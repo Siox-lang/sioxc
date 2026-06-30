@@ -169,6 +169,8 @@ version = "0.0.1"
 dependencies = [
  "siox-diag",
  "siox-elab",
+ "siox-resolve",
+ "siox-syntax",
  "siox-types",
 ]
 

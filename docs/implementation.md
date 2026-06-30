@@ -20,10 +20,10 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
-| `siox-ir`      | 6    | 🔴 stub | |
+| `siox-ir`      | 6    | 🟢 partial | language-neutral IR; lowers behaviour to drivers + event blocks; `siox ir` |
 | `siox-sim`     | 7, 8 | 🔴 stub | |
 | `siox-wave`    | 9    | 🔴 stub | |
-| `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`; `sim`/`test`/`ir` report where the pipeline stops |
+| `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`; `sim`/`test` report where the pipeline stops |
 
 ## Stage-by-stage
 
@@ -81,10 +81,21 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   expansion, full direction analysis, and propagating concrete parameter widths
   down into instance signal types.
 
-### Stage 6 — Digital IR (`siox-ir`) — 🔴
+### Stage 6 — Digital IR (`siox-ir`) — 🟢 partial
 - **Acceptance:** event vs. combinational deps explicit; sequential updates
   separated from local assignments; `::event`/`::old` represented directly;
   `siox ir` prints normalized IR.
+- **Status (done):** a **language-neutral** IR (its own `BinOp`/`UnOp`, no AST
+  imports — see the convergence-layer goal). `lower` walks each non-extern
+  entity's behaviour into signals, combinational `Driver`s, and `EventBlock`s;
+  detects event-controlled blocks (`::event`/`::rising`) and expands
+  `clk::rising` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
+  `if`/`else` priority accumulates into next-state conditions. `siox ir` prints
+  it.
+- **Status (todo):** per-instance width specialization and cross-instance
+  flattening/connections (today it lowers entity behaviour with declared,
+  possibly parametric widths); match/index/slice/concat/method-call lowering;
+  instance `let` bindings are currently listed as signals.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🔴
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -128,8 +139,8 @@ Per spec §7 — the shortest practical path. Strikethrough marks completed work
 3. ~~Name resolution (Stage 3)~~
 4. Type checking (Stage 4) — *in progress*
 5. Elaboration (Stage 5) — *in progress*
-6. **Digital IR (Stage 6) — next**
-7. Event-driven simulator (Stage 7)
+6. Digital IR (Stage 6) — *in progress*
+7. **Event-driven simulator (Stage 7) — next**
 8. Test runner + assertions (Stage 8)
 9. Waveform output (Stage 9)
 10. Diagnostics polish (Stage 10)

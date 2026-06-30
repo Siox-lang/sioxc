@@ -117,13 +117,7 @@ fn main() -> ExitCode {
                 Pending { stage: 8, name: "run tests", krate: "siox-sim" },
             ],
         ),
-        Command::Ir { file } => run_then_report(
-            &file,
-            &[
-                Pending { stage: 5, name: "elaborate", krate: "siox-elab" },
-                Pending { stage: 6, name: "lower (IR)", krate: "siox-ir" },
-            ],
-        ),
+        Command::Ir { file } => cmd_ir(&file),
         Command::Tree { file } => cmd_tree(&file),
     }
 }
@@ -261,6 +255,39 @@ fn cmd_tree(path: &Path) -> ExitCode {
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     eprintln!();
     print!("{}", hier.to_tree_string());
+    if sem.fe.sink.has_errors() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `siox ir`: run the pipeline through elaboration, lower to the digital IR, and
+/// print it. The IR goes to stdout; the stage trace and diagnostics to stderr.
+fn cmd_ir(path: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    let modules = std::slice::from_ref(&sem.fe.module);
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    eprintln!("== stage 5: elaborate == {} instance(s)", hier.instances.len());
+
+    let before = sem.fe.sink.error_count();
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    eprintln!(
+        "== stage 6: lower == {} signal(s), {} driver(s), {} event block(s), {} diagnostic(s)",
+        design.signals.len(),
+        design.drivers.len(),
+        design.event_blocks.len(),
+        sem.fe.sink.error_count() - before
+    );
+
+    eprintln!();
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    eprintln!();
+    print!("{}", design.to_ir_string());
     if sem.fe.sink.has_errors() {
         ExitCode::FAILURE
     } else {
