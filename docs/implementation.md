@@ -18,7 +18,7 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-diag`    | 10   | 🟢 working | spans, source map with line/col, diagnostics, code catalogue |
 | `siox-syntax`  | 1, 2 | 🟢 working | lexer, parser, AST, round-tripping pretty-printer |
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
-| `siox-types`   | 4    | 🟢 partial | type-inference core; Logic-condition, attr target/value, input-write, assignment/init compatibility, `::ddt` |
+| `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
 | `siox-ir`      | 6    | 🔴 stub | |
 | `siox-sim`     | 7, 8 | 🔴 stub | |
@@ -57,9 +57,11 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   attributes rejected; cannot write `in` ports; bare `Logic` condition rejected;
   `::ddt` rejected.
 - **Status (done):** type-inference core (annotation → `Ty`, per-impl symbol
-  table, `type_of`); `Logic`-as-bare-condition (`E-P003`), attribute target
-  (`E-P006`) and value (`E-P007`), write-to-input-port (`E-P004`), assignment
-  and initializer compatibility / no-implicit-conversion (`E-P003`, literal- and
+  table, `type_of`); a trait-driven condition check (a condition's type must
+  implement `Boolean`; `Bit`/`Bool` are built in, `Logic` is excluded, user
+  types opt in via `impl Boolean for T`) (`E-P003`), attribute target (`E-P006`)
+  and value (`E-P007`), write-to-input-port (`E-P004`), assignment and
+  initializer compatibility / no-implicit-conversion (`E-P003`, literal- and
   enum-aware), and the `::ddt` Phase-2 guard (`E-P010`).
 - **Status (deferred):** concrete-width mismatch (`uint[8]`→`uint[16]`) needs
   elaboration-time widths fed back in; method-call resolution needs the method
@@ -104,10 +106,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   (multiple drivers, latches, unused items, non-exhaustive match, ...) are not
   yet emitted.
 
-### Stage 11 — Standard library (`std/`) — 🔴
+### Stage 11 — Standard library (`std/`) — 🔴 (started)
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
-- **Status:** `std/` is empty; primitives and `std::attrs` are seeded as
-  compiler builtins in the meantime (see architecture.md).
+- **Status:** `std/ops.siox` declares the `Boolean` trait (boolean
+  representation for conditions). The compiler does not load `std/` yet, so
+  primitives, `std::attrs`, and the built-in `Boolean` impls (`Bit`/`Bool`) are
+  seeded as compiler builtins in the meantime (see architecture.md).
 
 ### Stage 12 — CLI & workflow (`siox-cli`) — 🟢
 - **Acceptance:** `siox check` succeeds; `siox sim --wave` produces a waveform;

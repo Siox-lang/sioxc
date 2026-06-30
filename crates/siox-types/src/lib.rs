@@ -110,6 +110,8 @@ struct Checker<'a> {
     attr_targets: HashMap<String, Vec<String>>,
     /// Attribute name -> the value type it expects.
     attr_value_kinds: HashMap<String, AttrValueTy>,
+    /// Trait name -> set of type (head) names that implement it.
+    trait_impls: HashMap<String, HashSet<String>>,
 }
 
 impl<'a> Checker<'a> {
@@ -136,7 +138,22 @@ impl<'a> Checker<'a> {
         ] {
             attr_value_kinds.insert(name.to_string(), ty);
         }
-        Checker { sink, resolved, entities: HashMap::new(), attr_targets, attr_value_kinds }
+        // Built-in `Boolean` impls (until `std::ops` is loaded): `Bit` and `Bool`
+        // can be used directly as conditions (spec 3.16). `Logic` is omitted, so
+        // it still requires an explicit comparison.
+        let mut trait_impls: HashMap<String, HashSet<String>> = HashMap::new();
+        trait_impls.insert(
+            "Boolean".to_string(),
+            ["Bit", "Bool"].iter().map(|s| s.to_string()).collect(),
+        );
+        Checker {
+            sink,
+            resolved,
+            entities: HashMap::new(),
+            attr_targets,
+            attr_value_kinds,
+            trait_impls,
+        }
     }
 
     /// First pass: record entity port types and declared attribute targets.
@@ -165,6 +182,17 @@ impl<'a> Checker<'a> {
                             _ => AttrValueTy::Other,
                         };
                         self.attr_value_kinds.insert(a.name.text.clone(), kind);
+                    }
+                    Item::Impl(im) => {
+                        // Record `impl Trait for Type` so trait-driven checks
+                        // (e.g. conditions) can ask "does T implement Trait?".
+                        if let Some(tr) = &im.trait_ {
+                            let trait_name = tr.segments.last().map(|s| s.text.clone());
+                            let target = type_head_name(&im.target).map(|s| s.to_string());
+                            if let (Some(t), Some(ty)) = (trait_name, target) {
+                                self.trait_impls.entry(t).or_default().insert(ty);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -335,16 +363,40 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Spec 3.16: a `Logic` value cannot be a condition on its own; it must be
-    /// compared explicitly (e.g. `== '1'`). `Bit` and `Bool` are fine.
+    /// A condition's type must implement `Boolean` (spec 3.16, generalized).
+    /// `Bit`/`Bool` have built-in impls; user types opt in with `impl Boolean
+    /// for T`; `Logic` has none, so it still requires an explicit comparison.
+    /// An unknown (`Error`) condition type is skipped to avoid false positives.
     fn check_condition(&mut self, cond: &Expr, sym: &HashMap<String, Ty>) {
-        if self.type_of(cond, sym) == Ty::Logic {
+        let ty = self.type_of(cond, sym);
+        let Some(name) = self.type_kind_name(&ty) else { return };
+        if !self.implements_boolean(&name) {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(cond),
-                "`Logic` cannot be used directly as a condition; compare it explicitly, e.g. `== '1'`"
-                    .to_string(),
+                format!(
+                    "`{name}` cannot be used directly as a condition; \
+                     compare it explicitly (e.g. `== '1'`) or `impl Boolean for {name}`"
+                ),
             );
+        }
+    }
+
+    fn implements_boolean(&self, name: &str) -> bool {
+        self.trait_impls.get("Boolean").is_some_and(|set| set.contains(name))
+    }
+
+    /// The name a type is keyed by in the trait-impl table (`uint[8]` and
+    /// `uint` share `uint`). `Error`/array types have no name.
+    fn type_kind_name(&self, t: &Ty) -> Option<String> {
+        match t {
+            Ty::Bit => Some("Bit".to_string()),
+            Ty::Logic => Some("Logic".to_string()),
+            Ty::Bool => Some("Bool".to_string()),
+            Ty::UInt(_) => Some("uint".to_string()),
+            Ty::Int(_) => Some("int".to_string()),
+            Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
+            Ty::Array { .. } | Ty::Error => None,
         }
     }
 
@@ -756,5 +808,20 @@ mod tests {
         assert_eq!(bad, 1);
         let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
         assert_eq!(good, 0);
+    }
+
+    #[test]
+    fn user_type_opts_into_condition_via_boolean() {
+        // Without an `impl Boolean for State`, `if state` is rejected.
+        let without = check_src(
+            "module m;\nenum State { Idle, Run }\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
+        );
+        assert_eq!(without, 1);
+
+        // With it, the enum becomes usable as a condition.
+        let with = check_src(
+            "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  let as_bool(self) -> Bool {\n    match self {\n      State::Idle => false,\n      _ => true,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
+        );
+        assert_eq!(with, 0);
     }
 }

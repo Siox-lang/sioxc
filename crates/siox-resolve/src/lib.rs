@@ -138,8 +138,11 @@ impl<'a> Resolver<'a> {
     }
 
     fn seed_builtins(&mut self) {
-        // Primitive types (spec 3.9 / std::logic / std::bits).
-        for name in ["Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"] {
+        // Primitive types (spec 3.9 / std::logic / std::bits) plus the
+        // well-known std traits, seeded while `std/` is still empty.
+        for name in [
+            "Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string", "Boolean",
+        ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }

@@ -1,0 +1,27 @@
+module std::ops;
+
+// Operator and conversion traits for the standard library.
+//
+// `Boolean` gives a type a boolean representation so it can be used directly
+// as a condition (in `if`, and later `while`/assertions). The conversion is
+// applied only in condition position — it is not a general implicit cast.
+//
+// NOTE: until the compiler loads `std/`, the `Bit` and `Bool` impls below are
+// seeded as builtins in siox-types, and `Boolean` is seeded as a known trait
+// in siox-resolve. This file is the canonical declaration they stand in for.
+
+pub trait Boolean {
+    let as_bool(self) -> Bool;
+}
+
+impl Boolean for Bool {
+    let as_bool(self) -> Bool {
+        self
+    }
+}
+
+impl Boolean for Bit {
+    let as_bool(self) -> Bool {
+        self == '1'
+    }
+}
