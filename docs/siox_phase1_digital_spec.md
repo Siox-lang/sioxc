@@ -1,6 +1,6 @@
-# mhdl Phase 1 — Digital Language Specification and Implementation Plan
+# siox Phase 1 — Digital Language Specification and Implementation Plan
 
-This document defines Phase 1 of mhdl: the digital HDL layer. Phase 1 should produce a usable digital language, a parser, a type checker, an elaborator, an event-driven simulator, a test runner, and waveform output. Analogue domains and schematic/design syntax are intentionally left for later phases.
+This document defines Phase 1 of siox: the digital HDL layer. Phase 1 should produce a usable digital language, a parser, a type checker, an elaborator, an event-driven simulator, a test runner, and waveform output. Analogue domains and schematic/design syntax are intentionally left for later phases.
 
 The goal is not to finish the full language. The goal is to freeze and implement a coherent digital subset that is strong enough to write counters, FSMs, buses, ready/valid interfaces, small datapaths, test entities, assertions, and simulation traces.
 
@@ -8,7 +8,7 @@ The goal is not to finish the full language. The goal is to freeze and implement
 
 ## 1. Phase 1 goal
 
-Phase 1 creates the digital core of mhdl.
+Phase 1 creates the digital core of siox.
 
 It should support:
 
@@ -116,7 +116,7 @@ Not allowed inside an entity body in Phase 1:
 
 Valid:
 
-```mhdl
+```siox
 entity Counter<W: usize> {
     in clk: Clock;
     in rst: Logic;
@@ -128,7 +128,7 @@ entity Counter<W: usize> {
 
 Invalid:
 
-```mhdl
+```siox
 entity Counter {
     const W: usize;      // invalid in entity body
     let value: uint[8];  // invalid in entity body
@@ -150,7 +150,7 @@ They must be known when the entity is specialized/instantiated.
 
 Valid:
 
-```mhdl
+```siox
 entity Counter<W: usize> {
     out count: uint[W];
 }
@@ -158,7 +158,7 @@ entity Counter<W: usize> {
 
 Instantiation:
 
-```mhdl
+```siox
 let c = Counter<W = 8> {
     .count = count8,
 };
@@ -166,7 +166,7 @@ let c = Counter<W = 8> {
 
 or positional:
 
-```mhdl
+```siox
 let c = Counter<8> {
     .count = count8,
 };
@@ -176,14 +176,14 @@ Recommended Phase 1 restriction: do not allow mixing named and positional parame
 
 Valid:
 
-```mhdl
+```siox
 Counter<8>
 Counter<W = 8>
 ```
 
 Invalid:
 
-```mhdl
+```siox
 Counter<8, MODE = Fast>
 ```
 
@@ -195,7 +195,7 @@ In Phase 1, `const` may exist at module scope or inside implementation/function 
 
 Valid:
 
-```mhdl
+```siox
 const DEFAULT_WIDTH: usize = 8;
 
 entity Counter<W: usize> {
@@ -205,7 +205,7 @@ entity Counter<W: usize> {
 
 Valid inside implementation if used as a local compile-time value:
 
-```mhdl
+```siox
 impl Counter<W: usize> {
     const MAX: uint[W] = (1 << W) - 1;
 }
@@ -213,7 +213,7 @@ impl Counter<W: usize> {
 
 Invalid:
 
-```mhdl
+```siox
 entity Counter {
     const W: usize;
     out count: uint[W];
@@ -230,14 +230,14 @@ Reason: entity fields are externally connected ports/interface terminals, not hi
 
 Valid:
 
-```mhdl
+```siox
 using std::logic::{Bit, Logic, Clock};
 using Word = uint[32];
 ```
 
 Invalid:
 
-```mhdl
+```siox
 using path = a -> b; // invalid in digital Phase 1 and not an alias
 ```
 
@@ -251,7 +251,7 @@ Metadata attributes must be declared before use.
 
 Example declarations:
 
-```mhdl
+```siox
 module std::attrs;
 
 pub attr top: Bool for entity;
@@ -263,7 +263,7 @@ pub attr name: string for entity;
 
 Usage:
 
-```mhdl
+```siox
 #[top]
 entity Top {
     in clk: Clock;
@@ -272,14 +272,14 @@ entity Top {
 
 Invalid if `top` was not declared/imported:
 
-```mhdl
+```siox
 #[top]
 entity Top { }
 ```
 
 Invalid if type does not match:
 
-```mhdl
+```siox
 #[top = "yes"]
 entity Top { }
 ```
@@ -288,13 +288,13 @@ because `top` expects `Bool`.
 
 Boolean shorthand:
 
-```mhdl
+```siox
 #[top]
 ```
 
 means:
 
-```mhdl
+```siox
 #[top = true]
 ```
 
@@ -308,7 +308,7 @@ They should not silently change language semantics.
 
 Examples:
 
-```mhdl
+```siox
 #[top]
 entity Top { ... }
 
@@ -329,7 +329,7 @@ A `struct` groups fields. It does not define port directions.
 
 Valid:
 
-```mhdl
+```siox
 struct Packet<T> {
     valid: Bit,
     data: T,
@@ -338,7 +338,7 @@ struct Packet<T> {
 
 Invalid:
 
-```mhdl
+```siox
 struct Packet<T> {
     in valid: Bit,  // invalid: directions do not belong in normal struct fields
     out data: T,
@@ -355,7 +355,7 @@ Enums represent finite value domains.
 
 Basic enum:
 
-```mhdl
+```siox
 enum State {
     Idle,
     Start,
@@ -366,7 +366,7 @@ enum State {
 
 Enum with representation:
 
-```mhdl
+```siox
 enum State: uint[2] {
     Idle  = 0,
     Start = 1,
@@ -383,7 +383,7 @@ Phase 1 should avoid Rust-style payload enums. Keep enums simple.
 
 Every digital/discrete value has:
 
-```mhdl
+```siox
 x::event
 x::old
 ```
@@ -411,7 +411,7 @@ x::old
 
 Enum example:
 
-```mhdl
+```siox
 if state::event {
     changed = '1';
 }
@@ -423,7 +423,7 @@ if state::old == State::Idle & state == State::Start {
 
 Struct example:
 
-```mhdl
+```siox
 struct Packet {
     valid: Bit,
     data: uint[32],
@@ -462,7 +462,7 @@ array::old   = previous full array value
 
 Example definition:
 
-```mhdl
+```siox
 trait ClockLike {
     let rising(self);
     let falling(self);
@@ -486,7 +486,7 @@ impl ClockLike for Logic {
 
 Usage:
 
-```mhdl
+```siox
 if clk::rising {
     q = d;
 }
@@ -502,7 +502,7 @@ No VHDL-style explicit sensitivity list is needed.
 
 This:
 
-```mhdl
+```siox
 if clk::rising {
     q = d;
 }
@@ -512,7 +512,7 @@ is event-controlled because the condition depends on `clk::event`.
 
 This:
 
-```mhdl
+```siox
 if en {
     y = a;
 }
@@ -522,7 +522,7 @@ is not event-controlled by itself. It is ordinary conditional logic.
 
 Inside an event-controlled block:
 
-```mhdl
+```siox
 if clk::rising {
     if en {
         q = d;
@@ -542,19 +542,19 @@ Its meaning depends on context.
 
 Declaration initialization:
 
-```mhdl
+```siox
 let value: uint[8] = 0;
 ```
 
 Combinational assignment:
 
-```mhdl
+```siox
 y = a & b;
 ```
 
 Sequential/event-controlled update:
 
-```mhdl
+```siox
 if clk::rising {
     q = d;
 }
@@ -562,7 +562,7 @@ if clk::rising {
 
 Instance connection:
 
-```mhdl
+```siox
 let c = Counter<W = 8> {
     .clk = clk,
     .rst = rst,
@@ -572,7 +572,7 @@ let c = Counter<W = 8> {
 
 Shorthand connection:
 
-```mhdl
+```siox
 let c = Counter<W = 8> {
     .clk,
     .rst,
@@ -582,7 +582,7 @@ let c = Counter<W = 8> {
 
 means:
 
-```mhdl
+```siox
 let c = Counter<W = 8> {
     .clk = clk,
     .rst = rst,
@@ -598,7 +598,7 @@ In an event-controlled block, assignments to persistent state update at the end 
 
 Example:
 
-```mhdl
+```siox
 if clk::rising {
     a = b;
     b = a;
@@ -616,7 +616,7 @@ This swaps `a` and `b`.
 
 Local variables update immediately:
 
-```mhdl
+```siox
 if clk::rising {
     let tmp = a;
     a = b;
@@ -632,7 +632,7 @@ Within one combinational driver context, later assignments override earlier assi
 
 Example:
 
-```mhdl
+```siox
 y = b;
 
 if sel {
@@ -664,7 +664,7 @@ Reset is not a magic built-in concept.
 
 Synchronous reset:
 
-```mhdl
+```siox
 if clk::rising {
     if rst == '1' {
         q = 0;
@@ -676,7 +676,7 @@ if clk::rising {
 
 Asynchronous reset pattern:
 
-```mhdl
+```siox
 if rst == '1' {
     q = 0;
 } else if clk::rising {
@@ -698,7 +698,7 @@ Recommended Phase 1 condition rules:
 
 Valid:
 
-```mhdl
+```siox
 if ready {
     y = '1';
 }
@@ -708,7 +708,7 @@ where `ready: Bit`.
 
 Valid:
 
-```mhdl
+```siox
 if rst == '1' {
     q = 0;
 }
@@ -716,7 +716,7 @@ if rst == '1' {
 
 Invalid or discouraged:
 
-```mhdl
+```siox
 if rst {
     q = 0;
 }
@@ -732,7 +732,7 @@ Avoid hidden conversions between unrelated digital types.
 
 Use constructors/casts:
 
-```mhdl
+```siox
 let b = Bit(x);
 let l = Logic(b);
 let u = uint[8](value);
@@ -750,7 +750,7 @@ They are not normal runtime values.
 
 Valid:
 
-```mhdl
+```siox
 entity Producer {
     out data: uint[8];
 }
@@ -770,7 +770,7 @@ Structs do not contain direction. Directional modes define how a struct behaves 
 
 Example struct:
 
-```mhdl
+```siox
 struct Stream<T> {
     clk: Clock,
     rst: Logic,
@@ -782,7 +782,7 @@ struct Stream<T> {
 
 Source mode:
 
-```mhdl
+```siox
 impl out Stream<T>::Source {
     in clk;
     in rst;
@@ -794,7 +794,7 @@ impl out Stream<T>::Source {
 
 Sink mode:
 
-```mhdl
+```siox
 impl in Stream<T>::Sink {
     in clk;
     in rst;
@@ -806,7 +806,7 @@ impl in Stream<T>::Sink {
 
 Usage:
 
-```mhdl
+```siox
 entity Producer {
     bus: out Stream<uint[32]>::Source;
 }
@@ -820,7 +820,7 @@ If no custom named mode is used, direction may apply recursively to all leaves.
 
 Example:
 
-```mhdl
+```siox
 bus: in Packet;
 ```
 
@@ -836,7 +836,7 @@ They define required functions/methods/properties for compile-time checking and 
 
 Example:
 
-```mhdl
+```siox
 trait Source<T> {
     let send(self, value: T);
     let can_send(self) -> Bit;
@@ -845,7 +845,7 @@ trait Source<T> {
 
 Implementation:
 
-```mhdl
+```siox
 impl Source<T> for out Stream<T>::Source {
     let send(self, value: T) {
         self.valid = '1';
@@ -879,7 +879,7 @@ Phase 1 should support `match` over enums and simple bit/vector patterns.
 
 Enum match:
 
-```mhdl
+```siox
 match state {
     State::Idle => {
         next = State::Start;
@@ -895,7 +895,7 @@ match state {
 
 Bit-pattern match with wildcard:
 
-```mhdl
+```siox
 match opcode {
     b"00??" => op = Op::Alu,
     b"01??" => op = Op::Load,
@@ -908,7 +908,7 @@ match opcode {
 
 Invalid:
 
-```mhdl
+```siox
 let x: uint[4] = b"10??";
 ```
 
@@ -920,7 +920,7 @@ unless Phase 1 explicitly introduces a pattern type, which is not recommended.
 
 Phase 1 should support:
 
-```mhdl
+```siox
 let data: Logic[31..0];
 let byte: Logic[7..0] = data[7..0];
 let bit0: Logic = data[0];
@@ -928,7 +928,7 @@ let bit0: Logic = data[0];
 
 Range attributes:
 
-```mhdl
+```siox
 data::width
 data::range
 data::low
@@ -940,7 +940,7 @@ data::direction
 
 For:
 
-```mhdl
+```siox
 let data: Logic[31..0];
 ```
 
@@ -1015,7 +1015,7 @@ Define exact syntax for:
 A document named something like:
 
 ```text
-mhdl_phase1_syntax.md
+siox_phase1_syntax.md
 ```
 
 containing a frozen grammar sketch and 10 to 20 valid examples.
@@ -1089,7 +1089,7 @@ Implement:
 The compiler can run:
 
 ```bash
-mhdl parse examples/counter.mhdl
+siox parse examples/counter.siox
 ```
 
 and print a stable AST or pretty-printed source.
@@ -1128,19 +1128,19 @@ Implement:
 
 `using` imports names:
 
-```mhdl
+```siox
 using std::logic::{Bit, Logic, Clock};
 ```
 
 Aliases create local names:
 
-```mhdl
+```siox
 using Word = uint[32];
 ```
 
 Fully-qualified paths remain valid:
 
-```mhdl
+```siox
 std::logic::Bit
 ```
 
@@ -1186,14 +1186,14 @@ Implement:
 
 Digital/discrete values support:
 
-```mhdl
+```siox
 x::event
 x::old
 ```
 
 Range-like values support:
 
-```mhdl
+```siox
 x::width
 x::range
 x::high
@@ -1205,7 +1205,7 @@ x::direction
 
 Analogue attributes are not part of Phase 1:
 
-```mhdl
+```siox
 x::ddt // invalid in Phase 1
 ```
 
@@ -1250,7 +1250,7 @@ Implement:
 
 Source:
 
-```mhdl
+```siox
 let c = Counter<W = 8> {
     .clk,
     .rst,
@@ -1323,7 +1323,7 @@ OnEvent(event_condition): next(signal) = expression
 
 Example:
 
-```mhdl
+```siox
 if clk::rising {
     q = d;
 }
@@ -1447,11 +1447,11 @@ Must simulate correctly:
 
 ### Goal
 
-Allow users to write tests in mhdl itself.
+Allow users to write tests in siox itself.
 
 ### Test entity
 
-```mhdl
+```siox
 #[test]
 entity CounterTest {
 }
@@ -1465,7 +1465,7 @@ Keep this small initially.
 
 Possible primitives:
 
-```mhdl
+```siox
 wait 10.ns;
 tick(clk);
 assert!(condition, "message");
@@ -1473,7 +1473,7 @@ assert!(condition, "message");
 
 Example:
 
-```mhdl
+```siox
 #[test]
 entity CounterTest {
 }
@@ -1506,7 +1506,7 @@ Exact test-time syntax can be simplified for MVP.
 
 ### Endgoal
 
-`mhdl test` can discover and run `#[test]` entities.
+`siox test` can discover and run `#[test]` entities.
 
 ### Acceptance criteria
 
@@ -1536,7 +1536,7 @@ Export simulation traces for debugging.
 ### Example CLI
 
 ```bash
-mhdl sim examples/counter_test.mhdl --wave counter.vcd
+siox sim examples/counter_test.siox --wave counter.vcd
 ```
 
 ### Endgoal
@@ -1603,7 +1603,7 @@ Example:
 
 ```text
 error[E-P0XX]: cannot assign to input port `ready`
-  --> stream.mhdl:42:9
+  --> stream.siox:42:9
    |
 42 |         self.ready = '1';
    |         ^^^^^^^^^^ input fields are read-only in `out Stream<T>::Source`
@@ -1634,7 +1634,7 @@ std::assert
 
 Should contain:
 
-```mhdl
+```siox
 Bit
 Logic
 Bool
@@ -1644,7 +1644,7 @@ ClockLike
 
 Potential logic values:
 
-```mhdl
+```siox
 enum Bit {
     '0',
     '1',
@@ -1662,7 +1662,7 @@ enum Logic {
 
 Should contain:
 
-```mhdl
+```siox
 uint[N]
 int[N]
 ```
@@ -1680,7 +1680,7 @@ plus operations:
 
 Should contain:
 
-```mhdl
+```siox
 pub attr top: Bool for entity;
 pub attr test: Bool for entity;
 pub attr keep: Bool for let, port;
@@ -1692,7 +1692,7 @@ pub attr name: string for entity;
 
 Should contain test/simulation helpers:
 
-```mhdl
+```siox
 wait
 tick
 run
@@ -1724,18 +1724,18 @@ Make Phase 1 usable from the command line.
 Minimum commands:
 
 ```bash
-mhdl check <file>
-mhdl parse <file>
-mhdl sim <file>
-mhdl test <path>
+siox check <file>
+siox parse <file>
+siox sim <file>
+siox test <path>
 ```
 
 Useful debug commands:
 
 ```bash
-mhdl ast <file>
-mhdl ir <file>
-mhdl tree <file>
+siox ast <file>
+siox ir <file>
+siox tree <file>
 ```
 
 ### Endgoal
@@ -1744,9 +1744,9 @@ A user can write examples, check them, run simulations, and inspect output.
 
 ### Acceptance criteria
 
-- `mhdl check examples/counter.mhdl` reports success.
-- `mhdl sim examples/counter_test.mhdl --wave counter.vcd` produces a waveform.
-- `mhdl test examples/` runs all tests.
+- `siox check examples/counter.siox` reports success.
+- `siox sim examples/counter_test.siox --wave counter.vcd` produces a waveform.
+- `siox test examples/` runs all tests.
 - Compiler exits nonzero on failed checks/tests.
 
 ---
@@ -1757,18 +1757,18 @@ The Phase 1 repository should include examples that double as regression tests.
 
 Required examples:
 
-1. `basic_mux.mhdl`
-2. `register.mhdl`
-3. `counter.mhdl`
-4. `fsm.mhdl`
-5. `enum_event_monitor.mhdl`
-6. `packet_struct_event.mhdl`
-7. `stream_bus.mhdl`
-8. `producer_consumer.mhdl`
-9. `external_entity_stub.mhdl`
-10. `attribute_usage.mhdl`
-11. `counter_test.mhdl`
-12. `fsm_test.mhdl`
+1. `basic_mux.siox`
+2. `register.siox`
+3. `counter.siox`
+4. `fsm.siox`
+5. `enum_event_monitor.siox`
+6. `packet_struct_event.siox`
+7. `stream_bus.siox`
+8. `producer_consumer.siox`
+9. `external_entity_stub.siox`
+10. `attribute_usage.siox`
+11. `counter_test.siox`
+12. `fsm_test.siox`
 
 ---
 
@@ -1790,7 +1790,7 @@ Phase 1 is complete when the project can:
 11. Report useful diagnostics.
 ```
 
-At that point, mhdl has a real digital HDL foundation. Phase 2 can then add analogue `domain`, `across`, `through`, `::ddt`, analysis domains, physical solvers, and mixed-signal bridges without destabilizing the digital core.
+At that point, siox has a real digital HDL foundation. Phase 2 can then add analogue `domain`, `across`, `through`, `::ddt`, analysis domains, physical solvers, and mixed-signal bridges without destabilizing the digital core.
 
 ---
 

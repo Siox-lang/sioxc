@@ -1,6 +1,6 @@
-# mhdl Three-Phase Roadmap
+# siox Three-Phase Roadmap
 
-This document splits mhdl development into three major phases:
+This document splits siox development into three major phases:
 
 1. **Digital**
 2. **Analogue**
@@ -23,7 +23,7 @@ The digital and analogue layers are the **logic/modeling language**. The design 
 
 Build the core HDL language and event-driven simulator.
 
-This phase defines the digital semantics of mhdl: entities, implementations, structs, enums, traits, ports, assignments, event handling, and tests.
+This phase defines the digital semantics of siox: entities, implementations, structs, enums, traits, ports, assignments, event handling, and tests.
 
 ### Core Concepts
 
@@ -66,7 +66,7 @@ in / out / inout
 
 Entity bodies are interface-only.
 
-```mhdl
+```siox
 entity Counter<W: usize> {
     in clk: Clock;
     in rst: Logic;
@@ -78,7 +78,7 @@ entity Counter<W: usize> {
 
 No `const` fields inside entities.
 
-```mhdl
+```siox
 entity BadCounter {
     const W: usize;      // invalid
     out count: uint[W];  // invalid because W changes interface shape
@@ -87,7 +87,7 @@ entity BadCounter {
 
 Configuration values that affect shape or behavior go in the entity parameter list:
 
-```mhdl
+```siox
 entity Counter<W: usize> {
     out count: uint[W];
 }
@@ -97,7 +97,7 @@ entity Counter<W: usize> {
 
 All digital/discrete values get:
 
-```mhdl
+```siox
 x::event
 x::old
 ```
@@ -117,7 +117,7 @@ arrays/vectors of digital values
 
 Example with an enum:
 
-```mhdl
+```siox
 enum State {
     Idle,
     Start,
@@ -142,7 +142,7 @@ impl Controller {
 
 Clock edges can be expressed as derived attributes over `::event` and `::old`.
 
-```mhdl
+```siox
 trait ClockLike {
     let rising(self);
     let falling(self);
@@ -166,7 +166,7 @@ impl ClockLike for Logic {
 
 Usage:
 
-```mhdl
+```siox
 if clk::rising {
     q = d;
 }
@@ -176,7 +176,7 @@ The scheduler can infer that this block is event-controlled because the conditio
 
 ### Example: Counter
 
-```mhdl
+```siox
 entity Counter<W: usize> {
     in clk: Clock;
     in rst: Logic;
@@ -259,7 +259,7 @@ If a type is declared with `domain`, it is analogue.
 
 If a type is declared with `struct`, it is ordinary/digital data unless explicitly used through a bridge.
 
-```mhdl
+```siox
 domain Electrical<A: Analysis> {
     across v: Voltage<A>;
     through i: Current<A>;
@@ -294,7 +294,7 @@ The terminal itself does not store `v` or `i`. The quantities appear when two co
 
 Analysis/math representations can be ordinary types implementing traits.
 
-```mhdl
+```siox
 trait Analysis {
     using Scalar;
 }
@@ -336,7 +336,7 @@ DC:
 
 ### Example: Resistor
 
-```mhdl
+```siox
 entity Resistor<R: Ohm, A: Analysis> {
     p: Electrical<A>;
     n: Electrical<A>;
@@ -351,7 +351,7 @@ impl Resistor<R: Ohm, A: Analysis> {
 
 ### Example: Capacitor
 
-```mhdl
+```siox
 entity Capacitor<C: Farad, A: Analysis> {
     p: Electrical<A>;
     n: Electrical<A>;
@@ -366,7 +366,7 @@ impl Capacitor<C: Farad, A: Analysis> {
 
 ### Example: Inductor
 
-```mhdl
+```siox
 entity Inductor<L: Henry, A: Analysis> {
     p: Electrical<A>;
     n: Electrical<A>;
@@ -385,7 +385,7 @@ The same `domain` pattern can define other physical systems.
 
 #### Thermal
 
-```mhdl
+```siox
 domain Thermal<A: Analysis> {
     across temp: Temperature<A>;
     through q: HeatFlow<A>;
@@ -394,7 +394,7 @@ domain Thermal<A: Analysis> {
 
 #### Mechanical Translational
 
-```mhdl
+```siox
 domain Translational<A: Analysis> {
     across x: Position<A>;
     through f: Force<A>;
@@ -403,7 +403,7 @@ domain Translational<A: Analysis> {
 
 #### Mechanical Rotational
 
-```mhdl
+```siox
 domain Rotational<A: Analysis> {
     across theta: Angle<A>;
     through tau: Torque<A>;
@@ -412,7 +412,7 @@ domain Rotational<A: Analysis> {
 
 #### Hydraulic
 
-```mhdl
+```siox
 domain Hydraulic<A: Analysis> {
     across p: Pressure<A>;
     through q: VolumeFlow<A>;
@@ -421,7 +421,7 @@ domain Hydraulic<A: Analysis> {
 
 #### Pneumatic
 
-```mhdl
+```siox
 domain Pneumatic<A: Analysis> {
     across p: Pressure<A>;
     through m: MassFlow<A>;
@@ -430,7 +430,7 @@ domain Pneumatic<A: Analysis> {
 
 #### Magnetic
 
-```mhdl
+```siox
 domain Magnetic<A: Analysis> {
     across mmf: MagnetomotiveForce<A>;
     through phi: MagneticFlux<A>;
@@ -439,7 +439,7 @@ domain Magnetic<A: Analysis> {
 
 #### Acoustic
 
-```mhdl
+```siox
 domain Acoustic<A: Analysis> {
     across p: SoundPressure<A>;
     through u: VolumeVelocity<A>;
@@ -448,7 +448,7 @@ domain Acoustic<A: Analysis> {
 
 #### Chemical
 
-```mhdl
+```siox
 domain Chemical<A: Analysis> {
     across c: Concentration<A>;
     through j: MolarFlow<A>;
@@ -457,7 +457,7 @@ domain Chemical<A: Analysis> {
 
 #### Electrochemical
 
-```mhdl
+```siox
 domain Electrochemical<A: Analysis> {
     across mu: ElectrochemicalPotential<A>;
     through j: IonicCurrent<A>;
@@ -470,7 +470,7 @@ Analogue and digital values should not silently mix.
 
 Use explicit bridges:
 
-```mhdl
+```siox
 sample(x)     // analogue -> digital sampled value
 hold(x)       // digital -> analogue piecewise-constant value
 cross(x, dir) // analogue threshold crossing -> digital event
@@ -479,7 +479,7 @@ quantize(...) // analogue value -> digital code
 
 Example sampled comparator:
 
-```mhdl
+```siox
 entity SampledComparator {
     in clk: Clock;
 
@@ -561,7 +561,7 @@ probe
 
 Layout can live in the same file using declared attributes.
 
-```mhdl
+```siox
 pub attr pos: Point2D for instance, node, signal;
 pub attr rot: Angle for instance;
 pub attr symbol: string for instance;
@@ -592,7 +592,7 @@ generated equations
 
 ### Example: RC Low-Pass Design
 
-```mhdl
+```siox
 design RcLowPass {
     using std::analysis::Time;
 
@@ -625,7 +625,7 @@ design RcLowPass {
 
 ### Example: Sensor Frontend Design
 
-```mhdl
+```siox
 design SensorFrontend {
     using std::analysis::Time;
 
@@ -688,7 +688,7 @@ compact component instantiation syntax
 named-field component instantiation syntax
 layout attributes
 schematic-compatible metadata model
-design-to-mhdl elaboration
+design-to-siox elaboration
 simulation setup handling
 probe/check/assert support
 GUI round-trip support
@@ -722,4 +722,4 @@ Design language
     schematic/netlist composition and GUI-friendly layout
 ```
 
-The design language should lower into normal mhdl elaboration. It is a friendlier frontend for composition, not a separate semantic universe.
+The design language should lower into normal siox elaboration. It is a friendlier frontend for composition, not a separate semantic universe.

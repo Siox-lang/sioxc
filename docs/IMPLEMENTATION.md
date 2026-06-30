@@ -4,9 +4,8 @@
 simulator. This document tracks **what needs to be implemented** for Phase 1
 (the digital core) and maps each spec stage to the crate that owns it.
 
-> The frozen language design lives in [`siox_phase1_digital_spec.md`](siox_phase1_digital_spec.md)
-> (written before the language was named `siox`; treat every "mhdl" there as
-> "siox"). The roadmap for Phases 2–3 is in
+> The frozen language design lives in [`siox_phase1_digital_spec.md`](siox_phase1_digital_spec.md).
+> The roadmap for Phases 2–3 is in
 > [`siox_three_phase_roadmap.md`](siox_three_phase_roadmap.md).
 
 Phase 1 is **simulation-first**: no analogue, no schematic/design layer, no
