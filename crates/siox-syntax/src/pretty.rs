@@ -542,7 +542,7 @@ mod tests {
              trait ClockLike { fn rising(self); }\n\
              impl ClockLike for Logic {\n\
                fn rising(self) {\n\
-                 self::event and self::old == '0' and self == '1'\n\
+                 return self::event and self::old == '0' and self == '1';\n\
                }\n\
              }\n\
              impl M {\n\

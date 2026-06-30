@@ -522,12 +522,9 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Semi, "after an assignment");
             Stmt::Assign { target: lhs, value, span: start.to(self.prev_span()) }
         } else {
-            // A bare final expression in a block may omit the `;` (implicit value).
-            if self.at(TokenKind::Semi) {
-                self.bump();
-            } else if !self.at(TokenKind::RBrace) {
-                self.expect(TokenKind::Semi, "after an expression statement");
-            }
+            // No implicit tail-expression returns: every expression statement is
+            // terminated by `;`. A function returns a value via `return`.
+            self.expect(TokenKind::Semi, "after an expression statement");
             Stmt::Expr(lhs)
         }
     }
@@ -580,6 +577,16 @@ impl<'a> Parser<'a> {
 
     fn parse_arm_single_stmt(&mut self) -> Stmt {
         let start = self.span();
+        // A `,`-terminated arm body: `=> return e`, `=> a = b`, or `=> e`.
+        if self.at(TokenKind::Return) {
+            self.bump();
+            let value = if self.at(TokenKind::Comma) || self.at(TokenKind::RBrace) {
+                None
+            } else {
+                Some(self.parse_expr(false))
+            };
+            return Stmt::Return { value, span: start.to(self.prev_span()) };
+        }
         let lhs = self.parse_expr(false);
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr(false);
@@ -1270,7 +1277,7 @@ mod tests {
     #[test]
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    self::event and self::old == '0' and self == '1'\n  }\n  fn edge(self) {\n    self::event\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self::event and self::old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self::event;\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else { panic!("expected trait") };
         assert_eq!(t.items.len(), 2);

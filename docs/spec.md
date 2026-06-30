@@ -471,15 +471,15 @@ trait ClockLike {
 
 impl ClockLike for Logic {
     fn rising(self) {
-        self::event and self::old == '0' and self == '1'
+        return self::event and self::old == '0' and self == '1';
     }
 
     fn falling(self) {
-        self::event and self::old == '1' and self == '0'
+        return self::event and self::old == '1' and self == '0';
     }
 
     fn edge(self) {
-        self::event
+        return self::event;
     }
 }
 ```
@@ -735,8 +735,8 @@ A user type becomes usable as a condition by implementing `Boolean`:
 impl Boolean for State {
     fn as_bool(self) -> Bool {
         match self {
-            State::Idle => false,
-            _ => true,
+            State::Idle => return false,
+            _ => return true,
         }
     }
 }

@@ -16,12 +16,12 @@ pub trait Boolean {
 
 impl Boolean for Bool {
     fn as_bool(self) -> Bool {
-        self
+        return self;
     }
 }
 
 impl Boolean for Bit {
     fn as_bool(self) -> Bool {
-        self == '1'
+        return self == '1';
     }
 }
