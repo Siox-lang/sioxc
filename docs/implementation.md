@@ -21,7 +21,7 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
 | `siox-ir`      | 6    | 🟢 partial | language-neutral IR; lowers behaviour to drivers + event blocks; `siox ir` |
-| `siox-sim`     | 7, 8 | 🔴 stub | |
+| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator core (Stage 7); `#[test]` runner (Stage 8) pending |
 | `siox-wave`    | 9    | 🔴 stub | |
 | `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`; `sim`/`test` report where the pipeline stops |
 
@@ -97,9 +97,18 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   possibly parametric widths); match/index/slice/concat/method-call lowering;
   instance `let` bindings are currently listed as signals.
 
-### Stage 7 — Simulator core (`siox-sim`) — 🔴
+### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
   handshake, enum monitor (`::old`), struct/array element events.
+- **Status (done):** the delta-cycle `Simulator` over the IR `Design`:
+  current/old/event state, IR-expression evaluation (`Event`/`Old`/`Current`,
+  logical/comparison/arithmetic ops), combinational fixpoint, event blocks fired
+  once per edge with next-state semantics, and `set`/`read`/`settle`/`advance`.
+  The counter simulates correctly (increments on rising edges, sync reset,
+  enable gating).
+- **Status (todo):** verified against the remaining acceptance designs (mux/FSM/
+  ready-valid/enum/struct/array); proper logic-value (X/Z) modelling; cascaded
+  event domains. Driving it from a `#[test]` entity is Stage 8.
 
 ### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🔴
 - **Acceptance:** passing assertions report success; failures report
@@ -140,8 +149,8 @@ Per spec §7 — the shortest practical path. Strikethrough marks completed work
 4. Type checking (Stage 4) — *in progress*
 5. Elaboration (Stage 5) — *in progress*
 6. Digital IR (Stage 6) — *in progress*
-7. **Event-driven simulator (Stage 7) — next**
-8. Test runner + assertions (Stage 8)
+7. Event-driven simulator (Stage 7) — *in progress*
+8. **Test runner + assertions (Stage 8) — next**
 9. Waveform output (Stage 9)
 10. Diagnostics polish (Stage 10)
 11. Standard library cleanup (Stage 11)

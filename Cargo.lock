@@ -187,7 +187,11 @@ name = "siox-sim"
 version = "0.0.1"
 dependencies = [
  "siox-diag",
+ "siox-elab",
  "siox-ir",
+ "siox-resolve",
+ "siox-syntax",
+ "siox-types",
 ]
 
 [[package]]
