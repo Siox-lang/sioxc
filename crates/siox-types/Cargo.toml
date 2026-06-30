@@ -1,0 +1,12 @@
+[package]
+name = "siox-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+siox-diag.workspace = true
+siox-syntax.workspace = true
+siox-resolve.workspace = true

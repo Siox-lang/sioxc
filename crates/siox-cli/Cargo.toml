@@ -1,0 +1,22 @@
+[package]
+name = "siox-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "siox"
+path = "src/main.rs"
+
+[dependencies]
+siox-diag.workspace = true
+siox-syntax.workspace = true
+siox-resolve.workspace = true
+siox-types.workspace = true
+siox-elab.workspace = true
+siox-ir.workspace = true
+siox-sim.workspace = true
+siox-wave.workspace = true
+clap.workspace = true

@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Simulator / tooling output
+*.vcd
+*.fst
+
+# Editor / OS noise
+.DS_Store
+*.swp
+/.idea
+/.vscode
+
+# Claude Code local tooling (not part of the published repo)
+/CLAUDE.md
+/.claude/settings.local.json

@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/siox-diag",
+    "crates/siox-syntax",
+    "crates/siox-resolve",
+    "crates/siox-types",
+    "crates/siox-elab",
+    "crates/siox-ir",
+    "crates/siox-sim",
+    "crates/siox-wave",
+    "crates/siox-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Siox-lang/sioxc"
+authors = ["siox contributors"]
+
+[workspace.dependencies]
+# Internal crates (path deps so the whole tree builds as one unit).
+siox-diag = { path = "crates/siox-diag" }
+siox-syntax = { path = "crates/siox-syntax" }
+siox-resolve = { path = "crates/siox-resolve" }
+siox-types = { path = "crates/siox-types" }
+siox-elab = { path = "crates/siox-elab" }
+siox-ir = { path = "crates/siox-ir" }
+siox-sim = { path = "crates/siox-sim" }
+siox-wave = { path = "crates/siox-wave" }
+
+# Third-party (kept minimal on purpose; add as stages need them).
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
