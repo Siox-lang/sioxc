@@ -370,7 +370,7 @@ pub fn type_str(t: &Type) -> String {
 fn un_op(op: UnOp) -> &'static str {
     match op {
         UnOp::Neg => "-",
-        UnOp::Not => "!",
+        UnOp::Not => "not ",
     }
 }
 
@@ -380,8 +380,12 @@ fn bin_op(op: BinOp) -> &'static str {
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
-        BinOp::And => "&",
-        BinOp::Or => "|",
+        BinOp::And => "and",
+        BinOp::Nand => "nand",
+        BinOp::Xor => "xor",
+        BinOp::Xnor => "xnor",
+        BinOp::Or => "or",
+        BinOp::Nor => "nor",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
         BinOp::Eq => "==",
@@ -402,8 +406,9 @@ fn bin_prec(op: BinOp) -> u8 {
         BinOp::Shl | BinOp::Shr => 7,
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 6,
         BinOp::Eq | BinOp::Ne => 5,
-        BinOp::And => 4,
-        BinOp::Or => 3,
+        BinOp::And | BinOp::Nand => 4,
+        BinOp::Xor | BinOp::Xnor => 3,
+        BinOp::Or | BinOp::Nor => 2,
     }
 }
 
@@ -537,7 +542,7 @@ mod tests {
              trait ClockLike { let rising(self); }\n\
              impl ClockLike for Logic {\n\
                let rising(self) {\n\
-                 self::event & self::old == '0' & self == '1'\n\
+                 self::event and self::old == '0' and self == '1'\n\
                }\n\
              }\n\
              impl M {\n\
@@ -553,5 +558,13 @@ mod tests {
     #[test]
     fn precedence_is_preserved() {
         roundtrip("module m;\nimpl M {\n  y = (a + b) * c;\n  z = a + b * c;\n}\n");
+    }
+
+    #[test]
+    fn textual_logical_operators_roundtrip() {
+        // and > xor > or, and `not` is prefix. Mixed precedence must round-trip.
+        roundtrip(
+            "module m;\nimpl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
+        );
     }
 }

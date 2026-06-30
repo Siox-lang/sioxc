@@ -335,8 +335,14 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    And, // & (bitwise / logical per spec examples)
-    Or,  // |
+    // Textual logical/bitwise operators (`a and b`). `nand`/`nor`/`xnor` are the
+    // negated forms; `xor` is between `and` and `or` in precedence.
+    And,
+    Nand,
+    Xor,
+    Xnor,
+    Or,
+    Nor,
     Shl,
     Shr,
     Eq,

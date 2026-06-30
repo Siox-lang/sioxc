@@ -638,8 +638,17 @@ impl<'a> Parser<'a> {
                 TokenKind::Lt => (BinOp::Lt, 60, 61),
                 TokenKind::Gt => (BinOp::Gt, 60, 61),
                 TokenKind::EqEq => (BinOp::Eq, 50, 51),
-                TokenKind::Amp => (BinOp::And, 40, 41),
-                TokenKind::Pipe => (BinOp::Or, 30, 31),
+                // Textual logical operators (`and`/`or`/...). They lex as plain
+                // identifiers and are recognised here in operator position.
+                TokenKind::Ident => match self.cur_text() {
+                    "and" => (BinOp::And, 40, 41),
+                    "nand" => (BinOp::Nand, 40, 41),
+                    "xor" => (BinOp::Xor, 35, 36),
+                    "xnor" => (BinOp::Xnor, 35, 36),
+                    "or" => (BinOp::Or, 30, 31),
+                    "nor" => (BinOp::Nor, 30, 31),
+                    _ => break,
+                },
                 _ => break,
             };
             if lbp < min_bp {
@@ -661,7 +670,8 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let op = match self.kind() {
             TokenKind::Minus => Some(UnOp::Neg),
-            TokenKind::Bang => Some(UnOp::Not),
+            // `not` is the textual logical-negation prefix operator.
+            TokenKind::Ident if self.cur_text() == "not" => Some(UnOp::Not),
             _ => None,
         };
         if let Some(op) = op {
@@ -1258,7 +1268,7 @@ mod tests {
     #[test]
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  let rising(self);\n  let edge(self);\n}\nimpl ClockLike for Logic {\n  let rising(self) {\n    self::event & self::old == '0' & self == '1'\n  }\n  let edge(self) {\n    self::event\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  let rising(self);\n  let edge(self);\n}\nimpl ClockLike for Logic {\n  let rising(self) {\n    self::event and self::old == '0' and self == '1'\n  }\n  let edge(self) {\n    self::event\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else { panic!("expected trait") };
         assert_eq!(t.items.len(), 2);
@@ -1294,6 +1304,17 @@ mod tests {
         assert_eq!(args.len(), 3);
         assert!(args[0].value.is_none()); // `.clk` shorthand
         assert!(args[1].value.is_some());
+    }
+
+    #[test]
+    fn textual_logical_operators_and_precedence() {
+        // `a and b or c` must parse as `(a and b) or c` (and binds tighter).
+        let m = parse_ok("module m;\nimpl M {\n  y = a and b or c;\n}\n");
+        let Item::Impl(i) = &m.items[0] else { panic!() };
+        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else { panic!() };
+        let Expr::Binary { op, lhs, .. } = value else { panic!("expected binary") };
+        assert_eq!(*op, BinOp::Or); // top-level is `or`
+        assert!(matches!(**lhs, Expr::Binary { op: BinOp::And, .. }));
     }
 
     #[test]
