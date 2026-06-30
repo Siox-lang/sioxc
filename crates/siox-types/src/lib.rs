@@ -27,7 +27,8 @@ pub enum Ty {
     Bit,
     Logic,
     Bool,
-    /// `uint[N]` / `int[N]` with a resolved width.
+    /// `uint[N]` / `int[N]`. Width `0` means "not yet known" (parametric, e.g.
+    /// `uint[W]`); the concrete width is resolved during elaboration.
     UInt(u32),
     Int(u32),
     /// Named struct / enum / entity, keyed by its definition.
@@ -56,16 +57,22 @@ pub struct Typed {
 
 /// Type-check resolved modules.
 ///
-/// This is an incremental Stage-4 starter. It already enforces two concrete
-/// rules and is structured so the remaining checks (width conversions, method
-/// resolution, `Logic`-as-condition, attribute targeting) slot in beside them:
-/// - **Phase-2 rejection** (spec Stage 4): `x::ddt` and friends are analogue
-///   syntax and produce [`codes::PHASE2_SYNTAX`].
-/// - **Write to input port** (spec 3.18): assigning a bare `in` port inside its
-///   entity's impl produces [`codes::WRITE_TO_INPUT_PORT`].
+/// Incremental Stage-4 checker. It builds a light type-inference core (resolve
+/// type annotations to [`Ty`], a per-impl symbol table, and `type_of` for
+/// expressions) and enforces the digital rules that do not need elaboration:
+/// - **Phase-2 guard** (spec Stage 4): `::ddt` -> [`codes::PHASE2_SYNTAX`].
+/// - **Write to input port** (spec 3.18): bare `in` port on an assignment LHS
+///   -> [`codes::WRITE_TO_INPUT_PORT`].
+/// - **`Logic` as a bare condition** (spec 3.16): a condition of type `Logic`
+///   that is not an explicit comparison -> [`codes::TYPE_MISMATCH`].
+/// - **Attribute target** (spec 3.5): an attribute applied to a target its
+///   declaration does not allow -> [`codes::INVALID_ATTR_TARGET`].
+///
+/// Deferred to elaboration, where the needed information exists: width-level
+/// conversions (`uint[8]` !-> `uint[16]`) and method-call resolution.
 pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink) -> Typed {
-    let mut checker = Checker { sink, _resolved: resolved, entity_in_ports: HashMap::new() };
-    checker.collect_entities(modules);
+    let mut checker = Checker::new(sink, resolved);
+    checker.collect(modules);
     for m in modules {
         for item in &m.items {
             checker.check_item(item);
@@ -79,25 +86,61 @@ pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink)
 /// concern; `::ddt` is kept here only as the guard the spec calls out.
 const PHASE2_ATTRS: &[&str] = &["ddt"];
 
+/// A port as seen by the checker: its name, resolved type, and direction.
+struct PortInfo {
+    name: String,
+    ty: Ty,
+    dir: Option<Direction>,
+}
+
 struct Checker<'a> {
     sink: &'a mut DiagnosticSink,
-    _resolved: &'a Resolved,
-    /// Entity name -> set of its `in` port names.
-    entity_in_ports: HashMap<String, HashSet<String>>,
+    resolved: &'a Resolved,
+    /// Entity name -> its ports.
+    entities: HashMap<String, Vec<PortInfo>>,
+    /// Attribute name -> the target keywords it may be applied to.
+    attr_targets: HashMap<String, Vec<String>>,
 }
 
 impl<'a> Checker<'a> {
-    fn collect_entities(&mut self, modules: &[Module]) {
+    fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved) -> Self {
+        // Seed the std::attrs targets so the standard attributes validate while
+        // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
+        let mut attr_targets = HashMap::new();
+        for (name, targets) in [
+            ("top", &["entity"][..]),
+            ("test", &["entity"]),
+            ("keep", &["let", "port"]),
+            ("library", &["entity"]),
+            ("name", &["entity"]),
+        ] {
+            attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
+        }
+        Checker { sink, resolved, entities: HashMap::new(), attr_targets }
+    }
+
+    /// First pass: record entity port types and declared attribute targets.
+    fn collect(&mut self, modules: &[Module]) {
         for m in modules {
             for item in &m.items {
-                if let Item::Entity(e) = item {
-                    let ins = e
-                        .ports
-                        .iter()
-                        .filter(|p| p.dir == Some(Direction::In))
-                        .map(|p| p.name.text.clone())
-                        .collect();
-                    self.entity_in_ports.insert(e.name.text.clone(), ins);
+                match item {
+                    Item::Entity(e) => {
+                        let ports = e
+                            .ports
+                            .iter()
+                            .map(|p| PortInfo {
+                                name: p.name.text.clone(),
+                                ty: self.ast_ty(&p.ty),
+                                dir: p.dir,
+                            })
+                            .collect();
+                        self.entities.insert(e.name.text.clone(), ports);
+                    }
+                    Item::AttrDecl(a) => {
+                        let targets = a.targets.iter().map(|t| t.text.clone()).collect();
+                        self.attr_targets.insert(a.name.text.clone(), targets);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -115,6 +158,7 @@ impl<'a> Checker<'a> {
             }
             Item::Entity(e) => {
                 for a in &e.attrs {
+                    self.check_attr_target(a);
                     if let Some(v) = &a.value {
                         self.check_expr(v);
                     }
@@ -132,17 +176,26 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_impl(&mut self, im: &ImplDecl) {
-        // For an inherent impl of an entity, writes to its `in` ports are errors.
-        let in_ports = if im.trait_.is_none() {
-            type_head_name(&im.target)
-                .and_then(|name| self.entity_in_ports.get(name))
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            HashSet::new()
-        };
+    /// Spec 3.5: an attribute may only be applied to a target its declaration
+    /// allows. Attributes currently attach to entities only, so the target is
+    /// always `entity`. Unknown attribute names are reported by name resolution.
+    fn check_attr_target(&mut self, a: &Attr) {
+        let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+        let verdict = self
+            .attr_targets
+            .get(name)
+            .map(|targets| (targets.iter().any(|t| t == "entity"), targets.join(", ")));
+        if let Some((false, allowed)) = verdict {
+            self.error(
+                codes::INVALID_ATTR_TARGET,
+                a.name.span,
+                format!("attribute `{name}` cannot be applied to an entity (allowed: {allowed})"),
+            );
+        }
+    }
 
+    fn check_impl(&mut self, im: &ImplDecl) {
+        let (in_ports, sym) = self.impl_env(im);
         for item in &im.items {
             match item {
                 ImplItem::Const(c) => self.check_expr(&c.value),
@@ -157,18 +210,49 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ImplItem::ModeField { .. } => {}
-                ImplItem::Stmt(s) => self.check_stmt(s, &in_ports),
+                ImplItem::Stmt(s) => self.check_stmt(s, &in_ports, &sym),
             }
         }
     }
 
+    /// Build the value environment for an impl body: the `in` ports (for the
+    /// write check) and a name -> type table (ports + impl-level lets/consts).
+    fn impl_env(&self, im: &ImplDecl) -> (HashSet<String>, HashMap<String, Ty>) {
+        let mut in_ports = HashSet::new();
+        let mut sym = HashMap::new();
+        if im.trait_.is_none() {
+            if let Some(ports) = type_head_name(&im.target).and_then(|n| self.entities.get(n)) {
+                for p in ports {
+                    sym.insert(p.name.clone(), p.ty.clone());
+                    if p.dir == Some(Direction::In) {
+                        in_ports.insert(p.name.clone());
+                    }
+                }
+            }
+        }
+        for it in &im.items {
+            match it {
+                ImplItem::Let(l) => {
+                    let ty = l.ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error);
+                    sym.insert(l.name.text.clone(), ty);
+                }
+                ImplItem::Const(c) => {
+                    sym.insert(c.name.text.clone(), self.ast_ty(&c.ty));
+                }
+                _ => {}
+            }
+        }
+        (in_ports, sym)
+    }
+
     fn check_block(&mut self, b: &Block) {
+        let (in_ports, sym) = (HashSet::new(), HashMap::new());
         for s in &b.stmts {
-            self.check_stmt(s, &HashSet::new());
+            self.check_stmt(s, &in_ports, &sym);
         }
     }
 
-    fn check_stmt(&mut self, s: &Stmt, in_ports: &HashSet<String>) {
+    fn check_stmt(&mut self, s: &Stmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
         match s {
             Stmt::Let(l) => {
                 if let Some(v) = &l.value {
@@ -180,19 +264,19 @@ impl<'a> Checker<'a> {
                 self.check_expr(target);
                 self.check_expr(value);
             }
-            Stmt::If(i) => self.check_if(i, in_ports),
+            Stmt::If(i) => self.check_if(i, in_ports, sym),
             Stmt::Match(m) => {
                 self.check_expr(&m.scrutinee);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
-                        self.check_stmt(s, in_ports);
+                        self.check_stmt(s, in_ports, sym);
                     }
                 }
             }
             Stmt::For { range, body, .. } => {
                 self.check_expr(range);
                 for s in &body.stmts {
-                    self.check_stmt(s, in_ports);
+                    self.check_stmt(s, in_ports, sym);
                 }
             }
             Stmt::Expr(e) => self.check_expr(e),
@@ -204,40 +288,52 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_if(&mut self, i: &IfStmt, in_ports: &HashSet<String>) {
+    fn check_if(&mut self, i: &IfStmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
+        self.check_condition(&i.cond, sym);
         self.check_expr(&i.cond);
         for s in &i.then.stmts {
-            self.check_stmt(s, in_ports);
+            self.check_stmt(s, in_ports, sym);
         }
         match i.else_.as_deref() {
             Some(ElseBranch::Block(b)) => {
                 for s in &b.stmts {
-                    self.check_stmt(s, in_ports);
+                    self.check_stmt(s, in_ports, sym);
                 }
             }
-            Some(ElseBranch::If(inner)) => self.check_if(inner, in_ports),
+            Some(ElseBranch::If(inner)) => self.check_if(inner, in_ports, sym),
             None => {}
         }
     }
 
-    /// Flag `port = ...` where `port` is a bare `in` port of the entity (spec
-    /// 3.18). Field/index writes (`bus.ready = ...`) are intentionally left for
-    /// the fuller direction analysis.
+    /// Spec 3.16: a `Logic` value cannot be a condition on its own; it must be
+    /// compared explicitly (e.g. `== '1'`). `Bit` and `Bool` are fine.
+    fn check_condition(&mut self, cond: &Expr, sym: &HashMap<String, Ty>) {
+        if self.type_of(cond, sym) == Ty::Logic {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(cond),
+                "`Logic` cannot be used directly as a condition; compare it explicitly, e.g. `== '1'`"
+                    .to_string(),
+            );
+        }
+    }
+
+    /// Spec 3.18: flag `port = ...` where `port` is a bare `in` port. Field /
+    /// index writes (`bus.ready = ...`) are left for fuller direction analysis.
     fn check_write_target(&mut self, target: &Expr, in_ports: &HashSet<String>) {
         if let Expr::Path(p) = target {
-            if p.segments.len() == 1 {
-                let name = &p.segments[0].text;
-                if in_ports.contains(name) {
-                    self.error(
-                        codes::WRITE_TO_INPUT_PORT,
-                        p.span,
-                        format!("cannot assign to input port `{name}`"),
-                    );
-                }
+            if p.segments.len() == 1 && in_ports.contains(&p.segments[0].text) {
+                self.error(
+                    codes::WRITE_TO_INPUT_PORT,
+                    p.span,
+                    format!("cannot assign to input port `{}`", p.segments[0].text),
+                );
             }
         }
     }
 
+    /// Walk an expression for the Phase-2 `::ddt` guard (the only expression-
+    /// local check so far).
     fn check_expr(&mut self, e: &Expr) {
         match e {
             Expr::SysAttr { base, attr, span } => {
@@ -285,6 +381,81 @@ impl<'a> Checker<'a> {
         }
     }
 
+    // --- type inference core ------------------------------------------------
+
+    /// Best-effort type of an expression given the in-scope value table. Unknown
+    /// or unsupported cases yield [`Ty::Error`], which suppresses dependent
+    /// checks rather than producing a false positive.
+    fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
+        match e {
+            Expr::Int { .. } => Ty::UInt(0),
+            Expr::LogicLit { .. } => Ty::Logic,
+            Expr::Bool { .. } => Ty::Bool,
+            Expr::StrLit { .. } => Ty::Error,
+            Expr::Path(p) => {
+                if p.segments.len() == 1 {
+                    sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
+                } else {
+                    self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+                }
+            }
+            Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
+                "event" | "rising" | "falling" | "edge" => Ty::Bool,
+                "old" => self.type_of(base, sym),
+                "width" | "high" | "low" | "left" | "right" => Ty::UInt(0),
+                _ => Ty::Error,
+            },
+            Expr::Binary { op, lhs, .. } => {
+                if is_comparison(*op) {
+                    Ty::Bool
+                } else {
+                    self.type_of(lhs, sym)
+                }
+            }
+            Expr::Unary { rhs, .. } => self.type_of(rhs, sym),
+            Expr::Construct { ty, .. } => self.ast_ty(ty),
+            Expr::Field { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Range { .. } => {
+                Ty::Error
+            }
+        }
+    }
+
+    /// Resolve a type annotation to a [`Ty`]. Parametric widths (`uint[W]`)
+    /// become `UInt(0)` until elaboration fills them in.
+    fn ast_ty(&self, t: &Type) -> Ty {
+        match t {
+            Type::Path(p) => self.path_ty(p),
+            Type::Indexed { base, index, .. } => {
+                let width = width_of(index);
+                match self.ast_ty(base) {
+                    Ty::UInt(_) => Ty::UInt(width),
+                    Ty::Int(_) => Ty::Int(width),
+                    other => Ty::Array { elem: Box::new(other), len: width },
+                }
+            }
+            Type::Generic { base, .. } => self.ast_ty(base),
+            Type::Mode { inner, .. } => self.ast_ty(inner),
+        }
+    }
+
+    fn path_ty(&self, p: &Path) -> Ty {
+        if p.segments.len() == 1 {
+            match p.segments[0].text.as_str() {
+                "Bit" => Ty::Bit,
+                "Logic" => Ty::Logic,
+                "Bool" => Ty::Bool,
+                // A clock is a single-bit signal; treat it as Bit for checking
+                // (clock-as-condition correctness is a separate, later concern).
+                "Clock" => Ty::Bit,
+                "uint" | "usize" => Ty::UInt(0),
+                "int" => Ty::Int(0),
+                _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
+            }
+        } else {
+            self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+        }
+    }
+
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
     }
@@ -296,6 +467,37 @@ fn type_head_name(ty: &Type) -> Option<&str> {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_name(base),
         Type::Mode { inner, .. } => type_head_name(inner),
+    }
+}
+
+/// Width of a bracketed type index when it is a literal (`uint[8]` -> 8);
+/// otherwise `0`, meaning "parametric / not yet known".
+fn width_of(index: &Expr) -> u32 {
+    match index {
+        Expr::Int { text, .. } => text.parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn is_comparison(op: BinOp) -> bool {
+    matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+}
+
+fn expr_span(e: &Expr) -> Span {
+    match e {
+        Expr::Int { span, .. }
+        | Expr::LogicLit { span, .. }
+        | Expr::StrLit { span, .. }
+        | Expr::Bool { span, .. }
+        | Expr::Field { span, .. }
+        | Expr::SysAttr { span, .. }
+        | Expr::Index { span, .. }
+        | Expr::Range { span, .. }
+        | Expr::Unary { span, .. }
+        | Expr::Binary { span, .. }
+        | Expr::Call { span, .. }
+        | Expr::Construct { span, .. } => *span,
+        Expr::Path(p) => p.span,
     }
 }
 
@@ -341,6 +543,36 @@ mod tests {
         let errors = check_src(
             "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en;\n}\n",
         );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn bare_logic_condition_is_rejected() {
+        let errors = check_src(
+            "module m;\nentity E { in rst: Logic; out y: Bit; }\nimpl E {\n  if rst {\n    y = '0';\n  }\n}\n",
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn compared_logic_and_bit_conditions_are_fine() {
+        // `rst == '1'` is a comparison (-> Bool); `en` is a Bit. Both valid.
+        let errors = check_src(
+            "module m;\nentity E { in rst: Logic; in en: Bit; out y: Bit; }\nimpl E {\n  if rst == '1' {\n    y = '0';\n  }\n  if en {\n    y = '1';\n  }\n}\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn attribute_on_wrong_target_is_rejected() {
+        // `keep` is declared for `let, port`, not `entity`.
+        let errors = check_src("module m;\n#[keep]\nentity E { out y: Bit; }\n");
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn attribute_on_right_target_is_fine() {
+        let errors = check_src("module m;\n#[top]\nentity E { out y: Bit; }\n");
         assert_eq!(errors, 0);
     }
 }
