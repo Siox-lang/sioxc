@@ -1,6 +1,6 @@
 //! Lexer, parser, AST and pretty-printer for siox Phase 1.
 //!
-//! Spec: `siox_phase1_digital_spec.md` Stage 1 (syntax freeze) and Stage 2
+//! Spec: `docs/spec.md` Stage 1 (syntax freeze) and Stage 2
 //! (lexer/parser). The AST must be able to represent every item listed under
 //! "AST should represent" in Stage 2.
 
