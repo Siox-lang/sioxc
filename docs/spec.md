@@ -1,13 +1,5 @@
 # siox Phase 1 — Digital Language Specification and Implementation Plan
 
-> **This is the original Phase 1 design.** As the language is implemented some
-> decisions have been refined — notably logical operators are now textual
-> (`and`/`or`, not `&`/`|`), conditions are trait-driven (`Boolean`), and the
-> `b"…"`/`x"…"` literals are string overloads rather than tokens. Where this
-> document and the implemented language disagree, **[language-changes.md](language-changes.md)
-> is authoritative** for current syntax and semantics. This file is kept as the
-> design baseline and rationale.
-
 This document defines Phase 1 of siox: the digital HDL layer. Phase 1 should produce a usable digital language, a parser, a type checker, an elaborator, an event-driven simulator, a test runner, and waveform output. Analogue domains and schematic/design syntax are intentionally left for later phases.
 
 The goal is not to finish the full language. The goal is to freeze and implement a coherent digital subset that is strong enough to write counters, FSMs, buses, ready/valid interfaces, small datapaths, test entities, assertions, and simulation traces.
@@ -424,7 +416,7 @@ if state::event {
     changed = '1';
 }
 
-if state::old == State::Idle & state == State::Start {
+if state::old == State::Idle and state == State::Start {
     started = '1';
 }
 ```
@@ -443,7 +435,7 @@ if p::event {
     packet_changed = '1';
 }
 
-if p::old.valid == '0' & p.valid == '1' {
+if p::old.valid == '0' and p.valid == '1' {
     packet_became_valid = '1';
 }
 ```
@@ -479,11 +471,11 @@ trait ClockLike {
 
 impl ClockLike for Logic {
     let rising(self) {
-        self::event & self::old == '0' & self == '1'
+        self::event and self::old == '0' and self == '1'
     }
 
     let falling(self) {
-        self::event & self::old == '1' & self == '0'
+        self::event and self::old == '1' and self == '0'
     }
 
     let edge(self) {
@@ -557,7 +549,7 @@ let value: uint[8] = 0;
 Combinational assignment:
 
 ```siox
-y = a & b;
+y = a and b;
 ```
 
 Sequential/event-controlled update:
@@ -698,13 +690,22 @@ The compiler may recognize these patterns later for synthesis diagnostics, but P
 
 ### 3.16 Digital conditions
 
-Recommended Phase 1 condition rules:
+A condition (in `if`, and later `while`/assertions) must have a type that
+implements the `Boolean` trait — a type provides a boolean representation, which
+is applied only in condition position (not as a general implicit cast):
 
-- `Bool` is valid as a condition.
-- `Bit` is valid as a hardware condition.
-- `Logic` requires explicit comparison, unless a later rule says otherwise.
+```siox
+trait Boolean {
+    let as_bool(self) -> Bool;
+}
+```
 
-Valid:
+- `Bool` and `Bit` have built-in `Boolean` impls, so both are valid conditions.
+- `Logic` has **no** `Boolean` impl, so it requires an explicit comparison —
+  because `Logic` may be `'X'`, `'Z'`, etc.
+- A user type opts in by implementing `Boolean` for it.
+
+Valid (`ready: Bit`):
 
 ```siox
 if ready {
@@ -712,9 +713,7 @@ if ready {
 }
 ```
 
-where `ready: Bit`.
-
-Valid:
+Valid (explicit comparison yields `Bool`):
 
 ```siox
 if rst == '1' {
@@ -722,7 +721,7 @@ if rst == '1' {
 }
 ```
 
-Invalid or discouraged:
+Invalid (`rst: Logic` has no `Boolean` impl):
 
 ```siox
 if rst {
@@ -730,7 +729,18 @@ if rst {
 }
 ```
 
-where `rst: Logic`, because `Logic` may be `'X'`, `'Z'`, etc.
+A user type becomes usable as a condition by implementing `Boolean`:
+
+```siox
+impl Boolean for State {
+    let as_bool(self) -> Bool {
+        match self {
+            State::Idle => false,
+            _ => true,
+        }
+    }
+}
+```
 
 ---
 
@@ -912,7 +922,10 @@ match opcode {
 }
 ```
 
-`?` is only a wildcard in pattern contexts.
+The `?` wildcard lives inside the pattern string. A prefixed string like
+`b"00??"` is not a special literal token — it lexes as an identifier glued to a
+string and is interpreted as a bit pattern via a *string overload* (a library
+mechanism). This is not yet implemented.
 
 Invalid:
 

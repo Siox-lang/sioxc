@@ -4,11 +4,9 @@ This document tracks **what needs to be implemented for Phase 1** and how far
 along each piece is. It maps the 12 spec stages (from [spec.md](spec.md)) to the
 crate that owns them, lists the acceptance criteria, and records current status.
 
-For the crate layout and conventions, see [architecture.md](architecture.md);
-for where the implemented language has moved past the original spec, see
-[language-changes.md](language-changes.md). Phase 1 is simulation-first: no
-analogue, no schematic layer, no synthesis backend (those are
-[roadmap.md](roadmap.md)).
+For the crate layout and conventions, see [architecture.md](architecture.md).
+Phase 1 is simulation-first: no analogue, no schematic layer, no synthesis
+backend (those are [roadmap.md](roadmap.md)).
 
 ## Status at a glance
 
