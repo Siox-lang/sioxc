@@ -23,26 +23,15 @@ and [architecture.md](architecture.md) for the compiler.
 
 Source flows top-to-bottom through one linear pipeline; each stage is a crate.
 
-```
-.siox source
-   │  siox-syntax    lex → tokens → parse → AST → (pretty-print)
-   ▼
-  AST
-   │  siox-resolve   names → DefIds, imports, paths, enum variants
-   ▼
- Resolved
-   │  siox-types     kind/type checking, system attributes, Phase-2 rejection
-   ▼
-  Typed
-   │  siox-elab      instantiate #[top]/#[test], substitute params, connect ports
-   ▼
- Hierarchy
-   │  siox-ir        lower to drivers + event blocks (combinational vs sequential)
-   ▼
- Design
-   │  siox-sim       delta-cycle simulation, #[test] entities, assertions
-   ▼
- results + siox-wave VCD waveforms
+```mermaid
+flowchart TD
+    SRC([".siox source"]) -->|siox-syntax| AST[AST]
+    AST -->|siox-resolve| RES[Resolved]
+    RES -->|siox-types| TY[Typed]
+    TY -->|siox-elab| HIER[Hierarchy]
+    HIER -->|siox-ir| IR[Design]
+    IR -->|siox-sim| SIM["results + tests"]
+    SIM -->|siox-wave| VCD[VCD waveforms]
 ```
 
 `siox-diag` (spans, diagnostics, source map) underpins every stage, and

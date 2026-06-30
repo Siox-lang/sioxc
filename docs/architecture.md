@@ -5,12 +5,14 @@ pipeline**. Each crate consumes the output of the crate above it and produces
 the input to the crate below. The only crate everything may depend on is
 `siox-diag`.
 
-```
-siox-diag ──used by everything──┐
-                                │
-siox-syntax  →  siox-resolve  →  siox-types  →  siox-elab  →  siox-ir  →  siox-sim  →  siox-wave
-     │                                                                                     │
-     └──────────────────────────── siox-cli wires them together ──────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph pipeline [compiler pipeline]
+        direction LR
+        SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir] --> SI[siox-sim] --> WA[siox-wave]
+    end
+    DIAG[siox-diag] -. used by all .-> pipeline
+    CLI[siox-cli] == drives ==> pipeline
 ```
 
 **Layering rule:** a crate may depend only on the crates above it in this list
@@ -35,14 +37,15 @@ and the spec acceptance criteria — read it first when entering a crate.
 
 ## Data that flows between stages
 
-```
-&str ──siox-syntax──▶ ast::Module
-        ──siox-resolve──▶ Resolved      (defs: Vec<DefInfo>, uses: Span → DefId)
-        ──siox-types────▶ Typed         (expression/signal types — being filled in)
-        ──siox-elab─────▶ Hierarchy     (instances, params, connections)
-        ──siox-ir───────▶ Design        (signals, drivers, event blocks)
-        ──siox-sim──────▶ values / TestResults
-        ──siox-wave─────▶ VCD
+```mermaid
+flowchart TD
+    A["&str (source)"] -->|siox-syntax| B["ast::Module"]
+    B -->|siox-resolve| C["Resolved<br/>defs + use-site → DefId"]
+    C -->|siox-types| D["Typed<br/>expression / signal types"]
+    D -->|siox-elab| E["Hierarchy<br/>instances + connections"]
+    E -->|siox-ir| F["Design<br/>signals, drivers, event blocks"]
+    F -->|siox-sim| G["values / TestResults"]
+    G -->|siox-wave| H["VCD"]
 ```
 
 `siox-diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
