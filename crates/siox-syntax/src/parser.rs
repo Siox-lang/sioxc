@@ -604,10 +604,8 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Pattern::Wildcard
             }
-            TokenKind::BitPatLit => {
-                let t = self.bump();
-                Pattern::BitPattern { text: self.text_of(t.span).to_string(), span: t.span }
-            }
+            // Bit-pattern patterns (`b"01??"`) will return via the string-overload
+            // mechanism; for now a pattern is a wildcard or an enum path.
             _ => Pattern::Path(self.parse_path()),
         }
     }
@@ -751,7 +749,7 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         match self.kind() {
-            TokenKind::Int | TokenKind::Float | TokenKind::HexStrLit | TokenKind::BitPatLit => {
+            TokenKind::Int | TokenKind::Float => {
                 let t = self.bump();
                 Expr::Int { text: self.text_of(t.span).to_string(), span: t.span }
             }
@@ -984,7 +982,6 @@ impl<'a> Parser<'a> {
                 | TokenKind::Attr
                 | TokenKind::Const
                 | TokenKind::Let
-                | TokenKind::Fn
                 | TokenKind::In
                 | TokenKind::Out
                 | TokenKind::Inout
@@ -1300,16 +1297,15 @@ mod tests {
     }
 
     #[test]
-    fn match_enum_and_bitpattern() {
+    fn match_enum_and_wildcard() {
         let m = parse_ok(
-            "module m;\nimpl M {\n  match opcode {\n    b\"00??\" => op = Op::Alu,\n    State::Idle => { next = State::Start; }\n    _ => op = Op::Nop,\n  }\n}\n",
+            "module m;\nimpl M {\n  match state {\n    State::Idle => { next = State::Start; }\n    _ => next = State::Idle,\n  }\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Stmt(Stmt::Match(mt)) = &i.items[0] else { panic!("expected match") };
-        assert_eq!(mt.arms.len(), 3);
-        assert!(matches!(mt.arms[0].pattern, Pattern::BitPattern { .. }));
-        assert!(matches!(mt.arms[1].pattern, Pattern::Path(_)));
-        assert!(matches!(mt.arms[2].pattern, Pattern::Wildcard));
+        assert_eq!(mt.arms.len(), 2);
+        assert!(matches!(mt.arms[0].pattern, Pattern::Path(_)));
+        assert!(matches!(mt.arms[1].pattern, Pattern::Wildcard));
     }
 
     #[test]

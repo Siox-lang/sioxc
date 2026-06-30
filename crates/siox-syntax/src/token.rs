@@ -21,9 +21,7 @@ pub enum TokenKind {
     Int,        // 42, 0xFF, 0b1010 (numeric suffixes like 100n lex as a trailing ident)
     Float,      // 1000.0  (the `f`-style suffix lexes as a trailing ident, like Int)
     LogicLit,   // '0' '1' 'Z' 'X'
-    StrLit,     // "work"
-    BitPatLit,  // b"01??"  prefixed-string overload, pattern context only (spec 3.22)
-    HexStrLit,  // x"05AB"  prefixed-string overload for a hex value literal
+    StrLit,     // "work"  (prefixed strings like b"01??"/x"05AB" lex as Ident + StrLit)
 
     // Keywords (Phase 1)
     Module,
@@ -37,7 +35,6 @@ pub enum TokenKind {
     Attr,
     Const,
     Let,
-    Fn,        // reserved; methods use `let name(self)` per spec examples
     In,
     Out,
     Inout,
@@ -76,7 +73,6 @@ pub enum TokenKind {
     Slash,
     Shl,       // <<
     Shr,       // >>
-    Question,  // ? (wildcard inside bit patterns only)
     Bang,      // ! (assert!)
     Pound,     // # (attribute application `#[...]`, spec 3.5/3.6)
 

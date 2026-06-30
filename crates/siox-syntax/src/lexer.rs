@@ -13,9 +13,10 @@
 //!   consumed here — they lex as a following identifier and are the parser's
 //!   problem (see token.rs note). A `.` only starts a fraction when a digit
 //!   follows, so range syntax like `31..0` is never mistaken for a float.
-//! - Prefixed-string "overloads": a single letter immediately before a string,
-//!   e.g. `b"01??"` (bit pattern, spec 3.22) -> [`TokenKind::BitPatLit`] and
-//!   `x"05AB"` (hex value) -> [`TokenKind::HexStrLit`].
+//! - Prefixed strings like `b"01??"` (bit pattern) and `x"05AB"` (hex value)
+//!   are *not* special tokens: they lex as an identifier glued to a string
+//!   (`Ident` + `StrLit`). The prefix is interpreted later as a string overload
+//!   (a library mechanism), so the lexer stays language-neutral here.
 //! - Analogue keywords (`domain`, `across`, `through`) are deliberately not
 //!   recognised, so they lex as plain identifiers for a later Phase-2 rejection.
 
@@ -51,11 +52,6 @@ impl<'a> Lexer<'a> {
             let kind = match c {
                 b'/' if self.peek_at(1) == Some(b'/') => self.line_comment(),
                 b'/' if self.peek_at(1) == Some(b'*') => self.block_comment(sink, start),
-                // A single letter glued to a string is a prefixed-string overload
-                // (`b"..."`, `x"..."`); otherwise it is an ordinary identifier.
-                c if is_ident_start(c) && self.peek_at(1) == Some(b'"') => {
-                    self.prefixed_string(sink, start)
-                }
                 c if is_ident_start(c) => self.ident_or_keyword(),
                 c if c.is_ascii_digit() => self.number(sink, start),
                 b'\'' => self.logic_literal(sink, start),
@@ -160,27 +156,6 @@ impl<'a> Lexer<'a> {
         TokenKind::Int
     }
 
-    /// Scan a single-letter prefixed-string overload (`b"..."`, `x"..."`). The
-    /// cursor is on the prefix letter, which is immediately followed by `"`.
-    fn prefixed_string(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
-        let prefix = self.bump().unwrap(); // the prefix letter
-        self.string_body(sink, start);
-        match prefix {
-            b'b' => TokenKind::BitPatLit,
-            b'x' => TokenKind::HexStrLit,
-            _ => {
-                sink.emit(
-                    Diagnostic::error(format!(
-                        "unknown string literal prefix `{}`",
-                        prefix as char
-                    ))
-                    .at(self.span(start, self.pos)),
-                );
-                TokenKind::StrLit
-            }
-        }
-    }
-
     fn logic_literal(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         self.bump(); // opening `'`
         let mut chars = 0;
@@ -276,7 +251,6 @@ impl<'a> Lexer<'a> {
             b'-' => TokenKind::Minus,
             b'*' => TokenKind::Star,
             b'/' => TokenKind::Slash,
-            b'?' => TokenKind::Question,
             b'!' => TokenKind::Bang,
             b'#' => TokenKind::Pound,
             _ => {
@@ -351,7 +325,6 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "attr" => TokenKind::Attr,
         "const" => TokenKind::Const,
         "let" => TokenKind::Let,
-        "fn" => TokenKind::Fn,
         "in" => TokenKind::In,
         "out" => TokenKind::Out,
         "inout" => TokenKind::Inout,
@@ -430,13 +403,14 @@ mod tests {
     }
 
     #[test]
-    fn logic_string_and_prefixed_string_literals() {
+    fn logic_and_string_literals() {
         assert_eq!(kinds("'0' '1' 'Z' 'X'"), vec![LogicLit, LogicLit, LogicLit, LogicLit, Eof]);
         assert_eq!(kinds("\"work\""), vec![StrLit, Eof]);
-        assert_eq!(kinds("b\"01??\""), vec![BitPatLit, Eof]);
-        assert_eq!(kinds("x\"05AB\""), vec![HexStrLit, Eof]);
-        // A multi-letter ident before a string is not an overload: two tokens.
-        assert_eq!(kinds("foo\"x\""), vec![Ident, StrLit, Eof]);
+        // Prefixed strings are not special tokens: an ident glued to a string.
+        // The prefix becomes a string overload later. `?` lives inside the
+        // string body, so it is never a standalone token.
+        assert_eq!(kinds("b\"01??\""), vec![Ident, StrLit, Eof]);
+        assert_eq!(kinds("x\"05AB\""), vec![Ident, StrLit, Eof]);
     }
 
     #[test]
