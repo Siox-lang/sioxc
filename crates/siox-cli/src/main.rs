@@ -124,10 +124,7 @@ fn main() -> ExitCode {
                 Pending { stage: 6, name: "lower (IR)", krate: "siox-ir" },
             ],
         ),
-        Command::Tree { file } => run_then_report(
-            &file,
-            &[Pending { stage: 5, name: "elaborate", krate: "siox-elab" }],
-        ),
+        Command::Tree { file } => cmd_tree(&file),
     }
 }
 
@@ -188,18 +185,23 @@ fn run_frontend(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
     Ok(fe)
 }
 
-/// `siox check`: parse -> resolve -> typecheck, narrating each stage. `-v` adds
-/// the token/item dump from the frontend.
-fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
-    let mut fe = match lex_parse(path, verbose) {
-        Ok(f) => f,
-        Err(code) => return code,
-    };
+/// The frontend plus the resolve/typecheck results, diagnostics not yet
+/// rendered. Stage banners are narrated to stderr as it runs.
+struct Semantic {
+    fe: FrontendOut,
+    typed: siox_types::Typed,
+}
+
+/// Run parse -> resolve -> typecheck, narrating each stage. Renders diagnostics
+/// and returns `Err` only when parsing itself failed (later stages still run on
+/// a parseable-but-flawed tree so all diagnostics surface at once).
+fn run_semantic(path: &Path, trace: bool) -> Result<Semantic, ExitCode> {
+    let mut fe = lex_parse(path, trace)?;
 
     if fe.sink.has_errors() {
         render_diagnostics(&fe.sources, &fe.sink);
-        eprintln!("\nparse failed: {} error(s); resolve/typecheck skipped", fe.sink.error_count());
-        return ExitCode::FAILURE;
+        eprintln!("\nparse failed: {} error(s); later stages skipped", fe.sink.error_count());
+        return Err(ExitCode::FAILURE);
     }
     eprintln!("== stage 2: parse == {} item(s)", fe.module.items.len());
 
@@ -214,16 +216,54 @@ fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
     );
 
     let before = fe.sink.error_count();
-    let _typed = siox_types::check(modules, &resolved, &mut fe.sink);
+    let typed = siox_types::check(modules, &resolved, &mut fe.sink);
     eprintln!("== stage 4: typecheck == {} diagnostic(s)", fe.sink.error_count() - before);
 
+    Ok(Semantic { fe, typed })
+}
+
+/// `siox check`: parse -> resolve -> typecheck. `-v` adds the token/item dump.
+fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
+    let sem = match run_semantic(path, verbose) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     eprintln!();
-    render_diagnostics(&fe.sources, &fe.sink);
-    if fe.sink.has_errors() {
-        eprintln!("\ncheck failed: {} error(s)", fe.sink.error_count());
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        eprintln!("\ncheck failed: {} error(s)", sem.fe.sink.error_count());
         ExitCode::FAILURE
     } else {
         eprintln!("check ok");
+        ExitCode::SUCCESS
+    }
+}
+
+/// `siox tree`: run the semantic pipeline, elaborate the instance hierarchy, and
+/// print it. The tree goes to stdout; the stage trace and diagnostics to stderr.
+fn cmd_tree(path: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    let modules = std::slice::from_ref(&sem.fe.module);
+    let before = sem.fe.sink.error_count();
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    eprintln!(
+        "== stage 5: elaborate == {} instance(s), {} root(s), {} diagnostic(s)",
+        hier.instances.len(),
+        hier.roots.len(),
+        sem.fe.sink.error_count() - before
+    );
+
+    eprintln!();
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    eprintln!();
+    print!("{}", hier.to_tree_string());
+    if sem.fe.sink.has_errors() {
+        ExitCode::FAILURE
+    } else {
         ExitCode::SUCCESS
     }
 }

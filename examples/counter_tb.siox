@@ -1,0 +1,44 @@
+module examples::counter_tb;
+
+using std::logic::{Bit, Logic, Clock};
+using std::bits::uint;
+
+// The device under test: a parameterized counter.
+entity Counter<W: usize> {
+    in clk: Clock;
+    in rst: Logic;
+    in en: Bit;
+    out count: uint[W];
+}
+
+impl Counter<W: usize> {
+    let value: uint[W] = 0;
+
+    if clk::rising {
+        if rst == '1' {
+            value = 0;
+        } else if en {
+            value = value + 1;
+        }
+    }
+
+    count = value;
+}
+
+// A concrete top-level harness that instantiates the counter at W = 8.
+#[top]
+entity Harness {}
+
+impl Harness {
+    let clk: Logic = '0';
+    let rst: Logic = '1';
+    let en: Bit = '1';
+    let count: uint[8];
+
+    let dut = Counter<W = 8> {
+        .clk,
+        .rst,
+        .en,
+        .count,
+    };
+}
