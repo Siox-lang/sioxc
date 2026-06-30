@@ -36,11 +36,13 @@ pub enum ParamValue {
 }
 
 /// One resolved port connection: `port` of the instance is driven by / drives
-/// the local `signal` in the parent.
+/// the local `signal` in the parent. `ty` is the port's type after parameter
+/// substitution (e.g. `uint[W]` with `W=8` becomes `uint[8]`).
 #[derive(Clone, Debug)]
 pub struct Connection {
     pub port: String,
     pub signal: String,
+    pub ty: String,
 }
 
 /// One node in the elaborated instance tree.
@@ -91,7 +93,7 @@ impl Hierarchy {
             out.push_str(&format!("{pad}{}: {}{params}{tag}\n", inst.name, inst.entity));
         }
         for c in &inst.connections {
-            out.push_str(&format!("{pad}  .{} <- {}\n", c.port, c.signal));
+            out.push_str(&format!("{pad}  .{}: {} <- {}\n", c.port, c.ty, c.signal));
         }
         for &child in &inst.children {
             self.write_instance(out, child, depth + 1, false);
@@ -186,6 +188,7 @@ impl<'a> Elaborator<'a> {
 
         let is_extern = self.entities.get(entity_name).map(|e| e.is_extern).unwrap_or(true);
         let specs = self.gather_instances(entity_name, is_extern);
+        let env = param_env(&params);
 
         stack.push(entity_name.to_string());
         let mut children = Vec::new();
@@ -194,8 +197,11 @@ impl<'a> Elaborator<'a> {
             // Only entity constructions are instances; struct/data constructs
             // are ignored here.
             if let Some(sub_decl) = self.entities.get(sub).copied() {
-                let cparams = eval_params(sub_decl, spec.ty);
-                let cconns = self.resolve_connections(sub_decl, spec.args, spec.site);
+                // Args may reference this instance's params; ports substitute
+                // the child's resolved params.
+                let cparams = eval_params(sub_decl, spec.ty, &env);
+                let child_env = param_env(&cparams);
+                let cconns = self.resolve_connections(sub_decl, spec.args, spec.site, &child_env);
                 let child = self.build(&spec.name, sub, cparams, cconns, stack);
                 children.push(child);
             }
@@ -249,28 +255,31 @@ impl<'a> Elaborator<'a> {
         edecl: &EntityDecl,
         args: &[ConnectArg],
         site: Span,
+        env: &HashMap<String, i64>,
     ) -> Vec<Connection> {
-        let ports: HashSet<&str> = edecl.ports.iter().map(|p| p.name.text.as_str()).collect();
+        let ports: HashMap<&str, &Type> =
+            edecl.ports.iter().map(|p| (p.name.text.as_str(), &p.ty)).collect();
         let mut conns = Vec::new();
         let mut connected: HashSet<String> = HashSet::new();
 
         for arg in args {
             let port = arg.field.text.clone();
-            if !ports.contains(port.as_str()) {
+            let Some(port_ty) = ports.get(port.as_str()) else {
                 self.error(
                     codes::UNKNOWN_NAME,
                     arg.span,
                     format!("`{}` has no port `{port}`", edecl.name.text),
                 );
                 continue;
-            }
+            };
             let signal = match &arg.value {
                 // `.clk` shorthand means `.clk = clk`.
                 None => arg.field.text.clone(),
                 Some(e) => render_signal(e),
             };
+            let ty = render_concrete(port_ty, env);
             connected.insert(port.clone());
-            conns.push(Connection { port, signal });
+            conns.push(Connection { port, signal, ty });
         }
 
         for p in &edecl.ports {
@@ -310,8 +319,20 @@ fn is_root(e: &EntityDecl) -> bool {
     })
 }
 
-/// Map the construct's generic arguments to the entity's parameter names.
-fn eval_params(edecl: &EntityDecl, ty: &Type) -> Vec<(String, ParamValue)> {
+/// The `Int`-valued subset of a param list, as a substitution environment.
+fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
+    params
+        .iter()
+        .filter_map(|(n, v)| match v {
+            ParamValue::Int(i) => Some((n.clone(), *i)),
+            ParamValue::Unknown => None,
+        })
+        .collect()
+}
+
+/// Map the construct's generic arguments to the entity's parameter names,
+/// evaluating each in `env` (the instantiating scope's parameters).
+fn eval_params(edecl: &EntityDecl, ty: &Type, env: &HashMap<String, i64>) -> Vec<(String, ParamValue)> {
     let args: &[GenericArg] = match ty {
         Type::Generic { args, .. } => args,
         _ => &[],
@@ -319,7 +340,7 @@ fn eval_params(edecl: &EntityDecl, ty: &Type) -> Vec<(String, ParamValue)> {
     let mut out = Vec::new();
     for (i, arg) in args.iter().enumerate() {
         match arg {
-            GenericArg::Named { name, value } => out.push((name.text.clone(), eval(value))),
+            GenericArg::Named { name, value } => out.push((name.text.clone(), eval(value, env))),
             GenericArg::Positional(value) => {
                 let name = edecl
                     .params
@@ -327,25 +348,29 @@ fn eval_params(edecl: &EntityDecl, ty: &Type) -> Vec<(String, ParamValue)> {
                     .get(i)
                     .map(|p| p.name.text.clone())
                     .unwrap_or_else(|| format!("arg{i}"));
-                out.push((name, eval(value)));
+                out.push((name, eval(value, env)));
             }
         }
     }
     out
 }
 
-/// Constant-evaluate a parameter expression (spec 3.3 const exprs).
-fn eval(e: &Expr) -> ParamValue {
+/// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving
+/// bare identifiers against `env`.
+fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
     use ParamValue::{Int, Unknown};
     match e {
         Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
         Expr::Bool { value, .. } => Int(*value as i64),
-        Expr::Unary { op, rhs, .. } => match (op, eval(rhs)) {
+        Expr::Path(p) if p.segments.len() == 1 => {
+            env.get(&p.segments[0].text).copied().map(Int).unwrap_or(Unknown)
+        }
+        Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
             (UnOp::Neg, Int(v)) => Int(-v),
             (UnOp::Not, Int(v)) => Int(!v),
             _ => Unknown,
         },
-        Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs), eval(rhs)) {
+        Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs, env), eval(rhs, env)) {
             (Int(a), Int(b)) => match op {
                 BinOp::Add => Int(a + b),
                 BinOp::Sub => Int(a - b),
@@ -360,6 +385,60 @@ fn eval(e: &Expr) -> ParamValue {
             _ => Unknown,
         },
         _ => Unknown,
+    }
+}
+
+/// Render a port type with parameter widths substituted (`uint[W]` with `W=8`
+/// becomes `uint[8]`; unresolved widths keep their symbolic form).
+fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
+    match t {
+        Type::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+        Type::Indexed { base, index, .. } => {
+            format!("{}[{}]", render_concrete(base, env), render_index(index, env))
+        }
+        Type::Generic { base, args, .. } => {
+            let inner = args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Positional(e) => render_index(e, env),
+                    GenericArg::Named { name, value } => {
+                        format!("{} = {}", name.text, render_index(value, env))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}<{inner}>", render_concrete(base, env))
+        }
+        Type::Mode { dir, inner, mode, .. } => {
+            let m = mode.as_ref().map(|n| format!("::{}", n.text)).unwrap_or_default();
+            format!("{} {}{m}", dir_str(*dir), render_concrete(inner, env))
+        }
+    }
+}
+
+/// Render a type-index expression, substituting a constant value when known.
+fn render_index(e: &Expr, env: &HashMap<String, i64>) -> String {
+    match eval(e, env) {
+        ParamValue::Int(v) => v.to_string(),
+        ParamValue::Unknown => render_expr(e),
+    }
+}
+
+fn render_expr(e: &Expr) -> String {
+    match e {
+        Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+        Expr::Int { text, .. } => text.clone(),
+        Expr::Range { lo, hi, .. } => format!("{}..{}", render_expr(lo), render_expr(hi)),
+        Expr::Index { base, index, .. } => format!("{}[{}]", render_expr(base), render_expr(index)),
+        _ => "?".to_string(),
+    }
+}
+
+fn dir_str(d: Direction) -> &'static str {
+    match d {
+        Direction::In => "in",
+        Direction::Out => "out",
+        Direction::Inout => "inout",
     }
 }
 
@@ -478,7 +557,17 @@ mod tests {
         let tree = hier.to_tree_string();
         assert!(tree.contains("Harness"));
         assert!(tree.contains("dut: Counter<W=8>"));
-        assert!(tree.contains(".clk <- clk"));
+        assert!(tree.contains(".clk: Clock <- clk"));
+    }
+
+    #[test]
+    fn parameter_widths_are_substituted_into_port_types() {
+        let (hier, _) = elaborate_src(HARNESS);
+        let root = hier.instance(hier.roots[0]);
+        let dut = hier.instance(root.children[0]);
+        // `count: uint[W]` with W=8 becomes `uint[8]`.
+        let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
+        assert_eq!(count.ty, "uint[8]");
     }
 
     #[test]

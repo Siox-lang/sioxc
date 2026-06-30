@@ -18,8 +18,8 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-diag`    | 10   | 🟢 working | spans, source map with line/col, diagnostics, code catalogue |
 | `siox-syntax`  | 1, 2 | 🟢 working | lexer, parser, AST, round-tripping pretty-printer |
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
-| `siox-types`   | 4    | 🟢 partial | type-inference core; Logic-condition, attr-target, input-write, `::ddt` checks |
-| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval, connections |
+| `siox-types`   | 4    | 🟢 partial | type-inference core; Logic-condition, attr target/value, input-write, assignment/init compatibility, `::ddt` |
+| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution into port types, connections |
 | `siox-ir`      | 6    | 🔴 stub | |
 | `siox-sim`     | 7, 8 | 🔴 stub | |
 | `siox-wave`    | 9    | 🔴 stub | |
@@ -58,19 +58,21 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   `::ddt` rejected.
 - **Status (done):** type-inference core (annotation → `Ty`, per-impl symbol
   table, `type_of`); `Logic`-as-bare-condition (`E-P003`), attribute target
-  (`E-P006`), write-to-input-port (`E-P004`), and the `::ddt` Phase-2 guard
-  (`E-P010`).
-- **Status (deferred to Stage 5+):** width-level conversions and method-call
-  resolution need elaboration-time width/method information.
+  (`E-P006`) and value (`E-P007`), write-to-input-port (`E-P004`), assignment
+  and initializer compatibility / no-implicit-conversion (`E-P003`, literal- and
+  enum-aware), and the `::ddt` Phase-2 guard (`E-P010`).
+- **Status (deferred):** concrete-width mismatch (`uint[8]`→`uint[16]`) needs
+  elaboration-time widths fed back in; method-call resolution needs the method
+  tables. Both become tractable now that elaboration substitutes widths.
 
 ### Stage 5 — Elaboration (`siox-elab`) — 🟢 partial
 - **Acceptance:** all params known post-elab; all required ports connected;
   direction violations reported; bus modes expand to leaf permissions; extern
   entities are black boxes; `siox tree` prints the tree.
 - **Status (done):** instance hierarchy from `#[top]`/`#[test]` roots, parameter
-  const-evaluation, `.clk`-shorthand connection resolution, missing-port
-  (`E-P005`) and unknown-port checks, extern black boxes, cycle detection, and
-  `siox tree`.
+  const-evaluation and substitution into concrete port types (`uint[W]` →
+  `uint[8]`), `.clk`-shorthand connection resolution, missing-port (`E-P005`) and
+  unknown-port checks, extern black boxes, cycle detection, and `siox tree`.
 - **Status (todo):** generated instances (loops/arrays), bus-mode leaf
   expansion, full direction analysis, and propagating concrete parameter widths
   down into instance signal types.

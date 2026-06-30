@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
-use siox_resolve::Resolved;
+use siox_resolve::{DefKind, Resolved};
 use siox_syntax::ast::*;
 use siox_syntax::Module;
 
@@ -93,6 +93,14 @@ struct PortInfo {
     dir: Option<Direction>,
 }
 
+/// The value type an attribute declaration expects (spec 3.5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttrValueTy {
+    Bool,
+    Str,
+    Other,
+}
+
 struct Checker<'a> {
     sink: &'a mut DiagnosticSink,
     resolved: &'a Resolved,
@@ -100,6 +108,8 @@ struct Checker<'a> {
     entities: HashMap<String, Vec<PortInfo>>,
     /// Attribute name -> the target keywords it may be applied to.
     attr_targets: HashMap<String, Vec<String>>,
+    /// Attribute name -> the value type it expects.
+    attr_value_kinds: HashMap<String, AttrValueTy>,
 }
 
 impl<'a> Checker<'a> {
@@ -116,7 +126,17 @@ impl<'a> Checker<'a> {
         ] {
             attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
         }
-        Checker { sink, resolved, entities: HashMap::new(), attr_targets }
+        let mut attr_value_kinds = HashMap::new();
+        for (name, ty) in [
+            ("top", AttrValueTy::Bool),
+            ("test", AttrValueTy::Bool),
+            ("keep", AttrValueTy::Bool),
+            ("library", AttrValueTy::Str),
+            ("name", AttrValueTy::Str),
+        ] {
+            attr_value_kinds.insert(name.to_string(), ty);
+        }
+        Checker { sink, resolved, entities: HashMap::new(), attr_targets, attr_value_kinds }
     }
 
     /// First pass: record entity port types and declared attribute targets.
@@ -139,6 +159,12 @@ impl<'a> Checker<'a> {
                     Item::AttrDecl(a) => {
                         let targets = a.targets.iter().map(|t| t.text.clone()).collect();
                         self.attr_targets.insert(a.name.text.clone(), targets);
+                        let kind = match type_head_name(&a.ty) {
+                            Some("Bool") => AttrValueTy::Bool,
+                            Some("string") | Some("str") => AttrValueTy::Str,
+                            _ => AttrValueTy::Other,
+                        };
+                        self.attr_value_kinds.insert(a.name.text.clone(), kind);
                     }
                     _ => {}
                 }
@@ -159,6 +185,7 @@ impl<'a> Checker<'a> {
             Item::Entity(e) => {
                 for a in &e.attrs {
                     self.check_attr_target(a);
+                    self.check_attr_value(a);
                     if let Some(v) = &a.value {
                         self.check_expr(v);
                     }
@@ -201,6 +228,7 @@ impl<'a> Checker<'a> {
                 ImplItem::Const(c) => self.check_expr(&c.value),
                 ImplItem::Let(l) => {
                     if let Some(v) = &l.value {
+                        self.check_init(l.ty.as_ref(), v, &sym);
                         self.check_expr(v);
                     }
                 }
@@ -256,11 +284,13 @@ impl<'a> Checker<'a> {
         match s {
             Stmt::Let(l) => {
                 if let Some(v) = &l.value {
+                    self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v);
                 }
             }
             Stmt::Assign { target, value, .. } => {
                 self.check_write_target(target, in_ports);
+                self.check_assignment(target, value, sym);
                 self.check_expr(target);
                 self.check_expr(value);
             }
@@ -332,6 +362,78 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Spec 3.5: an attribute's value must match the type its declaration gives.
+    fn check_attr_value(&mut self, a: &Attr) {
+        let Some(value) = &a.value else { return };
+        let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+        let expected = self.attr_value_kinds.get(name).copied();
+        let ok = match expected {
+            Some(AttrValueTy::Bool) => matches!(value, Expr::Bool { .. }),
+            Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
+            // Unknown attribute (reported by resolve) or an `Other`-typed one.
+            _ => true,
+        };
+        if !ok {
+            let want = match expected {
+                Some(AttrValueTy::Bool) => "a Bool",
+                Some(AttrValueTy::Str) => "a string",
+                _ => "a different",
+            };
+            self.error(
+                codes::INVALID_ATTR_VALUE_TYPE,
+                expr_span(value),
+                format!("attribute `{name}` expects {want} value"),
+            );
+        }
+    }
+
+    /// Spec 3.17: a `let name: T = e` initializer must be assignable to `T`.
+    fn check_init(&mut self, decl_ty: Option<&Type>, value: &Expr, sym: &HashMap<String, Ty>) {
+        let Some(t) = decl_ty else { return };
+        let lhs = self.ast_ty(t);
+        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+            let rhs = self.type_of(value, sym);
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(value),
+                format!(
+                    "cannot initialize {} with {} without an explicit conversion",
+                    ty_name(&lhs),
+                    ty_name(&rhs)
+                ),
+            );
+        }
+    }
+
+    /// Spec 3.17: the right-hand side of `target = value` must be assignable to
+    /// the target's type. Only fires when the target type is known.
+    fn check_assignment(&mut self, target: &Expr, value: &Expr, sym: &HashMap<String, Ty>) {
+        let lhs = self.type_of(target, sym);
+        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+            let rhs = self.type_of(value, sym);
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(value),
+                format!(
+                    "cannot assign {} to {} without an explicit conversion",
+                    ty_name(&rhs),
+                    ty_name(&lhs)
+                ),
+            );
+        }
+    }
+
+    /// Whether `value` may be assigned to a target of type `lhs` without an
+    /// explicit conversion. Integer and logic *literals* are polymorphic; an
+    /// `Error` type on either side suppresses the check.
+    fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
+        match value {
+            Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Error),
+            Expr::LogicLit { .. } => matches!(lhs, Ty::Bit | Ty::Logic | Ty::Error),
+            _ => compatible(lhs, &self.type_of(value, sym)),
+        }
+    }
+
     /// Walk an expression for the Phase-2 `::ddt` guard (the only expression-
     /// local check so far).
     fn check_expr(&mut self, e: &Expr) {
@@ -396,7 +498,13 @@ impl<'a> Checker<'a> {
                 if p.segments.len() == 1 {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
                 } else {
-                    self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+                    // `Enum::Variant` has the enum's type, not the variant's.
+                    match self.resolved.resolved(p.span).and_then(|id| self.resolved.def(id)) {
+                        Some(d) if d.kind == DefKind::EnumVariant => {
+                            d.parent.map(Ty::Named).unwrap_or(Ty::Error)
+                        }
+                        _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
+                    }
                 }
             }
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
@@ -481,6 +589,37 @@ fn width_of(index: &Expr) -> u32 {
 
 fn is_comparison(op: BinOp) -> bool {
     matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+}
+
+/// Whether a value of type `rhs` may be assigned to `lhs` with no conversion.
+/// A width of `0` is "not yet known" (parametric) and assumed compatible — the
+/// concrete width check happens after elaboration.
+fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
+    use Ty::*;
+    if matches!(lhs, Error) || matches!(rhs, Error) {
+        return true;
+    }
+    match (lhs, rhs) {
+        (Bit, Bit) | (Logic, Logic) | (Bool, Bool) => true,
+        (UInt(a), UInt(b)) | (Int(a), Int(b)) => *a == 0 || *b == 0 || a == b,
+        (Named(a), Named(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn ty_name(t: &Ty) -> String {
+    match t {
+        Ty::Bit => "Bit".to_string(),
+        Ty::Logic => "Logic".to_string(),
+        Ty::Bool => "Bool".to_string(),
+        Ty::UInt(0) => "uint".to_string(),
+        Ty::UInt(w) => format!("uint[{w}]"),
+        Ty::Int(0) => "int".to_string(),
+        Ty::Int(w) => format!("int[{w}]"),
+        Ty::Named(_) => "a named type".to_string(),
+        Ty::Array { .. } => "an array".to_string(),
+        Ty::Error => "<unknown>".to_string(),
+    }
 }
 
 fn expr_span(e: &Expr) -> Span {
@@ -574,5 +713,48 @@ mod tests {
     fn attribute_on_right_target_is_fine() {
         let errors = check_src("module m;\n#[top]\nentity E { out y: Bit; }\n");
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn assigning_bool_to_a_bit_port_is_rejected() {
+        let errors = check_src(
+            "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en == en;\n}\n",
+        );
+        // `en == en` is Bool; `y` is Bit.
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn integer_and_logic_literals_are_polymorphic() {
+        // int literal -> any uint; '1' -> Bit or Logic. No conversions needed.
+        let errors = check_src(
+            "module m;\nentity E { out count: uint[8]; out q: Bit; out clk: Logic; }\nimpl E {\n  let value: uint[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn enum_assignment_uses_the_enum_type() {
+        let errors = check_src(
+            "module m;\nenum State { Idle, Run }\nentity E { out s: State; }\nimpl E {\n  s = State::Idle;\n}\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn bad_initializer_type_is_rejected() {
+        let errors = check_src(
+            "module m;\nentity E { out y: Bit; }\nimpl E {\n  let flag: Bool = 5;\n  y = '0';\n}\n",
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn attribute_value_type_is_checked() {
+        // `name` expects a string; giving it an int is an error.
+        let bad = check_src("module m;\n#[name = 5]\nentity E { out y: Bit; }\n");
+        assert_eq!(bad, 1);
+        let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
+        assert_eq!(good, 0);
     }
 }
