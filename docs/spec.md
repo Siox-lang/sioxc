@@ -1,5 +1,13 @@
 # siox Phase 1 — Digital Language Specification and Implementation Plan
 
+> **This is the original Phase 1 design.** As the language is implemented some
+> decisions have been refined — notably logical operators are now textual
+> (`and`/`or`, not `&`/`|`), conditions are trait-driven (`Boolean`), and the
+> `b"…"`/`x"…"` literals are string overloads rather than tokens. Where this
+> document and the implemented language disagree, **[language-changes.md](language-changes.md)
+> is authoritative** for current syntax and semantics. This file is kept as the
+> design baseline and rationale.
+
 This document defines Phase 1 of siox: the digital HDL layer. Phase 1 should produce a usable digital language, a parser, a type checker, an elaborator, an event-driven simulator, a test runner, and waveform output. Analogue domains and schematic/design syntax are intentionally left for later phases.
 
 The goal is not to finish the full language. The goal is to freeze and implement a coherent digital subset that is strong enough to write counters, FSMs, buses, ready/valid interfaces, small datapaths, test entities, assertions, and simulation traces.

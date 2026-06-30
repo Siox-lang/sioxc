@@ -11,13 +11,15 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 
 | Document | What it is |
 | -------- | ---------- |
-| [spec.md](spec.md) | The **frozen Phase 1 language specification** — the authority for syntax and semantics. Read this before changing language behaviour. |
+| [spec.md](spec.md) | The **original Phase 1 language design** — the baseline and rationale for syntax and semantics. |
+| [language-changes.md](language-changes.md) | **Intentional deviations** of the implemented language from the original spec. Authoritative where the two disagree (e.g. textual `and`/`or`, the `Boolean` condition trait). |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
 | [implementation.md](implementation.md) | The **stage-by-stage plan and live build status** — what each crate must do, the acceptance criteria, and how far along it is. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 
 If you are new: skim this page, then read [spec.md](spec.md) for the language
-and [architecture.md](architecture.md) for the compiler.
+(with [language-changes.md](language-changes.md) for where it has moved on) and
+[architecture.md](architecture.md) for the compiler.
 
 ## The compiler pipeline
 
