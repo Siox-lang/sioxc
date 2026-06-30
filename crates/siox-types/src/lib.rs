@@ -820,7 +820,7 @@ mod tests {
 
         // With it, the enum becomes usable as a condition.
         let with = check_src(
-            "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  let as_bool(self) -> Bool {\n    match self {\n      State::Idle => false,\n      _ => true,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
+            "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  fn as_bool(self) -> Bool {\n    match self {\n      State::Idle => false,\n      _ => true,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(with, 0);
     }

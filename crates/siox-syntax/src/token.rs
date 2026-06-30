@@ -34,7 +34,8 @@ pub enum TokenKind {
     Trait,
     Attr,
     Const,
-    Let,
+    Let,        // signal / state / local binding: `let x: T = e;`
+    Fn,         // function / method declaration: `fn name(self) { ... }`
     In,
     Out,
     Inout,

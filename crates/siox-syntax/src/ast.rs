@@ -165,7 +165,7 @@ pub enum ImplItem {
     Const(ConstDecl),
     /// Persistent state / signal: `let value: uint[W] = 0;`
     Let(LetDecl),
-    /// Method / function: `let send(self, value: T) { ... }`
+    /// Method / function: `fn send(self, value: T) { ... }`
     Fn(FnDecl),
     /// Bus-mode leaf direction: `in clk;` / `out valid;` (spec 3.19).
     ModeField { dir: Direction, name: Ident, span: Span },
@@ -173,7 +173,7 @@ pub enum ImplItem {
     Stmt(Stmt),
 }
 
-/// `trait ClockLike { let rising(self); ... }` (spec 3.20). Compile-time only.
+/// `trait ClockLike { fn rising(self); ... }` (spec 3.20). Compile-time only.
 #[derive(Clone, Debug)]
 pub struct TraitDecl {
     pub is_pub: bool,

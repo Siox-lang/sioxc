@@ -464,21 +464,21 @@ Example definition:
 
 ```siox
 trait ClockLike {
-    let rising(self);
-    let falling(self);
-    let edge(self);
+    fn rising(self);
+    fn falling(self);
+    fn edge(self);
 }
 
 impl ClockLike for Logic {
-    let rising(self) {
+    fn rising(self) {
         self::event and self::old == '0' and self == '1'
     }
 
-    let falling(self) {
+    fn falling(self) {
         self::event and self::old == '1' and self == '0'
     }
 
-    let edge(self) {
+    fn edge(self) {
         self::event
     }
 }
@@ -696,7 +696,7 @@ is applied only in condition position (not as a general implicit cast):
 
 ```siox
 trait Boolean {
-    let as_bool(self) -> Bool;
+    fn as_bool(self) -> Bool;
 }
 ```
 
@@ -733,7 +733,7 @@ A user type becomes usable as a condition by implementing `Boolean`:
 
 ```siox
 impl Boolean for State {
-    let as_bool(self) -> Bool {
+    fn as_bool(self) -> Bool {
         match self {
             State::Idle => false,
             _ => true,
@@ -856,8 +856,8 @@ Example:
 
 ```siox
 trait Source<T> {
-    let send(self, value: T);
-    let can_send(self) -> Bit;
+    fn send(self, value: T);
+    fn can_send(self) -> Bit;
 }
 ```
 
@@ -865,12 +865,12 @@ Implementation:
 
 ```siox
 impl Source<T> for out Stream<T>::Source {
-    let send(self, value: T) {
+    fn send(self, value: T) {
         self.valid = '1';
         self.data = value;
     }
 
-    let can_send(self) -> Bit {
+    fn can_send(self) -> Bit {
         return self.ready;
     }
 }

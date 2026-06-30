@@ -341,7 +341,20 @@ impl<'a> Parser<'a> {
     fn parse_impl_item(&mut self) -> Option<ImplItem> {
         match self.kind() {
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
-            TokenKind::Let => Some(self.parse_let_or_fn()),
+            // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
+            // is a method.
+            TokenKind::Let => {
+                let start = self.span();
+                self.bump();
+                let name = self.parse_ident();
+                Some(ImplItem::Let(self.parse_let_after_name(start, name)))
+            }
+            TokenKind::Fn => {
+                let start = self.span();
+                self.bump();
+                let name = self.parse_ident();
+                Some(ImplItem::Fn(self.parse_fn_after_name(start, name)))
+            }
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
                 let start = self.span();
@@ -351,18 +364,6 @@ impl<'a> Parser<'a> {
                 Some(ImplItem::ModeField { dir, name, span: start.to(self.prev_span()) })
             }
             _ => Some(ImplItem::Stmt(self.parse_stmt())),
-        }
-    }
-
-    /// `let value: T = e;` (state) or `let send(self, ...) { ... }` (method).
-    fn parse_let_or_fn(&mut self) -> ImplItem {
-        let start = self.span();
-        self.bump(); // `let`
-        let name = self.parse_ident();
-        if self.at(TokenKind::LParen) {
-            ImplItem::Fn(self.parse_fn_after_name(start, name))
-        } else {
-            ImplItem::Let(self.parse_let_after_name(start, name))
         }
     }
 
@@ -428,8 +429,8 @@ impl<'a> Parser<'a> {
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
             let istart = self.span();
-            if !self.eat(TokenKind::Let) {
-                self.error_here("expected a `let` method signature in trait body");
+            if !self.eat(TokenKind::Fn) {
+                self.error_here("expected a `fn` method signature in trait body");
                 break;
             }
             let mname = self.parse_ident();
@@ -992,6 +993,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Attr
                 | TokenKind::Const
                 | TokenKind::Let
+                | TokenKind::Fn
                 | TokenKind::In
                 | TokenKind::Out
                 | TokenKind::Inout
@@ -1268,7 +1270,7 @@ mod tests {
     #[test]
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  let rising(self);\n  let edge(self);\n}\nimpl ClockLike for Logic {\n  let rising(self) {\n    self::event and self::old == '0' and self == '1'\n  }\n  let edge(self) {\n    self::event\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    self::event and self::old == '0' and self == '1'\n  }\n  fn edge(self) {\n    self::event\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else { panic!("expected trait") };
         assert_eq!(t.items.len(), 2);

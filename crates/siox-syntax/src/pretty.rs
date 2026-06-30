@@ -189,7 +189,7 @@ impl Printer {
         };
         match &f.body {
             Some(body) => {
-                self.line(&format!("let {}({ps}){ret} {{", f.name.text));
+                self.line(&format!("fn {}({ps}){ret} {{", f.name.text));
                 self.indent += 1;
                 for s in &body.stmts {
                     self.stmt(s);
@@ -197,7 +197,7 @@ impl Printer {
                 self.indent -= 1;
                 self.line("}");
             }
-            None => self.line(&format!("let {}({ps}){ret};", f.name.text)),
+            None => self.line(&format!("fn {}({ps}){ret};", f.name.text)),
         }
     }
 
@@ -539,9 +539,9 @@ mod tests {
     fn roundtrips_trait_match_and_construct() {
         roundtrip(
             "module m;\n\
-             trait ClockLike { let rising(self); }\n\
+             trait ClockLike { fn rising(self); }\n\
              impl ClockLike for Logic {\n\
-               let rising(self) {\n\
+               fn rising(self) {\n\
                  self::event and self::old == '0' and self == '1'\n\
                }\n\
              }\n\

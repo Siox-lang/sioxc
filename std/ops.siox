@@ -11,17 +11,17 @@ module std::ops;
 // in siox-resolve. This file is the canonical declaration they stand in for.
 
 pub trait Boolean {
-    let as_bool(self) -> Bool;
+    fn as_bool(self) -> Bool;
 }
 
 impl Boolean for Bool {
-    let as_bool(self) -> Bool {
+    fn as_bool(self) -> Bool {
         self
     }
 }
 
 impl Boolean for Bit {
-    let as_bool(self) -> Bool {
+    fn as_bool(self) -> Bool {
         self == '1'
     }
 }
