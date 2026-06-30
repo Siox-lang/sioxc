@@ -55,8 +55,12 @@ enum Command {
         #[arg(long)]
         wave: Option<PathBuf>,
     },
-    /// Discover and run `#[test]` entities.
-    Test { path: PathBuf },
+    /// Discover and run `#[test]` entities (optionally filtered by name).
+    Test {
+        path: PathBuf,
+        /// Run only test entities whose name contains this string.
+        filter: Option<String>,
+    },
     /// Debug: print the pretty-printed AST.
     Ast {
         file: PathBuf,
@@ -95,9 +99,9 @@ fn main() -> ExitCode {
             if wave.is_some() {
                 eprintln!("note: --wave (VCD) output is not yet implemented (Stage 9)\n");
             }
-            cmd_test(&file)
+            cmd_test(&file, None)
         }
-        Command::Test { path } => cmd_test(&path),
+        Command::Test { path, filter } => cmd_test(&path, filter.as_deref()),
         Command::Ir { file } => cmd_ir(&file),
         Command::Tree { file } => cmd_tree(&file),
     }
@@ -276,9 +280,10 @@ fn cmd_ir(path: &Path) -> ExitCode {
     }
 }
 
-/// `siox test`: run every `#[test]` entity through the simulator and report
-/// pass/fail. Exits nonzero if any test fails (or the pipeline errored).
-fn cmd_test(path: &Path) -> ExitCode {
+/// `siox test`: run the `#[test]` entities (optionally filtered by name)
+/// through the simulator and report pass/fail. Exits nonzero if any test fails
+/// (or the pipeline errored).
+fn cmd_test(path: &Path, filter: Option<&str>) -> ExitCode {
     let mut sem = match run_semantic(path, false) {
         Ok(s) => s,
         Err(code) => return code,
@@ -296,9 +301,12 @@ fn cmd_test(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let results = siox_sim::run_tests(modules, &hier, &design);
+    let results = siox_sim::run_tests(modules, &hier, &design, filter);
     if results.is_empty() {
-        eprintln!("no #[test] entities found");
+        match filter {
+            Some(f) => eprintln!("no #[test] entity matching `{f}`"),
+            None => eprintln!("no #[test] entities found"),
+        }
         return ExitCode::SUCCESS;
     }
 

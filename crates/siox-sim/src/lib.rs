@@ -231,7 +231,13 @@ pub struct TestResult {
 /// through the elaborated connections. The interpreted stimulus statements are
 /// `let` initial values, assignments, `tick(clk)`, `wait`, `for` over a static
 /// range, `if`, and `assert!(cond, "msg")`.
-pub fn run_tests(modules: &[Module], hier: &Hierarchy, design: &Design) -> Vec<TestResult> {
+/// `filter`, when given, runs only the `#[test]` entities whose name contains it.
+pub fn run_tests(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+) -> Vec<TestResult> {
     let mut entities: HashMap<&str, &ast::EntityDecl> = HashMap::new();
     let mut impls: HashMap<&str, Vec<&ast::ImplDecl>> = HashMap::new();
     for m in modules {
@@ -254,7 +260,8 @@ pub fn run_tests(modules: &[Module], hier: &Hierarchy, design: &Design) -> Vec<T
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
-        if is_test {
+        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             results.push(run_one(&inst.entity, root, hier, design, &body));
         }
@@ -543,7 +550,7 @@ mod tests {
         let typed = siox_types::check(modules, &resolved, &mut sink);
         let hier = siox_elab::elaborate(modules, &typed, &mut sink);
         let design = siox_ir::lower(modules, &hier, &mut sink);
-        run_tests(modules, &hier, &design)
+        run_tests(modules, &hier, &design, None)
     }
 
     const COUNTER_TEST: &str = "module m;\n\
@@ -588,6 +595,21 @@ mod tests {
         assert!(!results[0].passed);
         assert_eq!(results[0].failure.as_deref(), Some("wrong count"));
         assert!(results[0].span.is_some());
+    }
+
+    #[test]
+    fn name_filter_selects_a_test() {
+        let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 10, \"ok\");");
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), &src, &mut sink);
+        let modules = std::slice::from_ref(&module);
+        let resolved = siox_resolve::resolve(modules, &mut sink);
+        let typed = siox_types::check(modules, &resolved, &mut sink);
+        let hier = siox_elab::elaborate(modules, &typed, &mut sink);
+        let design = siox_ir::lower(modules, &hier, &mut sink);
+
+        assert_eq!(run_tests(modules, &hier, &design, Some("Counter")).len(), 1);
+        assert_eq!(run_tests(modules, &hier, &design, Some("Nope")).len(), 0);
     }
 
     const COUNTER: &str = "module m;\n\

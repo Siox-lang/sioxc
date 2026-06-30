@@ -116,9 +116,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** `run_tests` discovers `#[test]` entities, maps their
   signals to the DUT via the elaborated connections, and interprets the
   stimulus (`let` initials, assignments, `tick(clk)`, `wait`, `for` over a
-  static range, `if`, `assert!(cond, "msg")`) against the simulator. `siox test`
-  prints `PASS`/`FAIL` with the failing assertion's `file:line:col` and exits
-  nonzero on failure.
+  static range, `if`, `assert!(cond, "msg")`) against the simulator. `siox test
+  [name]` runs all or a name-filtered subset, prints `PASS`/`FAIL` with the
+  failing assertion's `file:line:col`, and exits nonzero on failure.
 - **Status (todo):** `siox test <dir>` over a directory; `wait`/time-based
   stimulus; richer stimulus (clock generators, `i` in `for` bodies).
 
