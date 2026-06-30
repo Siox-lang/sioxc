@@ -1,0 +1,52 @@
+module examples::counter_test;
+
+using std::logic::{Bit, Logic, Clock};
+using std::bits::uint;
+
+entity Counter<W: usize> {
+    in clk: Clock;
+    in rst: Logic;
+    in en: Bit;
+    out count: uint[W];
+}
+
+impl Counter<W: usize> {
+    let value: uint[W] = 0;
+
+    if clk::rising {
+        if rst == '1' {
+            value = 0;
+        } else if en {
+            value = value + 1;
+        }
+    }
+
+    count = value;
+}
+
+// A test entity drives the counter and checks the result.
+#[test]
+entity CounterTest {}
+
+impl CounterTest {
+    let clk: Logic = '0';
+    let rst: Logic = '1';
+    let en: Bit = '1';
+    let count: uint[8];
+
+    let dut = Counter<W = 8> {
+        .clk,
+        .rst,
+        .en,
+        .count,
+    };
+
+    wait 10.ns;
+    rst = '0';
+
+    for i in 0..10 {
+        tick(clk);
+    }
+
+    assert!(count == 10, "counter should reach 10 after 10 ticks");
+}

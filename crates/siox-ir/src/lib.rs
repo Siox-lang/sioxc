@@ -175,7 +175,9 @@ impl<'a> Lowering<'a> {
 
     fn lower_entity(&mut self, name: &str) {
         let Some(edecl) = self.entities.get(name).copied() else { return };
-        if edecl.is_extern {
+        // Extern entities are black boxes; `#[test]` entities are testbenches
+        // (stimulus, not hardware) and are run by the Stage-8 test runner.
+        if edecl.is_extern || has_attr(edecl, "test") {
             return;
         }
 
@@ -569,6 +571,12 @@ fn range_width(lo: &ast::Expr, hi: &ast::Expr) -> u32 {
         }
     }
     0
+}
+
+fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
+    e.attrs
+        .iter()
+        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
 }
 
 fn type_head_name(t: &ast::Type) -> Option<&str> {

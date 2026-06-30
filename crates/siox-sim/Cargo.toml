@@ -8,11 +8,11 @@ repository.workspace = true
 
 [dependencies]
 siox-diag.workspace = true
+siox-syntax.workspace = true
+siox-elab.workspace = true
 siox-ir.workspace = true
 
 [dev-dependencies]
 # Used only to lower real source in the integration tests.
-siox-syntax.workspace = true
 siox-resolve.workspace = true
 siox-types.workspace = true
-siox-elab.workspace = true

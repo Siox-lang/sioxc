@@ -15,8 +15,13 @@
 //! Event blocks fire once per `settle` (one clock edge per step), which covers
 //! the Phase-1 single-clock designs; cascaded event domains are a follow-up.
 
-use siox_diag::DiagnosticSink;
+use std::collections::HashMap;
+
+use siox_diag::Span;
+use siox_elab::Hierarchy;
 use siox_ir::{BinOp, Design, Expr, SignalId, UnOp};
+use siox_syntax::ast;
+use siox_syntax::Module;
 
 /// Per-signal runtime state: current value, previous value, and event flag.
 #[derive(Clone, Copy, Debug, Default)]
@@ -212,20 +217,309 @@ fn apply_binop(op: BinOp, a: u64, b: u64) -> u64 {
 pub struct TestResult {
     pub name: String,
     pub passed: bool,
-    /// Failure message with span info when an assertion fails.
+    /// Failure message when an assertion fails.
     pub failure: Option<String>,
+    /// Span of the failing assertion, for `file:line:col` rendering.
+    pub span: Option<Span>,
 }
 
-/// Discover and run all `#[test]` entities in the design (spec Stage 8).
-pub fn run_tests(_design: &Design, _sink: &mut DiagnosticSink) -> Vec<TestResult> {
-    // TODO(stage-8): drive stimulus (`wait`, `tick`), evaluate `assert!`.
-    todo!("Stage 8: test runner")
+/// Discover and run every `#[test]` entity, driving its stimulus through the
+/// simulator and evaluating its assertions (spec Stage 8).
+///
+/// Phase-1 scope: a test entity instantiates one or more DUTs and drives them
+/// via `tick`/`wait`/assignments; its signals are aliased to the DUTs' signals
+/// through the elaborated connections. The interpreted stimulus statements are
+/// `let` initial values, assignments, `tick(clk)`, `wait`, `for` over a static
+/// range, `if`, and `assert!(cond, "msg")`.
+pub fn run_tests(modules: &[Module], hier: &Hierarchy, design: &Design) -> Vec<TestResult> {
+    let mut entities: HashMap<&str, &ast::EntityDecl> = HashMap::new();
+    let mut impls: HashMap<&str, Vec<&ast::ImplDecl>> = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            match item {
+                ast::Item::Entity(e) => {
+                    entities.insert(e.name.text.as_str(), e);
+                }
+                ast::Item::Impl(im) if im.trait_.is_none() => {
+                    if let Some(n) = type_head_name(&im.target) {
+                        impls.entry(n).or_default().push(im);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut results = Vec::new();
+    for &root in &hier.roots {
+        let inst = hier.instance(root);
+        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        if is_test {
+            let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
+            results.push(run_one(&inst.entity, root, hier, design, &body));
+        }
+    }
+    results
+}
+
+fn run_one(
+    name: &str,
+    root: siox_elab::InstanceId,
+    hier: &Hierarchy,
+    design: &Design,
+    body: &[&ast::ImplDecl],
+) -> TestResult {
+    // Map this test's local signal names to design signals via the connections
+    // of the DUTs it instantiates (`.clk = clk` aliases `clk` to `DUT.clk`).
+    let mut map: HashMap<String, SignalId> = HashMap::new();
+    for &child_id in &hier.instance(root).children {
+        let child = hier.instance(child_id);
+        for c in &child.connections {
+            if let Some(id) = signal_id(design, &format!("{}.{}", child.entity, c.port)) {
+                map.insert(c.signal.clone(), id);
+            }
+        }
+    }
+
+    let mut tb = Testbench { sim: Simulator::new(design), map, failure: None };
+
+    // Apply initial `let` values, then settle.
+    for im in body {
+        for item in &im.items {
+            if let ast::ImplItem::Let(l) = item {
+                if let Some(value) = &l.value {
+                    if !matches!(value, ast::Expr::Construct { .. }) {
+                        let v = tb.eval(value);
+                        tb.set_name(&l.name.text, v);
+                    }
+                }
+            }
+        }
+    }
+    tb.sim.settle();
+
+    // Run the stimulus.
+    for im in body {
+        for item in &im.items {
+            if let ast::ImplItem::Stmt(s) = item {
+                tb.exec(s);
+                if tb.failure.is_some() {
+                    break;
+                }
+            }
+        }
+        if tb.failure.is_some() {
+            break;
+        }
+    }
+
+    match tb.failure {
+        Some((msg, span)) => {
+            TestResult { name: name.to_string(), passed: false, failure: Some(msg), span: Some(span) }
+        }
+        None => TestResult { name: name.to_string(), passed: true, failure: None, span: None },
+    }
+}
+
+/// Interprets a testbench's stimulus statements against a running simulator.
+struct Testbench<'a> {
+    sim: Simulator<'a>,
+    /// Test-local signal name -> design signal id.
+    map: HashMap<String, SignalId>,
+    failure: Option<(String, Span)>,
+}
+
+impl Testbench<'_> {
+    fn set_name(&mut self, name: &str, value: u64) {
+        if let Some(&id) = self.map.get(name) {
+            self.sim.set(id, value);
+        }
+    }
+
+    fn exec(&mut self, s: &ast::Stmt) {
+        match s {
+            ast::Stmt::Assign { target, value, .. } => {
+                let v = self.eval(value);
+                if let ast::Expr::Path(p) = target {
+                    if p.segments.len() == 1 {
+                        self.set_name(&p.segments[0].text, v);
+                    }
+                }
+                self.sim.settle();
+            }
+            ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, span }) => {
+                self.exec_call(callee, args, *bang, *span);
+            }
+            ast::Stmt::For { range, body, .. } => {
+                for _ in 0..self.range_count(range) {
+                    for s in &body.stmts {
+                        self.exec(s);
+                        if self.failure.is_some() {
+                            return;
+                        }
+                    }
+                }
+            }
+            ast::Stmt::If(iff) => {
+                let branch = if self.eval(&iff.cond) != 0 {
+                    Some(&iff.then.stmts)
+                } else {
+                    match iff.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(b)) => Some(&b.stmts),
+                        Some(ast::ElseBranch::If(_)) => None, // else-if: skip for now
+                        None => None,
+                    }
+                };
+                if let Some(stmts) = branch {
+                    for s in stmts {
+                        self.exec(s);
+                        if self.failure.is_some() {
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn exec_call(&mut self, callee: &ast::Expr, args: &[ast::Expr], bang: bool, span: Span) {
+        let name = match callee {
+            ast::Expr::Path(p) => p.segments.first().map(|s| s.text.as_str()).unwrap_or(""),
+            _ => "",
+        };
+        match name {
+            // tick(clk): one full clock cycle (rising then falling).
+            "tick" => {
+                if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
+                    self.sim.set(id, 1);
+                    self.sim.settle();
+                    self.sim.set(id, 0);
+                    self.sim.settle();
+                }
+            }
+            // wait <duration>: advance time (no time-based behaviour in Phase 1).
+            "wait" => self.sim.advance(0),
+            // assert!(cond, "msg"): record the first failure.
+            "assert" if bang => {
+                let ok = args.first().map(|c| self.eval(c) != 0).unwrap_or(true);
+                if !ok {
+                    let msg = args
+                        .get(1)
+                        .and_then(str_lit)
+                        .unwrap_or_else(|| "assertion failed".to_string());
+                    self.failure = Some((msg, span));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn signal_of(&self, e: &ast::Expr) -> Option<SignalId> {
+        if let ast::Expr::Path(p) = e {
+            if p.segments.len() == 1 {
+                return self.map.get(&p.segments[0].text).copied();
+            }
+        }
+        None
+    }
+
+    fn range_count(&self, range: &ast::Expr) -> u64 {
+        if let ast::Expr::Range { lo, hi, .. } = range {
+            let (a, b) = (self.eval(lo), self.eval(hi));
+            return b.saturating_sub(a);
+        }
+        0
+    }
+
+    /// Evaluate an AST expression against the simulator via the signal map.
+    fn eval(&self, e: &ast::Expr) -> u64 {
+        match e {
+            ast::Expr::Int { text, .. } => parse_u64(text),
+            ast::Expr::Bool { value, .. } => *value as u64,
+            ast::Expr::LogicLit { ch, .. } => logic_value(*ch),
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                self.map.get(&p.segments[0].text).map(|&id| self.sim.read(id)).unwrap_or(0)
+            }
+            ast::Expr::Unary { op, rhs, .. } => {
+                let a = self.eval(rhs);
+                match op {
+                    ast::UnOp::Not => (a == 0) as u64,
+                    ast::UnOp::Neg => a.wrapping_neg(),
+                }
+            }
+            ast::Expr::Binary { op, lhs, rhs, .. } => {
+                apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
+            }
+            _ => 0,
+        }
+    }
+}
+
+fn signal_id(design: &Design, path: &str) -> Option<SignalId> {
+    design.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32))
+}
+
+fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
+    e.attrs.iter().any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
+}
+
+fn type_head_name(t: &ast::Type) -> Option<&str> {
+    match t {
+        ast::Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
+        ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
+        ast::Type::Mode { inner, .. } => type_head_name(inner),
+    }
+}
+
+fn str_lit(e: &ast::Expr) -> Option<String> {
+    match e {
+        ast::Expr::StrLit { text, .. } => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn parse_u64(text: &str) -> u64 {
+    let t = text.trim();
+    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u64::from_str_radix(h, 16).unwrap_or(0)
+    } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+        u64::from_str_radix(b, 2).unwrap_or(0)
+    } else {
+        t.parse().unwrap_or(0)
+    }
+}
+
+fn lower_ast_binop(op: ast::BinOp) -> BinOp {
+    use ast::BinOp as A;
+    match op {
+        A::Add => BinOp::Add,
+        A::Sub => BinOp::Sub,
+        A::Mul => BinOp::Mul,
+        A::Div => BinOp::Div,
+        A::And => BinOp::And,
+        A::Nand => BinOp::Nand,
+        A::Or => BinOp::Or,
+        A::Nor => BinOp::Nor,
+        A::Xor => BinOp::Xor,
+        A::Xnor => BinOp::Xnor,
+        A::Shl => BinOp::Shl,
+        A::Shr => BinOp::Shr,
+        A::Eq => BinOp::Eq,
+        A::Ne => BinOp::Ne,
+        A::Lt => BinOp::Lt,
+        A::Le => BinOp::Le,
+        A::Gt => BinOp::Gt,
+        A::Ge => BinOp::Ge,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use siox_diag::FileId;
+
+    use siox_diag::DiagnosticSink;
 
     /// Lower a source string through the full frontend into IR.
     fn lower(src: &str) -> Design {
@@ -237,6 +531,63 @@ mod tests {
         let typed = siox_types::check(modules, &resolved, &mut sink);
         let hier = siox_elab::elaborate(modules, &typed, &mut sink);
         siox_ir::lower(modules, &hier, &mut sink)
+    }
+
+    /// Lower + run the test entities in a source string.
+    fn run(src: &str) -> Vec<TestResult> {
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
+        assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");
+        let modules = std::slice::from_ref(&module);
+        let resolved = siox_resolve::resolve(modules, &mut sink);
+        let typed = siox_types::check(modules, &resolved, &mut sink);
+        let hier = siox_elab::elaborate(modules, &typed, &mut sink);
+        let design = siox_ir::lower(modules, &hier, &mut sink);
+        run_tests(modules, &hier, &design)
+    }
+
+    const COUNTER_TEST: &str = "module m;\n\
+        entity Counter<W: usize> {\n\
+          in clk: Clock; in rst: Logic; in en: Bit; out count: uint[W];\n\
+        }\n\
+        impl Counter<W: usize> {\n\
+          let value: uint[W] = 0;\n\
+          if clk::rising {\n\
+            if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
+          }\n\
+          count = value;\n\
+        }\n\
+        #[test]\n\
+        entity CounterTest {}\n\
+        impl CounterTest {\n\
+          let clk: Logic = '0';\n\
+          let rst: Logic = '1';\n\
+          let en: Bit = '1';\n\
+          let count: uint[8];\n\
+          let dut = Counter<W = 8> { .clk, .rst, .en, .count };\n\
+          wait 10.ns;\n\
+          rst = '0';\n\
+          for i in 0..10 { tick(clk); }\n\
+          PLACEHOLDER\n\
+        }\n";
+
+    #[test]
+    fn passing_test_entity_reports_pass() {
+        let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 10, \"should be 10\");");
+        let results = run(&src);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "CounterTest");
+        assert!(results[0].passed, "failure: {:?}", results[0].failure);
+    }
+
+    #[test]
+    fn failing_assertion_reports_message_and_span() {
+        let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 99, \"wrong count\");");
+        let results = run(&src);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+        assert_eq!(results[0].failure.as_deref(), Some("wrong count"));
+        assert!(results[0].span.is_some());
     }
 
     const COUNTER: &str = "module m;\n\

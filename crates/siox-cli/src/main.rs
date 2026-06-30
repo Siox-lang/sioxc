@@ -71,14 +71,6 @@ enum Command {
     Tokens { file: PathBuf },
 }
 
-/// A pipeline stage that is wired into the CLI but not yet implemented. Used to
-/// tell the user exactly where the compiler currently stops.
-struct Pending {
-    stage: u8,
-    name: &'static str,
-    krate: &'static str,
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.cmd {
@@ -99,24 +91,13 @@ fn main() -> ExitCode {
         },
         Command::Check { file, verbose } => cmd_check(&file, verbose),
         Command::Sim { file, wave } => {
-            let mut stages = vec![
-                Pending { stage: 5, name: "elaborate", krate: "siox-elab" },
-                Pending { stage: 6, name: "lower (IR)", krate: "siox-ir" },
-                Pending { stage: 7, name: "simulate", krate: "siox-sim" },
-            ];
+            // Simulation runs the testbenches; `--wave` VCD output is Stage 9.
             if wave.is_some() {
-                stages.push(Pending { stage: 9, name: "waveform", krate: "siox-wave" });
+                eprintln!("note: --wave (VCD) output is not yet implemented (Stage 9)\n");
             }
-            run_then_report(&file, &stages)
+            cmd_test(&file)
         }
-        Command::Test { path } => run_then_report(
-            &path,
-            &[
-                Pending { stage: 5, name: "elaborate", krate: "siox-elab" },
-                Pending { stage: 6, name: "lower (IR)", krate: "siox-ir" },
-                Pending { stage: 8, name: "run tests", krate: "siox-sim" },
-            ],
-        ),
+        Command::Test { path } => cmd_test(&path),
         Command::Ir { file } => cmd_ir(&file),
         Command::Tree { file } => cmd_tree(&file),
     }
@@ -295,22 +276,56 @@ fn cmd_ir(path: &Path) -> ExitCode {
     }
 }
 
-/// Run the frontend (always traced), then report the still-unimplemented
-/// pipeline stages this command would need.
-fn run_then_report(path: &Path, pending: &[Pending]) -> ExitCode {
-    match run_frontend(path, true) {
-        Ok(_) => {
-            eprintln!();
-            for p in pending {
-                eprintln!(
-                    "== stage {}: {} == not yet implemented (crate `{}`)",
-                    p.stage, p.name, p.krate
-                );
-            }
-            eprintln!("\npipeline stops after parse; later stages are still stubs.");
-            ExitCode::SUCCESS
+/// `siox test`: run every `#[test]` entity through the simulator and report
+/// pass/fail. Exits nonzero if any test fails (or the pipeline errored).
+fn cmd_test(path: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    if sem.fe.sink.has_errors() {
+        render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+        return ExitCode::FAILURE;
+    }
+
+    let modules = std::slice::from_ref(&sem.fe.module);
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        return ExitCode::FAILURE;
+    }
+
+    let results = siox_sim::run_tests(modules, &hier, &design);
+    if results.is_empty() {
+        eprintln!("no #[test] entities found");
+        return ExitCode::SUCCESS;
+    }
+
+    let mut failed = 0;
+    for r in &results {
+        if r.passed {
+            println!("PASS  {}", r.name);
+        } else {
+            failed += 1;
+            let loc = r
+                .span
+                .map(|s| {
+                    let (line, col) = sem.fe.sources.line_col(s.file, s.start);
+                    let name = sem.fe.sources.get(s.file).map(|f| f.name.as_str()).unwrap_or("?");
+                    format!(" ({name}:{line}:{col})")
+                })
+                .unwrap_or_default();
+            let msg = r.failure.as_deref().unwrap_or("assertion failed");
+            println!("FAIL  {} — {msg}{loc}", r.name);
         }
-        Err(code) => code,
+    }
+    let passed = results.len() - failed;
+    println!("\n{passed} passed, {failed} failed");
+    if failed > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

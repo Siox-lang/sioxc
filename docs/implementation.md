@@ -21,9 +21,9 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
 | `siox-ir`      | 6    | 🟢 partial | language-neutral IR; lowers behaviour to drivers + event blocks; `siox ir` |
-| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator core (Stage 7); `#[test]` runner (Stage 8) pending |
+| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator (Stage 7) + `#[test]` runner with `assert!` (Stage 8) |
 | `siox-wave`    | 9    | 🔴 stub | |
-| `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`; `sim`/`test` report where the pipeline stops |
+| `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`/`test`/`sim` (sim's `--wave` is Stage 9) |
 
 ## Stage-by-stage
 
@@ -110,9 +110,17 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   ready-valid/enum/struct/array); proper logic-value (X/Z) modelling; cascaded
   event domains. Driving it from a `#[test]` entity is Stage 8.
 
-### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🔴
+### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
   file/span/message; multiple tests run; `siox test examples/` works.
+- **Status (done):** `run_tests` discovers `#[test]` entities, maps their
+  signals to the DUT via the elaborated connections, and interprets the
+  stimulus (`let` initials, assignments, `tick(clk)`, `wait`, `for` over a
+  static range, `if`, `assert!(cond, "msg")`) against the simulator. `siox test`
+  prints `PASS`/`FAIL` with the failing assertion's `file:line:col` and exits
+  nonzero on failure.
+- **Status (todo):** `siox test <dir>` over a directory; `wait`/time-based
+  stimulus; richer stimulus (clock generators, `i` in `for` bodies).
 
 ### Stage 9 — Waveforms (`siox-wave`) — 🔴
 - **Acceptance:** counter VCD shows `clk/rst/en/count`; FSM shows symbolic/
@@ -150,8 +158,8 @@ Per spec §7 — the shortest practical path. Strikethrough marks completed work
 5. Elaboration (Stage 5) — *in progress*
 6. Digital IR (Stage 6) — *in progress*
 7. Event-driven simulator (Stage 7) — *in progress*
-8. **Test runner + assertions (Stage 8) — next**
-9. Waveform output (Stage 9)
+8. Test runner + assertions (Stage 8) — *in progress*
+9. **Waveform output (Stage 9) — next**
 10. Diagnostics polish (Stage 10)
 11. Standard library cleanup (Stage 11)
 
@@ -169,7 +177,7 @@ The project is Phase-1 complete when it can:
 - [ ] Lower designs into digital simulation IR
 - [ ] Simulate combinational and sequential behavior
 - [ ] Support `::event` and `::old` on all digital/discrete values
-- [ ] Run `#[test]` entities
-- [ ] Evaluate assertions
+- [x] Run `#[test]` entities
+- [x] Evaluate assertions
 - [ ] Export waveforms
 - [~] Report useful diagnostics *(errors done; warnings pending)*
