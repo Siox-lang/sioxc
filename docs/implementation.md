@@ -19,7 +19,7 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-syntax`  | 1, 2 | 🟢 working | lexer, parser, AST, round-tripping pretty-printer |
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
 | `siox-types`   | 4    | 🟢 partial | type-inference core; Logic-condition, attr target/value, input-write, assignment/init compatibility, `::ddt` |
-| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution into port types, connections |
+| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
 | `siox-ir`      | 6    | 🔴 stub | |
 | `siox-sim`     | 7, 8 | 🔴 stub | |
 | `siox-wave`    | 9    | 🔴 stub | |
@@ -72,7 +72,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** instance hierarchy from `#[top]`/`#[test]` roots, parameter
   const-evaluation and substitution into concrete port types (`uint[W]` →
   `uint[8]`), `.clk`-shorthand connection resolution, missing-port (`E-P005`) and
-  unknown-port checks, extern black boxes, cycle detection, and `siox tree`.
+  unknown-port checks, **port-connection width checking** (a port's width must
+  match the signal it connects to, `E-P003`), extern black boxes, cycle
+  detection, and `siox tree`.
 - **Status (todo):** generated instances (loops/arrays), bus-mode leaf
   expansion, full direction analysis, and propagating concrete parameter widths
   down into instance signal types.

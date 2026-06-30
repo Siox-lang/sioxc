@@ -17,6 +17,7 @@
 //! direction analysis are noted as follow-ups.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
 use siox_syntax::ast::*;
@@ -35,6 +36,54 @@ pub enum ParamValue {
     Unknown,
 }
 
+/// An elaborated type with concrete widths substituted in. A width of `None`
+/// means "not yet known" (an unbound parameter). Bus/mode and generic types
+/// that don't carry a simple width are kept as a rendered `Other`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EType {
+    Bit,
+    Logic,
+    Bool,
+    Clock,
+    UInt(Option<u32>),
+    Int(Option<u32>),
+    Named(String),
+    Array { elem: Box<EType>, len: Option<u32> },
+    Other(String),
+}
+
+impl EType {
+    /// The bit width when it is meaningful and known (integers, vectors).
+    /// `Bit`/`Logic`/`Bool`/`Clock` return `None` so the width check only
+    /// compares actual bit-vector widths, not single-bit kinds.
+    pub fn width(&self) -> Option<u32> {
+        match self {
+            EType::UInt(w) | EType::Int(w) => *w,
+            EType::Array { len, .. } => *len,
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for EType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EType::Bit => write!(f, "Bit"),
+            EType::Logic => write!(f, "Logic"),
+            EType::Bool => write!(f, "Bool"),
+            EType::Clock => write!(f, "Clock"),
+            EType::UInt(None) => write!(f, "uint"),
+            EType::UInt(Some(w)) => write!(f, "uint[{w}]"),
+            EType::Int(None) => write!(f, "int"),
+            EType::Int(Some(w)) => write!(f, "int[{w}]"),
+            EType::Named(n) => write!(f, "{n}"),
+            EType::Array { elem, len: Some(l) } => write!(f, "{elem}[{l}]"),
+            EType::Array { elem, len: None } => write!(f, "{elem}[]"),
+            EType::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// One resolved port connection: `port` of the instance is driven by / drives
 /// the local `signal` in the parent. `ty` is the port's type after parameter
 /// substitution (e.g. `uint[W]` with `W=8` becomes `uint[8]`).
@@ -42,7 +91,7 @@ pub enum ParamValue {
 pub struct Connection {
     pub port: String,
     pub signal: String,
-    pub ty: String,
+    pub ty: EType,
 }
 
 /// One node in the elaborated instance tree.
@@ -189,6 +238,9 @@ impl<'a> Elaborator<'a> {
         let is_extern = self.entities.get(entity_name).map(|e| e.is_extern).unwrap_or(true);
         let specs = self.gather_instances(entity_name, is_extern);
         let env = param_env(&params);
+        // This instance's own signals (ports + impl lets), for width-checking the
+        // connections of the children it instantiates.
+        let parent_signals = self.entity_signals(entity_name, &env);
 
         stack.push(entity_name.to_string());
         let mut children = Vec::new();
@@ -202,6 +254,7 @@ impl<'a> Elaborator<'a> {
                 let cparams = eval_params(sub_decl, spec.ty, &env);
                 let child_env = param_env(&cparams);
                 let cconns = self.resolve_connections(sub_decl, spec.args, spec.site, &child_env);
+                self.check_widths(&parent_signals, &cconns, spec.site);
                 let child = self.build(&spec.name, sub, cparams, cconns, stack);
                 children.push(child);
             }
@@ -277,7 +330,7 @@ impl<'a> Elaborator<'a> {
                 None => arg.field.text.clone(),
                 Some(e) => render_signal(e),
             };
-            let ty = render_concrete(port_ty, env);
+            let ty = concrete_ty(port_ty, env);
             connected.insert(port.clone());
             conns.push(Connection { port, signal, ty });
         }
@@ -292,6 +345,55 @@ impl<'a> Elaborator<'a> {
             }
         }
         conns
+    }
+
+    /// The concrete types of an entity's own signals (ports + impl-level lets)
+    /// with `env` substituted, used to width-check the connections made to its
+    /// child instances.
+    fn entity_signals(&self, entity_name: &str, env: &HashMap<String, i64>) -> HashMap<String, EType> {
+        let mut sigs = HashMap::new();
+        if let Some(edecl) = self.entities.get(entity_name) {
+            for p in &edecl.ports {
+                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env));
+            }
+        }
+        if let Some(impls) = self.impls.get(entity_name) {
+            for im in impls {
+                for item in &im.items {
+                    if let ImplItem::Let(l) = item {
+                        if let Some(t) = &l.ty {
+                            sigs.insert(l.name.text.clone(), concrete_ty(t, env));
+                        }
+                    }
+                }
+            }
+        }
+        sigs
+    }
+
+    /// Report a width mismatch when a port and the local signal it connects to
+    /// have different, both-known widths (spec 3.17 / 3.18).
+    fn check_widths(
+        &mut self,
+        parent_signals: &HashMap<String, EType>,
+        conns: &[Connection],
+        site: Span,
+    ) {
+        for c in conns {
+            let Some(sig) = parent_signals.get(&c.signal) else { continue };
+            if let (Some(pw), Some(sw)) = (c.ty.width(), sig.width()) {
+                if pw != sw {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        site,
+                        format!(
+                            "width mismatch on port `{}`: the port is `{}` but `{}` is `{}`",
+                            c.port, c.ty, c.signal, sig
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     fn push(&mut self, inst: Instance) -> InstanceId {
@@ -385,6 +487,48 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
             _ => Unknown,
         },
         _ => Unknown,
+    }
+}
+
+/// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
+fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
+    match t {
+        Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
+            Some("Bit") => EType::Bit,
+            Some("Logic") => EType::Logic,
+            Some("Bool") => EType::Bool,
+            Some("Clock") => EType::Clock,
+            Some("uint") | Some("usize") => EType::UInt(None),
+            Some("int") => EType::Int(None),
+            Some(other) => EType::Named(other.to_string()),
+            None => EType::Other(String::new()),
+        },
+        Type::Indexed { base, index, .. } => {
+            let len = index_width(index, env);
+            match concrete_ty(base, env) {
+                EType::UInt(_) => EType::UInt(len),
+                EType::Int(_) => EType::Int(len),
+                elem => EType::Array { elem: Box::new(elem), len },
+            }
+        }
+        // Bus-mode and generic types don't carry a simple scalar width; keep a
+        // rendered form for display and skip width checking on them.
+        Type::Generic { .. } | Type::Mode { .. } => EType::Other(render_concrete(t, env)),
+    }
+}
+
+/// The bit width implied by a type index: a single value is the width itself
+/// (`uint[8]` -> 8); a descending/ascending range is its span (`[31..0]` -> 32).
+fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
+    if let Expr::Range { lo, hi, .. } = index {
+        if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
+            return Some((a - b).unsigned_abs() as u32 + 1);
+        }
+        return None;
+    }
+    match eval(index, env) {
+        ParamValue::Int(v) if v >= 0 => Some(v as u32),
+        _ => None,
     }
 }
 
@@ -567,7 +711,40 @@ mod tests {
         let dut = hier.instance(root.children[0]);
         // `count: uint[W]` with W=8 becomes `uint[8]`.
         let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
-        assert_eq!(count.ty, "uint[8]");
+        assert_eq!(count.ty, EType::UInt(Some(8)));
+    }
+
+    #[test]
+    fn connection_width_mismatch_is_reported() {
+        // Port `a` is uint[8] (W=8) but the local signal `a` is uint[4].
+        let src = "module m;\n\
+            entity Sub<W: usize> { in a: uint[W]; out b: uint[W]; }\n\
+            impl Sub<W: usize> { b = a; }\n\
+            #[top]\n\
+            entity Top {}\n\
+            impl Top {\n\
+              let a: uint[4];\n\
+              let b: uint[8];\n\
+              let dut = Sub<W = 8> { .a = a, .b = b };\n\
+            }\n";
+        let (_, errors) = elaborate_src(src);
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn matching_widths_are_fine() {
+        let src = "module m;\n\
+            entity Sub<W: usize> { in a: uint[W]; out b: uint[W]; }\n\
+            impl Sub<W: usize> { b = a; }\n\
+            #[top]\n\
+            entity Top {}\n\
+            impl Top {\n\
+              let a: uint[8];\n\
+              let b: uint[8];\n\
+              let dut = Sub<W = 8> { .a = a, .b = b };\n\
+            }\n";
+        let (_, errors) = elaborate_src(src);
+        assert_eq!(errors, 0);
     }
 
     #[test]
