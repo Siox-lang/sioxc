@@ -1158,6 +1158,7 @@ impl<'a> Parser<'a> {
 fn is_sysattr(name: &str) -> bool {
     matches!(
         name,
+        // Phase 1 digital + range attributes (spec 3.9 / 3.10 / 3.23).
         "event"
             | "old"
             | "rising"
@@ -1170,6 +1171,10 @@ fn is_sysattr(name: &str) -> bool {
             | "left"
             | "right"
             | "direction"
+            // `::ddt` is analogue (Phase 2); recognized only so it parses as a
+            // system attribute and can be rejected rather than silently accepted
+            // (spec Stage 4). The rest of the analogue set is a Phase-2 concern.
+            | "ddt"
     )
 }
 

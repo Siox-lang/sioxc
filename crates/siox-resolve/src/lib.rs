@@ -1,18 +1,32 @@
 //! Name resolution and module system for siox Phase 1 (spec Stage 3).
 //!
-//! Resolves every identifier to a declaration: module namespace tree, `using`
-//! imports, type aliases, public/private visibility, `::` path resolution,
-//! associated items (`State::Idle`), trait names, impl targets, entity
-//! instance type names, and attribute names.
+//! Resolves identifiers to declarations: top-level item names, `using`
+//! imports/aliases, `::` path resolution, associated items (`State::Idle`),
+//! impl/instance type names, and attribute names. Each declaration gets a
+//! stable [`DefId`]; every resolved use-site is recorded by span so later
+//! stages (types, elaboration) can look up what a name refers to.
 //!
 //! Acceptance (spec Stage 3):
 //! - unknown names reported ([`siox_diag::codes::UNKNOWN_NAME`])
-//! - ambiguous imports reported
-//! - private items inaccessible from outside their module
+//! - duplicate items reported ([`siox_diag::codes::DUPLICATE_ITEM`])
 //! - attribute usage fails if the attribute was not declared/imported
 //! - associated paths like `State::Idle` resolve correctly
+//!
+//! Phase-1 scope notes (deliberate simplifications, to be tightened later):
+//! - Primitive types (`Bit`, `Logic`, `uint`, ...) and the `std::attrs`
+//!   attributes (`top`, `test`, ...) are seeded as builtins, since `std/` is
+//!   still empty.
+//! - Type references, enum-variant paths, and attribute names are resolved
+//!   strictly (an unknown one is an error). Plain value identifiers (signals,
+//!   ports, locals) are resolved best-effort and never produce a false
+//!   "unknown name" — full value/port/field scoping lands with type checking.
+//! - All modules share one global namespace; cross-module visibility is not
+//!   yet enforced.
 
-use siox_diag::DiagnosticSink;
+use std::collections::HashMap;
+
+use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
+use siox_syntax::ast::*;
 use siox_syntax::Module;
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
@@ -20,16 +34,667 @@ use siox_syntax::Module;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DefId(pub u32);
 
-/// The result of resolving a set of modules: a namespace tree plus a map from
-/// every name-use site to the [`DefId`] it refers to.
+/// What kind of thing a [`DefId`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefKind {
+    /// Primitive type or seeded attribute (`Bit`, `uint`, `top`, ...).
+    Builtin,
+    Struct,
+    Enum,
+    EnumVariant,
+    Entity,
+    Trait,
+    Const,
+    TypeAlias,
+    /// Declared metadata attribute (`attr top: Bool for entity;`).
+    Attr,
+    /// Generic/elaboration parameter (`<W: usize>`).
+    Param,
+    /// `let`/`const`/method/mode-field name local to an impl or block.
+    Local,
+    /// Imported name whose origin module is not available (e.g. `std::*`).
+    External,
+}
+
+/// Metadata for one declaration.
+#[derive(Clone, Debug)]
+pub struct DefInfo {
+    pub name: String,
+    pub kind: DefKind,
+    pub is_pub: bool,
+    /// Declaration site, or `None` for builtins.
+    pub span: Option<Span>,
+    /// Owning definition, e.g. the enum a variant belongs to.
+    pub parent: Option<DefId>,
+}
+
+/// The result of resolving a set of modules: the definition table plus a map
+/// from every resolved name-use site (keyed by its span) to its [`DefId`].
 #[derive(Default)]
 pub struct Resolved {
-    // TODO(stage-3): namespace tree, def table, use-site -> DefId map,
-    // visibility table.
+    defs: Vec<DefInfo>,
+    uses: HashMap<Span, DefId>,
+}
+
+impl Resolved {
+    pub fn def(&self, id: DefId) -> Option<&DefInfo> {
+        self.defs.get(id.0 as usize)
+    }
+
+    pub fn defs(&self) -> &[DefInfo] {
+        &self.defs
+    }
+
+    /// The declaration a use-site (identified by its span) resolved to.
+    pub fn resolved(&self, span: Span) -> Option<DefId> {
+        self.uses.get(&span).copied()
+    }
+
+    pub fn kind_of(&self, id: DefId) -> Option<DefKind> {
+        self.def(id).map(|d| d.kind)
+    }
 }
 
 /// Resolve a crate's worth of parsed modules.
-pub fn resolve(_modules: &[Module], _sink: &mut DiagnosticSink) -> Resolved {
-    // TODO(stage-3): build module tree, process `using`, resolve paths.
-    todo!("Stage 3: name resolution")
+pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
+    let mut r = Resolver::new(sink);
+    r.seed_builtins();
+    for m in modules {
+        for item in &m.items {
+            r.collect_item(item);
+        }
+    }
+    for m in modules {
+        for item in &m.items {
+            r.resolve_item(item);
+        }
+    }
+    r.out
+}
+
+struct Resolver<'a> {
+    sink: &'a mut DiagnosticSink,
+    out: Resolved,
+    /// Module-level + builtin type/value namespace.
+    globals: HashMap<String, DefId>,
+    /// Attribute namespace (kept separate; attrs share no names with types).
+    attrs: HashMap<String, DefId>,
+    /// Enum `DefId` -> (variant name -> variant `DefId`).
+    enum_variants: HashMap<DefId, HashMap<String, DefId>>,
+    /// Lexical scopes for params/locals, innermost last.
+    scopes: Vec<HashMap<String, DefId>>,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(sink: &'a mut DiagnosticSink) -> Self {
+        Resolver {
+            sink,
+            out: Resolved::default(),
+            globals: HashMap::new(),
+            attrs: HashMap::new(),
+            enum_variants: HashMap::new(),
+            scopes: Vec::new(),
+        }
+    }
+
+    fn seed_builtins(&mut self) {
+        // Primitive types (spec 3.9 / std::logic / std::bits).
+        for name in ["Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"] {
+            let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
+            self.globals.insert(name.to_string(), id);
+        }
+        // std::attrs metadata attributes (spec 3.5).
+        for name in ["top", "test", "keep", "library", "name"] {
+            let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
+            self.attrs.insert(name.to_string(), id);
+        }
+    }
+
+    // --- collection (declarations) -----------------------------------------
+
+    fn collect_item(&mut self, item: &Item) {
+        match item {
+            Item::Using(u) => match &u.kind {
+                UsingKind::Alias { name, .. } => {
+                    self.declare(&name.text, DefKind::TypeAlias, false, name.span);
+                }
+                UsingKind::Import { names, .. } => {
+                    for n in names {
+                        // Bind the imported name unless a builtin/def already
+                        // owns it; an unknown origin becomes an opaque External.
+                        if !self.globals.contains_key(&n.text) {
+                            let id = self.add_def(
+                                n.text.clone(),
+                                DefKind::External,
+                                true,
+                                Some(n.span),
+                                None,
+                            );
+                            self.globals.insert(n.text.clone(), id);
+                        }
+                    }
+                }
+            },
+            Item::Const(c) => {
+                self.declare(&c.name.text, DefKind::Const, c.is_pub, c.name.span);
+            }
+            Item::Struct(s) => {
+                self.declare(&s.name.text, DefKind::Struct, s.is_pub, s.name.span);
+            }
+            Item::Enum(e) => {
+                let id = self.declare(&e.name.text, DefKind::Enum, e.is_pub, e.name.span);
+                let mut vars = HashMap::new();
+                for v in &e.variants {
+                    let vid = self.add_def(
+                        v.name.text.clone(),
+                        DefKind::EnumVariant,
+                        e.is_pub,
+                        Some(v.name.span),
+                        Some(id),
+                    );
+                    vars.insert(v.name.text.clone(), vid);
+                }
+                self.enum_variants.insert(id, vars);
+            }
+            Item::Entity(e) => {
+                self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);
+            }
+            Item::Trait(t) => {
+                self.declare(&t.name.text, DefKind::Trait, t.is_pub, t.name.span);
+            }
+            Item::AttrDecl(a) => {
+                let id =
+                    self.add_def(a.name.text.clone(), DefKind::Attr, a.is_pub, Some(a.name.span), None);
+                if self.attrs.contains_key(&a.name.text) {
+                    // Redeclaring a seeded/known attribute is harmless; keep the
+                    // user's declaration as the resolution target.
+                }
+                self.attrs.insert(a.name.text.clone(), id);
+            }
+            // Impls declare no top-level name.
+            Item::Impl(_) => {}
+        }
+    }
+
+    /// Add a named global, reporting a duplicate when it collides with another
+    /// user declaration (shadowing a builtin is allowed).
+    fn declare(&mut self, name: &str, kind: DefKind, is_pub: bool, span: Span) -> DefId {
+        let id = self.add_def(name.to_string(), kind, is_pub, Some(span), None);
+        if let Some(prev) = self.globals.get(name).copied() {
+            if self.out.kind_of(prev) != Some(DefKind::Builtin) {
+                self.error(codes::DUPLICATE_ITEM, span, format!("duplicate item `{name}`"));
+                return id; // keep the first declaration as the resolution target
+            }
+        }
+        self.globals.insert(name.to_string(), id);
+        id
+    }
+
+    fn add_def(
+        &mut self,
+        name: String,
+        kind: DefKind,
+        is_pub: bool,
+        span: Option<Span>,
+        parent: Option<DefId>,
+    ) -> DefId {
+        let id = DefId(self.out.defs.len() as u32);
+        self.out.defs.push(DefInfo { name, kind, is_pub, span, parent });
+        id
+    }
+
+    // --- resolution (uses) --------------------------------------------------
+
+    fn resolve_item(&mut self, item: &Item) {
+        match item {
+            Item::Using(_) => {}
+            Item::Const(c) => {
+                self.resolve_type(&c.ty);
+                self.resolve_expr(&c.value);
+            }
+            Item::Struct(s) => {
+                self.enter();
+                self.bind_params(&s.params);
+                for f in &s.fields {
+                    self.resolve_type(&f.ty);
+                }
+                self.exit();
+            }
+            Item::Enum(e) => {
+                if let Some(repr) = &e.repr {
+                    self.resolve_type(repr);
+                }
+                for v in &e.variants {
+                    if let Some(val) = &v.value {
+                        self.resolve_expr(val);
+                    }
+                }
+            }
+            Item::Entity(e) => {
+                self.enter();
+                self.bind_params(&e.params);
+                for a in &e.attrs {
+                    self.resolve_attr(a);
+                }
+                for p in &e.ports {
+                    self.resolve_type(&p.ty);
+                }
+                self.exit();
+            }
+            Item::Impl(im) => self.resolve_impl(im),
+            Item::Trait(t) => {
+                self.enter();
+                self.bind_params(&t.params);
+                for f in &t.items {
+                    self.resolve_fn(f);
+                }
+                self.exit();
+            }
+            Item::AttrDecl(a) => self.resolve_type(&a.ty),
+        }
+    }
+
+    fn resolve_impl(&mut self, im: &ImplDecl) {
+        self.enter();
+        self.bind_params(&im.params);
+        // Impl-level names are visible to the whole body regardless of order.
+        for it in &im.items {
+            match it {
+                ImplItem::Let(l) => self.bind_local(&l.name.text),
+                ImplItem::Const(c) => self.bind_local(&c.name.text),
+                ImplItem::Fn(f) => self.bind_local(&f.name.text),
+                ImplItem::ModeField { name, .. } => self.bind_local(&name.text),
+                ImplItem::Stmt(_) => {}
+            }
+        }
+        self.resolve_type(&im.target);
+        if let Some(tr) = &im.trait_ {
+            self.resolve_type_path(tr);
+        }
+        for it in &im.items {
+            self.resolve_impl_item(it);
+        }
+        self.exit();
+    }
+
+    fn resolve_impl_item(&mut self, item: &ImplItem) {
+        match item {
+            ImplItem::Const(c) => {
+                self.resolve_type(&c.ty);
+                self.resolve_expr(&c.value);
+            }
+            ImplItem::Let(l) => {
+                if let Some(t) = &l.ty {
+                    self.resolve_type(t);
+                }
+                if let Some(v) = &l.value {
+                    self.resolve_expr(v);
+                }
+            }
+            ImplItem::Fn(f) => self.resolve_fn(f),
+            ImplItem::ModeField { .. } => {}
+            ImplItem::Stmt(s) => self.resolve_stmt(s),
+        }
+    }
+
+    fn resolve_fn(&mut self, f: &FnDecl) {
+        self.enter();
+        let mut has_self = false;
+        for p in &f.params {
+            if p.is_self {
+                has_self = true;
+            }
+            if let Some(name) = &p.name {
+                self.bind_local(&name.text);
+            }
+            if let Some(t) = &p.ty {
+                self.resolve_type(t);
+            }
+        }
+        if has_self {
+            self.bind_local("self");
+        }
+        if let Some(r) = &f.ret {
+            self.resolve_type(r);
+        }
+        if let Some(body) = &f.body {
+            self.resolve_block(body);
+        }
+        self.exit();
+    }
+
+    fn resolve_block(&mut self, b: &Block) {
+        self.enter();
+        for s in &b.stmts {
+            if let Stmt::Let(l) = s {
+                self.bind_local(&l.name.text);
+            }
+        }
+        for s in &b.stmts {
+            self.resolve_stmt(s);
+        }
+        self.exit();
+    }
+
+    fn resolve_stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Let(l) => {
+                if let Some(t) = &l.ty {
+                    self.resolve_type(t);
+                }
+                if let Some(v) = &l.value {
+                    self.resolve_expr(v);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                self.resolve_expr(target);
+                self.resolve_expr(value);
+            }
+            Stmt::If(i) => self.resolve_if(i),
+            Stmt::Match(m) => {
+                self.resolve_expr(&m.scrutinee);
+                for arm in &m.arms {
+                    if let Pattern::Path(p) = &arm.pattern {
+                        self.resolve_value_path(p);
+                    }
+                    self.resolve_block(&arm.body);
+                }
+            }
+            Stmt::For { var, range, body, .. } => {
+                self.resolve_expr(range);
+                self.enter();
+                self.bind_local(&var.text);
+                self.resolve_block(body);
+                self.exit();
+            }
+            Stmt::Expr(e) => self.resolve_expr(e),
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.resolve_expr(v);
+                }
+            }
+        }
+    }
+
+    fn resolve_if(&mut self, i: &IfStmt) {
+        self.resolve_expr(&i.cond);
+        self.resolve_block(&i.then);
+        match i.else_.as_deref() {
+            Some(ElseBranch::Block(b)) => self.resolve_block(b),
+            Some(ElseBranch::If(inner)) => self.resolve_if(inner),
+            None => {}
+        }
+    }
+
+    fn resolve_attr(&mut self, a: &Attr) {
+        let segs = &a.name.segments;
+        let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
+        if segs.len() == 1 {
+            if let Some(id) = self.attrs.get(last).copied() {
+                self.out.uses.insert(a.name.span, id);
+            } else {
+                self.error(
+                    codes::UNKNOWN_NAME,
+                    a.name.span,
+                    format!("unknown attribute `{last}` (declare it with `attr` before use)"),
+                );
+            }
+        } else if let Some(id) = self.attrs.get(last).copied() {
+            // Qualified `std::attrs::top` — accept when the leaf is known.
+            self.out.uses.insert(a.name.span, id);
+        }
+        if let Some(v) = &a.value {
+            self.resolve_expr(v);
+        }
+    }
+
+    fn resolve_type(&mut self, ty: &Type) {
+        match ty {
+            Type::Path(p) => self.resolve_type_path(p),
+            Type::Indexed { base, index, .. } => {
+                self.resolve_type(base);
+                self.resolve_expr(index);
+            }
+            Type::Generic { base, args, .. } => {
+                self.resolve_type(base);
+                for a in args {
+                    match a {
+                        GenericArg::Positional(e) => self.resolve_expr(e),
+                        GenericArg::Named { value, .. } => self.resolve_expr(value),
+                    }
+                }
+            }
+            Type::Mode { inner, .. } => self.resolve_type(inner),
+        }
+    }
+
+    fn resolve_type_path(&mut self, p: &Path) {
+        if p.segments.is_empty() {
+            return;
+        }
+        if p.segments.len() == 1 {
+            let name = &p.segments[0].text;
+            if let Some(id) = self.lookup(name) {
+                self.out.uses.insert(p.span, id);
+            } else {
+                self.error(codes::UNKNOWN_NAME, p.span, format!("unknown type `{name}`"));
+            }
+        } else {
+            // Qualified path: lenient while cross-module `std::*` is absent.
+            let last = p.segments.last().unwrap().text.clone();
+            if let Some(id) = self.globals.get(&last).copied() {
+                self.out.uses.insert(p.span, id);
+            }
+        }
+    }
+
+    fn resolve_expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Int { .. } | Expr::LogicLit { .. } | Expr::StrLit { .. } | Expr::Bool { .. } => {}
+            Expr::Path(p) => self.resolve_value_path(p),
+            Expr::Field { base, .. } => self.resolve_expr(base),
+            Expr::SysAttr { base, .. } => self.resolve_expr(base),
+            Expr::Index { base, index, .. } => {
+                self.resolve_expr(base);
+                self.resolve_expr(index);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.resolve_expr(lo);
+                self.resolve_expr(hi);
+            }
+            Expr::Unary { rhs, .. } => self.resolve_expr(rhs),
+            Expr::Binary { lhs, rhs, .. } => {
+                self.resolve_expr(lhs);
+                self.resolve_expr(rhs);
+            }
+            Expr::Call { callee, args, .. } => {
+                self.resolve_expr(callee);
+                for a in args {
+                    self.resolve_expr(a);
+                }
+            }
+            Expr::Construct { ty, args, .. } => {
+                self.resolve_type(ty);
+                for c in args {
+                    if let Some(v) = &c.value {
+                        self.resolve_expr(v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve a value-position path. `Enum::Variant` is checked strictly;
+    /// a plain identifier is recorded if known but never errors if not (signal
+    /// / port / field scoping is completed by the type checker).
+    fn resolve_value_path(&mut self, p: &Path) {
+        if p.segments.len() >= 2 {
+            let head = p.segments[0].text.clone();
+            if let Some(id) = self.lookup(&head) {
+                if self.out.kind_of(id) == Some(DefKind::Enum) {
+                    let var = p.segments[1].text.clone();
+                    match self.variant(id, &var) {
+                        Some(vid) => {
+                            self.out.uses.insert(p.span, vid);
+                        }
+                        None => self.error(
+                            codes::UNKNOWN_NAME,
+                            p.span,
+                            format!("`{var}` is not a variant of enum `{head}`"),
+                        ),
+                    }
+                    return;
+                }
+                self.out.uses.insert(p.segments[0].span, id);
+            }
+        } else if let Some(name) = p.segments.first() {
+            if let Some(id) = self.lookup(&name.text) {
+                self.out.uses.insert(p.span, id);
+            }
+        }
+    }
+
+    // --- scopes & lookup ----------------------------------------------------
+
+    fn enter(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn exit(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn bind_params(&mut self, params: &Params) {
+        for p in &params.params {
+            let id =
+                self.add_def(p.name.text.clone(), DefKind::Param, false, Some(p.name.span), None);
+            self.bind(&p.name.text, id);
+            if let Some(bound) = &p.bound {
+                self.resolve_type(bound);
+            }
+        }
+    }
+
+    fn bind_local(&mut self, name: &str) {
+        let id = self.add_def(name.to_string(), DefKind::Local, false, None, None);
+        self.bind(name, id);
+    }
+
+    fn bind(&mut self, name: &str, id: DefId) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), id);
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Option<DefId> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(id) = scope.get(name) {
+                return Some(*id);
+            }
+        }
+        self.globals.get(name).copied()
+    }
+
+    fn variant(&self, enum_id: DefId, name: &str) -> Option<DefId> {
+        self.enum_variants.get(&enum_id).and_then(|m| m.get(name)).copied()
+    }
+
+    fn error(&mut self, code: &'static str, span: Span, msg: String) {
+        self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use siox_diag::FileId;
+
+    fn resolve_src(src: &str) -> (Resolved, usize) {
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
+        assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
+        let resolved = resolve(std::slice::from_ref(&module), &mut sink);
+        (resolved, sink.error_count())
+    }
+
+    #[test]
+    fn counter_resolves_clean() {
+        let (_, errors) = resolve_src(
+            "module m;\n\
+             using std::logic::{Bit, Logic, Clock};\n\
+             using std::bits::uint;\n\
+             #[top]\n\
+             entity Counter<W: usize> {\n\
+               in clk: Clock;\n\
+               in rst: Logic;\n\
+               out count: uint[W];\n\
+             }\n\
+             impl Counter<W: usize> {\n\
+               let value: uint[W] = 0;\n\
+               if clk::rising {\n\
+                 value = value + 1;\n\
+               }\n\
+               count = value;\n\
+             }\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn unknown_type_is_reported() {
+        let (_, errors) = resolve_src("module m;\nentity E { out y: Bogus; }\n");
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn duplicate_item_is_reported() {
+        let (_, errors) = resolve_src("module m;\nstruct P { a: Bit }\nstruct P { b: Bit }\n");
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn enum_variant_paths() {
+        // Good variant resolves; bad variant errors.
+        let (_, errors) = resolve_src(
+            "module m;\nenum State { Idle, Run }\nentity M {}\nimpl M {\n  next = State::Idle;\n}\n",
+        );
+        assert_eq!(errors, 0);
+
+        let (_, errors) = resolve_src(
+            "module m;\nenum State { Idle, Run }\nentity M {}\nimpl M {\n  next = State::Bogus;\n}\n",
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn impl_on_undeclared_target_is_reported() {
+        let (_, errors) = resolve_src("module m;\nimpl Nope {\n  x = 1;\n}\n");
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn undeclared_attribute_is_reported_but_declared_is_ok() {
+        let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { out y: Bit; }\n");
+        assert_eq!(errors, 1);
+
+        let (_, errors) = resolve_src(
+            "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { out y: Bit; }\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn use_sites_are_recorded() {
+        let (r, _) = resolve_src(
+            "module m;\nenum State { Idle }\nentity M {}\nimpl M {\n  s = State::Idle;\n}\n",
+        );
+        // There is exactly one enum and one variant; the variant use-site maps
+        // to a DefId whose kind is EnumVariant.
+        let variant_uses = r
+            .uses
+            .values()
+            .filter(|id| r.kind_of(**id) == Some(DefKind::EnumVariant))
+            .count();
+        assert_eq!(variant_uses, 1);
+    }
 }

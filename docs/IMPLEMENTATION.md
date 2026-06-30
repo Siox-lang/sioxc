@@ -20,15 +20,15 @@ only on the ones above it (plus `siox-diag`, which everything uses).
 
 | Crate          | Spec stage(s) | Responsibility                                            | Status |
 | -------------- | ------------- | -------------------------------------------------------- | ------ |
-| `siox-diag`    | 10            | Spans, source map, diagnostics, error-code catalogue      | 🟡 skeleton |
-| `siox-syntax`  | 1, 2          | Lexer, tokens, AST, parser, pretty-printer                | 🟡 skeleton |
-| `siox-resolve` | 3             | Module tree, `using` imports/aliases, path resolution     | 🔴 stub |
-| `siox-types`   | 4             | Type/kind checking, system-attribute typing               | 🔴 stub |
+| `siox-diag`    | 10            | Spans, source map, diagnostics, error-code catalogue      | 🟢 working |
+| `siox-syntax`  | 1, 2          | Lexer, tokens, AST, parser, pretty-printer                | 🟢 working |
+| `siox-resolve` | 3             | Module tree, `using` imports/aliases, path resolution     | 🟢 working |
+| `siox-types`   | 4             | Type/kind checking, system-attribute typing               | 🟢 working (partial) |
 | `siox-elab`    | 5             | Entity specialization, instance hierarchy, bus modes      | 🔴 stub |
 | `siox-ir`      | 6             | Digital simulation IR (drivers, event blocks, next-state) | 🔴 stub |
 | `siox-sim`     | 7, 8          | Event-driven delta-cycle simulator, test runner           | 🔴 stub |
 | `siox-wave`    | 9             | VCD (later FST) waveform export                            | 🔴 stub |
-| `siox-cli`     | 12            | `siox` binary: `check/parse/sim/test/ast/ir/tree`         | 🟡 skeleton |
+| `siox-cli`     | 12            | `siox` binary: `check/parse/sim/test/ast/ir/tree/tokens`  | 🟢 working (parse/check) |
 
 Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) ·
 🟢 working · ✅ done with acceptance tests.

@@ -16,7 +16,7 @@ pub struct FileId(pub u32);
 /// A byte range within a single source file.
 ///
 /// Spans are half-open `[start, end)` byte offsets, mirroring `&str` slicing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,

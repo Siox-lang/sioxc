@@ -97,13 +97,7 @@ fn main() -> ExitCode {
             }
             Err(code) => code,
         },
-        Command::Check { file, .. } => run_then_report(
-            &file,
-            &[
-                Pending { stage: 3, name: "resolve", krate: "siox-resolve" },
-                Pending { stage: 4, name: "typecheck", krate: "siox-types" },
-            ],
-        ),
+        Command::Check { file, verbose } => cmd_check(&file, verbose),
         Command::Sim { file, wave } => {
             let mut stages = vec![
                 Pending { stage: 5, name: "elaborate", krate: "siox-elab" },
@@ -137,15 +131,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// The successful result of the (currently implemented) compiler frontend.
-struct Frontend {
+/// Everything the frontend produces, with diagnostics not yet rendered so a
+/// caller can keep running later stages on the same sink.
+struct FrontendOut {
+    sources: SourceMap,
     module: Module,
+    sink: DiagnosticSink,
 }
 
-/// Read, lex and parse a file. With `trace`, narrates each step to stderr.
-/// Renders diagnostics; `Err` carries a failure exit code on read or parse
-/// errors so callers can short-circuit.
-fn run_frontend(path: &Path, trace: bool) -> Result<Frontend, ExitCode> {
+/// Read, lex and parse a file. With `trace`, narrates the lex/parse steps to
+/// stderr. Does not render diagnostics — the caller decides when. `Err` only on
+/// a read failure.
+fn lex_parse(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -158,35 +155,77 @@ fn run_frontend(path: &Path, trace: bool) -> Result<Frontend, ExitCode> {
     let file = sources.add(path.display().to_string(), src.clone());
     let mut sink = DiagnosticSink::new();
 
-    // Stage 2a — lex.
     if trace {
-        eprintln!("== stage 1/2: lex ({}) ==", path.display());
+        eprintln!("== lex ({}) ==", path.display());
     }
     let tokens = Lexer::new(file, &src).tokenize(&mut sink);
     if trace {
         let trivia = tokens.iter().filter(|t| t.kind == TokenKind::Comment).count();
         eprintln!("   {} tokens ({} comment trivia)", tokens.len(), trivia);
         dump_tokens(&src, &tokens);
-    }
-
-    // Stage 2b — parse.
-    if trace {
-        eprintln!("\n== stage 2/2: parse ==");
+        eprintln!("\n== parse ==");
     }
     let module = parser::Parser::new(&src, tokens, &mut sink).parse_module();
     if trace {
         dump_items(&module);
     }
 
-    render_diagnostics(&sources, &sink);
-    if sink.has_errors() {
-        eprintln!("\nfrontend failed: {} error(s)", sink.error_count());
+    Ok(FrontendOut { sources, module, sink })
+}
+
+/// Lex + parse, then render diagnostics and fail on parse errors. Used by the
+/// commands whose later stages are still stubs.
+fn run_frontend(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
+    let fe = lex_parse(path, trace)?;
+    render_diagnostics(&fe.sources, &fe.sink);
+    if fe.sink.has_errors() {
+        eprintln!("\nfrontend failed: {} error(s)", fe.sink.error_count());
         return Err(ExitCode::FAILURE);
     }
     if trace {
-        eprintln!("\nfrontend ok: {} item(s) parsed", module.items.len());
+        eprintln!("\nfrontend ok: {} item(s) parsed", fe.module.items.len());
     }
-    Ok(Frontend { module })
+    Ok(fe)
+}
+
+/// `siox check`: parse -> resolve -> typecheck, narrating each stage. `-v` adds
+/// the token/item dump from the frontend.
+fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
+    let mut fe = match lex_parse(path, verbose) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+
+    if fe.sink.has_errors() {
+        render_diagnostics(&fe.sources, &fe.sink);
+        eprintln!("\nparse failed: {} error(s); resolve/typecheck skipped", fe.sink.error_count());
+        return ExitCode::FAILURE;
+    }
+    eprintln!("== stage 2: parse == {} item(s)", fe.module.items.len());
+
+    let modules = std::slice::from_ref(&fe.module);
+
+    let before = fe.sink.error_count();
+    let resolved = siox_resolve::resolve(modules, &mut fe.sink);
+    eprintln!(
+        "== stage 3: resolve == {} definitions, {} diagnostic(s)",
+        resolved.defs().len(),
+        fe.sink.error_count() - before
+    );
+
+    let before = fe.sink.error_count();
+    let _typed = siox_types::check(modules, &resolved, &mut fe.sink);
+    eprintln!("== stage 4: typecheck == {} diagnostic(s)", fe.sink.error_count() - before);
+
+    eprintln!();
+    render_diagnostics(&fe.sources, &fe.sink);
+    if fe.sink.has_errors() {
+        eprintln!("\ncheck failed: {} error(s)", fe.sink.error_count());
+        ExitCode::FAILURE
+    } else {
+        eprintln!("check ok");
+        ExitCode::SUCCESS
+    }
 }
 
 /// Run the frontend (always traced), then report the still-unimplemented
