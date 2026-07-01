@@ -167,7 +167,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   Bit/Logic/Bool/Clock + LOW/HIGH), `std::bits` (uint/int as derived Logic
   vectors, docs), `std::ops` (the `Boolean` condition trait, `as_bool ->
   integer`, 1 = true — no longer seeded), `std::attrs` (the five system
-  attributes), `std::assert` (`Severity`), `std::sim` (FS..MS time constants).
+  attributes), `std::assert` (`Severity`), `std::sim` (FS..MS time constants),
+  `std::math` (`Complex` with `"+"`/`"-"` operator impls, exercised by
+  `examples/complex_test.siox`; operator traits declared in `std::ops` and
+  imported by quoted name).
   The kernel's base types are only `integer` and `real` (spec "type kernel");
   the checker/IR still recognize the std::logic/std::bits names intrinsically
   as a shim until operator overloading carries their semantics in source.

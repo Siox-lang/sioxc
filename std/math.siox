@@ -1,0 +1,23 @@
+module std::math;
+
+using std::bits::{int};
+using std::ops::{"+", "-"};
+
+// Complex fixed-point value (modelled on ieee.math_complex). Component
+// widths are 16-bit signed; parameterized widths come with generic structs.
+pub struct Complex {
+    re: int[16],
+    im: int[16],
+}
+
+impl "+" for Complex {
+    fn apply(self, rhs: Complex) -> Complex {
+        return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
+    }
+}
+
+impl "-" for Complex {
+    fn apply(self, rhs: Complex) -> Complex {
+        return Complex { .re = self.re - rhs.re, .im = self.im - rhs.im };
+    }
+}

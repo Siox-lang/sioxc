@@ -14,6 +14,26 @@ using std::logic::{Bit, Bool};
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
 
+// Arithmetic operator traits (spec 3.25). A type opts into an operator by
+// implementing the trait; the impl body is inlined at lowering into the IR.
+// Import them by their quoted name: `using std::ops::{"+", "-"};`.
+
+pub trait "+" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "-" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "*" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "/" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
 pub trait Boolean {
     fn as_bool(self) -> integer;
 }

@@ -63,7 +63,8 @@ impl Printer {
     fn using(&mut self, u: &Using) {
         let s = match &u.kind {
             UsingKind::Import { base, names } => {
-                let names = names.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join(", ");
+                let names =
+                    names.iter().map(|n| trait_name_str(&n.text)).collect::<Vec<_>>().join(", ");
                 if base.segments.is_empty() {
                     format!("using {names};")
                 } else {

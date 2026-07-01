@@ -1730,6 +1730,8 @@ Suggested initial modules:
 ```text
 std::logic
 std::bits
+std::ops
+std::math
 std::attrs
 std::sim
 std::assert

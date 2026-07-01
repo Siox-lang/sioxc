@@ -171,6 +171,43 @@ struct Lowering<'a> {
     locals: HashMap<String, SignalId>,
     /// Local name -> its enum type name (operator-impl operands).
     local_enum: HashMap<String, String>,
+    /// Local name -> its struct type name (multi-signal operands/targets).
+    local_struct: HashMap<String, String>,
+}
+
+/// A lowered value: a scalar expression, or one expression per struct field
+/// (a struct-typed value has no single-signal representation).
+#[derive(Clone, Debug)]
+enum Val {
+    Scalar(Expr),
+    Fields(Vec<(String, Expr)>),
+}
+
+/// `cond ? then : els` over values; struct values select per field.
+fn select_val(cond: Expr, then: Val, els: Val) -> Val {
+    match (then, els) {
+        (Val::Scalar(t), Val::Scalar(e)) => Val::Scalar(Expr::Select {
+            cond: Box::new(cond),
+            then: Box::new(t),
+            els: Box::new(e),
+        }),
+        (Val::Fields(ts), Val::Fields(es)) => Val::Fields(
+            ts.into_iter()
+                .map(|(name, t)| {
+                    let e = es
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or(Expr::Unknown);
+                    (
+                        name,
+                        Expr::Select { cond: Box::new(cond.clone()), then: Box::new(t), els: Box::new(e) },
+                    )
+                })
+                .collect(),
+        ),
+        _ => Val::Scalar(Expr::Unknown),
+    }
 }
 
 impl<'a> Lowering<'a> {
@@ -187,6 +224,7 @@ impl<'a> Lowering<'a> {
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
+            local_struct: HashMap::new(),
         }
     }
 
@@ -237,6 +275,7 @@ impl<'a> Lowering<'a> {
         let env = self.entity_params.get(name).cloned().unwrap_or_default();
         self.locals.clear();
         self.local_enum.clear();
+        self.local_struct.clear();
         for p in &edecl.ports {
             self.add_typed_signal(name, &p.name.text, &p.ty, &env);
         }
@@ -275,6 +314,9 @@ impl<'a> Lowering<'a> {
     /// (`uint[8]`) stays a single scalar signal.
     fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
         if let Some(fields) = self.struct_fields(ty) {
+            if let ast::Type::Path(p) = ty {
+                self.local_struct.insert(name.to_string(), p.segments[0].text.clone());
+            }
             for (fname, fty) in fields {
                 self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
             }
@@ -319,6 +361,24 @@ impl<'a> Lowering<'a> {
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         match stmt {
             ast::Stmt::Assign { target, value, .. } => {
+                // A struct-typed target takes one driver per flattened field
+                // (struct copy, struct literal, or an inlined operator impl).
+                if let Some(tpath) = expr_path(target) {
+                    if self.local_struct.contains_key(&tpath) {
+                        if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
+                            for (fname, expr) in fields {
+                                if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
+                                    self.out.drivers.push(Driver {
+                                        target: sig,
+                                        cond: cond.clone(),
+                                        expr,
+                                    });
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.lower_expr(value);
                     self.out.drivers.push(Driver { target, cond, expr });
@@ -522,12 +582,14 @@ impl<'a> Lowering<'a> {
                 Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr(rhs)) }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
-                // An operator on an enum-typed operand inlines its
+                // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
                 // built-in discriminant comparison.
                 let op_str = siox_syntax::pretty::bin_op(*op);
                 if !matches!(op_str, "==" | "!=") {
-                    if let Some(inlined) = self.inline_op(op_str, lhs, rhs) {
+                    if let Some(Val::Scalar(inlined)) =
+                        self.inline_op(op_str, lhs, rhs, &HashMap::new())
+                    {
                         return inlined;
                     }
                 }
@@ -586,35 +648,43 @@ impl<'a> Lowering<'a> {
     }
 
     /// Inline the operator-trait impl body for `lhs OP rhs` when the left
-    /// operand is an enum-typed local with a matching impl. The body must be a
-    /// pure expression tree: `return e;` or `if c { .. } else { .. }` chains
-    /// ending in returns (which become [`Expr::Select`]). `None` falls back to
-    /// the built-in operator lowering.
-    // ponytail: enum operands only — struct operands (Complex) need
-    // multi-signal values; loops/match in bodies unsupported until needed.
-    fn inline_op(&self, op: &str, lhs: &ast::Expr, rhs: &ast::Expr) -> Option<Expr> {
-        let ty = expr_path(lhs).and_then(|p| self.local_enum.get(&p))?;
+    /// operand is an enum- or struct-typed local with a matching impl. The
+    /// body must be a pure expression tree: `return e;` or `if c { .. } else
+    /// { .. }` chains ending in returns (which become [`Expr::Select`], per
+    /// field for struct values). `None` falls back to built-in lowering.
+    // ponytail: operand types come from the outer locals, so `self + rhs`
+    // nested *inside* an impl body doesn't re-inline; loops/match in bodies
+    // unsupported until needed.
+    fn inline_op(
+        &self,
+        op: &str,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let p = expr_path(lhs)?;
+        let ty = self.local_enum.get(&p).or_else(|| self.local_struct.get(&p))?;
         let f = self.op_impls.get(&(op.to_string(), ty.clone())).copied()?;
         let body = f.body.as_ref()?;
 
         // Bind `self` to the left operand and the first named param to the right.
-        let mut env: HashMap<String, Expr> = HashMap::new();
-        env.insert("self".to_string(), self.lower_expr(lhs));
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
-                env.insert(n.text.clone(), self.lower_expr(rhs));
+                fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
             }
         }
-        self.inline_block(&body.stmts, &env)
+        self.inline_block(&body.stmts, &fenv)
     }
 
     /// The value a straight-line `return`/`if-else` block produces, or `None`
     /// if the block has statements the inliner cannot express as a value.
-    fn inline_block(&self, stmts: &[ast::Stmt], env: &HashMap<String, Expr>) -> Option<Expr> {
+    fn inline_block(&self, stmts: &[ast::Stmt], env: &HashMap<String, Val>) -> Option<Val> {
         match stmts {
-            [ast::Stmt::Return { value: Some(v), .. }, ..] => Some(self.lower_expr_env(v, env)),
+            [ast::Stmt::Return { value: Some(v), .. }, ..] => Some(self.lower_val_env(v, env)),
             [ast::Stmt::If(iff), rest @ ..] => {
-                let cond = self.lower_expr_env(&iff.cond, env);
+                let cond = self.lower_scalar_env(&iff.cond, env);
                 let then = self.inline_block(&iff.then.stmts, env)?;
                 // The else value: an explicit else branch, or the statements
                 // after the if.
@@ -627,32 +697,106 @@ impl<'a> Lowering<'a> {
                     },
                     None => self.inline_block(rest, env)?,
                 };
-                Some(Expr::Select { cond: Box::new(cond), then: Box::new(then), els: Box::new(els) })
+                Some(select_val(cond, then, els))
             }
             _ => None,
         }
     }
 
-    /// [`Self::lower_expr`] with substitution: single-segment paths bound in
-    /// `env` (fn parameters) take their bound value.
-    fn lower_expr_env(&self, e: &ast::Expr, env: &HashMap<String, Expr>) -> Expr {
+    /// Lower an expression to a [`Val`], with fn parameters substituted from
+    /// `env`. Struct-typed locals and struct literals become per-field values.
+    fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
-                if let Some(v) = env.get(&p.segments[0].text) {
+                let name = &p.segments[0].text;
+                if let Some(v) = env.get(name) {
                     return v.clone();
                 }
-                self.lower_expr(e)
+                if let Some(v) = self.struct_local_val(name) {
+                    return v;
+                }
+                Val::Scalar(self.lower_expr(e))
             }
-            ast::Expr::Binary { op, lhs, rhs, .. } => Expr::Binary {
-                op: lower_binop(*op),
-                lhs: Box::new(self.lower_expr_env(lhs, env)),
-                rhs: Box::new(self.lower_expr_env(rhs, env)),
-            },
-            ast::Expr::Unary { op, rhs, .. } => {
-                Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr_env(rhs, env)) }
+            // `self.re` where `self` is an env-bound struct value.
+            ast::Expr::Field { base, field, .. } => {
+                if let ast::Expr::Path(p) = base.as_ref() {
+                    if p.segments.len() == 1 {
+                        if let Some(Val::Fields(fs)) = env.get(&p.segments[0].text) {
+                            let v = fs
+                                .iter()
+                                .find(|(n, _)| *n == field.text)
+                                .map(|(_, e)| e.clone())
+                                .unwrap_or(Expr::Unknown);
+                            return Val::Scalar(v);
+                        }
+                    }
+                }
+                Val::Scalar(self.lower_expr(e))
             }
-            _ => self.lower_expr(e),
+            // A struct literal (named or name-less): one value per field.
+            // `.re` shorthand means `.re = re`.
+            ast::Expr::Construct { args, .. } => Val::Fields(
+                args.iter()
+                    .map(|a| {
+                        let v = match &a.value {
+                            Some(v) => self.lower_scalar_env(v, env),
+                            None => match env.get(&a.field.text) {
+                                Some(Val::Scalar(e)) => e.clone(),
+                                _ => self
+                                    .locals
+                                    .get(&a.field.text)
+                                    .map(|&id| Expr::Current(id))
+                                    .unwrap_or(Expr::Unknown),
+                            },
+                        };
+                        (a.field.text.clone(), v)
+                    })
+                    .collect(),
+            ),
+            ast::Expr::Binary { op, lhs, rhs, .. } => {
+                let op_str = siox_syntax::pretty::bin_op(*op);
+                if !matches!(op_str, "==" | "!=") {
+                    if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
+                        return v;
+                    }
+                }
+                Val::Scalar(Expr::Binary {
+                    op: lower_binop(*op),
+                    lhs: Box::new(self.lower_scalar_env(lhs, env)),
+                    rhs: Box::new(self.lower_scalar_env(rhs, env)),
+                })
+            }
+            ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
+                op: lower_unop(*op),
+                rhs: Box::new(self.lower_scalar_env(rhs, env)),
+            }),
+            _ => Val::Scalar(self.lower_expr(e)),
         }
+    }
+
+    fn lower_scalar_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Expr {
+        match self.lower_val_env(e, env) {
+            Val::Scalar(e) => e,
+            Val::Fields(_) => Expr::Unknown, // a struct value has no scalar context
+        }
+    }
+
+    /// The per-field value of a struct-typed local (`p` -> `p.re`, `p.im`).
+    fn struct_local_val(&self, name: &str) -> Option<Val> {
+        let sname = self.local_struct.get(name)?;
+        let s = self.structs.get(sname)?;
+        Some(Val::Fields(
+            s.fields
+                .iter()
+                .map(|f| {
+                    let sig = self.locals.get(&format!("{name}.{}", f.name.text));
+                    (
+                        f.name.text.clone(),
+                        sig.map(|&id| Expr::Current(id)).unwrap_or(Expr::Unknown),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     /// Lower a system attribute. `clk::rising`/`falling`/`edge` expand into

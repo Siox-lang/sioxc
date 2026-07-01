@@ -477,9 +477,18 @@ impl Testbench<'_> {
     fn exec(&mut self, s: &ast::Stmt) {
         match s {
             ast::Stmt::Assign { target, value, .. } => {
-                let v = self.eval(value);
                 if let Some(path) = expr_path(target) {
-                    self.set_name(&path, v);
+                    // A struct literal assigns each field of a flattened
+                    // struct local (`a = { .re = 3, .im = 4 };`).
+                    if let ast::Expr::Construct { args, .. } = value {
+                        for arg in args {
+                            let v = arg.value.as_ref().map(|v| self.eval(v)).unwrap_or(0);
+                            self.set_name(&format!("{path}.{}", arg.field.text), v);
+                        }
+                    } else {
+                        let v = self.eval(value);
+                        self.set_name(&path, v);
+                    }
                 }
                 self.sim.settle();
                 self.sample();
@@ -1116,6 +1125,44 @@ mod tests {
             tick(&mut sim, clk);
         }
         assert_eq!(sim.read(count), 1);
+    }
+
+    #[test]
+    fn struct_operator_impl_evaluates_per_field() {
+        // `+` on a struct type: the impl body's struct literal lowers to one
+        // driver per field, so complex addition works component-wise.
+        let results = run(
+            "module m;\n\
+             struct Complex { re: uint[8], im: uint[8] }\n\
+             pub trait \"+\" {\n\
+               fn apply(self, rhs: Self) -> Self;\n\
+             }\n\
+             impl \"+\" for Complex {\n\
+               fn apply(self, rhs: Complex) -> Complex {\n\
+                 return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
+               }\n\
+             }\n\
+             entity Adder { in a: Complex; in b: Complex; out z: Complex; }\n\
+             impl Adder { z = a + b; }\n\
+             #[test]\n\
+             entity ComplexTest {}\n\
+             impl ComplexTest {\n\
+               let a: Complex = { .re = 10, .im = 0 };\n\
+               let b: Complex = { .re = 0, .im = 5 };\n\
+               let z: Complex;\n\
+               let dut = Adder { .a, .b, .z };\n\
+               wait 1ns;\n\
+               assert!(z.re == 10, \"10 + 5i has re 10\");\n\
+               assert!(z.im == 5, \"10 + 5i has im 5\");\n\
+               a = { .re = 3, .im = 4 };\n\
+               b = { .re = 1, .im = 2 };\n\
+               wait 1ns;\n\
+               assert!(z.re == 4, \"(3+4i)+(1+2i) re\");\n\
+               assert!(z.im == 6, \"(3+4i)+(1+2i) im\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
     }
 
     #[test]

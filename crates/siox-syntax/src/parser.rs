@@ -142,7 +142,8 @@ impl<'a> Parser<'a> {
             self.bump(); // `{`
             let mut names = Vec::new();
             while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                names.push(self.parse_ident());
+                // Operator traits import by their quoted name: `{"+", Boolean}`.
+                names.push(self.parse_trait_name());
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
