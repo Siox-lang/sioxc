@@ -17,6 +17,15 @@ impl Adder {
     z = a + b;
 }
 
+// The `i` literal suffix comes from `impl Suffix for Complex` in std::math.
+entity Imag {
+    out z: Complex;
+}
+
+impl Imag {
+    z = 5i;
+}
+
 #[test]
 entity ComplexTest {}
 
@@ -36,4 +45,11 @@ impl ComplexTest {
     wait 1ns;
     assert!(z.re == 4, "(3+4i) + (1+2i): real part");
     assert!(z.im == 6, "(3+4i) + (1+2i): imaginary part");
+
+    let w: Complex;
+    let imag = Imag { .z = w };
+
+    wait 1ns;
+    assert!(w.re == 0, "5i: real part");
+    assert!(w.im == 5, "5i: imaginary part");
 }

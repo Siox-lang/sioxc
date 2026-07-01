@@ -114,6 +114,9 @@ struct Checker<'a> {
     trait_impls: HashMap<String, HashSet<String>>,
     /// Enum name -> its variant names (for match-exhaustiveness).
     enum_variants: HashMap<String, Vec<String>>,
+    /// Literal suffix -> the type names defining it via `impl Suffix for T`
+    /// (more than one is an ambiguity error at the use site).
+    suffix_types: HashMap<String, Vec<String>>,
 }
 
 impl<'a> Checker<'a> {
@@ -158,6 +161,7 @@ impl<'a> Checker<'a> {
             attr_value_kinds,
             trait_impls,
             enum_variants: HashMap::new(),
+            suffix_types: HashMap::new(),
         }
     }
 
@@ -195,6 +199,18 @@ impl<'a> Checker<'a> {
                             let trait_name = tr.segments.last().map(|s| s.text.clone());
                             let target = type_head_name(&im.target).map(|s| s.to_string());
                             if let (Some(t), Some(ty)) = (trait_name, target) {
+                                // `impl Suffix for T`: each fn's name is a
+                                // literal suffix producing a T (spec 3.24).
+                                if t == "Suffix" {
+                                    for it in &im.items {
+                                        if let ImplItem::Fn(f) = it {
+                                            self.suffix_types
+                                                .entry(f.name.text.clone())
+                                                .or_default()
+                                                .push(ty.clone());
+                                        }
+                                    }
+                                }
                                 self.trait_impls.entry(t).or_default().insert(ty);
                             }
                         }
@@ -633,12 +649,31 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::SuffixLit { suffix, span, .. } => {
-                if suffix_scale(&suffix.text).is_none() {
-                    self.error(
-                        codes::UNKNOWN_NAME,
-                        *span,
-                        format!("unknown literal suffix `{}`", suffix.text),
-                    );
+                match self.suffix_types.get(&suffix.text).map(|v| v.as_slice()) {
+                    Some([_]) => {} // one `impl Suffix` fn defines it
+                    Some(tys) => {
+                        let list = tys
+                            .iter()
+                            .map(|t| format!("{t}::{}", suffix.text))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.error(
+                            codes::UNKNOWN_NAME,
+                            *span,
+                            format!("literal suffix `{}` is ambiguous: {list}", suffix.text),
+                        );
+                    }
+                    // No Suffix impl in scope: the fixed fs/Hz table backs
+                    // bare files (spec 3.24).
+                    None => {
+                        if suffix_scale(&suffix.text).is_none() {
+                            self.error(
+                                codes::UNKNOWN_NAME,
+                                *span,
+                                format!("unknown literal suffix `{}`", suffix.text),
+                            );
+                        }
+                    }
                 }
             }
             Expr::BitStrLit { base, digits, span } => {
@@ -668,9 +703,21 @@ impl<'a> Checker<'a> {
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
             Expr::Int { .. } => Ty::UInt(0),
-            // Unit suffixes scale to the base unit (fs / Hz) and stay integer
-            // until std-defined suffix types (Time, Freq, Complex) land.
+            // A suffix defined by `impl Suffix for T` types the literal as T;
+            // the fixed fs/Hz table backs bare files as integer.
             Expr::SuffixLit { suffix, .. } => {
+                if let Some([ty]) = self.suffix_types.get(&suffix.text).map(|v| v.as_slice()) {
+                    return self
+                        .resolved
+                        .defs()
+                        .iter()
+                        .position(|d| {
+                            d.name == *ty
+                                && matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                        })
+                        .map(|i| Ty::Named(siox_resolve::DefId(i as u32)))
+                        .unwrap_or(Ty::Error);
+                }
                 if suffix_scale(&suffix.text).is_some() { Ty::UInt(0) } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
@@ -1049,6 +1096,25 @@ mod tests {
             )),
             0
         );
+    }
+
+    #[test]
+    fn suffix_traits_define_and_disambiguate_literals() {
+        let time = "pub trait Suffix {}\nstruct Time { fs: uint[48] }\nimpl Suffix for Time {\n  fn s(v: integer) -> Time {\n    return Time { .fs = v };\n  }\n}\n";
+        // A Suffix-impl fn defines the literal's type: Time = 5s init passes.
+        assert_eq!(
+            check_src(&format!(
+                "module m;\n{time}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
+            )),
+            0
+        );
+        // Two types defining the same suffix is an ambiguity error (the
+        // cascading init mismatch is separate).
+        let score = "struct Score { p: uint[8] }\nimpl Suffix for Score {\n  fn s(v: integer) -> Score {\n    return Score { .p = v };\n  }\n}\n";
+        let src = format!(
+            "module m;\n{time}{score}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
+        );
+        assert_eq!(warnings(&src, codes::UNKNOWN_NAME), 1);
     }
 
     #[test]

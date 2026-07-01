@@ -1128,6 +1128,46 @@ mod tests {
     }
 
     #[test]
+    fn suffix_trait_impl_types_and_inlines_literals() {
+        // `impl Suffix for T`: the fn name is the suffix, the literal inlines
+        // its body — `10ns` drives Time.fs with 10_000_000, `5i` a Complex.
+        let results = run(
+            "module m;\n\
+             pub trait Suffix {}\n\
+             struct Time { fs: uint[48] }\n\
+             impl Suffix for Time {\n\
+               fn ns(v: integer) -> Time {\n\
+                 return Time { .fs = v * 1000000 };\n\
+               }\n\
+             }\n\
+             struct Complex { re: uint[8], im: uint[8] }\n\
+             impl Suffix for Complex {\n\
+               fn i(v: integer) -> Complex {\n\
+                 return Complex { .re = 0, .im = v };\n\
+               }\n\
+             }\n\
+             entity Src { out t: Time; out z: Complex; }\n\
+             impl Src {\n\
+               t = 10ns;\n\
+               z = 5i;\n\
+             }\n\
+             #[test]\n\
+             entity SuffixTest {}\n\
+             impl SuffixTest {\n\
+               let t: Time;\n\
+               let z: Complex;\n\
+               let dut = Src { .t, .z };\n\
+               wait 1ns;\n\
+               assert!(t.fs == 10000000, \"10ns is 10^7 fs\");\n\
+               assert!(z.re == 0, \"5i has no real part\");\n\
+               assert!(z.im == 5, \"5i has im 5\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn struct_operator_impl_evaluates_per_field() {
         // `+` on a struct type: the impl body's struct literal lowers to one
         // driver per field, so complex addition works component-wise.

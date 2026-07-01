@@ -166,6 +166,8 @@ struct Lowering<'a> {
     enum_reprs: HashMap<String, u32>,
     /// (trait name, target type) -> the impl's fn, for operator inlining.
     op_impls: HashMap<(String, String), &'a ast::FnDecl>,
+    /// Literal suffix -> its `impl Suffix for T` fn, for suffix inlining.
+    suffix_impls: HashMap<String, &'a ast::FnDecl>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -221,6 +223,7 @@ impl<'a> Lowering<'a> {
             structs: HashMap::new(),
             enum_reprs: HashMap::new(),
             op_impls: HashMap::new(),
+            suffix_impls: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -244,16 +247,25 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     // A trait impl's first fn is the operator body for
-                    // `impl "+" for T` (spec 3.25).
+                    // `impl "+" for T` (spec 3.25); each fn of an
+                    // `impl Suffix for T` defines the literal suffix of its
+                    // name (spec 3.24).
                     ast::Item::Impl(im) => {
                         let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                         let target = type_head_name(&im.target);
-                        let f = im.items.iter().find_map(|it| match it {
-                            ast::ImplItem::Fn(f) => Some(f),
-                            _ => None,
-                        });
-                        if let (Some(tr), Some(ty), Some(f)) = (tr, target, f) {
-                            self.op_impls.insert((tr.text.clone(), ty.to_string()), f);
+                        if let (Some(tr), Some(ty)) = (tr, target) {
+                            if tr.text == "Suffix" {
+                                for it in &im.items {
+                                    if let ast::ImplItem::Fn(f) = it {
+                                        self.suffix_impls.insert(f.name.text.clone(), f);
+                                    }
+                                }
+                            } else if let Some(f) = im.items.iter().find_map(|it| match it {
+                                ast::ImplItem::Fn(f) => Some(f),
+                                _ => None,
+                            }) {
+                                self.op_impls.insert((tr.text.clone(), ty.to_string()), f);
+                            }
                         }
                     }
                     _ => {}
@@ -530,13 +542,20 @@ impl<'a> Lowering<'a> {
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
             ast::Expr::Int { text, .. } => Expr::Const(parse_int(text).unwrap_or(0)),
-            // `1ns` / `10MHz` scale to the base unit (fs / Hz); `x"AB"` is a
-            // sized constant.
-            ast::Expr::SuffixLit { text, suffix, .. } => Expr::Const(
-                parse_int(text)
-                    .map(|v| v.saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64))
-                    .unwrap_or(0),
-            ),
+            // A suffix with an `impl Suffix` fn inlines it (scalar results
+            // only here; struct results flow through `lower_val_env`).
+            // Otherwise `1ns` / `10MHz` scale by the fixed fs/Hz table.
+            ast::Expr::SuffixLit { text, suffix, .. } => match self.inline_suffix(e) {
+                Some(Val::Scalar(v)) => v,
+                Some(Val::Fields(_)) => Expr::Unknown,
+                None => Expr::Const(
+                    parse_int(text)
+                        .map(|v| {
+                            v.saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64)
+                        })
+                        .unwrap_or(0),
+                ),
+            },
             ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(
                 u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0),
             ),
@@ -770,8 +789,26 @@ impl<'a> Lowering<'a> {
                 op: lower_unop(*op),
                 rhs: Box::new(self.lower_scalar_env(rhs, env)),
             }),
+            ast::Expr::SuffixLit { .. } => self.inline_suffix(e).unwrap_or_else(|| {
+                Val::Scalar(self.lower_expr(e)) // fixed fs/Hz table fallback
+            }),
             _ => Val::Scalar(self.lower_expr(e)),
         }
+    }
+
+    /// Inline the `impl Suffix for T` fn for a suffixed literal (`5i` ->
+    /// `Complex::i(5)`): the fn's parameter binds to the literal value.
+    fn inline_suffix(&self, e: &ast::Expr) -> Option<Val> {
+        let ast::Expr::SuffixLit { text, suffix, .. } = e else { return None };
+        let f = self.suffix_impls.get(&suffix.text).copied()?;
+        let body = f.body.as_ref()?;
+        let mut env: HashMap<String, Val> = HashMap::new();
+        if let Some(p) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &p.name {
+                env.insert(n.text.clone(), Val::Scalar(Expr::Const(parse_int(text).unwrap_or(0))));
+            }
+        }
+        self.inline_block(&body.stmts, &env)
     }
 
     fn lower_scalar_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Expr {

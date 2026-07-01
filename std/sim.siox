@@ -1,12 +1,57 @@
 module std::sim;
 
-// Simulation helpers (spec Stage 11, modelled on VHDL's `time` units).
+using std::ops::{Suffix};
+
+// Simulation time and frequency (spec Stage 11, modelled on VHDL's `time`
+// physical type). The simulator's base tick is 1 fs (the VCD timescale).
 //
 // `wait`/`tick`/`run` stimulus control is built-in simulator syntax for now
-// (spec Stage 11 allows this). This module carries the time-unit constants:
-// the simulator's base tick is 1 fs (the VCD timescale), so a delay of
-// `10 * NS` means 10 nanoseconds.
+// (spec Stage 11 allows this).
 
+pub struct Time {
+    fs: integer,
+}
+
+// Time-unit literal suffixes: `10ns` is `Time::ns(10)`.
+impl Suffix for Time {
+    fn fs(v: integer) -> Time {
+        return Time { .fs = v };
+    }
+    fn ps(v: integer) -> Time {
+        return Time { .fs = v * 1000 };
+    }
+    fn ns(v: integer) -> Time {
+        return Time { .fs = v * 1000000 };
+    }
+    fn us(v: integer) -> Time {
+        return Time { .fs = v * 1000000000 };
+    }
+    fn ms(v: integer) -> Time {
+        return Time { .fs = v * 1000000000000 };
+    }
+}
+
+pub struct Freq {
+    hz: integer,
+}
+
+// Frequency literal suffixes: `100MHz` is `Freq::MHz(100)`.
+impl Suffix for Freq {
+    fn Hz(v: integer) -> Freq {
+        return Freq { .hz = v };
+    }
+    fn kHz(v: integer) -> Freq {
+        return Freq { .hz = v * 1000 };
+    }
+    fn MHz(v: integer) -> Freq {
+        return Freq { .hz = v * 1000000 };
+    }
+    fn GHz(v: integer) -> Freq {
+        return Freq { .hz = v * 1000000000 };
+    }
+}
+
+// Raw femtosecond multipliers, for integer time arithmetic.
 pub const FS: integer = 1;
 pub const PS: integer = 1000;
 pub const NS: integer = 1000000;

@@ -34,6 +34,15 @@ pub trait "/" {
     fn apply(self, rhs: Self) -> Self;
 }
 
+// Literal suffix/prefix traits (spec 3.24, docs/notes/literal-suffixes.md).
+// Deliberately empty: each `impl Suffix for T` brings fns whose *names* are
+// the suffixes they define (`5i` -> `Complex::i(5)`), inlined like operator
+// impls. `Prefix` is the declared home of string prefixes (`x"AB"`).
+
+pub trait Suffix {}
+
+pub trait Prefix {}
+
 pub trait Boolean {
     fn as_bool(self) -> integer;
 }

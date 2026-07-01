@@ -1,7 +1,7 @@
 module std::math;
 
 using std::bits::{int};
-using std::ops::{"+", "-"};
+using std::ops::{"+", "-", Suffix};
 
 // Complex fixed-point value (modelled on ieee.math_complex). Component
 // widths are 16-bit signed; parameterized widths come with generic structs.
@@ -19,5 +19,12 @@ impl "+" for Complex {
 impl "-" for Complex {
     fn apply(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re - rhs.re, .im = self.im - rhs.im };
+    }
+}
+
+// `5i` is a pure imaginary: Complex::i(5).
+impl Suffix for Complex {
+    fn i(v: integer) -> Complex {
+        return Complex { .re = 0, .im = v };
     }
 }

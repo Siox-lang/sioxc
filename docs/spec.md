@@ -1013,18 +1013,31 @@ Both may use the English word “direction”, but they are different concepts.
 A numeric literal may carry an adjacent identifier suffix (no space):
 
 ```siox
-wait 1ns;          // time: fs ps ns us ms s  (scaled to fs, the base tick)
-let f = 100MHz;    // frequency: Hz kHz MHz GHz (scaled to Hz)
-let z = 10 + 5i;   // future: complex, via a std suffix definition
+let t: Time = 10ns;      // std::sim::Time, via impl Suffix for Time
+let f: Freq = 100MHz;    // std::sim::Freq
+let z: Complex = 5i;     // std::math::Complex
 ```
 
-An unknown suffix is an error. The suffix table is currently fixed in the
-compiler; it becomes std-defined (suffix declarations producing `Time`,
-`Freq`, `Complex`, ... values) when literal-suffix overloading lands, the way
-VHDL declares time units in a physical type.
+Suffixes are defined by the `Suffix` trait: **each fn's name is the suffix it
+defines**, and the literal desugars to that fn, inlined at lowering like an
+operator impl (3.25):
+
+```siox
+impl Suffix for Time {
+    fn ns(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
+}
+```
+
+Two loaded types defining the same suffix is an ambiguity error at the use
+site. An unknown suffix is an error; a fixed fs/Hz scale table (typing the
+literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
+`wait 10ns` without imports. See docs/notes/literal-suffixes.md for the full
+design, including multi-type examples.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
-a sized `uint` constant:
+a sized `uint` constant. The `Prefix` trait is their declared home
+(`impl Prefix for uint { fn x(digits: string) -> uint; }`), with evaluation
+intrinsic until const string operations exist:
 
 ```siox
 let a: uint[8]  = x"AB";        // hex: width = 4 * digits
