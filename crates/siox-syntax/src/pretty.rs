@@ -390,7 +390,8 @@ fn un_op(op: UnOp) -> &'static str {
     }
 }
 
-fn bin_op(op: BinOp) -> &'static str {
+/// The source string of a binary operator (also the operator-trait name).
+pub fn bin_op(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "+",
         BinOp::Sub => "-",

@@ -29,11 +29,13 @@ use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
 use siox_syntax::ast::*;
 use siox_syntax::Module;
 
-/// The fixed operator set available for operator traits (`trait "+"`).
-/// User-defined operator *symbols* are out of scope; user impls of these
-/// operators for their own types are the point.
+/// The fixed operator set available for operator traits (`trait "+"`),
+/// matching the language's operator surface (word logic operators, VHDL
+/// style). User-defined operator *symbols* are out of scope; user impls of
+/// these operators for their own types are the point.
 pub const OPERATORS: &[&str] = &[
-    "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "!", "~",
+    "+", "-", "*", "/", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "and", "or", "xor", "nand",
+    "nor", "xnor", "not",
 ];
 
 /// Stable id for a resolved declaration. Later stages key off this instead of

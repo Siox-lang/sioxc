@@ -1055,10 +1055,14 @@ impl "+" for Complex {
 }
 ```
 
-The operator set is fixed: `+ - * / % & | ^ << >> == != < <= > >= ! ~`.
+The operator set is fixed, matching the language's operator surface:
+`+ - * / << >> == != < <= > >= and or xor nand nor xnor not`.
 Declaring a trait for any other string is an error — user impls of these
 operators for user types are the point, not user-invented symbols. `Self` in
 a trait or impl body refers to the implementing type.
+
+Using an operator on a user struct/enum without a matching impl is an error
+(`==`/`!=` stay built-in on enums as discriminant comparison).
 
 The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types

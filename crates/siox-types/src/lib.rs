@@ -210,12 +210,14 @@ impl<'a> Checker<'a> {
     }
 
     fn check_item(&mut self, item: &Item) {
+        let sym = HashMap::new();
+        let sym = &sym;
         match item {
-            Item::Const(c) => self.check_expr(&c.value),
+            Item::Const(c) => self.check_expr(&c.value, sym),
             Item::Enum(e) => {
                 for v in &e.variants {
                     if let Some(val) = &v.value {
-                        self.check_expr(val);
+                        self.check_expr(val, sym);
                     }
                 }
             }
@@ -224,7 +226,7 @@ impl<'a> Checker<'a> {
                     self.check_attr_target(a);
                     self.check_attr_value(a);
                     if let Some(v) = &a.value {
-                        self.check_expr(v);
+                        self.check_expr(v, sym);
                     }
                 }
             }
@@ -262,11 +264,11 @@ impl<'a> Checker<'a> {
         let (in_ports, sym) = self.impl_env(im);
         for item in &im.items {
             match item {
-                ImplItem::Const(c) => self.check_expr(&c.value),
+                ImplItem::Const(c) => self.check_expr(&c.value, &sym),
                 ImplItem::Let(l) => {
                     if let Some(v) = &l.value {
                         self.check_init(l.ty.as_ref(), v, &sym);
-                        self.check_expr(v);
+                        self.check_expr(v, &sym);
                     }
                 }
                 ImplItem::Fn(f) => {
@@ -322,20 +324,20 @@ impl<'a> Checker<'a> {
             Stmt::Let(l) => {
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
-                    self.check_expr(v);
+                    self.check_expr(v, sym);
                 }
             }
             Stmt::Assign { target, value, .. } => {
                 self.check_write_target(target, in_ports);
                 self.check_assignment(target, value, sym);
-                self.check_expr(target);
-                self.check_expr(value);
+                self.check_expr(target, sym);
+                self.check_expr(value, sym);
             }
             Stmt::If(i) => self.check_if(i, in_ports, sym),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
                 self.check_unreachable_arms(m);
-                self.check_expr(&m.scrutinee);
+                self.check_expr(&m.scrutinee, sym);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
                         self.check_stmt(s, in_ports, sym);
@@ -343,15 +345,15 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::For { range, body, .. } => {
-                self.check_expr(range);
+                self.check_expr(range, sym);
                 for s in &body.stmts {
                     self.check_stmt(s, in_ports, sym);
                 }
             }
-            Stmt::Expr(e) => self.check_expr(e),
+            Stmt::Expr(e) => self.check_expr(e, sym),
             Stmt::Return { value, .. } => {
                 if let Some(v) = value {
-                    self.check_expr(v);
+                    self.check_expr(v, sym);
                 }
             }
         }
@@ -359,7 +361,7 @@ impl<'a> Checker<'a> {
 
     fn check_if(&mut self, i: &IfStmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
         self.check_condition(&i.cond, sym);
-        self.check_expr(&i.cond);
+        self.check_expr(&i.cond, sym);
         for s in &i.then.stmts {
             self.check_stmt(s, in_ports, sym);
         }
@@ -567,7 +569,7 @@ impl<'a> Checker<'a> {
 
     /// Walk an expression for the Phase-2 `::ddt` guard (the only expression-
     /// local check so far).
-    fn check_expr(&mut self, e: &Expr) {
+    fn check_expr(&mut self, e: &Expr, sym: &HashMap<String, Ty>) {
         match e {
             Expr::SysAttr { base, attr, span } => {
                 if PHASE2_ATTRS.contains(&attr.text.as_str()) {
@@ -577,38 +579,57 @@ impl<'a> Checker<'a> {
                         format!("`::{}` is Phase-2 analogue syntax, not available in Phase 1", attr.text),
                     );
                 }
-                self.check_expr(base);
+                self.check_expr(base, sym);
             }
-            Expr::Field { base, .. } => self.check_expr(base),
+            Expr::Field { base, .. } => self.check_expr(base, sym),
             Expr::Index { base, index, .. } => {
-                self.check_expr(base);
-                self.check_expr(index);
+                self.check_expr(base, sym);
+                self.check_expr(index, sym);
             }
             Expr::Range { lo, hi, .. } => {
-                self.check_expr(lo);
-                self.check_expr(hi);
+                self.check_expr(lo, sym);
+                self.check_expr(hi, sym);
             }
-            Expr::Unary { rhs, .. } => self.check_expr(rhs),
-            Expr::Binary { lhs, rhs, .. } => {
-                self.check_expr(lhs);
-                self.check_expr(rhs);
+            Expr::Unary { rhs, .. } => self.check_expr(rhs, sym),
+            Expr::Binary { op, lhs, rhs, span } => {
+                self.check_expr(lhs, sym);
+                self.check_expr(rhs, sym);
+                // A user struct/enum operand needs an operator-trait impl
+                // (spec 3.25); intrinsic numerics keep built-in semantics.
+                // `==`/`!=` on enums stay built-in (discriminant compare).
+                let op_str = siox_syntax::pretty::bin_op(*op);
+                if !matches!(op_str, "==" | "!=") {
+                    if let Some(name) = self.named_operand_name(lhs, sym) {
+                        let has = self
+                            .trait_impls
+                            .get(op_str)
+                            .is_some_and(|set| set.contains(&name));
+                        if !has {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!("no `impl \"{op_str}\"` for `{name}`"),
+                            );
+                        }
+                    }
+                }
             }
             Expr::Call { callee, args, .. } => {
-                self.check_expr(callee);
+                self.check_expr(callee, sym);
                 for a in args {
-                    self.check_expr(a);
+                    self.check_expr(a, sym);
                 }
             }
             Expr::Construct { args, .. } => {
                 for c in args {
                     if let Some(v) = &c.value {
-                        self.check_expr(v);
+                        self.check_expr(v, sym);
                     }
                 }
             }
             Expr::Concat { parts, .. } => {
                 for p in parts {
-                    self.check_expr(p);
+                    self.check_expr(p, sym);
                 }
             }
             Expr::SuffixLit { suffix, span, .. } => {
@@ -693,6 +714,19 @@ impl<'a> Checker<'a> {
             Expr::Field { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Range { .. } => {
                 Ty::Error
             }
+        }
+    }
+
+    /// The declared name of an operand's type when it is a user struct/enum
+    /// (the types operator-trait impls target). `None` for intrinsics and
+    /// unknowns, which keep built-in operator semantics.
+    fn named_operand_name(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Option<String> {
+        match self.type_of(e, sym) {
+            Ty::Named(id) => {
+                let d = self.resolved.def(id)?;
+                matches!(d.kind, DefKind::Struct | DefKind::Enum).then(|| d.name.clone())
+            }
+            _ => None,
         }
     }
 
@@ -1000,6 +1034,21 @@ mod tests {
         assert_eq!(bad, 1);
         let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
         assert_eq!(good, 0);
+    }
+
+    #[test]
+    fn operators_on_user_types_need_an_impl() {
+        let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { in p: V; in q: V; out y: Bit; }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
+        // Without an impl, `+` on a struct is rejected.
+        assert_eq!(check_src(&base.replace("OPIMPL\n", "")), 1);
+        // With `impl \"+\" for V`, it is accepted.
+        assert_eq!(
+            check_src(&base.replace(
+                "OPIMPL",
+                "pub trait \"+\" {\n  fn apply(self, rhs: Self) -> Self;\n}\nimpl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
+            )),
+            0
+        );
     }
 
     #[test]
