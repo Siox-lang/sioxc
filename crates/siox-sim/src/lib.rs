@@ -171,6 +171,8 @@ impl<'a> Simulator<'a> {
                 let b = self.eval(rhs);
                 apply_binop(*op, a, b)
             }
+            // `base[hi..lo]`: shift out the low bits, keep `hi-lo+1` of them.
+            Expr::Slice { base, hi, lo } => mask(self.eval(base) >> lo, hi - lo + 1),
             Expr::Unknown => 0,
         }
     }
@@ -803,6 +805,24 @@ mod tests {
                assert!(st == State::Done, \"-> done\");\n\
                tick(clk);\n\
                assert!(st == State::Idle, \"-> idle\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn simulates_bit_slices() {
+        // `data[7..4]` is the high nibble, `data[3..0]` the low nibble.
+        assert_test_passes(
+            "module m;\n\
+             entity Split { in data: uint[8]; out hi: uint[4]; out lo: uint[4]; }\n\
+             impl Split { hi = data[7..4]; lo = data[3..0]; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let data: uint[8] = 0; let hi: uint[4]; let lo: uint[4];\n\
+               let dut = Split { .data, .hi, .lo };\n\
+               data = 171;\n\
+               assert!(hi == 10, \"high nibble of 0xAB\");\n\
+               assert!(lo == 11, \"low nibble of 0xAB\");\n\
              }\n",
         );
     }

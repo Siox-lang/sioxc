@@ -83,6 +83,8 @@ pub enum Expr {
     Event(SignalId),
     Unary { op: UnOp, rhs: Box<Expr> },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    /// Bit slice `base[hi..lo]` (inclusive), value `(base >> lo) & mask(hi-lo+1)`.
+    Slice { base: Box<Expr>, hi: u32, lo: u32 },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
 }
@@ -440,6 +442,23 @@ impl<'a> Lowering<'a> {
                 .and_then(|m| m.get(&p.segments[1].text))
                 .map(|&d| Expr::Const(d))
                 .unwrap_or(Expr::Unknown),
+            // A bit slice `base[hi..lo]` (constant bounds).
+            ast::Expr::Index { base, index, .. }
+                if matches!(index.as_ref(), ast::Expr::Range { .. }) =>
+            {
+                if let ast::Expr::Range { lo, hi, .. } = index.as_ref() {
+                    match (int_lit(lo), int_lit(hi)) {
+                        (Some(a), Some(b)) => Expr::Slice {
+                            base: Box::new(self.lower_expr(base)),
+                            hi: a.max(b),
+                            lo: a.min(b),
+                        },
+                        _ => Expr::Unknown, // dynamic slice bounds: unsupported
+                    }
+                } else {
+                    Expr::Unknown
+                }
+            }
             // A struct-field (`s.data`) or constant array-element (`a[2]`) access
             // resolves to its flattened signal.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
@@ -568,6 +587,7 @@ fn render(e: &Expr, d: &Design) -> String {
         Expr::Binary { op, lhs, rhs } => {
             format!("{} {} {}", paren(lhs, d), bin_sym(*op), paren(rhs, d))
         }
+        Expr::Slice { base, hi, lo } => format!("{}[{hi}..{lo}]", paren(base, d)),
         Expr::Unknown => "?".to_string(),
     }
 }
@@ -767,6 +787,14 @@ fn array_of<'t>(ty: &'t ast::Type, env: &HashMap<String, i64>) -> Option<(&'t as
         }
     }
     None
+}
+
+/// The value of an integer-literal expression, if `e` is one.
+fn int_lit(e: &ast::Expr) -> Option<u32> {
+    match e {
+        ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as u32),
+        _ => None,
+    }
 }
 
 fn is_int_type(ty: &ast::Type) -> bool {
