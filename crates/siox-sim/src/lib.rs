@@ -839,6 +839,24 @@ mod tests {
     }
 
     #[test]
+    fn simulates_nested_concatenation() {
+        // `{a, {b, c}}`: a occupies bits 7..4, then b bits 3..2, c bits 1..0.
+        // a=1, b=2, c=3 -> (1<<4) | (2<<2) | 3 = 16 | 8 | 3 = 27.
+        assert_test_passes(
+            "module m;\n\
+             entity J { in a: uint[4]; in b: uint[2]; in c: uint[2]; out y: uint[8]; }\n\
+             impl J { y = {a, {b, c}}; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let a: uint[4] = 0; let b: uint[2] = 0; let c: uint[2] = 0; let y: uint[8];\n\
+               let dut = J { .a, .b, .c, .y };\n\
+               a = 1; b = 2; c = 3;\n\
+               assert!(y == 27, \"nested concat packs correctly\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
     fn simulates_bit_slices() {
         // `data[7..4]` is the high nibble, `data[3..0]` the low nibble.
         assert_test_passes(

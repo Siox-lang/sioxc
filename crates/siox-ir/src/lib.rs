@@ -495,8 +495,8 @@ impl<'a> Lowering<'a> {
             ast::Expr::Concat { parts, .. } => {
                 let mut acc = Expr::Const(0);
                 for part in parts {
+                    let w = self.ast_width(part);
                     let e = self.lower_expr(part);
-                    let w = self.ir_width(&e);
                     let shifted =
                         Expr::Binary { op: BinOp::Shl, lhs: Box::new(acc), rhs: Box::new(Expr::Const(w as u64)) };
                     acc = Expr::Binary { op: BinOp::Add, lhs: Box::new(shifted), rhs: Box::new(e) };
@@ -507,14 +507,30 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The bit width of a lowered expression, for sizing concatenations. Only
-    /// signals and slices carry a known width; other forms fall back to 1.
-    fn ir_width(&self, e: &Expr) -> u32 {
+    /// The bit width of a source expression, for sizing concatenations. A nested
+    /// concat sums its parts; a slice is its span; a signal/field/element is its
+    /// declared width; a literal is its minimal width.
+    fn ast_width(&self, e: &ast::Expr) -> u32 {
         match e {
-            Expr::Current(id) | Expr::Old(id) => self.out.signals[id.0 as usize].width,
-            Expr::Slice { hi, lo, .. } => hi - lo + 1,
-            Expr::Const(v) => (u64::BITS - v.leading_zeros()).max(1),
-            _ => 1, // ponytail: nested concat / arbitrary exprs unsized; add if needed
+            ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
+            ast::Expr::Index { index, .. } if matches!(index.as_ref(), ast::Expr::Range { .. }) => {
+                if let ast::Expr::Range { lo, hi, .. } = index.as_ref() {
+                    match (int_lit(lo), int_lit(hi)) {
+                        (Some(a), Some(b)) => a.max(b) - a.min(b) + 1,
+                        _ => 1,
+                    }
+                } else {
+                    1
+                }
+            }
+            ast::Expr::Int { text, .. } => {
+                (u64::BITS - parse_int(text).unwrap_or(0).leading_zeros()).max(1)
+            }
+            // A signal reference (name, struct field, constant array element).
+            _ => expr_path(e)
+                .and_then(|p| self.locals.get(&p))
+                .map(|&id| self.out.signals[id.0 as usize].width)
+                .unwrap_or(1),
         }
     }
 

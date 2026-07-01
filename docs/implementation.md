@@ -97,12 +97,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   flatten to one scalar per leaf (`s: Packet` -> `s.valid`, `s.data`; `a: Bit[4]`
   -> `a[0]..a[3]`); field/constant-index access resolves to the flattened signal.
   Constant bit slices (`data[7..4]`) lower to a `Slice` IR op; concatenations
-  (`{hi, lo}`) fold into a shift/add tree sized by each part's width. `siox ir`
-  prints it.
+  (`{hi, lo}`, including nested `{a, {b, c}}`) fold into a shift/add tree sized
+  from each part's source width. `siox ir` prints it.
 - **Status (todo):** cross-instance flattening/connections and multiple
   instances of one entity with differing params (widths come from the *first*
-  instance today); dynamic array indexing, method-call lowering; nested-concat
-  sizing; instance `let` bindings are listed as signals.
+  instance today); dynamic array indexing, method-call lowering; instance `let`
+  bindings are listed as signals.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
