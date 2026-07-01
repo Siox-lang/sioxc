@@ -513,6 +513,15 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_logic_literal_enum_variants() {
+        roundtrip(
+            "module std::logic;\n\
+             pub enum Bit {\n    '0',\n    '1',\n}\n\
+             pub enum Bool {\n    false,\n    true,\n}\n",
+        );
+    }
+
+    #[test]
     fn roundtrips_concat_and_nameless_struct_literal() {
         roundtrip(
             "module m;\n\

@@ -1,9 +1,12 @@
 module std::ops;
 
+using std::logic::{Bit, Bool};
+
 // Operator and conversion traits for the standard library.
 //
-// `Boolean` gives a type a boolean representation so it can be used directly
-// as a condition (in `if`, and later `while`/assertions). The conversion is
+// `Boolean` gives a type a truth representation so it can be used directly
+// as a condition (in `if`, and later `while`/assertions). Truth is the
+// kernel's intrinsic `integer`: 1 is true, 0 is false. The conversion is
 // applied only in condition position — it is not a general implicit cast.
 //
 // This is the canonical declaration of `Boolean`; name it with
@@ -12,17 +15,25 @@ module std::ops;
 // import — the impls here keep the semantics on the record in source form.
 
 pub trait Boolean {
-    fn as_bool(self) -> Bool;
-}
-
-impl Boolean for Bool {
-    fn as_bool(self) -> Bool {
-        return self;
-    }
+    fn as_bool(self) -> integer;
 }
 
 impl Boolean for Bit {
-    fn as_bool(self) -> Bool {
-        return self == '1';
+    fn as_bool(self) -> integer {
+        if self == '1' {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}
+
+impl Boolean for Bool {
+    fn as_bool(self) -> integer {
+        if self {
+            return 1;
+        } else {
+            return 0;
+        }
     }
 }

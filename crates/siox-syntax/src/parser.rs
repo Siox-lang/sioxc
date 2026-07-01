@@ -219,7 +219,15 @@ impl<'a> Parser<'a> {
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let vstart = self.span();
-            let vname = self.parse_ident();
+            // Logic-literal variant names (`enum Bit { '0', '1' }`, spec Stage
+            // 11) keep their quotes in the name text, matching use-site
+            // literals.
+            let vname = if self.at(TokenKind::LogicLit) {
+                let t = self.bump();
+                Ident { text: self.text_of(t.span).to_string(), span: t.span }
+            } else {
+                self.parse_ident()
+            };
             let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
             variants.push(EnumVariant { name: vname, value, span: vstart.to(self.prev_span()) });
             if !self.eat(TokenKind::Comma) {

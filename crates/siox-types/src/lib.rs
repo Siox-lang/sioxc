@@ -140,9 +140,11 @@ impl<'a> Checker<'a> {
         ] {
             attr_value_kinds.insert(name.to_string(), ty);
         }
-        // Built-in `Boolean` impls (until `std::ops` is loaded): `Bit` and `Bool`
-        // can be used directly as conditions (spec 3.16). `Logic` is omitted, so
-        // it still requires an explicit comparison.
+        // Mirror of std::ops' `Boolean` impls: `Bit` and `Bool` can be used
+        // directly as conditions (spec 3.16); truth is 1-bit, '1' = true.
+        // `Logic` is omitted, so it still requires an explicit comparison.
+        // ponytail: hardcoded shim — replace with real trait-impl lookup when
+        // trait resolution lands, so user `impl Boolean for T` works from source.
         let mut trait_impls: HashMap<String, HashSet<String>> = HashMap::new();
         trait_impls.insert(
             "Boolean".to_string(),

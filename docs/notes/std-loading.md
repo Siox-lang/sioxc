@@ -1,7 +1,11 @@
 # Proposal: loading `std/` (and multi-file modules)
 
-Status: **implemented** (A/A approved: primitives intrinsic, `--std <dir>`
-default `./std`; a bad import is a hard error, `E-P011`). Kept for the design
+Status: **implemented** (`--std <dir>` default `./std`; a bad import is a hard
+error, `E-P011`). Fork 1 was later **revised**: the kernel keeps only `integer`
+and `real` as base types — Bit/Logic/Bool/Clock are now canonical `enum`
+declarations in std/logic.siox, and uint/int are derived Logic vectors, with
+the compiler's by-name handling kept as a shim until operator overloading
+(see the spec's "type kernel" section under Stage 11). Kept for the design
 rationale; the live status lives in docs/implementation.md (Stage 11).
 
 ## Where we are today

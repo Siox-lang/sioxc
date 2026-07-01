@@ -707,12 +707,13 @@ The compiler may recognize these patterns later for synthesis diagnostics, but P
 ### 3.16 Digital conditions
 
 A condition (in `if`, and later `while`/assertions) must have a type that
-implements the `Boolean` trait — a type provides a boolean representation, which
-is applied only in condition position (not as a general implicit cast):
+implements the `Boolean` trait — a type provides a truth representation, which
+is applied only in condition position (not as a general implicit cast). Truth
+is the kernel base type `integer`: 1 is true, 0 is false.
 
 ```siox
 trait Boolean {
-    fn as_bool(self) -> Bool;
+    fn as_bool(self) -> integer;
 }
 ```
 
@@ -749,10 +750,10 @@ A user type becomes usable as a condition by implementing `Boolean`:
 
 ```siox
 impl Boolean for State {
-    fn as_bool(self) -> Bool {
+    fn as_bool(self) -> integer {
         match self {
-            State::Idle => return false,
-            _ => return true,
+            State::Idle => return 0,
+            _ => return 1,
         }
     }
 }
@@ -1667,51 +1668,69 @@ std::sim
 std::assert
 ```
 
+### The type kernel
+
+The language kernel provides only two base types — `integer` and `real`
+(unconstrained, VHDL-style) — plus the type machinery: enums (including
+character-literal variants), structs, arrays, and events. Every other type is
+declared in `std/` as ordinary source, the way VHDL declares `bit`, `boolean`
+and `std_ulogic` in library code. Truth is `integer` (1 true, 0 false; see
+3.16).
+
+*Shim note:* until operator overloading (3.13 traits) can carry their
+semantics, the compiler still recognizes the std::logic/std::bits names
+intrinsically; the declarations below are canonical and the shim is deleted
+when operators move to std.
+
 ### `std::logic`
 
-Should contain:
+Canonical declarations:
 
 ```siox
-Bit
-Logic
-Bool
-Clock
-ClockLike
-```
-
-Potential logic values:
-
-```siox
-enum Bit {
+pub enum Bit {
     '0',
     '1',
 }
 
-enum Logic {
+pub enum Logic {
     '0',
     '1',
     'Z',
     'X',
 }
+
+pub enum Bool {
+    false,
+    true,
+}
+
+pub enum Clock {
+    '0',
+    '1',
+}
 ```
+
+`Clock` is a `Bit` carrying clock intent; edge detection stays built-in syntax
+(`clk::rising`, per 3.10).
 
 ### `std::bits`
 
-Should contain:
+Contains the derived numeric vectors:
 
 ```siox
-uint[N]
-int[N]
+uint[N]   // vector of Logic, unsigned interpretation  (VHDL `unsigned`)
+int[N]    // vector of Logic, two's-complement          (VHDL `signed`)
 ```
 
-plus operations:
+Both are derived from `Logic` but accept the kernel base type `integer` on
+assignment (`let x: uint[8] = 42;`), plus operations:
 
 - Arithmetic.
 - Bitwise logic.
 - Comparisons.
 - Shifts.
 - Slices.
-- Concatenation via `concat(...)`.
+- Concatenation via `{hi, lo}`.
 
 ### `std::attrs`
 

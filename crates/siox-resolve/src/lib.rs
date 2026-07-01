@@ -141,10 +141,16 @@ impl<'a> Resolver<'a> {
     }
 
     fn seed_builtins(&mut self) {
-        // Primitive types (spec 3.9 / std::logic / std::bits). These are
-        // intrinsic to the compiler; everything else lives in `std/` and is
-        // loaded like any other module (`Boolean` is declared in std/ops.siox).
-        for name in ["Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"] {
+        // The kernel's base types are `integer` and `real` (unconstrained,
+        // VHDL-style); everything else is designed to live in `std/`:
+        // Bit/Logic/Bool/Clock are enums in std/logic.siox, `Boolean` a trait
+        // in std/ops.siox, and uint[N]/int[N] are derived Logic vectors that
+        // accept `integer` on assignment. The rest of this list is the shim:
+        // names the checker/IR still special-case until operator overloading
+        // lets their semantics move to std as source.
+        for name in
+            ["integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"]
+        {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }

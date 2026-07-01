@@ -163,13 +163,15 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   (default `./std`), mapping `std::a::b` → `<dir>/a/b.siox`. Imports resolve
   against the loaded modules' `pub` declarations; an import that matches
   nothing is a hard error (`E-P011`, with a "did you mean?" suggestion).
-  Shipped modules: `std::logic` (LOW/HIGH + docs for the intrinsic
-  Bit/Logic/Bool/Clock), `std::bits` (docs for uint/int/usize), `std::ops`
-  (the `Boolean` condition trait — no longer seeded), `std::attrs` (the five
-  system attributes, canonical declarations), `std::assert` (`Severity`),
-  `std::sim` (FS/PS/NS/US/MS time constants). Primitive types stay intrinsic
-  by design (docs/notes/std-loading.md); `examples/std_test.siox` exercises
-  every module through real imports.
+  Shipped modules: `std::logic` (canonical `enum` declarations of
+  Bit/Logic/Bool/Clock + LOW/HIGH), `std::bits` (uint/int as derived Logic
+  vectors, docs), `std::ops` (the `Boolean` condition trait, `as_bool ->
+  integer`, 1 = true — no longer seeded), `std::attrs` (the five system
+  attributes), `std::assert` (`Severity`), `std::sim` (FS..MS time constants).
+  The kernel's base types are only `integer` and `real` (spec "type kernel");
+  the checker/IR still recognize the std::logic/std::bits names intrinsically
+  as a shim until operator overloading carries their semantics in source.
+  `examples/std_test.siox` exercises every module through real imports.
 
 ### Stage 12 — CLI & workflow (`siox-cli`) — 🟢
 - **Acceptance:** `siox check` succeeds; `siox sim --wave` produces a waveform;

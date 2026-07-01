@@ -1,21 +1,44 @@
 module std::logic;
 
 // Scalar logic types (spec Stage 11, modelled on VHDL's std.standard and
-// ieee.std_logic_1164).
+// ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
+// enumeration types declared in library code, not compiler magic).
 //
-// The types themselves — `Bit`, `Logic`, `Bool`, `Clock` — are intrinsic to
-// the compiler: the type checker and IR know their value sets and widths
-// natively, so this module cannot re-declare them. `using std::logic::{Bit}`
-// resolves to the intrinsic type; this file documents the surface and carries
-// the derived items that *are* expressible in siox.
-//
-//   Bit    two-valued scalar: '0' | '1'          (VHDL `bit`)
-//   Logic  four-valued scalar: '0' '1' 'Z' 'X'   (VHDL `std_ulogic`, reduced)
-//   Bool   condition type: true | false          (VHDL `boolean`)
-//   Clock  a Bit carrying clock intent; supports `::rising` / `::falling`
-//          (VHDL has no clock type; `rising_edge(clk)` is the analogue)
-//
-// Edge detection is built-in syntax (`clk::rising`), not a library function.
+// These are the canonical declarations. The compiler still recognizes them by
+// name and keeps their operator semantics intrinsic — a temporary shim until
+// operator overloading (spec 3.13) lets the truth tables live here as trait
+// impls, the way std_logic_1164 defines `and`/`or` as plain functions.
+// The kernel's base types are `integer` and `real`; its only notion of truth
+// is `integer`: 1 is true, 0 is false (see std::ops::Boolean).
+
+// Two-valued scalar (VHDL `bit`).
+pub enum Bit {
+    '0',
+    '1',
+}
+
+// Four-valued scalar (VHDL `std_ulogic`, reduced): 'Z' = high-impedance,
+// 'X' = unknown. No `Boolean` impl — using a Logic directly as a condition is
+// ambiguous; compare explicitly.
+pub enum Logic {
+    '0',
+    '1',
+    'Z',
+    'X',
+}
+
+// Condition results and metadata values (VHDL `boolean`).
+pub enum Bool {
+    false,
+    true,
+}
+
+// A Bit carrying clock intent; edge detection is built-in syntax
+// (`clk::rising` / `clk::falling`, the analogue of VHDL's `rising_edge`).
+pub enum Clock {
+    '0',
+    '1',
+}
 
 // Named levels, for readability at connection sites.
 pub const LOW: Bit = '0';
