@@ -366,8 +366,11 @@ fn run_one(
                 let id = SignalId(i as u32);
                 if sig.path == prefix {
                     map.insert(c.signal.clone(), id);
-                } else if let Some(field) = sig.path.strip_prefix(&format!("{prefix}.")) {
-                    map.insert(format!("{}.{field}", c.signal), id);
+                } else if let Some(suffix) = sig.path.strip_prefix(&prefix) {
+                    // A struct field (`.valid`) or array element (`[0]`) leaf.
+                    if suffix.starts_with('.') || suffix.starts_with('[') {
+                        map.insert(format!("{}{suffix}", c.signal), id);
+                    }
                 }
             }
         }
@@ -569,8 +572,9 @@ impl Testbench<'_> {
                 .and_then(|m| m.get(&p.segments[1].text))
                 .copied()
                 .unwrap_or(0),
-            // A struct-field read (`p.data`) resolves through the flattened map.
-            ast::Expr::Field { .. } => {
+            // A struct-field (`p.data`) or array-element (`a[2]`) read resolves
+            // through the flattened map.
+            ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 expr_path(e).and_then(|p| self.map.get(&p)).map(|&id| self.sim.read(id)).unwrap_or(0)
             }
             ast::Expr::Unary { op, rhs, .. } => {
@@ -588,13 +592,18 @@ impl Testbench<'_> {
     }
 }
 
-/// The dotted signal path of a name or struct-field access (`p.data`).
+/// The dotted signal path of a name, struct-field, or constant-index access
+/// (`p.data`, `a[2]`).
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
         ast::Expr::Field { base, field, .. } => {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
+        ast::Expr::Index { base, index, .. } => match index.as_ref() {
+            ast::Expr::Int { text, .. } => Some(format!("{}[{}]", expr_path(base)?, parse_u64(text))),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -794,6 +803,26 @@ mod tests {
                assert!(st == State::Done, \"-> done\");\n\
                tick(clk);\n\
                assert!(st == State::Idle, \"-> idle\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn simulates_array_element_signals() {
+        // An array-typed port flattens to per-element signals; the DUT reads a
+        // constant index, and the testbench drives elements individually.
+        assert_test_passes(
+            "module m;\n\
+             entity Bank { in a: Bit[4]; out y: Bit; }\n\
+             impl Bank { y = a[2]; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let a: Bit[4]; let y: Bit;\n\
+               let dut = Bank { .a, .y };\n\
+               a[2] = '1';\n\
+               assert!(y == '1', \"reads a[2]\");\n\
+               a[2] = '0';\n\
+               assert!(y == '0', \"tracks a[2]\");\n\
              }\n",
         );
     }

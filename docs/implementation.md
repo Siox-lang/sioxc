@@ -93,13 +93,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   `if`/`else` priority accumulates into next-state conditions. `match` lowers to
   first-match `scrutinee == variant` guards with enum discriminants (`Idle=0`,
   ...). Signal widths are made concrete by substituting the entity's instance
-  parameters (`uint[W]` with `W=8` -> width 8). Struct-typed signals flatten to
-  one scalar per leaf field (`s: Packet` -> `s.valid`, `s.data`); field access
-  resolves to the flattened signal. `siox ir` prints it.
+  parameters (`uint[W]` with `W=8` -> width 8). Struct- and array-typed signals
+  flatten to one scalar per leaf (`s: Packet` -> `s.valid`, `s.data`; `a: Bit[4]`
+  -> `a[0]..a[3]`); field/constant-index access resolves to the flattened signal.
+  `siox ir` prints it.
 - **Status (todo):** cross-instance flattening/connections and multiple
   instances of one entity with differing params (widths come from the *first*
-  instance today); array flattening + index/slice/concat/method-call lowering; enum-typed signal
-  widths (currently 0); instance `let` bindings are currently listed as signals.
+  instance today); dynamic array indexing, slice/concat/method-call lowering;
+  enum-typed signal widths (currently 0); instance `let` bindings are signals.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -113,9 +114,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   gating, wrap-around). Verified on **counter, register, mux, an FSM** (`match`
   over an enum), and an **enum `::old` transition monitor** (`started` pulses on
   Idle → Run), a **ready/valid handshake** (compound condition in an event
-  block), and **struct-field signals** (`p.data` read/driven per field).
-- **Status (todo):** array element events; proper logic-value (X/Z) modelling;
-  cascaded event domains.
+  block), **struct-field signals** (`p.data` per field), and **array-element
+  signals** (`a[2]` per element).
+- **Status (todo):** dynamic (non-constant) array indexing; proper logic-value
+  (X/Z) modelling; cascaded event domains.
 
 ### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
@@ -137,10 +139,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   (`$timescale`, `$scope`/`$var` per entity, `#time` value changes). `siox sim
   <file> --wave <out.vcd>` writes the counter's waveform (clk/rst/en/count over
   ~100 ns, count reaching 10).
-- **Status (done, cont.):** struct fields appear as separate trace paths
-  (`p.valid`, `p.data`) since struct signals are flattened in the IR.
-- **Status (todo):** enum values as symbolic names; array elements as separate
-  paths; FST.
+- **Status (done, cont.):** struct fields and array elements appear as separate
+  trace paths (`p.valid`, `a[2]`) since composite signals are flattened in the IR.
+- **Status (todo):** enum values as symbolic names; FST.
 
 ### Stage 10 — Diagnostics & lints (`siox-diag` + all) — 🟢 (ongoing)
 - **Acceptance:** every diagnostic has a code, a main span, a message, optional

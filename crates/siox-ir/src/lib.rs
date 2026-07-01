@@ -240,16 +240,21 @@ impl<'a> Lowering<'a> {
         self.locals.insert(name.to_string(), id);
     }
 
-    /// Add a signal for `name: ty`, flattening a struct type into one scalar
-    /// signal per field (`s.valid`, `s.data`, ...). Nested structs recurse.
+    /// Add a signal for `name: ty`, flattening composites into scalar leaves: a
+    /// struct into one signal per field (`s.valid`), an array into one per
+    /// element (`a[0]`). Nested composites recurse. An integer vector
+    /// (`uint[8]`) stays a single scalar signal.
     fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
-        match self.struct_fields(ty) {
-            Some(fields) => {
-                for (fname, fty) in fields {
-                    self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
-                }
+        if let Some(fields) = self.struct_fields(ty) {
+            for (fname, fty) in fields {
+                self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
             }
-            None => self.add_signal(entity, name, type_width(ty, env)),
+        } else if let Some((elem, len)) = array_of(ty, env) {
+            for i in 0..len {
+                self.add_typed_signal(entity, &format!("{name}[{i}]"), elem, env);
+            }
+        } else {
+            self.add_signal(entity, name, type_width(ty, env));
         }
     }
 
@@ -435,8 +440,9 @@ impl<'a> Lowering<'a> {
                 .and_then(|m| m.get(&p.segments[1].text))
                 .map(|&d| Expr::Const(d))
                 .unwrap_or(Expr::Unknown),
-            // A struct-field access (`s.data`) resolves to its flattened signal.
-            ast::Expr::Field { .. } => expr_path(e)
+            // A struct-field (`s.data`) or constant array-element (`a[2]`) access
+            // resolves to its flattened signal.
+            ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
                 .and_then(|p| self.locals.get(&p).copied())
                 .map(Expr::Current)
                 .unwrap_or(Expr::Unknown),
@@ -735,16 +741,37 @@ fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64
     out
 }
 
-/// The dotted signal path of a name or struct-field access: `s` -> `"s"`,
-/// `s.data` -> `"s.data"`. Anything else (calls, indexing) yields `None`.
+/// The dotted signal path of a name, struct-field, or constant-index access:
+/// `s` -> `"s"`, `s.data` -> `"s.data"`, `a[2]` -> `"a[2]"`. A dynamic index or
+/// anything else (calls, slices) yields `None`.
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
         ast::Expr::Field { base, field, .. } => {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
+        ast::Expr::Index { base, index, .. } => match index.as_ref() {
+            ast::Expr::Int { text, .. } => Some(format!("{}[{}]", expr_path(base)?, parse_int(text)?)),
+            _ => None,
+        },
         _ => None,
     }
+}
+
+/// The `(element type, length)` if `ty` is an array — an `Indexed` type whose
+/// base is *not* an integer (`Bit[4]`), as opposed to a vector (`uint[8]`).
+fn array_of<'t>(ty: &'t ast::Type, env: &HashMap<String, i64>) -> Option<(&'t ast::Type, u32)> {
+    if let ast::Type::Indexed { base, index, .. } = ty {
+        if !is_int_type(base) {
+            return Some((base, eval_const(index, env).unwrap_or(0).max(0) as u32));
+        }
+    }
+    None
+}
+
+fn is_int_type(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Path(p)
+        if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "usize")))
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
