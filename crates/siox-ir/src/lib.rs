@@ -122,6 +122,7 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     let mut l = Lowering::new(sink);
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
+    l.enum_reprs = enum_reprs(modules);
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
@@ -158,6 +159,8 @@ struct Lowering<'a> {
     enum_variants: HashMap<String, HashMap<String, u64>>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
+    /// Enum name -> its bit width (repr, or bits for the variant count).
+    enum_reprs: HashMap<String, u32>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -172,6 +175,7 @@ impl<'a> Lowering<'a> {
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
             structs: HashMap::new(),
+            enum_reprs: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
         }
@@ -255,8 +259,20 @@ impl<'a> Lowering<'a> {
             for i in 0..len {
                 self.add_typed_signal(entity, &format!("{name}[{i}]"), elem, env);
             }
+        } else if let Some(w) = self.enum_width(ty) {
+            self.add_signal(entity, name, w);
         } else {
             self.add_signal(entity, name, type_width(ty, env));
+        }
+    }
+
+    /// The bit width of `ty` if it names a known enum.
+    fn enum_width(&self, ty: &ast::Type) -> Option<u32> {
+        match ty {
+            ast::Type::Path(p) if p.segments.len() == 1 => {
+                self.enum_reprs.get(&p.segments[0].text).copied()
+            }
+            _ => None,
         }
     }
 
@@ -802,6 +818,28 @@ fn is_int_type(ty: &ast::Type) -> bool {
         if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "usize")))
 }
 
+/// Build `enum name -> bit width`: the `repr` width if given (`enum S: uint[2]`),
+/// else the bits needed for the variant count.
+fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
+    let empty = HashMap::new();
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Enum(e) = item {
+                let w = match &e.repr {
+                    Some(t) => type_width(t, &empty),
+                    None => {
+                        let n = e.variants.len().max(1) as u32;
+                        if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }
+                    }
+                };
+                out.insert(e.name.text.clone(), w);
+            }
+        }
+    }
+    out
+}
+
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
     e.attrs
         .iter()
@@ -873,6 +911,25 @@ mod tests {
         // One event block (clk::rising) with two next-state updates.
         assert_eq!(d.event_blocks.len(), 1);
         assert_eq!(d.event_blocks[0].updates.len(), 2);
+    }
+
+    #[test]
+    fn composite_and_enum_signals_flatten_with_widths() {
+        let d = lower_src(
+            "module m;\n\
+             enum S: uint[2] { A, B, C }\n\
+             struct P { flag: Bit, val: uint[8] }\n\
+             entity E { in p: P; in a: Bit[3]; out s: S; }\n\
+             impl E {}\n\
+             #[top] entity H {}\n\
+             impl H { let p: P; let a: Bit[3]; let s: S; let dut = E { .p, .a, .s }; }\n",
+        );
+        let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
+        assert_eq!(width("E.p.flag"), Some(1)); // struct field
+        assert_eq!(width("E.p.val"), Some(8));
+        assert_eq!(width("E.a[0]"), Some(1)); // array element
+        assert_eq!(width("E.a[2]"), Some(1));
+        assert_eq!(width("E.s"), Some(2)); // enum repr width
     }
 
     #[test]
