@@ -278,7 +278,14 @@ impl<'a> Parser<'a> {
 
         // Leading direction for a bus-mode impl without a trait: `impl out S::Source`.
         let dir1 = self.eat_direction();
-        let head_path = self.parse_path();
+        // `impl "+" for T` names an operator trait by its quoted string.
+        let head_path = if self.at(TokenKind::StrLit) {
+            let name = self.parse_trait_name();
+            let span = name.span;
+            Path { segments: vec![name], span }
+        } else {
+            self.parse_path()
+        };
         // A `<name: bound>` list declares impl parameters; a `<expr>` list is
         // generic arguments that stay inside the target type.
         let mut params = Params::default();
@@ -427,10 +434,22 @@ impl<'a> Parser<'a> {
 
     // --- trait / attr decl --------------------------------------------------
 
+    /// A trait name: an identifier, or a quoted operator string for operator
+    /// traits (`trait "+"`, spec 3.25).
+    fn parse_trait_name(&mut self) -> Ident {
+        if self.at(TokenKind::StrLit) {
+            let t = self.bump();
+            let text = self.text_of(t.span).trim_matches('"').to_string();
+            Ident { text, span: t.span }
+        } else {
+            self.parse_ident()
+        }
+    }
+
     fn parse_trait(&mut self, is_pub: bool) -> TraitDecl {
         let start = self.span();
         self.bump(); // `trait`
-        let name = self.parse_ident();
+        let name = self.parse_trait_name();
         let params = self.parse_params_opt();
         self.expect(TokenKind::LBrace, "to open a trait body");
         let mut items = Vec::new();

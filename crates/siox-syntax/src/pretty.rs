@@ -140,7 +140,13 @@ impl Printer {
     fn impl_decl(&mut self, i: &ImplDecl) {
         let target = type_str(&i.target);
         let head = match &i.trait_ {
-            Some(tr) => format!("impl {}{} for {} {{", path(tr), params(&i.params), target),
+            Some(tr) => {
+                let name = match tr.segments.as_slice() {
+                    [seg] => trait_name_str(&seg.text),
+                    _ => path(tr),
+                };
+                format!("impl {name}{} for {} {{", params(&i.params), target)
+            }
             None => format!("impl {}{} {{", target, params(&i.params)),
         };
         self.line(&head);
@@ -166,7 +172,7 @@ impl Printer {
 
     fn trait_decl(&mut self, t: &TraitDecl) {
         let kw = pub_kw(t.is_pub);
-        self.line(&format!("{kw}trait {}{} {{", t.name.text, params(&t.params)));
+        self.line(&format!("{kw}trait {}{} {{", trait_name_str(&t.name.text), params(&t.params)));
         self.indent += 1;
         for f in &t.items {
             self.fn_decl(f);
@@ -285,6 +291,16 @@ fn dir_str(d: Direction) -> &'static str {
 
 fn path(p: &Path) -> String {
     p.segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("::")
+}
+
+/// Operator traits (`trait "+"`) print their name quoted.
+fn trait_name_str(name: &str) -> String {
+    let is_ident = name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    if is_ident {
+        name.to_string()
+    } else {
+        format!("\"{name}\"")
+    }
 }
 
 fn params(p: &Params) -> String {
@@ -512,6 +528,22 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_operator_traits() {
+        roundtrip(
+            "module m;\n\
+             pub trait \"+\" {\n\
+               fn apply(self, rhs: Self) -> Self;\n\
+             }\n\
+             struct V { x: Bit }\n\
+             impl \"+\" for V {\n\
+               fn apply(self, rhs: V) -> V {\n\
+                 return self;\n\
+               }\n\
+             }\n",
+        );
     }
 
     #[test]

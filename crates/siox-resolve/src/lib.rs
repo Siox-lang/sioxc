@@ -29,6 +29,13 @@ use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
 use siox_syntax::ast::*;
 use siox_syntax::Module;
 
+/// The fixed operator set available for operator traits (`trait "+"`).
+/// User-defined operator *symbols* are out of scope; user impls of these
+/// operators for their own types are the point.
+pub const OPERATORS: &[&str] = &[
+    "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "!", "~",
+];
+
 /// Stable id for a resolved declaration. Later stages key off this instead of
 /// raw names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -199,6 +206,17 @@ impl<'a> Resolver<'a> {
                 self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);
             }
             Item::Trait(t) => {
+                // Operator traits (`trait "+"`) are limited to the fixed
+                // operator set; anything else is a typo, not a new operator.
+                let is_op = t.name.text.chars().next().is_some_and(|c| !(c.is_alphabetic() || c == '_'));
+                if is_op && !OPERATORS.contains(&t.name.text.as_str()) {
+                    self.sink.emit(
+                        Diagnostic::error(format!("unknown operator `\"{}\"`", t.name.text))
+                            .with_code(codes::UNKNOWN_NAME)
+                            .at(t.name.span)
+                            .help(format!("operator traits are limited to: {}", OPERATORS.join(" "))),
+                    );
+                }
                 self.declare(&t.name.text, DefKind::Trait, t.is_pub, t.name.span);
             }
             Item::AttrDecl(a) => {
@@ -321,6 +339,8 @@ impl<'a> Resolver<'a> {
             Item::Trait(t) => {
                 self.enter();
                 self.bind_params(&t.params);
+                // `Self` refers to the implementing type inside a trait body.
+                self.bind_local("Self");
                 for f in &t.items {
                     self.resolve_fn(f);
                 }
@@ -333,6 +353,8 @@ impl<'a> Resolver<'a> {
     fn resolve_impl(&mut self, im: &ImplDecl) {
         self.enter();
         self.bind_params(&im.params);
+        // `Self` refers to the impl target type inside the body.
+        self.bind_local("Self");
         // Impl-level names are visible to the whole body regardless of order.
         for it in &im.items {
             match it {
@@ -712,6 +734,21 @@ mod tests {
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         resolve(std::slice::from_ref(&module), &mut sink);
         sink
+    }
+
+    #[test]
+    fn operator_traits_resolve_and_reject_unknown_operators() {
+        // A fixed-set operator trait and its impl resolve cleanly.
+        let (_, errs) = resolve_src(
+            "module m;\npub trait \"+\" {\n  fn apply(self, rhs: Self) -> Self;\n}\nstruct V { a: Bit }\nimpl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+        );
+        assert_eq!(errs, 0);
+
+        // An operator outside the fixed set is an error with the set in help.
+        let sink = diagnostics("module m;\npub trait \"+++\" {\n  fn apply(self) -> Self;\n}\n");
+        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::UNKNOWN_NAME)).unwrap();
+        assert!(d.message.contains("unknown operator"), "{}", d.message);
+        assert!(d.help.as_deref().unwrap_or("").contains("<<"));
     }
 
     #[test]

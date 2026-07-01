@@ -1037,6 +1037,36 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ---
 
+### 3.25 Operator traits
+
+Operators are traits named by their operator string. A type opts into an
+operator by implementing the trait — the way `std_logic_1164` defines `and`
+on `std_ulogic` as an ordinary function:
+
+```siox
+pub trait "+" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+impl "+" for Complex {
+    fn apply(self, rhs: Complex) -> Complex {
+        return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
+    }
+}
+```
+
+The operator set is fixed: `+ - * / % & | ^ << >> == != < <= > >= ! ~`.
+Declaring a trait for any other string is an error — user impls of these
+operators for user types are the point, not user-invented symbols. `Self` in
+a trait or impl body refers to the implementing type.
+
+The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
+semantics; operator traits extend the same syntax to std and user types
+(`Logic` truth tables, `Complex`, ...). Evaluation of operator impls in the
+simulator is the gate for retiring the std type shim.
+
+---
+
 ## 4. Phase 1 implementation stages
 
 Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.
