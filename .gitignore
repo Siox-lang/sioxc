@@ -15,4 +15,5 @@ Cargo.lock.orig
 
 # Claude Code local tooling (not part of the published repo)
 /CLAUDE.md
+/.claude/settings.json
 /.claude/settings.local.json
