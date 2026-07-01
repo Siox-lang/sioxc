@@ -440,6 +440,22 @@ if p::old.valid == '0' and p.valid == '1' {
 }
 ```
 
+A struct value is built with a construction literal. The type name may be
+omitted when it is fixed by context — the declared type of the assignment
+target:
+
+```siox
+let p: Packet = Packet { .valid = '1', .data = 5 };  // explicit
+let q: Packet = { .valid = '1', .data = 5 };         // type from `q: Packet`
+```
+
+Bits are concatenated with a brace list of positional values, most-significant
+first (distinguished from a struct literal by the absence of leading `.`):
+
+```siox
+let byte: uint[8] = { hi_nibble, lo_nibble };  // hi occupies bits 7..4
+```
+
 For structs:
 
 ```text

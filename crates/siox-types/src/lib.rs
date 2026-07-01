@@ -604,6 +604,11 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Expr::Concat { parts, .. } => {
+                for p in parts {
+                    self.check_expr(p);
+                }
+            }
             Expr::Int { .. }
             | Expr::LogicLit { .. }
             | Expr::StrLit { .. }
@@ -650,7 +655,11 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Unary { rhs, .. } => self.type_of(rhs, sym),
-            Expr::Construct { ty, .. } => self.ast_ty(ty),
+            // A name-less struct literal (`ty: None`) takes its type from the
+            // assignment target, which `type_of` does not see here.
+            Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
+            // A concatenation is an unsigned bit vector of unknown width.
+            Expr::Concat { .. } => Ty::UInt(0),
             Expr::Field { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Range { .. } => {
                 Ty::Error
             }
@@ -764,7 +773,8 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::Unary { span, .. }
         | Expr::Binary { span, .. }
         | Expr::Call { span, .. }
-        | Expr::Construct { span, .. } => *span,
+        | Expr::Construct { span, .. }
+        | Expr::Concat { span, .. } => *span,
         Expr::Path(p) => p.span,
     }
 }

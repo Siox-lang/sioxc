@@ -391,11 +391,23 @@ fn run_one(
     for im in body {
         for item in &im.items {
             if let ast::ImplItem::Let(l) = item {
-                if let Some(value) = &l.value {
-                    if !matches!(value, ast::Expr::Construct { .. }) {
+                match &l.value {
+                    // A named construct is an instance; elaboration handled it.
+                    Some(ast::Expr::Construct { ty: Some(_), .. }) => {}
+                    // A name-less struct literal initialises each field signal.
+                    Some(ast::Expr::Construct { args, .. }) => {
+                        for c in args {
+                            if let Some(v) = &c.value {
+                                let val = tb.eval(v);
+                                tb.set_name(&format!("{}.{}", l.name.text, c.field.text), val);
+                            }
+                        }
+                    }
+                    Some(value) => {
                         let v = tb.eval(value);
                         tb.set_name(&l.name.text, v);
                     }
+                    None => {}
                 }
             }
         }
@@ -810,6 +822,23 @@ mod tests {
     }
 
     #[test]
+    fn simulates_concatenation() {
+        // `{hi, lo}` packs two nibbles into a byte (hi is the high nibble).
+        assert_test_passes(
+            "module m;\n\
+             entity Join { in hi: uint[4]; in lo: uint[4]; out y: uint[8]; }\n\
+             impl Join { y = {hi, lo}; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let hi: uint[4] = 0; let lo: uint[4] = 0; let y: uint[8];\n\
+               let dut = Join { .hi, .lo, .y };\n\
+               hi = 10; lo = 11;\n\
+               assert!(y == 171, \"0xA:0xB == 0xAB\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
     fn simulates_bit_slices() {
         // `data[7..4]` is the high nibble, `data[3..0]` the low nibble.
         assert_test_passes(
@@ -843,6 +872,25 @@ mod tests {
                assert!(y == '1', \"reads a[2]\");\n\
                a[2] = '0';\n\
                assert!(y == '0', \"tracks a[2]\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn nameless_struct_literal_initialises_fields() {
+        // `let p: Packet = { .valid = '1', .data = 5 }` — type from the target,
+        // fields set individually.
+        assert_test_passes(
+            "module m;\n\
+             struct Packet { valid: Bit, data: uint[8] }\n\
+             entity Sink { in p: Packet; out got: uint[8]; }\n\
+             impl Sink { got = p.data; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let p: Packet = { .valid = '1', .data = 5 };\n\
+               let got: uint[8];\n\
+               let dut = Sink { .p, .got };\n\
+               assert!(got == 5, \"initialised p.data\");\n\
              }\n",
         );
     }

@@ -306,12 +306,16 @@ pub enum Expr {
     /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
     Call { callee: Box<Expr>, args: Vec<Expr>, bang: bool, span: Span },
     /// Instance/struct construction `Counter<W = 8> { .clk, .count = c }`
-    /// (spec 3.2/3.12).
+    /// (spec 3.2/3.12). `ty` is `None` for a name-less struct literal
+    /// `{ .valid = '1', .data = 5 }`, whose type comes from the assignment
+    /// target's declaration.
     Construct {
-        ty: Type,
+        ty: Option<Type>,
         args: Vec<ConnectArg>,
         span: Span,
     },
+    /// Bit concatenation `{a, b, c}` — the first element is the most significant.
+    Concat { parts: Vec<Expr>, span: Span },
 }
 
 /// A field connection inside an instance/struct literal. `value: None` is the

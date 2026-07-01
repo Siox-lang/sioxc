@@ -286,7 +286,9 @@ impl<'a> Elaborator<'a> {
                         _ => None,
                     };
                     if let Some(l) = let_decl {
-                        if let Some(Expr::Construct { ty, args, span }) = &l.value {
+                        // Only a *named* construct (`Counter<W=8> { ... }`) is an
+                        // instance; a name-less `{ .f = v }` is a struct value.
+                        if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
                             specs.push(InstanceSpec {
                                 name: l.name.text.as_str(),
                                 ty,

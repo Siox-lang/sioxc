@@ -475,7 +475,14 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            (format!("{} {{ {a} }}", type_str(ty)), POSTFIX_PREC)
+            match ty {
+                Some(ty) => (format!("{} {{ {a} }}", type_str(ty)), POSTFIX_PREC),
+                None => (format!("{{ {a} }}"), POSTFIX_PREC),
+            }
+        }
+        Expr::Concat { parts, .. } => {
+            let p = parts.iter().map(expr).collect::<Vec<_>>().join(", ");
+            (format!("{{ {p} }}"), POSTFIX_PREC)
         }
     }
 }
@@ -503,6 +510,18 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_concat_and_nameless_struct_literal() {
+        roundtrip(
+            "module m;\n\
+             entity E { out y: uint[8]; }\n\
+             impl E {\n\
+               let p: Packet = { .valid = '1', .data = 5 };\n\
+               y = {a, b, c};\n\
+             }\n",
+        );
     }
 
     #[test]

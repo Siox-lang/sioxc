@@ -490,7 +490,31 @@ impl<'a> Lowering<'a> {
                 lhs: Box::new(self.lower_expr(lhs)),
                 rhs: Box::new(self.lower_expr(rhs)),
             },
+            // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
+            // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
+            ast::Expr::Concat { parts, .. } => {
+                let mut acc = Expr::Const(0);
+                for part in parts {
+                    let e = self.lower_expr(part);
+                    let w = self.ir_width(&e);
+                    let shifted =
+                        Expr::Binary { op: BinOp::Shl, lhs: Box::new(acc), rhs: Box::new(Expr::Const(w as u64)) };
+                    acc = Expr::Binary { op: BinOp::Add, lhs: Box::new(shifted), rhs: Box::new(e) };
+                }
+                acc
+            }
             _ => Expr::Unknown,
+        }
+    }
+
+    /// The bit width of a lowered expression, for sizing concatenations. Only
+    /// signals and slices carry a known width; other forms fall back to 1.
+    fn ir_width(&self, e: &Expr) -> u32 {
+        match e {
+            Expr::Current(id) | Expr::Old(id) => self.out.signals[id.0 as usize].width,
+            Expr::Slice { hi, lo, .. } => hi - lo + 1,
+            Expr::Const(v) => (u64::BITS - v.leading_zeros()).max(1),
+            _ => 1, // ponytail: nested concat / arbitrary exprs unsized; add if needed
         }
     }
 

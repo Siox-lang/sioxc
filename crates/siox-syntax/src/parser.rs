@@ -795,12 +795,31 @@ impl<'a> Parser<'a> {
                 Expr::Bool { value, span: t.span }
             }
             TokenKind::Ident | TokenKind::SelfKw => self.parse_path_expr_or_construct(no_struct),
+            // A leading `{`: `{ .field = ... }` is a name-less struct literal
+            // (typed from context); `{ a, b }` is a bit concatenation.
+            TokenKind::LBrace if self.kind_at(self.pos + 1) == &TokenKind::Dot => {
+                self.parse_construct(start, None)
+            }
+            TokenKind::LBrace => self.parse_concat(start),
             _ => {
                 self.error_here("expected an expression");
                 // Synthesize a placeholder so callers can keep going.
                 Expr::Int { text: String::new(), span: start }
             }
         }
+    }
+
+    fn parse_concat(&mut self, start: Span) -> Expr {
+        self.expect(TokenKind::LBrace, "to open a concatenation");
+        let mut parts = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            parts.push(self.parse_expr(false));
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "to close a concatenation");
+        Expr::Concat { parts, span: start.to(self.prev_span()) }
     }
 
     /// A path expression, possibly an instance/struct construction. Path
@@ -826,15 +845,15 @@ impl<'a> Parser<'a> {
                 args,
                 span: start.to(self.prev_span()),
             };
-            return self.parse_construct(start, ty);
+            return self.parse_construct(start, Some(ty));
         }
         if self.at(TokenKind::LBrace) && !no_struct {
-            return self.parse_construct(start, Type::Path(path));
+            return self.parse_construct(start, Some(Type::Path(path)));
         }
         Expr::Path(path)
     }
 
-    fn parse_construct(&mut self, start: Span, ty: Type) -> Expr {
+    fn parse_construct(&mut self, start: Span, ty: Option<Type>) -> Expr {
         self.expect(TokenKind::LBrace, "to open a construction");
         let mut args = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {

@@ -533,11 +533,18 @@ impl<'a> Resolver<'a> {
                 }
             }
             Expr::Construct { ty, args, .. } => {
-                self.resolve_type(ty);
+                if let Some(ty) = ty {
+                    self.resolve_type(ty);
+                }
                 for c in args {
                     if let Some(v) = &c.value {
                         self.resolve_expr(v);
                     }
+                }
+            }
+            Expr::Concat { parts, .. } => {
+                for p in parts {
+                    self.resolve_expr(p);
                 }
             }
         }
