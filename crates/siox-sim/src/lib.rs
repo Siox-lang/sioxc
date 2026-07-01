@@ -783,6 +783,31 @@ mod tests {
     }
 
     #[test]
+    fn simulates_an_enum_old_monitor() {
+        // `started` pulses for one step on the Idle -> Run transition, detected
+        // combinationally via `state::old`.
+        assert_test_passes(
+            "module m;\n\
+             enum State: uint[2] { Idle = 0, Run = 1, Done = 2 }\n\
+             entity Mon { in state: State; out started: Bit; }\n\
+             impl Mon {\n\
+               started = '0';\n\
+               if state::old == State::Idle and state == State::Run { started = '1'; }\n\
+             }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let state: State = State::Idle; let started: Bit;\n\
+               let dut = Mon { .state, .started };\n\
+               assert!(started == '0', \"no transition yet\");\n\
+               state = State::Run;\n\
+               assert!(started == '1', \"idle -> run detected\");\n\
+               state = State::Done;\n\
+               assert!(started == '0', \"not an idle -> run\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
     fn simulates_a_register() {
         // q captures d on the rising edge and holds between edges.
         assert_test_passes(

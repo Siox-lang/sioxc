@@ -108,11 +108,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   once per edge with next-state semantics, value masking to the signal width
   (arithmetic wraps at `2^width`), and `set`/`read`/`settle`/`advance`. The
   counter simulates correctly (increments on rising edges, sync reset, enable
-  gating, wrap-around). Verified on **counter, register, mux, and an FSM**
-  (`match` over an enum, driven through Idle → Run → Done → Idle).
-- **Status (todo):** the remaining acceptance designs (ready/valid, enum
-  `::old` monitor, struct/array element events); proper logic-value (X/Z)
-  modelling; cascaded event domains.
+  gating, wrap-around). Verified on **counter, register, mux, an FSM** (`match`
+  over an enum), and an **enum `::old` transition monitor** (`started` pulses on
+  Idle → Run).
+- **Status (todo):** the remaining acceptance designs (ready/valid handshake,
+  struct/array element events); proper logic-value (X/Z) modelling; cascaded
+  event domains.
 
 ### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
