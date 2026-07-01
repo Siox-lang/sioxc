@@ -332,6 +332,7 @@ impl<'a> Checker<'a> {
             Stmt::If(i) => self.check_if(i, in_ports, sym),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
+                self.check_unreachable_arms(m);
                 self.check_expr(&m.scrutinee);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
@@ -418,6 +419,38 @@ impl<'a> Checker<'a> {
                     .at(m.span)
                     .help("add the missing arms, or a `_` wildcard"),
             );
+        }
+    }
+
+    /// Warn (spec Stage 10) on arms that can never match: anything after a `_`
+    /// wildcard, or a variant already covered by an earlier arm.
+    fn check_unreachable_arms(&mut self, m: &MatchStmt) {
+        let mut after_wildcard = false;
+        let mut seen: HashSet<String> = HashSet::new();
+        for arm in &m.arms {
+            let reason = if after_wildcard {
+                Some("a previous `_` already matches everything".to_string())
+            } else {
+                match &arm.pattern {
+                    Pattern::Wildcard => {
+                        after_wildcard = true;
+                        None
+                    }
+                    Pattern::Path(p) if p.segments.len() >= 2 => {
+                        let var = p.segments[1].text.clone();
+                        (!seen.insert(var.clone()))
+                            .then(|| format!("`{var}` is already matched by an earlier arm"))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(reason) = reason {
+                self.sink.emit(
+                    Diagnostic::warning(format!("unreachable match arm: {reason}"))
+                        .with_code(codes::UNREACHABLE_MATCH_ARM)
+                        .at(arm.span),
+                );
+            }
         }
     }
 
@@ -758,6 +791,38 @@ mod tests {
         let resolved = siox_resolve::resolve(std::slice::from_ref(&module), &mut sink);
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.diagnostics().iter().filter(|d| d.code == Some(code)).count()
+    }
+
+    #[test]
+    fn unreachable_match_arms_warn() {
+        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { out y: Bit; }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
+        // An arm after `_` is unreachable.
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "_ => { y = '0'; } State::Idle => { y = '1'; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
+            1
+        );
+        // A repeated variant is unreachable.
+        assert_eq!(
+            warnings(
+                &base.replace(
+                    "ARMS",
+                    "State::Idle => { y = '0'; } State::Idle => { y = '1'; } _ => { y = '0'; }"
+                ),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
+            1
+        );
+        // A normal, distinct set of arms is fine.
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "State::Idle => { y = '0'; } _ => { y = '1'; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
+            0
+        );
     }
 
     #[test]

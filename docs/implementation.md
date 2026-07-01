@@ -143,10 +143,11 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** the infrastructure and error-code catalogue are in use; the
   CLI renders `severity[code]: message --> file:line:col`, help lines, and
   related-span labels. Errors carry actionable help + "did you mean?"
-  suggestions (edit distance) and related spans (duplicate items). The first
-  warning is emitted: **non-exhaustive enum match** (`W-P007`).
+  suggestions (edit distance) and related spans (duplicate items). Warnings
+  emitted: **non-exhaustive enum match** (`W-P007`) and **unreachable match
+  arm** (`W-P006`, after `_` or a repeated variant).
 - **Status (todo):** the remaining warnings — multiple drivers, possible latch,
-  unused signal/param/import, unreachable arm, suspicious `Logic` compare/reset.
+  unused signal/param/import, suspicious `Logic` compare/reset.
 
 ### Stage 11 — Standard library (`std/`) — 🔴 (started)
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
