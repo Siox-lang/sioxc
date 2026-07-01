@@ -67,7 +67,7 @@ in / out / inout
 Entity bodies are interface-only.
 
 ```siox
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     in clk: Clock;
     in rst: Logic;
     in en: Bit;
@@ -80,7 +80,7 @@ No `const` fields inside entities.
 
 ```siox
 entity BadCounter {
-    const W: usize;      // invalid
+    const W: integer;      // invalid
     out count: uint[W];  // invalid because W changes interface shape
 }
 ```
@@ -88,7 +88,7 @@ entity BadCounter {
 Configuration values that affect shape or behavior go in the entity parameter list:
 
 ```siox
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     out count: uint[W];
 }
 ```
@@ -177,7 +177,7 @@ The scheduler can infer that this block is event-controlled because the conditio
 ### Example: Counter
 
 ```siox
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     in clk: Clock;
     in rst: Logic;
     in en: Bit;
@@ -185,7 +185,7 @@ entity Counter<W: usize> {
     out count: uint[W];
 }
 
-impl Counter<W: usize> {
+impl Counter<W: integer> {
     let value: uint[W] = 0;
 
     if clk::rising {

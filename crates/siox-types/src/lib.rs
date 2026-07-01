@@ -695,7 +695,7 @@ impl<'a> Checker<'a> {
                 // A clock is a single-bit signal; treat it as Bit for checking
                 // (clock-as-condition correctness is a separate, later concern).
                 "Clock" => Ty::Bit,
-                "uint" | "usize" => Ty::UInt(0),
+                "uint" | "integer" => Ty::UInt(0),
                 "int" => Ty::Int(0),
                 _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
             }

@@ -543,12 +543,12 @@ mod tests {
              struct Packet<T> { valid: Bit, data: T }\n\
              enum State: uint[2] { Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
-             entity Counter<W: usize> {\n\
+             entity Counter<W: integer> {\n\
                in clk: Clock;\n\
                bus: out Stream<uint[32]>::Source;\n\
                out count: uint[W];\n\
              }\n\
-             impl Counter<W: usize> {\n\
+             impl Counter<W: integer> {\n\
                const MAX: uint[W] = (1 << W) - 1;\n\
                let value: uint[W] = 0;\n\
                if clk::rising {\n\

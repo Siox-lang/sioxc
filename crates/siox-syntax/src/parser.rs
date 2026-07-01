@@ -1054,7 +1054,7 @@ impl<'a> Parser<'a> {
     // --- angle-bracket lookahead --------------------------------------------
 
     /// True if the `<...>` starting at `i` contains a top-level `:` (a parameter
-    /// list `<W: usize>` rather than a generic-argument list `<8>`).
+    /// list `<W: integer>` rather than a generic-argument list `<8>`).
     fn angle_is_param_list(&self, mut i: usize) -> bool {
         let mut depth = 0u32;
         loop {
@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn entity_with_params_and_ports() {
         let m = parse_ok(
-            "module m;\nentity Counter<W: usize> {\n  in clk: Clock;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
+            "module m;\nentity Counter<W: integer> {\n  in clk: Clock;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
         );
         let Item::Entity(e) = &m.items[0] else { panic!("expected entity") };
         assert_eq!(e.name.text, "Counter");
@@ -1274,7 +1274,7 @@ mod tests {
     #[test]
     fn impl_with_state_and_sequential_block() {
         let m = parse_ok(
-            "module m;\nimpl Counter<W: usize> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk::rising {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl Counter<W: integer> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk::rising {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!("expected impl") };
         assert_eq!(i.params.params.len(), 1);
@@ -1368,7 +1368,7 @@ mod tests {
     #[test]
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
-            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: usize> {\n  in a: uint[W];\n  out b: uint[W];\n}\n",
+            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: integer> {\n  in a: uint[W];\n  out b: uint[W];\n}\n",
         );
         let Item::AttrDecl(a) = &m.items[0] else { panic!("expected attr decl") };
         assert!(a.is_pub);

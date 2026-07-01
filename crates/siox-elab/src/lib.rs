@@ -504,7 +504,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
             Some("Logic") => EType::Logic,
             Some("Bool") => EType::Bool,
             Some("Clock") => EType::Clock,
-            Some("uint") | Some("usize") => EType::UInt(None),
+            Some("uint") | Some("integer") => EType::UInt(None),
             Some("int") => EType::Int(None),
             Some(other) => EType::Named(other.to_string()),
             None => EType::Other(String::new()),
@@ -655,12 +655,12 @@ mod tests {
     }
 
     const HARNESS: &str = "module m;\n\
-        entity Counter<W: usize> {\n\
+        entity Counter<W: integer> {\n\
           in clk: Clock;\n\
           in rst: Logic;\n\
           out count: uint[W];\n\
         }\n\
-        impl Counter<W: usize> {\n\
+        impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
           count = value;\n\
         }\n\
@@ -724,8 +724,8 @@ mod tests {
     fn connection_width_mismatch_is_reported() {
         // Port `a` is uint[8] (W=8) but the local signal `a` is uint[4].
         let src = "module m;\n\
-            entity Sub<W: usize> { in a: uint[W]; out b: uint[W]; }\n\
-            impl Sub<W: usize> { b = a; }\n\
+            entity Sub<W: integer> { in a: uint[W]; out b: uint[W]; }\n\
+            impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
@@ -740,8 +740,8 @@ mod tests {
     #[test]
     fn matching_widths_are_fine() {
         let src = "module m;\n\
-            entity Sub<W: usize> { in a: uint[W]; out b: uint[W]; }\n\
-            impl Sub<W: usize> { b = a; }\n\
+            entity Sub<W: integer> { in a: uint[W]; out b: uint[W]; }\n\
+            impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
@@ -757,8 +757,8 @@ mod tests {
     fn missing_connection_is_reported() {
         // `rst` is left unconnected.
         let src = "module m;\n\
-            entity Counter<W: usize> { in clk: Clock; in rst: Logic; out count: uint[W]; }\n\
-            impl Counter<W: usize> { count = 0; }\n\
+            entity Counter<W: integer> { in clk: Clock; in rst: Logic; out count: uint[W]; }\n\
+            impl Counter<W: integer> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn extern_entity_is_a_black_box() {
         let src = "module m;\n\
-            extern entity Ram<W: usize> { in addr: uint[W]; out data: uint[8]; }\n\
+            extern entity Ram<W: integer> { in addr: uint[W]; out data: uint[8]; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\

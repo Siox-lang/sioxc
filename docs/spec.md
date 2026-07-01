@@ -117,7 +117,7 @@ Not allowed inside an entity body in Phase 1:
 Valid:
 
 ```siox
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     in clk: Clock;
     in rst: Logic;
     in en: Bit;
@@ -130,7 +130,7 @@ Invalid:
 
 ```siox
 entity Counter {
-    const W: usize;      // invalid in entity body
+    const W: integer;      // invalid in entity body
     let value: uint[8];  // invalid in entity body
 
     in clk: Clock;
@@ -151,7 +151,7 @@ They must be known when the entity is specialized/instantiated.
 Valid:
 
 ```siox
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     out count: uint[W];
 }
 ```
@@ -196,9 +196,9 @@ In Phase 1, `const` may exist at module scope or inside implementation/function 
 Valid:
 
 ```siox
-const DEFAULT_WIDTH: usize = 8;
+const DEFAULT_WIDTH: integer = 8;
 
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     out count: uint[W];
 }
 ```
@@ -206,7 +206,7 @@ entity Counter<W: usize> {
 Valid inside implementation if used as a local compile-time value:
 
 ```siox
-impl Counter<W: usize> {
+impl Counter<W: integer> {
     const MAX: uint[W] = (1 << W) - 1;
 }
 ```
@@ -215,7 +215,7 @@ Invalid:
 
 ```siox
 entity Counter {
-    const W: usize;
+    const W: integer;
     out count: uint[W];
 }
 ```

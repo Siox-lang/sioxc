@@ -66,7 +66,7 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
-/// Generic/elaboration parameter list `<W: usize, T>` (spec 3.2).
+/// Generic/elaboration parameter list `<W: integer, T>` (spec 3.2).
 #[derive(Clone, Debug, Default)]
 pub struct Params {
     pub params: Vec<Param>,
@@ -75,7 +75,7 @@ pub struct Params {
 #[derive(Clone, Debug)]
 pub struct Param {
     pub name: Ident,
-    /// `None` for a bare type parameter `<T>`; `Some` for `<W: usize>`.
+    /// `None` for a bare type parameter `<T>`; `Some` for `<W: integer>`.
     pub bound: Option<Type>,
     pub span: Span,
 }
@@ -114,7 +114,7 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-/// `entity Counter<W: usize> { in clk: Clock; out count: uint[W]; }`.
+/// `entity Counter<W: integer> { in clk: Clock; out count: uint[W]; }`.
 ///
 /// Entity bodies are interface-only (spec 3.1): ports and bus/interface
 /// fields, never state or behavior.
@@ -146,7 +146,7 @@ pub enum Direction {
     Inout,
 }
 
-/// `impl Counter<W: usize> { ... }`, `impl Trait for Type { ... }`, or a
+/// `impl Counter<W: integer> { ... }`, `impl Trait for Type { ... }`, or a
 /// directional bus mode `impl out Stream<T>::Source { ... }` (spec 3.19).
 #[derive(Clone, Debug)]
 pub struct ImplDecl {

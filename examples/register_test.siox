@@ -4,13 +4,13 @@ using std::logic::{Logic, Clock};
 using std::bits::uint;
 
 // A parameterized register: `q` captures `d` on the rising clock edge.
-entity Register<W: usize> {
+entity Register<W: integer> {
     in clk: Clock;
     in d: uint[W];
     out q: uint[W];
 }
 
-impl Register<W: usize> {
+impl Register<W: integer> {
     let state: uint[W] = 0;
 
     if clk::rising {

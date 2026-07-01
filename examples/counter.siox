@@ -5,14 +5,14 @@ using std::bits::uint;
 
 // A parameterized up-counter with synchronous reset and enable.
 #[top]
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     in clk: Clock;
     in rst: Logic;
     in en: Bit;
     out count: uint[W];
 }
 
-impl Counter<W: usize> {
+impl Counter<W: integer> {
     let value: uint[W] = 0;
 
     if clk::rising {

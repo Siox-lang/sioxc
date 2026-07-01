@@ -13,9 +13,9 @@
 //! - associated paths like `State::Idle` resolve correctly
 //!
 //! Phase-1 scope notes (deliberate simplifications, to be tightened later):
-//! - Primitive types (`Bit`, `Logic`, `uint`, ...) and the `std::attrs`
-//!   attributes (`top`, `test`, ...) are seeded as builtins, since `std/` is
-//!   still empty.
+//! - The kernel base types (`integer`, `real`) are seeded as builtins, plus —
+//!   as a shim until operator overloading — the std type names the checker/IR
+//!   still special-case (`Bit`, `uint`, ...) and the `std::attrs` attributes.
 //! - Type references, enum-variant paths, and attribute names are resolved
 //!   strictly (an unknown one is an error). Plain value identifiers (signals,
 //!   ports, locals) are resolved best-effort and never produce a false
@@ -48,7 +48,7 @@ pub enum DefKind {
     TypeAlias,
     /// Declared metadata attribute (`attr top: Bool for entity;`).
     Attr,
-    /// Generic/elaboration parameter (`<W: usize>`).
+    /// Generic/elaboration parameter (`<W: integer>`).
     Param,
     /// `let`/`const`/method/mode-field name local to an impl or block.
     Local,
@@ -149,7 +149,7 @@ impl<'a> Resolver<'a> {
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
         for name in
-            ["integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"]
+            ["integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string"]
         {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
@@ -736,12 +736,12 @@ mod tests {
              using std::logic::{Bit, Logic, Clock};\n\
              using std::bits::uint;\n\
              #[top]\n\
-             entity Counter<W: usize> {\n\
+             entity Counter<W: integer> {\n\
                in clk: Clock;\n\
                in rst: Logic;\n\
                out count: uint[W];\n\
              }\n\
-             impl Counter<W: usize> {\n\
+             impl Counter<W: integer> {\n\
                let value: uint[W] = 0;\n\
                if clk::rising {\n\
                  value = value + 1;\n\

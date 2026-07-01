@@ -855,7 +855,7 @@ fn int_lit(e: &ast::Expr) -> Option<u32> {
 
 fn is_int_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Path(p)
-        if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "usize")))
+        if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "integer")))
 }
 
 /// Build `enum name -> bit width`: the `repr` width if given (`enum S: uint[2]`),
@@ -911,13 +911,13 @@ mod tests {
     }
 
     const COUNTER: &str = "module m;\n\
-        entity Counter<W: usize> {\n\
+        entity Counter<W: integer> {\n\
           in clk: Clock;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\
         }\n\
-        impl Counter<W: usize> {\n\
+        impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
           if clk::rising {\n\
             if rst == '1' {\n\

@@ -7,8 +7,8 @@ module std::sim;
 // the simulator's base tick is 1 fs (the VCD timescale), so a delay of
 // `10 * NS` means 10 nanoseconds.
 
-pub const FS: usize = 1;
-pub const PS: usize = 1000;
-pub const NS: usize = 1000000;
-pub const US: usize = 1000000000;
-pub const MS: usize = 1000000000000;
+pub const FS: integer = 1;
+pub const PS: integer = 1000;
+pub const NS: integer = 1000000;
+pub const US: integer = 1000000000;
+pub const MS: integer = 1000000000000;

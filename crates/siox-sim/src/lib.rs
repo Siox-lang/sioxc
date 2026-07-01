@@ -729,10 +729,10 @@ mod tests {
     }
 
     const COUNTER_TEST: &str = "module m;\n\
-        entity Counter<W: usize> {\n\
+        entity Counter<W: integer> {\n\
           in clk: Clock; in rst: Logic; in en: Bit; out count: uint[W];\n\
         }\n\
-        impl Counter<W: usize> {\n\
+        impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
           if clk::rising {\n\
             if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
@@ -992,8 +992,8 @@ mod tests {
         // q captures d on the rising edge and holds between edges.
         assert_test_passes(
             "module m;\n\
-             entity Reg<W: usize> { in clk: Clock; in d: uint[W]; out q: uint[W]; }\n\
-             impl Reg<W: usize> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
+             entity Reg<W: integer> { in clk: Clock; in d: uint[W]; out q: uint[W]; }\n\
+             impl Reg<W: integer> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
              #[test] entity T {}\n\
              impl T {\n\
                let clk: Logic = '0'; let d: uint[8] = 0; let q: uint[8];\n\
@@ -1036,13 +1036,13 @@ mod tests {
     }
 
     const COUNTER: &str = "module m;\n\
-        entity Counter<W: usize> {\n\
+        entity Counter<W: integer> {\n\
           in clk: Clock;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\
         }\n\
-        impl Counter<W: usize> {\n\
+        impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
           if clk::rising {\n\
             if rst == '1' {\n\

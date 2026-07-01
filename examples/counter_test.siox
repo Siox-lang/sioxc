@@ -3,14 +3,14 @@ module examples::counter_test;
 using std::logic::{Bit, Logic, Clock};
 using std::bits::uint;
 
-entity Counter<W: usize> {
+entity Counter<W: integer> {
     in clk: Clock;
     in rst: Logic;
     in en: Bit;
     out count: uint[W];
 }
 
-impl Counter<W: usize> {
+impl Counter<W: integer> {
     let value: uint[W] = 0;
 
     if clk::rising {
