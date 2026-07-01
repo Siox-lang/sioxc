@@ -8,7 +8,7 @@ the compiler's by-name handling kept as a shim until operator overloading
 (see the spec's "type kernel" section under Stage 11). Kept for the design
 rationale; the live status lives in docs/implementation.md (Stage 11).
 
-## Where we are today
+## Where we were (before this landed)
 
 - The CLI loads **one file** (`read_to_string(path)` → one `Module`). There is no
   multi-file front end.

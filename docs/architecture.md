@@ -81,14 +81,16 @@ name-use site to the declaration it resolves to.
   `across`/`through`, `::ddt`, layout attrs) must produce errors
   (`codes::PHASE2_SYNTAX`), not silent acceptance.
 
-## Builtins while `std/` is empty
+## The type kernel and the std shim
 
-The standard library (`std/`) is a placeholder. Until it is filled in, the
-primitive types (`Bit`, `Logic`, `Bool`, `Clock`, `uint`, `int`, ...) and the
-`std::attrs` attributes (`top`, `test`, `keep`, ...) are **seeded as builtins**
-inside `siox-resolve` and `siox-types`, so the example programs resolve and
-type-check without the real library. When `std/` lands (Stage 11), these move
-out of the compiler.
+The kernel's base types are **`integer` and `real`** only; `Bit`, `Logic`,
+`Bool`, `Clock` are canonical `enum` declarations in `std/logic.siox`, and
+`uint[N]`/`int[N]` are derived Logic vectors that accept `integer` on
+assignment (spec, "type kernel"). The CLI loads `std::` modules transitively
+from `--std <dir>` (default `./std`). As a shim until operator overloading can
+carry their semantics as source, `siox-resolve` still seeds those std type
+names (and the `std::attrs` attributes) and `siox-types`/`siox-ir` special-case
+them by name; the shim is deleted when operators move to std as trait impls.
 
 ## The CLI as the pipeline driver
 
