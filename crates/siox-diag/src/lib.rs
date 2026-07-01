@@ -198,6 +198,7 @@ pub mod codes {
     pub const INVALID_METHOD_CALL: &str = "E-P008";
     pub const INVALID_PATTERN: &str = "E-P009";
     pub const PHASE2_SYNTAX: &str = "E-P010";
+    pub const UNRESOLVED_IMPORT: &str = "E-P011";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

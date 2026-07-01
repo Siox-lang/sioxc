@@ -52,8 +52,6 @@ pub enum DefKind {
     Param,
     /// `let`/`const`/method/mode-field name local to an impl or block.
     Local,
-    /// Imported name whose origin module is not available (e.g. `std::*`).
-    External,
 }
 
 /// Metadata for one declaration.
@@ -102,6 +100,11 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     for m in modules {
         for item in &m.items {
             r.collect_item(item);
+        }
+    }
+    for m in modules {
+        for item in &m.items {
+            r.resolve_imports(item);
         }
     }
     for m in modules {
@@ -161,22 +164,10 @@ impl<'a> Resolver<'a> {
                 UsingKind::Alias { name, .. } => {
                     self.declare(&name.text, DefKind::TypeAlias, false, name.span);
                 }
-                UsingKind::Import { names, .. } => {
-                    for n in names {
-                        // Bind the imported name unless a builtin/def already
-                        // owns it; an unknown origin becomes an opaque External.
-                        if !self.globals.contains_key(&n.text) {
-                            let id = self.add_def(
-                                n.text.clone(),
-                                DefKind::External,
-                                true,
-                                Some(n.span),
-                                None,
-                            );
-                            self.globals.insert(n.text.clone(), id);
-                        }
-                    }
-                }
+                // Imports bind to declarations from other loaded modules, so
+                // they are validated after every module has been collected
+                // (see `resolve_imports`).
+                UsingKind::Import { .. } => {}
             },
             Item::Const(c) => {
                 self.declare(&c.name.text, DefKind::Const, c.is_pub, c.name.span);
@@ -216,6 +207,36 @@ impl<'a> Resolver<'a> {
             }
             // Impls declare no top-level name.
             Item::Impl(_) => {}
+        }
+    }
+
+    /// Bind each `using base::{names}` name to the declaration another loaded
+    /// module (or a builtin) provides. Runs after all modules are collected;
+    /// an import that matches nothing is a hard error.
+    fn resolve_imports(&mut self, item: &Item) {
+        let Item::Using(u) = item else { return };
+        let UsingKind::Import { base, names } = &u.kind else { return };
+        for n in names {
+            let found = self.globals.get(&n.text).or_else(|| self.attrs.get(&n.text)).copied();
+            match found {
+                Some(id) => {
+                    self.out.uses.insert(n.span, id);
+                }
+                None => {
+                    let base_str =
+                        base.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::");
+                    let mut diag = Diagnostic::error(format!(
+                        "unresolved import: no `{}` in `{base_str}`",
+                        n.text
+                    ))
+                    .with_code(codes::UNRESOLVED_IMPORT)
+                    .at(n.span);
+                    if let Some(s) = self.suggest(&n.text) {
+                        diag = diag.help(format!("did you mean `{s}`?"));
+                    }
+                    self.sink.emit(diag);
+                }
+            }
         }
     }
 
