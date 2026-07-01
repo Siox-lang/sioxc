@@ -1008,6 +1008,35 @@ Both may use the English word “direction”, but they are different concepts.
 
 ---
 
+### 3.24 Literal suffixes and bit-string literals
+
+A numeric literal may carry an adjacent identifier suffix (no space):
+
+```siox
+wait 1ns;          // time: fs ps ns us ms s  (scaled to fs, the base tick)
+let f = 100MHz;    // frequency: Hz kHz MHz GHz (scaled to Hz)
+let z = 10 + 5i;   // future: complex, via a std suffix definition
+```
+
+An unknown suffix is an error. The suffix table is currently fixed in the
+compiler; it becomes std-defined (suffix declarations producing `Time`,
+`Freq`, `Complex`, ... values) when literal-suffix overloading lands, the way
+VHDL declares time units in a physical type.
+
+A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
+a sized `uint` constant:
+
+```siox
+let a: uint[8]  = x"AB";        // hex: width = 4 * digits
+let m: uint[8]  = b"01010101";  // binary: width = digits
+let k: uint[24] = x"123ABC";
+```
+
+Digits must be valid for the base; widths participate in the strict
+assignment/connection width rules (3.17) and in concatenation sizing.
+
+---
+
 ## 4. Phase 1 implementation stages
 
 Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.

@@ -574,6 +574,11 @@ impl Testbench<'_> {
     fn eval(&self, e: &ast::Expr) -> u64 {
         match e {
             ast::Expr::Int { text, .. } => parse_u64(text),
+            ast::Expr::SuffixLit { text, suffix, .. } => parse_u64(text)
+                .saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
+            ast::Expr::BitStrLit { base, digits, .. } => {
+                u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0)
+            }
             ast::Expr::Bool { value, .. } => *value as u64,
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
@@ -642,23 +647,22 @@ fn str_lit(e: &ast::Expr) -> Option<String> {
 }
 
 /// The femtosecond duration of a `wait` argument like `10.ns` (parsed as a field
-/// access `10 . ns`). Unknown forms default to a half period.
+/// access `10 . ns`) or a suffixed literal `10ns`. Unknown forms default to a
+/// half period.
 fn duration_fs(args: &[ast::Expr]) -> u64 {
-    if let Some(ast::Expr::Field { base, field, .. }) = args.first() {
-        if let ast::Expr::Int { text, .. } = base.as_ref() {
-            let scale = match field.text.as_str() {
-                "fs" => 1,
-                "ps" => 1_000,
-                "ns" => 1_000_000,
-                "us" => 1_000_000_000,
-                "ms" => 1_000_000_000_000,
-                "s" => 1_000_000_000_000_000,
-                _ => 1_000_000,
-            };
-            return parse_u64(text) * scale;
+    match args.first() {
+        Some(ast::Expr::Field { base, field, .. }) => {
+            if let ast::Expr::Int { text, .. } = base.as_ref() {
+                let scale = ast::suffix_scale(&field.text).unwrap_or(1_000_000);
+                return parse_u64(text) * scale as u64;
+            }
+            HALF_PERIOD
         }
+        Some(ast::Expr::SuffixLit { text, suffix, .. }) => {
+            parse_u64(text) * ast::suffix_scale(&suffix.text).unwrap_or(1_000_000) as u64
+        }
+        _ => HALF_PERIOD,
     }
-    HALF_PERIOD
 }
 
 fn parse_u64(text: &str) -> u64 {
@@ -1105,6 +1109,30 @@ mod tests {
             tick(&mut sim, clk);
         }
         assert_eq!(sim.read(count), 1);
+    }
+
+    #[test]
+    fn suffix_and_bitstring_literals_run() {
+        let results = run(
+            "module m;\n\
+             entity Buf { in a: uint[8]; out y: uint[8]; }\n\
+             impl Buf { y = a; }\n\
+             #[test]\n\
+             entity LitTest {}\n\
+             impl LitTest {\n\
+               let a: uint[8] = x\"AB\";\n\
+               let y: uint[8];\n\
+               let dut = Buf { .a, .y };\n\
+               wait 1ns;\n\
+               assert!(y == x\"AB\", \"hex literal drives through\");\n\
+               assert!(y == 171, \"and equals its decimal value\");\n\
+               a = b\"01010101\";\n\
+               wait 1ns;\n\
+               assert!(y == 85, \"binary literal too\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
     }
 
     #[test]

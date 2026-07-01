@@ -444,6 +444,16 @@ impl<'a> Lowering<'a> {
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
             ast::Expr::Int { text, .. } => Expr::Const(parse_int(text).unwrap_or(0)),
+            // `1ns` / `10MHz` scale to the base unit (fs / Hz); `x"AB"` is a
+            // sized constant.
+            ast::Expr::SuffixLit { text, suffix, .. } => Expr::Const(
+                parse_int(text)
+                    .map(|v| v.saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64))
+                    .unwrap_or(0),
+            ),
+            ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(
+                u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0),
+            ),
             ast::Expr::Bool { value, .. } => Expr::Const(*value as u64),
             ast::Expr::LogicLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => self
@@ -525,6 +535,10 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Int { text, .. } => {
                 (u64::BITS - parse_int(text).unwrap_or(0).leading_zeros()).max(1)
+            }
+            // A bit-string literal has an explicit digit-count width.
+            ast::Expr::BitStrLit { base, digits, .. } => {
+                (digits.len() as u32 * if *base == 'x' { 4 } else { 1 }).max(1)
             }
             // A signal reference (name, struct field, constant array element).
             _ => expr_path(e)

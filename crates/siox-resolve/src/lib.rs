@@ -535,7 +535,14 @@ impl<'a> Resolver<'a> {
 
     fn resolve_expr(&mut self, e: &Expr) {
         match e {
-            Expr::Int { .. } | Expr::LogicLit { .. } | Expr::StrLit { .. } | Expr::Bool { .. } => {}
+            // Literal leaves; a suffix (`1ns`) is not a value path — it binds
+            // to a suffix definition during type checking.
+            Expr::Int { .. }
+            | Expr::SuffixLit { .. }
+            | Expr::BitStrLit { .. }
+            | Expr::LogicLit { .. }
+            | Expr::StrLit { .. }
+            | Expr::Bool { .. } => {}
             Expr::Path(p) => self.resolve_value_path(p),
             Expr::Field { base, .. } => self.resolve_expr(base),
             Expr::SysAttr { base, .. } => self.resolve_expr(base),

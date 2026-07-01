@@ -289,6 +289,12 @@ pub enum Pattern {
 #[derive(Clone, Debug)]
 pub enum Expr {
     Int { text: String, span: Span },
+    /// `1ns`, `10MHz`, `5i` — a numeric literal with an adjacent unit/type
+    /// suffix. `text` is the numeric part exactly as written.
+    SuffixLit { text: String, suffix: Ident, span: Span },
+    /// `x"123ABC"` / `b"0101"` — bit-string literal; `base` is the prefix
+    /// letter, `digits` the text between the quotes.
+    BitStrLit { base: char, digits: String, span: Span },
     LogicLit { ch: char, span: Span },
     StrLit { text: String, span: Span },
     Bool { value: bool, span: Span },
@@ -378,4 +384,25 @@ pub enum Type {
 pub enum GenericArg {
     Positional(Expr),
     Named { name: Ident, value: Expr },
+}
+
+/// Scale factor for a numeric literal suffix: femtoseconds for time units,
+/// hertz for frequency units. `1ns` scales to 1_000_000 (fs), `10MHz` to
+/// 10_000_000 (Hz).
+// ponytail: fixed table — becomes std-defined suffix declarations (Time/Freq/
+// Complex types) when literal-suffix overloading lands.
+pub fn suffix_scale(s: &str) -> Option<u128> {
+    Some(match s {
+        "fs" => 1,
+        "ps" => 1_000,
+        "ns" => 1_000_000,
+        "us" => 1_000_000_000,
+        "ms" => 1_000_000_000_000,
+        "s" => 1_000_000_000_000_000,
+        "Hz" => 1,
+        "kHz" => 1_000,
+        "MHz" => 1_000_000,
+        "GHz" => 1_000_000_000,
+        _ => return None,
+    })
 }

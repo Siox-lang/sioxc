@@ -434,6 +434,8 @@ fn expr_prec(e: &Expr, parent: u8) -> String {
 fn expr_inner(e: &Expr) -> (String, u8) {
     match e {
         Expr::Int { text, .. } => (text.clone(), u8::MAX),
+        Expr::SuffixLit { text, suffix, .. } => (format!("{text}{}", suffix.text), u8::MAX),
+        Expr::BitStrLit { base, digits, .. } => (format!("{base}\"{digits}\""), u8::MAX),
         Expr::LogicLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
         Expr::StrLit { text, .. } => (format!("\"{text}\""), u8::MAX),
         Expr::Bool { value, .. } => (value.to_string(), u8::MAX),
@@ -510,6 +512,21 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_suffix_and_bitstring_literals() {
+        roundtrip(
+            "module m;\n\
+             entity E { out y: uint[8]; }\n\
+             impl E {\n\
+               let t = 10ns;\n\
+               let f = 100MHz;\n\
+               let c = 5i;\n\
+               y = x\"AB\";\n\
+               wait 1ns;\n\
+             }\n",
+        );
     }
 
     #[test]

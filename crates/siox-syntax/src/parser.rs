@@ -777,7 +777,15 @@ impl<'a> Parser<'a> {
         match self.kind() {
             TokenKind::Int | TokenKind::Float => {
                 let t = self.bump();
-                Expr::Int { text: self.text_of(t.span).to_string(), span: t.span }
+                let text = self.text_of(t.span).to_string();
+                // An identifier glued to the number is a unit/type suffix:
+                // `1ns`, `10MHz`, `5i` (the lexer splits them into two tokens).
+                if self.at(TokenKind::Ident) && self.span().start == t.span.end {
+                    let suffix = self.parse_ident();
+                    let span = t.span.to(self.prev_span());
+                    return Expr::SuffixLit { text, suffix, span };
+                }
+                Expr::Int { text, span: t.span }
             }
             TokenKind::LogicLit => {
                 let t = self.bump();
@@ -801,6 +809,19 @@ impl<'a> Parser<'a> {
                 let value = self.cur_text() == "true";
                 let t = self.bump();
                 Expr::Bool { value, span: t.span }
+            }
+            // A one-letter prefix glued to a string is a bit-string literal:
+            // `x"123ABC"` (hex) / `b"0101"` (binary).
+            TokenKind::Ident
+                if matches!(self.cur_text(), "x" | "b")
+                    && self.kind_at(self.pos + 1) == &TokenKind::StrLit
+                    && self.span_at(self.pos + 1).start == self.span().end =>
+            {
+                let p = self.bump();
+                let base = self.text_of(p.span).chars().next().unwrap_or('x');
+                let t = self.bump();
+                let digits = self.text_of(t.span).trim_matches('"').to_string();
+                Expr::BitStrLit { base, digits, span: p.span.to(t.span) }
             }
             TokenKind::Ident | TokenKind::SelfKw => self.parse_path_expr_or_construct(no_struct),
             // A leading `{`: `{ .field = ... }` is a name-less struct literal
@@ -1127,6 +1148,10 @@ impl<'a> Parser<'a> {
 
     fn kind_at(&self, i: usize) -> &TokenKind {
         &self.tokens[i.min(self.tokens.len() - 1)].kind
+    }
+
+    fn span_at(&self, i: usize) -> Span {
+        self.tokens[i.min(self.tokens.len() - 1)].span
     }
 
     fn at(&self, k: TokenKind) -> bool {

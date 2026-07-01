@@ -611,6 +611,26 @@ impl<'a> Checker<'a> {
                     self.check_expr(p);
                 }
             }
+            Expr::SuffixLit { suffix, span, .. } => {
+                if suffix_scale(&suffix.text).is_none() {
+                    self.error(
+                        codes::UNKNOWN_NAME,
+                        *span,
+                        format!("unknown literal suffix `{}`", suffix.text),
+                    );
+                }
+            }
+            Expr::BitStrLit { base, digits, span } => {
+                let radix = if *base == 'x' { 16 } else { 2 };
+                if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!("invalid {} bit-string literal `{base}\"{digits}\"`",
+                            if radix == 16 { "hex" } else { "binary" }),
+                    );
+                }
+            }
             Expr::Int { .. }
             | Expr::LogicLit { .. }
             | Expr::StrLit { .. }
@@ -627,6 +647,14 @@ impl<'a> Checker<'a> {
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
             Expr::Int { .. } => Ty::UInt(0),
+            // Unit suffixes scale to the base unit (fs / Hz) and stay integer
+            // until std-defined suffix types (Time, Freq, Complex) land.
+            Expr::SuffixLit { suffix, .. } => {
+                if suffix_scale(&suffix.text).is_some() { Ty::UInt(0) } else { Ty::Error }
+            }
+            Expr::BitStrLit { base, digits, .. } => {
+                Ty::UInt(digits.len() as u32 * if *base == 'x' { 4 } else { 1 })
+            }
             Expr::LogicLit { .. } => Ty::Logic,
             Expr::Bool { .. } => Ty::Bool,
             Expr::StrLit { .. } => Ty::Error,
@@ -765,6 +793,8 @@ fn ty_name(t: &Ty) -> String {
 fn expr_span(e: &Expr) -> Span {
     match e {
         Expr::Int { span, .. }
+        | Expr::SuffixLit { span, .. }
+        | Expr::BitStrLit { span, .. }
         | Expr::LogicLit { span, .. }
         | Expr::StrLit { span, .. }
         | Expr::Bool { span, .. }
@@ -970,6 +1000,29 @@ mod tests {
         assert_eq!(bad, 1);
         let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
         assert_eq!(good, 0);
+    }
+
+    #[test]
+    fn suffix_and_bitstring_literals_are_checked() {
+        // Known unit suffixes and valid bit-strings pass.
+        assert_eq!(
+            check_src(
+                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t = 10ns;\n  let f = 100MHz;\n  y = x\"AB\";\n}\n"
+            ),
+            0
+        );
+        // An unknown suffix is an error.
+        assert_eq!(
+            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c = 5i;\n  y = '0';\n}\n"),
+            1
+        );
+        // Bad digits for the base are an error.
+        assert_eq!(
+            check_src(
+                "module m;\nentity E { out y: uint[5]; }\nimpl E {\n  y = b\"01021\";\n}\n"
+            ),
+            1
+        );
     }
 
     #[test]
