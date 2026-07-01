@@ -783,6 +783,33 @@ mod tests {
     }
 
     #[test]
+    fn simulates_a_ready_valid_handshake() {
+        // A 1-deep buffer captures `d` only when `valid and ready` on a rising
+        // edge (exercises a compound condition in an event block).
+        assert_test_passes(
+            "module m;\n\
+             entity Fifo1 { in clk: Clock; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
+             impl Fifo1 {\n\
+               let buf: uint[8] = 0;\n\
+               if clk::rising { if valid and ready { buf = d; } }\n\
+               q = buf;\n\
+             }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let clk: Logic = '0'; let valid: Bit = '0'; let ready: Bit = '0';\n\
+               let d: uint[8] = 0; let q: uint[8];\n\
+               let dut = Fifo1 { .clk, .valid, .ready, .d, .q };\n\
+               d = 99; valid = '1';\n\
+               tick(clk);\n\
+               assert!(q == 0, \"no capture without ready\");\n\
+               ready = '1';\n\
+               tick(clk);\n\
+               assert!(q == 99, \"captured on valid and ready\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
     fn simulates_an_enum_old_monitor() {
         // `started` pulses for one step on the Idle -> Run transition, detected
         // combinationally via `state::old`.
