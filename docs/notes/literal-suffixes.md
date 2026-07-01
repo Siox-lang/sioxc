@@ -111,9 +111,10 @@ for files that don't load a std `Suffix` impl covering the suffix — `wait
 10ns` keeps working in bare files, typed as `integer`. When a loaded module
 defines the suffix, the trait impl wins and the literal takes its type.
 
-## Still open: `10 + 5i`
+## `10 + 5i`: mixed-operand operator impls (landed)
 
-`5i` is a `Complex` but `10` is an `integer`, so the literal `10 + 5i` needs
-**mixed-operand operator impls** — `fn apply(self, rhs: integer) -> Complex`
-under the same `trait "+"`, with impl lookup keyed by (op, lhs, rhs) types.
-That is the next increment after suffix traits land.
+`5i` is a `Complex` but `10` is an `integer`, so the literal form uses
+**mixed-operand operator impls**: fns under one operator impl overload by
+their rhs parameter type, and `impl "+" for integer` handles literal left
+operands. Selection is by (op, lhs type, rhs type); see spec 3.25.
+`examples/complex_test.siox` asserts `10 + 5i` end to end.

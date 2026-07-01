@@ -17,13 +17,14 @@ impl Adder {
     z = a + b;
 }
 
-// The `i` literal suffix comes from `impl Suffix for Complex` in std::math.
+// The `i` literal suffix comes from `impl Suffix for Complex` in std::math;
+// the mixed-operand `impl "+" for integer` makes the literal form work.
 entity Imag {
     out z: Complex;
 }
 
 impl Imag {
-    z = 5i;
+    z = 10 + 5i;
 }
 
 #[test]
@@ -50,6 +51,6 @@ impl ComplexTest {
     let imag = Imag { .z = w };
 
     wait 1ns;
-    assert!(w.re == 0, "5i: real part");
-    assert!(w.im == 5, "5i: imaginary part");
+    assert!(w.re == 10, "10 + 5i: real part");
+    assert!(w.im == 5, "10 + 5i: imaginary part");
 }

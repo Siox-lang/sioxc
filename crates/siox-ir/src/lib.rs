@@ -164,10 +164,11 @@ struct Lowering<'a> {
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
-    /// (trait name, target type) -> the impl's fn, for operator inlining.
-    op_impls: HashMap<(String, String), &'a ast::FnDecl>,
-    /// Literal suffix -> its `impl Suffix for T` fn, for suffix inlining.
-    suffix_impls: HashMap<String, &'a ast::FnDecl>,
+    /// (trait name, target type) -> the impl's fns, for operator inlining.
+    /// Multiple fns overload by rhs parameter type (`10 + 5i`).
+    op_impls: HashMap<(String, String), Vec<&'a ast::FnDecl>>,
+    /// Literal suffix -> (target type, fn), for suffix inlining.
+    suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -257,14 +258,19 @@ impl<'a> Lowering<'a> {
                             if tr.text == "Suffix" {
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
-                                        self.suffix_impls.insert(f.name.text.clone(), f);
+                                        self.suffix_impls
+                                            .insert(f.name.text.clone(), (ty.to_string(), f));
                                     }
                                 }
-                            } else if let Some(f) = im.items.iter().find_map(|it| match it {
-                                ast::ImplItem::Fn(f) => Some(f),
-                                _ => None,
-                            }) {
-                                self.op_impls.insert((tr.text.clone(), ty.to_string()), f);
+                            } else {
+                                for it in &im.items {
+                                    if let ast::ImplItem::Fn(f) = it {
+                                        self.op_impls
+                                            .entry((tr.text.clone(), ty.to_string()))
+                                            .or_default()
+                                            .push(f);
+                                    }
+                                }
                             }
                         }
                     }
@@ -681,9 +687,28 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let p = expr_path(lhs)?;
-        let ty = self.local_enum.get(&p).or_else(|| self.local_struct.get(&p))?;
-        let f = self.op_impls.get(&(op.to_string(), ty.clone())).copied()?;
+        let lhs_ty = self.operand_type_name(lhs)?;
+        let rhs_ty = self.operand_type_name(rhs);
+        let fns = self.op_impls.get(&(op.to_string(), lhs_ty.clone()))?;
+
+        // Overload selection by the rhs parameter's type: `Self` reads as the
+        // impl target; an unknown rhs type accepts a sole candidate.
+        let f = fns
+            .iter()
+            .find(|f| {
+                let param_ty = f
+                    .params
+                    .iter()
+                    .find(|p| !p.is_self)
+                    .and_then(|p| p.ty.as_ref())
+                    .and_then(type_head_name);
+                match (param_ty, &rhs_ty) {
+                    (Some("Self"), Some(r)) => *r == lhs_ty,
+                    (Some(pt), Some(r)) => pt == r,
+                    _ => fns.len() == 1,
+                }
+            })
+            .or_else(|| if fns.len() == 1 { fns.first() } else { None })?;
         let body = f.body.as_ref()?;
 
         // Bind `self` to the left operand and the first named param to the right.
@@ -695,6 +720,26 @@ impl<'a> Lowering<'a> {
             }
         }
         self.inline_block(&body.stmts, &fenv)
+    }
+
+    /// The type name an operand contributes to operator-impl lookup: a local's
+    /// declared enum/struct, a suffix literal's target type, an enum variant's
+    /// enum, or `integer` for a bare numeric literal.
+    fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
+        match e {
+            ast::Expr::Int { .. } => Some("integer".to_string()),
+            ast::Expr::SuffixLit { suffix, .. } => {
+                self.suffix_impls.get(&suffix.text).map(|(ty, _)| ty.clone())
+            }
+            ast::Expr::Path(p) if p.segments.len() >= 2 => self
+                .enum_variants
+                .contains_key(&p.segments[0].text)
+                .then(|| p.segments[0].text.clone()),
+            _ => {
+                let p = expr_path(e)?;
+                self.local_enum.get(&p).or_else(|| self.local_struct.get(&p)).cloned()
+            }
+        }
     }
 
     /// The value a straight-line `return`/`if-else` block produces, or `None`
@@ -800,7 +845,7 @@ impl<'a> Lowering<'a> {
     /// `Complex::i(5)`): the fn's parameter binds to the literal value.
     fn inline_suffix(&self, e: &ast::Expr) -> Option<Val> {
         let ast::Expr::SuffixLit { text, suffix, .. } = e else { return None };
-        let f = self.suffix_impls.get(&suffix.text).copied()?;
+        let (_, f) = self.suffix_impls.get(&suffix.text)?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {

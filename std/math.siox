@@ -14,6 +14,16 @@ impl "+" for Complex {
     fn apply(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
+    fn apply_int(self, rhs: integer) -> Complex {
+        return Complex { .re = self.re + rhs, .im = self.im };
+    }
+}
+
+// `10 + 5i`: an integer left operand promotes into the Complex plane.
+impl "+" for integer {
+    fn apply(self, rhs: Complex) -> Complex {
+        return Complex { .re = self + rhs.re, .im = rhs.im };
+    }
 }
 
 impl "-" for Complex {

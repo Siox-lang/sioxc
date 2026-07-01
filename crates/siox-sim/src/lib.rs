@@ -1128,6 +1128,58 @@ mod tests {
     }
 
     #[test]
+    fn mixed_operand_operator_impl_selects_by_rhs_type() {
+        // `10 + 5i`: integer lhs finds `impl "+" for integer` with a Complex
+        // rhs; Complex lhs overloads select between Complex and integer rhs.
+        let results = run(
+            "module m;\n\
+             pub trait Suffix {}\n\
+             pub trait \"+\" {\n\
+               fn apply(self, rhs: Self) -> Self;\n\
+             }\n\
+             struct Complex { re: uint[8], im: uint[8] }\n\
+             impl Suffix for Complex {\n\
+               fn i(v: integer) -> Complex {\n\
+                 return Complex { .re = 0, .im = v };\n\
+               }\n\
+             }\n\
+             impl \"+\" for Complex {\n\
+               fn apply(self, rhs: Complex) -> Complex {\n\
+                 return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
+               }\n\
+               fn apply_int(self, rhs: integer) -> Complex {\n\
+                 return Complex { .re = self.re + rhs, .im = self.im };\n\
+               }\n\
+             }\n\
+             impl \"+\" for integer {\n\
+               fn apply(self, rhs: Complex) -> Complex {\n\
+                 return Complex { .re = self + rhs.re, .im = rhs.im };\n\
+               }\n\
+             }\n\
+             entity Src { in a: Complex; out lit: Complex; out bumped: Complex; }\n\
+             impl Src {\n\
+               lit = 10 + 5i;\n\
+               bumped = a + 3;\n\
+             }\n\
+             #[test]\n\
+             entity MixTest {}\n\
+             impl MixTest {\n\
+               let a: Complex = { .re = 1, .im = 2 };\n\
+               let lit: Complex;\n\
+               let bumped: Complex;\n\
+               let dut = Src { .a, .lit, .bumped };\n\
+               wait 1ns;\n\
+               assert!(lit.re == 10, \"10 + 5i re\");\n\
+               assert!(lit.im == 5, \"10 + 5i im\");\n\
+               assert!(bumped.re == 4, \"(1+2i) + 3 re\");\n\
+               assert!(bumped.im == 2, \"(1+2i) + 3 im\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn suffix_trait_impl_types_and_inlines_literals() {
         // `impl Suffix for T`: the fn name is the suffix, the literal inlines
         // its body — `10ns` drives Time.fs with 10_000_000, `5i` a Complex.

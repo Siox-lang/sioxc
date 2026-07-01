@@ -1083,8 +1083,25 @@ semantics; operator traits extend the same syntax to std and user types
 
 Operator impls are **inlined at lowering time** as pure expression trees: the
 body must be `return e;` or `if`/`else` chains ending in returns (no loops,
-no state). Enum-typed operands are supported; struct-typed operands (e.g.
-`Complex`) land with multi-signal expression values.
+no state). Enum- and struct-typed operands are supported (a struct result
+lowers to one driver per field).
+
+**Mixed operands** overload by the rhs parameter's type — multiple fns under
+one impl, and impls on `integer` for literal left operands:
+
+```siox
+impl "+" for Complex {
+    fn apply(self, rhs: Complex) -> Complex { ... }
+    fn apply_int(self, rhs: integer) -> Complex { ... }   // z + 3
+}
+
+impl "+" for integer {
+    fn apply(self, rhs: Complex) -> Complex { ... }        // 10 + 5i
+}
+```
+
+Selection is by (operator, lhs type, rhs type); `Self` in a parameter reads
+as the impl target.
 
 ---
 

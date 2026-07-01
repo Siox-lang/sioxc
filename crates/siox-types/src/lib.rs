@@ -745,12 +745,30 @@ impl<'a> Checker<'a> {
                 "width" | "high" | "low" | "left" | "right" => Ty::UInt(0),
                 _ => Ty::Error,
             },
-            Expr::Binary { op, lhs, .. } => {
+            Expr::Binary { op, lhs, rhs, .. } => {
                 if is_comparison(*op) {
-                    Ty::Bool
-                } else {
-                    self.type_of(lhs, sym)
+                    return Ty::Bool;
                 }
+                let lhs_ty = self.type_of(lhs, sym);
+                // A mixed-operand operator impl (`10 + 5i`) yields the
+                // impl-owning operand's type.
+                if !matches!(lhs_ty, Ty::Named(_)) {
+                    if let Ty::Named(id) = self.type_of(rhs, sym) {
+                        let has_impl = self
+                            .resolved
+                            .def(id)
+                            .map(|d| &d.name)
+                            .is_some_and(|name| {
+                                self.trait_impls
+                                    .get(siox_syntax::pretty::bin_op(*op))
+                                    .is_some_and(|set| set.contains(name))
+                            });
+                        if has_impl {
+                            return Ty::Named(id);
+                        }
+                    }
+                }
+                lhs_ty
             }
             Expr::Unary { rhs, .. } => self.type_of(rhs, sym),
             // A name-less struct literal (`ty: None`) takes its type from the
