@@ -90,13 +90,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   entity's behaviour into signals, combinational `Driver`s, and `EventBlock`s;
   detects event-controlled blocks (`::event`/`::rising`) and expands
   `clk::rising` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
-  `if`/`else` priority accumulates into next-state conditions. Signal widths are
-  made concrete by substituting the entity's instance parameters (`uint[W]` with
-  `W=8` -> width 8). `siox ir` prints it.
+  `if`/`else` priority accumulates into next-state conditions. `match` lowers to
+  first-match `scrutinee == variant` guards with enum discriminants (`Idle=0`,
+  ...). Signal widths are made concrete by substituting the entity's instance
+  parameters (`uint[W]` with `W=8` -> width 8). `siox ir` prints it.
 - **Status (todo):** cross-instance flattening/connections and multiple
   instances of one entity with differing params (widths come from the *first*
-  instance today); match/index/slice/concat/method-call lowering; instance `let`
-  bindings are currently listed as signals.
+  instance today); index/slice/concat/method-call lowering; enum-typed signal
+  widths (currently 0); instance `let` bindings are currently listed as signals.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -107,9 +108,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   once per edge with next-state semantics, value masking to the signal width
   (arithmetic wraps at `2^width`), and `set`/`read`/`settle`/`advance`. The
   counter simulates correctly (increments on rising edges, sync reset, enable
-  gating, wrap-around). Verified on **counter, register, and mux** (the last via
-  source-order-override combinational drivers).
-- **Status (todo):** the remaining acceptance designs (FSM, ready/valid, enum
+  gating, wrap-around). Verified on **counter, register, mux, and an FSM**
+  (`match` over an enum, driven through Idle → Run → Done → Idle).
+- **Status (todo):** the remaining acceptance designs (ready/valid, enum
   `::old` monitor, struct/array element events); proper logic-value (X/Z)
   modelling; cascaded event domains.
 

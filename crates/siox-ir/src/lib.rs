@@ -119,6 +119,7 @@ pub enum BinOp {
 pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) -> Design {
     let mut l = Lowering::new(sink);
     l.collect(modules);
+    l.enum_variants = enum_discriminants(modules);
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
@@ -151,6 +152,8 @@ struct Lowering<'a> {
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
     /// Entity name -> its instance's concrete parameter values.
     entity_params: HashMap<String, HashMap<String, i64>>,
+    /// Enum name -> variant name -> discriminant value.
+    enum_variants: HashMap<String, HashMap<String, u64>>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -163,6 +166,7 @@ impl<'a> Lowering<'a> {
             entities: HashMap::new(),
             impls: HashMap::new(),
             entity_params: HashMap::new(),
+            enum_variants: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
         }
@@ -264,9 +268,46 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            // Other statement forms (match, for, let, expr, return) are not
-            // lowered yet.
+            ast::Stmt::Match(m) => {
+                // Combinational match: each arm becomes conditional drivers
+                // guarded by `scrutinee == variant` with first-match priority.
+                let scrut = self.lower_expr(&m.scrutinee);
+                let mut remaining = cond;
+                for arm in &m.arms {
+                    let mc = self.arm_match_cond(&arm.pattern, &scrut);
+                    let fire = match &mc {
+                        Some(c) => Some(and(remaining.clone(), c.clone())),
+                        None => remaining.clone(),
+                    };
+                    for s in &arm.body.stmts {
+                        self.lower_stmt(s, fire.clone());
+                    }
+                    remaining = match mc {
+                        Some(c) => Some(and(remaining, not(c))),
+                        None => Some(Expr::Const(0)),
+                    };
+                }
+            }
+            // Other statement forms (for, let, expr, return) are not lowered yet.
             _ => {}
+        }
+    }
+
+    /// The condition under which a match arm fires: `scrut == <variant value>`
+    /// for an enum path, or always (`None`) for a wildcard.
+    fn arm_match_cond(&self, pattern: &ast::Pattern, scrut: &Expr) -> Option<Expr> {
+        match pattern {
+            ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                let disc = self
+                    .enum_variants
+                    .get(&p.segments[0].text)
+                    .and_then(|m| m.get(&p.segments[1].text))
+                    .copied()
+                    .unwrap_or(0);
+                Some(eq(scrut.clone(), Expr::Const(disc)))
+            }
+            // Wildcard and (for now) bit patterns match anything.
+            _ => None,
         }
     }
 
@@ -300,6 +341,22 @@ impl<'a> Lowering<'a> {
                     if let Some(eb) = iff.else_.as_deref() {
                         let neg = Some(and(cond.clone(), not(c)));
                         self.lower_event_else(eb, neg, out);
+                    }
+                }
+                ast::Stmt::Match(m) => {
+                    let scrut = self.lower_expr(&m.scrutinee);
+                    let mut remaining = cond.clone();
+                    for arm in &m.arms {
+                        let mc = self.arm_match_cond(&arm.pattern, &scrut);
+                        let fire = match &mc {
+                            Some(c) => Some(and(remaining.clone(), c.clone())),
+                            None => remaining.clone(),
+                        };
+                        self.lower_event_block(&arm.body, fire, out);
+                        remaining = match mc {
+                            Some(c) => Some(and(remaining, not(c))),
+                            None => Some(Expr::Const(0)),
+                        };
                     }
                 }
                 _ => {}
@@ -340,6 +397,13 @@ impl<'a> Lowering<'a> {
                 .locals
                 .get(&p.segments[0].text)
                 .map(|id| Expr::Current(*id))
+                .unwrap_or(Expr::Unknown),
+            // `Enum::Variant` lowers to its discriminant constant.
+            ast::Expr::Path(p) if p.segments.len() >= 2 => self
+                .enum_variants
+                .get(&p.segments[0].text)
+                .and_then(|m| m.get(&p.segments[1].text))
+                .map(|&d| Expr::Const(d))
                 .unwrap_or(Expr::Unknown),
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
@@ -610,6 +674,30 @@ fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
+/// honoured; unspecified variants continue from the previous discriminant + 1.
+fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Enum(e) = item {
+                let mut vars = HashMap::new();
+                let mut next = 0u64;
+                for v in &e.variants {
+                    let disc = match &v.value {
+                        Some(ast::Expr::Int { text, .. }) => parse_int(text).unwrap_or(next),
+                        _ => next,
+                    };
+                    vars.insert(v.name.text.clone(), disc);
+                    next = disc + 1;
+                }
+                out.insert(e.name.text.clone(), vars);
+            }
+        }
+    }
+    out
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {

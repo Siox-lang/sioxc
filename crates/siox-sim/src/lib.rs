@@ -262,6 +262,7 @@ pub fn run_tests(
     filter: Option<&str>,
 ) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
+    let enums = enum_discriminants(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -269,7 +270,7 @@ pub fn run_tests(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            results.push(run_one(&inst.entity, root, hier, design, &body, false).0);
+            results.push(run_one(&inst.entity, root, hier, design, &body, &enums, false).0);
         }
     }
     results
@@ -284,16 +285,40 @@ pub fn run_test_traced(
     filter: Option<&str>,
 ) -> Option<(TestResult, Vec<Sample>)> {
     let (entities, impls) = collect_defs(modules);
+    let enums = enum_discriminants(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            return Some(run_one(&inst.entity, root, hier, design, &body, true));
+            return Some(run_one(&inst.entity, root, hier, design, &body, &enums, true));
         }
     }
     None
+}
+
+/// Build `enum name -> variant name -> discriminant` from the parsed modules.
+fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Enum(e) = item {
+                let mut vars = HashMap::new();
+                let mut next = 0u64;
+                for v in &e.variants {
+                    let disc = match &v.value {
+                        Some(ast::Expr::Int { text, .. }) => parse_u64(text),
+                        _ => next,
+                    };
+                    vars.insert(v.name.text.clone(), disc);
+                    next = disc + 1;
+                }
+                out.insert(e.name.text.clone(), vars);
+            }
+        }
+    }
+    out
 }
 
 type Defs<'a> = (HashMap<&'a str, &'a ast::EntityDecl>, HashMap<&'a str, Vec<&'a ast::ImplDecl>>);
@@ -319,12 +344,14 @@ fn collect_defs(modules: &[Module]) -> Defs<'_> {
     (entities, impls)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_one(
     name: &str,
     root: siox_elab::InstanceId,
     hier: &Hierarchy,
     design: &Design,
     body: &[&ast::ImplDecl],
+    enums: &HashMap<String, HashMap<String, u64>>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -339,8 +366,14 @@ fn run_one(
         }
     }
 
-    let mut tb =
-        Testbench { sim: Simulator::new(design), map, failure: None, record, samples: Vec::new() };
+    let mut tb = Testbench {
+        sim: Simulator::new(design),
+        map,
+        enums,
+        failure: None,
+        record,
+        samples: Vec::new(),
+    };
 
     // Apply initial `let` values, then settle and record the starting state.
     for im in body {
@@ -387,6 +420,8 @@ struct Testbench<'a> {
     sim: Simulator<'a>,
     /// Test-local signal name -> design signal id.
     map: HashMap<String, SignalId>,
+    /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
+    enums: &'a HashMap<String, HashMap<String, u64>>,
     failure: Option<(String, Span)>,
     /// When set, a sample is recorded after each simulation step.
     record: bool,
@@ -522,6 +557,13 @@ impl Testbench<'_> {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 self.map.get(&p.segments[0].text).map(|&id| self.sim.read(id)).unwrap_or(0)
             }
+            // `Enum::Variant` evaluates to its discriminant.
+            ast::Expr::Path(p) if p.segments.len() >= 2 => self
+                .enums
+                .get(&p.segments[0].text)
+                .and_then(|m| m.get(&p.segments[1].text))
+                .copied()
+                .unwrap_or(0),
             ast::Expr::Unary { op, rhs, .. } => {
                 let a = self.eval(rhs);
                 match op {
@@ -701,6 +743,41 @@ mod tests {
                assert!(y == '0', \"sel=0 -> b\");\n\
                sel = '1';\n\
                assert!(y == '1', \"sel=1 -> a\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn simulates_an_fsm_with_match() {
+        // Idle --(start)--> Run --> Done --> Idle, driven by a `match` on an enum.
+        assert_test_passes(
+            "module m;\n\
+             enum State: uint[2] { Idle = 0, Run = 1, Done = 2 }\n\
+             entity Fsm { in clk: Clock; in start: Bit; out st: State; }\n\
+             impl Fsm {\n\
+               let s: State = State::Idle;\n\
+               if clk::rising {\n\
+                 match s {\n\
+                   State::Idle => { if start { s = State::Run; } }\n\
+                   State::Run => { s = State::Done; }\n\
+                   _ => { s = State::Idle; }\n\
+                 }\n\
+               }\n\
+               st = s;\n\
+             }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let clk: Logic = '0'; let start: Bit = '0'; let st: State;\n\
+               let dut = Fsm { .clk, .start, .st };\n\
+               tick(clk);\n\
+               assert!(st == State::Idle, \"stays idle\");\n\
+               start = '1';\n\
+               tick(clk);\n\
+               assert!(st == State::Run, \"-> run\");\n\
+               tick(clk);\n\
+               assert!(st == State::Done, \"-> done\");\n\
+               tick(clk);\n\
+               assert!(st == State::Idle, \"-> idle\");\n\
              }\n",
         );
     }
