@@ -173,6 +173,13 @@ impl<'a> Simulator<'a> {
             }
             // `base[hi..lo]`: shift out the low bits, keep `hi-lo+1` of them.
             Expr::Slice { base, hi, lo } => mask(self.eval(base) >> lo, hi - lo + 1),
+            Expr::Select { cond, then, els } => {
+                if self.eval(cond) != 0 {
+                    self.eval(then)
+                } else {
+                    self.eval(els)
+                }
+            }
             Expr::Unknown => 0,
         }
     }
@@ -1109,6 +1116,49 @@ mod tests {
             tick(&mut sim, clk);
         }
         assert_eq!(sim.read(count), 1);
+    }
+
+    #[test]
+    fn operator_trait_impl_evaluates_in_sim() {
+        // `+` on a user enum resolves to its impl body, inlined into the IR:
+        // High wins, otherwise the right operand passes through.
+        let results = run(
+            "module m;\n\
+             enum Volt { Low, High }\n\
+             pub trait \"+\" {\n\
+               fn apply(self, rhs: Self) -> Self;\n\
+             }\n\
+             impl \"+\" for Volt {\n\
+               fn apply(self, rhs: Volt) -> Volt {\n\
+                 if self == Volt::High {\n\
+                   return Volt::High;\n\
+                 } else {\n\
+                   return rhs;\n\
+                 }\n\
+               }\n\
+             }\n\
+             entity Mix { in a: Volt; in b: Volt; out y: Volt; }\n\
+             impl Mix { y = a + b; }\n\
+             #[test]\n\
+             entity OpTest {}\n\
+             impl OpTest {\n\
+               let a: Volt = Volt::Low;\n\
+               let b: Volt = Volt::Low;\n\
+               let y: Volt;\n\
+               let dut = Mix { .a, .b, .y };\n\
+               wait 1ns;\n\
+               assert!(y == Volt::Low, \"Low + Low = Low\");\n\
+               b = Volt::High;\n\
+               wait 1ns;\n\
+               assert!(y == Volt::High, \"Low + High = High\");\n\
+               a = Volt::High;\n\
+               b = Volt::Low;\n\
+               wait 1ns;\n\
+               assert!(y == Volt::High, \"High + Low = High\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
     }
 
     #[test]

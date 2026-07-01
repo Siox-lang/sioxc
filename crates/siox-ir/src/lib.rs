@@ -85,6 +85,9 @@ pub enum Expr {
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     /// Bit slice `base[hi..lo]` (inclusive), value `(base >> lo) & mask(hi-lo+1)`.
     Slice { base: Box<Expr>, hi: u32, lo: u32 },
+    /// `cond ? then : els` — produced by inlining operator-trait impl bodies
+    /// (`if`/`else` chains of `return`s become nested selects).
+    Select { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
 }
@@ -161,9 +164,13 @@ struct Lowering<'a> {
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
+    /// (trait name, target type) -> the impl's fn, for operator inlining.
+    op_impls: HashMap<(String, String), &'a ast::FnDecl>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
+    /// Local name -> its enum type name (operator-impl operands).
+    local_enum: HashMap<String, String>,
 }
 
 impl<'a> Lowering<'a> {
@@ -176,8 +183,10 @@ impl<'a> Lowering<'a> {
             enum_variants: HashMap::new(),
             structs: HashMap::new(),
             enum_reprs: HashMap::new(),
+            op_impls: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
+            local_enum: HashMap::new(),
         }
     }
 
@@ -194,6 +203,19 @@ impl<'a> Lowering<'a> {
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
                             self.impls.entry(name.to_string()).or_default().push(im);
+                        }
+                    }
+                    // A trait impl's first fn is the operator body for
+                    // `impl "+" for T` (spec 3.25).
+                    ast::Item::Impl(im) => {
+                        let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
+                        let target = type_head_name(&im.target);
+                        let f = im.items.iter().find_map(|it| match it {
+                            ast::ImplItem::Fn(f) => Some(f),
+                            _ => None,
+                        });
+                        if let (Some(tr), Some(ty), Some(f)) = (tr, target, f) {
+                            self.op_impls.insert((tr.text.clone(), ty.to_string()), f);
                         }
                     }
                     _ => {}
@@ -214,6 +236,7 @@ impl<'a> Lowering<'a> {
         // Struct-typed signals flatten into one scalar signal per leaf field.
         let env = self.entity_params.get(name).cloned().unwrap_or_default();
         self.locals.clear();
+        self.local_enum.clear();
         for p in &edecl.ports {
             self.add_typed_signal(name, &p.name.text, &p.ty, &env);
         }
@@ -260,6 +283,9 @@ impl<'a> Lowering<'a> {
                 self.add_typed_signal(entity, &format!("{name}[{i}]"), elem, env);
             }
         } else if let Some(w) = self.enum_width(ty) {
+            if let ast::Type::Path(p) = ty {
+                self.local_enum.insert(name.to_string(), p.segments[0].text.clone());
+            }
             self.add_signal(entity, name, w);
         } else {
             self.add_signal(entity, name, type_width(ty, env));
@@ -495,11 +521,22 @@ impl<'a> Lowering<'a> {
             ast::Expr::Unary { op, rhs, .. } => {
                 Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr(rhs)) }
             }
-            ast::Expr::Binary { op, lhs, rhs, .. } => Expr::Binary {
-                op: lower_binop(*op),
-                lhs: Box::new(self.lower_expr(lhs)),
-                rhs: Box::new(self.lower_expr(rhs)),
-            },
+            ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // An operator on an enum-typed operand inlines its
+                // operator-trait impl body (spec 3.25); `==`/`!=` stay
+                // built-in discriminant comparison.
+                let op_str = siox_syntax::pretty::bin_op(*op);
+                if !matches!(op_str, "==" | "!=") {
+                    if let Some(inlined) = self.inline_op(op_str, lhs, rhs) {
+                        return inlined;
+                    }
+                }
+                Expr::Binary {
+                    op: lower_binop(*op),
+                    lhs: Box::new(self.lower_expr(lhs)),
+                    rhs: Box::new(self.lower_expr(rhs)),
+                }
+            }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
             ast::Expr::Concat { parts, .. } => {
@@ -545,6 +582,76 @@ impl<'a> Lowering<'a> {
                 .and_then(|p| self.locals.get(&p))
                 .map(|&id| self.out.signals[id.0 as usize].width)
                 .unwrap_or(1),
+        }
+    }
+
+    /// Inline the operator-trait impl body for `lhs OP rhs` when the left
+    /// operand is an enum-typed local with a matching impl. The body must be a
+    /// pure expression tree: `return e;` or `if c { .. } else { .. }` chains
+    /// ending in returns (which become [`Expr::Select`]). `None` falls back to
+    /// the built-in operator lowering.
+    // ponytail: enum operands only — struct operands (Complex) need
+    // multi-signal values; loops/match in bodies unsupported until needed.
+    fn inline_op(&self, op: &str, lhs: &ast::Expr, rhs: &ast::Expr) -> Option<Expr> {
+        let ty = expr_path(lhs).and_then(|p| self.local_enum.get(&p))?;
+        let f = self.op_impls.get(&(op.to_string(), ty.clone())).copied()?;
+        let body = f.body.as_ref()?;
+
+        // Bind `self` to the left operand and the first named param to the right.
+        let mut env: HashMap<String, Expr> = HashMap::new();
+        env.insert("self".to_string(), self.lower_expr(lhs));
+        if let Some(p) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &p.name {
+                env.insert(n.text.clone(), self.lower_expr(rhs));
+            }
+        }
+        self.inline_block(&body.stmts, &env)
+    }
+
+    /// The value a straight-line `return`/`if-else` block produces, or `None`
+    /// if the block has statements the inliner cannot express as a value.
+    fn inline_block(&self, stmts: &[ast::Stmt], env: &HashMap<String, Expr>) -> Option<Expr> {
+        match stmts {
+            [ast::Stmt::Return { value: Some(v), .. }, ..] => Some(self.lower_expr_env(v, env)),
+            [ast::Stmt::If(iff), rest @ ..] => {
+                let cond = self.lower_expr_env(&iff.cond, env);
+                let then = self.inline_block(&iff.then.stmts, env)?;
+                // The else value: an explicit else branch, or the statements
+                // after the if.
+                let els = match &iff.else_ {
+                    Some(e) => match e.as_ref() {
+                        ast::ElseBranch::Block(b) => self.inline_block(&b.stmts, env)?,
+                        ast::ElseBranch::If(i) => {
+                            self.inline_block(std::slice::from_ref(&ast::Stmt::If(i.clone())), env)?
+                        }
+                    },
+                    None => self.inline_block(rest, env)?,
+                };
+                Some(Expr::Select { cond: Box::new(cond), then: Box::new(then), els: Box::new(els) })
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::lower_expr`] with substitution: single-segment paths bound in
+    /// `env` (fn parameters) take their bound value.
+    fn lower_expr_env(&self, e: &ast::Expr, env: &HashMap<String, Expr>) -> Expr {
+        match e {
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                if let Some(v) = env.get(&p.segments[0].text) {
+                    return v.clone();
+                }
+                self.lower_expr(e)
+            }
+            ast::Expr::Binary { op, lhs, rhs, .. } => Expr::Binary {
+                op: lower_binop(*op),
+                lhs: Box::new(self.lower_expr_env(lhs, env)),
+                rhs: Box::new(self.lower_expr_env(rhs, env)),
+            },
+            ast::Expr::Unary { op, rhs, .. } => {
+                Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr_env(rhs, env)) }
+            }
+            _ => self.lower_expr(e),
         }
     }
 
@@ -658,6 +765,9 @@ fn render(e: &Expr, d: &Design) -> String {
             format!("{} {} {}", paren(lhs, d), bin_sym(*op), paren(rhs, d))
         }
         Expr::Slice { base, hi, lo } => format!("{}[{hi}..{lo}]", paren(base, d)),
+        Expr::Select { cond, then, els } => {
+            format!("{} ? {} : {}", paren(cond, d), paren(then, d), paren(els, d))
+        }
         Expr::Unknown => "?".to_string(),
     }
 }

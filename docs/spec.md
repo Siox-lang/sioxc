@@ -1066,8 +1066,12 @@ Using an operator on a user struct/enum without a matching impl is an error
 
 The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types
-(`Logic` truth tables, `Complex`, ...). Evaluation of operator impls in the
-simulator is the gate for retiring the std type shim.
+(`Logic` truth tables, `Complex`, ...).
+
+Operator impls are **inlined at lowering time** as pure expression trees: the
+body must be `return e;` or `if`/`else` chains ending in returns (no loops,
+no state). Enum-typed operands are supported; struct-typed operands (e.g.
+`Complex`) land with multi-signal expression values.
 
 ---
 
