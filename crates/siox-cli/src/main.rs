@@ -23,13 +23,16 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use siox_diag::{DiagnosticSink, Severity, SourceMap};
-use siox_syntax::ast::{Item, Module, UsingKind};
+use siox_syntax::ast::{Item, Module, Path as AstPath, UsingKind};
 use siox_syntax::token::{Token, TokenKind};
 use siox_syntax::{lexer::Lexer, parser, pretty};
 
 #[derive(Parser)]
 #[command(name = "siox", version, about = "The siox digital HDL toolchain (Phase 1)")]
 struct Cli {
+    /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
+    #[arg(long, global = true, default_value = "std")]
+    std: PathBuf,
     #[command(subcommand)]
     cmd: Command,
 }
@@ -77,30 +80,31 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let std_root = cli.std;
     match cli.cmd {
         Command::Tokens { file } => cmd_tokens(&file),
-        Command::Parse { file, verbose } => match run_frontend(&file, verbose) {
+        Command::Parse { file, verbose } => match run_frontend(&file, &std_root, verbose) {
             Ok(fe) => {
-                print!("{}", pretty::print_module(&fe.module));
+                print!("{}", pretty::print_module(fe.entry()));
                 ExitCode::SUCCESS
             }
             Err(code) => code,
         },
-        Command::Ast { file, verbose } => match run_frontend(&file, verbose) {
+        Command::Ast { file, verbose } => match run_frontend(&file, &std_root, verbose) {
             Ok(fe) => {
-                println!("{:#?}", fe.module);
+                println!("{:#?}", fe.entry());
                 ExitCode::SUCCESS
             }
             Err(code) => code,
         },
-        Command::Check { file, verbose } => cmd_check(&file, verbose),
+        Command::Check { file, verbose } => cmd_check(&file, &std_root, verbose),
         Command::Sim { file, wave } => match wave {
-            Some(out) => cmd_wave(&file, &out),
-            None => cmd_test(&file, None),
+            Some(out) => cmd_wave(&file, &std_root, &out),
+            None => cmd_test(&file, &std_root, None),
         },
-        Command::Test { path, filter } => cmd_test(&path, filter.as_deref()),
-        Command::Ir { file } => cmd_ir(&file),
-        Command::Tree { file } => cmd_tree(&file),
+        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref()),
+        Command::Ir { file } => cmd_ir(&file, &std_root),
+        Command::Tree { file } => cmd_tree(&file, &std_root),
     }
 }
 
@@ -108,14 +112,22 @@ fn main() -> ExitCode {
 /// caller can keep running later stages on the same sink.
 struct FrontendOut {
     sources: SourceMap,
-    module: Module,
+    /// The entry module first, then any transitively-loaded `std::` modules.
+    modules: Vec<Module>,
     sink: DiagnosticSink,
 }
 
-/// Read, lex and parse a file. With `trace`, narrates the lex/parse steps to
-/// stderr. Does not render diagnostics — the caller decides when. `Err` only on
-/// a read failure.
-fn lex_parse(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
+impl FrontendOut {
+    /// The entry file's module (the one the command was pointed at).
+    fn entry(&self) -> &Module {
+        &self.modules[0]
+    }
+}
+
+/// Read, lex and parse `path`, then transitively load the `std::` modules it
+/// imports from `std_root`. With `trace`, narrates the lex/parse steps. Does not
+/// render diagnostics — the caller decides when. `Err` only on a read failure.
+fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -143,20 +155,74 @@ fn lex_parse(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
         dump_items(&module);
     }
 
-    Ok(FrontendOut { sources, module, sink })
+    let mut fe = FrontendOut { sources, modules: vec![module], sink };
+    load_std_deps(&mut fe, std_root, trace);
+    Ok(fe)
+}
+
+/// Transitively parse the `std::` modules imported by the already-loaded
+/// modules, mapping `std::a::b` to `<std_root>/a/b.siox`. A missing file is left
+/// unresolved so name resolution reports it against the `using`.
+fn load_std_deps(fe: &mut FrontendOut, std_root: &Path, trace: bool) {
+    let mut loaded: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut queue: Vec<AstPath> = using_bases(fe.entry());
+    while let Some(base) = queue.pop() {
+        let Some(file) = std_file(std_root, &base) else { continue };
+        if !loaded.insert(file.clone()) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&file) else { continue };
+        if trace {
+            eprintln!("== load {} ==", file.display());
+        }
+        let fid = fe.sources.add(file.display().to_string(), src.clone());
+        let tokens = Lexer::new(fid, &src).tokenize(&mut fe.sink);
+        let module = parser::Parser::new(&src, tokens, &mut fe.sink).parse_module();
+        queue.extend(using_bases(&module));
+        fe.modules.push(module);
+    }
+}
+
+/// The `base` path of every `using base::{...}` import in a module.
+fn using_bases(m: &Module) -> Vec<AstPath> {
+    m.items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Using(u) => match &u.kind {
+                UsingKind::Import { base, .. } => Some(base.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// Map a `std::a::b` import path to `<std_root>/a/b.siox`. Non-`std` bases are
+/// resolved within the already-loaded modules, so they map to no file.
+fn std_file(std_root: &Path, base: &AstPath) -> Option<PathBuf> {
+    let segs: Vec<&str> = base.segments.iter().map(|s| s.text.as_str()).collect();
+    if segs.first() != Some(&"std") {
+        return None;
+    }
+    let mut p = std_root.to_path_buf();
+    for s in &segs[1..] {
+        p.push(s);
+    }
+    p.set_extension("siox");
+    Some(p)
 }
 
 /// Lex + parse, then render diagnostics and fail on parse errors. Used by the
 /// commands whose later stages are still stubs.
-fn run_frontend(path: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
-    let fe = lex_parse(path, trace)?;
+fn run_frontend(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
+    let fe = lex_parse(path, std_root, trace)?;
     render_diagnostics(&fe.sources, &fe.sink);
     if fe.sink.has_errors() {
         eprintln!("\nfrontend failed: {} error(s)", fe.sink.error_count());
         return Err(ExitCode::FAILURE);
     }
     if trace {
-        eprintln!("\nfrontend ok: {} item(s) parsed", fe.module.items.len());
+        eprintln!("\nfrontend ok: {} item(s) parsed", fe.entry().items.len());
     }
     Ok(fe)
 }
@@ -171,17 +237,21 @@ struct Semantic {
 /// Run parse -> resolve -> typecheck, narrating each stage. Renders diagnostics
 /// and returns `Err` only when parsing itself failed (later stages still run on
 /// a parseable-but-flawed tree so all diagnostics surface at once).
-fn run_semantic(path: &Path, trace: bool) -> Result<Semantic, ExitCode> {
-    let mut fe = lex_parse(path, trace)?;
+fn run_semantic(path: &Path, std_root: &Path, trace: bool) -> Result<Semantic, ExitCode> {
+    let mut fe = lex_parse(path, std_root, trace)?;
 
     if fe.sink.has_errors() {
         render_diagnostics(&fe.sources, &fe.sink);
         eprintln!("\nparse failed: {} error(s); later stages skipped", fe.sink.error_count());
         return Err(ExitCode::FAILURE);
     }
-    eprintln!("== stage 2: parse == {} item(s)", fe.module.items.len());
+    eprintln!(
+        "== stage 2: parse == {} item(s) in {} module(s)",
+        fe.entry().items.len(),
+        fe.modules.len()
+    );
 
-    let modules = std::slice::from_ref(&fe.module);
+    let modules = fe.modules.as_slice();
 
     let before = fe.sink.error_count();
     let resolved = siox_resolve::resolve(modules, &mut fe.sink);
@@ -199,8 +269,8 @@ fn run_semantic(path: &Path, trace: bool) -> Result<Semantic, ExitCode> {
 }
 
 /// `siox check`: parse -> resolve -> typecheck. `-v` adds the token/item dump.
-fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
-    let sem = match run_semantic(path, verbose) {
+fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
+    let sem = match run_semantic(path, std_root, verbose) {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -217,13 +287,13 @@ fn cmd_check(path: &Path, verbose: bool) -> ExitCode {
 
 /// `siox tree`: run the semantic pipeline, elaborate the instance hierarchy, and
 /// print it. The tree goes to stdout; the stage trace and diagnostics to stderr.
-fn cmd_tree(path: &Path) -> ExitCode {
-    let mut sem = match run_semantic(path, false) {
+fn cmd_tree(path: &Path, std_root: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
     };
 
-    let modules = std::slice::from_ref(&sem.fe.module);
+    let modules = sem.fe.modules.as_slice();
     let before = sem.fe.sink.error_count();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     eprintln!(
@@ -246,13 +316,13 @@ fn cmd_tree(path: &Path) -> ExitCode {
 
 /// `siox ir`: run the pipeline through elaboration, lower to the digital IR, and
 /// print it. The IR goes to stdout; the stage trace and diagnostics to stderr.
-fn cmd_ir(path: &Path) -> ExitCode {
-    let mut sem = match run_semantic(path, false) {
+fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
     };
 
-    let modules = std::slice::from_ref(&sem.fe.module);
+    let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     eprintln!("== stage 5: elaborate == {} instance(s)", hier.instances.len());
 
@@ -280,8 +350,8 @@ fn cmd_ir(path: &Path) -> ExitCode {
 /// `siox test`: run the `#[test]` entities (optionally filtered by name)
 /// through the simulator and report pass/fail. Exits nonzero if any test fails
 /// (or the pipeline errored).
-fn cmd_test(path: &Path, filter: Option<&str>) -> ExitCode {
-    let mut sem = match run_semantic(path, false) {
+fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -290,7 +360,7 @@ fn cmd_test(path: &Path, filter: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let modules = std::slice::from_ref(&sem.fe.module);
+    let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
@@ -336,12 +406,12 @@ fn cmd_test(path: &Path, filter: Option<&str>) -> ExitCode {
 
 /// `siox sim --wave <out.vcd>`: run the first test entity with tracing and write
 /// its waveform as VCD.
-fn cmd_wave(path: &Path, out: &Path) -> ExitCode {
-    let mut sem = match run_semantic(path, false) {
+fn cmd_wave(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let modules = std::slice::from_ref(&sem.fe.module);
+    let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);

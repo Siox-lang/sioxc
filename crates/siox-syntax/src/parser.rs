@@ -1328,7 +1328,7 @@ mod tests {
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Let(l) = &i.items[0] else { panic!("expected let") };
         let Some(Expr::Construct { args, ty, .. }) = &l.value else { panic!("expected construct") };
-        assert!(matches!(ty, Type::Generic { .. }));
+        assert!(matches!(ty, Some(Type::Generic { .. })));
         assert_eq!(args.len(), 3);
         assert!(args[0].value.is_none()); // `.clk` shorthand
         assert!(args[1].value.is_some());
