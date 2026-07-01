@@ -90,12 +90,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   entity's behaviour into signals, combinational `Driver`s, and `EventBlock`s;
   detects event-controlled blocks (`::event`/`::rising`) and expands
   `clk::rising` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
-  `if`/`else` priority accumulates into next-state conditions. `siox ir` prints
-  it.
-- **Status (todo):** per-instance width specialization and cross-instance
-  flattening/connections (today it lowers entity behaviour with declared,
-  possibly parametric widths); match/index/slice/concat/method-call lowering;
-  instance `let` bindings are currently listed as signals.
+  `if`/`else` priority accumulates into next-state conditions. Signal widths are
+  made concrete by substituting the entity's instance parameters (`uint[W]` with
+  `W=8` -> width 8). `siox ir` prints it.
+- **Status (todo):** cross-instance flattening/connections and multiple
+  instances of one entity with differing params (widths come from the *first*
+  instance today); match/index/slice/concat/method-call lowering; instance `let`
+  bindings are currently listed as signals.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -103,9 +104,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** the delta-cycle `Simulator` over the IR `Design`:
   current/old/event state, IR-expression evaluation (`Event`/`Old`/`Current`,
   logical/comparison/arithmetic ops), combinational fixpoint, event blocks fired
-  once per edge with next-state semantics, and `set`/`read`/`settle`/`advance`.
-  The counter simulates correctly (increments on rising edges, sync reset,
-  enable gating).
+  once per edge with next-state semantics, value masking to the signal width
+  (arithmetic wraps at `2^width`), and `set`/`read`/`settle`/`advance`. The
+  counter simulates correctly (increments on rising edges, sync reset, enable
+  gating, wrap-around).
 - **Status (todo):** verified against the remaining acceptance designs (mux/FSM/
   ready-valid/enum/struct/array); proper logic-value (X/Z) modelling; cascaded
   event domains. Driving it from a `#[test]` entity is Stage 8.
@@ -131,7 +133,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   <file> --wave <out.vcd>` writes the counter's waveform (clk/rst/en/count over
   ~100 ns, count reaching 10).
 - **Status (todo):** enum values as symbolic names; struct fields as separate
-  paths; concrete vector widths (parametric widths render as 32-bit); FST.
+  paths; FST.
 
 ### Stage 10 — Diagnostics & lints (`siox-diag` + all) — 🟢 (ongoing)
 - **Acceptance:** every diagnostic has a code, a main span, a message, optional

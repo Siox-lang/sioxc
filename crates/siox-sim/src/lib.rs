@@ -56,7 +56,8 @@ impl<'a> Simulator<'a> {
 
     /// Drive a signal (stimulus). Call `settle` afterwards to propagate.
     pub fn set(&mut self, sig: SignalId, value: u64) {
-        self.state[sig.0 as usize].current = value;
+        let i = sig.0 as usize;
+        self.state[i].current = mask(value, self.design.signals[i].width);
     }
 
     /// Read a signal's current value.
@@ -100,6 +101,7 @@ impl<'a> Simulator<'a> {
         // 4. commit next-state, then re-settle combinational logic.
         let mut committed = false;
         for (i, v) in next {
+            let v = mask(v, self.design.signals[i].width);
             if self.state[i].current != v {
                 self.state[i].current = v;
                 self.state[i].event = true;
@@ -129,6 +131,7 @@ impl<'a> Simulator<'a> {
             }
             let mut changed = false;
             for (i, &v) in next.iter().enumerate() {
+                let v = mask(v, self.design.signals[i].width);
                 if self.state[i].current != v {
                     self.state[i].current = v;
                     self.state[i].event = true;
@@ -170,6 +173,16 @@ impl<'a> Simulator<'a> {
             }
             Expr::Unknown => 0,
         }
+    }
+}
+
+/// Truncate a value to a signal's bit width (arithmetic wraps at `2^width`).
+/// Width `0` (unknown) or `>= 64` leaves the value unchanged.
+fn mask(value: u64, width: u32) -> u64 {
+    if width == 0 || width >= 64 {
+        value
+    } else {
+        value & ((1u64 << width) - 1)
     }
 }
 
@@ -744,6 +757,25 @@ mod tests {
             tick(&mut sim, clk);
         }
         assert_eq!(sim.read(count), 10);
+    }
+
+    #[test]
+    fn arithmetic_wraps_at_the_signal_width() {
+        // A 2-bit counter wraps at 4: after 5 ticks, count == 5 mod 4 == 1.
+        let src = COUNTER.replace("W = 8", "W = 2");
+        let design = lower(&src);
+        let mut sim = Simulator::new(&design);
+        let clk = sim.signal("Counter.clk").unwrap();
+        let rst = sim.signal("Counter.rst").unwrap();
+        let en = sim.signal("Counter.en").unwrap();
+        let count = sim.signal("Counter.count").unwrap();
+        sim.set(rst, 0);
+        sim.set(en, 1);
+        sim.settle();
+        for _ in 0..5 {
+            tick(&mut sim, clk);
+        }
+        assert_eq!(sim.read(count), 1);
     }
 
     #[test]

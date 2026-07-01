@@ -121,11 +121,21 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     l.collect(modules);
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
-    // order, deduplicated.
+    // order, deduplicated. Each entity's parameters are taken from its first
+    // instance, so `uint[W]` lowers with the instance's concrete `W`.
     let mut seen = Vec::new();
     for inst in &hier.instances {
         if !seen.contains(&inst.entity) {
             seen.push(inst.entity.clone());
+            l.entity_params.entry(inst.entity.clone()).or_insert_with(|| {
+                inst.params
+                    .iter()
+                    .filter_map(|(n, v)| match v {
+                        siox_elab::ParamValue::Int(i) => Some((n.clone(), *i)),
+                        siox_elab::ParamValue::Unknown => None,
+                    })
+                    .collect()
+            });
         }
     }
     for name in &seen {
@@ -139,6 +149,8 @@ struct Lowering<'a> {
     sink: &'a mut DiagnosticSink,
     entities: HashMap<String, &'a ast::EntityDecl>,
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
+    /// Entity name -> its instance's concrete parameter values.
+    entity_params: HashMap<String, HashMap<String, i64>>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -150,6 +162,7 @@ impl<'a> Lowering<'a> {
             sink,
             entities: HashMap::new(),
             impls: HashMap::new(),
+            entity_params: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
         }
@@ -182,15 +195,16 @@ impl<'a> Lowering<'a> {
         }
 
         // Signals: ports, then impl-level `let` state. Build the local name map.
+        let env = self.entity_params.get(name).cloned().unwrap_or_default();
         self.locals.clear();
         for p in &edecl.ports {
-            self.add_signal(name, &p.name.text, type_width(&p.ty));
+            self.add_signal(name, &p.name.text, type_width(&p.ty, &env));
         }
         let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    let w = l.ty.as_ref().map(type_width).unwrap_or(0);
+                    let w = l.ty.as_ref().map(|t| type_width(t, &env)).unwrap_or(0);
                     self.add_signal(name, &l.name.text, w);
                 }
             }
@@ -548,29 +562,54 @@ fn parse_int(text: &str) -> Option<u64> {
     }
 }
 
-/// Bit width from a type annotation; `0` for parametric / non-integer-vector.
-fn type_width(t: &ast::Type) -> u32 {
+/// Bit width from a type annotation, substituting parameters from `env` (so
+/// `uint[W]` with `W=8` is width 8). `0` means parametric / not yet known.
+fn type_width(t: &ast::Type, env: &HashMap<String, i64>) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
             _ => 0,
         },
+        // For `uint[8]` the index is the width; for `Logic[31..0]` it is the span.
         ast::Type::Indexed { index, .. } => match index.as_ref() {
-            ast::Expr::Int { text, .. } => parse_int(text).unwrap_or(0) as u32,
-            ast::Expr::Range { lo, hi, .. } => range_width(lo, hi),
-            _ => 0,
+            ast::Expr::Range { lo, hi, .. } => match (eval_const(lo, env), eval_const(hi, env)) {
+                (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
+                _ => 0,
+            },
+            e => eval_const(e, env).map(|v| v.max(0) as u32).unwrap_or(0),
         },
-        ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => type_width(base),
+        ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => {
+            type_width(base, env)
+        }
     }
 }
 
-fn range_width(lo: &ast::Expr, hi: &ast::Expr) -> u32 {
-    if let (ast::Expr::Int { text: a, .. }, ast::Expr::Int { text: b, .. }) = (lo, hi) {
-        if let (Some(a), Some(b)) = (parse_int(a), parse_int(b)) {
-            return (a as i64 - b as i64).unsigned_abs() as u32 + 1;
+/// Const-evaluate a width expression against a parameter environment.
+fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
+    match e {
+        ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
+        ast::Expr::Path(p) if p.segments.len() == 1 => env.get(&p.segments[0].text).copied(),
+        ast::Expr::Unary { op, rhs, .. } => {
+            let v = eval_const(rhs, env)?;
+            Some(match op {
+                ast::UnOp::Neg => -v,
+                ast::UnOp::Not => !v,
+            })
         }
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let (a, b) = (eval_const(lhs, env)?, eval_const(rhs, env)?);
+            Some(match op {
+                ast::BinOp::Add => a + b,
+                ast::BinOp::Sub => a - b,
+                ast::BinOp::Mul => a * b,
+                ast::BinOp::Div if b != 0 => a / b,
+                ast::BinOp::Shl => a << b,
+                ast::BinOp::Shr => a >> b,
+                _ => return None,
+            })
+        }
+        _ => None,
     }
-    0
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
@@ -634,9 +673,11 @@ mod tests {
     #[test]
     fn lowers_signals_driver_and_event_block() {
         let d = lower_src(COUNTER);
-        // Counter signals: clk, rst, en, count, value.
+        // Counter signals: clk, rst, en, count, value. The instance's `W = 8`
+        // makes the parametric `uint[W]` widths concrete.
+        let count = d.signals.iter().find(|s| s.path == "Counter.count").unwrap();
+        assert_eq!(count.width, 8);
         assert!(d.signals.iter().any(|s| s.path == "Counter.value"));
-        assert!(d.signals.iter().any(|s| s.path == "Counter.count"));
         // One combinational driver: count = value.
         assert_eq!(d.drivers.len(), 1);
         // One event block (clk::rising) with two next-state updates.
