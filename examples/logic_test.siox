@@ -12,11 +12,13 @@ entity Gates {
     in b: Logic;
     out y_and: Logic;
     out y_or: Logic;
+    out y_not: Logic;
 }
 
 impl Gates {
     y_and = a and b;
     y_or = a or b;
+    y_not = not a;
 }
 
 #[test]
@@ -27,18 +29,25 @@ impl LogicTest {
     let b: Logic = '0';
     let y_and: Logic;
     let y_or: Logic;
+    let y_not: Logic;
 
-    let dut = Gates { .a, .b, .y_and, .y_or };
+    let dut = Gates { .a, .b, .y_and, .y_or, .y_not };
 
     wait 1ns;
     assert!(y_and == '0', "0 and 0 = 0");
     assert!(y_or == '0', "0 or 0 = 0");
+    assert!(y_not == '1', "not 0 = 1");
 
     a = '1';
     b = 'X';
     wait 1ns;
     assert!(y_and == 'X', "1 and X = X (unknown propagates)");
     assert!(y_or == '1', "1 or X = 1 (dominant operand decides)");
+    assert!(y_not == '0', "not 1 = 0");
+
+    a = 'X';
+    wait 1ns;
+    assert!(y_not == 'X', "not X = X (unknown propagates)");
 
     a = '0';
     wait 1ns;

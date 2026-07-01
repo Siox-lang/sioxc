@@ -1,6 +1,6 @@
 module std::logic;
 
-using std::ops::{"and", "or", "xor", "nand", "nor", "xnor"};
+using std::ops::{"and", "or", "xor", "nand", "nor", "xnor", "not"};
 
 // Scalar logic types (spec Stage 11, modelled on VHDL's std.standard and
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
@@ -89,6 +89,18 @@ impl "xor" for Logic {
         }
         if self == '1' and rhs == '0' {
             return '1';
+        }
+        return 'X';
+    }
+}
+
+impl "not" for Logic {
+    fn apply(self) -> Logic {
+        if self == '0' {
+            return '1';
+        }
+        if self == '1' {
+            return '0';
         }
         return 'X';
     }

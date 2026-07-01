@@ -604,6 +604,13 @@ impl<'a> Lowering<'a> {
                 .unwrap_or(Expr::Unknown),
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
+                // `not` on an enum-typed operand inlines its impl (`impl
+                // "not" for Logic`), like binary operators.
+                if *op == ast::UnOp::Not {
+                    if let Some(Val::Scalar(v)) = self.inline_unary("not", rhs) {
+                        return v;
+                    }
+                }
                 Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr(rhs)) }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
@@ -720,6 +727,17 @@ impl<'a> Lowering<'a> {
             }
         }
         self.inline_block(&body.stmts, &fenv)
+    }
+
+    /// Inline a unary operator impl (`not a`): binds only `self`.
+    fn inline_unary(&self, op: &str, rhs: &ast::Expr) -> Option<Val> {
+        let ty = self.operand_type_name(rhs)?;
+        let fns = self.op_impls.get(&(op.to_string(), ty))?;
+        let f = fns.first()?;
+        let body = f.body.as_ref()?;
+        let mut env: HashMap<String, Val> = HashMap::new();
+        env.insert("self".to_string(), self.lower_val_env(rhs, &HashMap::new()));
+        self.inline_block(&body.stmts, &env)
     }
 
     /// The type name an operand contributes to operator-impl lookup: a local's
