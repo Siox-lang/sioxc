@@ -112,6 +112,8 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<String, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// Enum name -> its variant names (for match-exhaustiveness).
+    enum_variants: HashMap<String, Vec<String>>,
 }
 
 impl<'a> Checker<'a> {
@@ -153,6 +155,7 @@ impl<'a> Checker<'a> {
             attr_targets,
             attr_value_kinds,
             trait_impls,
+            enum_variants: HashMap::new(),
         }
     }
 
@@ -193,6 +196,10 @@ impl<'a> Checker<'a> {
                                 self.trait_impls.entry(t).or_default().insert(ty);
                             }
                         }
+                    }
+                    Item::Enum(e) => {
+                        let vars = e.variants.iter().map(|v| v.name.text.clone()).collect();
+                        self.enum_variants.insert(e.name.text.clone(), vars);
                     }
                     _ => {}
                 }
@@ -324,6 +331,7 @@ impl<'a> Checker<'a> {
             }
             Stmt::If(i) => self.check_if(i, in_ports, sym),
             Stmt::Match(m) => {
+                self.check_match_exhaustive(m, sym);
                 self.check_expr(&m.scrutinee);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
@@ -378,6 +386,37 @@ impl<'a> Checker<'a> {
                     "`{name}` cannot be used directly as a condition; \
                      compare it explicitly (e.g. `== '1'`) or `impl Boolean for {name}`"
                 ),
+            );
+        }
+    }
+
+    /// Warn (spec Stage 10) when a `match` on an enum omits variants and has no
+    /// `_` wildcard.
+    fn check_match_exhaustive(&mut self, m: &MatchStmt, sym: &HashMap<String, Ty>) {
+        let Ty::Named(id) = self.type_of(&m.scrutinee, sym) else { return };
+        let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else { return };
+        let Some(variants) = self.enum_variants.get(&enum_name).cloned() else { return };
+
+        if m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard)) {
+            return;
+        }
+        let covered: HashSet<&str> = m
+            .arms
+            .iter()
+            .filter_map(|a| match &a.pattern {
+                Pattern::Path(p) if p.segments.len() >= 2 => Some(p.segments[1].text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<String> =
+            variants.into_iter().filter(|v| !covered.contains(v.as_str())).collect();
+        if !missing.is_empty() {
+            let names = missing.iter().map(|v| format!("`{v}`")).collect::<Vec<_>>().join(", ");
+            self.sink.emit(
+                Diagnostic::warning(format!("non-exhaustive match on `{enum_name}`: missing {names}"))
+                    .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                    .at(m.span)
+                    .help("add the missing arms, or a `_` wildcard"),
             );
         }
     }
@@ -710,6 +749,47 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    /// The number of warnings with a given code emitted while checking `src`.
+    fn warnings(src: &str, code: &str) -> usize {
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
+        let resolved = siox_resolve::resolve(std::slice::from_ref(&module), &mut sink);
+        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        sink.diagnostics().iter().filter(|d| d.code == Some(code)).count()
+    }
+
+    #[test]
+    fn non_exhaustive_enum_match_warns() {
+        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { out y: Bit; }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
+        // Missing `Done` and no `_` -> one warning.
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "State::Idle => { y = '0'; } State::Run => { y = '1'; }"),
+                codes::NON_EXHAUSTIVE_MATCH
+            ),
+            1
+        );
+        // A `_` wildcard is exhaustive.
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "State::Idle => { y = '0'; } _ => { y = '1'; }"),
+                codes::NON_EXHAUSTIVE_MATCH
+            ),
+            0
+        );
+        // All variants covered is exhaustive.
+        assert_eq!(
+            warnings(
+                &base.replace(
+                    "ARMS",
+                    "State::Idle => { y = '0'; } State::Run => { y = '1'; } State::Done => { y = '0'; }"
+                ),
+                codes::NON_EXHAUSTIVE_MATCH
+            ),
+            0
+        );
     }
 
     #[test]

@@ -140,10 +140,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 ### Stage 10 — Diagnostics & lints (`siox-diag` + all) — 🟢 (ongoing)
 - **Acceptance:** every diagnostic has a code, a main span, a message, optional
   help, and related spans.
-- **Status:** the infrastructure and the error-code catalogue exist and are in
-  use; the CLI renders `severity[code]: message --> file:line:col`. Warnings
-  (multiple drivers, latches, unused items, non-exhaustive match, ...) are not
-  yet emitted.
+- **Status (done):** the infrastructure and error-code catalogue are in use; the
+  CLI renders `severity[code]: message --> file:line:col`, help lines, and
+  related-span labels. Errors carry actionable help + "did you mean?"
+  suggestions (edit distance) and related spans (duplicate items). The first
+  warning is emitted: **non-exhaustive enum match** (`W-P007`).
+- **Status (todo):** the remaining warnings — multiple drivers, possible latch,
+  unused signal/param/import, unreachable arm, suspicious `Logic` compare/reset.
 
 ### Stage 11 — Standard library (`std/`) — 🔴 (started)
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
