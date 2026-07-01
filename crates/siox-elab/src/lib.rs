@@ -337,10 +337,14 @@ impl<'a> Elaborator<'a> {
 
         for p in &edecl.ports {
             if !connected.contains(&p.name.text) {
-                self.error(
-                    codes::MISSING_PORT_CONNECTION,
-                    site,
-                    format!("port `{}` of `{}` is not connected", p.name.text, edecl.name.text),
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "port `{}` of `{}` is not connected",
+                        p.name.text, edecl.name.text
+                    ))
+                    .with_code(codes::MISSING_PORT_CONNECTION)
+                    .at(site)
+                    .help(format!("add `.{} = <signal>` to the connection", p.name.text)),
                 );
             }
         }

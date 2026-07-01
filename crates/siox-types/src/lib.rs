@@ -405,10 +405,14 @@ impl<'a> Checker<'a> {
     fn check_write_target(&mut self, target: &Expr, in_ports: &HashSet<String>) {
         if let Expr::Path(p) = target {
             if p.segments.len() == 1 && in_ports.contains(&p.segments[0].text) {
-                self.error(
-                    codes::WRITE_TO_INPUT_PORT,
-                    p.span,
-                    format!("cannot assign to input port `{}`", p.segments[0].text),
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "cannot assign to input port `{}`",
+                        p.segments[0].text
+                    ))
+                    .with_code(codes::WRITE_TO_INPUT_PORT)
+                    .at(p.span)
+                    .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
                 );
             }
         }
@@ -463,14 +467,15 @@ impl<'a> Checker<'a> {
         let lhs = self.type_of(target, sym);
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
-            self.error(
-                codes::TYPE_MISMATCH,
-                expr_span(value),
-                format!(
+            self.sink.emit(
+                Diagnostic::error(format!(
                     "cannot assign {} to {} without an explicit conversion",
                     ty_name(&rhs),
                     ty_name(&lhs)
-                ),
+                ))
+                .with_code(codes::TYPE_MISMATCH)
+                .at(expr_span(value))
+                .help(format!("wrap it in a conversion, e.g. `{}(...)`", ty_name(&lhs))),
             );
         }
     }

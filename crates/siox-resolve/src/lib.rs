@@ -225,7 +225,14 @@ impl<'a> Resolver<'a> {
         let id = self.add_def(name.to_string(), kind, is_pub, Some(span), None);
         if let Some(prev) = self.globals.get(name).copied() {
             if self.out.kind_of(prev) != Some(DefKind::Builtin) {
-                self.error(codes::DUPLICATE_ITEM, span, format!("duplicate item `{name}`"));
+                let mut diag = Diagnostic::error(format!("duplicate item `{name}`"))
+                    .with_code(codes::DUPLICATE_ITEM)
+                    .at(span)
+                    .help("rename or remove one of them");
+                if let Some(prev_span) = self.out.def(prev).and_then(|d| d.span) {
+                    diag = diag.label(prev_span, format!("`{name}` first declared here"));
+                }
+                self.sink.emit(diag);
                 return id; // keep the first declaration as the resolution target
             }
         }
@@ -476,11 +483,20 @@ impl<'a> Resolver<'a> {
             return;
         }
         if p.segments.len() == 1 {
-            let name = &p.segments[0].text;
-            if let Some(id) = self.lookup(name) {
+            let name = p.segments[0].text.clone();
+            if let Some(id) = self.lookup(&name) {
                 self.out.uses.insert(p.span, id);
             } else {
-                self.error(codes::UNKNOWN_NAME, p.span, format!("unknown type `{name}`"));
+                let help = match self.suggest(&name) {
+                    Some(s) => format!("did you mean `{s}`?"),
+                    None => "declare it, or import it with `using`".to_string(),
+                };
+                self.sink.emit(
+                    Diagnostic::error(format!("unknown type `{name}`"))
+                        .with_code(codes::UNKNOWN_NAME)
+                        .at(p.span)
+                        .help(help),
+                );
             }
         } else {
             // Qualified path: lenient while cross-module `std::*` is absent.
@@ -598,6 +614,20 @@ impl<'a> Resolver<'a> {
         self.globals.get(name).copied()
     }
 
+    /// The closest in-scope name to `name` (edit distance <= 2), for a
+    /// "did you mean?" suggestion.
+    fn suggest(&self, name: &str) -> Option<String> {
+        let candidates = self.scopes.iter().flat_map(|s| s.keys()).chain(self.globals.keys());
+        let mut best: Option<(usize, &String)> = None;
+        for cand in candidates {
+            let d = levenshtein(name, cand);
+            if (1..=2).contains(&d) && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, cand));
+            }
+        }
+        best.map(|(_, s)| s.clone())
+    }
+
     fn variant(&self, enum_id: DefId, name: &str) -> Option<DefId> {
         self.enum_variants.get(&enum_id).and_then(|m| m.get(name)).copied()
     }
@@ -605,6 +635,22 @@ impl<'a> Resolver<'a> {
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
     }
+}
+
+/// Levenshtein edit distance between two ASCII-ish identifiers.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 #[cfg(test)]
@@ -618,6 +664,36 @@ mod tests {
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
         (resolved, sink.error_count())
+    }
+
+    /// Resolve and return the raw diagnostics, for inspecting help/labels.
+    fn diagnostics(src: &str) -> DiagnosticSink {
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
+        resolve(std::slice::from_ref(&module), &mut sink);
+        sink
+    }
+
+    #[test]
+    fn unknown_type_suggests_a_close_name() {
+        let sink = diagnostics("module m;\nstruct Packet { a: Bit }\nentity E { out y: Packe; }\n");
+        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::UNKNOWN_NAME)).unwrap();
+        assert_eq!(d.help.as_deref(), Some("did you mean `Packet`?"));
+    }
+
+    #[test]
+    fn levenshtein_basics() {
+        assert_eq!(levenshtein("Packe", "Packet"), 1);
+        assert_eq!(levenshtein("uint", "unit"), 2);
+        assert_eq!(levenshtein("abc", "abc"), 0);
+    }
+
+    #[test]
+    fn duplicate_item_points_to_the_first() {
+        let sink = diagnostics("module m;\nstruct P { a: Bit }\nstruct P { b: Bit }\n");
+        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::DUPLICATE_ITEM)).unwrap();
+        assert!(d.help.is_some());
+        assert_eq!(d.labels.len(), 1); // "first declared here"
     }
 
     #[test]
