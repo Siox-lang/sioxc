@@ -1,0 +1,40 @@
+module examples::struct_test;
+
+using std::logic::Bit;
+using std::bits::uint;
+
+// A struct-typed signal flattens to one scalar signal per field, so each field
+// gets its own trace path in the waveform.
+struct Packet {
+    valid: Bit,
+    data: uint[8],
+}
+
+entity Sink {
+    in p: Packet;
+    out got: uint[8];
+}
+
+impl Sink {
+    got = p.data;
+}
+
+#[test]
+entity SinkTest {}
+
+impl SinkTest {
+    let p: Packet;
+    let got: uint[8];
+
+    let dut = Sink {
+        .p,
+        .got,
+    };
+
+    p.data = 55;
+    p.valid = '1';
+    assert!(got == 55, "reads p.data");
+
+    p.data = 7;
+    assert!(got == 7, "tracks p.data");
+}

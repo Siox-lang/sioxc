@@ -355,13 +355,20 @@ fn run_one(
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
-    // of the DUTs it instantiates (`.clk = clk` aliases `clk` to `DUT.clk`).
+    // of the DUTs it instantiates (`.clk = clk` aliases `clk` to `DUT.clk`). A
+    // struct port flattens to per-field entries (`.p = p` -> `p.valid`, ...).
     let mut map: HashMap<String, SignalId> = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
         for c in &child.connections {
-            if let Some(id) = signal_id(design, &format!("{}.{}", child.entity, c.port)) {
-                map.insert(c.signal.clone(), id);
+            let prefix = format!("{}.{}", child.entity, c.port);
+            for (i, sig) in design.signals.iter().enumerate() {
+                let id = SignalId(i as u32);
+                if sig.path == prefix {
+                    map.insert(c.signal.clone(), id);
+                } else if let Some(field) = sig.path.strip_prefix(&format!("{prefix}.")) {
+                    map.insert(format!("{}.{field}", c.signal), id);
+                }
             }
         }
     }
@@ -447,10 +454,8 @@ impl Testbench<'_> {
         match s {
             ast::Stmt::Assign { target, value, .. } => {
                 let v = self.eval(value);
-                if let ast::Expr::Path(p) = target {
-                    if p.segments.len() == 1 {
-                        self.set_name(&p.segments[0].text, v);
-                    }
+                if let Some(path) = expr_path(target) {
+                    self.set_name(&path, v);
                 }
                 self.sim.settle();
                 self.sample();
@@ -564,6 +569,10 @@ impl Testbench<'_> {
                 .and_then(|m| m.get(&p.segments[1].text))
                 .copied()
                 .unwrap_or(0),
+            // A struct-field read (`p.data`) resolves through the flattened map.
+            ast::Expr::Field { .. } => {
+                expr_path(e).and_then(|p| self.map.get(&p)).map(|&id| self.sim.read(id)).unwrap_or(0)
+            }
             ast::Expr::Unary { op, rhs, .. } => {
                 let a = self.eval(rhs);
                 match op {
@@ -579,8 +588,15 @@ impl Testbench<'_> {
     }
 }
 
-fn signal_id(design: &Design, path: &str) -> Option<SignalId> {
-    design.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32))
+/// The dotted signal path of a name or struct-field access (`p.data`).
+fn expr_path(e: &ast::Expr) -> Option<String> {
+    match e {
+        ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        ast::Expr::Field { base, field, .. } => {
+            Some(format!("{}.{}", expr_path(base)?, field.text))
+        }
+        _ => None,
+    }
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
@@ -778,6 +794,28 @@ mod tests {
                assert!(st == State::Done, \"-> done\");\n\
                tick(clk);\n\
                assert!(st == State::Idle, \"-> idle\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn simulates_struct_field_signals() {
+        // A struct-typed port flattens to per-field signals; the DUT reads one
+        // field, and the testbench drives fields individually.
+        assert_test_passes(
+            "module m;\n\
+             struct Packet { valid: Bit, data: uint[8] }\n\
+             entity Sink { in p: Packet; out got: uint[8]; }\n\
+             impl Sink { got = p.data; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let p: Packet; let got: uint[8];\n\
+               let dut = Sink { .p, .got };\n\
+               p.data = 55;\n\
+               p.valid = '1';\n\
+               assert!(got == 55, \"reads p.data\");\n\
+               p.data = 7;\n\
+               assert!(got == 7, \"tracks p.data\");\n\
              }\n",
         );
     }

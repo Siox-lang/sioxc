@@ -154,6 +154,8 @@ struct Lowering<'a> {
     entity_params: HashMap<String, HashMap<String, i64>>,
     /// Enum name -> variant name -> discriminant value.
     enum_variants: HashMap<String, HashMap<String, u64>>,
+    /// Struct name -> its declaration (for flattening struct signals).
+    structs: HashMap<String, &'a ast::StructDecl>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -167,6 +169,7 @@ impl<'a> Lowering<'a> {
             impls: HashMap::new(),
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
+            structs: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
         }
@@ -178,6 +181,9 @@ impl<'a> Lowering<'a> {
                 match item {
                     ast::Item::Entity(e) => {
                         self.entities.insert(e.name.text.clone(), e);
+                    }
+                    ast::Item::Struct(s) => {
+                        self.structs.insert(s.name.text.clone(), s);
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
@@ -199,17 +205,21 @@ impl<'a> Lowering<'a> {
         }
 
         // Signals: ports, then impl-level `let` state. Build the local name map.
+        // Struct-typed signals flatten into one scalar signal per leaf field.
         let env = self.entity_params.get(name).cloned().unwrap_or_default();
         self.locals.clear();
         for p in &edecl.ports {
-            self.add_signal(name, &p.name.text, type_width(&p.ty, &env));
+            self.add_typed_signal(name, &p.name.text, &p.ty, &env);
         }
         let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    let w = l.ty.as_ref().map(|t| type_width(t, &env)).unwrap_or(0);
-                    self.add_signal(name, &l.name.text, w);
+                    if let Some(ty) = &l.ty {
+                        self.add_typed_signal(name, &l.name.text, ty, &env);
+                    } else {
+                        self.add_signal(name, &l.name.text, 0);
+                    }
                 }
             }
         }
@@ -228,6 +238,31 @@ impl<'a> Lowering<'a> {
         let id = SignalId(self.out.signals.len() as u32);
         self.out.signals.push(Signal { path: format!("{entity}.{name}"), width });
         self.locals.insert(name.to_string(), id);
+    }
+
+    /// Add a signal for `name: ty`, flattening a struct type into one scalar
+    /// signal per field (`s.valid`, `s.data`, ...). Nested structs recurse.
+    fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
+        match self.struct_fields(ty) {
+            Some(fields) => {
+                for (fname, fty) in fields {
+                    self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
+                }
+            }
+            None => self.add_signal(entity, name, type_width(ty, env)),
+        }
+    }
+
+    /// The `(field name, field type)` list if `ty` names a known struct.
+    fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
+        if let ast::Type::Path(p) = ty {
+            if p.segments.len() == 1 {
+                if let Some(s) = self.structs.get(&p.segments[0].text) {
+                    return Some(s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())).collect());
+                }
+            }
+        }
+        None
     }
 
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
@@ -377,15 +412,10 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The signal an assignment target refers to (only bare single-name targets
-    /// are handled so far).
+    /// The signal an assignment target refers to — a bare name or a struct-field
+    /// path (`s.data`).
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
-        if let ast::Expr::Path(p) = target {
-            if p.segments.len() == 1 {
-                return self.locals.get(&p.segments[0].text).copied();
-            }
-        }
-        None
+        expr_path(target).and_then(|p| self.locals.get(&p).copied())
     }
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
@@ -404,6 +434,11 @@ impl<'a> Lowering<'a> {
                 .get(&p.segments[0].text)
                 .and_then(|m| m.get(&p.segments[1].text))
                 .map(|&d| Expr::Const(d))
+                .unwrap_or(Expr::Unknown),
+            // A struct-field access (`s.data`) resolves to its flattened signal.
+            ast::Expr::Field { .. } => expr_path(e)
+                .and_then(|p| self.locals.get(&p).copied())
+                .map(Expr::Current)
                 .unwrap_or(Expr::Unknown),
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
@@ -698,6 +733,18 @@ fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64
         }
     }
     out
+}
+
+/// The dotted signal path of a name or struct-field access: `s` -> `"s"`,
+/// `s.data` -> `"s.data"`. Anything else (calls, indexing) yields `None`.
+fn expr_path(e: &ast::Expr) -> Option<String> {
+    match e {
+        ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        ast::Expr::Field { base, field, .. } => {
+            Some(format!("{}.{}", expr_path(base)?, field.text))
+        }
+        _ => None,
+    }
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
