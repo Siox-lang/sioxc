@@ -1,0 +1,53 @@
+module examples::logic_test;
+
+// Four-value logic from the standard library: `and`/`or` on Logic resolve to
+// the truth-table impls in std::logic (std_logic_1164 style), so unknowns
+// propagate — but a dominant operand still decides.
+
+using std::logic::{Logic};
+using std::attrs::{test};
+
+entity Gates {
+    in a: Logic;
+    in b: Logic;
+    out y_and: Logic;
+    out y_or: Logic;
+}
+
+impl Gates {
+    y_and = a and b;
+    y_or = a or b;
+}
+
+#[test]
+entity LogicTest {}
+
+impl LogicTest {
+    let a: Logic = '0';
+    let b: Logic = '0';
+    let y_and: Logic;
+    let y_or: Logic;
+
+    let dut = Gates { .a, .b, .y_and, .y_or };
+
+    wait 1ns;
+    assert!(y_and == '0', "0 and 0 = 0");
+    assert!(y_or == '0', "0 or 0 = 0");
+
+    a = '1';
+    b = 'X';
+    wait 1ns;
+    assert!(y_and == 'X', "1 and X = X (unknown propagates)");
+    assert!(y_or == '1', "1 or X = 1 (dominant operand decides)");
+
+    a = '0';
+    wait 1ns;
+    assert!(y_and == '0', "0 and X = 0 (dominant operand decides)");
+    assert!(y_or == 'X', "0 or X = X (unknown propagates)");
+
+    a = '1';
+    b = '1';
+    wait 1ns;
+    assert!(y_and == '1', "1 and 1 = 1");
+    assert!(y_or == '1', "1 or 1 = 1");
+}

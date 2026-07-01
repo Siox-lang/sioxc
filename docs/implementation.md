@@ -157,7 +157,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (todo):** the remaining warnings — multiple drivers, possible latch,
   unused signal/param/import, suspicious `Logic` compare/reset.
 
-### Stage 11 — Standard library (`std/`) — 🟢
+### Stage 11 — Standard library (`std/`) — 🟢 (documented in docs/std.md)
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
 - **Status:** the CLI loads `std::` modules transitively from `--std <dir>`
   (default `./std`), mapping `std::a::b` → `<dir>/a/b.siox`. Imports resolve
@@ -169,9 +169,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   integer`, 1 = true — no longer seeded), `std::attrs` (the five system
   attributes), `std::assert` (`Severity`), `std::sim` (`Time`/`Freq` with
   literal-suffix impls — `10ns`, `100MHz` — plus FS..MS integer constants),
-  `std::math` (`Complex` with `"+"`/`"-"` operator impls, exercised by
-  `examples/complex_test.siox`; operator traits declared in `std::ops` and
-  imported by quoted name).
+  `std::math` (`Complex` with `"+"`/`"-"` operator impls incl. mixed-operand
+  `10 + 5i`, and the `i` suffix; exercised by `examples/complex_test.siox`;
+  operator traits declared in `std::ops` and imported by quoted name).
+  `std::logic` now carries the **four-value truth tables** for
+  `and or xor nand nor xnor` on `Logic` as ordinary operator impls
+  (X/Z propagation, `examples/logic_test.siox`) — std_logic_1164's core as
+  library source. Full reference: docs/std.md.
   The kernel's base types are only `integer` and `real` (spec "type kernel");
   the checker/IR still recognize the std::logic/std::bits names intrinsically
   as a shim until operator overloading carries their semantics in source.

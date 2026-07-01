@@ -34,6 +34,34 @@ pub trait "/" {
     fn apply(self, rhs: Self) -> Self;
 }
 
+// Logic operator traits (word operators, VHDL style). std::logic implements
+// them for `Logic` with X/Z-propagating truth tables, the way
+// std_logic_1164 defines `and` on std_ulogic as a plain function.
+
+pub trait "and" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "or" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "xor" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "nand" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "nor" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
+pub trait "xnor" {
+    fn apply(self, rhs: Self) -> Self;
+}
+
 // Literal suffix/prefix traits (spec 3.24, docs/notes/literal-suffixes.md).
 // Deliberately empty: each `impl Suffix for T` brings fns whose *names* are
 // the suffixes they define (`5i` -> `Complex::i(5)`), inlined like operator

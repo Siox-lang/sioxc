@@ -12,6 +12,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | Document | What it is |
 | -------- | ---------- |
 | [spec.md](spec.md) | The **Phase 1 language specification** — the authority for syntax and semantics. Kept current as the language evolves. |
+| [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
 | [implementation.md](implementation.md) | The **stage-by-stage plan and live build status** — what each crate must do, the acceptance criteria, and how far along it is. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
@@ -39,10 +40,13 @@ flowchart TD
 
 ## Current status (summary)
 
-Working today: the frontend through **elaboration** — lex, parse, pretty-print,
-name resolution, a growing set of type/kind checks, and instance-hierarchy
-elaboration. The simulator, IR, and waveform stages are still stubs. See
-[implementation.md](implementation.md) for the per-stage detail.
+The whole pipeline runs **end to end**: source → parse → resolve → typecheck →
+elaborate → digital IR → delta-cycle simulation with `#[test]` discovery,
+assertions, and VCD waveforms. The standard library loads from `std/` as real
+source ([std.md](std.md)) — including operator overloading, literal suffixes
+(`10ns`, `5i`), and four-value `Logic` truth tables defined as library code.
+Remaining work is gap-filling: Stage 10 lints, vector operators in std, and
+deeper coverage. See [implementation.md](implementation.md) per stage.
 
 ## Build and run
 
@@ -63,12 +67,11 @@ CLI commands (run as `siox <cmd>`):
 | `ast <file>`    | ✅ | dump the debug AST |
 | `check <file>`  | ✅ | parse → resolve → typecheck, report diagnostics |
 | `tree <file>`   | ✅ | print the elaborated instance hierarchy |
-| `sim <file>`    | ⏳ | elaborate → lower → simulate (later stages still stubs) |
-| `test <path>`   | ⏳ | discover and run `#[test]` entities |
-| `ir <file>`     | ⏳ | print the normalized digital IR |
+| `sim <file>`    | ✅ | simulate; `--wave out.vcd` writes a waveform |
+| `test <path>`   | ✅ | discover and run `#[test]` entities |
+| `ir <file>`     | ✅ | print the normalized digital IR |
 
-Commands marked ⏳ run the pipeline as far as it currently goes and report which
-stage is not yet implemented.
-
-Example programs live in [`../examples`](../examples) (`counter.siox`,
-`counter_tb.siox`).
+All commands take `--std <dir>` (default `./std`) for the standard library
+root. Example programs live in [`../examples`](../examples) — counter,
+register, mux, FSM, struct/array, four-value logic, and complex-arithmetic
+tests, each a runnable `#[test]` entity.

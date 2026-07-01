@@ -196,9 +196,15 @@ fn mask(value: u64, width: u32) -> u64 {
 }
 
 /// Numeric value of a logic literal. `'X'`/`'Z'` are treated as 0 in Phase 1.
+/// Logic literal encoding, aligned with std::logic's `enum Logic { '0', '1',
+/// 'Z', 'X' }` declaration order so literal comparisons match enum-typed
+/// signals. In a 1-bit (intrinsic two-value) signal, 'Z'/'X' are simply never
+/// equal — unknown states need the 2-bit enum representation.
 fn logic_value(c: char) -> u64 {
     match c {
         '1' | 'H' => 1,
+        'Z' => 2,
+        'X' | 'U' | 'W' => 3,
         _ => 0,
     }
 }
