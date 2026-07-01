@@ -94,13 +94,10 @@ fn main() -> ExitCode {
             Err(code) => code,
         },
         Command::Check { file, verbose } => cmd_check(&file, verbose),
-        Command::Sim { file, wave } => {
-            // Simulation runs the testbenches; `--wave` VCD output is Stage 9.
-            if wave.is_some() {
-                eprintln!("note: --wave (VCD) output is not yet implemented (Stage 9)\n");
-            }
-            cmd_test(&file, None)
-        }
+        Command::Sim { file, wave } => match wave {
+            Some(out) => cmd_wave(&file, &out),
+            None => cmd_test(&file, None),
+        },
         Command::Test { path, filter } => cmd_test(&path, filter.as_deref()),
         Command::Ir { file } => cmd_ir(&file),
         Command::Tree { file } => cmd_tree(&file),
@@ -335,6 +332,48 @@ fn cmd_test(path: &Path, filter: Option<&str>) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `siox sim --wave <out.vcd>`: run the first test entity with tracing and write
+/// its waveform as VCD.
+fn cmd_wave(path: &Path, out: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let modules = std::slice::from_ref(&sem.fe.module);
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        return ExitCode::FAILURE;
+    }
+
+    let Some((result, samples)) = siox_sim::run_test_traced(modules, &hier, &design, None) else {
+        eprintln!("no #[test] entity found to trace");
+        return ExitCode::FAILURE;
+    };
+
+    let mut file = match std::fs::File::create(out) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: cannot write {}: {e}", out.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = siox_wave::write_vcd(&mut file, &design, &samples) {
+        eprintln!("error: writing VCD: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!(
+        "wrote {} ({} samples) for `{}` [{}]",
+        out.display(),
+        samples.len(),
+        result.name,
+        if result.passed { "pass" } else { "fail" }
+    );
+    ExitCode::SUCCESS
 }
 
 fn cmd_tokens(path: &Path) -> ExitCode {

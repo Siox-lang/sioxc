@@ -223,6 +223,16 @@ pub struct TestResult {
     pub span: Option<Span>,
 }
 
+/// A snapshot of every signal's value at one simulation time, recorded during a
+/// traced run for waveform export (spec Stage 9).
+pub struct Sample {
+    pub time_fs: u64,
+    pub values: Vec<u64>,
+}
+
+/// Half a clock period, in femtoseconds — the time `tick` advances per edge.
+const HALF_PERIOD: u64 = 5_000_000; // 5 ns
+
 /// Discover and run every `#[test]` entity, driving its stimulus through the
 /// simulator and evaluating its assertions (spec Stage 8).
 ///
@@ -238,7 +248,45 @@ pub fn run_tests(
     design: &Design,
     filter: Option<&str>,
 ) -> Vec<TestResult> {
-    let mut entities: HashMap<&str, &ast::EntityDecl> = HashMap::new();
+    let (entities, impls) = collect_defs(modules);
+    let mut results = Vec::new();
+    for &root in &hier.roots {
+        let inst = hier.instance(root);
+        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        if is_test && selected {
+            let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
+            results.push(run_one(&inst.entity, root, hier, design, &body, false).0);
+        }
+    }
+    results
+}
+
+/// Run the first `#[test]` entity (optionally name-filtered), recording a signal
+/// sample at every simulation step for waveform export (spec Stage 9).
+pub fn run_test_traced(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+) -> Option<(TestResult, Vec<Sample>)> {
+    let (entities, impls) = collect_defs(modules);
+    for &root in &hier.roots {
+        let inst = hier.instance(root);
+        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        if is_test && selected {
+            let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
+            return Some(run_one(&inst.entity, root, hier, design, &body, true));
+        }
+    }
+    None
+}
+
+type Defs<'a> = (HashMap<&'a str, &'a ast::EntityDecl>, HashMap<&'a str, Vec<&'a ast::ImplDecl>>);
+
+fn collect_defs(modules: &[Module]) -> Defs<'_> {
+    let mut entities = HashMap::new();
     let mut impls: HashMap<&str, Vec<&ast::ImplDecl>> = HashMap::new();
     for m in modules {
         for item in &m.items {
@@ -255,18 +303,7 @@ pub fn run_tests(
             }
         }
     }
-
-    let mut results = Vec::new();
-    for &root in &hier.roots {
-        let inst = hier.instance(root);
-        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
-        let selected = filter.map_or(true, |f| inst.entity.contains(f));
-        if is_test && selected {
-            let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            results.push(run_one(&inst.entity, root, hier, design, &body));
-        }
-    }
-    results
+    (entities, impls)
 }
 
 fn run_one(
@@ -275,7 +312,8 @@ fn run_one(
     hier: &Hierarchy,
     design: &Design,
     body: &[&ast::ImplDecl],
-) -> TestResult {
+    record: bool,
+) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
     // of the DUTs it instantiates (`.clk = clk` aliases `clk` to `DUT.clk`).
     let mut map: HashMap<String, SignalId> = HashMap::new();
@@ -288,9 +326,10 @@ fn run_one(
         }
     }
 
-    let mut tb = Testbench { sim: Simulator::new(design), map, failure: None };
+    let mut tb =
+        Testbench { sim: Simulator::new(design), map, failure: None, record, samples: Vec::new() };
 
-    // Apply initial `let` values, then settle.
+    // Apply initial `let` values, then settle and record the starting state.
     for im in body {
         for item in &im.items {
             if let ast::ImplItem::Let(l) = item {
@@ -304,6 +343,7 @@ fn run_one(
         }
     }
     tb.sim.settle();
+    tb.sample();
 
     // Run the stimulus.
     for im in body {
@@ -320,12 +360,13 @@ fn run_one(
         }
     }
 
-    match tb.failure {
+    let result = match tb.failure {
         Some((msg, span)) => {
             TestResult { name: name.to_string(), passed: false, failure: Some(msg), span: Some(span) }
         }
         None => TestResult { name: name.to_string(), passed: true, failure: None, span: None },
-    }
+    };
+    (result, tb.samples)
 }
 
 /// Interprets a testbench's stimulus statements against a running simulator.
@@ -334,12 +375,23 @@ struct Testbench<'a> {
     /// Test-local signal name -> design signal id.
     map: HashMap<String, SignalId>,
     failure: Option<(String, Span)>,
+    /// When set, a sample is recorded after each simulation step.
+    record: bool,
+    samples: Vec<Sample>,
 }
 
 impl Testbench<'_> {
     fn set_name(&mut self, name: &str, value: u64) {
         if let Some(&id) = self.map.get(name) {
             self.sim.set(id, value);
+        }
+    }
+
+    /// Record the full signal vector at the current simulation time.
+    fn sample(&mut self) {
+        if self.record {
+            let values = self.sim.state.iter().map(|s| s.current).collect();
+            self.samples.push(Sample { time_fs: self.sim.time_fs, values });
         }
     }
 
@@ -353,6 +405,7 @@ impl Testbench<'_> {
                     }
                 }
                 self.sim.settle();
+                self.sample();
             }
             ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, span }) => {
                 self.exec_call(callee, args, *bang, *span);
@@ -396,17 +449,25 @@ impl Testbench<'_> {
             _ => "",
         };
         match name {
-            // tick(clk): one full clock cycle (rising then falling).
+            // tick(clk): a full clock cycle — rising edge, half period, falling
+            // edge, half period.
             "tick" => {
                 if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
                     self.sim.set(id, 1);
                     self.sim.settle();
+                    self.sample();
+                    self.sim.advance(HALF_PERIOD);
                     self.sim.set(id, 0);
                     self.sim.settle();
+                    self.sample();
+                    self.sim.advance(HALF_PERIOD);
                 }
             }
-            // wait <duration>: advance time (no time-based behaviour in Phase 1).
-            "wait" => self.sim.advance(0),
+            // wait <duration>: advance simulation time.
+            "wait" => {
+                self.sim.advance(duration_fs(args));
+                self.sample();
+            }
             // assert!(cond, "msg"): record the first failure.
             "assert" if bang => {
                 let ok = args.first().map(|c| self.eval(c) != 0).unwrap_or(true);
@@ -484,6 +545,26 @@ fn str_lit(e: &ast::Expr) -> Option<String> {
         ast::Expr::StrLit { text, .. } => Some(text.clone()),
         _ => None,
     }
+}
+
+/// The femtosecond duration of a `wait` argument like `10.ns` (parsed as a field
+/// access `10 . ns`). Unknown forms default to a half period.
+fn duration_fs(args: &[ast::Expr]) -> u64 {
+    if let Some(ast::Expr::Field { base, field, .. }) = args.first() {
+        if let ast::Expr::Int { text, .. } = base.as_ref() {
+            let scale = match field.text.as_str() {
+                "fs" => 1,
+                "ps" => 1_000,
+                "ns" => 1_000_000,
+                "us" => 1_000_000_000,
+                "ms" => 1_000_000_000_000,
+                "s" => 1_000_000_000_000_000,
+                _ => 1_000_000,
+            };
+            return parse_u64(text) * scale;
+        }
+    }
+    HALF_PERIOD
 }
 
 fn parse_u64(text: &str) -> u64 {
