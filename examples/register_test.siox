@@ -1,0 +1,50 @@
+module examples::register_test;
+
+using std::logic::{Logic, Clock};
+using std::bits::uint;
+
+// A parameterized register: `q` captures `d` on the rising clock edge.
+entity Register<W: usize> {
+    in clk: Clock;
+    in d: uint[W];
+    out q: uint[W];
+}
+
+impl Register<W: usize> {
+    let state: uint[W] = 0;
+
+    if clk::rising {
+        state = d;
+    }
+
+    q = state;
+}
+
+#[test]
+entity RegisterTest {}
+
+impl RegisterTest {
+    let clk: Logic = '0';
+    let d: uint[8] = 0;
+    let q: uint[8];
+
+    let dut = Register<W = 8> {
+        .clk,
+        .d,
+        .q,
+    };
+
+    // Before any edge, q holds its reset value.
+    assert!(q == 0, "register starts at 0");
+
+    d = 42;
+    tick(clk);
+    assert!(q == 42, "register captures d on the rising edge");
+
+    // Changing d without an edge does not change q.
+    d = 7;
+    assert!(q == 42, "q holds between edges");
+
+    tick(clk);
+    assert!(q == 7, "next edge captures the new d");
+}

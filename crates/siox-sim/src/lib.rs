@@ -681,6 +681,53 @@ mod tests {
         assert!(results[0].passed, "failure: {:?}", results[0].failure);
     }
 
+    fn assert_test_passes(src: &str) {
+        let results = run(src);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{}: {:?}", results[0].name, results[0].failure);
+    }
+
+    #[test]
+    fn simulates_a_combinational_mux() {
+        // `y = b`, then `y = a` when `sel` — later driver wins (spec 3.14).
+        assert_test_passes(
+            "module m;\n\
+             entity Mux { in sel: Bit; in a: Bit; in b: Bit; out y: Bit; }\n\
+             impl Mux { y = b; if sel { y = a; } }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let sel: Bit = '0'; let a: Bit = '1'; let b: Bit = '0'; let y: Bit;\n\
+               let dut = Mux { .sel, .a, .b, .y };\n\
+               assert!(y == '0', \"sel=0 -> b\");\n\
+               sel = '1';\n\
+               assert!(y == '1', \"sel=1 -> a\");\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn simulates_a_register() {
+        // q captures d on the rising edge and holds between edges.
+        assert_test_passes(
+            "module m;\n\
+             entity Reg<W: usize> { in clk: Clock; in d: uint[W]; out q: uint[W]; }\n\
+             impl Reg<W: usize> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let clk: Logic = '0'; let d: uint[8] = 0; let q: uint[8];\n\
+               let dut = Reg<W = 8> { .clk, .d, .q };\n\
+               assert!(q == 0, \"starts at 0\");\n\
+               d = 42;\n\
+               tick(clk);\n\
+               assert!(q == 42, \"captures d\");\n\
+               d = 7;\n\
+               assert!(q == 42, \"holds between edges\");\n\
+               tick(clk);\n\
+               assert!(q == 7, \"next edge\");\n\
+             }\n",
+        );
+    }
+
     #[test]
     fn failing_assertion_reports_message_and_span() {
         let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 99, \"wrong count\");");

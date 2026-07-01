@@ -1,0 +1,44 @@
+module examples::mux_test;
+
+using std::logic::Bit;
+
+// A 2:1 mux written as default-then-override combinational logic (spec 3.14):
+// `y = b`, then `y = a` when `sel` — the later driver wins.
+entity Mux {
+    in sel: Bit;
+    in a: Bit;
+    in b: Bit;
+    out y: Bit;
+}
+
+impl Mux {
+    y = b;
+
+    if sel {
+        y = a;
+    }
+}
+
+#[test]
+entity MuxTest {}
+
+impl MuxTest {
+    let sel: Bit = '0';
+    let a: Bit = '1';
+    let b: Bit = '0';
+    let y: Bit;
+
+    let dut = Mux {
+        .sel,
+        .a,
+        .b,
+        .y,
+    };
+
+    // sel = 0 selects b.
+    assert!(y == '0', "sel=0 selects b");
+
+    sel = '1';
+    // sel = 1 selects a.
+    assert!(y == '1', "sel=1 selects a");
+}
