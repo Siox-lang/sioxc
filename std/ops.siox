@@ -6,9 +6,10 @@ module std::ops;
 // as a condition (in `if`, and later `while`/assertions). The conversion is
 // applied only in condition position — it is not a general implicit cast.
 //
-// NOTE: until the compiler loads `std/`, the `Bit` and `Bool` impls below are
-// seeded as builtins in siox-types, and `Boolean` is seeded as a known trait
-// in siox-resolve. This file is the canonical declaration they stand in for.
+// This is the canonical declaration of `Boolean`; name it with
+// `using std::ops::{Boolean};`. The `Bit`/`Bool` condition behaviour below is
+// also mirrored inside the type checker so plain `if bit` works without an
+// import — the impls here keep the semantics on the record in source form.
 
 pub trait Boolean {
     fn as_bool(self) -> Bool;

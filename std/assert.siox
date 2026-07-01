@@ -1,0 +1,15 @@
+module std::assert;
+
+// Assertion support (spec Stage 11, modelled on VHDL's `assert ... report ...
+// severity ...`).
+//
+// `assert(cond, "message")` itself is built-in simulator syntax. This module
+// carries the severity ladder for when assertions grow a severity argument
+// (VHDL `severity_level`: note < warning < error < failure).
+
+pub enum Severity {
+    Note,
+    Warning,
+    Error,
+    Failure,
+}

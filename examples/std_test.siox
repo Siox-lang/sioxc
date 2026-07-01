@@ -1,0 +1,39 @@
+module examples::std_test;
+
+// Exercises every std module through real imports: the CLI loads each file
+// from `--std` (default ./std) and resolution binds the names to the actual
+// `pub` declarations.
+
+using std::logic::{Bit, Clock, LOW, HIGH};
+using std::bits::{uint};
+using std::ops::{Boolean};
+using std::attrs::{test};
+using std::assert::{Severity};
+using std::sim::{NS};
+
+entity Buf {
+    in a: Bit;
+    out y: Bit;
+}
+
+impl Buf {
+    y = a;
+}
+
+#[test]
+entity StdTest {}
+
+impl StdTest {
+    let a: Bit = LOW;
+    let y: Bit;
+
+    let buf = Buf { .a, .y };
+
+    a = HIGH;
+    wait 1.ns;
+    assert!(y == HIGH, "buffer passes HIGH through");
+
+    a = LOW;
+    wait 1.ns;
+    assert!(y == LOW, "buffer passes LOW through");
+}

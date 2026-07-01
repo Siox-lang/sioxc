@@ -1,0 +1,15 @@
+module std::bits;
+
+// Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std).
+//
+// `uint[N]` and `int[N]` are intrinsic: arithmetic, bitwise logic,
+// comparisons, shifts, slices (`x[7..4]`) and concatenation (`{hi, lo}`) are
+// implemented by the compiler. `using std::bits::{uint, int}` resolves to the
+// intrinsic types; this file documents the surface.
+//
+//   uint[N]  unsigned, N bits, wrapping on overflow   (VHDL `unsigned`)
+//   int[N]   two's-complement signed, N bits          (VHDL `signed`)
+//   usize    elaboration-time natural, for widths/parameters
+//
+// Conversions and `resize`-style helpers land with operator overloading
+// (spec 3.13); until then widths are strict on assignment and connection.

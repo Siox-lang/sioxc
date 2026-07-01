@@ -157,12 +157,19 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (todo):** the remaining warnings — multiple drivers, possible latch,
   unused signal/param/import, suspicious `Logic` compare/reset.
 
-### Stage 11 — Standard library (`std/`) — 🔴 (started)
+### Stage 11 — Standard library (`std/`) — 🟢
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
-- **Status:** `std/ops.siox` declares the `Boolean` trait (boolean
-  representation for conditions). The compiler does not load `std/` yet, so
-  primitives, `std::attrs`, and the built-in `Boolean` impls (`Bit`/`Bool`) are
-  seeded as compiler builtins in the meantime (see architecture.md).
+- **Status:** the CLI loads `std::` modules transitively from `--std <dir>`
+  (default `./std`), mapping `std::a::b` → `<dir>/a/b.siox`. Imports resolve
+  against the loaded modules' `pub` declarations; an import that matches
+  nothing is a hard error (`E-P011`, with a "did you mean?" suggestion).
+  Shipped modules: `std::logic` (LOW/HIGH + docs for the intrinsic
+  Bit/Logic/Bool/Clock), `std::bits` (docs for uint/int/usize), `std::ops`
+  (the `Boolean` condition trait — no longer seeded), `std::attrs` (the five
+  system attributes, canonical declarations), `std::assert` (`Severity`),
+  `std::sim` (FS/PS/NS/US/MS time constants). Primitive types stay intrinsic
+  by design (docs/notes/std-loading.md); `examples/std_test.siox` exercises
+  every module through real imports.
 
 ### Stage 12 — CLI & workflow (`siox-cli`) — 🟢
 - **Acceptance:** `siox check` succeeds; `siox sim --wave` produces a waveform;

@@ -1,0 +1,14 @@
+module std::sim;
+
+// Simulation helpers (spec Stage 11, modelled on VHDL's `time` units).
+//
+// `wait`/`tick`/`run` stimulus control is built-in simulator syntax for now
+// (spec Stage 11 allows this). This module carries the time-unit constants:
+// the simulator's base tick is 1 fs (the VCD timescale), so a delay of
+// `10 * NS` means 10 nanoseconds.
+
+pub const FS: usize = 1;
+pub const PS: usize = 1000;
+pub const NS: usize = 1000000;
+pub const US: usize = 1000000000;
+pub const MS: usize = 1000000000000;

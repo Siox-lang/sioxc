@@ -1,0 +1,13 @@
+module std::attrs;
+
+// System metadata attributes (spec 3.5 / Stage 11).
+//
+// These are the canonical declarations; the compiler seeds the same set so
+// bare files keep working, and a loaded declaration here takes over as the
+// resolution target.
+
+pub attr top: Bool for entity;      // elaboration root
+pub attr test: Bool for entity;     // discovered by `siox test`
+pub attr keep: Bool for let, port;  // keep through optimization
+pub attr library: string for entity;
+pub attr name: string for entity;

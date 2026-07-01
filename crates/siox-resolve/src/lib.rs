@@ -141,11 +141,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn seed_builtins(&mut self) {
-        // Primitive types (spec 3.9 / std::logic / std::bits) plus the
-        // well-known std traits, seeded while `std/` is still empty.
-        for name in [
-            "Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string", "Boolean",
-        ] {
+        // Primitive types (spec 3.9 / std::logic / std::bits). These are
+        // intrinsic to the compiler; everything else lives in `std/` and is
+        // loaded like any other module (`Boolean` is declared in std/ops.siox).
+        for name in ["Bit", "Logic", "Bool", "Clock", "uint", "int", "usize", "string"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }

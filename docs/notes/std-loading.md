@@ -1,7 +1,8 @@
 # Proposal: loading `std/` (and multi-file modules)
 
-Status: **draft for approval** — no code written yet. This closes the "Stage 11
-/ std loading" gap, but the design has a few forks that are yours to pick.
+Status: **implemented** (A/A approved: primitives intrinsic, `--std <dir>`
+default `./std`; a bad import is a hard error, `E-P011`). Kept for the design
+rationale; the live status lives in docs/implementation.md (Stage 11).
 
 ## Where we are today
 
