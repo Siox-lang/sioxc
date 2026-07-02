@@ -155,6 +155,7 @@ impl<'a> Simulator<'a> {
     fn eval(&self, e: &Expr) -> u64 {
         match e {
             Expr::Const(v) => *v,
+            Expr::Real(x) => x.to_bits(),
             Expr::Logic(c) => logic_value(*c),
             Expr::Current(id) => self.state[id.0 as usize].current,
             Expr::Old(id) => self.state[id.0 as usize].old,
@@ -195,7 +196,6 @@ fn mask(value: u64, width: u32) -> u64 {
     }
 }
 
-/// Numeric value of a logic literal. `'X'`/`'Z'` are treated as 0 in Phase 1.
 /// Logic literal encoding, aligned with std::logic's `enum Logic { '0', '1',
 /// 'Z', 'X' }` declaration order so literal comparisons match enum-typed
 /// signals. In a 1-bit (intrinsic two-value) signal, 'Z'/'X' are simply never
@@ -234,6 +234,11 @@ fn apply_binop(op: BinOp, a: u64, b: u64) -> u64 {
         BinOp::Xnor => (!(la ^ lb)) as u64,
         BinOp::Eq => (a == b) as u64,
         BinOp::Ne => (a != b) as u64,
+        // Float arithmetic on f64-bit values (`real` operands).
+        BinOp::FAdd => (f64::from_bits(a) + f64::from_bits(b)).to_bits(),
+        BinOp::FSub => (f64::from_bits(a) - f64::from_bits(b)).to_bits(),
+        BinOp::FMul => (f64::from_bits(a) * f64::from_bits(b)).to_bits(),
+        BinOp::FDiv => (f64::from_bits(a) / f64::from_bits(b)).to_bits(),
         BinOp::Lt => (a < b) as u64,
         BinOp::Le => (a <= b) as u64,
         BinOp::Gt => (a > b) as u64,
@@ -411,13 +416,14 @@ fn run_one(
                     Some(ast::Expr::Construct { args, .. }) => {
                         for c in args {
                             if let Some(v) = &c.value {
-                                let val = tb.eval(v);
-                                tb.set_name(&format!("{}.{}", l.name.text, c.field.text), val);
+                                let field = format!("{}.{}", l.name.text, c.field.text);
+                                let val = tb.eval_for(&field, v);
+                                tb.set_name(&field, val);
                             }
                         }
                     }
                     Some(value) => {
-                        let v = tb.eval(value);
+                        let v = tb.eval_for(&l.name.text, value);
                         tb.set_name(&l.name.text, v);
                     }
                     None => {}
@@ -472,6 +478,21 @@ impl Testbench<'_> {
         }
     }
 
+    /// Evaluate a stimulus value for a named target: `real` targets take the
+    /// value's f64 bits (`a.re = 3` stores 3.0).
+    fn eval_for(&self, name: &str, e: &ast::Expr) -> u64 {
+        let real = self
+            .map
+            .get(name)
+            .map(|&id| self.sim.design.signals[id.0 as usize].real)
+            .unwrap_or(false);
+        if real {
+            self.eval_real(e).to_bits()
+        } else {
+            self.eval(e)
+        }
+    }
+
     /// Record the full signal vector at the current simulation time.
     fn sample(&mut self) {
         if self.record {
@@ -488,11 +509,16 @@ impl Testbench<'_> {
                     // struct local (`a = { .re = 3, .im = 4 };`).
                     if let ast::Expr::Construct { args, .. } = value {
                         for arg in args {
-                            let v = arg.value.as_ref().map(|v| self.eval(v)).unwrap_or(0);
-                            self.set_name(&format!("{path}.{}", arg.field.text), v);
+                            let field = format!("{path}.{}", arg.field.text);
+                            let v = arg
+                                .value
+                                .as_ref()
+                                .map(|v| self.eval_for(&field, v))
+                                .unwrap_or(0);
+                            self.set_name(&field, v);
                         }
                     } else {
-                        let v = self.eval(value);
+                        let v = self.eval_for(&path, value);
                         self.set_name(&path, v);
                     }
                 }
@@ -626,9 +652,46 @@ impl Testbench<'_> {
                 }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // A real operand switches to float semantics: integer literal
+                // counterparts coerce, so `z.re == 10` compares 10.0.
+                if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
+                    let a = self.eval_real(lhs);
+                    let b = self.eval_real(rhs);
+                    return match lower_ast_binop(*op) {
+                        BinOp::Add => (a + b).to_bits(),
+                        BinOp::Sub => (a - b).to_bits(),
+                        BinOp::Mul => (a * b).to_bits(),
+                        BinOp::Div => (a / b).to_bits(),
+                        BinOp::Eq => (a == b) as u64,
+                        BinOp::Ne => (a != b) as u64,
+                        BinOp::Lt => (a < b) as u64,
+                        BinOp::Le => (a <= b) as u64,
+                        BinOp::Gt => (a > b) as u64,
+                        BinOp::Ge => (a >= b) as u64,
+                        other => apply_binop(other, a.to_bits(), b.to_bits()),
+                    };
+                }
                 apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
             }
             _ => 0,
+        }
+    }
+
+    /// Whether a stimulus expression reads a `real` signal.
+    fn is_real_operand(&self, e: &ast::Expr) -> bool {
+        expr_path(e)
+            .and_then(|p| self.map.get(&p))
+            .map(|&id| self.sim.design.signals[id.0 as usize].real)
+            .unwrap_or(false)
+    }
+
+    /// The f64 value of a stimulus operand: real signals read their bits,
+    /// integer/decimal literals parse as floats, everything else converts.
+    fn eval_real(&self, e: &ast::Expr) -> f64 {
+        match e {
+            ast::Expr::Int { text, .. } => text.parse().unwrap_or(0.0),
+            _ if self.is_real_operand(e) => f64::from_bits(self.eval(e)),
+            _ => self.eval(e) as f64,
         }
     }
 }
@@ -1139,10 +1202,6 @@ mod tests {
         // rhs; Complex lhs overloads select between Complex and integer rhs.
         let results = run(
             "module m;\n\
-             pub trait Suffix {}\n\
-             pub trait \"+\" {\n\
-               fn apply(self, rhs: Self) -> Self;\n\
-             }\n\
              struct Complex { re: uint[8], im: uint[8] }\n\
              impl Suffix for Complex {\n\
                fn i(v: integer) -> Complex {\n\
@@ -1191,7 +1250,6 @@ mod tests {
         // its body — `10ns` drives Time.fs with 10_000_000, `5i` a Complex.
         let results = run(
             "module m;\n\
-             pub trait Suffix {}\n\
              struct Time { fs: uint[48] }\n\
              impl Suffix for Time {\n\
                fn ns(v: integer) -> Time {\n\
@@ -1232,9 +1290,6 @@ mod tests {
         let results = run(
             "module m;\n\
              struct Complex { re: uint[8], im: uint[8] }\n\
-             pub trait \"+\" {\n\
-               fn apply(self, rhs: Self) -> Self;\n\
-             }\n\
              impl \"+\" for Complex {\n\
                fn apply(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
@@ -1270,9 +1325,6 @@ mod tests {
         let results = run(
             "module m;\n\
              enum Volt { Low, High }\n\
-             pub trait \"+\" {\n\
-               fn apply(self, rhs: Self) -> Self;\n\
-             }\n\
              impl \"+\" for Volt {\n\
                fn apply(self, rhs: Volt) -> Volt {\n\
                  if self == Volt::High {\n\

@@ -1,7 +1,5 @@
 module std::sim;
 
-using std::ops::{Suffix};
-
 // Simulation time and frequency (spec Stage 11, modelled on VHDL's `time`
 // physical type). The simulator's base tick is 1 fs (the VCD timescale).
 //

@@ -27,6 +27,8 @@ pub enum Ty {
     Bit,
     Logic,
     Bool,
+    /// The kernel base type `real` (f64 in simulation).
+    Real,
     /// `uint[N]` / `int[N]`. Width `0` means "not yet known" (parametric, e.g.
     /// `uint[W]`); the concrete width is resolved during elaboration.
     UInt(u32),
@@ -487,6 +489,7 @@ impl<'a> Checker<'a> {
             Ty::Bool => Some("Bool".to_string()),
             Ty::UInt(_) => Some("uint".to_string()),
             Ty::Int(_) => Some("int".to_string()),
+            Ty::Real => Some("real".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
             Ty::Array { .. } | Ty::Error => None,
         }
@@ -577,7 +580,8 @@ impl<'a> Checker<'a> {
     /// `Error` type on either side suppresses the check.
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
-            Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Error),
+            // A numeric literal also initialises `real` (`.re = 10` is 10.0).
+            Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Real | Ty::Error),
             Expr::LogicLit { .. } => matches!(lhs, Ty::Bit | Ty::Logic | Ty::Error),
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
@@ -824,6 +828,7 @@ impl<'a> Checker<'a> {
                 "Clock" => Ty::Bit,
                 "uint" | "integer" => Ty::UInt(0),
                 "int" => Ty::Int(0),
+                "real" => Ty::Real,
                 _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
             }
         } else {
@@ -879,6 +884,7 @@ fn ty_name(t: &Ty) -> String {
         Ty::Bit => "Bit".to_string(),
         Ty::Logic => "Logic".to_string(),
         Ty::Bool => "Bool".to_string(),
+        Ty::Real => "real".to_string(),
         Ty::UInt(0) => "uint".to_string(),
         Ty::UInt(w) => format!("uint[{w}]"),
         Ty::Int(0) => "int".to_string(),
@@ -1110,7 +1116,7 @@ mod tests {
         assert_eq!(
             check_src(&base.replace(
                 "OPIMPL",
-                "pub trait \"+\" {\n  fn apply(self, rhs: Self) -> Self;\n}\nimpl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
+                "impl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
             )),
             0
         );
@@ -1118,7 +1124,7 @@ mod tests {
 
     #[test]
     fn suffix_traits_define_and_disambiguate_literals() {
-        let time = "pub trait Suffix {}\nstruct Time { fs: uint[48] }\nimpl Suffix for Time {\n  fn s(v: integer) -> Time {\n    return Time { .fs = v };\n  }\n}\n";
+        let time = "struct Time { fs: uint[48] }\nimpl Suffix for Time {\n  fn s(v: integer) -> Time {\n    return Time { .fs = v };\n  }\n}\n";
         // A Suffix-impl fn defines the literal's type: Time = 5s init passes.
         assert_eq!(
             check_src(&format!(

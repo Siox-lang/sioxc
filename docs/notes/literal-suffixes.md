@@ -1,16 +1,14 @@
 # Literal suffixes and prefixes as traits
 
-Status: **approved design** (supersedes the earlier `pub suffix` item
-proposal). A type opts into literal suffixes by implementing the `Suffix`
-trait; **each fn's name is the suffix it defines**, and the literal desugars
-to that fn, inlined at lowering exactly like operator impls (spec 3.25).
-`Prefix` does the same for string prefixes (`x"123ABC"`).
+Status: **approved design, landed** (supersedes the earlier `pub suffix`
+item proposal). A type opts into literal suffixes by implementing the
+`Suffix` trait; **each fn's name is the suffix it defines**, and the literal
+desugars to that fn, inlined at lowering exactly like operator impls (spec
+3.25). `Prefix` does the same for string prefixes (`x"123ABC"`).
 
-```siox
-// std/ops.siox — deliberately empty: each impl brings its own fn names.
-pub trait Suffix {}
-pub trait Prefix {}
-```
+`Suffix` and `Prefix` are **compiler built-ins** — like the operator
+strings, they are mechanisms, not library declarations: code just writes
+`impl Suffix for T`, no trait declaration or import.
 
 ## How a suffix is defined
 

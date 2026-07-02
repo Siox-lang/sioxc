@@ -2,7 +2,11 @@ module std::ops;
 
 using std::logic::{Bit, Bool};
 
-// Operator and conversion traits for the standard library.
+// Conversion traits for the standard library.
+//
+// Operator overloading (`impl "+" for T`) and literal suffixes/prefixes
+// (`impl Suffix for T`) are compiler mechanisms — spec 3.24/3.25 — and need
+// no declaration here.
 //
 // `Boolean` gives a type a truth representation so it can be used directly
 // as a condition (in `if`, and later `while`/assertions). Truth is the
@@ -13,67 +17,6 @@ using std::logic::{Bit, Bool};
 // `using std::ops::{Boolean};`. The `Bit`/`Bool` condition behaviour below is
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
-
-// Arithmetic operator traits (spec 3.25). A type opts into an operator by
-// implementing the trait; the impl body is inlined at lowering into the IR.
-// Import them by their quoted name: `using std::ops::{"+", "-"};`.
-
-pub trait "+" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "-" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "*" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "/" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-// Logic operator traits (word operators, VHDL style). std::logic implements
-// them for `Logic` with X/Z-propagating truth tables, the way
-// std_logic_1164 defines `and` on std_ulogic as a plain function.
-
-pub trait "and" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "or" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "xor" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "nand" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "nor" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "xnor" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
-pub trait "not" {
-    fn apply(self) -> Self;
-}
-
-// Literal suffix/prefix traits (spec 3.24, docs/notes/literal-suffixes.md).
-// Deliberately empty: each `impl Suffix for T` brings fns whose *names* are
-// the suffixes they define (`5i` -> `Complex::i(5)`), inlined like operator
-// impls. `Prefix` is the declared home of string prefixes (`x"AB"`).
-
-pub trait Suffix {}
-
-pub trait Prefix {}
 
 pub trait Boolean {
     fn as_bool(self) -> integer;

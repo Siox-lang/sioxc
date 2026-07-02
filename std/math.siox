@@ -1,13 +1,10 @@
 module std::math;
 
-using std::bits::{int};
-using std::ops::{"+", "-", Suffix};
-
-// Complex fixed-point value (modelled on ieee.math_complex). Component
-// widths are 16-bit signed; parameterized widths come with generic structs.
+// Complex value over the reals (modelled on ieee.math_complex). Components
+// are the kernel base type `real` (f64 in simulation).
 pub struct Complex {
-    re: int[16],
-    im: int[16],
+    re: real,
+    im: real,
 }
 
 impl "+" for Complex {
@@ -19,7 +16,7 @@ impl "+" for Complex {
     }
 }
 
-// `10 + 5i`: an integer left operand promotes into the Complex plane.
+// `10 + 5i`: a numeric left operand promotes into the Complex plane.
 impl "+" for integer {
     fn apply(self, rhs: Complex) -> Complex {
         return Complex { .re = self + rhs.re, .im = rhs.im };
@@ -32,9 +29,9 @@ impl "-" for Complex {
     }
 }
 
-// `5i` is a pure imaginary: Complex::i(5).
+// `5i` is a pure imaginary: Complex::i(5.0).
 impl Suffix for Complex {
-    fn i(v: integer) -> Complex {
+    fn i(v: real) -> Complex {
         return Complex { .re = 0, .im = v };
     }
 }

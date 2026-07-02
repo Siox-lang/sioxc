@@ -3,8 +3,12 @@
 The standard library lives in `std/` as ordinary siox source, loaded
 transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
-bad import is a hard error, `E-P011`). Operator and suffix names import by
-their quoted string: `using std::ops::{"+", Suffix};`.
+bad import is a hard error, `E-P011`).
+
+Compiler *mechanisms* are never declared in std: operator overloading
+(`impl "+" for T`), literal suffixes/prefixes (`impl Suffix for T`), and the
+operator set itself are built in (spec 3.24/3.25) — std and user code just
+write the impls, no trait declaration or import needed.
 
 Design stance (see the spec's "type kernel"): the compiler provides only
 `integer` and `real` plus the type machinery; everything else is declared
@@ -19,8 +23,8 @@ documented shim, and the declaration here is canonical.
 | ------------- | -------------------------------- | -------- |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool`, `Clock` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` surface (docs; ops intrinsic for now) |
-| `std::ops`    | (operators are functions in VHDL packages) | operator traits, `Suffix`/`Prefix`, `Boolean` |
-| `std::math`   | ieee.math_complex                | `Complex`, `+`/`-` impls, the `i` suffix |
+| `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
+| `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::sim`    | std.standard `time`              | `Time`, `Freq` + unit suffixes; FS..MS constants |
 | `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
@@ -61,40 +65,33 @@ vector operators land. Bit-string literals `x"AB"` / `b"0101"` are sized
 
 ## `std::ops`
 
-The trait home of every overloadable behaviour:
-
 ```siox
-pub trait "+"  { fn apply(self, rhs: Self) -> Self; }   // also - * /
-pub trait "and" { fn apply(self, rhs: Self) -> Self; }  // also or xor nand nor xnor
-pub trait Suffix {}
-pub trait Prefix {}
 pub trait Boolean { fn as_bool(self) -> integer; }
 ```
 
-- **Operator traits** are named by their operator string; the fixed set is
-  `+ - * / << >> == != < <= > >= and or xor nand nor xnor not`. Impls are
-  inlined at lowering as pure expression trees; mixed operand types overload
-  by the rhs parameter type, and `impl "+" for integer` catches literal left
-  operands (`10 + 5i`). See spec 3.25.
-- **`Suffix`** — each fn of an `impl Suffix for T` defines the literal
-  suffix of its name: `10ns` → `Time::ns(10)`. Two loaded types defining one
-  suffix is an ambiguity error. See spec 3.24 and
-  notes/literal-suffixes.md for multi-type examples.
-- **`Prefix`** — the declared home of string prefixes (`x"AB"`), evaluation
-  intrinsic until const string operations exist.
-- **`Boolean`** — a type usable as a condition provides `as_bool` returning
-  the kernel truth type `integer` (1 true, 0 false), applied only in
-  condition position. `Bit`/`Bool` opt in; `Logic` deliberately does not.
+**`Boolean`** — a type usable as a condition provides `as_bool` returning
+the kernel truth type `integer` (1 true, 0 false), applied only in condition
+position. `Bit`/`Bool` opt in; `Logic` deliberately does not.
+
+The overloading *mechanisms* — operator strings
+(`+ - * / << >> == != < <= > >= and or xor nand nor xnor not`), `Suffix`,
+`Prefix` — are compiler built-ins, not std declarations. Impls are inlined
+at lowering as pure expression trees; mixed operand types overload by the
+rhs parameter type, and `impl "+" for integer` catches literal left operands
+(`10 + 5i`). Each fn of an `impl Suffix for T` defines the literal suffix of
+its name (`10ns` → `Time::ns(10)`); two loaded types defining one suffix is
+an ambiguity error. See spec 3.24/3.25 and notes/literal-suffixes.md.
 
 ## `std::math`
 
 ```siox
-pub struct Complex { re: int[16], im: int[16] }
+pub struct Complex { re: real, im: real }
 ```
 
-`+`/`-` component-wise (including `integer + Complex` promotion both ways)
-and the `i` suffix, so `10 + 5i` works as written. Fixed 16-bit components
-until generic structs land.
+Complex over the **reals** (f64 in simulation): `+`/`-` component-wise,
+`integer` promotion both ways, and the `i` suffix, so `10 + 5i` works as
+written. Real arithmetic uses the float operators in the IR; integer
+literals coerce (`.re = 10` stores 10.0).
 
 ## `std::sim`
 

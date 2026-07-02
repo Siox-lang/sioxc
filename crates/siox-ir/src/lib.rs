@@ -46,6 +46,9 @@ pub struct Signal {
     pub path: String,
     /// Bit width; `0` means "not yet known" (a parametric width).
     pub width: u32,
+    /// A `real`-typed value: the 64-bit slot holds f64 bits, and arithmetic
+    /// uses the float operators.
+    pub real: bool,
 }
 
 /// A combinational driver: `signal = expr` under `cond` (spec 3.14 source-order
@@ -77,6 +80,8 @@ pub struct NextUpdate {
 #[derive(Clone, Debug)]
 pub enum Expr {
     Const(u64),
+    /// A `real` constant; evaluates to its f64 bit pattern.
+    Real(f64),
     Logic(char),
     Current(SignalId),
     Old(SignalId),
@@ -118,6 +123,11 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    /// Float arithmetic on f64-bit values (`real` operands).
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
 }
 
 /// Lower the elaborated design into simulation IR.
@@ -322,7 +332,7 @@ impl<'a> Lowering<'a> {
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
         let id = SignalId(self.out.signals.len() as u32);
-        self.out.signals.push(Signal { path: format!("{entity}.{name}"), width });
+        self.out.signals.push(Signal { path: format!("{entity}.{name}"), width, real: false });
         self.locals.insert(name.to_string(), id);
     }
 
@@ -349,6 +359,13 @@ impl<'a> Lowering<'a> {
             self.add_signal(entity, name, w);
         } else {
             self.add_signal(entity, name, type_width(ty, env));
+            // A `real` slot holds f64 bits and takes float arithmetic.
+            if matches!(ty, ast::Type::Path(p) if p.segments.len() == 1 && p.segments[0].text == "real")
+            {
+                if let Some(&id) = self.locals.get(name) {
+                    self.out.signals[id.0 as usize].real = true;
+                }
+            }
         }
     }
 
@@ -386,6 +403,7 @@ impl<'a> Lowering<'a> {
                         if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
                             for (fname, expr) in fields {
                                 if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
+                                    let expr = self.coerce_to_target(sig, expr);
                                     self.out.drivers.push(Driver {
                                         target: sig,
                                         cond: cond.clone(),
@@ -398,7 +416,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 if let Some(target) = self.target_signal(target) {
-                    let expr = self.lower_expr(value);
+                    let expr = self.coerce_to_target(target, self.lower_expr(value));
                     self.out.drivers.push(Driver { target, cond, expr });
                 }
             }
@@ -547,6 +565,10 @@ impl<'a> Lowering<'a> {
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
+            // A decimal point makes it a `real` literal (`1.5`).
+            ast::Expr::Int { text, .. } if text.contains('.') => {
+                Expr::Real(text.parse().unwrap_or(0.0))
+            }
             ast::Expr::Int { text, .. } => Expr::Const(parse_int(text).unwrap_or(0)),
             // A suffix with an `impl Suffix` fn inlines it (scalar results
             // only here; struct results flow through `lower_val_env`).
@@ -625,11 +647,8 @@ impl<'a> Lowering<'a> {
                         return inlined;
                     }
                 }
-                Expr::Binary {
-                    op: lower_binop(*op),
-                    lhs: Box::new(self.lower_expr(lhs)),
-                    rhs: Box::new(self.lower_expr(rhs)),
-                }
+                let (l, r) = (self.lower_expr(lhs), self.lower_expr(rhs));
+                self.make_binary(*op, l, r)
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
@@ -727,6 +746,84 @@ impl<'a> Lowering<'a> {
             }
         }
         self.inline_block(&body.stmts, &fenv)
+    }
+
+    /// Coerce a driven value to the target's representation: integer
+    /// constants become f64 bits when the target signal is `real`.
+    fn coerce_to_target(&self, target: SignalId, expr: Expr) -> Expr {
+        if self.out.signals[target.0 as usize].real {
+            self.coerce_real(expr)
+        } else {
+            expr
+        }
+    }
+
+    /// Whether a lowered expression produces f64-bit (`real`) values.
+    fn is_real_expr(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Real(_) => true,
+            Expr::Current(id) | Expr::Old(id) => self.out.signals[id.0 as usize].real,
+            Expr::Binary { op, .. } => {
+                matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv)
+            }
+            Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
+            _ => false,
+        }
+    }
+
+    /// Reinterpret an integer value flowing into a real context (`.re = 10`,
+    /// `self.re + 3`, a constant-folded `10 + 0`) as its f64 form: constants
+    /// convert, integer arithmetic becomes float arithmetic, selects recurse.
+    fn coerce_real(&self, e: Expr) -> Expr {
+        if self.is_real_expr(&e) {
+            return e;
+        }
+        match e {
+            Expr::Const(v) => Expr::Real(v as f64),
+            Expr::Select { cond, then, els } => Expr::Select {
+                cond,
+                then: Box::new(self.coerce_real(*then)),
+                els: Box::new(self.coerce_real(*els)),
+            },
+            Expr::Binary { op, lhs, rhs } => {
+                let fop = match op {
+                    BinOp::Add => Some(BinOp::FAdd),
+                    BinOp::Sub => Some(BinOp::FSub),
+                    BinOp::Mul => Some(BinOp::FMul),
+                    BinOp::Div => Some(BinOp::FDiv),
+                    _ => None,
+                };
+                match fop {
+                    Some(f) => Expr::Binary {
+                        op: f,
+                        lhs: Box::new(self.coerce_real(*lhs)),
+                        rhs: Box::new(self.coerce_real(*rhs)),
+                    },
+                    None => Expr::Binary { op, lhs, rhs },
+                }
+            }
+            e => e,
+        }
+    }
+
+    /// Build a binary node, switching `+ - * /` to float arithmetic (and
+    /// coercing integer constants) when either operand is real. `==`/`!=`
+    /// compare f64 bits exactly, which is right once constants are coerced.
+    // ponytail: ordered compares (< <=) on real stay bitwise — wrong for
+    // negative floats; add FLt/FLe when something needs them.
+    fn make_binary(&self, op: ast::BinOp, lhs: Expr, rhs: Expr) -> Expr {
+        if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
+            let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
+            let op = match op {
+                ast::BinOp::Add => BinOp::FAdd,
+                ast::BinOp::Sub => BinOp::FSub,
+                ast::BinOp::Mul => BinOp::FMul,
+                ast::BinOp::Div => BinOp::FDiv,
+                other => lower_binop(other),
+            };
+            return Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Expr::Binary { op: lower_binop(op), lhs: Box::new(lhs), rhs: Box::new(rhs) }
     }
 
     /// Inline a unary operator impl (`not a`): binds only `self`.
@@ -842,11 +939,8 @@ impl<'a> Lowering<'a> {
                         return v;
                     }
                 }
-                Val::Scalar(Expr::Binary {
-                    op: lower_binop(*op),
-                    lhs: Box::new(self.lower_scalar_env(lhs, env)),
-                    rhs: Box::new(self.lower_scalar_env(rhs, env)),
-                })
+                let (l, r) = (self.lower_scalar_env(lhs, env), self.lower_scalar_env(rhs, env));
+                Val::Scalar(self.make_binary(*op, l, r))
             }
             ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
                 op: lower_unop(*op),
@@ -868,7 +962,14 @@ impl<'a> Lowering<'a> {
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
-                env.insert(n.text.clone(), Val::Scalar(Expr::Const(parse_int(text).unwrap_or(0))));
+                // A `real` parameter takes the literal's float value.
+                let is_real = p.ty.as_ref().and_then(type_head_name) == Some("real");
+                let v = if is_real {
+                    Expr::Real(text.parse().unwrap_or(0.0))
+                } else {
+                    Expr::Const(parse_int(text).unwrap_or(0))
+                };
+                env.insert(n.text.clone(), Val::Scalar(v));
             }
         }
         self.inline_block(&body.stmts, &env)
@@ -1000,6 +1101,7 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 fn render(e: &Expr, d: &Design) -> String {
     match e {
         Expr::Const(v) => v.to_string(),
+        Expr::Real(x) => format!("{x}"),
         Expr::Logic(c) => format!("'{c}'"),
         Expr::Current(id) => d.signals[id.0 as usize].path.clone(),
         Expr::Old(id) => format!("Old({})", d.signals[id.0 as usize].path),
@@ -1050,6 +1152,10 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Le => "<=",
         BinOp::Gt => ">",
         BinOp::Ge => ">=",
+        BinOp::FAdd => "+.",
+        BinOp::FSub => "-.",
+        BinOp::FMul => "*.",
+        BinOp::FDiv => "/.",
     }
 }
 
@@ -1117,6 +1223,7 @@ fn type_width(t: &ast::Type, env: &HashMap<String, i64>) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
+            Some("real") => 64, // f64 bits
             _ => 0,
         },
         // For `uint[8]` the index is the width; for `Logic[31..0]` it is the span.

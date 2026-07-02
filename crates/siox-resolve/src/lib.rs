@@ -163,6 +163,14 @@ impl<'a> Resolver<'a> {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }
+        // Operator strings and the literal suffix/prefix hooks are compiler
+        // mechanisms (spec 3.24/3.25): `impl "+" for T` / `impl Suffix for T`
+        // need no trait declaration or import. Only valid operators are
+        // seeded, so `impl "+++" for T` fails as an unknown name.
+        for name in OPERATORS.iter().copied().chain(["Suffix", "Prefix"]) {
+            let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
+            self.globals.insert(name.to_string(), id);
+        }
         // std::attrs metadata attributes (spec 3.5).
         for name in ["top", "test", "keep", "library", "name"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);

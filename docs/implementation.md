@@ -169,9 +169,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   integer`, 1 = true — no longer seeded), `std::attrs` (the five system
   attributes), `std::assert` (`Severity`), `std::sim` (`Time`/`Freq` with
   literal-suffix impls — `10ns`, `100MHz` — plus FS..MS integer constants),
-  `std::math` (`Complex` with `"+"`/`"-"` operator impls incl. mixed-operand
-  `10 + 5i`, and the `i` suffix; exercised by `examples/complex_test.siox`;
-  operator traits declared in `std::ops` and imported by quoted name).
+  `std::math` (`Complex` over `real` — f64 in simulation — with `"+"`/`"-"`
+  impls incl. mixed-operand `10 + 5i` and the `i` suffix; exercised by
+  `examples/complex_test.siox`; the operator/Suffix/Prefix mechanisms are
+  compiler built-ins, not std declarations).
   `std::logic` now carries the **four-value truth tables** for
   `and or xor nand nor xnor` on `Logic` as ordinary operator impls
   (X/Z propagation, `examples/logic_test.siox`) — std_logic_1164's core as

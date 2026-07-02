@@ -92,8 +92,8 @@ mod tests {
     fn design() -> Design {
         Design {
             signals: vec![
-                Signal { path: "Counter.clk".into(), width: 1 },
-                Signal { path: "Counter.count".into(), width: 8 },
+                Signal { path: "Counter.clk".into(), width: 1, real: false },
+                Signal { path: "Counter.count".into(), width: 8, real: false },
             ],
             drivers: vec![],
             event_blocks: vec![],

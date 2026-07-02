@@ -1052,15 +1052,12 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ### 3.25 Operator traits
 
-Operators are traits named by their operator string. A type opts into an
-operator by implementing the trait — the way `std_logic_1164` defines `and`
-on `std_ulogic` as an ordinary function:
+Operators are traits named by their operator string. The traits themselves
+are **compiler built-ins** — no declaration or import — and a type opts into
+an operator by implementing one, the way `std_logic_1164` defines `and` on
+`std_ulogic` as an ordinary function:
 
 ```siox
-pub trait "+" {
-    fn apply(self, rhs: Self) -> Self;
-}
-
 impl "+" for Complex {
     fn apply(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
@@ -1070,9 +1067,9 @@ impl "+" for Complex {
 
 The operator set is fixed, matching the language's operator surface:
 `+ - * / << >> == != < <= > >= and or xor nand nor xnor not`.
-Declaring a trait for any other string is an error — user impls of these
-operators for user types are the point, not user-invented symbols. `Self` in
-a trait or impl body refers to the implementing type.
+Implementing any other string is an error — user impls of these operators
+for user types are the point, not user-invented symbols. `Self` in an impl
+body refers to the implementing type.
 
 Using an operator on a user struct/enum without a matching impl is an error
 (`==`/`!=` stay built-in on enums as discriminant comparison).
