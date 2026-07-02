@@ -1066,13 +1066,32 @@ impl "+" for Complex {
 ```
 
 The operator set is fixed, matching the language's operator surface:
-`+ - * / << >> == != < <= > >= and or xor nand nor xnor not`.
+`+ - * / << >> == != < <= > >= <=> and or xor nand nor xnor not`.
 Implementing any other string is an error — user impls of these operators
 for user types are the point, not user-invented symbols. `Self` in an impl
 body refers to the implementing type.
 
 Using an operator on a user struct/enum without a matching impl is an error
 (`==`/`!=` stay built-in on enums as discriminant comparison).
+
+**Three-way comparison (`<=>`).** One spaceship impl derives all six
+comparisons, like C++'s `operator<=>`. The impl returns `std::ops::Ordering`
+(`Less`/`Equal`/`Greater`); `a < b` lowers to `(a <=> b) == Ordering::Less`
+and so on. A direct impl of a specific comparison wins over the derivation:
+
+```siox
+impl "<=>" for Version {
+    fn apply(self, rhs: Version) -> Ordering {
+        if self.major < rhs.major { return Ordering::Less; }
+        if self.major > rhs.major { return Ordering::Greater; }
+        if self.minor < rhs.minor { return Ordering::Less; }
+        if self.minor > rhs.minor { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
+// v1 < v2, v1 >= v2, v1 == v2, ... all work — including struct
+// equality, which has no built-in form.
+```
 
 The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types

@@ -34,8 +34,8 @@ use siox_syntax::Module;
 /// style). User-defined operator *symbols* are out of scope; user impls of
 /// these operators for their own types are the point.
 pub const OPERATORS: &[&str] = &[
-    "+", "-", "*", "/", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "and", "or", "xor", "nand",
-    "nor", "xnor", "not",
+    "+", "-", "*", "/", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "<=>", "and", "or", "xor",
+    "nand", "nor", "xnor", "not",
 ];
 
 /// Stable id for a resolved declaration. Later stages key off this instead of

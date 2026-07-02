@@ -18,6 +18,16 @@ using std::logic::{Bit, Bool};
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
 
+// The result of a three-way comparison (`impl "<=>" for T`, spec 3.25).
+// One spaceship impl derives all of < <= > >= == != — like C++'s operator<=>.
+// Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
+// comparisons test against them.
+pub enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+
 pub trait Boolean {
     fn as_bool(self) -> integer;
 }

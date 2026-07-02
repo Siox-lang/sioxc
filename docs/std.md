@@ -66,8 +66,12 @@ vector operators land. Bit-string literals `x"AB"` / `b"0101"` are sized
 ## `std::ops`
 
 ```siox
+pub enum Ordering { Less, Equal, Greater }
 pub trait Boolean { fn as_bool(self) -> integer; }
 ```
+
+**`Ordering`** — the result of a three-way `impl "<=>" for T` (spaceship):
+one impl derives all of `< <= > >= == !=` (spec 3.25).
 
 **`Boolean`** — a type usable as a condition provides `as_bool` returning
 the kernel truth type `integer` (1 true, 0 false), applied only in condition

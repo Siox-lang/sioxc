@@ -1391,6 +1391,72 @@ mod tests {
     }
 
     #[test]
+    fn spaceship_impl_derives_all_comparisons() {
+        // One `<=>` impl (major, then minor) gives <, <=, >, >=, ==, != on a
+        // struct — including struct equality, which has no built-in form.
+        let results = run(
+            "module m;\n\
+             enum Ordering { Less, Equal, Greater }\n\
+             struct Version { major: uint[8], minor: uint[8] }\n\
+             impl \"<=>\" for Version {\n\
+               fn apply(self, rhs: Version) -> Ordering {\n\
+                 if self.major < rhs.major {\n\
+                   return Ordering::Less;\n\
+                 }\n\
+                 if self.major > rhs.major {\n\
+                   return Ordering::Greater;\n\
+                 }\n\
+                 if self.minor < rhs.minor {\n\
+                   return Ordering::Less;\n\
+                 }\n\
+                 if self.minor > rhs.minor {\n\
+                   return Ordering::Greater;\n\
+                 }\n\
+                 return Ordering::Equal;\n\
+               }\n\
+             }\n\
+             entity Cmp {\n\
+               in a: Version;\n\
+               in b: Version;\n\
+               out lt: Bool; out le: Bool; out gt: Bool;\n\
+               out ge: Bool; out eq: Bool; out ne: Bool;\n\
+             }\n\
+             impl Cmp {\n\
+               lt = a < b;\n\
+               le = a <= b;\n\
+               gt = a > b;\n\
+               ge = a >= b;\n\
+               eq = a == b;\n\
+               ne = a != b;\n\
+             }\n\
+             #[test]\n\
+             entity SpaceshipTest {}\n\
+             impl SpaceshipTest {\n\
+               let a: Version = { .major = 1, .minor = 9 };\n\
+               let b: Version = { .major = 2, .minor = 0 };\n\
+               let lt: Bool; let le: Bool; let gt: Bool;\n\
+               let ge: Bool; let eq: Bool; let ne: Bool;\n\
+               let dut = Cmp { .a, .b, .lt, .le, .gt, .ge, .eq, .ne };\n\
+               wait 1ns;\n\
+               assert!(lt, \"1.9 < 2.0\");\n\
+               assert!(le, \"1.9 <= 2.0\");\n\
+               assert!(ne, \"1.9 != 2.0\");\n\
+               a = { .major = 2, .minor = 0 };\n\
+               wait 1ns;\n\
+               assert!(eq, \"2.0 == 2.0\");\n\
+               assert!(ge, \"2.0 >= 2.0\");\n\
+               assert!(le, \"2.0 <= 2.0\");\n\
+               a = { .major = 2, .minor = 1 };\n\
+               wait 1ns;\n\
+               assert!(gt, \"2.1 > 2.0 (minor breaks the tie)\");\n\
+               assert!(ne, \"2.1 != 2.0\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn wide_slots_carry_128_bit_signals() {
         // A value shifted above bit 63 survives only in 128-bit slots; the
         // dispatcher picks them automatically (`needs_wide`).

@@ -638,7 +638,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
-                // built-in discriminant comparison.
+                // built-in discriminant comparison unless `<=>` derives them.
                 let op_str = siox_syntax::pretty::bin_op(*op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =
@@ -646,6 +646,9 @@ impl<'a> Lowering<'a> {
                     {
                         return inlined;
                     }
+                }
+                if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, &HashMap::new()) {
+                    return derived;
                 }
                 let (l, r) = (self.lower_expr(lhs), self.lower_expr(rhs));
                 self.make_binary(*op, l, r)
@@ -826,6 +829,36 @@ impl<'a> Lowering<'a> {
         Expr::Binary { op: lower_binop(op), lhs: Box::new(lhs), rhs: Box::new(rhs) }
     }
 
+    /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
+    /// 3.25): `a < b` becomes `(a <=> b) == Ordering::Less`, etc. The impl
+    /// returns std::ops' `Ordering { Less, Equal, Greater }` (0/1/2), so no
+    /// signed arithmetic is needed. `None` when the operand type has no
+    /// `<=>` impl — built-in comparison applies.
+    fn inline_cmp(
+        &self,
+        op_str: &str,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        // (discriminant to compare against, negate?)
+        let (want, ne) = match op_str {
+            "<" => (0u64, false),  // == Less
+            "==" => (1, false),    // == Equal
+            ">" => (2, false),     // == Greater
+            ">=" => (0, true),     // != Less
+            "!=" => (1, true),     // != Equal
+            "<=" => (2, true),     // != Greater
+            _ => return None,
+        };
+        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else { return None };
+        Some(Expr::Binary {
+            op: if ne { BinOp::Ne } else { BinOp::Eq },
+            lhs: Box::new(cmp),
+            rhs: Box::new(Expr::Const(want)),
+        })
+    }
+
     /// Inline a unary operator impl (`not a`): binds only `self`.
     fn inline_unary(&self, op: &str, rhs: &ast::Expr) -> Option<Val> {
         let ty = self.operand_type_name(rhs)?;
@@ -938,6 +971,9 @@ impl<'a> Lowering<'a> {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
                         return v;
                     }
+                }
+                if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, env) {
+                    return Val::Scalar(derived);
                 }
                 let (l, r) = (self.lower_scalar_env(lhs, env), self.lower_scalar_env(rhs, env));
                 Val::Scalar(self.make_binary(*op, l, r))

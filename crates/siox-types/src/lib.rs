@@ -620,10 +620,13 @@ impl<'a> Checker<'a> {
                 let op_str = siox_syntax::pretty::bin_op(*op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
-                        let has = self
-                            .trait_impls
-                            .get(op_str)
-                            .is_some_and(|set| set.contains(&name));
+                        let has_op = |op: &str| {
+                            self.trait_impls.get(op).is_some_and(|set| set.contains(&name))
+                        };
+                        // A three-way `<=>` impl derives every comparison
+                        // (spaceship, spec 3.25).
+                        let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
+                        let has = has_op(op_str) || (is_cmp && has_op("<=>"));
                         if !has {
                             self.error(
                                 codes::TYPE_MISMATCH,
