@@ -1785,12 +1785,22 @@ std::assert
 
 ### The type kernel
 
-The language kernel provides only two base types — `integer` and `real`
-(unconstrained, VHDL-style) — plus the type machinery: enums (including
-character-literal variants), structs, arrays, and events. Every other type is
-declared in `std/` as ordinary source, the way VHDL declares `bit`, `boolean`
-and `std_ulogic` in library code. Truth is `integer` (1 true, 0 false; see
-3.16).
+The language kernel provides exactly three base types:
+
+- **`integer`** — unconstrained integer; also the truth type (1 true,
+  0 false; see 3.16).
+- **`real`** — unconstrained float (f64 in simulation).
+- **`Char`** — a Unicode code point, fixed width (21 bits stored as 32).
+  UTF-8 is the *source/IO encoding*, never the in-memory shape. Character
+  literals are contextually typed: `'0'` is a `Char`, a `Bit`, or a `Logic`
+  depending on what the context demands (VHDL-style overloaded literals).
+
+Plus the type machinery: enums (including character-literal variants),
+structs, arrays, and events. Every other type is declared in `std/` as
+ordinary source, the way VHDL declares `bit`, `boolean` and `std_ulogic` in
+library code — `uint[N]`/`int[N]` derive from `Logic`, and `string` is
+`Char[N]` with its length fixed at elaboration from the initializer
+(`let s = "hello";` is a `Char[5]`; unconstrained array machinery pending).
 
 *Shim note:* until operator overloading (3.13 traits) can carry their
 semantics, the compiler still recognizes the std::logic/std::bits names

@@ -10,12 +10,14 @@ Compiler *mechanisms* are never declared in std: operator overloading
 operator set itself are built in (spec 3.24/3.25) — std and user code just
 write the impls, no trait declaration or import needed.
 
-Design stance (see the spec's "type kernel"): the compiler provides only
-`integer` and `real` plus the type machinery; everything else is declared
-here, the way VHDL declares `bit`, `boolean` and `std_ulogic` in
-`std.standard` / `std_logic_1164` rather than in the compiler. Where the
-compiler still special-cases a name for operator semantics, that is a
-documented shim, and the declaration here is canonical.
+Design stance (see the spec's "type kernel"): the compiler provides exactly
+three base types — `integer`, `real`, and `Char` (a fixed-width Unicode
+code point; UTF-8 is only the source/IO encoding) — plus the type
+machinery; everything else is declared here, the way VHDL declares `bit`,
+`boolean` and `std_ulogic` in `std.standard` / `std_logic_1164` rather than
+in the compiler. `string` is `Char[N]` with elaboration-inferred length.
+Where the compiler still special-cases a name for operator semantics, that
+is a documented shim, and the declaration here is canonical.
 
 ## Module map
 
