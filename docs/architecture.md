@@ -92,6 +92,19 @@ carry their semantics as source, `siox-resolve` still seeds those std type
 names (and the `std::attrs` attributes) and `siox-types`/`siox-ir` special-case
 them by name; the shim is deleted when operators move to std as trait impls.
 
+## Backend slot widths
+
+Simulation values live in fixed-width **slots**. The simulator is generic
+over a `Slot` type: `u64` (default, fastest) or `u128`, which is
+register-pair native on 64-bit CPUs — no software emulation. `--slot auto`
+(the default) picks 128-bit slots only when the design declares signals
+wider than 64 bits, trading speed for range; `--slot 64|128` forces a width.
+
+Floats are f64 bits in the low 64 of a slot regardless of width: no
+mainstream CPU has scalar f128/f256 hardware (AVX widths are SIMD lanes,
+not precision), so wider floats would mean software emulation — deferred
+until something needs precision beyond f64.
+
 ## The CLI as the pipeline driver
 
 `siox-cli` is where the stages are composed. It loads a file into a

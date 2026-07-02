@@ -13,7 +13,6 @@
 //!   system-attribute set is the only syntactic signal available pre-resolve.
 //! - Float / hex-string literal tokens map to [`Expr::Int`] (which stores raw
 //!   text); a dedicated literal node can be added when a later stage needs it.
-//! - `<=`, `>=`, `!=` are not yet lexable, so only `==`, `<`, `>` compare.
 
 use crate::ast::*;
 use crate::token::{Token, TokenKind};
@@ -673,7 +672,10 @@ impl<'a> Parser<'a> {
                 TokenKind::Shr => (BinOp::Shr, 70, 71),
                 TokenKind::Lt => (BinOp::Lt, 60, 61),
                 TokenKind::Gt => (BinOp::Gt, 60, 61),
+                TokenKind::LtEq => (BinOp::Le, 60, 61),
+                TokenKind::GtEq => (BinOp::Ge, 60, 61),
                 TokenKind::EqEq => (BinOp::Eq, 50, 51),
+                TokenKind::BangEq => (BinOp::Ne, 50, 51),
                 // Textual logical operators (`and`/`or`/...). They lex as plain
                 // identifiers and are recognised here in operator position.
                 TokenKind::Ident => match self.cur_text() {

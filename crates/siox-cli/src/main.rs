@@ -33,6 +33,11 @@ struct Cli {
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]
     std: PathBuf,
+    /// Backend slot width: `auto` uses 128-bit slots only when the design has
+    /// signals wider than 64 bits (u128 is register-pair native on 64-bit
+    /// CPUs); `64`/`128` force a width. Wider slots trade speed for range.
+    #[arg(long, global = true, default_value = "auto")]
+    slot: String,
     #[command(subcommand)]
     cmd: Command,
 }
@@ -81,6 +86,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let std_root = cli.std;
+    let slot = cli.slot;
     match cli.cmd {
         Command::Tokens { file } => cmd_tokens(&file),
         Command::Parse { file, verbose } => match run_frontend(&file, &std_root, verbose) {
@@ -100,9 +106,9 @@ fn main() -> ExitCode {
         Command::Check { file, verbose } => cmd_check(&file, &std_root, verbose),
         Command::Sim { file, wave } => match wave {
             Some(out) => cmd_wave(&file, &std_root, &out),
-            None => cmd_test(&file, &std_root, None),
+            None => cmd_test(&file, &std_root, None, &slot),
         },
-        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref()),
+        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot),
         Command::Ir { file } => cmd_ir(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
     }
@@ -350,7 +356,16 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
 /// `siox test`: run the `#[test]` entities (optionally filtered by name)
 /// through the simulator and report pass/fail. Exits nonzero if any test fails
 /// (or the pipeline errored).
-fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
+/// Parse the `--slot` flag into a sim slot width.
+fn slot_width(s: &str) -> siox_sim::SlotWidth {
+    match s {
+        "64" => siox_sim::SlotWidth::W64,
+        "128" => siox_sim::SlotWidth::W128,
+        _ => siox_sim::SlotWidth::Auto,
+    }
+}
+
+fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>, slot: &str) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
@@ -368,7 +383,13 @@ fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let results = siox_sim::run_tests(modules, &hier, &design, filter);
+    let width = slot_width(slot);
+    if width == siox_sim::SlotWidth::W128
+        || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(&design))
+    {
+        eprintln!("slot: 128-bit (native u128 on this target)");
+    }
+    let results = siox_sim::run_tests_with(modules, &hier, &design, filter, width);
     if results.is_empty() {
         match filter {
             Some(f) => eprintln!("no #[test] entity matching `{f}`"),

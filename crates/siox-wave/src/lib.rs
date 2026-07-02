@@ -37,10 +37,10 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
 
     // Value changes over time. Only emit signals whose value actually changed,
     // and one `#time` marker per distinct time.
-    let mut last: Vec<Option<u64>> = vec![None; design.signals.len()];
+    let mut last: Vec<Option<u128>> = vec![None; design.signals.len()];
     let mut cur_time: Option<u64> = None;
     for sample in samples {
-        let changes: Vec<(usize, u64)> = sample
+        let changes: Vec<(usize, u128)> = sample
             .values
             .iter()
             .enumerate()
@@ -76,7 +76,7 @@ fn vcd_width(width: u32) -> u32 {
     }
 }
 
-fn write_value<W: Write>(out: &mut W, value: u64, width: u32, id: &str) -> io::Result<()> {
+fn write_value<W: Write>(out: &mut W, value: u128, width: u32, id: &str) -> io::Result<()> {
     if width == 1 {
         writeln!(out, "{}{id}", value & 1)
     } else {

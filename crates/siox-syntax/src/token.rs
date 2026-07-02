@@ -75,6 +75,9 @@ pub enum TokenKind {
     Shl,       // <<
     Shr,       // >>
     Bang,      // ! (assert!)
+    BangEq,    // !=
+    LtEq,      // <=
+    GtEq,      // >=
     Pound,     // # (attribute application `#[...]`, spec 3.5/3.6)
 
     // Trivia / control

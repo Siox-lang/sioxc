@@ -23,18 +23,105 @@ use siox_ir::{BinOp, Design, Expr, SignalId, UnOp};
 use siox_syntax::ast;
 use siox_syntax::Module;
 
+/// A signal storage slot — the backend value representation. `u64` is the
+/// fast default; `u128` carries signals wider than 64 bits and is
+/// register-pair native on 64-bit targets (no software emulation). Floats
+/// stay f64 bits in the low 64 either way: no mainstream CPU has scalar
+/// f128/f256 hardware (AVX widths are SIMD lanes, not precision).
+pub trait Slot: Copy + PartialEq + PartialOrd + core::fmt::Debug + Default {
+    const BITS: u32;
+    fn from_u64(v: u64) -> Self;
+    fn to_u64(self) -> u64;
+    fn to_u128(self) -> u128;
+    fn wrapping_add(self, o: Self) -> Self;
+    fn wrapping_sub(self, o: Self) -> Self;
+    fn wrapping_mul(self, o: Self) -> Self;
+    fn checked_div(self, o: Self) -> Option<Self>;
+    fn wrapping_shl(self, n: u32) -> Self;
+    fn wrapping_shr(self, n: u32) -> Self;
+    fn bitand(self, o: Self) -> Self;
+    fn is_zero(self) -> bool;
+    fn one() -> Self;
+    fn wrapping_neg(self) -> Self;
+}
+
+macro_rules! impl_slot {
+    ($t:ty, $bits:expr) => {
+        impl Slot for $t {
+            const BITS: u32 = $bits;
+            fn from_u64(v: u64) -> Self {
+                v as $t
+            }
+            fn to_u64(self) -> u64 {
+                self as u64
+            }
+            fn to_u128(self) -> u128 {
+                self as u128
+            }
+            fn wrapping_add(self, o: Self) -> Self {
+                <$t>::wrapping_add(self, o)
+            }
+            fn wrapping_sub(self, o: Self) -> Self {
+                <$t>::wrapping_sub(self, o)
+            }
+            fn wrapping_mul(self, o: Self) -> Self {
+                <$t>::wrapping_mul(self, o)
+            }
+            fn checked_div(self, o: Self) -> Option<Self> {
+                <$t>::checked_div(self, o)
+            }
+            fn wrapping_shl(self, n: u32) -> Self {
+                <$t>::wrapping_shl(self, n)
+            }
+            fn wrapping_shr(self, n: u32) -> Self {
+                <$t>::wrapping_shr(self, n)
+            }
+            fn bitand(self, o: Self) -> Self {
+                self & o
+            }
+            fn is_zero(self) -> bool {
+                self == 0
+            }
+            fn one() -> Self {
+                1
+            }
+            fn wrapping_neg(self) -> Self {
+                <$t>::wrapping_neg(self)
+            }
+        }
+    };
+}
+
+impl_slot!(u64, 64);
+impl_slot!(u128, 128);
+
+/// Which slot width a run uses. `Auto` picks `u128` only when the design
+/// declares signals wider than 64 bits — precision costs speed, so the fast
+/// slot stays the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotWidth {
+    Auto,
+    W64,
+    W128,
+}
+
+/// Whether any signal in the design outgrows 64-bit slots.
+pub fn needs_wide(design: &Design) -> bool {
+    design.signals.iter().any(|s| s.width > 64)
+}
+
 /// Per-signal runtime state: current value, previous value, and event flag.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SignalState {
-    pub current: u64,
-    pub old: u64,
+pub struct SignalState<S: Slot = u64> {
+    pub current: S,
+    pub old: S,
     pub event: bool,
 }
 
-/// Simulation kernel.
-pub struct Simulator<'a> {
+/// Simulation kernel, generic over the backend slot width.
+pub struct Simulator<'a, S: Slot = u64> {
     design: &'a Design,
-    state: Vec<SignalState>,
+    state: Vec<SignalState<S>>,
     /// Simulation time in femtoseconds.
     time_fs: u64,
 }
@@ -43,7 +130,7 @@ pub struct Simulator<'a> {
 /// treated as stable (oscillation guard).
 const MAX_DELTAS: usize = 10_000;
 
-impl<'a> Simulator<'a> {
+impl<'a, S: Slot> Simulator<'a, S> {
     pub fn new(design: &'a Design) -> Self {
         let state = vec![SignalState::default(); design.signals.len()];
         Simulator { design, state, time_fs: 0 }
@@ -55,14 +142,24 @@ impl<'a> Simulator<'a> {
     }
 
     /// Drive a signal (stimulus). Call `settle` afterwards to propagate.
+    /// The `u64` API covers stimulus values; wider slots widen internally.
     pub fn set(&mut self, sig: SignalId, value: u64) {
+        self.set_slot(sig, S::from_u64(value));
+    }
+
+    fn set_slot(&mut self, sig: SignalId, value: S) {
         let i = sig.0 as usize;
         self.state[i].current = mask(value, self.design.signals[i].width);
     }
 
-    /// Read a signal's current value.
+    /// Read a signal's current value (low 64 bits; see [`Self::read_wide`]).
     pub fn read(&self, sig: SignalId) -> u64 {
-        self.state[sig.0 as usize].current
+        self.state[sig.0 as usize].current.to_u64()
+    }
+
+    /// Read a signal's full value, whatever the slot width.
+    pub fn read_wide(&self, sig: SignalId) -> u128 {
+        self.state[sig.0 as usize].current.to_u128()
     }
 
     pub fn time_fs(&self) -> u64 {
@@ -87,9 +184,9 @@ impl<'a> Simulator<'a> {
 
         // 3. fire event-controlled blocks once, computing next-state from the
         //    pre-commit values.
-        let mut next: Vec<(usize, u64)> = Vec::new();
+        let mut next: Vec<(usize, S)> = Vec::new();
         for eb in &self.design.event_blocks {
-            if self.eval(&eb.condition) != 0 {
+            if !self.eval(&eb.condition).is_zero() {
                 for u in &eb.updates {
                     if self.cond_true(&u.cond) {
                         next.push((u.target.0 as usize, self.eval(&u.expr)));
@@ -123,7 +220,7 @@ impl<'a> Simulator<'a> {
     /// order: later drivers override earlier within a pass).
     fn settle_combinational(&mut self) {
         for _ in 0..MAX_DELTAS {
-            let mut next: Vec<u64> = self.state.iter().map(|s| s.current).collect();
+            let mut next: Vec<S> = self.state.iter().map(|s| s.current).collect();
             for d in &self.design.drivers {
                 if self.cond_true(&d.cond) {
                     next[d.target.0 as usize] = self.eval(&d.expr);
@@ -147,23 +244,23 @@ impl<'a> Simulator<'a> {
     fn cond_true(&self, cond: &Option<Expr>) -> bool {
         match cond {
             None => true,
-            Some(e) => self.eval(e) != 0,
+            Some(e) => !self.eval(e).is_zero(),
         }
     }
 
     /// Evaluate an IR expression against the current state.
-    fn eval(&self, e: &Expr) -> u64 {
+    fn eval(&self, e: &Expr) -> S {
         match e {
-            Expr::Const(v) => *v,
-            Expr::Real(x) => x.to_bits(),
-            Expr::Logic(c) => logic_value(*c),
+            Expr::Const(v) => S::from_u64(*v),
+            Expr::Real(x) => S::from_u64(x.to_bits()),
+            Expr::Logic(c) => S::from_u64(logic_value(*c)),
             Expr::Current(id) => self.state[id.0 as usize].current,
             Expr::Old(id) => self.state[id.0 as usize].old,
-            Expr::Event(id) => self.state[id.0 as usize].event as u64,
+            Expr::Event(id) => S::from_u64(self.state[id.0 as usize].event as u64),
             Expr::Unary { op, rhs } => {
                 let a = self.eval(rhs);
                 match op {
-                    UnOp::Not => (a == 0) as u64,
+                    UnOp::Not => S::from_u64(a.is_zero() as u64),
                     UnOp::Neg => a.wrapping_neg(),
                 }
             }
@@ -173,26 +270,28 @@ impl<'a> Simulator<'a> {
                 apply_binop(*op, a, b)
             }
             // `base[hi..lo]`: shift out the low bits, keep `hi-lo+1` of them.
-            Expr::Slice { base, hi, lo } => mask(self.eval(base) >> lo, hi - lo + 1),
+            Expr::Slice { base, hi, lo } => {
+                mask(self.eval(base).wrapping_shr(*lo), hi - lo + 1)
+            }
             Expr::Select { cond, then, els } => {
-                if self.eval(cond) != 0 {
+                if !self.eval(cond).is_zero() {
                     self.eval(then)
                 } else {
                     self.eval(els)
                 }
             }
-            Expr::Unknown => 0,
+            Expr::Unknown => S::from_u64(0),
         }
     }
 }
 
 /// Truncate a value to a signal's bit width (arithmetic wraps at `2^width`).
-/// Width `0` (unknown) or `>= 64` leaves the value unchanged.
-fn mask(value: u64, width: u32) -> u64 {
-    if width == 0 || width >= 64 {
+/// Width `0` (unknown) or `>= slot bits` leaves the value unchanged.
+fn mask<S: Slot>(value: S, width: u32) -> S {
+    if width == 0 || width >= S::BITS {
         value
     } else {
-        value & ((1u64 << width) - 1)
+        value.bitand(S::one().wrapping_shl(width).wrapping_sub(S::one()))
     }
 }
 
@@ -211,38 +310,33 @@ fn logic_value(c: char) -> u64 {
 
 /// `and`/`or`/... are evaluated as logical (boolean) operators in Phase 1, which
 /// is correct for conditions; bitwise-on-vectors is a later, width-aware concern.
-fn apply_binop(op: BinOp, a: u64, b: u64) -> u64 {
-    let (la, lb) = (a != 0, b != 0);
+fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
+    let (la, lb) = (!a.is_zero(), !b.is_zero());
+    let bool_s = |v: bool| S::from_u64(v as u64);
     match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
         BinOp::Mul => a.wrapping_mul(b),
-        BinOp::Div => {
-            if b != 0 {
-                a / b
-            } else {
-                0
-            }
-        }
-        BinOp::Shl => a.wrapping_shl(b as u32),
-        BinOp::Shr => a.wrapping_shr(b as u32),
-        BinOp::And => (la && lb) as u64,
-        BinOp::Nand => (!(la && lb)) as u64,
-        BinOp::Or => (la || lb) as u64,
-        BinOp::Nor => (!(la || lb)) as u64,
-        BinOp::Xor => (la ^ lb) as u64,
-        BinOp::Xnor => (!(la ^ lb)) as u64,
-        BinOp::Eq => (a == b) as u64,
-        BinOp::Ne => (a != b) as u64,
-        // Float arithmetic on f64-bit values (`real` operands).
-        BinOp::FAdd => (f64::from_bits(a) + f64::from_bits(b)).to_bits(),
-        BinOp::FSub => (f64::from_bits(a) - f64::from_bits(b)).to_bits(),
-        BinOp::FMul => (f64::from_bits(a) * f64::from_bits(b)).to_bits(),
-        BinOp::FDiv => (f64::from_bits(a) / f64::from_bits(b)).to_bits(),
-        BinOp::Lt => (a < b) as u64,
-        BinOp::Le => (a <= b) as u64,
-        BinOp::Gt => (a > b) as u64,
-        BinOp::Ge => (a >= b) as u64,
+        BinOp::Div => a.checked_div(b).unwrap_or_else(|| S::from_u64(0)),
+        BinOp::Shl => a.wrapping_shl(b.to_u64() as u32),
+        BinOp::Shr => a.wrapping_shr(b.to_u64() as u32),
+        BinOp::And => bool_s(la && lb),
+        BinOp::Nand => bool_s(!(la && lb)),
+        BinOp::Or => bool_s(la || lb),
+        BinOp::Nor => bool_s(!(la || lb)),
+        BinOp::Xor => bool_s(la ^ lb),
+        BinOp::Xnor => bool_s(!(la ^ lb)),
+        BinOp::Eq => bool_s(a == b),
+        BinOp::Ne => bool_s(a != b),
+        // Float arithmetic on f64-bit values (`real` operands, low 64 bits).
+        BinOp::FAdd => S::from_u64((f64::from_bits(a.to_u64()) + f64::from_bits(b.to_u64())).to_bits()),
+        BinOp::FSub => S::from_u64((f64::from_bits(a.to_u64()) - f64::from_bits(b.to_u64())).to_bits()),
+        BinOp::FMul => S::from_u64((f64::from_bits(a.to_u64()) * f64::from_bits(b.to_u64())).to_bits()),
+        BinOp::FDiv => S::from_u64((f64::from_bits(a.to_u64()) / f64::from_bits(b.to_u64())).to_bits()),
+        BinOp::Lt => bool_s(a < b),
+        BinOp::Le => bool_s(a <= b),
+        BinOp::Gt => bool_s(a > b),
+        BinOp::Ge => bool_s(a >= b),
     }
 }
 
@@ -260,7 +354,8 @@ pub struct TestResult {
 /// traced run for waveform export (spec Stage 9).
 pub struct Sample {
     pub time_fs: u64,
-    pub values: Vec<u64>,
+    /// One value per signal, widened to u128 so any slot width fits.
+    pub values: Vec<u128>,
 }
 
 /// Half a clock period, in femtoseconds — the time `tick` advances per edge.
@@ -281,6 +376,39 @@ pub fn run_tests(
     design: &Design,
     filter: Option<&str>,
 ) -> Vec<TestResult> {
+    run_tests_with(modules, hier, design, filter, SlotWidth::Auto)
+}
+
+/// [`run_tests`] with an explicit backend slot width. `Auto` selects 128-bit
+/// slots only when the design has signals wider than 64 bits.
+pub fn run_tests_with(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+    slot: SlotWidth,
+) -> Vec<TestResult> {
+    if wide_run(slot, design) {
+        run_tests_impl::<u128>(modules, hier, design, filter)
+    } else {
+        run_tests_impl::<u64>(modules, hier, design, filter)
+    }
+}
+
+fn wide_run(slot: SlotWidth, design: &Design) -> bool {
+    match slot {
+        SlotWidth::W64 => false,
+        SlotWidth::W128 => true,
+        SlotWidth::Auto => needs_wide(design),
+    }
+}
+
+fn run_tests_impl<S: Slot>(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let mut results = Vec::new();
@@ -290,7 +418,7 @@ pub fn run_tests(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            results.push(run_one(&inst.entity, root, hier, design, &body, &enums, false).0);
+            results.push(run_one::<S>(&inst.entity, root, hier, design, &body, &enums, false).0);
         }
     }
     results
@@ -304,6 +432,18 @@ pub fn run_test_traced(
     design: &Design,
     filter: Option<&str>,
 ) -> Option<(TestResult, Vec<Sample>)> {
+    if needs_wide(design) {
+        return run_test_traced_impl::<u128>(modules, hier, design, filter);
+    }
+    run_test_traced_impl::<u64>(modules, hier, design, filter)
+}
+
+fn run_test_traced_impl<S: Slot>(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+) -> Option<(TestResult, Vec<Sample>)> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     for &root in &hier.roots {
@@ -312,7 +452,7 @@ pub fn run_test_traced(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            return Some(run_one(&inst.entity, root, hier, design, &body, &enums, true));
+            return Some(run_one::<S>(&inst.entity, root, hier, design, &body, &enums, true));
         }
     }
     None
@@ -365,7 +505,7 @@ fn collect_defs(modules: &[Module]) -> Defs<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_one(
+fn run_one<S: Slot>(
     name: &str,
     root: siox_elab::InstanceId,
     hier: &Hierarchy,
@@ -396,7 +536,7 @@ fn run_one(
         }
     }
 
-    let mut tb = Testbench {
+    let mut tb = Testbench::<S> {
         sim: Simulator::new(design),
         map,
         enums,
@@ -459,8 +599,8 @@ fn run_one(
 }
 
 /// Interprets a testbench's stimulus statements against a running simulator.
-struct Testbench<'a> {
-    sim: Simulator<'a>,
+struct Testbench<'a, S: Slot = u64> {
+    sim: Simulator<'a, S>,
     /// Test-local signal name -> design signal id.
     map: HashMap<String, SignalId>,
     /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
@@ -471,23 +611,23 @@ struct Testbench<'a> {
     samples: Vec<Sample>,
 }
 
-impl Testbench<'_> {
-    fn set_name(&mut self, name: &str, value: u64) {
+impl<S: Slot> Testbench<'_, S> {
+    fn set_name(&mut self, name: &str, value: S) {
         if let Some(&id) = self.map.get(name) {
-            self.sim.set(id, value);
+            self.sim.set_slot(id, value);
         }
     }
 
     /// Evaluate a stimulus value for a named target: `real` targets take the
     /// value's f64 bits (`a.re = 3` stores 3.0).
-    fn eval_for(&self, name: &str, e: &ast::Expr) -> u64 {
+    fn eval_for(&self, name: &str, e: &ast::Expr) -> S {
         let real = self
             .map
             .get(name)
             .map(|&id| self.sim.design.signals[id.0 as usize].real)
             .unwrap_or(false);
         if real {
-            self.eval_real(e).to_bits()
+            S::from_u64(self.eval_real(e).to_bits())
         } else {
             self.eval(e)
         }
@@ -496,7 +636,7 @@ impl Testbench<'_> {
     /// Record the full signal vector at the current simulation time.
     fn sample(&mut self) {
         if self.record {
-            let values = self.sim.state.iter().map(|s| s.current).collect();
+            let values = self.sim.state.iter().map(|s| s.current.to_u128()).collect();
             self.samples.push(Sample { time_fs: self.sim.time_fs, values });
         }
     }
@@ -514,7 +654,7 @@ impl Testbench<'_> {
                                 .value
                                 .as_ref()
                                 .map(|v| self.eval_for(&field, v))
-                                .unwrap_or(0);
+                                .unwrap_or_else(|| S::from_u64(0));
                             self.set_name(&field, v);
                         }
                     } else {
@@ -539,7 +679,7 @@ impl Testbench<'_> {
                 }
             }
             ast::Stmt::If(iff) => {
-                let branch = if self.eval(&iff.cond) != 0 {
+                let branch = if !self.eval(&iff.cond).is_zero() {
                     Some(&iff.then.stmts)
                 } else {
                     match iff.else_.as_deref() {
@@ -588,7 +728,7 @@ impl Testbench<'_> {
             }
             // assert!(cond, "msg"): record the first failure.
             "assert" if bang => {
-                let ok = args.first().map(|c| self.eval(c) != 0).unwrap_or(true);
+                let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
                 if !ok {
                     let msg = args
                         .get(1)
@@ -612,42 +752,48 @@ impl Testbench<'_> {
 
     fn range_count(&self, range: &ast::Expr) -> u64 {
         if let ast::Expr::Range { lo, hi, .. } = range {
-            let (a, b) = (self.eval(lo), self.eval(hi));
+            let (a, b) = (self.eval(lo).to_u64(), self.eval(hi).to_u64());
             return b.saturating_sub(a);
         }
         0
     }
 
     /// Evaluate an AST expression against the simulator via the signal map.
-    fn eval(&self, e: &ast::Expr) -> u64 {
+    fn eval(&self, e: &ast::Expr) -> S {
         match e {
-            ast::Expr::Int { text, .. } => parse_u64(text),
-            ast::Expr::SuffixLit { text, suffix, .. } => parse_u64(text)
-                .saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
+            ast::Expr::Int { text, .. } => S::from_u64(parse_u64(text)),
+            ast::Expr::SuffixLit { text, suffix, .. } => S::from_u64(
+                parse_u64(text).saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
+            ),
             ast::Expr::BitStrLit { base, digits, .. } => {
-                u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0)
+                let radix = if *base == 'x' { 16 } else { 2 };
+                S::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
-            ast::Expr::Bool { value, .. } => *value as u64,
-            ast::Expr::LogicLit { ch, .. } => logic_value(*ch),
-            ast::Expr::Path(p) if p.segments.len() == 1 => {
-                self.map.get(&p.segments[0].text).map(|&id| self.sim.read(id)).unwrap_or(0)
-            }
-            // `Enum::Variant` evaluates to its discriminant.
-            ast::Expr::Path(p) if p.segments.len() >= 2 => self
-                .enums
+            ast::Expr::Bool { value, .. } => S::from_u64(*value as u64),
+            ast::Expr::LogicLit { ch, .. } => S::from_u64(logic_value(*ch)),
+            ast::Expr::Path(p) if p.segments.len() == 1 => self
+                .map
                 .get(&p.segments[0].text)
-                .and_then(|m| m.get(&p.segments[1].text))
-                .copied()
-                .unwrap_or(0),
+                .map(|&id| self.sim.state[id.0 as usize].current)
+                .unwrap_or_else(|| S::from_u64(0)),
+            // `Enum::Variant` evaluates to its discriminant.
+            ast::Expr::Path(p) if p.segments.len() >= 2 => S::from_u64(
+                self.enums
+                    .get(&p.segments[0].text)
+                    .and_then(|m| m.get(&p.segments[1].text))
+                    .copied()
+                    .unwrap_or(0),
+            ),
             // A struct-field (`p.data`) or array-element (`a[2]`) read resolves
             // through the flattened map.
-            ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
-                expr_path(e).and_then(|p| self.map.get(&p)).map(|&id| self.sim.read(id)).unwrap_or(0)
-            }
+            ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
+                .and_then(|p| self.map.get(&p))
+                .map(|&id| self.sim.state[id.0 as usize].current)
+                .unwrap_or_else(|| S::from_u64(0)),
             ast::Expr::Unary { op, rhs, .. } => {
                 let a = self.eval(rhs);
                 match op {
-                    ast::UnOp::Not => (a == 0) as u64,
+                    ast::UnOp::Not => S::from_u64(a.is_zero() as u64),
                     ast::UnOp::Neg => a.wrapping_neg(),
                 }
             }
@@ -658,22 +804,22 @@ impl Testbench<'_> {
                     let a = self.eval_real(lhs);
                     let b = self.eval_real(rhs);
                     return match lower_ast_binop(*op) {
-                        BinOp::Add => (a + b).to_bits(),
-                        BinOp::Sub => (a - b).to_bits(),
-                        BinOp::Mul => (a * b).to_bits(),
-                        BinOp::Div => (a / b).to_bits(),
-                        BinOp::Eq => (a == b) as u64,
-                        BinOp::Ne => (a != b) as u64,
-                        BinOp::Lt => (a < b) as u64,
-                        BinOp::Le => (a <= b) as u64,
-                        BinOp::Gt => (a > b) as u64,
-                        BinOp::Ge => (a >= b) as u64,
-                        other => apply_binop(other, a.to_bits(), b.to_bits()),
+                        BinOp::Add => S::from_u64((a + b).to_bits()),
+                        BinOp::Sub => S::from_u64((a - b).to_bits()),
+                        BinOp::Mul => S::from_u64((a * b).to_bits()),
+                        BinOp::Div => S::from_u64((a / b).to_bits()),
+                        BinOp::Eq => S::from_u64((a == b) as u64),
+                        BinOp::Ne => S::from_u64((a != b) as u64),
+                        BinOp::Lt => S::from_u64((a < b) as u64),
+                        BinOp::Le => S::from_u64((a <= b) as u64),
+                        BinOp::Gt => S::from_u64((a > b) as u64),
+                        BinOp::Ge => S::from_u64((a >= b) as u64),
+                        other => apply_binop(other, S::from_u64(a.to_bits()), S::from_u64(b.to_bits())),
                     };
                 }
                 apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
             }
-            _ => 0,
+            _ => S::from_u64(0),
         }
     }
 
@@ -690,8 +836,8 @@ impl Testbench<'_> {
     fn eval_real(&self, e: &ast::Expr) -> f64 {
         match e {
             ast::Expr::Int { text, .. } => text.parse().unwrap_or(0.0),
-            _ if self.is_real_operand(e) => f64::from_bits(self.eval(e)),
-            _ => self.eval(e) as f64,
+            _ if self.is_real_operand(e) => f64::from_bits(self.eval(e).to_u64()),
+            _ => self.eval(e).to_u64() as f64,
         }
     }
 }
@@ -1238,6 +1384,30 @@ mod tests {
                assert!(lit.im == 5, \"10 + 5i im\");\n\
                assert!(bumped.re == 4, \"(1+2i) + 3 re\");\n\
                assert!(bumped.im == 2, \"(1+2i) + 3 im\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
+    fn wide_slots_carry_128_bit_signals() {
+        // A value shifted above bit 63 survives only in 128-bit slots; the
+        // dispatcher picks them automatically (`needs_wide`).
+        let results = run(
+            "module m;\n\
+             entity Shifter { in a: uint[8]; out y: uint[128]; }\n\
+             impl Shifter { y = a << 100; }\n\
+             #[test]\n\
+             entity WideTest {}\n\
+             impl WideTest {\n\
+               let a: uint[8] = 5;\n\
+               let y: uint[128];\n\
+               let dut = Shifter { .a, .y };\n\
+               wait 1ns;\n\
+               assert!(y != 0, \"bits above 63 survive in wide slots\");\n\
+               assert!(y >> 100 == 5, \"shifted value round-trips\");\n\
+               assert!(y >> 50 != 5, \"value is genuinely above bit 63\");\n\
              }\n",
         );
         assert_eq!(results.len(), 1);
