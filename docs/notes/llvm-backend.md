@@ -1,149 +1,141 @@
-# Plan: the LLVM backend (compiled simulation)
+# Plan: the LLVM backend (compiled processes + runtime)
 
 Status: **plan, approved direction** — siox is a low-level language and its
-execution should be native code, not tree-walking. This document plans the
-lowering from the digital IR to LLVM IR and the staging to get there. The
+execution should be native code. The basis is **bitcode generation from
+processes** and **a runtime that runs those processes**. Type-level
+optimization (narrowing `uint[]`/`int[]` to exact-width machine types) is
+explicitly *later*: those types will be softcoded by the std library in
+time, and the backend must not bake in assumptions about them now. The
 interpreter (`siox-sim`) stays as the reference semantics and the
 differential-testing oracle.
 
-## Why compiled, and why LLVM
+## The model: processes + kernel
 
-Today `siox-sim` interprets `Expr` trees per delta cycle. Compiled
-simulators (Verilator is the proof) turn the *design itself* into native
-code and win 10–1000×. LLVM is the right target because:
+This is the classic simulator architecture (VHDL-style), which fits the IR
+as it already exists:
 
-- **Arbitrary-width integers are native**: a `uint[37]` signal is an `i37`,
-  a `uint[128]` an `i128`. The interpreter's slot-width problem (u64/u128
-  slots, masking) disappears — every signal gets its exact type and LLVM
-  legalizes it for the target CPU.
-- `real` is a `double`; `Select` is `select`; slices are `lshr`+`trunc`;
-  the whole IR `Expr` grammar maps 1:1 onto LLVM instructions.
-- The same path later gives `siox build` a standalone native simulator
-  binary — the language compiles like C, which is the low-level story.
+- A **process** is a unit of behavior with a sensitivity set:
+  - each combinational `Driver(target, cond, expr)` is a process sensitive
+    to the signals its expression reads;
+  - each `EventBlock(condition, updates)` is a clocked process sensitive to
+    the signals in its condition.
+- The **runtime kernel** owns everything else: the signal state arrays
+  (current / old / event), the delta-cycle loop, sensitivity dispatch,
+  next-state commit, simulation time, and the VCD tap. Processes are pure
+  compiled functions the kernel calls when their sensitivity fires.
 
-## What already lines up
-
-- The digital IR is **flat and language-neutral** (per-leaf scalar signals
-  with widths; structs/arrays flattened; enums are integers with repr
-  widths) — deliberately kept that way for backend convergence.
-- **Operator/suffix impls inline at lowering**, so codegen never sees a
-  call — the IR is pure dataflow by the time a backend reads it.
-- The interpreter's `Slot` abstraction marks the exact IR↔execution
-  boundary the compiled runtime slots into: the runner drives *either*
-  backend through `set / settle / read`.
-
-## The mapping
-
-State is three flat arrays (current / old / event), one element per signal,
-each at its natural LLVM type:
-
-```llvm
-; entity Counter { in clk: Clock; in rst: Logic; out count: uint[8]; }
-@cur   = internal global %state zeroinitializer
-@old   = internal global %state zeroinitializer
-@event = internal global %events zeroinitializer
-%state  = type { i2, i2, i8, i8 }   ; clk, rst, count, value
-%events = type { i1, i1, i1, i1 }
+```
+          +-----------------------------+
+          |        runtime kernel       |   Rust (or small C): state,
+          |  state | deltas | sched | t |   delta cycles, dispatch
+          +---+----------+----------+---+
+              v          v          v        compiled bitcode: one
+          proc_0()   proc_1()   proc_2()     function per process
 ```
 
-| siox IR                          | LLVM |
-| -------------------------------- | ---- |
-| `Const(v)` / `Real(x)`           | `iN` constant / `double` constant |
-| `Current(s)` / `Old(s)`          | load from `@cur` / `@old` field |
-| `Event(s)`                       | load from `@event` field |
-| `Binary(Add/Sub/Mul/Div)`        | `add`/`sub`/`mul`/`udiv` (wrap = masked by iN) |
-| `Binary(FAdd..FDiv)`             | `fadd`..`fdiv` on `double` |
-| comparisons                      | `icmp`/`fcmp` |
-| `and/or/...` (logical)           | `icmp ne 0` + `and`/`or` on `i1` |
-| `Slice{hi,lo}`                   | `lshr` + `trunc iN -> iM` |
-| `Select`                         | `select i1, iN, iN` |
-| width truncation                 | free — the type *is* the width |
-| `Driver(target, cond, expr)`     | conditional store in `settle_comb()` |
-| `EventBlock(cond, updates)`      | compare old/cur, compute nexts, commit in `eval_events()` |
+## What compiles, what doesn't
 
-Signed `int[N]` uses `sdiv`/`ashr`/`icmp slt` — pinning signedness per
-operation is IR-hardening work the interpreter also needs (see Stage B0).
+- **Compiled**: process bodies — the `Expr` trees of drivers and event
+  blocks, already pure dataflow (operator/suffix impls inline at lowering,
+  so codegen never sees a call).
+- **Runtime**: scheduling, state, commit — the delta-cycle contract from
+  the spec, exactly what `siox-sim::settle` does today.
+- **Interpreted**: testbench stimulus (`wait`/`tick`/`assert`) — cold code,
+  stays in the host runner forever.
 
-## Static scheduling (the real speed)
+## Value representation (deliberately unoptimized)
 
-The interpreter re-evaluates *all* drivers to a fixpoint. The compiled
-settle must not. Build the driver dependency DAG (driver reads signal →
-edge from its driver); topologically sort:
+Processes operate on the **generic slot representation the interpreter
+already uses** — word-based values (u64/u128 words), width masks applied on
+store, `real` as f64 bits in the low word. Signals load/store through the
+kernel's state arrays.
 
-- **Acyclic** (almost all real designs): `settle_comb()` is one straight
-  pass in dependency order — no loop at all. LLVM then const-folds,
-  vectorizes, and inlines across the whole design.
-- **Cycles** (combinational loops/latches): fall back to bounded iteration
-  over just the cyclic region, and emit the existing `W-P002` lint.
+`uint[N]` / `int[N]` are *not* special-cased into exact-width `iN` machine
+types in the first backend: they will be softcoded by std (derived Logic
+vectors with operator impls), and codegen must treat them the way it treats
+any inlined-impl type. When that std migration lands, a **type-narrowing
+optimization stage** can map finished value types onto native `iN`/`double`
+and let LLVM legalize — that is an optimization pass over working bitcode,
+not the foundation.
 
-The scheduler is backend-independent — land it first and the *interpreter*
-gets faster too, and its output order becomes the codegen contract.
+The process→LLVM mapping is still direct: word loads/stores, integer ops on
+words + mask, `select`, `fadd`-family on the f64 payload — the compiled
+process computes exactly what the interpreter computes, instruction for
+instruction.
 
-## Emission strategy
+## Emission
 
-Emit **textual LLVM IR** (`.ll`), not FFI bindings:
-
-- zero Rust dependencies (matches the minimal-deps policy; `inkwell`/
-  `llvm-sys` version-lock the build to a system LLVM),
-- inspectable and diffable — golden-file tests of the emitted IR,
-- compiled by the system toolchain: `clang -O2 -shared out.ll` (or
-  `llc`+`ld`). `siox build` shells out; a missing clang is a clear error.
+Emit **LLVM IR text (`.ll`) / bitcode (`.bc`)** with no FFI dependencies
+(`llvm-sys`/`inkwell` version-lock the build; textual IR is inspectable and
+golden-file-testable). The system toolchain compiles it:
+`clang -O2 -shared` (hosted) or `clang` + runtime `main` (standalone).
 
 Execution modes, in delivery order:
 
-1. **`siox build design.siox -o sim`** — standalone native simulator: the
-   generated module plus a small C-ABI runtime `main` that runs the test
-   stimulus compiled from the testbench statements. Verilator-style.
-2. **Hosted**: the Rust runner `dlopen`s the shared object (one small,
-   well-justified dep: `libloading`) and drives it through the same
-   `set/settle/read` C ABI — the existing test runner and VCD tracer work
-   unchanged, stimulus stays interpreted (it is cold code).
-3. **JIT** (later, only if the edit-run loop hurts): ORC via textual IR
-   still, or reconsider Cranelift as a pure-Rust JIT for `siox test`.
+1. **Hosted**: the Rust kernel `dlopen`s the compiled processes (one small
+   dep, `libloading`, behind a cargo feature) and dispatches them through a
+   tiny C ABI. The existing test runner, assertions, and VCD tracing work
+   unchanged — only process evaluation changes engine.
+2. **Standalone `siox build design.siox -o sim`**: same bitcode linked with
+   a small runtime and a compiled form of the stimulus — a native simulator
+   binary, no siox installation needed to run it.
 
-The C ABI is deliberately tiny and stable:
+The C ABI between kernel and processes:
 
 ```c
-void     sx_reset(void);
-void     sx_set(uint32_t sig, const uint64_t *val_words);
-void     sx_read(uint32_t sig, uint64_t *out_words);
-void     sx_settle(void);
-uint64_t sx_time(void);
+// kernel -> process: evaluate against the state arrays
+void sx_proc_N(const uint64_t *cur, const uint64_t *old,
+               const uint8_t *event, uint64_t *out);
+// kernel side (hosted): stimulus drives it like the interpreter
+void sx_set(uint32_t sig, uint64_t v);   uint64_t sx_read(uint32_t sig);
+void sx_settle(void);                    uint64_t sx_time(void);
 ```
 
 ## Staging
 
-- **B0 — IR hardening** (shared with the interpreter):
-  signedness pinned per op (`int[N]` compare/shift/divide are wrong-or-
-  unimplemented today), div-by-zero semantics (defined: 0), X/Z semantics
-  documented as the 2-bit enum encoding, an IR validator pass
-  (widths known, signal ids in range, no `Unknown` reaching codegen).
-- **B1 — static scheduler** in `siox-ir`: dependency DAG, topo order,
-  cycle regions, `W-P002` wiring. Interpreter adopts the order.
-- **B2 — `siox-llvm` crate**: Design → `.ll` text. Golden-file tests
-  (counter/mux/FSM). No execution yet; `siox build --emit-llvm` prints it.
-- **B3 — runtime + `siox build`**: C-ABI shell, clang invocation,
-  standalone binary running the compiled stimulus; `--emit-llvm` keeps the
-  `.ll` next to it.
+- **B0 — IR hardening** (shared with the interpreter): defined semantics
+  codegen can trust — div-by-zero = 0, X/Z as the 2-bit enum encoding,
+  interim signedness rules for `int[N]` (pinned per op even though the type
+  is slated for std softcoding), an IR validator (widths known, ids in
+  range, no `Unknown` reaching a backend).
+- **B1 — process extraction** in `siox-ir`: name each driver/event block as
+  a process, compute its sensitivity set (read signals) and write set.
+  The interpreter can adopt sensitivity-based dispatch immediately —
+  correctness-neutral, observable speedup, and it validates the process
+  model before any bitcode exists.
+- **B2 — bitcode generation** (`siox-llvm` crate): one function per
+  process over the word-based state ABI. Golden-file `.ll` tests
+  (counter/mux/FSM). `siox build --emit-llvm` prints it; no execution yet.
+- **B3 — runtime kernel + hosted mode**: kernel keeps living in Rust
+  (it *is* today's `settle`, refactored against process tables);
+  `libloading` behind a feature; `siox test --backend=llvm`.
 - **B4 — differential harness**: every `#[test]` entity and example runs
-  under both backends; results and VCD streams must match bit-for-bit.
-  The examples corpus is the oracle.
-- **B5 — hosted mode**: `libloading` behind a cargo feature; `siox test
-  --backend=llvm` for the big regression suites.
+  under both engines; results and VCD streams must match bit-for-bit.
+- **B5 — standalone `siox build`**: compiled stimulus + runtime `main`,
+  single native binary.
+- **Later (optimization, in either order):**
+  - **static scheduling** — topo-sort the process DAG so acyclic regions
+    run as one straight pass instead of sensitivity-driven deltas
+    (Verilator's trick; big constant-factor win);
+  - **type narrowing** — once `uint[]`/`int[]` are std-softcoded, map
+    finished value types to exact `iN`/`double` and drop the masks.
 
 ## Non-goals (now)
 
+- **Type-level optimization** of `uint[]`/`int[]` — see above; explicitly
+  deferred until std softcodes them.
 - **Synthesis**: LLVM IR is software IR; netlists are a different backend
-  (Phase 3 concern, different lowering from the same digital IR).
-- **f128/f256**: `double` matches the interpreter; softfloat only when a
-  Phase-2 need appears.
+  over the same digital IR (Phase 3).
+- **f128/f256**: f64 payload matches the interpreter; revisit with Phase 2.
 - **Analogue**: Phase 2; the solver would be host code calling the same
   compiled digital core.
 
 ## Acceptance
 
+- `siox test --backend=llvm` passes the entire example corpus with results
+  and VCDs identical to the interpreter (B4).
 - `siox build examples/counter_test.siox -o sim && ./sim` prints the same
-  PASS and exit code as `siox test`.
-- All examples pass under B4 differential testing.
-- A 10⁸-cycle counter benchmark shows ≥50× over the interpreter with the
-  static scheduler on.
+  PASS and exit code as `siox test` (B5).
+- A 10⁸-cycle counter benchmark shows a clear compiled-over-interpreted
+  win before any optimization stage; static scheduling and type narrowing
+  each add on top and are measured separately.
