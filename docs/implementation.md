@@ -211,6 +211,11 @@ Stage 11 stdlib, and deeper per-stage coverage.
 Do not start analogue (Phase 2) until the digital simulator is stable enough to
 support tests, clocks, events, and waveforms.
 
+Beyond Phase 1 stages: the **LLVM backend** (compiled simulation — signals as
+native `iN` types, static scheduling, `siox build` producing a standalone
+simulator binary) is planned in [notes/llvm-backend.md](notes/llvm-backend.md),
+staged B0–B5 with the interpreter as the differential-testing oracle.
+
 ## Phase 1 "done" checklist (spec §6)
 
 The project is Phase-1 complete when it can:
