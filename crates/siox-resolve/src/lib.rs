@@ -158,7 +158,8 @@ impl<'a> Resolver<'a> {
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
         for name in [
-            "integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string", "range",
+            "integer", "real", "Char", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string",
+            "range",
         ]
         {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
@@ -522,7 +523,9 @@ impl<'a> Resolver<'a> {
             Type::Path(p) => self.resolve_type_path(p),
             Type::Indexed { base, index, .. } => {
                 self.resolve_type(base);
-                self.resolve_expr(index);
+                if let Some(index) = index {
+                    self.resolve_expr(index);
+                }
             }
             Type::Generic { base, args, .. } => {
                 self.resolve_type(base);

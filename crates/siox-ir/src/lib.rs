@@ -162,7 +162,6 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
 }
 
 struct Lowering<'a> {
-    #[allow(dead_code)]
     sink: &'a mut DiagnosticSink,
     entities: HashMap<String, &'a ast::EntityDecl>,
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
@@ -377,7 +376,8 @@ impl<'a> Lowering<'a> {
     /// element (`a[0]`). Nested composites recurse. An integer vector
     /// (`uint[8]`) stays a single scalar signal.
     fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
-        // Substitute `using X = T;` aliases first.
+        // Substitute `using X = T;` aliases; an index applied to an alias of
+        // an unconstrained array fills its hole (`string[5]` = `Char[5]`).
         let resolved;
         let ty = match ty {
             ast::Type::Path(p) if p.segments.len() == 1 => {
@@ -389,8 +389,37 @@ impl<'a> Lowering<'a> {
                     None => ty,
                 }
             }
+            ast::Type::Indexed { base, index: Some(i), span } => {
+                let inner = match base.as_ref() {
+                    ast::Type::Path(p) if p.segments.len() == 1 => {
+                        self.aliases.get(&p.segments[0].text)
+                    }
+                    _ => None,
+                };
+                match inner {
+                    Some(ast::Type::Indexed { base: elem, index: None, .. }) => {
+                        resolved = ast::Type::Indexed {
+                            base: elem.clone(),
+                            index: Some(i.clone()),
+                            span: *span,
+                        };
+                        &resolved
+                    }
+                    _ => ty,
+                }
+            }
             _ => ty,
         };
+        // An unconstrained array (`Char[]`) has no length to flatten with.
+        if let ast::Type::Indexed { index: None, .. } = ty {
+            self.sink.emit(
+                siox_diag::Diagnostic::error(format!(
+                    "unconstrained array type for `{name}`: the range must be set here                      (e.g. an explicit length)"
+                ))
+                .with_code(siox_diag::codes::TYPE_MISMATCH),
+            );
+            return;
+        }
         if let Some(fields) = self.struct_fields(ty) {
             if let ast::Type::Path(p) = ty {
                 self.local_struct.insert(name.to_string(), p.segments[0].text.clone());
@@ -1385,10 +1414,13 @@ fn type_width(t: &ast::Type, env: &HashMap<String, i64>) -> u32 {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
             Some("real") => 64, // f64 bits
+            Some("Char") => 32, // symbol storage (implementation detail)
             _ => 0,
         },
-        // For `uint[8]` the index is the width; for `Logic[31..0]` it is the span.
-        ast::Type::Indexed { index, .. } => match index.as_ref() {
+        // For `uint[8]` the index is the width; for `Logic[31..0]` it is the
+        // span; unconstrained `T[]` stays width 0 ("set at use").
+        ast::Type::Indexed { index: None, .. } => 0,
+        ast::Type::Indexed { index: Some(index), .. } => match index.as_ref() {
             ast::Expr::Range { lo, hi, .. } => match (eval_const(lo, env), eval_const(hi, env)) {
                 (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
                 _ => 0,
@@ -1481,7 +1513,7 @@ fn array_of<'t>(
     env: &HashMap<String, i64>,
     const_ranges: &HashMap<String, (i64, i64)>,
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
-    let ast::Type::Indexed { base, index, .. } = ty else { return None };
+    let ast::Type::Indexed { base, index: Some(index), .. } = ty else { return None };
     if is_int_type(base) {
         return None;
     }

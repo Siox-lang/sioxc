@@ -1,0 +1,19 @@
+module std::text;
+
+// Characters and strings (spec: type kernel / 3.23).
+//
+// `Char` is the kernel's non-numeric symbol type: characters have no
+// numbers of their own — a numbering exists only relative to an encoding
+// table, and ASCII is not the only table. `integer <-> Char` conversion
+// therefore goes through a named table here (VHDL's 'pos/'val made explicit
+// and table-scoped); planned:
+//
+//   pub struct Unicode {}   // code(c) -> integer, char(n) -> Char
+//   pub struct Ascii {}     // 7-bit subset; out-of-table is an error
+//
+// (Blocked on associated fns callable in expressions.)
+
+// A string is an array of symbols; the empty `[]` leaves the range to be
+// set at use — by an explicit length (`string[5]`) or, later, inferred from
+// a string literal (`let s = "hello";` -> Char[5]).
+pub using string = Char[];

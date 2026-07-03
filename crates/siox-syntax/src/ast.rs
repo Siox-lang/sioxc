@@ -370,8 +370,9 @@ pub enum Type {
     Path(Path),
     /// `uint[W]`, `int[8]` — a parameterized builtin width type.
     /// Also covers array/slice types `Logic[31..0]` (spec 3.23); the bracket
-    /// content is an expression (a width or a range).
-    Indexed { base: Box<Type>, index: Box<Expr>, span: Span },
+    /// content is an expression (a width or a range). `None` is the
+    /// unconstrained form `Char[]` — the range is set at use (spec 3.23).
+    Indexed { base: Box<Type>, index: Option<Box<Expr>>, span: Span },
     /// `Counter<W = 8>`, `Stream<uint[32]>` — generic application.
     Generic { base: Box<Type>, args: Vec<GenericArg>, span: Span },
     /// Directional bus-mode view: `out Stream<T>::Source`, `in Packet`

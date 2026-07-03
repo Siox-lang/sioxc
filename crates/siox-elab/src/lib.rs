@@ -510,7 +510,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
             None => EType::Other(String::new()),
         },
         Type::Indexed { base, index, .. } => {
-            let len = index_width(index, env);
+            let len = index.as_deref().and_then(|i| index_width(i, env));
             match concrete_ty(base, env) {
                 EType::UInt(_) => EType::UInt(len),
                 EType::Int(_) => EType::Int(len),
@@ -543,9 +543,12 @@ fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
 fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
     match t {
         Type::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
-        Type::Indexed { base, index, .. } => {
-            format!("{}[{}]", render_concrete(base, env), render_index(index, env))
-        }
+        Type::Indexed { base, index, .. } => match index {
+            Some(index) => {
+                format!("{}[{}]", render_concrete(base, env), render_index(index, env))
+            }
+            None => format!("{}[]", render_concrete(base, env)),
+        },
         Type::Generic { base, args, .. } => {
             let inner = args
                 .iter()

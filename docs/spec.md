@@ -970,6 +970,18 @@ elements 7 down to 0 (descending), `Bit[0..3]` ascending. Slices follow the
 written order too: `w[7..4]` extracts MSB-first (the natural bit order),
 while `w[4..7]` extracts the same bits with the order reversed.
 
+**Unconstrained arrays.** Empty brackets leave the range to be set at use
+(VHDL's `range <>` box):
+
+```siox
+pub using string = Char[];   // std::text
+in s: string[5];             // the use supplies the range: Char[5]
+```
+
+Using an unconstrained array where a concrete size is needed (a port, a
+signal) without supplying one is an error. Length inference from
+initializers (`let s = "hello";` -> `Char[5]`) is the string-literal work.
+
 **Named ranges.** A `range` constant names a range, preserving direction,
 usable in both type and slice position:
 

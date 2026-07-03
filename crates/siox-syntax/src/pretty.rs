@@ -369,7 +369,10 @@ fn generic_arg(a: &GenericArg) -> String {
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Path(p) => path(p),
-        Type::Indexed { base, index, .. } => format!("{}[{}]", type_str(base), expr(index)),
+        Type::Indexed { base, index, .. } => match index {
+            Some(i) => format!("{}[{}]", type_str(base), expr(i)),
+            None => format!("{}[]", type_str(base)),
+        },
         Type::Generic { base, args, .. } => {
             let inner = args.iter().map(generic_arg).collect::<Vec<_>>().join(", ");
             format!("{}<{inner}>", type_str(base))
@@ -530,6 +533,18 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_unconstrained_arrays_and_char() {
+        roundtrip(
+            "module std::text;\n\
+             pub using string = Char[];\n\
+             entity E {\n\
+               in s: string[5];\n\
+               in c: Char;\n\
+             }\n",
+        );
     }
 
     #[test]

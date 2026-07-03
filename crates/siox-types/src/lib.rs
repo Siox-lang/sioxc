@@ -29,6 +29,9 @@ pub enum Ty {
     Bool,
     /// The kernel base type `real` (f64 in simulation).
     Real,
+    /// The kernel base type `Char`: a non-numeric character symbol.
+    /// Equality is intrinsic; numbers only exist via std encoding tables.
+    Char,
     /// `uint[N]` / `int[N]`. Width `0` means "not yet known" (parametric, e.g.
     /// `uint[W]`); the concrete width is resolved during elaboration.
     UInt(u32),
@@ -498,6 +501,7 @@ impl<'a> Checker<'a> {
             Ty::UInt(_) => Some("uint".to_string()),
             Ty::Int(_) => Some("int".to_string()),
             Ty::Real => Some("real".to_string()),
+            Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
             Ty::Array { .. } | Ty::Error => None,
         }
@@ -591,7 +595,9 @@ impl<'a> Checker<'a> {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
             Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Real | Ty::Error),
-            Expr::LogicLit { .. } => matches!(lhs, Ty::Bit | Ty::Logic | Ty::Error),
+            Expr::LogicLit { .. } => {
+                matches!(lhs, Ty::Bit | Ty::Logic | Ty::Char | Ty::Error)
+            }
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }
@@ -856,7 +862,8 @@ impl<'a> Checker<'a> {
         match t {
             Type::Path(p) => self.path_ty(p),
             Type::Indexed { base, index, .. } => {
-                let width = width_of(index);
+                // Unconstrained (`Char[]`): width 0 = "set at use".
+                let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
                     Ty::UInt(_) => Ty::UInt(width),
                     Ty::Int(_) => Ty::Int(width),
@@ -880,6 +887,7 @@ impl<'a> Checker<'a> {
                 "uint" | "integer" => Ty::UInt(0),
                 "int" => Ty::Int(0),
                 "real" => Ty::Real,
+                "Char" => Ty::Char,
                 // Elaboration-time range constants (`const BYTE: range`);
                 // opaque to value checking.
                 "range" => Ty::Error,
@@ -931,7 +939,7 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         return true;
     }
     match (lhs, rhs) {
-        (Bit, Bit) | (Logic, Logic) | (Bool, Bool) => true,
+        (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
         (UInt(a), UInt(b)) | (Int(a), Int(b)) => *a == 0 || *b == 0 || a == b,
         (Named(a), Named(b)) => a == b,
         _ => false,
@@ -944,6 +952,7 @@ fn ty_name(t: &Ty) -> String {
         Ty::Logic => "Logic".to_string(),
         Ty::Bool => "Bool".to_string(),
         Ty::Real => "real".to_string(),
+        Ty::Char => "Char".to_string(),
         Ty::UInt(0) => "uint".to_string(),
         Ty::UInt(w) => format!("uint[{w}]"),
         Ty::Int(0) => "int".to_string(),

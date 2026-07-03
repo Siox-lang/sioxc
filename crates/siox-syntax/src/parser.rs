@@ -965,13 +965,14 @@ impl<'a> Parser<'a> {
         }
         while self.at(TokenKind::LBracket) {
             self.bump();
-            let index = self.parse_expr(false);
-            self.expect(TokenKind::RBracket, "to close a type index");
-            ty = Type::Indexed {
-                base: Box::new(ty),
-                index: Box::new(index),
-                span: start.to(self.prev_span()),
+            // `Char[]` is an unconstrained array: the range is set at use.
+            let index = if self.at(TokenKind::RBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr(false)))
             };
+            self.expect(TokenKind::RBracket, "to close a type index");
+            ty = Type::Indexed { base: Box::new(ty), index, span: start.to(self.prev_span()) };
         }
         ty
     }

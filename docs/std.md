@@ -29,7 +29,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
-| `std::text` (planned) | `'pos`/`'val` attributes   | encoding tables: `Unicode`/`Ascii` `code`/`char` conversions |
+| `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables (`Unicode`/`Ascii`) planned |
 | `std::sim`    | std.standard `time`              | `Time`, `Freq` + unit suffixes; FS..MS constants |
 | `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
