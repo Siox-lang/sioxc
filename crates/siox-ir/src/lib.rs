@@ -179,6 +179,16 @@ struct Lowering<'a> {
     op_impls: HashMap<(String, String), Vec<&'a ast::FnDecl>>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
     suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
+    /// Module-level integer constants (`const N: integer = 4`).
+    consts: HashMap<String, i64>,
+    /// Module-level range constants (`const BYTE: range = 7..0`), as written
+    /// (left, right) so direction is preserved.
+    const_ranges: HashMap<String, (i64, i64)>,
+    /// Type aliases (`using Word = uint[32]`).
+    aliases: HashMap<String, ast::Type>,
+    /// The active entity's width environment (consts + instance params),
+    /// for const-evaluating slice bounds during expression lowering.
+    cur_env: HashMap<String, i64>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -235,6 +245,10 @@ impl<'a> Lowering<'a> {
             enum_reprs: HashMap::new(),
             op_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
+            consts: HashMap::new(),
+            const_ranges: HashMap::new(),
+            aliases: HashMap::new(),
+            cur_env: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -251,6 +265,25 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Struct(s) => {
                         self.structs.insert(s.name.text.clone(), s);
+                    }
+                    // Module constants join the width environment; range
+                    // constants (`const BYTE: range = 7..0`) keep their
+                    // written direction. Aliases substitute during lowering.
+                    ast::Item::Const(c) => {
+                        if let ast::Expr::Range { lo, hi, .. } = &c.value {
+                            if let (Some(a), Some(b)) =
+                                (eval_const(lo, &self.consts), eval_const(hi, &self.consts))
+                            {
+                                self.const_ranges.insert(c.name.text.clone(), (a, b));
+                            }
+                        } else if let Some(v) = eval_const(&c.value, &self.consts) {
+                            self.consts.insert(c.name.text.clone(), v);
+                        }
+                    }
+                    ast::Item::Using(u) => {
+                        if let ast::UsingKind::Alias { name, ty } = &u.kind {
+                            self.aliases.insert(name.text.clone(), ty.clone());
+                        }
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
@@ -300,7 +333,10 @@ impl<'a> Lowering<'a> {
 
         // Signals: ports, then impl-level `let` state. Build the local name map.
         // Struct-typed signals flatten into one scalar signal per leaf field.
-        let env = self.entity_params.get(name).cloned().unwrap_or_default();
+        // Width environment: module constants, overridden by instance params.
+        let mut env = self.consts.clone();
+        env.extend(self.entity_params.get(name).cloned().unwrap_or_default());
+        self.cur_env = env.clone();
         self.locals.clear();
         self.local_enum.clear();
         self.local_struct.clear();
@@ -341,6 +377,20 @@ impl<'a> Lowering<'a> {
     /// element (`a[0]`). Nested composites recurse. An integer vector
     /// (`uint[8]`) stays a single scalar signal.
     fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
+        // Substitute `using X = T;` aliases first.
+        let resolved;
+        let ty = match ty {
+            ast::Type::Path(p) if p.segments.len() == 1 => {
+                match self.aliases.get(&p.segments[0].text) {
+                    Some(t) => {
+                        resolved = t.clone();
+                        &resolved
+                    }
+                    None => ty,
+                }
+            }
+            _ => ty,
+        };
         if let Some(fields) = self.struct_fields(ty) {
             if let ast::Type::Path(p) = ty {
                 self.local_struct.insert(name.to_string(), p.segments[0].text.clone());
@@ -348,9 +398,10 @@ impl<'a> Lowering<'a> {
             for (fname, fty) in fields {
                 self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
             }
-        } else if let Some((elem, len)) = array_of(ty, env) {
-            for i in 0..len {
-                self.add_typed_signal(entity, &format!("{name}[{i}]"), elem, env);
+        } else if let Some((elem, indices)) = array_of(ty, env, &self.const_ranges) {
+            let elem = elem.clone();
+            for i in indices {
+                self.add_typed_signal(entity, &format!("{name}[{i}]"), &elem, env);
             }
         } else if let Some(w) = self.enum_width(ty) {
             if let ast::Type::Path(p) = ty {
@@ -601,21 +652,38 @@ impl<'a> Lowering<'a> {
                 .and_then(|m| m.get(&p.segments[1].text))
                 .map(|&d| Expr::Const(d))
                 .unwrap_or(Expr::Unknown),
-            // A bit slice `base[hi..lo]` (constant bounds).
-            ast::Expr::Index { base, index, .. }
-                if matches!(index.as_ref(), ast::Expr::Range { .. }) =>
-            {
-                if let ast::Expr::Range { lo, hi, .. } = index.as_ref() {
-                    match (int_lit(lo), int_lit(hi)) {
-                        (Some(a), Some(b)) => Expr::Slice {
-                            base: Box::new(self.lower_expr(base)),
-                            hi: a.max(b),
-                            lo: a.min(b),
-                        },
-                        _ => Expr::Unknown, // dynamic slice bounds: unsupported
-                    }
+            // A bit slice `base[a..b]` (constant bounds, possibly a named
+            // range constant). Direction follows the written order: `7..4`
+            // (descending) extracts MSB-first — the natural bit order —
+            // while `4..7` (ascending) extracts with the bit order reversed.
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
+                let (a, b) = self.slice_bounds(index).unwrap();
+                let lowered = self.lower_expr(base);
+                if a >= b {
+                    Expr::Slice { base: Box::new(lowered), hi: a as u32, lo: b as u32 }
                 } else {
-                    Expr::Unknown
+                    // Ascending: reassemble bits a..=b with significance
+                    // reversed: source bit (a+k) lands at result bit (w-1-k).
+                    let w = (b - a + 1) as u32;
+                    let mut acc = Expr::Const(0);
+                    for k in 0..w {
+                        let bit = Expr::Slice {
+                            base: Box::new(lowered.clone()),
+                            hi: a as u32 + k,
+                            lo: a as u32 + k,
+                        };
+                        let shifted = Expr::Binary {
+                            op: BinOp::Shl,
+                            lhs: Box::new(bit),
+                            rhs: Box::new(Expr::Const((w - 1 - k) as u64)),
+                        };
+                        acc = Expr::Binary {
+                            op: BinOp::Add,
+                            lhs: Box::new(acc),
+                            rhs: Box::new(shifted),
+                        };
+                    }
+                    acc
                 }
             }
             // A struct-field (`s.data`) or constant array-element (`a[2]`) access
@@ -676,15 +744,9 @@ impl<'a> Lowering<'a> {
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         match e {
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
-            ast::Expr::Index { index, .. } if matches!(index.as_ref(), ast::Expr::Range { .. }) => {
-                if let ast::Expr::Range { lo, hi, .. } = index.as_ref() {
-                    match (int_lit(lo), int_lit(hi)) {
-                        (Some(a), Some(b)) => a.max(b) - a.min(b) + 1,
-                        _ => 1,
-                    }
-                } else {
-                    1
-                }
+            ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
+                let (a, b) = self.slice_bounds(index).unwrap();
+                (a.max(b) - a.min(b) + 1) as u32
             }
             ast::Expr::Int { text, .. } => {
                 (u64::BITS - parse_int(text).unwrap_or(0).leading_zeros()).max(1)
@@ -749,6 +811,21 @@ impl<'a> Lowering<'a> {
             }
         }
         self.inline_block(&body.stmts, &fenv)
+    }
+
+    /// The written (left, right) constant bounds of a slice index: a range
+    /// expression with const-evaluable bounds, or a named range constant.
+    fn slice_bounds(&self, index: &ast::Expr) -> Option<(i64, i64)> {
+        match index {
+            ast::Expr::Range { lo, hi, .. } => Some((
+                eval_const(lo, &self.cur_env)?,
+                eval_const(hi, &self.cur_env)?,
+            )),
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                self.const_ranges.get(&p.segments[0].text).copied()
+            }
+            _ => None,
+        }
     }
 
     /// Coerce a driven value to the target's representation: integer
@@ -1347,13 +1424,34 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
 
 /// The `(element type, length)` if `ty` is an array — an `Indexed` type whose
 /// base is *not* an integer (`Bit[4]`), as opposed to a vector (`uint[8]`).
-fn array_of<'t>(ty: &'t ast::Type, env: &HashMap<String, i64>) -> Option<(&'t ast::Type, u32)> {
-    if let ast::Type::Indexed { base, index, .. } = ty {
-        if !is_int_type(base) {
-            return Some((base, eval_const(index, env).unwrap_or(0).max(0) as u32));
-        }
+/// The element type and **ordered element indices** of an array type.
+/// A width-only index (`Bit[4]`) is ascending `0..=3`; a range keeps its
+/// written direction (`Logic[7..0]` yields 7,6,...,0). A single-segment path
+/// as the index may name a range constant.
+fn array_of<'t>(
+    ty: &'t ast::Type,
+    env: &HashMap<String, i64>,
+    const_ranges: &HashMap<String, (i64, i64)>,
+) -> Option<(&'t ast::Type, Vec<i64>)> {
+    let ast::Type::Indexed { base, index, .. } = ty else { return None };
+    if is_int_type(base) {
+        return None;
     }
-    None
+    let bounds = match index.as_ref() {
+        ast::Expr::Range { lo, hi, .. } => {
+            Some((eval_const(lo, env)?, eval_const(hi, env)?))
+        }
+        ast::Expr::Path(p) if p.segments.len() == 1 => {
+            const_ranges.get(&p.segments[0].text).copied()
+        }
+        _ => None,
+    };
+    let indices = match bounds {
+        Some((a, b)) if a <= b => (a..=b).collect(),
+        Some((a, b)) => (b..=a).rev().collect(),
+        None => (0..eval_const(index, env).unwrap_or(0).max(0)).collect(),
+    };
+    Some((base, indices))
 }
 
 /// The value of an integer-literal expression, if `e` is one.

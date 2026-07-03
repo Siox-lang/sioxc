@@ -964,6 +964,24 @@ let byte: Logic[7..0] = data[7..0];
 let bit0: Logic = data[0];
 ```
 
+**Direction.** A width-only index is ascending: `Bit[4]` declares elements
+`0..3`. A written range keeps its direction: `Logic[7..0]` declares
+elements 7 down to 0 (descending), `Bit[0..3]` ascending. Slices follow the
+written order too: `w[7..4]` extracts MSB-first (the natural bit order),
+while `w[4..7]` extracts the same bits with the order reversed.
+
+**Named ranges.** A `range` constant names a range, preserving direction,
+usable in both type and slice position:
+
+```siox
+const BYTE: range = 7..0;
+in b: Logic[BYTE];
+z = w[BYTE];
+```
+
+Module constants and `using` aliases participate in widths, lengths, and
+slice bounds (`const N: integer = 4; let a: Bit[N];`).
+
 Range attributes:
 
 ```siox

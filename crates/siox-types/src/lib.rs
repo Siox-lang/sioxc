@@ -832,6 +832,9 @@ impl<'a> Checker<'a> {
                 "uint" | "integer" => Ty::UInt(0),
                 "int" => Ty::Int(0),
                 "real" => Ty::Real,
+                // Elaboration-time range constants (`const BYTE: range`);
+                // opaque to value checking.
+                "range" => Ty::Error,
                 _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
             }
         } else {

@@ -1457,6 +1457,42 @@ mod tests {
     }
 
     #[test]
+    fn slice_direction_follows_written_order() {
+        // w = 0xA5 = 0b1010_0101. Descending `[7..4]` extracts MSB-first
+        // (0b1010 = 10); ascending `[4..7]` reverses the bit order
+        // (0b0101 = 5); a named range constant works in slice position.
+        let results = run(
+            "module m;\n\
+             const HI: integer = 7;\n\
+             const NIB: range = 3..0;\n\
+             entity S {\n\
+               in w: uint[8];\n\
+               out hi_dn: uint[4]; out lo_up: uint[4]; out named: uint[4];\n\
+             }\n\
+             impl S {\n\
+               hi_dn = w[HI..4];\n\
+               lo_up = w[4..7];\n\
+               named = w[NIB];\n\
+             }\n\
+             #[test]\n\
+             entity SliceTest {}\n\
+             impl SliceTest {\n\
+               let w: uint[8] = 165;\n\
+               let hi_dn: uint[4];\n\
+               let lo_up: uint[4];\n\
+               let named: uint[4];\n\
+               let dut = S { .w, .hi_dn, .lo_up, .named };\n\
+               wait 1ns;\n\
+               assert!(hi_dn == 10, \"w[7..4] descending is MSB-first\");\n\
+               assert!(lo_up == 5, \"w[4..7] ascending reverses bit order\");\n\
+               assert!(named == 5, \"named range const slices (w[3..0])\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn wide_slots_carry_128_bit_signals() {
         // A value shifted above bit 63 survives only in 128-bit slots; the
         // dispatcher picks them automatically (`needs_wide`).

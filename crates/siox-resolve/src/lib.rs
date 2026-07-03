@@ -157,8 +157,9 @@ impl<'a> Resolver<'a> {
         // accept `integer` on assignment. The rest of this list is the shim:
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
-        for name in
-            ["integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string"]
+        for name in [
+            "integer", "real", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string", "range",
+        ]
         {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
