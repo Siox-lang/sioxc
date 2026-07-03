@@ -11,11 +11,12 @@ operator set itself are built in (spec 3.24/3.25) — std and user code just
 write the impls, no trait declaration or import needed.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
-two base types — `integer` and `real` — plus the type machinery; everything
-else is declared here (including `Char`, a ranged integer over the Unicode
-code points; UTF-8 is only the source/IO encoding), the way VHDL declares `bit`,
-`boolean` and `std_ulogic` in `std.standard` / `std_logic_1164` rather than
-in the compiler. `string` is `Char[N]` with elaboration-inferred length.
+three base types — `integer`, `real`, and `Char` (a non-numeric character
+*symbol*: numbers exist only through an encoding table in std, and UTF-8 is
+only a source/IO encoding) — plus the type machinery; everything else is
+declared here, the way VHDL declares `bit`, `boolean` and `std_ulogic` in
+`std.standard` / `std_logic_1164` rather than in the compiler. `string` is
+`Char[N]` with elaboration-inferred length.
 Where the compiler still special-cases a name for operator semantics, that
 is a documented shim, and the declaration here is canonical.
 
@@ -27,7 +28,8 @@ is a documented shim, and the declaration here is canonical.
 | `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` surface (docs; ops intrinsic for now) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
-| `std::numeric`| natural/positive subtypes        | ranged integers: `Char`, `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
+| `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
+| `std::text` (planned) | `'pos`/`'val` attributes   | encoding tables: `Unicode`/`Ascii` `code`/`char` conversions |
 | `std::sim`    | std.standard `time`              | `Time`, `Freq` + unit suffixes; FS..MS constants |
 | `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
@@ -118,7 +120,6 @@ Ranged integers (spec 3.26): each stores in the smallest width covering its
 range; constants outside it are compile errors.
 
 ```siox
-pub using Char = integer<0..1114111>;   // any Unicode code point (21 bits)
 pub using Byte = integer<0..255>;
 pub using Short = integer<-32768..32767>;
 pub using Int = integer<-2147483648..2147483647>;

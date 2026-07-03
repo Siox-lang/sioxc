@@ -1164,8 +1164,9 @@ Semantics:
 - `real<lo..hi>` documents and (later) checks the constraint; storage
   stays f64.
 
-`std::numeric` provides the everyday names: `Char`, `Byte`, `Short`,
-`Int`, `Long`, `Natural`, `Positive`.
+`std::numeric` provides the everyday names: `Byte`, `Short`, `Int`,
+`Long`, `Natural`, `Positive`. (`Char` is *not* among them — characters
+are non-numeric symbols; see "The type kernel".)
 
 ---
 
@@ -1833,22 +1834,29 @@ std::assert
 
 ### The type kernel
 
-The language kernel provides exactly two base types:
+The language kernel provides exactly three base types:
 
 - **`integer`** — unconstrained integer; also the truth type (1 true,
   0 false; see 3.16).
 - **`real`** — unconstrained float (f64 in simulation).
+- **`Char`** — a character *symbol*, deliberately **non-numeric**.
+  Characters and strings have no numbers: a numbering exists only relative
+  to an encoding table (ASCII is not the only table), so `integer <-> Char`
+  conversion goes through a named std table (`Unicode.code(c)`,
+  `Ascii.char(65)`, ... — VHDL's `'pos`/`'val` made explicit and
+  table-scoped). Equality on symbols is intrinsic; ordering and arithmetic
+  are not. Character literals are contextually typed (`'0'` is a `Char`,
+  `Bit`, or `Logic` by context). Storage is an implementation detail.
 
-Plus the type machinery: enums (including character-literal variants),
-structs, arrays, ranges, value-range constraints (3.26), and events. Every
-other type is declared in `std/` as ordinary source, the way VHDL declares
-`bit`, `boolean` and `std_ulogic` in library code — `uint[N]`/`int[N]`
-derive from `Logic`, and `std::numeric` derives the C-style names as ranged
-integers, including **`Char = integer<0..1114111>`**: a Unicode code point
-(21 bits). UTF-8 is the *source/IO encoding*, never the in-memory shape,
-and character literals are contextually typed (`'0'` is a `Char`, `Bit`, or
-`Logic` by context). `string` is `Char[N]` with its length fixed at
-elaboration from the initializer (pending unconstrained-array machinery).
+Plus the type machinery: enums (including character-literal variants —
+symbol domains themselves), structs, arrays, ranges, value-range
+constraints (3.26), and events. Every other type is declared in `std/` as
+ordinary source, the way VHDL declares `bit`, `boolean` and `std_ulogic`
+in library code — `uint[N]`/`int[N]` derive from `Logic`, `std::numeric`
+derives the C-style ranged integers, and `string` is `Char[N]` with its
+length fixed at elaboration from the initializer (pending
+unconstrained-array machinery). UTF-8 is a std encoding table applied at
+source/IO boundaries, never the in-memory shape.
 
 *Shim note:* until operator overloading (3.13 traits) can carry their
 semantics, the compiler still recognizes the std::logic/std::bits names
