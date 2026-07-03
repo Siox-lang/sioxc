@@ -1857,8 +1857,16 @@ The language kernel provides exactly three base types:
   conversion goes through a named std table (`Unicode.code(c)`,
   `Ascii.char(65)`, ... — VHDL's `'pos`/`'val` made explicit and
   table-scoped). Equality on symbols is intrinsic; ordering and arithmetic
-  are not. Character literals are contextually typed (`'0'` is a `Char`,
-  `Bit`, or `Logic` by context). Storage is an implementation detail.
+  are not. Storage is an implementation detail.
+
+  **A character literal's identity comes from the context type**: against a
+  `Char` (or `string` element) it reads through Unicode — the default
+  table; against `Bit`/`Logic`/an enum it reads as the matching variant
+  (`'Z'` is the Logic value, not code point 90); against a future encoding
+  type (`Ascii`) it reads through that table. A context that cannot read a
+  character — a numeric type — is an error: `n == 'c'` with `n: uint[8]`
+  does not compile; convert through a table instead. Any Unicode symbol is
+  a valid literal (`'€'`).
 
 Plus the type machinery: enums (including character-literal variants —
 symbol domains themselves), structs, arrays, ranges, value-range

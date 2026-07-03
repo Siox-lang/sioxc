@@ -163,7 +163,12 @@ impl<'a> Lexer<'a> {
             if c == b'\'' || c == b'\n' {
                 break;
             }
+            // One *character*, not one byte: skip a UTF-8 sequence whole so
+            // any Unicode symbol is a valid character literal.
             self.bump();
+            while self.peek().is_some_and(|b| b & 0xC0 == 0x80) {
+                self.bump();
+            }
             chars += 1;
         }
         if self.peek() == Some(b'\'') {

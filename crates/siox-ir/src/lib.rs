@@ -49,6 +49,10 @@ pub struct Signal {
     /// A `real`-typed value: the 64-bit slot holds f64 bits, and arithmetic
     /// uses the float operators.
     pub real: bool,
+    /// A `Char`-typed value: the slot holds a symbol (stored as its Unicode
+    /// code point — an implementation detail); character literals compared or
+    /// assigned to it read through the Unicode table.
+    pub char: bool,
 }
 
 /// A combinational driver: `signal = expr` under `cond` (spec 3.14 source-order
@@ -195,6 +199,8 @@ struct Lowering<'a> {
     local_enum: HashMap<String, String>,
     /// Local name -> its struct type name (multi-signal operands/targets).
     local_struct: HashMap<String, String>,
+    /// Locals of the symbol base type `Char`.
+    local_char: std::collections::HashSet<String>,
 }
 
 /// A lowered value: a scalar expression, or one expression per struct field
@@ -252,6 +258,7 @@ impl<'a> Lowering<'a> {
             locals: HashMap::new(),
             local_enum: HashMap::new(),
             local_struct: HashMap::new(),
+            local_char: std::collections::HashSet::new(),
         }
     }
 
@@ -339,6 +346,7 @@ impl<'a> Lowering<'a> {
         self.locals.clear();
         self.local_enum.clear();
         self.local_struct.clear();
+        self.local_char.clear();
         for p in &edecl.ports {
             self.add_typed_signal(name, &p.name.text, &p.ty, &env);
         }
@@ -367,7 +375,7 @@ impl<'a> Lowering<'a> {
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
         let id = SignalId(self.out.signals.len() as u32);
-        self.out.signals.push(Signal { path: format!("{entity}.{name}"), width, real: false });
+        self.out.signals.push(Signal { path: format!("{entity}.{name}"), width, real: false, char: false });
         self.locals.insert(name.to_string(), id);
     }
 
@@ -448,11 +456,20 @@ impl<'a> Lowering<'a> {
             }
         } else {
             self.add_signal(entity, name, type_width(ty, env));
-            // A `real` slot holds f64 bits and takes float arithmetic.
-            if matches!(ty, ast::Type::Path(p) if p.segments.len() == 1 && p.segments[0].text == "real")
-            {
-                if let Some(&id) = self.locals.get(name) {
-                    self.out.signals[id.0 as usize].real = true;
+            // A `real` slot holds f64 bits and takes float arithmetic; a
+            // `Char` slot holds a symbol.
+            if let ast::Type::Path(p) = ty {
+                if p.segments.len() == 1 {
+                    if let Some(&id) = self.locals.get(name) {
+                        match p.segments[0].text.as_str() {
+                            "real" => self.out.signals[id.0 as usize].real = true,
+                            "Char" => {
+                                self.out.signals[id.0 as usize].char = true;
+                                self.local_char.insert(name.to_string());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
@@ -795,7 +812,19 @@ impl<'a> Lowering<'a> {
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, &HashMap::new()) {
                     return derived;
                 }
-                let (l, r) = (self.lower_expr(lhs), self.lower_expr(rhs));
+                let (mut l, mut r) = (self.lower_expr(lhs), self.lower_expr(rhs));
+                // A character literal's identity comes from its counterpart's
+                // type (`c == 'x'` with c: Char reads 'x' as Unicode).
+                if let ast::Expr::LogicLit { ch, .. } = lhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, rhs) {
+                        l = v;
+                    }
+                }
+                if let ast::Expr::LogicLit { ch, .. } = rhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, lhs) {
+                        r = v;
+                    }
+                }
                 self.make_binary(*op, l, r)
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
@@ -905,10 +934,29 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Resolve a character literal against its counterpart's type (the
+    /// literal has no identity of its own): a `Char` counterpart reads it
+    /// through the Unicode table (code point); an enum counterpart reads it
+    /// as the matching variant. `None` keeps the default logic-literal form.
+    fn typed_char_literal(&self, c: char, other: &ast::Expr) -> Option<Expr> {
+        let t = self.operand_type_name(other)?;
+        if t == "Char" {
+            return Some(Expr::Const(c as u32 as u64));
+        }
+        let vars = self.enum_variants.get(&t)?;
+        vars.get(&format!("'{c}'")).map(|&d| Expr::Const(d))
+    }
+
     /// Coerce a driven value to the target's representation: integer
     /// constants become f64 bits when the target signal is `real`.
     fn coerce_to_target(&self, target: SignalId, expr: Expr) -> Expr {
-        if self.out.signals[target.0 as usize].real {
+        let sig = &self.out.signals[target.0 as usize];
+        if sig.char {
+            if let Expr::Logic(c) = expr {
+                return Expr::Const(c as u32 as u64);
+            }
+        }
+        if sig.real {
             self.coerce_real(expr)
         } else {
             expr
@@ -1039,6 +1087,9 @@ impl<'a> Lowering<'a> {
                 .then(|| p.segments[0].text.clone()),
             _ => {
                 let p = expr_path(e)?;
+                if self.local_char.contains(&p) {
+                    return Some("Char".to_string());
+                }
                 self.local_enum.get(&p).or_else(|| self.local_struct.get(&p)).cloned()
             }
         }

@@ -627,10 +627,19 @@ impl<S: Slot> Testbench<'_, S> {
             .map(|&id| self.sim.design.signals[id.0 as usize].real)
             .unwrap_or(false);
         if real {
-            S::from_u64(self.eval_real(e).to_bits())
-        } else {
-            self.eval(e)
+            return S::from_u64(self.eval_real(e).to_bits());
         }
+        let is_char = self
+            .map
+            .get(name)
+            .map(|&id| self.sim.design.signals[id.0 as usize].char)
+            .unwrap_or(false);
+        if is_char {
+            if let ast::Expr::LogicLit { ch, .. } = e {
+                return S::from_u64(*ch as u32 as u64);
+            }
+        }
+        self.eval(e)
     }
 
     /// Record the full signal vector at the current simulation time.
@@ -798,6 +807,13 @@ impl<S: Slot> Testbench<'_, S> {
                 }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // A character literal reads through its counterpart's type:
+                // a Char signal reads it as Unicode (code point).
+                if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
+                    let a = self.eval_char(lhs);
+                    let b = self.eval_char(rhs);
+                    return apply_binop(lower_ast_binop(*op), a, b);
+                }
                 // A real operand switches to float semantics: integer literal
                 // counterparts coerce, so `z.re == 10` compares 10.0.
                 if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
@@ -820,6 +836,23 @@ impl<S: Slot> Testbench<'_, S> {
                 apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
             }
             _ => S::from_u64(0),
+        }
+    }
+
+    /// Whether a stimulus expression reads a `Char` signal.
+    fn is_char_operand(&self, e: &ast::Expr) -> bool {
+        expr_path(e)
+            .and_then(|p| self.map.get(&p))
+            .map(|&id| self.sim.design.signals[id.0 as usize].char)
+            .unwrap_or(false)
+    }
+
+    /// A stimulus operand in a `Char` comparison: literals are Unicode code
+    /// points, signals read their slots.
+    fn eval_char(&self, e: &ast::Expr) -> S {
+        match e {
+            ast::Expr::LogicLit { ch, .. } => S::from_u64(*ch as u32 as u64),
+            _ => self.eval(e),
         }
     }
 
@@ -1450,6 +1483,38 @@ mod tests {
                wait 1ns;\n\
                assert!(gt, \"2.1 > 2.0 (minor breaks the tie)\");\n\
                assert!(ne, \"2.1 != 2.0\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
+    fn char_literals_read_through_the_context_type() {
+        // The same literal syntax means different things by context: a Char
+        // signal reads 'A' as its Unicode symbol; Logic keeps reading '1' as
+        // a logic level. Symbol equality is intrinsic.
+        let results = run(
+            "module m;\n\
+             entity P { in c: Char; out is_a: Bool; out echo: Char; }\n\
+             impl P {\n\
+               is_a = c == 'A';\n\
+               echo = c;\n\
+             }\n\
+             #[test]\n\
+             entity CharTest {}\n\
+             impl CharTest {\n\
+               let c: Char = 'A';\n\
+               let is_a: Bool;\n\
+               let echo: Char;\n\
+               let dut = P { .c, .is_a, .echo };\n\
+               wait 1ns;\n\
+               assert!(is_a, \"'A' == 'A' (symbol equality)\");\n\
+               assert!(echo == 'A', \"symbol round-trips\");\n\
+               c = '\u{20AC}';\n\
+               wait 1ns;\n\
+               assert!(echo == '\u{20AC}', \"non-ASCII symbols work (euro sign)\");\n\
+               assert!(is_a == false, \"and are distinct from 'A'\");\n\
              }\n",
         );
         assert_eq!(results.len(), 1);

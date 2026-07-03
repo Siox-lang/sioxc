@@ -629,6 +629,24 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
                 self.check_expr(rhs, sym);
+                // A character literal's identity comes from its counterpart's
+                // type (spec: type kernel); a numeric counterpart cannot read
+                // one — conversion goes through an encoding table.
+                for (lit, other) in [(lhs, rhs), (rhs, lhs)] {
+                    if matches!(lit.as_ref(), Expr::LogicLit { .. })
+                        && matches!(
+                            self.type_of(other, sym),
+                            Ty::UInt(_) | Ty::Int(_) | Ty::Real
+                        )
+                    {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            "a character literal has no numeric identity; convert it                              through an encoding table (std::text)"
+                                .to_string(),
+                        );
+                    }
+                }
                 // A user struct/enum operand needs an operator-trait impl
                 // (spec 3.25); intrinsic numerics keep built-in semantics.
                 // `==`/`!=` on enums stay built-in (discriminant compare).
