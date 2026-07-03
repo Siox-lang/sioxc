@@ -983,10 +983,10 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
                 let name = self.parse_ident();
                 self.bump(); // `=`
-                let value = self.parse_postfix(false);
+                let value = self.parse_generic_value();
                 args.push(GenericArg::Named { name, value });
             } else {
-                args.push(GenericArg::Positional(self.parse_postfix(false)));
+                args.push(GenericArg::Positional(self.parse_generic_value()));
             }
             if !self.eat(TokenKind::Comma) {
                 break;
@@ -994,6 +994,32 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenKind::Gt, "to close a generic argument list");
         args
+    }
+
+    /// One generic argument value: a postfix expression, optionally extended
+    /// into a range (`integer<0..255>`, value-range constraints on numerics).
+    /// Bounds may be negative (`integer<-32768..32767>`).
+    fn parse_generic_value(&mut self) -> Expr {
+        let start = self.span();
+        let lo = self.parse_generic_atom();
+        if self.at(TokenKind::DotDot) {
+            self.bump();
+            let hi = self.parse_generic_atom();
+            let span = start.to(self.prev_span());
+            return Expr::Range { lo: Box::new(lo), hi: Box::new(hi), span };
+        }
+        lo
+    }
+
+    fn parse_generic_atom(&mut self) -> Expr {
+        if self.at(TokenKind::Minus) {
+            let start = self.span();
+            self.bump();
+            let rhs = self.parse_postfix(false);
+            let span = start.to(self.prev_span());
+            return Expr::Unary { op: UnOp::Neg, rhs: Box::new(rhs), span };
+        }
+        self.parse_postfix(false)
     }
 
     // --- params -------------------------------------------------------------

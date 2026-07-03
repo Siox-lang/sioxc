@@ -119,6 +119,8 @@ struct Checker<'a> {
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
+    /// `using X = T;` aliases, resolved through when typing.
+    aliases: HashMap<String, Type>,
 }
 
 impl<'a> Checker<'a> {
@@ -164,6 +166,7 @@ impl<'a> Checker<'a> {
             trait_impls,
             enum_variants: HashMap::new(),
             suffix_types: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -220,6 +223,11 @@ impl<'a> Checker<'a> {
                     Item::Enum(e) => {
                         let vars = e.variants.iter().map(|v| v.name.text.clone()).collect();
                         self.enum_variants.insert(e.name.text.clone(), vars);
+                    }
+                    Item::Using(u) => {
+                        if let UsingKind::Alias { name, ty } = &u.kind {
+                            self.aliases.insert(name.text.clone(), ty.clone());
+                        }
                     }
                     _ => {}
                 }
@@ -541,6 +549,7 @@ impl<'a> Checker<'a> {
     /// Spec 3.17: a `let name: T = e` initializer must be assignable to `T`.
     fn check_init(&mut self, decl_ty: Option<&Type>, value: &Expr, sym: &HashMap<String, Ty>) {
         let Some(t) = decl_ty else { return };
+        self.check_value_range(t, value);
         let lhs = self.ast_ty(t);
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
@@ -802,6 +811,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A constant initializer must lie inside a value-range-constrained
+    /// numeric type (`let b: integer<0..255> = 300;` is an error). Literal
+    /// bounds only; named ranges and dynamic values are runtime checks later.
+    fn check_value_range(&mut self, decl_ty: &Type, value: &Expr) {
+        // Resolve one alias hop (`using Byte = integer<0..255>`).
+        let resolved;
+        let t = match decl_ty {
+            Type::Path(p) if p.segments.len() == 1 => {
+                match self.aliases.get(&p.segments[0].text) {
+                    Some(a) => {
+                        resolved = a.clone();
+                        &resolved
+                    }
+                    None => decl_ty,
+                }
+            }
+            _ => decl_ty,
+        };
+        let Type::Generic { base, args, .. } = t else { return };
+        let Type::Path(p) = base.as_ref() else { return };
+        if p.segments.last().map(|s| s.text.as_str()) != Some("integer") {
+            return;
+        }
+        let [GenericArg::Positional(Expr::Range { lo, hi, .. })] = args.as_slice() else {
+            return;
+        };
+        let (Some(a), Some(b)) = (signed_lit(lo), signed_lit(hi)) else { return };
+        let (min, max) = (a.min(b), a.max(b));
+        if let Some(v) = signed_lit(value) {
+            if v < min || v > max {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(value),
+                    format!("value {v} is outside the range {min}..{max}"),
+                );
+            }
+        }
+    }
+
     /// Resolve a type annotation to a [`Ty`]. Parametric widths (`uint[W]`)
     /// become `UInt(0)` until elaboration fills them in.
     fn ast_ty(&self, t: &Type) -> Ty {
@@ -835,7 +883,12 @@ impl<'a> Checker<'a> {
                 // Elaboration-time range constants (`const BYTE: range`);
                 // opaque to value checking.
                 "range" => Ty::Error,
-                _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
+                name => match self.aliases.get(name) {
+                    Some(t) => self.ast_ty(&t.clone()),
+                    None => {
+                        self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+                    }
+                },
             }
         } else {
             self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
@@ -898,6 +951,15 @@ fn ty_name(t: &Ty) -> String {
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array { .. } => "an array".to_string(),
         Ty::Error => "<unknown>".to_string(),
+    }
+}
+
+/// The value of an integer literal, allowing a leading unary minus.
+fn signed_lit(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int { text, .. } => text.parse::<i64>().ok(),
+        Expr::Unary { op: UnOp::Neg, rhs, .. } => signed_lit(rhs).map(|v| -v),
+        _ => None,
     }
 }
 

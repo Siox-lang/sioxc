@@ -1457,6 +1457,36 @@ mod tests {
     }
 
     #[test]
+    fn ranged_integers_store_in_covering_width() {
+        // integer<0..1114111> is 21 bits: a large code point round-trips;
+        // integer<0..255> is 8 bits: arithmetic wraps at the range width.
+        let results = run(
+            "module m;\n\
+             using Char = integer<0..1114111>;\n\
+             using Byte = integer<0..255>;\n\
+             entity P { in c: Char; in b: Byte; out oc: Char; out ob: Byte; }\n\
+             impl P {\n\
+               oc = c;\n\
+               ob = b + 1;\n\
+             }\n\
+             #[test]\n\
+             entity RangedTest {}\n\
+             impl RangedTest {\n\
+               let c: Char = 128512;\n\
+               let b: Byte = 255;\n\
+               let oc: Char;\n\
+               let ob: Byte;\n\
+               let dut = P { .c, .b, .oc, .ob };\n\
+               wait 1ns;\n\
+               assert!(oc == 128512, \"21-bit code point survives (width > 16)\");\n\
+               assert!(ob == 0, \"byte arithmetic wraps at 8 bits\");\n\
+             }\n",
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn slice_direction_follows_written_order() {
         // w = 0xA5 = 0b1010_0101. Descending `[7..4]` extracts MSB-first
         // (0b1010 = 10); ascending `[4..7]` reverses the bit order

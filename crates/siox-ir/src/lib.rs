@@ -408,6 +408,15 @@ impl<'a> Lowering<'a> {
                 self.local_enum.insert(name.to_string(), p.segments[0].text.clone());
             }
             self.add_signal(entity, name, w);
+        } else if let Some((w, is_real)) = self.ranged_numeric(ty) {
+            // `integer<lo..hi>` stores in the smallest width covering the
+            // range (two's complement when lo < 0); `real<..>` stays f64.
+            self.add_signal(entity, name, w);
+            if is_real {
+                if let Some(&id) = self.locals.get(name) {
+                    self.out.signals[id.0 as usize].real = true;
+                }
+            }
         } else {
             self.add_signal(entity, name, type_width(ty, env));
             // A `real` slot holds f64 bits and takes float arithmetic.
@@ -418,6 +427,45 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+    }
+
+    /// The storage width of a value-range-constrained numeric type
+    /// (`integer<lo..hi>` / `real<lo..hi>`), if `ty` is one. Returns
+    /// `(width, is_real)`.
+    fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool)> {
+        let ast::Type::Generic { base, args, .. } = ty else { return None };
+        let ast::Type::Path(p) = base.as_ref() else { return None };
+        let kind = p.segments.last().map(|s| s.text.as_str())?;
+        if kind != "integer" && kind != "real" {
+            return None;
+        }
+        let [ast::GenericArg::Positional(arg)] = args.as_slice() else { return None };
+        if kind == "real" {
+            return Some((64, true)); // range is a constraint, storage is f64
+        }
+        let (a, b) = match arg {
+            ast::Expr::Range { lo, hi, .. } => {
+                (eval_const(lo, &self.cur_env)?, eval_const(hi, &self.cur_env)?)
+            }
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                self.const_ranges.get(&p.segments[0].text).copied()?
+            }
+            _ => return None,
+        };
+        let (lo, hi) = (a.min(b), a.max(b));
+        // Smallest width whose (signed, when lo < 0) domain covers [lo, hi].
+        for w in 1..=64u32 {
+            let fits = if lo < 0 {
+                let half = 1i128 << (w - 1);
+                (lo as i128) >= -half && (hi as i128) < half
+            } else {
+                (hi as i128) < (1i128 << w.min(63)) || w >= 64
+            };
+            if fits {
+                return Some((w, false));
+            }
+        }
+        Some((64, false))
     }
 
     /// The bit width of `ty` if it names a known enum.

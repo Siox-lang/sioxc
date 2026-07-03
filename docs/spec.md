@@ -1139,6 +1139,36 @@ as the impl target.
 
 ---
 
+### 3.26 Ranged numerics
+
+A value-range constraint on the numeric base types uses the parameter
+brackets — `[]` stays bit/array-shaped:
+
+```siox
+using Byte = integer<0..255>;
+using Short = integer<-32768..32767>;
+const SHORT: range = -32768..32767;
+using Short2 = integer<SHORT>;         // range constants compose
+let gain: real<0.0..1.0>;
+```
+
+Semantics:
+
+- **Storage width** derives from the range: the smallest width whose
+  domain covers it (two's complement when the range dips below zero).
+  `integer<0..255>` is 8 bits; `integer<0..1114111>` is 21.
+- **Constant range check**: `let b: Byte = 300;` is a compile-time error.
+- **Runtime range check**: a dynamic value leaving the range is a
+  simulation check (later; VHDL semantics). Until it lands, arithmetic
+  wraps at the storage width.
+- `real<lo..hi>` documents and (later) checks the constraint; storage
+  stays f64.
+
+`std::numeric` provides the everyday names: `Char`, `Byte`, `Short`,
+`Int`, `Long`, `Natural`, `Positive`.
+
+---
+
 ## 4. Phase 1 implementation stages
 
 Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.
@@ -1803,22 +1833,22 @@ std::assert
 
 ### The type kernel
 
-The language kernel provides exactly three base types:
+The language kernel provides exactly two base types:
 
 - **`integer`** — unconstrained integer; also the truth type (1 true,
   0 false; see 3.16).
 - **`real`** — unconstrained float (f64 in simulation).
-- **`Char`** — a Unicode code point, fixed width (21 bits stored as 32).
-  UTF-8 is the *source/IO encoding*, never the in-memory shape. Character
-  literals are contextually typed: `'0'` is a `Char`, a `Bit`, or a `Logic`
-  depending on what the context demands (VHDL-style overloaded literals).
 
 Plus the type machinery: enums (including character-literal variants),
-structs, arrays, and events. Every other type is declared in `std/` as
-ordinary source, the way VHDL declares `bit`, `boolean` and `std_ulogic` in
-library code — `uint[N]`/`int[N]` derive from `Logic`, and `string` is
-`Char[N]` with its length fixed at elaboration from the initializer
-(`let s = "hello";` is a `Char[5]`; unconstrained array machinery pending).
+structs, arrays, ranges, value-range constraints (3.26), and events. Every
+other type is declared in `std/` as ordinary source, the way VHDL declares
+`bit`, `boolean` and `std_ulogic` in library code — `uint[N]`/`int[N]`
+derive from `Logic`, and `std::numeric` derives the C-style names as ranged
+integers, including **`Char = integer<0..1114111>`**: a Unicode code point
+(21 bits). UTF-8 is the *source/IO encoding*, never the in-memory shape,
+and character literals are contextually typed (`'0'` is a `Char`, `Bit`, or
+`Logic` by context). `string` is `Char[N]` with its length fixed at
+elaboration from the initializer (pending unconstrained-array machinery).
 
 *Shim note:* until operator overloading (3.13 traits) can carry their
 semantics, the compiler still recognizes the std::logic/std::bits names

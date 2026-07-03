@@ -1,0 +1,15 @@
+module std::numeric;
+
+// Value-range-constrained integers (spec 3.26), modelled on VHDL's
+// natural/positive subtypes and the C fixed-width names. A ranged integer
+// stores in the smallest width covering its range (two's complement when
+// the range dips below zero); a constant outside the range is a compile
+// error, and dynamic range checking is a later simulation check.
+
+pub using Char = integer<0..1114111>;   // any Unicode code point (21 bits)
+pub using Byte = integer<0..255>;
+pub using Short = integer<-32768..32767>;
+pub using Int = integer<-2147483648..2147483647>;
+pub using Long = integer<-9223372036854775808..9223372036854775807>;
+pub using Natural = integer<0..9223372036854775807>;
+pub using Positive = integer<1..9223372036854775807>;
