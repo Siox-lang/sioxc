@@ -1,8 +1,8 @@
-//! Differential harness (stage B4 seed): the JIT must agree with the
-//! interpreter oracle, signal for signal, on combinational designs.
-//!
-//! Only built with `--features llvm`; sequential (event-block) designs join
-//! once B2.1 emits their codegen.
+//! Differential harness (stage B4): the JIT must agree with the interpreter
+//! oracle, signal for signal, across the whole expression surface —
+//! arithmetic, slices, concat, enum match, struct/array signals, char
+//! literals, and sequential (clocked) designs. Only built with
+//! `--features llvm`.
 #![cfg(feature = "llvm")]
 
 use siox_diag::{DiagnosticSink, FileId};
@@ -187,6 +187,107 @@ fn arithmetic_and_slice_agree() {
     for (a, b) in [(10u64, 20u64), (200, 100), (0xA5, 0x0F), (255, 1)] {
         assert_agree(&d, &[("Alu.a", a), ("Alu.b", b)]);
     }
+}
+
+#[test]
+fn concat_agrees() {
+    // `{a, b}` -> shift/add tree in the IR.
+    let d = lower(
+        "module m;\n\
+         entity C { in a: uint[4]; in b: uint[4]; out y: uint[8]; }\n\
+         impl C { y = {a, b}; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: uint[4]; let b: uint[4]; let y: uint[8];\n\
+           let dut = C { .a, .b, .y };\n\
+         }\n",
+    );
+    for (a, b) in [(0xA, 0x5), (0xF, 0x0), (0x0, 0xF), (0x3, 0xC)] {
+        assert_agree(&d, &[("C.a", a), ("C.b", b)]);
+    }
+}
+
+#[test]
+fn enum_match_agrees() {
+    // `match op` -> first-match comparison chain over discriminants.
+    let d = lower(
+        "module m;\n\
+         enum Op { Add, Sub, Pass }\n\
+         entity Alu { in op: Op; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         impl Alu {\n\
+           match op {\n\
+             Op::Add => { y = a + b; }\n\
+             Op::Sub => { y = a - b; }\n\
+             _ => { y = a; }\n\
+           }\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let dut = Alu { .op, .a, .b, .y };\n\
+         }\n",
+    );
+    for op in 0..3u64 {
+        assert_agree(&d, &[("Alu.op", op), ("Alu.a", 30), ("Alu.b", 12)]);
+    }
+}
+
+#[test]
+fn struct_field_agrees() {
+    // Struct fields flatten to per-field signals (`S.p.lo`, `S.p.hi`).
+    let d = lower(
+        "module m;\n\
+         struct P { lo: uint[4], hi: uint[4] }\n\
+         entity S { in p: P; out y: uint[8]; }\n\
+         impl S { y = {p.hi, p.lo}; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let p: P; let y: uint[8];\n\
+           let dut = S { .p, .y };\n\
+         }\n",
+    );
+    assert_agree(&d, &[("S.p.lo", 0x5), ("S.p.hi", 0xA)]);
+    assert_agree(&d, &[("S.p.lo", 0xF), ("S.p.hi", 0x0)]);
+}
+
+#[test]
+fn array_element_agrees() {
+    // Array elements flatten to `A.v[0]`, `A.v[1]`.
+    let d = lower(
+        "module m;\n\
+         entity A { in v: uint[4][2]; out y: uint[8]; }\n\
+         impl A { y = {v[1], v[0]}; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let v: uint[4][2]; let y: uint[8];\n\
+           let dut = A { .v, .y };\n\
+         }\n",
+    );
+    assert_agree(&d, &[("A.v[0]", 0x3), ("A.v[1]", 0xC)]);
+}
+
+#[test]
+fn char_compare_agrees() {
+    // A Char literal reads through the context type as a Unicode code point;
+    // both engines evaluate the same lowered constant.
+    let d = lower(
+        "module m;\n\
+         entity Ch { in c: Char; out is_a: Bool; }\n\
+         impl Ch { is_a = c == 'A'; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let c: Char; let is_a: Bool;\n\
+           let dut = Ch { .c, .is_a };\n\
+         }\n",
+    );
+    assert_agree(&d, &[("Ch.c", 'A' as u64)]);
+    assert_agree(&d, &[("Ch.c", 'B' as u64)]);
+    assert_agree(&d, &[("Ch.c", 0x20AC)]); // euro sign
 }
 
 #[test]
