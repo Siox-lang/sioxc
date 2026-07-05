@@ -468,10 +468,15 @@ pub fn run_tests_with(
     filter: Option<&str>,
     slot: SlotWidth,
 ) -> Vec<TestResult> {
-    if wide_run(slot, design) {
-        run_tests_impl::<u128>(modules, hier, design, filter)
+    run_tests_impl(modules, hier, design, filter, wide_run(slot, design))
+}
+
+/// Build an interpreter engine (`Simulator`) of the right slot width.
+fn interp_engine(design: &Design, wide: bool) -> Box<dyn Engine + '_> {
+    if wide {
+        Box::new(Simulator::<u128>::new(design))
     } else {
-        run_tests_impl::<u64>(modules, hier, design, filter)
+        Box::new(Simulator::<u64>::new(design))
     }
 }
 
@@ -483,11 +488,12 @@ fn wide_run(slot: SlotWidth, design: &Design) -> bool {
     }
 }
 
-fn run_tests_impl<S: Slot>(
+fn run_tests_impl(
     modules: &[Module],
     hier: &Hierarchy,
     design: &Design,
     filter: Option<&str>,
+    wide: bool,
 ) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
@@ -498,7 +504,8 @@ fn run_tests_impl<S: Slot>(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            results.push(run_one::<S>(&inst.entity, root, hier, design, &body, &enums, false).0);
+            let engine = interp_engine(design, wide);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, false).0);
         }
     }
     results
@@ -512,17 +519,15 @@ pub fn run_test_traced(
     design: &Design,
     filter: Option<&str>,
 ) -> Option<(TestResult, Vec<Sample>)> {
-    if needs_wide(design) {
-        return run_test_traced_impl::<u128>(modules, hier, design, filter);
-    }
-    run_test_traced_impl::<u64>(modules, hier, design, filter)
+    run_test_traced_impl(modules, hier, design, filter, needs_wide(design))
 }
 
-fn run_test_traced_impl<S: Slot>(
+fn run_test_traced_impl(
     modules: &[Module],
     hier: &Hierarchy,
     design: &Design,
     filter: Option<&str>,
+    wide: bool,
 ) -> Option<(TestResult, Vec<Sample>)> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
@@ -532,7 +537,8 @@ fn run_test_traced_impl<S: Slot>(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            return Some(run_one::<S>(&inst.entity, root, hier, design, &body, &enums, true));
+            let engine = interp_engine(design, wide);
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, true));
         }
     }
     None
@@ -585,13 +591,14 @@ fn collect_defs(modules: &[Module]) -> Defs<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_one<S: Slot>(
+fn run_one<'a>(
+    engine: Box<dyn Engine + 'a>,
     name: &str,
     root: siox_elab::InstanceId,
     hier: &Hierarchy,
     design: &Design,
     body: &[&ast::ImplDecl],
-    enums: &HashMap<String, HashMap<String, u64>>,
+    enums: &'a HashMap<String, HashMap<String, u64>>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -616,8 +623,8 @@ fn run_one<S: Slot>(
         }
     }
 
-    let mut tb = Testbench::<S> {
-        sim: Simulator::new(design),
+    let mut tb = Testbench {
+        engine,
         map,
         enums,
         failure: None,
@@ -655,7 +662,7 @@ fn run_one<S: Slot>(
             }
         }
     }
-    tb.sim.settle();
+    tb.engine.settle();
     tb.sample();
 
     // Run the stimulus.
@@ -683,8 +690,8 @@ fn run_one<S: Slot>(
 }
 
 /// Interprets a testbench's stimulus statements against a running simulator.
-struct Testbench<'a, S: Slot = u64> {
-    sim: Simulator<'a, S>,
+struct Testbench<'a> {
+    engine: Box<dyn Engine + 'a>,
     /// Test-local signal name -> design signal id.
     map: HashMap<String, SignalId>,
     /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
@@ -695,10 +702,10 @@ struct Testbench<'a, S: Slot = u64> {
     samples: Vec<Sample>,
 }
 
-impl<S: Slot> Testbench<'_, S> {
-    fn set_name(&mut self, name: &str, value: S) {
+impl Testbench<'_> {
+    fn set_name(&mut self, name: &str, value: u128) {
         if let Some(&id) = self.map.get(name) {
-            self.sim.set_slot(id, value);
+            self.engine.set(id, value);
         }
     }
 
@@ -714,29 +721,29 @@ impl<S: Slot> Testbench<'_, S> {
             .collect();
         ids.sort_by_key(|(i, _)| *i);
         for ((_, id), c) in ids.into_iter().zip(text.chars()) {
-            self.sim.set(id, c as u32 as u64);
+            self.engine.set(id, c as u32 as u128);
         }
     }
 
     /// Evaluate a stimulus value for a named target: `real` targets take the
     /// value's f64 bits (`a.re = 3` stores 3.0).
-    fn eval_for(&self, name: &str, e: &ast::Expr) -> S {
+    fn eval_for(&self, name: &str, e: &ast::Expr) -> u128 {
         let real = self
             .map
             .get(name)
-            .map(|&id| self.sim.design.signals[id.0 as usize].real)
+            .map(|&id| self.engine.design().signals[id.0 as usize].real)
             .unwrap_or(false);
         if real {
-            return S::from_u64(self.eval_real(e).to_bits());
+            return u128::from_u64(self.eval_real(e).to_bits());
         }
         let is_char = self
             .map
             .get(name)
-            .map(|&id| self.sim.design.signals[id.0 as usize].char)
+            .map(|&id| self.engine.design().signals[id.0 as usize].char)
             .unwrap_or(false);
         if is_char {
             if let ast::Expr::LogicLit { ch, .. } = e {
-                return S::from_u64(*ch as u32 as u64);
+                return u128::from_u64(*ch as u32 as u64);
             }
         }
         self.eval(e)
@@ -745,8 +752,9 @@ impl<S: Slot> Testbench<'_, S> {
     /// Record the full signal vector at the current simulation time.
     fn sample(&mut self) {
         if self.record {
-            let values = self.sim.state.iter().map(|s| s.current.to_u128()).collect();
-            self.samples.push(Sample { time_fs: self.sim.time_fs, values });
+            let n = self.engine.design().signals.len() as u32;
+            let values = (0..n).map(|i| self.engine.read(SignalId(i))).collect();
+            self.samples.push(Sample { time_fs: self.engine.time_fs(), values });
         }
     }
 
@@ -757,7 +765,7 @@ impl<S: Slot> Testbench<'_, S> {
                     // A string literal assigns each Char element (`s = "hi";`).
                     if let ast::Expr::StrLit { text, .. } = value {
                         self.set_string(&path, text);
-                        self.sim.settle();
+                        self.engine.settle();
                         self.sample();
                         return;
                     }
@@ -770,7 +778,7 @@ impl<S: Slot> Testbench<'_, S> {
                                 .value
                                 .as_ref()
                                 .map(|v| self.eval_for(&field, v))
-                                .unwrap_or_else(|| S::from_u64(0));
+                                .unwrap_or_else(|| u128::from_u64(0));
                             self.set_name(&field, v);
                         }
                     } else {
@@ -778,7 +786,7 @@ impl<S: Slot> Testbench<'_, S> {
                         self.set_name(&path, v);
                     }
                 }
-                self.sim.settle();
+                self.engine.settle();
                 self.sample();
             }
             ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, span }) => {
@@ -827,19 +835,19 @@ impl<S: Slot> Testbench<'_, S> {
             // edge, half period.
             "tick" => {
                 if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
-                    self.sim.set(id, 1);
-                    self.sim.settle();
+                    self.engine.set(id, 1);
+                    self.engine.settle();
                     self.sample();
-                    self.sim.advance(HALF_PERIOD);
-                    self.sim.set(id, 0);
-                    self.sim.settle();
+                    self.engine.advance(HALF_PERIOD);
+                    self.engine.set(id, 0);
+                    self.engine.settle();
                     self.sample();
-                    self.sim.advance(HALF_PERIOD);
+                    self.engine.advance(HALF_PERIOD);
                 }
             }
             // wait <duration>: advance simulation time.
             "wait" => {
-                self.sim.advance(duration_fs(args));
+                self.engine.advance(duration_fs(args));
                 self.sample();
             }
             // assert!(cond, "msg"): record the first failure.
@@ -875,25 +883,25 @@ impl<S: Slot> Testbench<'_, S> {
     }
 
     /// Evaluate an AST expression against the simulator via the signal map.
-    fn eval(&self, e: &ast::Expr) -> S {
+    fn eval(&self, e: &ast::Expr) -> u128 {
         match e {
-            ast::Expr::Int { text, .. } => S::from_u64(parse_u64(text)),
-            ast::Expr::SuffixLit { text, suffix, .. } => S::from_u64(
+            ast::Expr::Int { text, .. } => u128::from_u64(parse_u64(text)),
+            ast::Expr::SuffixLit { text, suffix, .. } => u128::from_u64(
                 parse_u64(text).saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
             ),
             ast::Expr::BitStrLit { base, digits, .. } => {
                 let radix = if *base == 'x' { 16 } else { 2 };
-                S::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
+                u128::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
-            ast::Expr::Bool { value, .. } => S::from_u64(*value as u64),
-            ast::Expr::LogicLit { ch, .. } => S::from_u64(logic_value(*ch)),
+            ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
+            ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_value(*ch)),
             ast::Expr::Path(p) if p.segments.len() == 1 => self
                 .map
                 .get(&p.segments[0].text)
-                .map(|&id| self.sim.state[id.0 as usize].current)
-                .unwrap_or_else(|| S::from_u64(0)),
+                .map(|&id| self.engine.read(id))
+                .unwrap_or_else(|| u128::from_u64(0)),
             // `Enum::Variant` evaluates to its discriminant.
-            ast::Expr::Path(p) if p.segments.len() >= 2 => S::from_u64(
+            ast::Expr::Path(p) if p.segments.len() >= 2 => u128::from_u64(
                 self.enums
                     .get(&p.segments[0].text)
                     .and_then(|m| m.get(&p.segments[1].text))
@@ -904,12 +912,12 @@ impl<S: Slot> Testbench<'_, S> {
             // through the flattened map.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
                 .and_then(|p| self.map.get(&p))
-                .map(|&id| self.sim.state[id.0 as usize].current)
-                .unwrap_or_else(|| S::from_u64(0)),
+                .map(|&id| self.engine.read(id))
+                .unwrap_or_else(|| u128::from_u64(0)),
             ast::Expr::Unary { op, rhs, .. } => {
                 let a = self.eval(rhs);
                 match op {
-                    ast::UnOp::Not => S::from_u64(a.is_zero() as u64),
+                    ast::UnOp::Not => u128::from_u64(a.is_zero() as u64),
                     ast::UnOp::Neg => a.wrapping_neg(),
                 }
             }
@@ -919,7 +927,7 @@ impl<S: Slot> Testbench<'_, S> {
                 if matches!(lower_ast_binop(*op), BinOp::Eq | BinOp::Ne) {
                     if let Some(eq) = self.string_eq(lhs, rhs) {
                         let v = if matches!(lower_ast_binop(*op), BinOp::Eq) { eq } else { !eq };
-                        return S::from_u64(v as u64);
+                        return u128::from_u64(v as u64);
                     }
                 }
                 // A character literal reads through its counterpart's type:
@@ -935,22 +943,22 @@ impl<S: Slot> Testbench<'_, S> {
                     let a = self.eval_real(lhs);
                     let b = self.eval_real(rhs);
                     return match lower_ast_binop(*op) {
-                        BinOp::Add => S::from_u64((a + b).to_bits()),
-                        BinOp::Sub => S::from_u64((a - b).to_bits()),
-                        BinOp::Mul => S::from_u64((a * b).to_bits()),
-                        BinOp::Div => S::from_u64((a / b).to_bits()),
-                        BinOp::Eq => S::from_u64((a == b) as u64),
-                        BinOp::Ne => S::from_u64((a != b) as u64),
-                        BinOp::Lt => S::from_u64((a < b) as u64),
-                        BinOp::Le => S::from_u64((a <= b) as u64),
-                        BinOp::Gt => S::from_u64((a > b) as u64),
-                        BinOp::Ge => S::from_u64((a >= b) as u64),
-                        other => apply_binop(other, S::from_u64(a.to_bits()), S::from_u64(b.to_bits())),
+                        BinOp::Add => u128::from_u64((a + b).to_bits()),
+                        BinOp::Sub => u128::from_u64((a - b).to_bits()),
+                        BinOp::Mul => u128::from_u64((a * b).to_bits()),
+                        BinOp::Div => u128::from_u64((a / b).to_bits()),
+                        BinOp::Eq => u128::from_u64((a == b) as u64),
+                        BinOp::Ne => u128::from_u64((a != b) as u64),
+                        BinOp::Lt => u128::from_u64((a < b) as u64),
+                        BinOp::Le => u128::from_u64((a <= b) as u64),
+                        BinOp::Gt => u128::from_u64((a > b) as u64),
+                        BinOp::Ge => u128::from_u64((a >= b) as u64),
+                        other => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
                     };
                 }
                 apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
             }
-            _ => S::from_u64(0),
+            _ => u128::from_u64(0),
         }
     }
 
@@ -992,7 +1000,7 @@ impl<S: Slot> Testbench<'_, S> {
                 let b = self.char_array(rhs)?;
                 return Some(
                     a.len() == b.len()
-                        && a.iter().zip(&b).all(|(&x, &y)| self.sim.read(x) == self.sim.read(y)),
+                        && a.iter().zip(&b).all(|(&x, &y)| self.engine.read(x) == self.engine.read(y)),
                 );
             }
         };
@@ -1001,7 +1009,7 @@ impl<S: Slot> Testbench<'_, S> {
                 && arr
                     .iter()
                     .zip(&chars)
-                    .all(|(&id, &c)| self.sim.read(id) == c as u32 as u64),
+                    .all(|(&id, &c)| self.engine.read(id) == c as u32 as u128),
         )
     }
 
@@ -1009,15 +1017,15 @@ impl<S: Slot> Testbench<'_, S> {
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
         expr_path(e)
             .and_then(|p| self.map.get(&p))
-            .map(|&id| self.sim.design.signals[id.0 as usize].char)
+            .map(|&id| self.engine.design().signals[id.0 as usize].char)
             .unwrap_or(false)
     }
 
     /// A stimulus operand in a `Char` comparison: literals are Unicode code
     /// points, signals read their slots.
-    fn eval_char(&self, e: &ast::Expr) -> S {
+    fn eval_char(&self, e: &ast::Expr) -> u128 {
         match e {
-            ast::Expr::LogicLit { ch, .. } => S::from_u64(*ch as u32 as u64),
+            ast::Expr::LogicLit { ch, .. } => u128::from_u64(*ch as u32 as u64),
             _ => self.eval(e),
         }
     }
@@ -1026,7 +1034,7 @@ impl<S: Slot> Testbench<'_, S> {
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
         expr_path(e)
             .and_then(|p| self.map.get(&p))
-            .map(|&id| self.sim.design.signals[id.0 as usize].real)
+            .map(|&id| self.engine.design().signals[id.0 as usize].real)
             .unwrap_or(false)
     }
 
