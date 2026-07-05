@@ -95,11 +95,14 @@ enum Command {
     },
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
-    /// Compile the design to a native object (the DUT, `sx_*` ABI). Like
-    /// `cargo build` — it compiles the project but runs nothing.
+    /// Compile a top-level design to a native object (the DUT, `sx_*` ABI).
+    /// Like `rustc` compiling a crate — builds one module setup, runs nothing.
     #[cfg(feature = "llvm")]
     Build {
         file: PathBuf,
+        /// The top entity to build (default: the single `#[top]` entity).
+        #[arg(long)]
+        top: Option<String>,
         /// Output object path (default: `<file>.o`).
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -153,7 +156,9 @@ fn main() -> ExitCode {
         }
         Command::Ir { file } => cmd_ir(&file, &std_root),
         #[cfg(feature = "llvm")]
-        Command::Build { file, out } => cmd_build(&file, &std_root, out.as_deref()),
+        Command::Build { file, top, out } => {
+            cmd_build(&file, &std_root, top.as_deref(), out.as_deref())
+        }
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
@@ -337,35 +342,84 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     }
 }
 
-/// `siox build`: compile the design to a native object (the DUT, `sx_*` ABI).
-/// Like `cargo build` — compiles the project, runs nothing.
+/// `sioxc build`: compile one top-level design to a native object (the DUT,
+/// `sx_*` ABI). The top is `--top <Entity>` or the single `#[top]` entity;
+/// only that top and its instantiated children are built (no testbenches).
 #[cfg(feature = "llvm")]
-fn cmd_build(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
+fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
     };
     let modules = sem.fe.modules.as_slice();
-    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+
+    let top = match resolve_top(modules, top) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("siox build: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let hier = siox_elab::elaborate_top(modules, &sem.typed, &mut sem.fe.sink, &top);
+    if hier.roots.is_empty() {
+        eprintln!("siox build: no entity named `{top}`");
+        return ExitCode::FAILURE;
+    }
     let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
     let obj = out.map(|p| p.to_path_buf()).unwrap_or_else(|| path.with_extension("o"));
+    if let Some(s) = design.signals.iter().find(|s| s.width == 0) {
+        eprintln!(
+            "siox build: `{}` has an unresolved width — `{top}` is parametric; \
+             build a concrete top (or a wrapper that fixes its parameters)",
+            s.path
+        );
+        return ExitCode::FAILURE;
+    }
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
         eprintln!("siox build: signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width);
         return ExitCode::FAILURE;
     }
     match siox_llvm::emit_object(&design, &obj) {
         Ok(()) => {
-            eprintln!("compiled {} ({} signals)", obj.display(), design.signals.len());
+            eprintln!("compiled `{top}` -> {} ({} signals)", obj.display(), design.signals.len());
             ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("siox build: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Pick the top entity to build: an explicit `--top`, else the single
+/// `#[top]`-attributed entity. Ambiguity or absence is an error.
+#[cfg(feature = "llvm")]
+fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, String> {
+    if let Some(t) = explicit {
+        return Ok(t.to_string());
+    }
+    let tops: Vec<&str> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|it| match it {
+            Item::Entity(e)
+                if e.attrs.iter().any(|a| {
+                    a.name.segments.last().map(|s| s.text.as_str()) == Some("top")
+                }) =>
+            {
+                Some(e.name.text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    match tops.as_slice() {
+        [t] => Ok(t.to_string()),
+        [] => Err("no #[top] entity; name one with --top <Entity>".into()),
+        _ => Err(format!("multiple #[top] entities ({}); pick one with --top", tops.join(", "))),
     }
 }
 

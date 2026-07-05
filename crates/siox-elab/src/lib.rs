@@ -151,7 +151,24 @@ impl Hierarchy {
 }
 
 /// Elaborate starting from every `#[top]` / `#[test]` entity.
-pub fn elaborate(modules: &[Module], _typed: &Typed, sink: &mut DiagnosticSink) -> Hierarchy {
+pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -> Hierarchy {
+    elaborate_roots(modules, typed, sink, |ent| is_root(ent))
+}
+
+/// Elaborate rooted at a single named entity — for `sioxc build`, which builds
+/// one top-level module setup (not the testbenches). Lowering only lowers
+/// entities that appear in the hierarchy, so this yields just the top and its
+/// instantiated children. `roots` is empty if the entity isn't found.
+pub fn elaborate_top(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink, top: &str) -> Hierarchy {
+    elaborate_roots(modules, typed, sink, |ent| ent.name.text == top)
+}
+
+fn elaborate_roots(
+    modules: &[Module],
+    _typed: &Typed,
+    sink: &mut DiagnosticSink,
+    is_selected: impl Fn(&EntityDecl) -> bool,
+) -> Hierarchy {
     let mut e = Elaborator {
         sink,
         entities: HashMap::new(),
@@ -164,7 +181,7 @@ pub fn elaborate(modules: &[Module], _typed: &Typed, sink: &mut DiagnosticSink) 
     for m in modules {
         for item in &m.items {
             if let Item::Entity(ent) = item {
-                if is_root(ent) {
+                if is_selected(ent) {
                     let params = ent
                         .params
                         .params
