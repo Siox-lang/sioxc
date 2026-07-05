@@ -116,11 +116,14 @@ uint64_t sx_time(void);
 
 ## Staging
 
-- **B0 — IR hardening** (shared with the interpreter): defined semantics
-  codegen can trust — div-by-zero = 0, X/Z as the 2-bit enum encoding,
-  interim signedness rules for `int[N]` (pinned per op even though the type
-  is slated for std softcoding), an IR validator (widths known, ids in
-  range, no `Unknown` reaching a backend).
+- **B0 — IR hardening** (shared with the interpreter): **validator DONE** —
+  `Design::validate()` flags out-of-range signal ids, `Unknown` (unlowered)
+  expressions, unknown widths on *referenced* signals, and malformed slices;
+  the emitter runs it as a pre-codegen gate (clear error, not bad LLVM).
+  Div-by-zero = 0 is settled (both engines + the codegen guard). **Still
+  open (needs a decision):** `int[N]` signedness — both engines currently
+  treat everything as unsigned words, so they agree; formalizing signed
+  compare/shift/divide is a semantics call for the user.
 - **B1 — process extraction** in `siox-ir`: name each driver/event block as
   a process, compute its sensitivity set (read signals) and write set.
   The interpreter can adopt sensitivity-based dispatch immediately —

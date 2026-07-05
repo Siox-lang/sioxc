@@ -1390,6 +1390,35 @@ fn dedup(v: &mut Vec<SignalId>) {
     v.retain(|id| seen.insert(*id));
 }
 
+/// Validation walk over an expression (see [`Design::validate`]).
+fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
+    match e {
+        Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => {
+            if id.0 >= n {
+                issues.push(format!("{ctx}: signal id {} out of range (n={n})", id.0));
+            }
+        }
+        Expr::Unknown => issues.push(format!("{ctx}: contains an Unknown (unlowered) expression")),
+        Expr::Unary { rhs, .. } => check_expr(rhs, n, issues, ctx),
+        Expr::Binary { lhs, rhs, .. } => {
+            check_expr(lhs, n, issues, ctx);
+            check_expr(rhs, n, issues, ctx);
+        }
+        Expr::Slice { base, hi, lo } => {
+            if lo > hi {
+                issues.push(format!("{ctx}: slice bounds lo {lo} > hi {hi}"));
+            }
+            check_expr(base, n, issues, ctx);
+        }
+        Expr::Select { cond, then, els } => {
+            check_expr(cond, n, issues, ctx);
+            check_expr(then, n, issues, ctx);
+            check_expr(els, n, issues, ctx);
+        }
+        Expr::Const(_) | Expr::Real(_) | Expr::Logic(_) => {}
+    }
+}
+
 /// A unit of behaviour the scheduler dispatches, with its **sensitivity**
 /// (the signals it reads) and **write set** (the signals it drives). This is
 /// the process view the LLVM backend compiles and the interpreter dispatches
@@ -1414,6 +1443,72 @@ pub enum ProcessKind {
 }
 
 impl Design {
+    /// Check the IR is well-formed enough for a backend to compile: signal
+    /// ids in range, no `Unknown` (unlowered) expressions, concrete widths,
+    /// and valid slice bounds. Returns a list of problems — empty means the
+    /// design is safe to hand to codegen. Pure; callers decide how to react.
+    pub fn validate(&self) -> Vec<String> {
+        let n = self.signals.len() as u32;
+        let mut issues = Vec::new();
+
+        // Signals codegen actually touches (driven or read). An unreferenced
+        // width-0 signal — e.g. an instance-binding `let` placeholder — is
+        // harmless, so only flag unknown widths on referenced signals.
+        let mut referenced: std::collections::HashSet<SignalId> = std::collections::HashSet::new();
+        let mut collect = |e: &Expr| {
+            let mut v = Vec::new();
+            read_set(e, &mut v);
+            v
+        };
+        for d in &self.drivers {
+            referenced.insert(d.target);
+            if let Some(c) = &d.cond {
+                referenced.extend(collect(c));
+            }
+            referenced.extend(collect(&d.expr));
+        }
+        for eb in &self.event_blocks {
+            referenced.extend(collect(&eb.condition));
+            for u in &eb.updates {
+                referenced.insert(u.target);
+                if let Some(c) = &u.cond {
+                    referenced.extend(collect(c));
+                }
+                referenced.extend(collect(&u.expr));
+            }
+        }
+        for (i, s) in self.signals.iter().enumerate() {
+            if s.width == 0 && referenced.contains(&SignalId(i as u32)) {
+                issues.push(format!("signal `{}` has unknown width (0)", s.path));
+            }
+        }
+        let target = |id: SignalId, what: &str, issues: &mut Vec<String>| {
+            if id.0 >= n {
+                issues.push(format!("{what}: target signal id {} out of range (n={n})", id.0));
+            }
+        };
+        for (di, d) in self.drivers.iter().enumerate() {
+            let ctx = format!("driver {di}");
+            target(d.target, &ctx, &mut issues);
+            if let Some(c) = &d.cond {
+                check_expr(c, n, &mut issues, &format!("{ctx} cond"));
+            }
+            check_expr(&d.expr, n, &mut issues, &format!("{ctx} expr"));
+        }
+        for (bi, eb) in self.event_blocks.iter().enumerate() {
+            check_expr(&eb.condition, n, &mut issues, &format!("event {bi} cond"));
+            for (ui, u) in eb.updates.iter().enumerate() {
+                let ctx = format!("event {bi} update {ui}");
+                target(u.target, &ctx, &mut issues);
+                if let Some(c) = &u.cond {
+                    check_expr(c, n, &mut issues, &format!("{ctx} cond"));
+                }
+                check_expr(&u.expr, n, &mut issues, &format!("{ctx} expr"));
+            }
+        }
+        issues
+    }
+
     /// The process decomposition: one combinational process per driven signal
     /// (grouping its source-ordered drivers) and one per event block, each
     /// with its sensitivity and write set. Combinational targets keep their
@@ -1873,6 +1968,29 @@ mod tests {
         // One event block (clk::rising) with two next-state updates.
         assert_eq!(d.event_blocks.len(), 1);
         assert_eq!(d.event_blocks[0].updates.len(), 2);
+    }
+
+    #[test]
+    fn validate_accepts_good_and_flags_bad_ir() {
+        // A lowered counter is well-formed.
+        assert!(lower_src(COUNTER).validate().is_empty());
+
+        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false };
+        // Out-of-range signal id, an Unknown, a bad slice, and a width-0 signal.
+        let bad = Design {
+            signals: vec![sig(0)], // width 0 -> flagged
+            drivers: vec![Driver {
+                target: SignalId(9), // out of range
+                cond: Some(Expr::Unknown),
+                expr: Expr::Slice { base: Box::new(Expr::Current(SignalId(0))), hi: 1, lo: 3 },
+            }],
+            event_blocks: vec![],
+        };
+        let issues = bad.validate();
+        assert!(issues.iter().any(|i| i.contains("unknown width")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.contains("out of range")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.contains("Unknown")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.contains("slice bounds")), "{issues:?}");
     }
 
     #[test]

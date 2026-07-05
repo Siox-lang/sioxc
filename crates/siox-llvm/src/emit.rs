@@ -21,6 +21,12 @@ pub fn emit_module_ir(design: &Design) -> String {
 /// Build and verify the LLVM module for `design` in `ctx`. Shared by the
 /// textual emitter and the JIT.
 pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<'ctx> {
+    // Reject IR a backend can't compile (bad ids, Unknown, unknown widths)
+    // with a clear message rather than emitting malformed LLVM (B0).
+    let issues = design.validate();
+    if !issues.is_empty() {
+        panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
+    }
     let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
