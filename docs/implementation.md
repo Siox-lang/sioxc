@@ -20,9 +20,10 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
-| `siox-ir`      | 6    | 🟢 partial | language-neutral IR; lowers behaviour to drivers + event blocks; `siox ir` |
-| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator (Stage 7) + `#[test]` runner with `assert!` (Stage 8) |
+| `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; process decomposition + validator for codegen; `siox ir` |
+| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator with event-driven dispatch (Stage 7) + `#[test]` runner with `assert!` (Stage 8); the differential oracle |
 | `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run; `siox sim --wave` |
+| `siox-llvm`    | B    | 🟢 partial | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, and AOT native object; differentially verified vs. the interpreter |
 | `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`/`test`/`sim` (incl. `sim --wave` VCD) |
 
 ## Stage-by-stage
@@ -211,12 +212,26 @@ Stage 11 stdlib, and deeper per-stage coverage.
 Do not start analogue (Phase 2) until the digital simulator is stable enough to
 support tests, clocks, events, and waveforms.
 
-Beyond Phase 1 stages: the **LLVM backend** is planned in
-[notes/llvm-backend.md](notes/llvm-backend.md): bitcode generation from
-*processes* (drivers/event blocks with sensitivity sets) run by a runtime
-kernel, staged B0–B5 with the interpreter as the differential-testing
-oracle. Type-level optimization of `uint[]`/`int[]` (exact-width `iN`) is
-deliberately later — those types are slated to be softcoded by std.
+Beyond Phase 1 stages: the **LLVM backend** (`siox-llvm`, inkwell behind the
+`llvm` cargo feature) is designed in
+[notes/llvm-backend.md](notes/llvm-backend.md) and largely built:
+
+- **B0 validator** 🟢 — `Design::validate` gates codegen against bad ids /
+  `Unknown` / unknown widths / bad slices. (`int[N]` signedness still open.)
+- **B1 process extraction** 🟢 — `Design::processes` (sensitivity + write
+  sets); the interpreter adopted event-driven dispatch.
+- **B2 emitter** 🟢 — combinational + sequential codegen (full delta cycle);
+  `Expr`→builder 1:1; `module.verify()`-clean.
+- **B3 JIT** 🟢 — `with_jit` runs the compiled design in-process.
+- **B4 differential harness** 🟢 — JIT matches the interpreter oracle
+  signal-for-signal across the whole expression surface (10 designs).
+- **B5 AOT** 🟡 — `emit_object` writes a native `.o` that links+runs; the
+  `siox build` CLI + compiled testbench (B5.1) remain.
+
+The default `cargo build` stays LLVM-free (feature-gated); the interpreter
+is the differential oracle. Type-level optimization of `uint[]`/`int[]`
+(exact-width `iN`) is deliberately later — those types are slated to be
+softcoded by std.
 
 ## Phase 1 "done" checklist (spec §6)
 

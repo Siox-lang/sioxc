@@ -31,12 +31,16 @@ flowchart TD
     RES -->|siox-types| TY[Typed]
     TY -->|siox-elab| HIER[Hierarchy]
     HIER -->|siox-ir| IR[Design]
-    IR -->|siox-sim| SIM["results + tests"]
+    IR -->|siox-sim| SIM["results + tests (interpreter)"]
+    IR -->|siox-llvm| NAT["JIT / native object"]
     SIM -->|siox-wave| VCD[VCD waveforms]
 ```
 
 `siox-diag` (spans, diagnostics, source map) underpins every stage, and
 `siox-cli` is the `siox` binary that wires the stages together per subcommand.
+`siox-llvm` (behind the `llvm` feature) is an alternative consumer of the same
+`Design` IR — it JIT-runs or AOT-compiles designs to native code, verified
+against the interpreter.
 
 ## Current status (summary)
 
@@ -45,6 +49,9 @@ elaborate → digital IR → delta-cycle simulation with `#[test]` discovery,
 assertions, and VCD waveforms. The standard library loads from `std/` as real
 source ([std.md](std.md)) — including operator overloading, literal suffixes
 (`10ns`, `5i`), and four-value `Logic` truth tables defined as library code.
+A **compiled backend** (`siox-llvm`, inkwell behind the `llvm` feature) also
+JIT-runs designs and emits native object files, verified bit-for-bit against
+the interpreter ([notes/llvm-backend.md](notes/llvm-backend.md)).
 Remaining work is gap-filling: Stage 10 lints, vector operators in std, and
 deeper coverage. See [implementation.md](implementation.md) per stage.
 

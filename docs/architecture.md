@@ -11,9 +11,14 @@ flowchart LR
         direction LR
         SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir] --> SI[siox-sim] --> WA[siox-wave]
     end
+    IR --> LL[siox-llvm]
     DIAG[siox-diag] -. used by all .-> pipeline
     CLI[siox-cli] == drives ==> pipeline
 ```
+
+`siox-llvm` (behind the `llvm` cargo feature) is an alternative consumer of the
+`siox-ir` `Design`: it emits LLVM, JIT-runs, or AOT-compiles the design to
+native code, with the `siox-sim` interpreter as its differential oracle.
 
 **Layering rule:** a crate may depend only on the crates above it in this list
 (plus `siox-diag`). Do not introduce upward or sideways dependencies.
@@ -28,8 +33,9 @@ flowchart LR
 | `siox-types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
 | `siox-elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
 | `siox-ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
-| `siox-sim`     | 7–8  | Event-driven delta-cycle `Simulator`; `#[test]` discovery, stimulus, assertions. |
+| `siox-sim`     | 7–8  | Event-driven delta-cycle `Simulator`; `#[test]` discovery, stimulus, assertions. The compiled backend's differential oracle. |
 | `siox-wave`    | 9    | `Trace` recording + VCD export (FST later). |
+| `siox-llvm`    | B    | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; verified vs. `siox-sim`. |
 | `siox-cli`     | 12   | The `siox` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
 
 Each crate's `lib.rs` opens with a doc-comment summarising its responsibility
