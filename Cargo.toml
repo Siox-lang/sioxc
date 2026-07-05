@@ -10,7 +10,7 @@ members = [
     "crates/siox-llvm",
     "crates/siox-sim",
     "crates/siox-wave",
-    "crates/siox-cli",
+    "crates/sioxc",
 ]
 
 [workspace.package]

@@ -37,7 +37,7 @@ flowchart TD
 ```
 
 `siox-diag` (spans, diagnostics, source map) underpins every stage, and
-`siox-cli` is the `siox` binary that wires the stages together per subcommand.
+`sioxc` is the binary that wires the stages together per subcommand.
 `siox-llvm` (behind the `llvm` feature) is an alternative consumer of the same
 `Design` IR — it JIT-runs or AOT-compiles designs to native code, verified
 against the interpreter.
@@ -62,10 +62,10 @@ cargo build                       # build the workspace
 cargo test                        # run all tests
 cargo test -p siox-syntax         # tests for one crate
 
-cargo run -p siox-cli -- <cmd> <file>
+cargo run -p sioxc -- <cmd> <file>
 ```
 
-CLI commands (run as `siox <cmd>`):
+CLI commands (run as `sioxc <cmd>`):
 
 | Command | Status | Does |
 | ------- | ------ | ---- |

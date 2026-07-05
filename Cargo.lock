@@ -231,22 +231,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "siox-cli"
-version = "0.0.1"
-dependencies = [
- "clap",
- "siox-diag",
- "siox-elab",
- "siox-ir",
- "siox-llvm",
- "siox-resolve",
- "siox-sim",
- "siox-syntax",
- "siox-types",
- "siox-wave",
-]
-
-[[package]]
 name = "siox-diag"
 version = "0.0.1"
 
@@ -327,6 +311,22 @@ version = "0.0.1"
 dependencies = [
  "siox-ir",
  "siox-sim",
+]
+
+[[package]]
+name = "sioxc"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "siox-diag",
+ "siox-elab",
+ "siox-ir",
+ "siox-llvm",
+ "siox-resolve",
+ "siox-sim",
+ "siox-syntax",
+ "siox-types",
+ "siox-wave",
 ]
 
 [[package]]

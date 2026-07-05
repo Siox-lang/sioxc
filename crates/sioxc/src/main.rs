@@ -1,4 +1,4 @@
-//! `siox` command-line driver (spec Stage 12).
+//! `sioxc` — the siox compiler driver (spec Stage 12).
 //!
 //! Pipeline wiring lives here: each subcommand runs the compiler up to the
 //! stage it needs and prints the result. With `--verbose` (and always for the
@@ -7,15 +7,15 @@
 //!
 //! Commands (spec Stage 12):
 //! ```text
-//! siox check  <file>     # parse + resolve + typecheck, report success/errors
-//! siox parse  <file>     # parse, print canonical source
-//! siox build  <file>     # compile the design to a native object (no run)
-//! siox sim    <file>     # elaborate + lower + simulate (--wave <out.vcd>)
-//! siox test   <path>     # build and run #[test] entities (--no-run to just build)
-//! siox ast    <file>     # debug: pretty-printed AST
-//! siox ir     <file>     # debug: normalized digital IR
-//! siox tree   <file>     # debug: elaborated instance hierarchy
-//! siox tokens <file>     # debug: raw lexer token stream
+//! sioxc check  <file>     # parse + resolve + typecheck, report success/errors
+//! sioxc parse  <file>     # parse, print canonical source
+//! sioxc build  <file>     # compile the design to a native object (no run)
+//! sioxc sim    <file>     # elaborate + lower + simulate (--wave <out.vcd>)
+//! sioxc test   <path>     # build and run #[test] entities (--no-run to just build)
+//! sioxc ast    <file>     # debug: pretty-printed AST
+//! sioxc ir     <file>     # debug: normalized digital IR
+//! sioxc tree   <file>     # debug: elaborated instance hierarchy
+//! sioxc tokens <file>     # debug: raw lexer token stream
 //! ```
 //! Exit code is nonzero on failed checks/tests.
 
@@ -32,7 +32,7 @@ use siox_syntax::token::{Token, TokenKind};
 use siox_syntax::{lexer::Lexer, parser, pretty};
 
 #[derive(Parser)]
-#[command(name = "siox", version, about = "The siox digital HDL toolchain (Phase 1)")]
+#[command(name = "sioxc", version, about = "The siox compiler (Phase 1)")]
 struct Cli {
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]

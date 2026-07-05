@@ -24,7 +24,7 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator with event-driven dispatch (Stage 7) + `#[test]` runner with `assert!` (Stage 8); the differential oracle |
 | `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run; `siox sim --wave` |
 | `siox-llvm`    | B    | 🟢 partial | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, and AOT native object; differentially verified vs. the interpreter |
-| `siox-cli`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`/`test`/`sim` (incl. `sim --wave` VCD) |
+| `sioxc`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`/`test`/`sim` (incl. `sim --wave` VCD) |
 
 ## Stage-by-stage
 
@@ -183,7 +183,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   as a shim until operator overloading carries their semantics in source.
   `examples/std_test.siox` exercises every module through real imports.
 
-### Stage 12 — CLI & workflow (`siox-cli`) — 🟢
+### Stage 12 — CLI & workflow (`sioxc`) — 🟢
 - **Acceptance:** `siox check` succeeds; `siox sim --wave` produces a waveform;
   `siox test` runs all; non-zero exit on failure.
 - **Status:** `tokens`/`parse`/`ast`/`check`/`tree` work; `sim`/`test`/`ir` run

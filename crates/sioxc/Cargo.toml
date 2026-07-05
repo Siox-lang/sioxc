@@ -1,5 +1,5 @@
 [package]
-name = "siox-cli"
+name = "sioxc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "siox"
+name = "sioxc"
 path = "src/main.rs"
 
 [dependencies]

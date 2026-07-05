@@ -10,7 +10,7 @@ fn test_no_run_builds_a_runnable_binary() {
         eprintln!("skipping: clang not found");
         return;
     }
-    let siox = env!("CARGO_BIN_EXE_siox");
+    let siox = env!("CARGO_BIN_EXE_sioxc");
     let out = std::env::temp_dir().join(format!("siox_counter_{}", std::process::id()));
 
     // Build from the repo root so `./std` resolves.

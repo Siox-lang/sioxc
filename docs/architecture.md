@@ -13,7 +13,7 @@ flowchart LR
     end
     IR --> LL[siox-llvm]
     DIAG[siox-diag] -. used by all .-> pipeline
-    CLI[siox-cli] == drives ==> pipeline
+    CLI[sioxc] == drives ==> pipeline
 ```
 
 `siox-llvm` (behind the `llvm` cargo feature) is an alternative consumer of the
@@ -36,7 +36,7 @@ native code, with the `siox-sim` interpreter as its differential oracle.
 | `siox-sim`     | 7–8  | Event-driven delta-cycle `Simulator`; `#[test]` discovery, stimulus, assertions. The compiled backend's differential oracle. |
 | `siox-wave`    | 9    | `Trace` recording + VCD export (FST later). |
 | `siox-llvm`    | B    | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; verified vs. `siox-sim`. |
-| `siox-cli`     | 12   | The `siox` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
+| `sioxc`     | 12   | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
 
 Each crate's `lib.rs` opens with a doc-comment summarising its responsibility
 and the spec acceptance criteria — read it first when entering a crate.
@@ -113,7 +113,7 @@ until something needs precision beyond f64.
 
 ## The CLI as the pipeline driver
 
-`siox-cli` is where the stages are composed. It loads a file into a
+`sioxc` is where the stages are composed. It loads a file into a
 `SourceMap`, runs the stages a subcommand needs on a shared `DiagnosticSink`,
 narrates each stage to stderr (more with `-v`), prints the requested artifact to
 stdout, and exits non-zero if any errors were reported. This makes the CLI the
