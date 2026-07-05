@@ -209,7 +209,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 staged.push((u.target, guard, val));
             }
         }
-        let mut committed = !staged.is_empty();
+        let committed = !staged.is_empty();
         for (target, guard, val) in staged {
             let prev = self.load("cur", target);
             let next = self.builder.build_select(guard, val, prev, "next").unwrap().into_int_value();
@@ -220,9 +220,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // 5. re-settle combinational after commits.
         if committed {
             self.emit_comb_pass();
-            committed = false;
         }
-        let _ = committed;
 
         // 6. roll old <- cur; clear event.
         for i in 0..self.n {
