@@ -16,10 +16,14 @@
 //! the emitter with `--features llvm`.
 
 #[cfg(feature = "llvm")]
+mod aot;
+#[cfg(feature = "llvm")]
 mod emit;
 #[cfg(feature = "llvm")]
 mod jit;
 
+#[cfg(feature = "llvm")]
+pub use aot::emit_object;
 #[cfg(feature = "llvm")]
 pub use emit::emit_module_ir;
 #[cfg(feature = "llvm")]

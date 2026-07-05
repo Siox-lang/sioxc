@@ -147,8 +147,11 @@ uint64_t sx_time(void);
 - **B4 — differential harness**: every `#[test]` entity and example runs
   under the interpreter (oracle) and the JIT; results and VCD streams must
   match bit-for-bit. This is what lets the interpreter later step back.
-- **B5 — AOT `siox build`**: `TargetMachine` object + runtime `main` from
-  the stimulus, linked to a single native binary.
+- **B5 — AOT `siox build`**: **object emission DONE** — `emit_object` writes
+  a native `.o` via `TargetMachine` (host cpu/features) exporting the `sx_*`
+  ABI; a linked C `main` runs it as a native binary (adder computes + wraps,
+  verified via clang link+run). **Follow-on (B5.1):** generate the runtime
+  `main` from the testbench stimulus and wire the `siox build` CLI command.
 - **After B4 passes**: flip the `llvm` feature default-on; the interpreter
   becomes an optional reference rather than the execution path.
 - **Later (optimization, in either order):**
