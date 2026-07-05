@@ -54,6 +54,100 @@ fn assert_agree(design: &Design, inputs: &[(&str, u64)]) {
     });
 }
 
+/// A stimulus step: drive these `(signal, value)` pairs, then settle.
+type Step<'a> = &'a [(&'a str, u64)];
+
+/// Run the same sequence of drive-then-settle steps on both engines, and after
+/// *each* step assert every signal agrees. Exercises sequential state (event
+/// blocks carry values across steps).
+fn assert_agree_seq(design: &Design, steps: &[Step]) {
+    let mut sim: Simulator = Simulator::new(design);
+    siox_llvm::with_jit(design, |jit| {
+        for (n, step) in steps.iter().enumerate() {
+            for &(path, v) in *step {
+                let s = id(design, path);
+                sim.set(s, v);
+                jit.set(s.0, v);
+            }
+            sim.settle();
+            jit.settle();
+            for i in 0..design.signals.len() {
+                let want = sim.read(SignalId(i as u32));
+                let got = jit.read(i as u32);
+                assert_eq!(
+                    got, want,
+                    "step {n}: signal {i} ({}) disagrees: jit={got} oracle={want}",
+                    design.signals[i].path
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn counter_agrees_across_clock_edges() {
+    let d = lower(
+        "module m;\n\
+         entity Counter { in clk: Clock; in rst: Logic; in en: Bit; out count: uint[8]; }\n\
+         impl Counter {\n\
+           let value: uint[8] = 0;\n\
+           if clk::rising {\n\
+             if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
+           }\n\
+           count = value;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let clk: Logic; let rst: Logic; let en: Bit; let count: uint[8];\n\
+           let dut = Counter { .clk, .rst, .en, .count };\n\
+         }\n",
+    );
+    // Reset high for one edge, then count several enabled cycles, then hold.
+    let mut steps: Vec<Vec<(&str, u64)>> = Vec::new();
+    steps.push(vec![("Counter.rst", 1), ("Counter.en", 1), ("Counter.clk", 0)]);
+    steps.push(vec![("Counter.clk", 1)]); // rising edge under reset -> 0
+    steps.push(vec![("Counter.rst", 0), ("Counter.clk", 0)]);
+    for _ in 0..5 {
+        steps.push(vec![("Counter.clk", 1)]); // rising: count++
+        steps.push(vec![("Counter.clk", 0)]);
+    }
+    // Disable and pulse: value should hold across edges.
+    steps.push(vec![("Counter.en", 0), ("Counter.clk", 1)]);
+    steps.push(vec![("Counter.clk", 0)]);
+    let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
+    assert_agree_seq(&d, &refs);
+}
+
+#[test]
+fn register_agrees_across_clock_edges() {
+    // A plain D flip-flop: unconditional next-state on the rising edge.
+    let d = lower(
+        "module m;\n\
+         entity Reg { in clk: Clock; in d: uint[8]; out q: uint[8]; }\n\
+         impl Reg {\n\
+           let s: uint[8] = 0;\n\
+           if clk::rising { s = d; }\n\
+           q = s;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let clk: Logic; let d: uint[8]; let q: uint[8];\n\
+           let dut = Reg { .clk, .d, .q };\n\
+         }\n",
+    );
+    let steps: Vec<Vec<(&str, u64)>> = vec![
+        vec![("Reg.d", 42), ("Reg.clk", 0)],
+        vec![("Reg.clk", 1)], // latch 42
+        vec![("Reg.clk", 0), ("Reg.d", 99)],
+        vec![("Reg.clk", 1)], // latch 99
+        vec![("Reg.d", 7)],   // no edge: q holds 99
+    ];
+    let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
+    assert_agree_seq(&d, &refs);
+}
+
 #[test]
 fn mux_agrees() {
     let d = lower(

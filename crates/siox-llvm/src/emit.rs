@@ -166,16 +166,80 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- sx_settle: combinational processes in dependency order -----------
 
+    /// Emit the whole delta cycle, mirroring `siox_sim::Simulator::settle`:
+    /// 1. event flags from stimulus (`cur != old`); 2. combinational settle;
+    /// 3+4. event blocks compute next-state from pre-commit values, then
+    /// commit; 5. re-settle combinational; 6. roll `old <- cur`, clear event.
     fn settle(&self) {
         let void = self.ctx.void_type();
         let f = self.module.add_function("sx_settle", void.fn_type(&[], false), None);
         self.builder.position_at_end(self.ctx.append_basic_block(f, "e"));
 
-        for pi in self.topo_order() {
-            let p = &self.comb()[pi];
-            self.emit_comb(p);
+        // 1. event[i] = (cur[i] != old[i]).
+        for i in 0..self.n {
+            let id = SignalId(i);
+            let ne = self.builder
+                .build_int_compare(IntPredicate::NE, self.load("cur", id), self.load("old", id), "ev")
+                .unwrap();
+            self.store("event", id, self.zext(ne));
+        }
+
+        // 2. combinational settle.
+        self.emit_comb_pass();
+
+        // 3+4. event blocks: next-state semantics (spec 3.13). Compute every
+        // update's guard and value from the *pre-commit* state first, then
+        // commit — so simultaneous updates don't see each other.
+        let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
+        for eb in &self.design.event_blocks {
+            let fired = self.as_i1(&eb.condition);
+            for u in &eb.updates {
+                let guard = match &u.cond {
+                    Some(c) => self.builder.build_and(fired, self.as_i1(c), "g").unwrap(),
+                    None => fired,
+                };
+                let w = self.design.signals[u.target.0 as usize].width;
+                let val = self.mask(self.emit(&u.expr), w);
+                staged.push((u.target, guard, val));
+            }
+        }
+        let mut committed = !staged.is_empty();
+        for (target, guard, val) in staged {
+            let prev = self.load("cur", target);
+            let next = self.builder.build_select(guard, val, prev, "next").unwrap().into_int_value();
+            self.store("cur", target, next);
+            self.mark_event(target, prev, next);
+        }
+
+        // 5. re-settle combinational after commits.
+        if committed {
+            self.emit_comb_pass();
+            committed = false;
+        }
+        let _ = committed;
+
+        // 6. roll old <- cur; clear event.
+        for i in 0..self.n {
+            let id = SignalId(i);
+            self.store("old", id, self.load("cur", id));
+            self.store("event", id, self.c(0));
         }
         self.builder.build_return(None).unwrap();
+    }
+
+    /// One combinational settle pass over the processes in dependency order.
+    fn emit_comb_pass(&self) {
+        let comb = self.comb();
+        for pi in self.topo_order() {
+            self.emit_comb(&comb[pi]);
+        }
+    }
+
+    /// `event[target] |= (next != prev)` — a change flags the signal.
+    fn mark_event(&self, target: SignalId, prev: IntValue<'ctx>, next: IntValue<'ctx>) {
+        let ch = self.builder.build_int_compare(IntPredicate::NE, next, prev, "ch").unwrap();
+        let ev = self.builder.build_or(self.load("event", target), self.zext(ch), "ev2").unwrap();
+        self.store("event", target, ev);
     }
 
     /// Combinational processes (target + source-ordered driver indices).
@@ -251,7 +315,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// (`value = cond ? expr : value`), mask, store to `cur`.
     fn emit_comb(&self, p: &(SignalId, Vec<usize>)) {
         let (target, drivers) = p;
-        let mut val = self.load("cur", *target);
+        let prev = self.load("cur", *target);
+        let mut val = prev;
         for &di in drivers {
             let d = &self.design.drivers[di];
             let e = self.emit(&d.expr);
@@ -264,7 +329,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             };
         }
         let w = self.design.signals[target.0 as usize].width;
-        self.store("cur", *target, self.mask(val, w));
+        let masked = self.mask(val, w);
+        self.store("cur", *target, masked);
+        self.mark_event(*target, prev, masked);
     }
 
     // --- expressions ------------------------------------------------------

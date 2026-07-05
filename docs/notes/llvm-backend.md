@@ -132,8 +132,12 @@ uint64_t sx_time(void);
   processes in topological (dependency) order. Full `Expr`->builder mapping
   (int/logic/float, slices, selects, div-by-zero guard). Verified against
   LLVM 22 with `module.verify()` + golden tests; default workspace build
-  stays LLVM-free. **Next increment (B2.1): sequential codegen** — event
-  blocks, `old`/`event`/next-state bookkeeping, comb fixpoint for cycles.
+  stays LLVM-free. **B2.1 sequential codegen DONE**: `sx_settle` now emits
+  the full delta cycle — event flags from stimulus, comb pass, event blocks
+  with compute-all-then-commit next-state (spec 3.13), re-settle, roll
+  `old<-cur`. Counter and register match the interpreter across clock edges
+  in the differential harness. (Combinational-cycle fixpoint iteration is
+  still single-pass; acyclic designs are exact.)
 - **B3 — JIT (`siox test --backend=llvm`)**: `create_jit_execution_engine`;
   the Rust test runner drives the JIT'd DUT via `sx_set/settle/read`. Same
   runner, assertions, and VCD tap — only the DUT engine swaps.
