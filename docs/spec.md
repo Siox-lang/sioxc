@@ -1678,13 +1678,32 @@ A test entity may instantiate a DUT and create simulation stimulus.
 
 Keep this small initially.
 
-Possible primitives:
+Primitives:
 
 ```siox
-wait 10.ns;
-tick(clk);
+wait 10.ns;                 // advance simulation time
+tick(clk);                  // one manual clock cycle (rise, half, fall, half)
 assert!(condition, "message");
 ```
+
+#### `await` and background clocks
+
+For edge/level-driven stimulus (and to mirror cocotb's async model), a
+testbench can start a free-running background **clock** and `await` on it:
+
+```siox
+clock(clk, 10ns);           // toggle clk every half period, forever
+await 10ns;                 // advance simulation time
+await clk::rising;          // wait for the next rising edge (::falling/::event)
+await count == 7;           // wait until a condition holds
+```
+
+`await`'s three forms are: a **duration** (advance time), an **edge**
+(`clk::rising`/`::falling`/`::event`), and a **condition** (any boolean). Edge
+and condition forms are driven by the background clocks — the scheduler steps
+the clocks until the trigger fires. `await` runs identically on the
+interpreter, the JIT, and the native `--no-run` binary. (`wait`/`tick` remain
+for straight-line, self-clocked stimulus.)
 
 Example:
 

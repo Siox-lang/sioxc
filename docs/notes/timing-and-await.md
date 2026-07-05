@@ -1,7 +1,10 @@
 # Timing, `await`, and cocotb (design note — proposal)
 
-Status: **proposed**, not yet implemented. Tracks tasks #34 (scheduler), #35
-(`await`), #36 (cocotb). This is a direction sketch, not frozen spec.
+Status: **`await` + background clocks implemented** (#35 done; interp, JIT, and
+native `--no-run` binary). What remains under #34 is a general event wheel with
+real wall-clock time in the *compiled* runtime and the VPI/GPI-shaped ABI for
+cocotb (#36, way later). Current scheduler is clock-driven stepping, not a full
+time wheel. Tracks #34/#35/#36.
 
 ## The gap
 
