@@ -149,6 +149,47 @@ fn register_agrees_across_clock_edges() {
 }
 
 #[test]
+fn fsm_agrees_across_clock_edges() {
+    // Enum-state machine: exercises an enum-typed sequential signal, `match`
+    // in an event block, and enum comparison — all at once.
+    let d = lower(
+        "module m;\n\
+         enum State { Idle, Run, Done }\n\
+         entity Fsm { in clk: Clock; in go: Bit; in fin: Bit; out active: Bool; }\n\
+         impl Fsm {\n\
+           let state: State = State::Idle;\n\
+           if clk::rising {\n\
+             match state {\n\
+               State::Idle => { if go { state = State::Run; } }\n\
+               State::Run => { if fin { state = State::Done; } }\n\
+               _ => { state = State::Idle; }\n\
+             }\n\
+           }\n\
+           active = state == State::Run;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let clk: Logic; let go: Bit; let fin: Bit; let active: Bool;\n\
+           let dut = Fsm { .clk, .go, .fin, .active };\n\
+         }\n",
+    );
+    let steps: Vec<Vec<(&str, u64)>> = vec![
+        vec![("Fsm.go", 0), ("Fsm.fin", 0), ("Fsm.clk", 0)],
+        vec![("Fsm.go", 1), ("Fsm.clk", 1)], // Idle -> Run
+        vec![("Fsm.clk", 0)],
+        vec![("Fsm.go", 0), ("Fsm.clk", 1)], // Run (fin=0, stays)
+        vec![("Fsm.clk", 0), ("Fsm.fin", 1)],
+        vec![("Fsm.clk", 1)], // Run -> Done
+        vec![("Fsm.clk", 0)],
+        vec![("Fsm.clk", 1)], // Done -> Idle
+        vec![("Fsm.clk", 0)],
+    ];
+    let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
+    assert_agree_seq(&d, &refs);
+}
+
+#[test]
 fn mux_agrees() {
     let d = lower(
         "module m;\n\
