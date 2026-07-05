@@ -83,7 +83,8 @@ instruction.
 
 ## Emission (inkwell)
 
-`inkwell = { version = "0.5", features = ["llvm18-0"], optional = true }`
+`inkwell = { version = "0.9.0", features = ["llvm22-1"], optional = true }`
+(match the feature to the local `llvm-config`; this box has LLVM 22.1.6)
 behind a `llvm` cargo feature. The emitter walks the process-extracted
 `Design` and builds one LLVM function per process plus a `settle` that runs
 the delta cycle (events → comb fixpoint → commit → roll). State is three
