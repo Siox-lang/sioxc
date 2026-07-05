@@ -21,6 +21,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+#[cfg(feature = "llvm")]
+mod build;
+
 use clap::{Parser, Subcommand};
 use siox_diag::{DiagnosticSink, Severity, SourceMap};
 use siox_syntax::ast::{Item, Module, Path as AstPath, UsingKind};
@@ -83,6 +86,14 @@ enum Command {
     },
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
+    /// Compile a design + its #[test] stimulus into a native simulator binary.
+    #[cfg(feature = "llvm")]
+    Build {
+        file: PathBuf,
+        /// Output executable path.
+        #[arg(short, long, default_value = "a.sim")]
+        out: PathBuf,
+    },
     /// Debug: print the LLVM IR emitted by the compiled backend.
     #[cfg(feature = "llvm")]
     EmitLlvm { file: PathBuf },
@@ -120,6 +131,8 @@ fn main() -> ExitCode {
         },
         Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend),
         Command::Ir { file } => cmd_ir(&file, &std_root),
+        #[cfg(feature = "llvm")]
+        Command::Build { file, out } => cmd_build(&file, &std_root, &out),
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
@@ -300,6 +313,33 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     } else {
         eprintln!("check ok");
         ExitCode::SUCCESS
+    }
+}
+
+/// `siox build`: compile the design + its `#[test]` stimulus into a native
+/// simulator binary via the LLVM backend + clang.
+#[cfg(feature = "llvm")]
+fn cmd_build(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let modules = sem.fe.modules.as_slice();
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        return ExitCode::FAILURE;
+    }
+    match build::build(modules, &hier, &design, out) {
+        Ok(()) => {
+            eprintln!("built {} (run it to execute the testbench)", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("siox build: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

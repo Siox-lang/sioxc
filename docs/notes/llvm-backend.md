@@ -152,11 +152,12 @@ uint64_t sx_time(void);
 - **B4 — differential harness**: every `#[test]` entity and example runs
   under the interpreter (oracle) and the JIT; results and VCD streams must
   match bit-for-bit. This is what lets the interpreter later step back.
-- **B5 — AOT `siox build`**: **object emission DONE** — `emit_object` writes
-  a native `.o` via `TargetMachine` (host cpu/features) exporting the `sx_*`
-  ABI; a linked C `main` runs it as a native binary (adder computes + wraps,
-  verified via clang link+run). **Follow-on (B5.1):** generate the runtime
-  `main` from the testbench stimulus and wire the `siox build` CLI command.
+- **B5 — AOT `siox build`**: **DONE**. `emit_object` writes a native `.o`
+  via `TargetMachine`; `siox build <file> -o <out>` translates the `#[test]`
+  stimulus to a C `main` driving the `sx_*` ABI, links with clang, and
+  produces a standalone ELF that runs the testbench and returns PASS/FAIL.
+  Verified: counter, register, mux, fsm all build + run + PASS. First cut is
+  integer/logic/bool; real/char/string testbenches error cleanly (follow-on).
 - **Flip default-on (DONE 2026-07-05)**: `llvm` is a default feature of
   siox-cli/siox-llvm, so LLVM is a default build dependency and `siox test`
   JIT-runs by default. The interpreter is kept as the reference oracle and
