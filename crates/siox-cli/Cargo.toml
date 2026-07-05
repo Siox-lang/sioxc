@@ -19,4 +19,11 @@ siox-elab.workspace = true
 siox-ir.workspace = true
 siox-sim.workspace = true
 siox-wave.workspace = true
+siox-llvm.workspace = true
 clap.workspace = true
+
+[features]
+default = []
+# Enable the LLVM backend commands (`siox emit-llvm`). Requires a matching
+# LLVM toolchain; the default `siox` binary builds without it.
+llvm = ["siox-llvm/llvm"]

@@ -77,6 +77,9 @@ enum Command {
     },
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
+    /// Debug: print the LLVM IR emitted by the compiled backend.
+    #[cfg(feature = "llvm")]
+    EmitLlvm { file: PathBuf },
     /// Debug: print the elaborated instance hierarchy.
     Tree { file: PathBuf },
     /// Debug: print the raw lexer token stream.
@@ -110,6 +113,8 @@ fn main() -> ExitCode {
         },
         Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot),
         Command::Ir { file } => cmd_ir(&file, &std_root),
+        #[cfg(feature = "llvm")]
+        Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
     }
 }
@@ -289,6 +294,41 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
         eprintln!("check ok");
         ExitCode::SUCCESS
     }
+}
+
+/// `siox emit-llvm`: run the pipeline through lowering and print the LLVM IR
+/// the compiled backend emits. IR to stdout; stage trace/diagnostics to stderr.
+#[cfg(feature = "llvm")]
+fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let modules = sem.fe.modules.as_slice();
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        return ExitCode::FAILURE;
+    }
+    // Report codegen-blocking IR (bad ids, Unknown, wide signals) cleanly
+    // rather than letting the emitter panic.
+    let mut issues = design.validate();
+    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+        issues.push(format!(
+            "signal `{}` is {} bits; the LLVM backend is 64-bit-word only",
+            s.path, s.width
+        ));
+    }
+    if !issues.is_empty() {
+        eprintln!("cannot emit LLVM:");
+        for i in &issues {
+            eprintln!("  - {i}");
+        }
+        return ExitCode::FAILURE;
+    }
+    print!("{}", siox_llvm::emit_module_ir(&design));
+    ExitCode::SUCCESS
 }
 
 /// `siox tree`: run the semantic pipeline, elaborate the instance hierarchy, and
