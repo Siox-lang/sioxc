@@ -44,7 +44,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
 
     // Header, one `int test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
-    prog.push_str("#include <stdint.h>\n#include <stdio.h>\n");
+    prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
     prog.push_str("extern void sx_reset(void);\n");
     prog.push_str("extern void sx_set(uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
@@ -81,24 +81,31 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
 }
 
 /// The libtest-style `main` that runs each `test_<name>` and reports results.
+/// Takes an optional name-substring filter as `argv[1]`, like a rustc test
+/// binary (`./testbin <filter>`).
 fn gen_main(names: &[String]) -> String {
     let mut m = String::new();
-    m.push_str(&format!(
-        "int main(void) {{\n    printf(\"\\nrunning {} test{}\\n\");\n    int failed = 0;\n",
-        names.len(),
-        if names.len() == 1 { "" } else { "s" }
-    ));
+    m.push_str("int main(int argc, char **argv) {\n");
+    m.push_str("    const char *filter = argc > 1 ? argv[1] : 0;\n");
+    m.push_str("    int failed = 0, ran = 0, filtered = 0;\n");
+    // Count how many tests match, so the "running N tests" line is post-filter.
     for n in names {
         m.push_str(&format!(
-            "    if (test_{n}()) {{ printf(\"test {n} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
-             else printf(\"test {n} ... ok\\n\");\n"
+            "    if (!filter || strstr(\"{n}\", filter)) ran++; else filtered++;\n"
+        ));
+    }
+    m.push_str("    printf(\"\\nrunning %d test%s\\n\", ran, ran == 1 ? \"\" : \"s\");\n");
+    for n in names {
+        m.push_str(&format!(
+            "    if (!filter || strstr(\"{n}\", filter)) {{ \
+             if (test_{n}()) {{ printf(\"test {n} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
+             else printf(\"test {n} ... ok\\n\"); }}\n"
         ));
     }
     m.push_str(
-        "    printf(\"\\ntest result: %s. %d passed; %d failed\\n\",\n\
-         \x20          failed ? \"FAILED\" : \"ok\", (int)(",
+        "    printf(\"\\ntest result: %s. %d passed; %d failed; %d filtered out\\n\",\n\
+         \x20          failed ? \"FAILED\" : \"ok\", ran - failed, failed, filtered);\n",
     );
-    m.push_str(&format!("{}) - failed, failed);\n", names.len()));
     m.push_str("    return failed ? 1 : 0;\n}\n");
     m
 }
