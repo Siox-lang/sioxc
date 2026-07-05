@@ -9,8 +9,9 @@
 //! ```text
 //! siox check  <file>     # parse + resolve + typecheck, report success/errors
 //! siox parse  <file>     # parse, print canonical source
+//! siox build  <file>     # compile the design to a native object (no run)
 //! siox sim    <file>     # elaborate + lower + simulate (--wave <out.vcd>)
-//! siox test   <path>     # discover and run #[test] entities
+//! siox test   <path>     # build and run #[test] entities (--no-run to just build)
 //! siox ast    <file>     # debug: pretty-printed AST
 //! siox ir     <file>     # debug: normalized digital IR
 //! siox tree   <file>     # debug: elaborated instance hierarchy
@@ -72,11 +73,19 @@ enum Command {
         #[arg(long)]
         wave: Option<PathBuf>,
     },
-    /// Discover and run `#[test]` entities (optionally filtered by name).
+    /// Build and run `#[test]` entities (optionally filtered by name).
     Test {
         path: PathBuf,
         /// Run only test entities whose name contains this string.
         filter: Option<String>,
+        /// Compile the test into a native binary but do not run it.
+        #[cfg(feature = "llvm")]
+        #[arg(long)]
+        no_run: bool,
+        /// Output path for `--no-run` (default: `<file>.sim`).
+        #[cfg(feature = "llvm")]
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
     /// Debug: print the pretty-printed AST.
     Ast {
@@ -86,13 +95,14 @@ enum Command {
     },
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
-    /// Compile a design + its #[test] stimulus into a native simulator binary.
+    /// Compile the design to a native object (the DUT, `sx_*` ABI). Like
+    /// `cargo build` — it compiles the project but runs nothing.
     #[cfg(feature = "llvm")]
     Build {
         file: PathBuf,
-        /// Output executable path.
-        #[arg(short, long, default_value = "a.sim")]
-        out: PathBuf,
+        /// Output object path (default: `<file>.o`).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
     /// Debug: print the LLVM IR emitted by the compiled backend.
     #[cfg(feature = "llvm")]
@@ -129,10 +139,21 @@ fn main() -> ExitCode {
             Some(out) => cmd_wave(&file, &std_root, &out),
             None => cmd_test(&file, &std_root, None, &slot, &backend),
         },
-        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend),
+        #[cfg(feature = "llvm")]
+        Command::Test { path, filter, no_run, out } => {
+            if no_run {
+                cmd_test_no_run(&path, &std_root, out.as_deref())
+            } else {
+                cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend)
+            }
+        }
+        #[cfg(not(feature = "llvm"))]
+        Command::Test { path, filter } => {
+            cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend)
+        }
         Command::Ir { file } => cmd_ir(&file, &std_root),
         #[cfg(feature = "llvm")]
-        Command::Build { file, out } => cmd_build(&file, &std_root, &out),
+        Command::Build { file, out } => cmd_build(&file, &std_root, out.as_deref()),
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
@@ -316,10 +337,10 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     }
 }
 
-/// `siox build`: compile the design + its `#[test]` stimulus into a native
-/// simulator binary via the LLVM backend + clang.
+/// `siox build`: compile the design to a native object (the DUT, `sx_*` ABI).
+/// Like `cargo build` — compiles the project, runs nothing.
 #[cfg(feature = "llvm")]
-fn cmd_build(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
+fn cmd_build(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
@@ -331,13 +352,46 @@ fn cmd_build(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
-    match build::build(modules, &hier, &design, out) {
+    let obj = out.map(|p| p.to_path_buf()).unwrap_or_else(|| path.with_extension("o"));
+    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+        eprintln!("siox build: signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width);
+        return ExitCode::FAILURE;
+    }
+    match siox_llvm::emit_object(&design, &obj) {
         Ok(()) => {
-            eprintln!("built {} (run it to execute the testbench)", out.display());
+            eprintln!("compiled {} ({} signals)", obj.display(), design.signals.len());
             ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("siox build: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `siox test --no-run`: compile the `#[test]` stimulus into a standalone
+/// native simulator binary, but do not run it. Like `cargo test --no-run`.
+#[cfg(feature = "llvm")]
+fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
+    let mut sem = match run_semantic(path, std_root, false) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let modules = sem.fe.modules.as_slice();
+    let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
+    if sem.fe.sink.has_errors() {
+        return ExitCode::FAILURE;
+    }
+    let bin = out.map(|p| p.to_path_buf()).unwrap_or_else(|| path.with_extension("sim"));
+    match build::build(modules, &hier, &design, &bin) {
+        Ok(()) => {
+            eprintln!("built test binary {} (run it to execute the testbench)", bin.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("siox test --no-run: {e}");
             ExitCode::FAILURE
         }
     }

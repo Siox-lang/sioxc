@@ -5,7 +5,7 @@
 use std::process::Command;
 
 #[test]
-fn builds_and_runs_the_counter() {
+fn test_no_run_builds_a_runnable_binary() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -17,10 +17,10 @@ fn builds_and_runs_the_counter() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let status = Command::new(siox)
         .current_dir(root)
-        .args(["build", "examples/counter_test.siox", "-o", out.to_str().unwrap()])
+        .args(["test", "examples/counter_test.siox", "--no-run", "-o", out.to_str().unwrap()])
         .status()
         .unwrap();
-    assert!(status.success(), "siox build failed");
+    assert!(status.success(), "siox test --no-run failed");
     assert!(out.exists(), "no binary produced");
 
     // The binary runs the testbench and exits 0 on PASS.
