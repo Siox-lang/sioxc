@@ -56,7 +56,8 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         let name = hier.instance(root).entity.clone();
         let map = build_map(hier, root, design);
         let items = test_items(modules, &name);
-        let ctx = Ctx { design, map: &map, enums: &enums, name: &name };
+        let clocks = scan_clocks(&items, &map);
+        let ctx = Ctx { design, map: &map, enums: &enums, name: &name, clocks };
         prog.push_str(&ctx.gen_test_fn(&items)?);
         names.push(name);
     }
@@ -117,6 +118,8 @@ struct Ctx<'a> {
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
     name: &'a str,
+    /// Signal ids of `clock(clk, ..)`-registered background clocks.
+    clocks: Vec<u32>,
 }
 
 impl Ctx<'_> {
@@ -223,6 +226,14 @@ impl Ctx<'_> {
                 // No timed behaviour beyond explicit edges: just settle.
                 b.push_str(&format!("{ind}sx_settle();\n"));
             }
+            // clock(clk, period): register a background clock (init to 0).
+            "clock" => {
+                if let Some(id) = args.first().and_then(expr_path).and_then(|p| self.map.get(&p)) {
+                    b.push_str(&format!("{ind}sx_set({}, 0); sx_settle();\n", id.0));
+                }
+            }
+            // await <duration> | <edge> | <condition>.
+            "await" => self.emit_await(args, b, depth)?,
             "assert" if bang => {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
@@ -233,6 +244,53 @@ impl Ctx<'_> {
                 b.push_str(&format!("{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"));
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// The C that toggles every background clock once and settles.
+    fn step_clocks(&self) -> String {
+        let mut s = String::new();
+        for &c in &self.clocks {
+            s.push_str(&format!("sx_set({c}, !sx_read({c})); "));
+        }
+        s.push_str("sx_settle();");
+        s
+    }
+
+    /// `await <duration> | <edge> | <condition>` in the native harness: a
+    /// duration just settles (no wall-clock time in the binary); an edge or
+    /// condition steps the background clocks until it fires (bounded).
+    fn emit_await(&self, args: &[ast::Expr], b: &mut String, depth: usize) -> Result<(), String> {
+        let ind = "    ".repeat(depth);
+        let step = self.step_clocks();
+        match args.first() {
+            Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
+                b.push_str(&format!("{ind}sx_settle();\n"));
+            }
+            Some(ast::Expr::SysAttr { base, attr, .. }) => {
+                let id = expr_path(base)
+                    .and_then(|p| self.map.get(&p))
+                    .ok_or("await: unknown edge signal")?
+                    .0;
+                let hit = match attr.text.as_str() {
+                    "rising" => "!_p && _c",
+                    "falling" => "_p && !_c",
+                    _ => "_p != _c",
+                };
+                b.push_str(&format!(
+                    "{ind}{{ uint64_t _p = sx_read({id}); \
+                     for (int _g = 0; _g < 1000000; _g++) {{ {step} \
+                     uint64_t _c = sx_read({id}); if ({hit}) break; _p = _c; }} }}\n"
+                ));
+            }
+            Some(cond) => {
+                let c = self.expr(cond)?;
+                b.push_str(&format!(
+                    "{ind}for (int _g = 0; _g < 1000000 && !({c}); _g++) {{ {step} }}\n"
+                ));
+            }
+            None => {}
         }
         Ok(())
     }
@@ -322,6 +380,25 @@ fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
 }
 
 // --- helpers (small replicas of interpreter internals) ---------------------
+
+/// Collect the signal ids of `clock(clk, ..)` calls in a test's body.
+fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for item in items {
+        if let ast::ImplItem::Stmt(ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })) = item {
+            let is_clock = matches!(callee.as_ref(),
+                ast::Expr::Path(p) if p.segments.first().map(|s| s.text.as_str()) == Some("clock"));
+            if is_clock {
+                if let Some(id) = args.first().and_then(expr_path).and_then(|p| map.get(&p)) {
+                    if !ids.contains(&id.0) {
+                        ids.push(id.0);
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
 
 fn is_test_entity(modules: &[Module], entity: &str) -> bool {
     for m in modules {
