@@ -1775,14 +1775,6 @@ fn array_of<'t>(
     Some((base, indices))
 }
 
-/// The value of an integer-literal expression, if `e` is one.
-fn int_lit(e: &ast::Expr) -> Option<u32> {
-    match e {
-        ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as u32),
-        _ => None,
-    }
-}
-
 fn is_int_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Path(p)
         if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "integer")))

@@ -125,10 +125,14 @@ uint64_t sx_time(void);
   The interpreter can adopt sensitivity-based dispatch immediately —
   correctness-neutral, observable speedup, and it validates the process
   model before any bitcode exists.
-- **B2 — `siox-llvm` crate (inkwell)** behind the `llvm` feature: build the
-  LLVM module from the process list — per-process functions plus `settle`.
-  Golden-file tests on `print_to_string()`. `siox build --emit-llvm` prints
-  it; no execution yet.
+- **B2 — `siox-llvm` crate (inkwell)** behind the `llvm` feature: **DONE
+  (combinational)** — state globals (`cur`/`old`/`event`), `sx_reset`/
+  `sx_set`/`sx_read` accessors, and `sx_settle` evaluating combinational
+  processes in topological (dependency) order. Full `Expr`->builder mapping
+  (int/logic/float, slices, selects, div-by-zero guard). Verified against
+  LLVM 22 with `module.verify()` + golden tests; default workspace build
+  stays LLVM-free. **Next increment (B2.1): sequential codegen** — event
+  blocks, `old`/`event`/next-state bookkeeping, comb fixpoint for cycles.
 - **B3 — JIT (`siox test --backend=llvm`)**: `create_jit_execution_engine`;
   the Rust test runner drives the JIT'd DUT via `sx_set/settle/read`. Same
   runner, assertions, and VCD tap — only the DUT engine swaps.
