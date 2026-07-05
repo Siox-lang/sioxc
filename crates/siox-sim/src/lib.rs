@@ -31,6 +31,7 @@ use siox_syntax::Module;
 pub trait Slot: Copy + PartialEq + PartialOrd + core::fmt::Debug + Default {
     const BITS: u32;
     fn from_u64(v: u64) -> Self;
+    fn from_u128(v: u128) -> Self;
     fn to_u64(self) -> u64;
     fn to_u128(self) -> u128;
     fn wrapping_add(self, o: Self) -> Self;
@@ -50,6 +51,9 @@ macro_rules! impl_slot {
         impl Slot for $t {
             const BITS: u32 = $bits;
             fn from_u64(v: u64) -> Self {
+                v as $t
+            }
+            fn from_u128(v: u128) -> Self {
                 v as $t
             }
             fn to_u64(self) -> u64 {
@@ -324,6 +328,40 @@ impl<'a, S: Slot> Simulator<'a, S> {
             }
             Expr::Unknown => S::from_u64(0),
         }
+    }
+}
+
+/// The DUT execution engine the test runner drives: the interpreter
+/// ([`Simulator`]) or a compiled backend (the JIT, via an adapter). Values
+/// cross the boundary as `u128` so wide designs keep full precision; a narrow
+/// engine widens on read and truncates on set.
+pub trait Engine {
+    fn set(&mut self, sig: SignalId, value: u128);
+    fn read(&self, sig: SignalId) -> u128;
+    fn settle(&mut self);
+    fn advance(&mut self, fs: u64);
+    fn time_fs(&self) -> u64;
+    fn design(&self) -> &Design;
+}
+
+impl<S: Slot> Engine for Simulator<'_, S> {
+    fn set(&mut self, sig: SignalId, value: u128) {
+        self.set_slot(sig, S::from_u128(value));
+    }
+    fn read(&self, sig: SignalId) -> u128 {
+        self.state[sig.0 as usize].current.to_u128()
+    }
+    fn settle(&mut self) {
+        Simulator::settle(self);
+    }
+    fn advance(&mut self, fs: u64) {
+        Simulator::advance(self, fs);
+    }
+    fn time_fs(&self) -> u64 {
+        self.time_fs
+    }
+    fn design(&self) -> &Design {
+        self.design
     }
 }
 
