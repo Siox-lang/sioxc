@@ -23,7 +23,10 @@ siox-llvm.workspace = true
 clap.workspace = true
 
 [features]
-default = []
+# LLVM is the default backend (the language is compiled-first). Build
+# without a toolchain via `--no-default-features` (interpreter-only; the
+# CLI falls back to the interpreter automatically).
+default = ["llvm"]
 # Enable the LLVM backend commands (`siox emit-llvm`). Requires a matching
 # LLVM toolchain; the default `siox` binary builds without it.
 llvm = ["siox-llvm/llvm"]

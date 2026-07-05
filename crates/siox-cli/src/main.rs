@@ -38,9 +38,11 @@ struct Cli {
     /// CPUs); `64`/`128` force a width. Wider slots trade speed for range.
     #[arg(long, global = true, default_value = "auto")]
     slot: String,
-    /// Execution engine for `siox test`: `interp` (the interpreter) or `llvm`
-    /// (JIT-compiled, requires a build with `--features llvm`).
-    #[arg(long, global = true, default_value = "interp")]
+    /// Execution engine for `siox test`: `llvm` (JIT-compiled, the default) or
+    /// `interp` (the interpreter/reference oracle). `llvm` auto-falls back to
+    /// the interpreter for designs it can't compile yet (e.g. >64-bit signals)
+    /// or a build without the LLVM toolchain.
+    #[arg(long, global = true, default_value = "llvm")]
     backend: String,
     #[command(subcommand)]
     cmd: Command,
@@ -470,6 +472,23 @@ fn run_tests_llvm(
     Err("this build has no llvm backend (rebuild with `--features llvm`)".to_string())
 }
 
+/// Run the `#[test]` entities on the interpreter (the reference oracle).
+fn run_interp(
+    modules: &[Module],
+    hier: &siox_elab::Hierarchy,
+    design: &siox_ir::Design,
+    filter: Option<&str>,
+    slot: &str,
+) -> Vec<siox_sim::TestResult> {
+    let width = slot_width(slot);
+    if width == siox_sim::SlotWidth::W128
+        || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(design))
+    {
+        eprintln!("slot: 128-bit (native u128 on this target)");
+    }
+    siox_sim::run_tests_with(modules, hier, design, filter, width)
+}
+
 /// Parse the `--slot` flag into a sim slot width.
 fn slot_width(s: &str) -> siox_sim::SlotWidth {
     match s {
@@ -503,22 +522,18 @@ fn cmd_test(
         return ExitCode::FAILURE;
     }
 
+    // LLVM is the default engine; fall back to the interpreter (the reference
+    // oracle) for designs it can't compile yet or a build without a toolchain.
     let results = if backend == "llvm" {
         match run_tests_llvm(modules, &hier, &design, filter) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("llvm backend: {e}");
-                return ExitCode::FAILURE;
+                eprintln!("backend: interp (llvm unavailable: {e})");
+                run_interp(modules, &hier, &design, filter, slot)
             }
         }
     } else {
-        let width = slot_width(slot);
-        if width == siox_sim::SlotWidth::W128
-            || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(&design))
-        {
-            eprintln!("slot: 128-bit (native u128 on this target)");
-        }
-        siox_sim::run_tests_with(modules, &hier, &design, filter, width)
+        run_interp(modules, &hier, &design, filter, slot)
     };
     if results.is_empty() {
         match filter {

@@ -157,8 +157,12 @@ uint64_t sx_time(void);
   ABI; a linked C `main` runs it as a native binary (adder computes + wraps,
   verified via clang link+run). **Follow-on (B5.1):** generate the runtime
   `main` from the testbench stimulus and wire the `siox build` CLI command.
-- **After B4 passes**: flip the `llvm` feature default-on; the interpreter
-  becomes an optional reference rather than the execution path.
+- **Flip default-on (DONE 2026-07-05)**: `llvm` is a default feature of
+  siox-cli/siox-llvm, so LLVM is a default build dependency and `siox test`
+  JIT-runs by default. The interpreter is kept as the reference oracle and
+  the automatic fallback (wide >64-bit designs, invalid IR, or a
+  `--no-default-features` build without a toolchain) — reachable explicitly
+  with `--backend=interp`.
 - **Later (optimization, in either order):**
   - **static scheduling** — topo-sort the process DAG so acyclic regions
     run as one straight pass instead of sensitivity-driven deltas
