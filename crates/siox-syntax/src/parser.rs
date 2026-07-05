@@ -525,15 +525,17 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::Semi, "after a `return`");
                 Stmt::Return { value, span: start.to(self.prev_span()) }
             }
-            // `wait <expr>;` simulation primitive (no parens): modeled as a call.
-            TokenKind::Ident if self.cur_text() == "wait" => {
+            // `wait <expr>;` / `await <expr>;` timing primitives (no parens):
+            // modeled as a call. `await 10ns` advances time; `await clk::rising`
+            // waits for an edge; `await cond` waits until a condition holds.
+            TokenKind::Ident if self.cur_text() == "wait" || self.cur_text() == "await" => {
                 let start = self.span();
                 let callee = Expr::Path(Path {
                     segments: vec![self.parse_ident()],
                     span: start,
                 });
                 let arg = self.parse_expr(false);
-                self.expect(TokenKind::Semi, "after a `wait`");
+                self.expect(TokenKind::Semi, "after a timing primitive");
                 let span = start.to(self.prev_span());
                 Stmt::Expr(Expr::Call { callee: Box::new(callee), args: vec![arg], bang: false, span })
             }

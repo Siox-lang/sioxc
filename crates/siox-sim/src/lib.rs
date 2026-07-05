@@ -643,6 +643,7 @@ fn run_one<'a>(
         failure: None,
         record,
         samples: Vec::new(),
+        clocks: Vec::new(),
     };
 
     // Apply initial `let` values, then settle and record the starting state.
@@ -703,6 +704,16 @@ fn run_one<'a>(
 }
 
 /// Interprets a testbench's stimulus statements against a running simulator.
+/// A free-running background clock started by `clock(clk, period)`; the
+/// scheduler toggles it every half period so `await clk::rising` has an edge
+/// to wait for.
+struct ClockGen {
+    id: SignalId,
+    half_period: u64,
+    /// Absolute femtosecond time of the next toggle.
+    next_edge: u64,
+}
+
 struct Testbench<'a> {
     engine: Box<dyn Engine + 'a>,
     /// Test-local signal name -> design signal id.
@@ -713,6 +724,8 @@ struct Testbench<'a> {
     /// When set, a sample is recorded after each simulation step.
     record: bool,
     samples: Vec<Sample>,
+    /// Background clocks driving `await` edges/conditions.
+    clocks: Vec<ClockGen>,
 }
 
 impl Testbench<'_> {
@@ -863,6 +876,17 @@ impl Testbench<'_> {
                 self.engine.advance(duration_fs(args));
                 self.sample();
             }
+            // clock(clk, period): start a free-running background clock.
+            "clock" => {
+                if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
+                    let half = (duration_fs(&args[1..]) / 2).max(1);
+                    self.engine.set(id, 0);
+                    let next = self.engine.time_fs() + half;
+                    self.clocks.push(ClockGen { id, half_period: half, next_edge: next });
+                }
+            }
+            // await <duration> | <edge> | <condition>.
+            "await" => self.do_await(args),
             // assert!(cond, "msg"): record the first failure.
             "assert" if bang => {
                 let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
@@ -875,6 +899,97 @@ impl Testbench<'_> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// `await <expr>`: dispatch on the argument shape — a duration advances
+    /// time; `clk::rising` waits for an edge; anything else is a condition.
+    fn do_await(&mut self, args: &[ast::Expr]) {
+        match args.first() {
+            Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
+                let target = self.engine.time_fs() + duration_fs(args);
+                self.run_clocks_until(target);
+                let now = self.engine.time_fs();
+                if target > now {
+                    self.engine.advance(target - now);
+                }
+                self.engine.settle();
+                self.sample();
+            }
+            Some(ast::Expr::SysAttr { base, attr, .. }) => {
+                let id = self.signal_of(base);
+                self.await_edge(id, attr.text.as_str());
+            }
+            Some(cond) => {
+                let cond = cond.clone();
+                self.await_cond(&cond);
+            }
+            None => {}
+        }
+    }
+
+    /// Advance to the earliest pending clock edge and toggle it; false if there
+    /// are no background clocks.
+    fn step_one_clock(&mut self) -> bool {
+        let Some(t) = self.clocks.iter().map(|c| c.next_edge).min() else {
+            return false;
+        };
+        let now = self.engine.time_fs();
+        if t > now {
+            self.engine.advance(t - now);
+        }
+        for i in 0..self.clocks.len() {
+            if self.clocks[i].next_edge == t {
+                let id = self.clocks[i].id;
+                let v = self.engine.read(id);
+                self.engine.set(id, if v == 0 { 1 } else { 0 });
+                self.clocks[i].next_edge = t + self.clocks[i].half_period;
+            }
+        }
+        self.engine.settle();
+        self.sample();
+        true
+    }
+
+    /// Run background clocks up to (and including) `target` femtoseconds.
+    fn run_clocks_until(&mut self, target: u64) {
+        while self.clocks.iter().map(|c| c.next_edge).min().is_some_and(|t| t <= target) {
+            self.step_one_clock();
+        }
+    }
+
+    /// Wait for a `rising`/`falling`/`event` edge on `id`, driven by the
+    /// background clocks. Bounded so a missing clock can't hang the run.
+    fn await_edge(&mut self, id: Option<SignalId>, kind: &str) {
+        let Some(id) = id else { return };
+        let mut prev = self.engine.read(id);
+        for _ in 0..1_000_000 {
+            if !self.step_one_clock() {
+                break;
+            }
+            let cur = self.engine.read(id);
+            let hit = match kind {
+                "rising" => prev == 0 && cur != 0,
+                "falling" => prev != 0 && cur == 0,
+                _ => prev != cur, // ::event
+            };
+            prev = cur;
+            if hit {
+                break;
+            }
+        }
+    }
+
+    /// Wait until `cond` holds, stepping the background clocks. Proceeds
+    /// immediately if already true; bounded against a missing clock.
+    fn await_cond(&mut self, cond: &ast::Expr) {
+        self.engine.settle();
+        let mut guard = 0;
+        while self.eval(cond).is_zero() && guard < 1_000_000 {
+            if !self.step_one_clock() {
+                break;
+            }
+            guard += 1;
         }
     }
 
