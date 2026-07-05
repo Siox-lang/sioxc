@@ -1,13 +1,31 @@
 # Plan: the LLVM backend (compiled processes + runtime)
 
-Status: **plan, approved direction** — siox is a low-level language and its
-execution should be native code. The basis is **bitcode generation from
-processes** and **a runtime that runs those processes**. Type-level
-optimization (narrowing `uint[]`/`int[]` to exact-width machine types) is
-explicitly *later*: those types will be softcoded by the std library in
-time, and the backend must not bake in assumptions about them now. The
-interpreter (`siox-sim`) stays as the reference semantics and the
-differential-testing oracle.
+Status: **decided (2026-07-05)** — siox is a low-level language, so its
+execution is **native code via LLVM (inkwell)**, not the interpreter. One
+emitter builds an LLVM module from the process-extracted IR; it forks only
+at the tail into the two modes we want:
+
+- **`siox test` → JIT**: inkwell's `ExecutionEngine` compiles the design
+  in-process and runs it — no `clang`, no temp files, fast edit-run.
+- **`siox build` → AOT**: the same module goes through `TargetMachine` to an
+  object/binary (or `.bc` handed to `clang`/`lld`) — a standalone simulator.
+
+LLVM is a load-bearing project dependency, the way it is for rustc/Swift —
+we cannot emit native code without it, so we stop pretending otherwise.
+inkwell also hands us `.ll` text (`print_to_string`) and `.bc` for free, so
+there is **no hand-written textual `.ll` emitter** (that only earned its
+keep by building without LLVM, which the mission moots).
+
+The **interpreter (`siox-sim`) stays as the correctness oracle** for
+differential testing during backend bring-up (B4) — not as the way you run
+siox. It keeps `siox-sim` and the default `cargo build` LLVM-free so CI and
+frontend contributors work on a bare box; inkwell lives behind a cargo
+feature until JIT is trusted, then the feature goes default-on.
+
+Type-level optimization (narrowing `uint[]`/`int[]` to exact-width machine
+types) is explicitly *later*: those types will be softcoded by std, and the
+backend must not bake in assumptions about them now — the first cut matches
+the interpreter's word semantics so B4 is bit-identical.
 
 ## The model: processes + kernel
 
@@ -63,32 +81,36 @@ words + mask, `select`, `fadd`-family on the f64 payload — the compiled
 process computes exactly what the interpreter computes, instruction for
 instruction.
 
-## Emission
+## Emission (inkwell)
 
-Emit **LLVM IR text (`.ll`) / bitcode (`.bc`)** with no FFI dependencies
-(`llvm-sys`/`inkwell` version-lock the build; textual IR is inspectable and
-golden-file-testable). The system toolchain compiles it:
-`clang -O2 -shared` (hosted) or `clang` + runtime `main` (standalone).
+`inkwell = { version = "0.5", features = ["llvm18-0"], optional = true }`
+behind a `llvm` cargo feature. The emitter walks the process-extracted
+`Design` and builds one LLVM function per process plus a `settle` that runs
+the delta cycle (events → comb fixpoint → commit → roll). State is three
+globals (current/old/event) at word width, masked to each signal's width —
+matching the interpreter for bit-identical differential testing. `Expr` maps
+1:1 onto `Builder` calls (`build_int_add`, `build_select`, `lshr`+`trunc`
+for `Slice`, `build_float_*` for the `real` path).
 
-Execution modes, in delivery order:
+The two modes share this module and split at the tail:
 
-1. **Hosted**: the Rust kernel `dlopen`s the compiled processes (one small
-   dep, `libloading`, behind a cargo feature) and dispatches them through a
-   tiny C ABI. The existing test runner, assertions, and VCD tracing work
-   unchanged — only process evaluation changes engine.
-2. **Standalone `siox build design.siox -o sim`**: same bitcode linked with
-   a small runtime and a compiled form of the stimulus — a native simulator
-   binary, no siox installation needed to run it.
+1. **JIT (`siox test --backend=llvm`)**: `create_jit_execution_engine`, then
+   call `settle`/`set`/`read` in-process. The Rust test runner keeps
+   interpreting the (cold) testbench and drives the JIT'd DUT.
+2. **AOT (`siox build design.siox -o sim`)**: `TargetMachine::write_to_file`
+   for an object, linked with a small runtime `main` compiled from the
+   stimulus — a standalone native simulator.
 
-The C ABI between kernel and processes:
+`--emit-llvm` prints `module.print_to_string()`; golden-file tests diff that
+text (they need inkwell built, but not a full LLVM at *emitter* test time
+beyond linking). The C ABI the runtime/host uses stays tiny:
 
 ```c
-// kernel -> process: evaluate against the state arrays
-void sx_proc_N(const uint64_t *cur, const uint64_t *old,
-               const uint8_t *event, uint64_t *out);
-// kernel side (hosted): stimulus drives it like the interpreter
-void sx_set(uint32_t sig, uint64_t v);   uint64_t sx_read(uint32_t sig);
-void sx_settle(void);                    uint64_t sx_time(void);
+void     sx_reset(void);
+void     sx_set(uint32_t sig, uint64_t v);
+uint64_t sx_read(uint32_t sig);
+void     sx_settle(void);          // whole delta cycle, compiled
+uint64_t sx_time(void);
 ```
 
 ## Staging
@@ -103,16 +125,20 @@ void sx_settle(void);                    uint64_t sx_time(void);
   The interpreter can adopt sensitivity-based dispatch immediately —
   correctness-neutral, observable speedup, and it validates the process
   model before any bitcode exists.
-- **B2 — bitcode generation** (`siox-llvm` crate): one function per
-  process over the word-based state ABI. Golden-file `.ll` tests
-  (counter/mux/FSM). `siox build --emit-llvm` prints it; no execution yet.
-- **B3 — runtime kernel + hosted mode**: kernel keeps living in Rust
-  (it *is* today's `settle`, refactored against process tables);
-  `libloading` behind a feature; `siox test --backend=llvm`.
+- **B2 — `siox-llvm` crate (inkwell)** behind the `llvm` feature: build the
+  LLVM module from the process list — per-process functions plus `settle`.
+  Golden-file tests on `print_to_string()`. `siox build --emit-llvm` prints
+  it; no execution yet.
+- **B3 — JIT (`siox test --backend=llvm`)**: `create_jit_execution_engine`;
+  the Rust test runner drives the JIT'd DUT via `sx_set/settle/read`. Same
+  runner, assertions, and VCD tap — only the DUT engine swaps.
 - **B4 — differential harness**: every `#[test]` entity and example runs
-  under both engines; results and VCD streams must match bit-for-bit.
-- **B5 — standalone `siox build`**: compiled stimulus + runtime `main`,
-  single native binary.
+  under the interpreter (oracle) and the JIT; results and VCD streams must
+  match bit-for-bit. This is what lets the interpreter later step back.
+- **B5 — AOT `siox build`**: `TargetMachine` object + runtime `main` from
+  the stimulus, linked to a single native binary.
+- **After B4 passes**: flip the `llvm` feature default-on; the interpreter
+  becomes an optional reference rather than the execution path.
 - **Later (optimization, in either order):**
   - **static scheduling** — topo-sort the process DAG so acyclic regions
     run as one straight pass instead of sensitivity-driven deltas
