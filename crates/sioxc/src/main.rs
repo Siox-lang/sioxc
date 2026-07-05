@@ -5,11 +5,11 @@
 //! later-stage commands) it narrates each pipeline step to stderr so you can
 //! watch how the compiler turns source into data.
 //!
-//! Commands (spec Stage 12):
+//! Usage (rustc-shaped — a bare file compiles it):
 //! ```text
+//! sioxc <file>            # compile the #[top] design to a native object
 //! sioxc check  <file>     # parse + resolve + typecheck, report success/errors
 //! sioxc parse  <file>     # parse, print canonical source
-//! sioxc build  <file>     # compile the design to a native object (no run)
 //! sioxc sim    <file>     # elaborate + lower + simulate (--wave <out.vcd>)
 //! sioxc test   <path>     # build and run #[test] entities (--no-run to just build)
 //! sioxc ast    <file>     # debug: pretty-printed AST
@@ -33,7 +33,20 @@ use siox_syntax::{lexer::Lexer, parser, pretty};
 
 #[derive(Parser)]
 #[command(name = "sioxc", version, about = "The siox compiler (Phase 1)")]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
+    /// The `.siox` file to compile (builds its `#[top]` design). Bare
+    /// `sioxc foo.siox` compiles the file, like `rustc foo.rs`.
+    #[cfg(feature = "llvm")]
+    file: Option<PathBuf>,
+    /// The top entity to build (default: the single `#[top]` entity).
+    #[cfg(feature = "llvm")]
+    #[arg(long)]
+    top: Option<String>,
+    /// Output object path for a bare build (default: `<file>.o`).
+    #[cfg(feature = "llvm")]
+    #[arg(short, long)]
+    out: Option<PathBuf>,
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]
     std: PathBuf,
@@ -49,7 +62,7 @@ struct Cli {
     #[arg(long, global = true, default_value = "llvm")]
     backend: String,
     #[command(subcommand)]
-    cmd: Command,
+    cmd: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -95,18 +108,6 @@ enum Command {
     },
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
-    /// Compile a top-level design to a native object (the DUT, `sx_*` ABI).
-    /// Like `rustc` compiling a crate — builds one module setup, runs nothing.
-    #[cfg(feature = "llvm")]
-    Build {
-        file: PathBuf,
-        /// The top entity to build (default: the single `#[top]` entity).
-        #[arg(long)]
-        top: Option<String>,
-        /// Output object path (default: `<file>.o`).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
     /// Debug: print the LLVM IR emitted by the compiled backend.
     #[cfg(feature = "llvm")]
     EmitLlvm { file: PathBuf },
@@ -121,7 +122,33 @@ fn main() -> ExitCode {
     let std_root = cli.std;
     let slot = cli.slot;
     let backend = cli.backend;
-    match cli.cmd {
+
+    // Bare `sioxc foo.siox` compiles the file (like `rustc foo.rs`).
+    #[cfg(feature = "llvm")]
+    let cmd = match cli.cmd {
+        Some(c) => c,
+        None => {
+            return match cli.file {
+                Some(f) => cmd_build(&f, &std_root, cli.top.as_deref(), cli.out.as_deref()),
+                None => {
+                    use clap::CommandFactory;
+                    Cli::command().print_help().ok();
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    };
+    #[cfg(not(feature = "llvm"))]
+    let cmd = match cli.cmd {
+        Some(c) => c,
+        None => {
+            use clap::CommandFactory;
+            Cli::command().print_help().ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match cmd {
         Command::Tokens { file } => cmd_tokens(&file),
         Command::Parse { file, verbose } => match run_frontend(&file, &std_root, verbose) {
             Ok(fe) => {
@@ -155,10 +182,6 @@ fn main() -> ExitCode {
             cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend)
         }
         Command::Ir { file } => cmd_ir(&file, &std_root),
-        #[cfg(feature = "llvm")]
-        Command::Build { file, top, out } => {
-            cmd_build(&file, &std_root, top.as_deref(), out.as_deref())
-        }
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),

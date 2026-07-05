@@ -65,7 +65,7 @@ cargo test -p siox-syntax         # tests for one crate
 cargo run -p sioxc -- <cmd> <file>
 ```
 
-CLI commands (run as `sioxc <cmd>`):
+A bare `sioxc <file>` compiles it (like `rustc foo.rs`); the subcommands are alternate modes:
 
 | Command | Status | Does |
 | ------- | ------ | ---- |
