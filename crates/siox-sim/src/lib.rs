@@ -495,6 +495,19 @@ fn run_tests_impl(
     filter: Option<&str>,
     wide: bool,
 ) -> Vec<TestResult> {
+    run_tests_with_engine(modules, hier, design, filter, || interp_engine(design, wide))
+}
+
+/// Run the `#[test]` entities against a caller-provided execution engine. The
+/// factory builds a fresh, reset engine per test (state must not leak between
+/// tests). This is how a compiled backend (the JIT) plugs into the runner.
+pub fn run_tests_with_engine<'e>(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+    mut make_engine: impl FnMut() -> Box<dyn Engine + 'e>,
+) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let mut results = Vec::new();
@@ -504,7 +517,7 @@ fn run_tests_impl(
         let selected = filter.map_or(true, |f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
-            let engine = interp_engine(design, wide);
+            let engine = make_engine();
             results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, false).0);
         }
     }

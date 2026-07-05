@@ -38,6 +38,10 @@ struct Cli {
     /// CPUs); `64`/`128` force a width. Wider slots trade speed for range.
     #[arg(long, global = true, default_value = "auto")]
     slot: String,
+    /// Execution engine for `siox test`: `interp` (the interpreter) or `llvm`
+    /// (JIT-compiled, requires a build with `--features llvm`).
+    #[arg(long, global = true, default_value = "interp")]
+    backend: String,
     #[command(subcommand)]
     cmd: Command,
 }
@@ -90,6 +94,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let std_root = cli.std;
     let slot = cli.slot;
+    let backend = cli.backend;
     match cli.cmd {
         Command::Tokens { file } => cmd_tokens(&file),
         Command::Parse { file, verbose } => match run_frontend(&file, &std_root, verbose) {
@@ -109,9 +114,9 @@ fn main() -> ExitCode {
         Command::Check { file, verbose } => cmd_check(&file, &std_root, verbose),
         Command::Sim { file, wave } => match wave {
             Some(out) => cmd_wave(&file, &std_root, &out),
-            None => cmd_test(&file, &std_root, None, &slot),
+            None => cmd_test(&file, &std_root, None, &slot, &backend),
         },
-        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot),
+        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend),
         Command::Ir { file } => cmd_ir(&file, &std_root),
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
@@ -396,6 +401,75 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
 /// `siox test`: run the `#[test]` entities (optionally filtered by name)
 /// through the simulator and report pass/fail. Exits nonzero if any test fails
 /// (or the pipeline errored).
+/// Run the `#[test]` entities through the JIT-compiled backend, driving the
+/// same test runner with a JIT engine instead of the interpreter.
+#[cfg(feature = "llvm")]
+fn run_tests_llvm(
+    modules: &[Module],
+    hier: &siox_elab::Hierarchy,
+    design: &siox_ir::Design,
+    filter: Option<&str>,
+) -> Result<Vec<siox_sim::TestResult>, String> {
+    // The JIT is 64-bit-word only; reject wide designs (the interpreter
+    // handles them) and any IR the backend can't compile.
+    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+        return Err(format!("signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width));
+    }
+    let issues = design.validate();
+    if !issues.is_empty() {
+        return Err(issues.join("; "));
+    }
+    eprintln!("backend: llvm (JIT)");
+    Ok(siox_llvm::with_jit(design, |jit| {
+        siox_sim::run_tests_with_engine(modules, hier, design, filter, || {
+            jit.reset();
+            Box::new(JitEngine { jit, design }) as Box<dyn siox_sim::Engine>
+        })
+    }))
+}
+
+/// Adapts a JIT-compiled design to the test runner's [`siox_sim::Engine`].
+#[cfg(feature = "llvm")]
+struct JitEngine<'a, 'ctx> {
+    jit: &'a siox_llvm::Jit<'ctx>,
+    design: &'a siox_ir::Design,
+}
+
+#[cfg(feature = "llvm")]
+impl siox_sim::Engine for JitEngine<'_, '_> {
+    fn set(&mut self, sig: siox_ir::SignalId, value: u128) {
+        self.jit.set(sig.0, value as u64);
+    }
+    fn read(&self, sig: siox_ir::SignalId) -> u128 {
+        self.jit.read(sig.0) as u128
+    }
+    fn settle(&mut self) {
+        self.jit.settle();
+    }
+    fn advance(&mut self, _fs: u64) {
+        // No timed behaviour in Phase 1 beyond explicit clock edges, so
+        // advancing time is just another settle.
+        self.jit.settle();
+    }
+    fn time_fs(&self) -> u64 {
+        0
+    }
+    fn design(&self) -> &siox_ir::Design {
+        self.design
+    }
+}
+
+/// Without the `llvm` feature, `--backend=llvm` is unavailable.
+#[cfg(not(feature = "llvm"))]
+fn run_tests_llvm(
+    _modules: &[Module],
+    _hier: &siox_elab::Hierarchy,
+    _design: &siox_ir::Design,
+    _filter: Option<&str>,
+) -> Result<Vec<siox_sim::TestResult>, String> {
+    Err("this build has no llvm backend (rebuild with `--features llvm`)".to_string())
+}
+
 /// Parse the `--slot` flag into a sim slot width.
 fn slot_width(s: &str) -> siox_sim::SlotWidth {
     match s {
@@ -405,7 +479,13 @@ fn slot_width(s: &str) -> siox_sim::SlotWidth {
     }
 }
 
-fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>, slot: &str) -> ExitCode {
+fn cmd_test(
+    path: &Path,
+    std_root: &Path,
+    filter: Option<&str>,
+    slot: &str,
+    backend: &str,
+) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
@@ -423,13 +503,23 @@ fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>, slot: &str) -> E
         return ExitCode::FAILURE;
     }
 
-    let width = slot_width(slot);
-    if width == siox_sim::SlotWidth::W128
-        || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(&design))
-    {
-        eprintln!("slot: 128-bit (native u128 on this target)");
-    }
-    let results = siox_sim::run_tests_with(modules, &hier, &design, filter, width);
+    let results = if backend == "llvm" {
+        match run_tests_llvm(modules, &hier, &design, filter) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("llvm backend: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        let width = slot_width(slot);
+        if width == siox_sim::SlotWidth::W128
+            || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(&design))
+        {
+            eprintln!("slot: 128-bit (native u128 on this target)");
+        }
+        siox_sim::run_tests_with(modules, &hier, &design, filter, width)
+    };
     if results.is_empty() {
         match filter {
             Some(f) => eprintln!("no #[test] entity matching `{f}`"),
