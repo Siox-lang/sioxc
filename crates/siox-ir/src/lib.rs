@@ -1455,7 +1455,7 @@ impl Design {
         // width-0 signal — e.g. an instance-binding `let` placeholder — is
         // harmless, so only flag unknown widths on referenced signals.
         let mut referenced: std::collections::HashSet<SignalId> = std::collections::HashSet::new();
-        let mut collect = |e: &Expr| {
+        let collect = |e: &Expr| {
             let mut v = Vec::new();
             read_set(e, &mut v);
             v
