@@ -124,6 +124,11 @@ pub struct Simulator<'a, S: Slot = u64> {
     state: Vec<SignalState<S>>,
     /// Simulation time in femtoseconds.
     time_fs: u64,
+    /// Combinational processes: `(target, source-ordered driver indices)`.
+    /// Built once from `Design::processes` for event-driven dispatch.
+    comb: Vec<(SignalId, Vec<usize>)>,
+    /// Read signal -> combinational processes sensitive to it.
+    sens: HashMap<SignalId, Vec<usize>>,
 }
 
 /// A combinational fixpoint that fails to converge after this many iterations is
@@ -133,7 +138,20 @@ const MAX_DELTAS: usize = 10_000;
 impl<'a, S: Slot> Simulator<'a, S> {
     pub fn new(design: &'a Design) -> Self {
         let state = vec![SignalState::default(); design.signals.len()];
-        Simulator { design, state, time_fs: 0 }
+        // Combinational processes and their sensitivity, for event-driven
+        // dispatch (only recompute a target when a signal it reads changes).
+        let mut comb = Vec::new();
+        let mut sens: HashMap<SignalId, Vec<usize>> = HashMap::new();
+        for p in design.processes() {
+            if let siox_ir::ProcessKind::Comb { target, drivers } = p.kind {
+                let pi = comb.len();
+                for r in &p.reads {
+                    sens.entry(*r).or_default().push(pi);
+                }
+                comb.push((target, drivers));
+            }
+        }
+        Simulator { design, state, time_fs: 0, comb, sens }
     }
 
     /// The id of a signal by its hierarchical path, e.g. `Counter.count`.
@@ -216,29 +234,53 @@ impl<'a, S: Slot> Simulator<'a, S> {
         }
     }
 
-    /// Evaluate combinational drivers until no signal changes (spec 3.14 source
-    /// order: later drivers override earlier within a pass).
+    /// Evaluate combinational processes to a fixpoint by **event-driven
+    /// dispatch**: recompute a target only when a signal it reads has
+    /// changed. Each target resolves its source-ordered drivers (spec 3.14
+    /// later-wins); a change wakes the processes sensitive to it. Equivalent
+    /// to the old all-drivers-per-pass fixpoint, but O(affected) per delta.
     fn settle_combinational(&mut self) {
-        for _ in 0..MAX_DELTAS {
-            let mut next: Vec<S> = self.state.iter().map(|s| s.current).collect();
-            for d in &self.design.drivers {
+        let comb = std::mem::take(&mut self.comb);
+        let sens = std::mem::take(&mut self.sens);
+        // Seed every process dirty (a settle may follow an event-block commit).
+        let mut queue: Vec<usize> = (0..comb.len()).collect();
+        let mut queued = vec![true; comb.len()];
+        // Oscillation guard, matching the old MAX_DELTAS-pass bound.
+        let mut budget = (MAX_DELTAS * comb.len().max(1)) as u64;
+
+        while let Some(pi) = queue.pop() {
+            queued[pi] = false;
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+
+            let target = comb[pi].0;
+            let ti = target.0 as usize;
+            // Resolve the target: firing drivers apply in source order.
+            let mut val = self.state[ti].current;
+            for &di in &comb[pi].1 {
+                let d = &self.design.drivers[di];
                 if self.cond_true(&d.cond) {
-                    next[d.target.0 as usize] = self.eval(&d.expr);
+                    val = self.eval(&d.expr);
                 }
             }
-            let mut changed = false;
-            for (i, &v) in next.iter().enumerate() {
-                let v = mask(v, self.design.signals[i].width);
-                if self.state[i].current != v {
-                    self.state[i].current = v;
-                    self.state[i].event = true;
-                    changed = true;
+            let val = mask(val, self.design.signals[ti].width);
+            if self.state[ti].current != val {
+                self.state[ti].current = val;
+                self.state[ti].event = true;
+                if let Some(dep) = sens.get(&target) {
+                    for &qi in dep {
+                        if !queued[qi] {
+                            queued[qi] = true;
+                            queue.push(qi);
+                        }
+                    }
                 }
-            }
-            if !changed {
-                return;
             }
         }
+        self.comb = comb;
+        self.sens = sens;
     }
 
     fn cond_true(&self, cond: &Option<Expr>) -> bool {
@@ -1573,6 +1615,38 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
+    fn combinational_chain_propagates_through_dispatch() {
+        // a -> b -> c -> out: event-driven dispatch must wake each stage when
+        // its input settles, propagating a change all the way through in one
+        // settle. (Drivers are declared out of dependency order on purpose.)
+        assert_test_passes(
+            "module m;\n\
+             entity Chain { in i: uint[8]; out o: uint[8]; }\n\
+             impl Chain {\n\
+               let a: uint[8];\n\
+               let b: uint[8];\n\
+               let c: uint[8];\n\
+               o = c;\n\
+               c = b + 1;\n\
+               b = a + 1;\n\
+               a = i + 1;\n\
+             }\n\
+             #[test]\n\
+             entity ChainTest {}\n\
+             impl ChainTest {\n\
+               let i: uint[8] = 10;\n\
+               let o: uint[8];\n\
+               let dut = Chain { .i, .o };\n\
+               wait 1ns;\n\
+               assert!(o == 13, \"10 +1 +1 +1 propagates through the chain\");\n\
+               i = 20;\n\
+               wait 1ns;\n\
+               assert!(o == 23, \"a new input re-propagates\");\n\
+             }\n",
+        );
     }
 
     #[test]

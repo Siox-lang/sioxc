@@ -1365,7 +1365,106 @@ impl<'a> Lowering<'a> {
     }
 }
 
+/// Collect every signal an IR expression reads (`Current`/`Old`/`Event`
+/// leaves) into `out`, in first-seen order.
+pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
+    match e {
+        Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => out.push(*id),
+        Expr::Unary { rhs, .. } => read_set(rhs, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            read_set(lhs, out);
+            read_set(rhs, out);
+        }
+        Expr::Slice { base, .. } => read_set(base, out),
+        Expr::Select { cond, then, els } => {
+            read_set(cond, out);
+            read_set(then, out);
+            read_set(els, out);
+        }
+        Expr::Const(_) | Expr::Real(_) | Expr::Logic(_) | Expr::Unknown => {}
+    }
+}
+
+fn dedup(v: &mut Vec<SignalId>) {
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|id| seen.insert(*id));
+}
+
+/// A unit of behaviour the scheduler dispatches, with its **sensitivity**
+/// (the signals it reads) and **write set** (the signals it drives). This is
+/// the process view the LLVM backend compiles and the interpreter dispatches
+/// on (spec Stage 6 / the compiled-backend plan, B1).
+#[derive(Clone, Debug)]
+pub struct Process {
+    pub kind: ProcessKind,
+    /// Signals read by the process's conditions/expressions (sensitivity).
+    pub reads: Vec<SignalId>,
+    /// Signals the process drives.
+    pub writes: Vec<SignalId>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProcessKind {
+    /// A combinational target, resolved from the drivers that target it, in
+    /// source order (spec 3.14 last-writer-wins). `drivers` indexes
+    /// `Design::drivers`.
+    Comb { target: SignalId, drivers: Vec<usize> },
+    /// A clocked event block. `block` indexes `Design::event_blocks`.
+    Event { block: usize },
+}
+
 impl Design {
+    /// The process decomposition: one combinational process per driven signal
+    /// (grouping its source-ordered drivers) and one per event block, each
+    /// with its sensitivity and write set. Combinational targets keep their
+    /// first-seen order so source-order override is preserved.
+    pub fn processes(&self) -> Vec<Process> {
+        let mut procs = Vec::new();
+
+        // Group combinational drivers by target, first-seen order.
+        let mut order: Vec<SignalId> = Vec::new();
+        let mut by_target: std::collections::HashMap<SignalId, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, d) in self.drivers.iter().enumerate() {
+            by_target.entry(d.target).or_insert_with(|| {
+                order.push(d.target);
+                Vec::new()
+            });
+            by_target.get_mut(&d.target).unwrap().push(i);
+        }
+        for target in order {
+            let drivers = by_target.remove(&target).unwrap();
+            let mut reads = Vec::new();
+            for &di in &drivers {
+                let d = &self.drivers[di];
+                if let Some(c) = &d.cond {
+                    read_set(c, &mut reads);
+                }
+                read_set(&d.expr, &mut reads);
+            }
+            dedup(&mut reads);
+            procs.push(Process { kind: ProcessKind::Comb { target, drivers }, reads, writes: vec![target] });
+        }
+
+        // One process per event block.
+        for (bi, eb) in self.event_blocks.iter().enumerate() {
+            let mut reads = Vec::new();
+            read_set(&eb.condition, &mut reads);
+            let mut writes = Vec::new();
+            for u in &eb.updates {
+                if let Some(c) = &u.cond {
+                    read_set(c, &mut reads);
+                }
+                read_set(&u.expr, &mut reads);
+                writes.push(u.target);
+            }
+            dedup(&mut reads);
+            dedup(&mut writes);
+            procs.push(Process { kind: ProcessKind::Event { block: bi }, reads, writes });
+        }
+        procs
+    }
+
     /// Render normalized IR (backs `siox ir`).
     pub fn to_ir_string(&self) -> String {
         let mut out = String::new();
@@ -1782,6 +1881,33 @@ mod tests {
         // One event block (clk::rising) with two next-state updates.
         assert_eq!(d.event_blocks.len(), 1);
         assert_eq!(d.event_blocks[0].updates.len(), 2);
+    }
+
+    #[test]
+    fn processes_carry_sensitivity_and_write_sets() {
+        let d = lower_src(COUNTER);
+        let sig = |path: &str| {
+            SignalId(d.signals.iter().position(|s| s.path == path).unwrap() as u32)
+        };
+        let procs = d.processes();
+        // A combinational process for `count = value` and one event process.
+        let comb = procs
+            .iter()
+            .find(|p| matches!(&p.kind, ProcessKind::Comb { target, .. } if *target == sig("Counter.count")))
+            .unwrap();
+        assert_eq!(comb.reads, vec![sig("Counter.value")]);
+        assert_eq!(comb.writes, vec![sig("Counter.count")]);
+
+        let event = procs
+            .iter()
+            .find(|p| matches!(p.kind, ProcessKind::Event { .. }))
+            .unwrap();
+        // Sensitive to clk (edge condition), rst and en (update guards),
+        // value (increment). Writes value.
+        for s in ["Counter.clk", "Counter.rst", "Counter.en", "Counter.value"] {
+            assert!(event.reads.contains(&sig(s)), "event not sensitive to {s}");
+        }
+        assert_eq!(event.writes, vec![sig("Counter.value")]);
     }
 
     #[test]
