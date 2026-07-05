@@ -16,3 +16,13 @@ inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1"]
 [features]
 default = []
 llvm = ["dep:inkwell"]
+
+[dev-dependencies]
+# Frontend + interpreter, to build real Designs and differential-test the
+# JIT against the interpreter oracle (the seed of stage B4).
+siox-diag.workspace = true
+siox-syntax.workspace = true
+siox-resolve.workspace = true
+siox-types.workspace = true
+siox-elab.workspace = true
+siox-sim.workspace = true

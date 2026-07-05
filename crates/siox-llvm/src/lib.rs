@@ -17,6 +17,10 @@
 
 #[cfg(feature = "llvm")]
 mod emit;
+#[cfg(feature = "llvm")]
+mod jit;
 
 #[cfg(feature = "llvm")]
 pub use emit::emit_module_ir;
+#[cfg(feature = "llvm")]
+pub use jit::{with_jit, Jit};

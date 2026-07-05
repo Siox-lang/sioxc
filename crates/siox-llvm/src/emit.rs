@@ -14,13 +14,20 @@ use siox_ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
 /// This is what `siox build --emit-llvm` prints and what golden tests diff.
 pub fn emit_module_ir(design: &Design) -> String {
     let ctx = Context::create();
-    let cg = Codegen::new(&ctx, design);
+    let module = build_module(&ctx, design);
+    module.print_to_string().to_string()
+}
+
+/// Build and verify the LLVM module for `design` in `ctx`. Shared by the
+/// textual emitter and the JIT.
+pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<'ctx> {
+    let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
         panic!("emitted invalid LLVM module:\n{}\n--- IR ---\n{}", e, cg.module.print_to_string());
     }
-    cg.module.print_to_string().to_string()
+    cg.module
 }
 
 struct Codegen<'ctx, 'd> {
