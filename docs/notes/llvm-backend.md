@@ -76,6 +76,11 @@ optimization stage** can map finished value types onto native `iN`/`double`
 and let LLVM legalize — that is an optimization pass over working bitcode,
 not the foundation.
 
+The current emitter is **64-bit-word only**: it stores every signal in an
+`i64` slot and masks to width, so signals wider than 64 bits (which the
+interpreter handles via `u128` slots) are *rejected* at codegen rather than
+silently truncated. Wide-word codegen arrives with the type-narrowing work.
+
 The process→LLVM mapping is still direct: word loads/stores, integer ops on
 words + mask, `select`, `fadd`-family on the f64 payload — the compiled
 process computes exactly what the interpreter computes, instruction for

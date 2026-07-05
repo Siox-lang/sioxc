@@ -27,6 +27,17 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     if !issues.is_empty() {
         panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
     }
+    // This backend is i64-word-based; signals wider than 64 bits (the
+    // interpreter handles them via u128 slots) would silently truncate, so
+    // reject them rather than miscompile. Wide-word codegen lands with the
+    // type-narrowing work.
+    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+        panic!(
+            "signal `{}` is {} bits wide; the LLVM backend is 64-bit-word only \
+             (use the interpreter, or wait for wide-word codegen)",
+            s.path, s.width
+        );
+    }
     let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
@@ -504,6 +515,22 @@ mod tests {
         assert!(ll.contains("define i64 @sx_read(i32"), "{ll}");
         assert!(ll.contains("add i64"), "{ll}");
         assert!(ll.contains("and i64") && ll.contains("255"), "mask to width 8:\n{ll}");
+    }
+
+    #[test]
+    #[should_panic(expected = "64-bit-word only")]
+    fn rejects_signals_wider_than_64_bits() {
+        // A uint[128] signal would truncate in an i64 slot — reject it.
+        let design = Design {
+            signals: vec![sig("E.a", 128)],
+            drivers: vec![Driver {
+                target: SignalId(0),
+                cond: None,
+                expr: Expr::Const(1),
+            }],
+            event_blocks: vec![],
+        };
+        emit_module_ir(&design);
     }
 
     #[test]
