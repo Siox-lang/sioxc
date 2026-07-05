@@ -3,8 +3,10 @@
 //!
 //! The DUT lowers to a native object (`sx_*` C ABI) via the LLVM backend; the
 //! testbench statements are translated to a C `main` that drives it. clang
-//! links the two into an executable that runs the stimulus and reports
-//! PASS/FAIL via its exit code. First cut: integer/logic/bool designs;
+//! links them into an executable that runs *every* `#[test]` (one C function
+//! per test, a libtest-style `main`) and reports results + exit code. All
+//! tests share the one lowered Design (one `sx_*` namespace); `sx_reset`
+//! zeroes state between them. First cut: integer/logic/bool designs;
 //! real/char/string testbenches are a follow-on.
 
 use std::collections::HashMap;
@@ -16,7 +18,10 @@ use siox_ir::{Design, SignalId};
 use siox_syntax::ast;
 use siox_syntax::Module;
 
-/// Build a native simulator binary for the design's first `#[test]` entity.
+/// Build a native simulator binary that runs *all* `#[test]` entities, like
+/// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
+/// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
+/// in the same object.
 pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) -> Result<(), String> {
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
         return Err(format!("signal `{}` is {} bits; siox build is 64-bit only", s.path, s.width));
@@ -26,28 +31,44 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         return Err(issues.join("; "));
     }
 
-    let test_root = hier
+    let tests: Vec<InstanceId> = hier
         .roots
         .iter()
         .copied()
-        .find(|&r| is_test_entity(modules, &hier.instance(r).entity))
-        .ok_or("no #[test] entity to build a simulator from")?;
-    let tb_entity = hier.instance(test_root).entity.clone();
-
-    let map = build_map(hier, test_root, design);
+        .filter(|&r| is_test_entity(modules, &hier.instance(r).entity))
+        .collect();
+    if tests.is_empty() {
+        return Err("no #[test] entity to build a test binary from".into());
+    }
     let enums = enum_discriminants(modules);
-    let items = test_items(modules, &tb_entity);
 
-    let ctx = Ctx { design, map: &map, enums: &enums, name: &tb_entity };
-    let c = ctx.gen_c(&items)?;
+    // Header, one `int test_<name>(void)` per test, then a libtest-style main.
+    let mut prog = String::new();
+    prog.push_str("#include <stdint.h>\n#include <stdio.h>\n");
+    prog.push_str("extern void sx_reset(void);\n");
+    prog.push_str("extern void sx_set(uint32_t, uint64_t);\n");
+    prog.push_str("extern uint64_t sx_read(uint32_t);\n");
+    prog.push_str("extern void sx_settle(void);\n");
+    prog.push_str("static const char *g_msg;\n\n");
 
-    // Emit the DUT object and link a native binary with clang.
+    let mut names = Vec::new();
+    for &root in &tests {
+        let name = hier.instance(root).entity.clone();
+        let map = build_map(hier, root, design);
+        let items = test_items(modules, &name);
+        let ctx = Ctx { design, map: &map, enums: &enums, name: &name };
+        prog.push_str(&ctx.gen_test_fn(&items)?);
+        names.push(name);
+    }
+    prog.push_str(&gen_main(&names));
+
+    // Emit the DUT object (all tests' logic) and link with clang.
     let tmp = std::env::temp_dir().join(format!("siox_build_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let obj = tmp.join("design.o");
     let csrc = tmp.join("sim.c");
     siox_llvm::emit_object(design, &obj)?;
-    std::fs::write(&csrc, c).map_err(|e| e.to_string())?;
+    std::fs::write(&csrc, prog).map_err(|e| e.to_string())?;
     let status = Command::new("clang")
         .args([csrc.to_str().unwrap(), obj.to_str().unwrap(), "-O2", "-o", out.to_str().unwrap()])
         .status()
@@ -59,7 +80,30 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     Ok(())
 }
 
-/// Translation context: the design, the testbench name -> signal map, and enum
+/// The libtest-style `main` that runs each `test_<name>` and reports results.
+fn gen_main(names: &[String]) -> String {
+    let mut m = String::new();
+    m.push_str(&format!(
+        "int main(void) {{\n    printf(\"\\nrunning {} test{}\\n\");\n    int failed = 0;\n",
+        names.len(),
+        if names.len() == 1 { "" } else { "s" }
+    ));
+    for n in names {
+        m.push_str(&format!(
+            "    if (test_{n}()) {{ printf(\"test {n} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
+             else printf(\"test {n} ... ok\\n\");\n"
+        ));
+    }
+    m.push_str(
+        "    printf(\"\\ntest result: %s. %d passed; %d failed\\n\",\n\
+         \x20          failed ? \"FAILED\" : \"ok\", (int)(",
+    );
+    m.push_str(&format!("{}) - failed, failed);\n", names.len()));
+    m.push_str("    return failed ? 1 : 0;\n}\n");
+    m
+}
+
+/// Translation context: the design, this test's name -> signal map, and enum
 /// discriminants.
 struct Ctx<'a> {
     design: &'a Design,
@@ -69,15 +113,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn gen_c(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
+    /// `int test_<name>(void) { ... }` — 0 on pass, 1 on the first failed
+    /// assert (printing its message first, like a panic).
+    fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
-        b.push_str("#include <stdint.h>\n#include <stdio.h>\n");
-        b.push_str("extern void sx_reset(void);\n");
-        b.push_str("extern void sx_set(uint32_t, uint64_t);\n");
-        b.push_str("extern uint64_t sx_read(uint32_t);\n");
-        b.push_str("extern void sx_settle(void);\n\n");
-        b.push_str("int main(void) {\n    sx_reset();\n");
-        b.push_str("    printf(\"\\nrunning 1 test\\n\");\n");
+        b.push_str(&format!("int test_{}(void) {{\n    sx_reset();\n", self.name));
 
         // Initial `let` values, then settle (mirrors the interpreter).
         for item in items {
@@ -103,10 +143,7 @@ impl Ctx<'_> {
             }
         }
 
-        b.push_str(&format!(
-            "    printf(\"test {} ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n\");\n    return 0;\n}}\n",
-            self.name
-        ));
+        b.push_str("    return 0;\n}\n\n");
         Ok(b)
     }
 
@@ -184,10 +221,9 @@ impl Ctx<'_> {
                 let c = self.expr(cond)?;
                 let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "assertion failed".into());
                 let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
-                b.push_str(&format!(
-                    "{ind}if (!({c})) {{ printf(\"test {} ... FAILED\\n\\nfailures:\\n    {msg}\\n\\ntest result: FAILED. 0 passed; 1 failed\\n\"); return 1; }}\n",
-                    self.name
-                ));
+                // Record the failure message and fail this test; `main` prints
+                // the `test <name> ... FAILED` line and the message.
+                b.push_str(&format!("{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"));
             }
             _ => {}
         }
