@@ -979,8 +979,11 @@ in s: string[5];             // the use supplies the range: Char[5]
 ```
 
 Using an unconstrained array where a concrete size is needed (a port, a
-signal) without supplying one is an error. Length inference from
-initializers (`let s = "hello";` -> `Char[5]`) is the string-literal work.
+signal) without supplying one is an error. A **string literal supplies the
+length**: `let s: string = "hello";` infers `Char[5]`, assigns one code
+point per element, and whole-string equality (`s == "hello"`) compares
+element by element. Whole-array assignment of the same element type and
+length copies (`o = s`).
 
 **Named ranges.** A `range` constant names a range, preserving direction,
 usable in both type and slice position:

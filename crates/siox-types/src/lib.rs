@@ -960,6 +960,10 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
         (UInt(a), UInt(b)) | (Int(a), Int(b)) => *a == 0 || *b == 0 || a == b,
         (Named(a), Named(b)) => a == b,
+        // Whole-array copy: same element type, matching length (0 = unset).
+        (Array { elem: ea, len: la }, Array { elem: eb, len: lb }) => {
+            compatible(ea, eb) && (*la == 0 || *lb == 0 || la == lb)
+        }
         _ => false,
     }
 }

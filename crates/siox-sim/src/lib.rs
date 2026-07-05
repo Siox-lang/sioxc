@@ -562,6 +562,10 @@ fn run_one<S: Slot>(
                             }
                         }
                     }
+                    // `let s: string = "hello";` writes each Char element.
+                    Some(ast::Expr::StrLit { text, .. }) => {
+                        tb.set_string(&l.name.text, text);
+                    }
                     Some(value) => {
                         let v = tb.eval_for(&l.name.text, value);
                         tb.set_name(&l.name.text, v);
@@ -618,6 +622,22 @@ impl<S: Slot> Testbench<'_, S> {
         }
     }
 
+    /// Write a string literal to a Char-array local, one code point per
+    /// element (`s = "hi"` sets `s[0]='h'`, `s[1]='i'`).
+    fn set_string(&mut self, path: &str, text: &str) {
+        let prefix = format!("{path}[");
+        let mut ids: Vec<(usize, SignalId)> = self
+            .map
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, &id)| (id.0 as usize, id))
+            .collect();
+        ids.sort_by_key(|(i, _)| *i);
+        for ((_, id), c) in ids.into_iter().zip(text.chars()) {
+            self.sim.set(id, c as u32 as u64);
+        }
+    }
+
     /// Evaluate a stimulus value for a named target: `real` targets take the
     /// value's f64 bits (`a.re = 3` stores 3.0).
     fn eval_for(&self, name: &str, e: &ast::Expr) -> S {
@@ -654,6 +674,13 @@ impl<S: Slot> Testbench<'_, S> {
         match s {
             ast::Stmt::Assign { target, value, .. } => {
                 if let Some(path) = expr_path(target) {
+                    // A string literal assigns each Char element (`s = "hi";`).
+                    if let ast::Expr::StrLit { text, .. } = value {
+                        self.set_string(&path, text);
+                        self.sim.settle();
+                        self.sample();
+                        return;
+                    }
                     // A struct literal assigns each field of a flattened
                     // struct local (`a = { .re = 3, .im = 4 };`).
                     if let ast::Expr::Construct { args, .. } = value {
@@ -807,6 +834,14 @@ impl<S: Slot> Testbench<'_, S> {
                 }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // Whole-string equality: `s == "hello"` compares element-wise
+                // (a string is a Char array).
+                if matches!(lower_ast_binop(*op), BinOp::Eq | BinOp::Ne) {
+                    if let Some(eq) = self.string_eq(lhs, rhs) {
+                        let v = if matches!(lower_ast_binop(*op), BinOp::Eq) { eq } else { !eq };
+                        return S::from_u64(v as u64);
+                    }
+                }
                 // A character literal reads through its counterpart's type:
                 // a Char signal reads it as Unicode (code point).
                 if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
@@ -837,6 +872,57 @@ impl<S: Slot> Testbench<'_, S> {
             }
             _ => S::from_u64(0),
         }
+    }
+
+    /// The ordered element signal ids of a Char-array local, if `e` names
+    /// one (`s` -> the ids of `s[0]`, `s[1]`, ...). Elements are kept in the
+    /// order the design flattened them.
+    fn char_array(&self, e: &ast::Expr) -> Option<Vec<SignalId>> {
+        let path = expr_path(e)?;
+        let prefix = format!("{path}[");
+        if !self.map.keys().any(|k| k.starts_with(&prefix)) {
+            return None;
+        }
+        // Preserve the design's element order via signal id.
+        let mut elems: Vec<(usize, SignalId)> = self
+            .map
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, &id)| (id.0 as usize, id))
+            .collect();
+        elems.sort_by_key(|(i, _)| *i);
+        Some(elems.into_iter().map(|(_, id)| id).collect())
+    }
+
+    /// Element-wise string equality when one side is a string literal (or
+    /// both sides are Char arrays). `None` if this is not a string compare.
+    fn string_eq(&self, lhs: &ast::Expr, rhs: &ast::Expr) -> Option<bool> {
+        let lit = |e: &ast::Expr| match e {
+            ast::Expr::StrLit { text, .. } => Some(text.chars().collect::<Vec<_>>()),
+            _ => None,
+        };
+        // literal vs array
+        let (arr, chars) = match (lit(lhs), lit(rhs)) {
+            (Some(_), Some(_)) => return None, // two literals: not our case
+            (None, Some(c)) => (self.char_array(lhs)?, c),
+            (Some(c), None) => (self.char_array(rhs)?, c),
+            (None, None) => {
+                // array vs array
+                let a = self.char_array(lhs)?;
+                let b = self.char_array(rhs)?;
+                return Some(
+                    a.len() == b.len()
+                        && a.iter().zip(&b).all(|(&x, &y)| self.sim.read(x) == self.sim.read(y)),
+                );
+            }
+        };
+        Some(
+            arr.len() == chars.len()
+                && arr
+                    .iter()
+                    .zip(&chars)
+                    .all(|(&id, &c)| self.sim.read(id) == c as u32 as u64),
+        )
     }
 
     /// Whether a stimulus expression reads a `Char` signal.
@@ -1487,6 +1573,32 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
+    fn string_literals_infer_char_arrays() {
+        // `using string = Char[]` — an unconstrained array; a string literal
+        // supplies the length (Char[5]), assigns per element, and whole-string
+        // equality compares element-wise.
+        assert_test_passes(
+            "module m;\n\
+             using string = Char[];\n\
+             entity Echo { in s: string[5]; out o: string[5]; }\n\
+             impl Echo { o = s; }\n\
+             #[test]\n\
+             entity StrTest {}\n\
+             impl StrTest {\n\
+               let s: string = \"hello\";\n\
+               let o: string[5];\n\
+               let dut = Echo { .s, .o };\n\
+               wait 1ns;\n\
+               assert!(o == \"hello\", \"echoed string matches\");\n\
+               assert!(o != \"world\", \"and differs from another\");\n\
+               s = \"world\";\n\
+               wait 1ns;\n\
+               assert!(o == \"world\", \"reassignment propagates\");\n\
+             }\n",
+        );
     }
 
     #[test]

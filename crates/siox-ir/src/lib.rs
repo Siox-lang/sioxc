@@ -201,6 +201,9 @@ struct Lowering<'a> {
     local_struct: HashMap<String, String>,
     /// Locals of the symbol base type `Char`.
     local_char: std::collections::HashSet<String>,
+    /// Array-typed locals -> their ordered element indices (whole-array
+    /// assignment and string literals expand per element).
+    local_array: HashMap<String, Vec<i64>>,
 }
 
 /// A lowered value: a scalar expression, or one expression per struct field
@@ -259,6 +262,7 @@ impl<'a> Lowering<'a> {
             local_enum: HashMap::new(),
             local_struct: HashMap::new(),
             local_char: std::collections::HashSet::new(),
+            local_array: HashMap::new(),
         }
     }
 
@@ -347,6 +351,7 @@ impl<'a> Lowering<'a> {
         self.local_enum.clear();
         self.local_struct.clear();
         self.local_char.clear();
+        self.local_array.clear();
         for p in &edecl.ports {
             self.add_typed_signal(name, &p.name.text, &p.ty, &env);
         }
@@ -354,6 +359,21 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
+                    // `let s: string = "hello";` / `let s = "hello";`:
+                    // a string literal supplies the unconstrained range.
+                    let unconstrained = match &l.ty {
+                        None => true,
+                        Some(t) => matches!(
+                            self.resolve_alias_shallow(t),
+                            ast::Type::Indexed { index: None, .. }
+                        ),
+                    };
+                    if unconstrained {
+                        if let Some(ast::Expr::StrLit { text, .. }) = &l.value {
+                            self.add_char_array(name, &l.name.text, text.chars().count());
+                            continue;
+                        }
+                    }
                     if let Some(ty) = &l.ty {
                         self.add_typed_signal(name, &l.name.text, ty, &env);
                     } else {
@@ -437,6 +457,7 @@ impl<'a> Lowering<'a> {
             }
         } else if let Some((elem, indices)) = array_of(ty, env, &self.const_ranges) {
             let elem = elem.clone();
+            self.local_array.insert(name.to_string(), indices.clone());
             for i in indices {
                 self.add_typed_signal(entity, &format!("{name}[{i}]"), &elem, env);
             }
@@ -544,6 +565,51 @@ impl<'a> Lowering<'a> {
                 // A struct-typed target takes one driver per flattened field
                 // (struct copy, struct literal, or an inlined operator impl).
                 if let Some(tpath) = expr_path(target) {
+                    // Whole-array assignment: a string literal fills a Char
+                    // array per element; an array of the same shape copies.
+                    if let Some(indices) = self.local_array.get(&tpath).cloned() {
+                        match value {
+                            ast::Expr::StrLit { text, .. } => {
+                                let chars: Vec<char> = text.chars().collect();
+                                if chars.len() != indices.len() {
+                                    self.sink.emit(siox_diag::Diagnostic::error(format!(
+                                        "string literal length {} does not match `{tpath}` length {}",
+                                        chars.len(),
+                                        indices.len()
+                                    )));
+                                    return;
+                                }
+                                for (c, i) in chars.iter().zip(&indices) {
+                                    if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
+                                        self.out.drivers.push(Driver {
+                                            target: sig,
+                                            cond: cond.clone(),
+                                            expr: Expr::Const(*c as u32 as u64),
+                                        });
+                                    }
+                                }
+                                return;
+                            }
+                            v => {
+                                if let Some(vpath) = expr_path(v) {
+                                    if let Some(vidx) = self.local_array.get(&vpath).cloned() {
+                                        for (ti, vi) in indices.iter().zip(&vidx) {
+                                            let t = self.locals.get(&format!("{tpath}[{ti}]"));
+                                            let sv = self.locals.get(&format!("{vpath}[{vi}]"));
+                                            if let (Some(&t), Some(&sv)) = (t, sv) {
+                                                self.out.drivers.push(Driver {
+                                                    target: t,
+                                                    cond: cond.clone(),
+                                                    expr: Expr::Current(sv),
+                                                });
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if self.local_struct.contains_key(&tpath) {
                         if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
                             for (fname, expr) in fields {
@@ -931,6 +997,31 @@ impl<'a> Lowering<'a> {
                 self.const_ranges.get(&p.segments[0].text).copied()
             }
             _ => None,
+        }
+    }
+
+    /// One alias hop, for inspecting a declared type's shape.
+    fn resolve_alias_shallow<'t>(&'t self, ty: &'t ast::Type) -> &'t ast::Type {
+        if let ast::Type::Path(p) = ty {
+            if p.segments.len() == 1 {
+                if let Some(t) = self.aliases.get(&p.segments[0].text) {
+                    return t;
+                }
+            }
+        }
+        ty
+    }
+
+    /// Declare `name` as a `Char[n]` array (string-literal inference).
+    fn add_char_array(&mut self, entity: &str, name: &str, n: usize) {
+        self.local_array.insert(name.to_string(), (0..n as i64).collect());
+        for i in 0..n {
+            let elem = format!("{name}[{i}]");
+            self.add_signal(entity, &elem, 32);
+            if let Some(&id) = self.locals.get(&elem) {
+                self.out.signals[id.0 as usize].char = true;
+            }
+            self.local_char.insert(elem);
         }
     }
 
