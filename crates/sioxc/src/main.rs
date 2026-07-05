@@ -683,20 +683,14 @@ fn cmd_test(
     } else {
         run_interp(modules, &hier, &design, filter, slot)
     };
-    if results.is_empty() {
-        match filter {
-            Some(f) => eprintln!("no #[test] entity matching `{f}`"),
-            None => eprintln!("no #[test] entities found"),
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    let mut failed = 0;
+    // libtest-style report (the rustc parallel).
+    println!("\nrunning {} test{}", results.len(), if results.len() == 1 { "" } else { "s" });
+    let mut failures: Vec<(&str, String)> = Vec::new();
     for r in &results {
         if r.passed {
-            println!("PASS  {}", r.name);
+            println!("test {} ... ok", r.name);
         } else {
-            failed += 1;
+            println!("test {} ... FAILED", r.name);
             let loc = r
                 .span
                 .map(|s| {
@@ -706,11 +700,19 @@ fn cmd_test(
                 })
                 .unwrap_or_default();
             let msg = r.failure.as_deref().unwrap_or("assertion failed");
-            println!("FAIL  {} — {msg}{loc}", r.name);
+            failures.push((&r.name, format!("{msg}{loc}")));
         }
     }
+    if !failures.is_empty() {
+        println!("\nfailures:");
+        for (name, why) in &failures {
+            println!("    {name}: {why}");
+        }
+    }
+    let failed = failures.len();
     let passed = results.len() - failed;
-    println!("\n{passed} passed, {failed} failed");
+    let verdict = if failed == 0 { "ok" } else { "FAILED" };
+    println!("\ntest result: {verdict}. {passed} passed; {failed} failed");
     if failed > 0 {
         ExitCode::FAILURE
     } else {

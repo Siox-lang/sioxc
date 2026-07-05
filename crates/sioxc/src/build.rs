@@ -38,7 +38,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     let enums = enum_discriminants(modules);
     let items = test_items(modules, &tb_entity);
 
-    let ctx = Ctx { design, map: &map, enums: &enums };
+    let ctx = Ctx { design, map: &map, enums: &enums, name: &tb_entity };
     let c = ctx.gen_c(&items)?;
 
     // Emit the DUT object and link a native binary with clang.
@@ -65,6 +65,7 @@ struct Ctx<'a> {
     design: &'a Design,
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
+    name: &'a str,
 }
 
 impl Ctx<'_> {
@@ -76,6 +77,7 @@ impl Ctx<'_> {
         b.push_str("extern uint64_t sx_read(uint32_t);\n");
         b.push_str("extern void sx_settle(void);\n\n");
         b.push_str("int main(void) {\n    sx_reset();\n");
+        b.push_str("    printf(\"\\nrunning 1 test\\n\");\n");
 
         // Initial `let` values, then settle (mirrors the interpreter).
         for item in items {
@@ -101,7 +103,10 @@ impl Ctx<'_> {
             }
         }
 
-        b.push_str("    printf(\"PASS\\n\");\n    return 0;\n}\n");
+        b.push_str(&format!(
+            "    printf(\"test {} ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n\");\n    return 0;\n}}\n",
+            self.name
+        ));
         Ok(b)
     }
 
@@ -180,7 +185,8 @@ impl Ctx<'_> {
                 let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "assertion failed".into());
                 let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
                 b.push_str(&format!(
-                    "{ind}if (!({c})) {{ printf(\"FAIL: {msg}\\n\"); return 1; }}\n"
+                    "{ind}if (!({c})) {{ printf(\"test {} ... FAILED\\n\\nfailures:\\n    {msg}\\n\\ntest result: FAILED. 0 passed; 1 failed\\n\"); return 1; }}\n",
+                    self.name
                 ));
             }
             _ => {}
