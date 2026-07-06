@@ -132,8 +132,6 @@ pub struct SignalState<S: Slot = u64> {
 pub struct Simulator<'a, S: Slot = u64> {
     design: &'a Design,
     state: Vec<SignalState<S>>,
-    /// Simulation time in femtoseconds.
-    time_fs: u64,
     /// Combinational processes: `(target, source-ordered driver indices)`.
     /// Built once from `Design::processes` for event-driven dispatch.
     comb: Vec<(SignalId, Vec<usize>)>,
@@ -163,7 +161,7 @@ impl<'a, S: Slot> Simulator<'a, S> {
                 comb.push((target, drivers));
             }
         }
-        Simulator { design, state, time_fs: 0, comb, sens }
+        Simulator { design, state, comb, sens }
     }
 
     /// The id of a signal by its hierarchical path, e.g. `Counter.count`.
@@ -192,15 +190,6 @@ impl<'a, S: Slot> Simulator<'a, S> {
         self.state[sig.0 as usize].current.to_u128()
     }
 
-    pub fn time_fs(&self) -> u64 {
-        self.time_fs
-    }
-
-    /// Advance simulation time and settle.
-    pub fn advance(&mut self, fs: u64) {
-        self.time_fs += fs;
-        self.settle();
-    }
 
     /// Run delta cycles until the design is stable.
     pub fn settle(&mut self) {
@@ -347,8 +336,6 @@ pub trait Engine {
     fn set(&mut self, sig: SignalId, value: u128);
     fn read(&self, sig: SignalId) -> u128;
     fn settle(&mut self);
-    fn advance(&mut self, fs: u64);
-    fn time_fs(&self) -> u64;
     fn design(&self) -> &Design;
 }
 
@@ -362,12 +349,6 @@ impl<S: Slot> Engine for Simulator<'_, S> {
     }
     fn settle(&mut self) {
         Simulator::settle(self);
-    }
-    fn advance(&mut self, fs: u64) {
-        Simulator::advance(self, fs);
-    }
-    fn time_fs(&self) -> u64 {
-        self.time_fs
     }
     fn design(&self) -> &Design {
         self.design
@@ -686,6 +667,7 @@ fn run_one<'a>(
         record,
         samples: Vec::new(),
         clocks: Vec::new(),
+        time_fs: 0,
     };
 
     // Apply initial `let` values, then settle and record the starting state.
@@ -768,6 +750,10 @@ struct Testbench<'a> {
     samples: Vec<Sample>,
     /// Background clocks driving `await` edges/conditions.
     clocks: Vec<ClockGen>,
+    /// Simulation time in femtoseconds. The runner owns the clock (the engine
+    /// is purely combinational), so time is correct on any backend — including
+    /// the JIT, whose settle-only engine has no notion of time.
+    time_fs: u64,
 }
 
 impl Testbench<'_> {
@@ -822,7 +808,7 @@ impl Testbench<'_> {
         if self.record {
             let n = self.engine.design().signals.len() as u32;
             let values = (0..n).map(|i| self.engine.read(SignalId(i))).collect();
-            self.samples.push(Sample { time_fs: self.engine.time_fs(), values });
+            self.samples.push(Sample { time_fs: self.time_fs, values });
         }
     }
 
@@ -906,16 +892,16 @@ impl Testbench<'_> {
                     self.engine.set(id, 1);
                     self.engine.settle();
                     self.sample();
-                    self.engine.advance(HALF_PERIOD);
+                    self.time_fs += HALF_PERIOD;
                     self.engine.set(id, 0);
                     self.engine.settle();
                     self.sample();
-                    self.engine.advance(HALF_PERIOD);
+                    self.time_fs += HALF_PERIOD;
                 }
             }
             // wait <duration>: advance simulation time.
             "wait" => {
-                self.engine.advance(duration_fs(args));
+                self.time_fs += duration_fs(args);
                 self.sample();
             }
             // clock(clk, period): start a free-running background clock.
@@ -923,7 +909,7 @@ impl Testbench<'_> {
                 if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
                     let half = (duration_fs(&args[1..]) / 2).max(1);
                     self.engine.set(id, 0);
-                    let next = self.engine.time_fs() + half;
+                    let next = self.time_fs + half;
                     self.clocks.push(ClockGen { id, half_period: half, next_edge: next });
                 }
             }
@@ -949,11 +935,11 @@ impl Testbench<'_> {
     fn do_await(&mut self, args: &[ast::Expr]) {
         match args.first() {
             Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
-                let target = self.engine.time_fs() + duration_fs(args);
+                let target = self.time_fs + duration_fs(args);
                 self.run_clocks_until(target);
-                let now = self.engine.time_fs();
+                let now = self.time_fs;
                 if target > now {
-                    self.engine.advance(target - now);
+                    self.time_fs = target;
                 }
                 self.engine.settle();
                 self.sample();
@@ -976,9 +962,8 @@ impl Testbench<'_> {
         let Some(t) = self.clocks.iter().map(|c| c.next_edge).min() else {
             return false;
         };
-        let now = self.engine.time_fs();
-        if t > now {
-            self.engine.advance(t - now);
+        if t > self.time_fs {
+            self.time_fs = t;
         }
         for i in 0..self.clocks.len() {
             if self.clocks[i].next_edge == t {

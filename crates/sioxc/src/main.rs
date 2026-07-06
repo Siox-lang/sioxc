@@ -619,14 +619,6 @@ impl siox_sim::Engine for JitEngine<'_, '_> {
     fn settle(&mut self) {
         self.jit.settle();
     }
-    fn advance(&mut self, _fs: u64) {
-        // No timed behaviour in Phase 1 beyond explicit clock edges, so
-        // advancing time is just another settle.
-        self.jit.settle();
-    }
-    fn time_fs(&self) -> u64 {
-        0
-    }
     fn design(&self) -> &siox_ir::Design {
         self.design
     }
