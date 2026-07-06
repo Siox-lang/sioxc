@@ -31,16 +31,19 @@ flowchart TD
     RES -->|siox-types| TY[Typed]
     TY -->|siox-elab| HIER[Hierarchy]
     HIER -->|siox-ir| IR[Design]
-    IR -->|siox-sim| SIM["results + tests (interpreter)"]
-    IR -->|siox-llvm| NAT["JIT / native object"]
-    SIM -->|siox-wave| VCD[VCD waveforms]
+    IR -->|siox-llvm| ENG["JIT / native object<br/>(execution engine)"]
+    ENG -->|test runner| OUT["#[test] results"]
+    ENG -->|"test runner + siox-wave"| VCD[VCD waveforms]
+    IR -.->|"siox-sim (--features interp)"| ORACLE["interpreter<br/>differential oracle"]
 ```
 
-`siox-diag` (spans, diagnostics, source map) underpins every stage, and
-`sioxc` is the binary that wires the stages together per subcommand.
-`siox-llvm` (behind the `llvm` feature) is an alternative consumer of the same
-`Design` IR — it JIT-runs or AOT-compiles designs to native code, verified
-against the interpreter.
+`siox-diag` (spans, diagnostics, source map) underpins every stage, and `sioxc`
+is the binary that wires them together per subcommand. **`siox-llvm` (on by
+default) is the execution engine** — it JIT-runs or AOT-compiles the `Design` to
+native code; the engine-generic test runner drives it to produce `#[test]`
+results and traced waveforms. The `siox-sim` **interpreter** (dashed; behind
+`--features interp`) is kept only as the differential oracle that verifies the
+compiler.
 
 ## Current status (summary)
 

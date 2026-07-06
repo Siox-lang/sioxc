@@ -9,9 +9,11 @@ the input to the crate below. The only crate everything may depend on is
 flowchart LR
     subgraph pipeline [compiler pipeline]
         direction LR
-        SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir] --> SI[siox-sim] --> WA[siox-wave]
+        SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir]
     end
     IR --> LL[siox-llvm]
+    LL -->|test runner| WA[siox-wave]
+    IR -. "--features interp" .-> SI[siox-sim]
     DIAG[siox-diag] -. used by all .-> pipeline
     CLI[sioxc] == drives ==> pipeline
 ```
@@ -52,7 +54,7 @@ flowchart TD
     C -->|siox-types| D["Typed<br/>expression / signal types"]
     D -->|siox-elab| E["Hierarchy<br/>instances + connections"]
     E -->|siox-ir| F["Design<br/>signals, drivers, event blocks"]
-    F -->|siox-sim| G["values / TestResults"]
+    F -->|"siox-llvm + test runner"| G["TestResults / traced samples"]
     G -->|siox-wave| H["VCD"]
 ```
 
