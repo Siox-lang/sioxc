@@ -3,7 +3,7 @@
 //! arithmetic, slices, concat, enum match, struct/array signals, char
 //! literals, and sequential (clocked) designs. Only built with
 //! `--features llvm`.
-#![cfg(feature = "llvm")]
+#![cfg(all(feature = "llvm", feature = "interp"))]
 
 use siox_diag::{DiagnosticSink, FileId};
 use siox_ir::{Design, SignalId};

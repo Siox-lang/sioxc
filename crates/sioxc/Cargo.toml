@@ -30,3 +30,6 @@ default = ["llvm"]
 # Enable the LLVM backend commands (`siox emit-llvm`). Requires a matching
 # LLVM toolchain; the default `siox` binary builds without it.
 llvm = ["siox-llvm/llvm"]
+# Opt back into the interpreter: the reference oracle and >64-bit fallback,
+# plus `--backend interp`. Off by default — the compiled backend is the engine.
+interp = ["siox-sim/interp", "siox-llvm/interp"]

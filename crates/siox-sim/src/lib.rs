@@ -19,7 +19,9 @@ use std::collections::HashMap;
 
 use siox_diag::Span;
 use siox_elab::Hierarchy;
-use siox_ir::{BinOp, Design, Expr, SignalId, UnOp};
+use siox_ir::{BinOp, Design, SignalId};
+#[cfg(feature = "interp")]
+use siox_ir::{Expr, UnOp};
 use siox_syntax::ast;
 use siox_syntax::Module;
 
@@ -103,6 +105,7 @@ impl_slot!(u128, 128);
 /// declares signals wider than 64 bits — precision costs speed, so the fast
 /// slot stays the default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "interp")]
 pub enum SlotWidth {
     Auto,
     W64,
@@ -110,12 +113,14 @@ pub enum SlotWidth {
 }
 
 /// Whether any signal in the design outgrows 64-bit slots.
+#[cfg(feature = "interp")]
 pub fn needs_wide(design: &Design) -> bool {
     design.signals.iter().any(|s| s.width > 64)
 }
 
 /// Per-signal runtime state: current value, previous value, and event flag.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg(feature = "interp")]
 pub struct SignalState<S: Slot = u64> {
     pub current: S,
     pub old: S,
@@ -123,6 +128,7 @@ pub struct SignalState<S: Slot = u64> {
 }
 
 /// Simulation kernel, generic over the backend slot width.
+#[cfg(feature = "interp")]
 pub struct Simulator<'a, S: Slot = u64> {
     design: &'a Design,
     state: Vec<SignalState<S>>,
@@ -137,8 +143,10 @@ pub struct Simulator<'a, S: Slot = u64> {
 
 /// A combinational fixpoint that fails to converge after this many iterations is
 /// treated as stable (oscillation guard).
+#[cfg(feature = "interp")]
 const MAX_DELTAS: usize = 10_000;
 
+#[cfg(feature = "interp")]
 impl<'a, S: Slot> Simulator<'a, S> {
     pub fn new(design: &'a Design) -> Self {
         let state = vec![SignalState::default(); design.signals.len()];
@@ -344,6 +352,7 @@ pub trait Engine {
     fn design(&self) -> &Design;
 }
 
+#[cfg(feature = "interp")]
 impl<S: Slot> Engine for Simulator<'_, S> {
     fn set(&mut self, sig: SignalId, value: u128) {
         self.set_slot(sig, S::from_u128(value));
@@ -367,6 +376,7 @@ impl<S: Slot> Engine for Simulator<'_, S> {
 
 /// Truncate a value to a signal's bit width (arithmetic wraps at `2^width`).
 /// Width `0` (unknown) or `>= slot bits` leaves the value unchanged.
+#[cfg(feature = "interp")]
 fn mask<S: Slot>(value: S, width: u32) -> S {
     if width == 0 || width >= S::BITS {
         value
@@ -450,6 +460,7 @@ const HALF_PERIOD: u64 = 5_000_000; // 5 ns
 /// `let` initial values, assignments, `tick(clk)`, `wait`, `for` over a static
 /// range, `if`, and `assert!(cond, "msg")`.
 /// `filter`, when given, runs only the `#[test]` entities whose name contains it.
+#[cfg(feature = "interp")]
 pub fn run_tests(
     modules: &[Module],
     hier: &Hierarchy,
@@ -461,6 +472,7 @@ pub fn run_tests(
 
 /// [`run_tests`] with an explicit backend slot width. `Auto` selects 128-bit
 /// slots only when the design has signals wider than 64 bits.
+#[cfg(feature = "interp")]
 pub fn run_tests_with(
     modules: &[Module],
     hier: &Hierarchy,
@@ -472,6 +484,7 @@ pub fn run_tests_with(
 }
 
 /// Build an interpreter engine (`Simulator`) of the right slot width.
+#[cfg(feature = "interp")]
 fn interp_engine(design: &Design, wide: bool) -> Box<dyn Engine + '_> {
     if wide {
         Box::new(Simulator::<u128>::new(design))
@@ -480,6 +493,7 @@ fn interp_engine(design: &Design, wide: bool) -> Box<dyn Engine + '_> {
     }
 }
 
+#[cfg(feature = "interp")]
 fn wide_run(slot: SlotWidth, design: &Design) -> bool {
     match slot {
         SlotWidth::W64 => false,
@@ -488,6 +502,7 @@ fn wide_run(slot: SlotWidth, design: &Design) -> bool {
     }
 }
 
+#[cfg(feature = "interp")]
 fn run_tests_impl(
     modules: &[Module],
     hier: &Hierarchy,
@@ -524,8 +539,34 @@ pub fn run_tests_with_engine<'e>(
     results
 }
 
+/// Like [`run_test_traced`] but against a caller-provided engine (e.g. the
+/// JIT), so waveform tracing works on the compiled backend. Records a sample at
+/// every step of the first matching `#[test]`.
+pub fn run_test_traced_with_engine<'e>(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    filter: Option<&str>,
+    mut make_engine: impl FnMut() -> Box<dyn Engine + 'e>,
+) -> Option<(TestResult, Vec<Sample>)> {
+    let (entities, impls) = collect_defs(modules);
+    let enums = enum_discriminants(modules);
+    for &root in &hier.roots {
+        let inst = hier.instance(root);
+        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        if is_test && selected {
+            let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
+            let engine = make_engine();
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, true));
+        }
+    }
+    None
+}
+
 /// Run the first `#[test]` entity (optionally name-filtered), recording a signal
 /// sample at every simulation step for waveform export (spec Stage 9).
+#[cfg(feature = "interp")]
 pub fn run_test_traced(
     modules: &[Module],
     hier: &Hierarchy,
@@ -535,6 +576,7 @@ pub fn run_test_traced(
     run_test_traced_impl(modules, hier, design, filter, needs_wide(design))
 }
 
+#[cfg(feature = "interp")]
 fn run_test_traced_impl(
     modules: &[Module],
     hier: &Hierarchy,
@@ -1266,7 +1308,8 @@ fn lower_ast_binop(op: ast::BinOp) -> BinOp {
     }
 }
 
-#[cfg(test)]
+// These exercises run designs on the interpreter, so they need its feature.
+#[cfg(all(test, feature = "interp"))]
 mod tests {
     use super::*;
     use siox_diag::FileId;

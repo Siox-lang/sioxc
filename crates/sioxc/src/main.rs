@@ -644,6 +644,7 @@ fn run_tests_llvm(
 }
 
 /// Run the `#[test]` entities on the interpreter (the reference oracle).
+#[cfg(feature = "interp")]
 fn run_interp(
     modules: &[Module],
     hier: &siox_elab::Hierarchy,
@@ -661,6 +662,7 @@ fn run_interp(
 }
 
 /// Parse the `--slot` flag into a sim slot width.
+#[cfg(feature = "interp")]
 fn slot_width(s: &str) -> siox_sim::SlotWidth {
     match s {
         "64" => siox_sim::SlotWidth::W64,
@@ -693,18 +695,38 @@ fn cmd_test(
         return ExitCode::FAILURE;
     }
 
-    // LLVM is the default engine; fall back to the interpreter (the reference
-    // oracle) for designs it can't compile yet or a build without a toolchain.
-    let results = if backend == "llvm" {
+    // `--slot` only matters to the interpreter.
+    #[cfg(not(feature = "interp"))]
+    let _ = slot;
+
+    // LLVM is the default engine. With the `interp` feature it falls back to the
+    // interpreter (oracle / >64-bit); without it, an un-JIT-able design errors.
+    let results = if backend == "interp" {
+        #[cfg(feature = "interp")]
+        {
+            run_interp(modules, &hier, &design, filter, slot)
+        }
+        #[cfg(not(feature = "interp"))]
+        {
+            eprintln!("backend `interp` is not in this build (rebuild with `--features interp`)");
+            return ExitCode::FAILURE;
+        }
+    } else {
         match run_tests_llvm(modules, &hier, &design, filter) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("backend: interp (llvm unavailable: {e})");
-                run_interp(modules, &hier, &design, filter, slot)
+                #[cfg(feature = "interp")]
+                {
+                    eprintln!("backend: interp (llvm unavailable: {e})");
+                    run_interp(modules, &hier, &design, filter, slot)
+                }
+                #[cfg(not(feature = "interp"))]
+                {
+                    eprintln!("backend: llvm unavailable: {e}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
-    } else {
-        run_interp(modules, &hier, &design, filter, slot)
     };
     // libtest-style report (the rustc parallel).
     println!("\nrunning {} test{}", results.len(), if results.len() == 1 { "" } else { "s" });
@@ -743,6 +765,33 @@ fn cmd_test(
     }
 }
 
+/// Trace the first `#[test]` for waveform export — via the JIT when available,
+/// else the interpreter.
+fn trace_first_test(
+    modules: &[Module],
+    hier: &siox_elab::Hierarchy,
+    design: &siox_ir::Design,
+) -> Option<(siox_sim::TestResult, Vec<siox_sim::Sample>)> {
+    #[cfg(feature = "llvm")]
+    {
+        let jittable = design.signals.iter().all(|s| s.width <= 64) && design.validate().is_empty();
+        if jittable {
+            return siox_llvm::with_jit(design, |jit| {
+                siox_sim::run_test_traced_with_engine(modules, hier, design, None, || {
+                    jit.reset();
+                    Box::new(JitEngine { jit, design }) as Box<dyn siox_sim::Engine>
+                })
+            });
+        }
+    }
+    #[cfg(feature = "interp")]
+    {
+        return siox_sim::run_test_traced(modules, hier, design, None);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 /// `siox sim --wave <out.vcd>`: run the first test entity with tracing and write
 /// its waveform as VCD.
 fn cmd_wave(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
@@ -758,8 +807,8 @@ fn cmd_wave(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let Some((result, samples)) = siox_sim::run_test_traced(modules, &hier, &design, None) else {
-        eprintln!("no #[test] entity found to trace");
+    let Some((result, samples)) = trace_first_test(modules, &hier, &design) else {
+        eprintln!("no #[test] entity found to trace (or no backend can run it)");
         return ExitCode::FAILURE;
     };
 
