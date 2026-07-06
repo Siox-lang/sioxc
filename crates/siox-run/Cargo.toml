@@ -1,5 +1,5 @@
 [package]
-name = "siox-wave"
+name = "siox-run"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,5 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+siox-diag.workspace = true
+siox-syntax.workspace = true
+siox-elab.workspace = true
 siox-ir.workspace = true
-siox-run.workspace = true

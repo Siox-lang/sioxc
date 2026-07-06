@@ -1,14 +1,14 @@
 //! Waveform / tracing output for siox Phase 1 (spec Stage 9).
 //!
 //! Takes the per-time [`Sample`]s recorded by a traced simulation run
-//! ([`siox_sim::run_test_traced`]) and writes a VCD file: a `$timescale`, one
+//! ([`siox_run::run_test_traced`]) and writes a VCD file: a `$timescale`, one
 //! `$scope`/`$var` per signal (grouped by the `Entity.signal` path prefix), then
 //! `#time` value-change records. Enum symbolic names and FST are follow-ups.
 
 use std::io::{self, Write};
 
 use siox_ir::Design;
-use siox_sim::Sample;
+use siox_run::Sample;
 
 /// Write the recorded samples for `design` as a VCD stream.
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {

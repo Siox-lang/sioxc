@@ -7,6 +7,7 @@ members = [
     "crates/siox-types",
     "crates/siox-elab",
     "crates/siox-ir",
+    "crates/siox-run",
     "crates/siox-llvm",
     "crates/siox-sim",
     "crates/siox-wave",
@@ -29,6 +30,7 @@ siox-resolve = { path = "crates/siox-resolve" }
 siox-types = { path = "crates/siox-types" }
 siox-elab = { path = "crates/siox-elab" }
 siox-ir = { path = "crates/siox-ir" }
+siox-run = { path = "crates/siox-run" }
 siox-llvm = { path = "crates/siox-llvm" }
 siox-sim = { path = "crates/siox-sim" }
 siox-wave = { path = "crates/siox-wave" }

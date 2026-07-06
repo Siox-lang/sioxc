@@ -582,7 +582,7 @@ fn run_tests_llvm(
     hier: &siox_elab::Hierarchy,
     design: &siox_ir::Design,
     filter: Option<&str>,
-) -> Result<Vec<siox_sim::TestResult>, String> {
+) -> Result<Vec<siox_run::TestResult>, String> {
     // The JIT is 64-bit-word only; reject wide designs (the interpreter
     // handles them) and any IR the backend can't compile.
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
@@ -594,14 +594,14 @@ fn run_tests_llvm(
     }
     eprintln!("backend: llvm (JIT)");
     Ok(siox_llvm::with_jit(design, |jit| {
-        siox_sim::run_tests_with_engine(modules, hier, design, filter, || {
+        siox_run::run_tests_with_engine(modules, hier, design, filter, || {
             jit.reset();
-            Box::new(JitEngine { jit, design }) as Box<dyn siox_sim::Engine>
+            Box::new(JitEngine { jit, design }) as Box<dyn siox_run::Engine>
         })
     }))
 }
 
-/// Adapts a JIT-compiled design to the test runner's [`siox_sim::Engine`].
+/// Adapts a JIT-compiled design to the test runner's [`siox_run::Engine`].
 #[cfg(feature = "llvm")]
 struct JitEngine<'a, 'ctx> {
     jit: &'a siox_llvm::Jit<'ctx>,
@@ -609,7 +609,7 @@ struct JitEngine<'a, 'ctx> {
 }
 
 #[cfg(feature = "llvm")]
-impl siox_sim::Engine for JitEngine<'_, '_> {
+impl siox_run::Engine for JitEngine<'_, '_> {
     fn set(&mut self, sig: siox_ir::SignalId, value: u128) {
         self.jit.set(sig.0, value as u64);
     }
@@ -631,7 +631,7 @@ fn run_tests_llvm(
     _hier: &siox_elab::Hierarchy,
     _design: &siox_ir::Design,
     _filter: Option<&str>,
-) -> Result<Vec<siox_sim::TestResult>, String> {
+) -> Result<Vec<siox_run::TestResult>, String> {
     Err("this build has no llvm backend (rebuild with `--features llvm`)".to_string())
 }
 
@@ -643,7 +643,7 @@ fn run_interp(
     design: &siox_ir::Design,
     filter: Option<&str>,
     slot: &str,
-) -> Vec<siox_sim::TestResult> {
+) -> Vec<siox_run::TestResult> {
     let width = slot_width(slot);
     if width == siox_sim::SlotWidth::W128
         || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(design))
@@ -763,15 +763,15 @@ fn trace_first_test(
     modules: &[Module],
     hier: &siox_elab::Hierarchy,
     design: &siox_ir::Design,
-) -> Option<(siox_sim::TestResult, Vec<siox_sim::Sample>)> {
+) -> Option<(siox_run::TestResult, Vec<siox_run::Sample>)> {
     #[cfg(feature = "llvm")]
     {
         let jittable = design.signals.iter().all(|s| s.width <= 64) && design.validate().is_empty();
         if jittable {
             return siox_llvm::with_jit(design, |jit| {
-                siox_sim::run_test_traced_with_engine(modules, hier, design, None, || {
+                siox_run::run_test_traced_with_engine(modules, hier, design, None, || {
                     jit.reset();
-                    Box::new(JitEngine { jit, design }) as Box<dyn siox_sim::Engine>
+                    Box::new(JitEngine { jit, design }) as Box<dyn siox_run::Engine>
                 })
             });
         }

@@ -12,17 +12,21 @@ flowchart LR
         SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir]
     end
     IR --> LL[siox-llvm]
-    LL -->|test runner| WA[siox-wave]
-    IR -. "--features interp" .-> SI[siox-sim]
+    LL -. Engine .-> RUN[siox-run]
+    SI[siox-sim] -. Engine .-> RUN
+    RUN --> WA[siox-wave]
+    IR -. "--features interp" .-> SI
     DIAG[siox-diag] -. used by all .-> pipeline
     CLI[sioxc] == drives ==> pipeline
 ```
 
-`siox-llvm` (behind the `llvm` cargo feature, on by default) is the primary
-consumer of the `siox-ir` `Design`: it emits LLVM, JIT-runs, or AOT-compiles
-the design to native code. It is the execution engine — `sioxc test` JIT-runs,
-`sim --wave` JIT-traces. The `siox-sim` interpreter (feature `interp`, off by
-default) is kept as the differential oracle and the >64-bit fallback.
+`siox-run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
+stimulus + `await`/`clock` scheduler, owns simulation time, and records
+waveforms — driving whatever `Engine` it's handed. `siox-llvm` (the `llvm`
+feature, on by default) is that `Engine` — it emits LLVM, JIT-runs, or
+AOT-compiles the `Design` to native code (`sioxc test` JIT-runs, `sim --wave`
+JIT-traces). The `siox-sim` interpreter (feature `interp`, off by default) is a
+second `Engine`, kept only as the differential oracle and the >64-bit fallback.
 
 **Layering rule:** a crate may depend only on the crates above it in this list
 (plus `siox-diag`). Do not introduce upward or sideways dependencies.
@@ -37,9 +41,10 @@ default) is kept as the differential oracle and the >64-bit fallback.
 | `siox-types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
 | `siox-elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
 | `siox-ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
-| `siox-sim`     | 7–8  | The engine-generic test runner (`#[test]` discovery, stimulus, `await`/`clock`, assertions) — always compiled, driven by the JIT. The delta-cycle `Simulator` interpreter is behind the `interp` feature (**off by default**): the differential oracle + >64-bit fallback. |
+| `siox-run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT, or the interpreter) is driven by this. |
+| `siox-sim`     | 7    | The delta-cycle **interpreter** — one `Engine`. Kept as the **differential oracle** verifying the compiled backend, and the >64-bit fallback. Not in the default build; pulled in via `--features interp`. |
 | `siox-wave`    | 9    | `Trace` recording + VCD export (FST later). |
-| `siox-llvm`    | B    | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; verified vs. `siox-sim`. |
+| `siox-llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; driven by `siox-run`, verified vs. the `siox-sim` interpreter. |
 | `sioxc`     | 12   | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
 
 Each crate's `lib.rs` opens with a doc-comment summarising its responsibility

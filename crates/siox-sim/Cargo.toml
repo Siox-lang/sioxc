@@ -6,19 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-# The delta-cycle interpreter (`Simulator`) + slot machinery. Off by default:
-# the compiled LLVM backend is the execution engine; the interpreter is kept as
-# the differential oracle and the >64-bit fallback, enabled with `--features
-# interp`. The engine-generic test runner (`Testbench`, `run_tests_with_engine`,
-# `await`/`clock`) is always compiled — the JIT drives it.
-interp = []
-
 [dependencies]
 siox-diag.workspace = true
 siox-syntax.workspace = true
 siox-elab.workspace = true
 siox-ir.workspace = true
+siox-run.workspace = true
 
 [dev-dependencies]
 # Used only to lower real source in the integration tests.

@@ -21,7 +21,8 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
 | `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; **hierarchical lowering** (per-instance signals + connection drivers); process decomposition + validator for codegen; `sioxc ir` |
-| `siox-sim`     | 7, 8 | 🟢 partial | the engine-generic test runner/**kernel**: `#[test]` runner, `await`/`clock` timing + event wheel (**runner owns simulation time**), `assert!`. The delta-cycle `Simulator` interpreter is behind the `interp` feature (the differential oracle + >64-bit fallback) |
+| `siox-run`     | 7, 8 | 🟢 partial | the engine-agnostic **kernel/test runner**: `Engine` trait, `#[test]` runner, `await`/`clock` timing + event wheel (**owns simulation time**), `assert!`, waveform sample recording. Drives whatever `Engine` it is given |
+| `siox-sim`     | 7    | 🟢 partial | the delta-cycle **interpreter** — one `Engine`, kept as the differential oracle + >64-bit fallback (not in the default build; `--features interp`) |
 | `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run (real timestamps, JIT-traced); `sioxc sim --wave` |
 | `siox-llvm`    | B    | 🟢 partial | **default execution engine** (inkwell, `llvm` feature on by default): emit `.ll`, JIT-run (`sioxc test`), AOT native object (`sioxc <file>`), native test binary (`test --no-run`); differentially verified vs. the interpreter oracle |
 | `sioxc`        | 12   | 🟢 working | rustc-shaped: bare `sioxc <file>` compiles; `check`/`test` (libtest output, `--no-run`)/`sim --wave`/`ir`/`ast`/`tree`/`tokens`/`emit-llvm` |
@@ -126,7 +127,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (todo):** dynamic (non-constant) array indexing; proper logic-value
   (X/Z) modelling; cascaded event domains.
 
-### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🟢 partial
+### Stage 8 — Tests, assertions, stimulus (`siox-run`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
   file/span/message; multiple tests run; `siox test examples/` works.
 - **Status (done):** the runner discovers `#[test]` entities, maps their signals

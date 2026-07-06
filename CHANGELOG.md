@@ -43,6 +43,12 @@ assertions, and VCD export — predates this changelog. See
   purely combinational (`set`/`read`/`settle`); the runner owns `time_fs` and
   the event wheel — deliberately the factoring digital events, Phase-2 analogue
   timesteps, and cocotb will all share.
+- **Split the simulation kernel from the interpreter.** The test runner —
+  `Engine` trait, `#[test]` discovery, stimulus, `await`/`clock` scheduler,
+  time, waveform recording — moved to a new **`siox-run`** crate (engine-agnostic,
+  always compiled). `siox-sim` is now *only* the delta-cycle interpreter (one
+  `Engine`), pulled in via `--features interp` as the differential oracle — the
+  rustc/Miri split at the crate level.
 - **Compiler renamed `siox` → `sioxc`** (crate + binary) — the rustc side of the
   planned rustc/cargo split (the cargo-like `pcb`/`circuit` is a future repo).
 - `test` reports in **libtest style** (`running N tests` … `test result: …`).

@@ -17,7 +17,8 @@ siox-resolve.workspace = true
 siox-types.workspace = true
 siox-elab.workspace = true
 siox-ir.workspace = true
-siox-sim.workspace = true
+siox-run.workspace = true
+siox-sim = { workspace = true, optional = true }
 siox-wave.workspace = true
 siox-llvm.workspace = true
 clap.workspace = true
@@ -32,4 +33,4 @@ default = ["llvm"]
 llvm = ["siox-llvm/llvm"]
 # Opt back into the interpreter: the reference oracle and >64-bit fallback,
 # plus `--backend interp`. Off by default — the compiled backend is the engine.
-interp = ["siox-sim/interp", "siox-llvm/interp"]
+interp = ["dep:siox-sim", "siox-llvm/interp"]

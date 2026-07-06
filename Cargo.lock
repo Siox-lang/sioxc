@@ -264,6 +264,7 @@ dependencies = [
  "siox-elab",
  "siox-ir",
  "siox-resolve",
+ "siox-run",
  "siox-sim",
  "siox-syntax",
  "siox-types",
@@ -278,6 +279,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "siox-run"
+version = "0.0.1"
+dependencies = [
+ "siox-diag",
+ "siox-elab",
+ "siox-ir",
+ "siox-syntax",
+]
+
+[[package]]
 name = "siox-sim"
 version = "0.0.1"
 dependencies = [
@@ -285,6 +296,7 @@ dependencies = [
  "siox-elab",
  "siox-ir",
  "siox-resolve",
+ "siox-run",
  "siox-syntax",
  "siox-types",
 ]
@@ -310,7 +322,7 @@ name = "siox-wave"
 version = "0.0.1"
 dependencies = [
  "siox-ir",
- "siox-sim",
+ "siox-run",
 ]
 
 [[package]]
@@ -323,6 +335,7 @@ dependencies = [
  "siox-ir",
  "siox-llvm",
  "siox-resolve",
+ "siox-run",
  "siox-sim",
  "siox-syntax",
  "siox-types",
