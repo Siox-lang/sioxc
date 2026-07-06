@@ -340,27 +340,60 @@ impl<'a> Lowering<'a> {
         if edecl.is_extern || has_attr(edecl, "test") {
             return;
         }
-
-        // Signals: ports, then impl-level `let` state. Build the local name map.
-        // Struct-typed signals flatten into one scalar signal per leaf field.
-        // Width environment: module constants, overridden by instance params.
+        // A top-level DUT: signals are entity-qualified (`Counter.count`), and
+        // widths come from its first instance's parameters.
         let mut env = self.consts.clone();
         env.extend(self.entity_params.get(name).cloned().unwrap_or_default());
-        self.cur_env = env.clone();
-        self.locals.clear();
-        self.local_enum.clear();
-        self.local_struct.clear();
-        self.local_char.clear();
-        self.local_array.clear();
+        self.lower_body(name, name, &env);
+    }
+
+    /// Lower entity `ename`'s body, naming signals under `path` (the instance
+    /// path — `Counter.count` at the top, `Add2.s1.a` for a sub-instance) in the
+    /// width environment `env`. Sub-instances (`let s = Sub { .p = x, .. }`) are
+    /// lowered recursively under `path.s` and their port connections become
+    /// drivers. Returns each port's (signal, direction) so a parent can wire to
+    /// it. Runs in a fresh name scope, restoring the caller's on return.
+    fn lower_body(
+        &mut self,
+        ename: &str,
+        path: &str,
+        env: &HashMap<String, i64>,
+    ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
+        let Some(edecl) = self.entities.get(ename).copied() else {
+            return HashMap::new();
+        };
+
+        // Save the caller's scope; give this body a fresh one.
+        let saved_locals = std::mem::take(&mut self.locals);
+        let saved_enum = std::mem::take(&mut self.local_enum);
+        let saved_struct = std::mem::take(&mut self.local_struct);
+        let saved_char = std::mem::take(&mut self.local_char);
+        let saved_array = std::mem::take(&mut self.local_array);
+        let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
+
+        // Ports (struct/array-typed ones flatten to leaves), then the port map.
         for p in &edecl.ports {
-            self.add_typed_signal(name, &p.name.text, &p.ty, &env);
+            self.add_typed_signal(path, &p.name.text, &p.ty, env);
         }
-        let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
+        let ports: HashMap<String, (SignalId, Option<ast::Direction>)> = edecl
+            .ports
+            .iter()
+            .filter_map(|p| self.locals.get(&p.name.text).map(|&id| (p.name.text.clone(), (id, p.dir))))
+            .collect();
+
+        // `let` items: instance bindings are collected for recursion; the rest
+        // become state signals.
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(ename).cloned().unwrap_or_default();
+        let mut subinsts: Vec<(String, ast::Type, Vec<ast::ConnectArg>)> = Vec::new();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    // `let s: string = "hello";` / `let s = "hello";`:
-                    // a string literal supplies the unconstrained range.
+                    // `let s = Sub { .. }`: a sub-instance, not a signal.
+                    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
+                        subinsts.push((l.name.text.clone(), cty.clone(), args.clone()));
+                        continue;
+                    }
+                    // `let s: string = "hello";`: the literal sets the range.
                     let unconstrained = match &l.ty {
                         None => true,
                         Some(t) => matches!(
@@ -370,15 +403,42 @@ impl<'a> Lowering<'a> {
                     };
                     if unconstrained {
                         if let Some(ast::Expr::StrLit { text, .. }) = &l.value {
-                            self.add_char_array(name, &l.name.text, text.chars().count());
+                            self.add_char_array(path, &l.name.text, text.chars().count());
                             continue;
                         }
                     }
                     if let Some(ty) = &l.ty {
-                        self.add_typed_signal(name, &l.name.text, ty, &env);
+                        self.add_typed_signal(path, &l.name.text, ty, env);
                     } else {
-                        self.add_signal(name, &l.name.text, 0);
+                        self.add_signal(path, &l.name.text, 0);
                     }
+                }
+            }
+        }
+
+        // Sub-instances: lower each under `path.inst`, then wire its ports. An
+        // `in` port is driven from the parent's signal; an `out` port drives the
+        // parent's. The recursion saves/restores this body's scope, so the
+        // parent's names resolve again here.
+        for (inst, cty, conns) in &subinsts {
+            let Some(sub_ename) = type_head_name(cty) else { continue };
+            let sub_path = format!("{path}.{inst}");
+            let mut sub_env = self.consts.clone();
+            sub_env.extend(self.construct_params(cty, env));
+            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env);
+            for c in conns {
+                let Some(&(child_id, dir)) = sub_ports.get(&c.field.text) else { continue };
+                // `.p` shorthand means the parent signal `p`.
+                let value = c.value.clone().unwrap_or_else(|| {
+                    ast::Expr::Path(ast::Path { segments: vec![c.field.clone()], span: c.field.span })
+                });
+                if dir == Some(ast::Direction::Out) {
+                    if let Some(target) = self.target_signal(&value) {
+                        self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id) });
+                    }
+                } else {
+                    let expr = self.lower_expr(&value);
+                    self.out.drivers.push(Driver { target: child_id, cond: None, expr });
                 }
             }
         }
@@ -391,6 +451,30 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+
+        // Restore the caller's scope.
+        self.locals = saved_locals;
+        self.local_enum = saved_enum;
+        self.local_struct = saved_struct;
+        self.local_char = saved_char;
+        self.local_array = saved_array;
+        self.cur_env = saved_env;
+        ports
+    }
+
+    /// Concrete parameter bindings written on an instance type (`Counter<W=8>`).
+    fn construct_params(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> HashMap<String, i64> {
+        let mut out = HashMap::new();
+        if let ast::Type::Generic { args, .. } = ty {
+            for a in args {
+                if let ast::GenericArg::Named { name, value } = a {
+                    if let Some(v) = eval_const(value, env) {
+                        out.insert(name.text.clone(), v);
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
@@ -1945,7 +2029,7 @@ mod tests {
           }\n\
           count = value;\n\
         }\n\
-        #[top]\n\
+        #[test]\n\
         entity H {}\n\
         impl H {\n\
           let clk: Logic = '0';\n\
@@ -1968,6 +2052,44 @@ mod tests {
         // One event block (clk::rising) with two next-state updates.
         assert_eq!(d.event_blocks.len(), 1);
         assert_eq!(d.event_blocks[0].updates.len(), 2);
+    }
+
+    #[test]
+    fn lowers_nested_instances_with_connections() {
+        // Add2 instantiates two Add1s wired through `mid`. Each instance must
+        // get its own signals, and every port connection must become a driver.
+        let src = "module m;\n\
+            entity Add1 { in a: uint[8]; out y: uint[8]; }\n\
+            impl Add1 { y = a + 1; }\n\
+            entity Add2 { in a: uint[8]; out y: uint[8]; }\n\
+            impl Add2 {\n\
+              let mid: uint[8];\n\
+              let s1 = Add1 { .a = a, .y = mid };\n\
+              let s2 = Add1 { .a = mid, .y = y };\n\
+            }\n\
+            #[test] entity T {}\n\
+            impl T {\n\
+              let a: uint[8] = 10;\n\
+              let y: uint[8];\n\
+              let dut = Add2 { .a, .y };\n\
+            }\n";
+        let d = lower_src(src);
+        let id = |path: &str| d.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32));
+        // Two distinct Add1 instances, each with its own signals.
+        assert!(id("Add2.s1.a").is_some() && id("Add2.s1.y").is_some());
+        assert!(id("Add2.s2.a").is_some() && id("Add2.s2.y").is_some());
+        // Every connection is a driver: `in` ports read the parent, `out`
+        // ports drive it.
+        let wired = |target: &str, source: &str| {
+            let (t, s) = (id(target).unwrap(), id(source).unwrap());
+            d.drivers
+                .iter()
+                .any(|dr| dr.target == t && matches!(&dr.expr, Expr::Current(x) if *x == s))
+        };
+        assert!(wired("Add2.s1.a", "Add2.a"), "s1.a <- a");
+        assert!(wired("Add2.mid", "Add2.s1.y"), "mid <- s1.y");
+        assert!(wired("Add2.s2.a", "Add2.mid"), "s2.a <- mid");
+        assert!(wired("Add2.y", "Add2.s2.y"), "y <- s2.y");
     }
 
     #[test]

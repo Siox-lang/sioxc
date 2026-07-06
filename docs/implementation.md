@@ -100,10 +100,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   Constant bit slices (`data[7..4]`) lower to a `Slice` IR op; concatenations
   (`{hi, lo}`, including nested `{a, {b, c}}`) fold into a shift/add tree sized
   from each part's source width. `siox ir` prints it.
-- **Status (todo):** cross-instance flattening/connections and multiple
-  instances of one entity with differing params (widths come from the *first*
-  instance today); dynamic array indexing, method-call lowering; instance `let`
-  bindings are listed as signals.
+- **Status (done):** hierarchical lowering — each instance lowers into its own
+  signal namespace (`Add2.s1.a`), sub-instances (`let s = Sub {..}`) recurse
+  under `path.s`, and every port connection becomes a driver (`in` reads the
+  parent, `out` drives it). Multiple instances of one entity take per-instance
+  params (`Reg<8>` and `Reg<4>` in one parent size correctly).
+- **Status (todo):** dynamic array indexing, method-call lowering; struct-typed
+  sub-instance ports (scalar ports wire today); avoid re-lowering a nested
+  entity standalone (harmless clutter under a `#[top]` wrapper).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
