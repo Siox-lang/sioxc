@@ -20,11 +20,11 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
-| `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; process decomposition + validator for codegen; `siox ir` |
-| `siox-sim`     | 7, 8 | 🟢 partial | delta-cycle simulator with event-driven dispatch (Stage 7) + `#[test]` runner with `assert!` (Stage 8); the differential oracle |
-| `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run; `siox sim --wave` |
-| `siox-llvm`    | B    | 🟢 partial | LLVM/inkwell backend behind the `llvm` feature: emit `.ll`, JIT-run, and AOT native object; differentially verified vs. the interpreter |
-| `sioxc`     | 12   | 🟢 working | `tokens`/`parse`/`ast`/`check`/`tree`/`ir`/`test`/`sim` (incl. `sim --wave` VCD) |
+| `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; **hierarchical lowering** (per-instance signals + connection drivers); process decomposition + validator for codegen; `sioxc ir` |
+| `siox-sim`     | 7, 8 | 🟢 partial | the engine-generic test runner/**kernel**: `#[test]` runner, `await`/`clock` timing + event wheel (**runner owns simulation time**), `assert!`. The delta-cycle `Simulator` interpreter is behind the `interp` feature (the differential oracle + >64-bit fallback) |
+| `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run (real timestamps, JIT-traced); `sioxc sim --wave` |
+| `siox-llvm`    | B    | 🟢 partial | **default execution engine** (inkwell, `llvm` feature on by default): emit `.ll`, JIT-run (`sioxc test`), AOT native object (`sioxc <file>`), native test binary (`test --no-run`); differentially verified vs. the interpreter oracle |
+| `sioxc`        | 12   | 🟢 working | rustc-shaped: bare `sioxc <file>` compiles; `check`/`test` (libtest output, `--no-run`)/`sim --wave`/`ir`/`ast`/`tree`/`tokens`/`emit-llvm` |
 
 ## Stage-by-stage
 
@@ -129,14 +129,17 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 ### Stage 8 — Tests, assertions, stimulus (`siox-sim`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
   file/span/message; multiple tests run; `siox test examples/` works.
-- **Status (done):** `run_tests` discovers `#[test]` entities, maps their
-  signals to the DUT via the elaborated connections, and interprets the
-  stimulus (`let` initials, assignments, `tick(clk)`, `wait`, `for` over a
-  static range, `if`, `assert!(cond, "msg")`) against the simulator. `siox test
-  [name]` runs all or a name-filtered subset, prints `PASS`/`FAIL` with the
-  failing assertion's `file:line:col`, and exits nonzero on failure.
-- **Status (todo):** `siox test <dir>` over a directory; `wait`/time-based
-  stimulus; richer stimulus (clock generators, `i` in `for` bodies).
+- **Status (done):** the runner discovers `#[test]` entities, maps their signals
+  to the DUT via the elaborated connections, and drives the stimulus (`let`
+  initials, assignments, `tick(clk)`, `wait`, `for`, `if`, `assert!(cond,
+  "msg")`) against any backend via the `Engine` trait. **Timing:** `clock(clk,
+  period)` starts a background clock and `await` waits on time / an edge
+  (`clk::rising`) / a condition — driven by the runner-owned event wheel, so
+  multiple clocks interleave. `sioxc test [name]` runs all or a filtered subset
+  in libtest style (`test … ok`/`FAILED`, `file:line:col`), exits nonzero on
+  failure, and `--no-run` links a native multi-test binary.
+- **Status (todo):** `sioxc test <dir>` over a directory; multiple instances of
+  the same entity at the testbench top level (#39).
 
 ### Stage 9 — Waveforms (`siox-wave`) — 🟢 partial
 - **Acceptance:** counter VCD shows `clk/rst/en/count`; FSM shows symbolic/
@@ -188,10 +191,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   `examples/std_test.siox` exercises every module through real imports.
 
 ### Stage 12 — CLI & workflow (`sioxc`) — 🟢
-- **Acceptance:** `siox check` succeeds; `siox sim --wave` produces a waveform;
-  `siox test` runs all; non-zero exit on failure.
-- **Status:** `tokens`/`parse`/`ast`/`check`/`tree` work; `sim`/`test`/`ir` run
-  the pipeline as far as it goes and report the first unimplemented stage.
+- **Acceptance:** `sioxc check` succeeds; `sioxc sim --wave` produces a waveform;
+  `sioxc test` runs all; non-zero exit on failure.
+- **Status:** rustc-shaped. A bare `sioxc <file>` compiles the `#[top]` design to
+  a native object; `check`/`sim --wave` (JIT-traced)/`test` (JIT, libtest output,
+  `--no-run` native binary)/`ir`/`ast`/`tree`/`tokens`/`emit-llvm` all work. LLVM
+  is the default backend; `--features interp` adds the interpreter and
+  `--backend interp`. (The cargo-like project layer is future `pcb`/`circuit`.)
 
 ## Recommended order
 
@@ -216,21 +222,21 @@ Stage 11 stdlib, and deeper per-stage coverage.
 Do not start analogue (Phase 2) until the digital simulator is stable enough to
 support tests, clocks, events, and waveforms.
 
-Beyond Phase 1 stages: the **LLVM backend** (`siox-llvm`, inkwell behind the
-`llvm` cargo feature) is designed in
-[notes/llvm-backend.md](notes/llvm-backend.md) and largely built:
+Beyond Phase 1 stages: the **LLVM backend** (`siox-llvm`, inkwell, `llvm`
+feature **on by default**) is the execution engine, designed in
+[notes/llvm-backend.md](notes/llvm-backend.md) and built:
 
-- **B0 validator** 🟢 — `Design::validate` gates codegen against bad ids /
-  `Unknown` / unknown widths / bad slices. (`int[N]` signedness still open.)
-- **B1 process extraction** 🟢 — `Design::processes` (sensitivity + write
-  sets); the interpreter adopted event-driven dispatch.
-- **B2 emitter** 🟢 — combinational + sequential codegen (full delta cycle);
+- **B0 validator** ✅ — `Design::validate` gates codegen against bad ids /
+  `Unknown` / unknown widths / bad slices; div-by-zero → 0 on both engines.
+  (Signedness is *not* compiler work — it moves to std operator impls, #37.)
+- **B1 process extraction** ✅ — `Design::processes` (sensitivity + write sets).
+- **B2 emitter** ✅ — combinational + sequential codegen (full delta cycle);
   `Expr`→builder 1:1; `module.verify()`-clean.
-- **B3 JIT** 🟢 — `with_jit` runs the compiled design in-process.
-- **B4 differential harness** 🟢 — JIT matches the interpreter oracle
-  signal-for-signal across the whole expression surface (10 designs).
-- **B5 AOT** 🟡 — `emit_object` writes a native `.o` that links+runs; the
-  `siox build` CLI + compiled testbench (B5.1) remain.
+- **B3 JIT** ✅ — `sioxc test` runs the compiled design in-process (default).
+- **B4 differential harness** ✅ — JIT matches the interpreter oracle
+  signal-for-signal across the expression surface (`--features interp`).
+- **B5 AOT** ✅ — `emit_object` writes a native `.o`; `sioxc <file>` compiles a
+  top; `sioxc test --no-run` links a standalone native test binary.
 
 The default `cargo build` stays LLVM-free (feature-gated); the interpreter
 is the differential oracle. Type-level optimization of `uint[]`/`int[]`

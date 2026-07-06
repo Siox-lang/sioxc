@@ -45,40 +45,48 @@ against the interpreter.
 ## Current status (summary)
 
 The whole pipeline runs **end to end**: source → parse → resolve → typecheck →
-elaborate → digital IR → delta-cycle simulation with `#[test]` discovery,
-assertions, and VCD waveforms. The standard library loads from `std/` as real
-source ([std.md](std.md)) — including operator overloading, literal suffixes
-(`10ns`, `5i`), and four-value `Logic` truth tables defined as library code.
-A **compiled backend** (`siox-llvm`, inkwell behind the `llvm` feature) also
-JIT-runs designs and emits native object files, verified bit-for-bit against
-the interpreter ([notes/llvm-backend.md](notes/llvm-backend.md)).
-Remaining work is gap-filling: Stage 10 lints, vector operators in std, and
-deeper coverage. See [implementation.md](implementation.md) per stage.
+elaborate → digital IR → simulation with `#[test]` discovery, `await`/`clock`
+timing, assertions, and VCD waveforms. Structural **hierarchy** works — an
+entity may instantiate sub-entities, each instance lowering into its own signals
+with port connections wired as drivers.
+
+The **compiled LLVM backend** (`siox-llvm`, inkwell) is the default execution
+engine: `sioxc test` JIT-runs designs, `sioxc <file>` compiles the `#[top]`
+design to a native object, and `sioxc test --no-run` links a standalone native
+test binary. Simulation time is owned by the runner/kernel, so waveforms carry
+real timestamps and multiple clocks interleave on one event wheel. The
+delta-cycle **interpreter** is kept behind the `interp` feature (off by default)
+as the differential oracle and the >64-bit fallback.
+
+The standard library loads from `std/` as real source ([std.md](std.md)) —
+operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
+truth tables defined as library code. See [implementation.md](implementation.md)
+per stage and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 
 ## Build and run
 
 ```bash
-cargo build                       # build the workspace
+cargo build                       # build the workspace (LLVM backend, default)
 cargo test                        # run all tests
-cargo test -p siox-syntax         # tests for one crate
+cargo test --features interp      # also run the interpreter + differential harness
 
-cargo run -p sioxc -- <cmd> <file>
+cargo run -p sioxc -- <file>              # compile the #[top] design
+cargo run -p sioxc -- test <file>         # build + run #[test] entities (JIT)
 ```
 
-A bare `sioxc <file>` compiles it (like `rustc foo.rs`); the subcommands are alternate modes:
+A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
+`rustc foo.rs`). LLVM is the default backend; add `--features interp` for the
+interpreter engine and `--backend interp`.
 
-| Command | Status | Does |
-| ------- | ------ | ---- |
-| `tokens <file>` | ✅ | dump the raw lexer token stream |
-| `parse <file>`  | ✅ | parse and print canonical source (`-v` traces the pipeline) |
-| `ast <file>`    | ✅ | dump the debug AST |
-| `check <file>`  | ✅ | parse → resolve → typecheck, report diagnostics |
-| `tree <file>`   | ✅ | print the elaborated instance hierarchy |
-| `sim <file>`    | ✅ | simulate; `--wave out.vcd` writes a waveform |
-| `test <path>`   | ✅ | discover and run `#[test]` entities |
-| `ir <file>`     | ✅ | print the normalized digital IR |
+| Command | Does |
+| ------- | ---- |
+| `sioxc <file>` | compile the `#[top]` design to a native object (`--top` to pick) |
+| `check <file>` | parse → resolve → typecheck, report diagnostics |
+| `test <path> [--no-run]` | build + run `#[test]` entities (JIT); `--no-run` links a native test binary |
+| `sim <file> [--wave out.vcd]` | simulate; write a VCD waveform |
+| `ir` · `ast` · `tree` · `tokens` · `emit-llvm` | debug dumps of each stage |
 
-All commands take `--std <dir>` (default `./std`) for the standard library
-root. Example programs live in [`../examples`](../examples) — counter,
-register, mux, FSM, struct/array, four-value logic, and complex-arithmetic
-tests, each a runnable `#[test]` entity.
+All commands take `--std <dir>` (default `./std`) for the standard library root.
+Example programs live in [`../examples`](../examples) — counter, register, mux,
+FSM, struct/array, four-value logic, complex arithmetic, hierarchy, multi-clock,
+and `await` tests, each a runnable `#[test]` entity.
