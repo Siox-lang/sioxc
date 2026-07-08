@@ -159,7 +159,17 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
             });
         }
     }
-    for name in &seen {
+    // Lower only the top-level designs — the `#[top]`/`#[test]` roots. Their
+    // sub-instances (and a testbench's DUTs) are lowered recursively from there,
+    // each per-instance, so no entity is lowered standalone by type.
+    let mut roots = Vec::new();
+    for &r in &hier.roots {
+        let ent = hier.instance(r).entity.clone();
+        if !roots.contains(&ent) {
+            roots.push(ent);
+        }
+    }
+    for name in &roots {
         l.lower_entity(name);
     }
     l.out
@@ -335,16 +345,45 @@ impl<'a> Lowering<'a> {
 
     fn lower_entity(&mut self, name: &str) {
         let Some(edecl) = self.entities.get(name).copied() else { return };
-        // Extern entities are black boxes; `#[test]` entities are testbenches
-        // (stimulus, not hardware) and are run by the Stage-8 test runner.
-        if edecl.is_extern || has_attr(edecl, "test") {
+        // Extern entities are black boxes.
+        if edecl.is_extern {
+            return;
+        }
+        let mut env = self.consts.clone();
+        env.extend(self.entity_params.get(name).cloned().unwrap_or_default());
+        if has_attr(edecl, "test") {
+            // A testbench: lower only its DUT instances, each per-instance under
+            // the testbench path (`CounterTest.dut.*`), so two instances of one
+            // entity are distinct. Stimulus statements are interpreted by the
+            // runner, and testbench<->DUT connections go through the runner's
+            // signal map — so no top-level connection drivers here.
+            self.lower_testbench_duts(name, &env);
             return;
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        let mut env = self.consts.clone();
-        env.extend(self.entity_params.get(name).cloned().unwrap_or_default());
         self.lower_body(name, name, &env);
+    }
+
+    /// Lower each `let inst = Sub { .. }` DUT of a testbench into its own
+    /// namespace `<testbench>.<inst>.*` (with the DUT's internal logic and
+    /// sub-instances). No testbench signals, statements, or top connections.
+    fn lower_testbench_duts(&mut self, name: &str, env: &HashMap<String, i64>) {
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
+        for im in &impls {
+            for item in &im.items {
+                if let ast::ImplItem::Let(l) = item {
+                    if let Some(ast::Expr::Construct { ty: Some(cty), .. }) = &l.value {
+                        if let Some(sub) = type_head_name(cty) {
+                            let sub_path = format!("{name}.{}", l.name.text);
+                            let mut sub_env = self.consts.clone();
+                            sub_env.extend(self.construct_params(cty, env));
+                            self.lower_body(sub, &sub_path, &sub_env);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Lower entity `ename`'s body, naming signals under `path` (the instance
@@ -2044,9 +2083,9 @@ mod tests {
         let d = lower_src(COUNTER);
         // Counter signals: clk, rst, en, count, value. The instance's `W = 8`
         // makes the parametric `uint[W]` widths concrete.
-        let count = d.signals.iter().find(|s| s.path == "Counter.count").unwrap();
+        let count = d.signals.iter().find(|s| s.path == "H.dut.count").unwrap();
         assert_eq!(count.width, 8);
-        assert!(d.signals.iter().any(|s| s.path == "Counter.value"));
+        assert!(d.signals.iter().any(|s| s.path == "H.dut.value"));
         // One combinational driver: count = value.
         assert_eq!(d.drivers.len(), 1);
         // One event block (clk::rising) with two next-state updates.
@@ -2076,8 +2115,8 @@ mod tests {
         let d = lower_src(src);
         let id = |path: &str| d.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32));
         // Two distinct Add1 instances, each with its own signals.
-        assert!(id("Add2.s1.a").is_some() && id("Add2.s1.y").is_some());
-        assert!(id("Add2.s2.a").is_some() && id("Add2.s2.y").is_some());
+        assert!(id("T.dut.s1.a").is_some() && id("T.dut.s1.y").is_some());
+        assert!(id("T.dut.s2.a").is_some() && id("T.dut.s2.y").is_some());
         // Every connection is a driver: `in` ports read the parent, `out`
         // ports drive it.
         let wired = |target: &str, source: &str| {
@@ -2086,10 +2125,10 @@ mod tests {
                 .iter()
                 .any(|dr| dr.target == t && matches!(&dr.expr, Expr::Current(x) if *x == s))
         };
-        assert!(wired("Add2.s1.a", "Add2.a"), "s1.a <- a");
-        assert!(wired("Add2.mid", "Add2.s1.y"), "mid <- s1.y");
-        assert!(wired("Add2.s2.a", "Add2.mid"), "s2.a <- mid");
-        assert!(wired("Add2.y", "Add2.s2.y"), "y <- s2.y");
+        assert!(wired("T.dut.s1.a", "T.dut.a"), "s1.a <- a");
+        assert!(wired("T.dut.mid", "T.dut.s1.y"), "mid <- s1.y");
+        assert!(wired("T.dut.s2.a", "T.dut.mid"), "s2.a <- mid");
+        assert!(wired("T.dut.y", "T.dut.s2.y"), "y <- s2.y");
     }
 
     #[test]
@@ -2125,10 +2164,10 @@ mod tests {
         // A combinational process for `count = value` and one event process.
         let comb = procs
             .iter()
-            .find(|p| matches!(&p.kind, ProcessKind::Comb { target, .. } if *target == sig("Counter.count")))
+            .find(|p| matches!(&p.kind, ProcessKind::Comb { target, .. } if *target == sig("H.dut.count")))
             .unwrap();
-        assert_eq!(comb.reads, vec![sig("Counter.value")]);
-        assert_eq!(comb.writes, vec![sig("Counter.count")]);
+        assert_eq!(comb.reads, vec![sig("H.dut.value")]);
+        assert_eq!(comb.writes, vec![sig("H.dut.count")]);
 
         let event = procs
             .iter()
@@ -2136,10 +2175,10 @@ mod tests {
             .unwrap();
         // Sensitive to clk (edge condition), rst and en (update guards),
         // value (increment). Writes value.
-        for s in ["Counter.clk", "Counter.rst", "Counter.en", "Counter.value"] {
+        for s in ["H.dut.clk", "H.dut.rst", "H.dut.en", "H.dut.value"] {
             assert!(event.reads.contains(&sig(s)), "event not sensitive to {s}");
         }
-        assert_eq!(event.writes, vec![sig("Counter.value")]);
+        assert_eq!(event.writes, vec![sig("H.dut.value")]);
     }
 
     #[test]
@@ -2154,11 +2193,11 @@ mod tests {
              impl H { let p: P; let a: Bit[3]; let s: S; let dut = E { .p, .a, .s }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
-        assert_eq!(width("E.p.flag"), Some(1)); // struct field
-        assert_eq!(width("E.p.val"), Some(8));
-        assert_eq!(width("E.a[0]"), Some(1)); // array element
-        assert_eq!(width("E.a[2]"), Some(1));
-        assert_eq!(width("E.s"), Some(2)); // enum repr width
+        assert_eq!(width("H.dut.p.flag"), Some(1)); // struct field
+        assert_eq!(width("H.dut.p.val"), Some(8));
+        assert_eq!(width("H.dut.a[0]"), Some(1)); // array element
+        assert_eq!(width("H.dut.a[2]"), Some(1));
+        assert_eq!(width("H.dut.s"), Some(2)); // enum repr width
     }
 
     #[test]
@@ -2166,12 +2205,12 @@ mod tests {
         let d = lower_src(COUNTER);
         let rendered = d.to_ir_string();
         // clk::rising expands into the explicit Event/Old/Current form.
-        assert!(rendered.contains("Event(Counter.clk)"));
-        assert!(rendered.contains("Old(Counter.clk) == '0'"));
-        assert!(rendered.contains("Counter.clk == '1'"));
+        assert!(rendered.contains("Event(H.dut.clk)"));
+        assert!(rendered.contains("Old(H.dut.clk) == '0'"));
+        assert!(rendered.contains("H.dut.clk == '1'"));
         // The combinational driver and the next-state updates are present.
-        assert!(rendered.contains("driver Counter.count = Counter.value"));
-        assert!(rendered.contains("next Counter.value = 0"));
+        assert!(rendered.contains("driver H.dut.count = H.dut.value"));
+        assert!(rendered.contains("next H.dut.value = 0"));
     }
 
     #[test]

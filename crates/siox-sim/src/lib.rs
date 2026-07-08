@@ -706,6 +706,9 @@ mod tests {
         entity H {}\n\
         impl H {\n\
           let clk: Logic = '0';\n\
+          let rst: Logic;\n\
+          let en: Bit;\n\
+          let count: uint[8];\n\
           let dut = Counter<W = 8> { .clk, .rst, .en, .count };\n\
         }\n";
 
@@ -721,10 +724,10 @@ mod tests {
     fn counter_increments_on_rising_edges() {
         let design = lower(COUNTER);
         let mut sim = Simulator::new(&design);
-        let clk = sim.signal("Counter.clk").unwrap();
-        let rst = sim.signal("Counter.rst").unwrap();
-        let en = sim.signal("Counter.en").unwrap();
-        let count = sim.signal("Counter.count").unwrap();
+        let clk = sim.signal("H.clk").unwrap();
+        let rst = sim.signal("H.rst").unwrap();
+        let en = sim.signal("H.en").unwrap();
+        let count = sim.signal("H.count").unwrap();
 
         sim.set(rst, 0);
         sim.set(en, 1);
@@ -743,10 +746,10 @@ mod tests {
         let src = COUNTER.replace("W = 8", "W = 2");
         let design = lower(&src);
         let mut sim = Simulator::new(&design);
-        let clk = sim.signal("Counter.clk").unwrap();
-        let rst = sim.signal("Counter.rst").unwrap();
-        let en = sim.signal("Counter.en").unwrap();
-        let count = sim.signal("Counter.count").unwrap();
+        let clk = sim.signal("H.clk").unwrap();
+        let rst = sim.signal("H.rst").unwrap();
+        let en = sim.signal("H.en").unwrap();
+        let count = sim.signal("H.count").unwrap();
         sim.set(rst, 0);
         sim.set(en, 1);
         sim.settle();
@@ -1192,10 +1195,10 @@ mod tests {
     fn reset_clears_and_enable_gates() {
         let design = lower(COUNTER);
         let mut sim = Simulator::new(&design);
-        let clk = sim.signal("Counter.clk").unwrap();
-        let rst = sim.signal("Counter.rst").unwrap();
-        let en = sim.signal("Counter.en").unwrap();
-        let count = sim.signal("Counter.count").unwrap();
+        let clk = sim.signal("H.clk").unwrap();
+        let rst = sim.signal("H.rst").unwrap();
+        let en = sim.signal("H.en").unwrap();
+        let count = sim.signal("H.count").unwrap();
 
         // Count up to 3.
         sim.set(rst, 0);

@@ -105,16 +105,16 @@ fn counter_agrees_across_clock_edges() {
     );
     // Reset high for one edge, then count several enabled cycles, then hold.
     let mut steps: Vec<Vec<(&str, u64)>> = Vec::new();
-    steps.push(vec![("Counter.rst", 1), ("Counter.en", 1), ("Counter.clk", 0)]);
-    steps.push(vec![("Counter.clk", 1)]); // rising edge under reset -> 0
-    steps.push(vec![("Counter.rst", 0), ("Counter.clk", 0)]);
+    steps.push(vec![("T.rst", 1), ("T.en", 1), ("T.clk", 0)]);
+    steps.push(vec![("T.clk", 1)]); // rising edge under reset -> 0
+    steps.push(vec![("T.rst", 0), ("T.clk", 0)]);
     for _ in 0..5 {
-        steps.push(vec![("Counter.clk", 1)]); // rising: count++
-        steps.push(vec![("Counter.clk", 0)]);
+        steps.push(vec![("T.clk", 1)]); // rising: count++
+        steps.push(vec![("T.clk", 0)]);
     }
     // Disable and pulse: value should hold across edges.
-    steps.push(vec![("Counter.en", 0), ("Counter.clk", 1)]);
-    steps.push(vec![("Counter.clk", 0)]);
+    steps.push(vec![("T.en", 0), ("T.clk", 1)]);
+    steps.push(vec![("T.clk", 0)]);
     let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
     assert_agree_seq(&d, &refs);
 }
@@ -138,11 +138,11 @@ fn register_agrees_across_clock_edges() {
          }\n",
     );
     let steps: Vec<Vec<(&str, u64)>> = vec![
-        vec![("Reg.d", 42), ("Reg.clk", 0)],
-        vec![("Reg.clk", 1)], // latch 42
-        vec![("Reg.clk", 0), ("Reg.d", 99)],
-        vec![("Reg.clk", 1)], // latch 99
-        vec![("Reg.d", 7)],   // no edge: q holds 99
+        vec![("T.d", 42), ("T.clk", 0)],
+        vec![("T.clk", 1)], // latch 42
+        vec![("T.clk", 0), ("T.d", 99)],
+        vec![("T.clk", 1)], // latch 99
+        vec![("T.d", 7)],   // no edge: q holds 99
     ];
     let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
     assert_agree_seq(&d, &refs);
@@ -175,15 +175,15 @@ fn fsm_agrees_across_clock_edges() {
          }\n",
     );
     let steps: Vec<Vec<(&str, u64)>> = vec![
-        vec![("Fsm.go", 0), ("Fsm.fin", 0), ("Fsm.clk", 0)],
-        vec![("Fsm.go", 1), ("Fsm.clk", 1)], // Idle -> Run
-        vec![("Fsm.clk", 0)],
-        vec![("Fsm.go", 0), ("Fsm.clk", 1)], // Run (fin=0, stays)
-        vec![("Fsm.clk", 0), ("Fsm.fin", 1)],
-        vec![("Fsm.clk", 1)], // Run -> Done
-        vec![("Fsm.clk", 0)],
-        vec![("Fsm.clk", 1)], // Done -> Idle
-        vec![("Fsm.clk", 0)],
+        vec![("T.go", 0), ("T.fin", 0), ("T.clk", 0)],
+        vec![("T.go", 1), ("T.clk", 1)], // Idle -> Run
+        vec![("T.clk", 0)],
+        vec![("T.go", 0), ("T.clk", 1)], // Run (fin=0, stays)
+        vec![("T.clk", 0), ("T.fin", 1)],
+        vec![("T.clk", 1)], // Run -> Done
+        vec![("T.clk", 0)],
+        vec![("T.clk", 1)], // Done -> Idle
+        vec![("T.clk", 0)],
     ];
     let refs: Vec<Step> = steps.iter().map(|s| s.as_slice()).collect();
     assert_agree_seq(&d, &refs);
@@ -205,8 +205,8 @@ fn mux_agrees() {
            let dut = Mux { .sel, .a, .b, .y };\n\
          }\n",
     );
-    assert_agree(&d, &[("Mux.sel", 0), ("Mux.a", 111), ("Mux.b", 222)]);
-    assert_agree(&d, &[("Mux.sel", 1), ("Mux.a", 111), ("Mux.b", 222)]);
+    assert_agree(&d, &[("T.sel", 0), ("T.a", 111), ("T.b", 222)]);
+    assert_agree(&d, &[("T.sel", 1), ("T.a", 111), ("T.b", 222)]);
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn arithmetic_and_slice_agree() {
          }\n",
     );
     for (a, b) in [(10u64, 20u64), (200, 100), (0xA5, 0x0F), (255, 1)] {
-        assert_agree(&d, &[("Alu.a", a), ("Alu.b", b)]);
+        assert_agree(&d, &[("T.a", a), ("T.b", b)]);
     }
 }
 
@@ -245,7 +245,7 @@ fn concat_agrees() {
          }\n",
     );
     for (a, b) in [(0xA, 0x5), (0xF, 0x0), (0x0, 0xF), (0x3, 0xC)] {
-        assert_agree(&d, &[("C.a", a), ("C.b", b)]);
+        assert_agree(&d, &[("T.a", a), ("T.b", b)]);
     }
 }
 
@@ -271,7 +271,7 @@ fn enum_match_agrees() {
          }\n",
     );
     for op in 0..3u64 {
-        assert_agree(&d, &[("Alu.op", op), ("Alu.a", 30), ("Alu.b", 12)]);
+        assert_agree(&d, &[("T.op", op), ("T.a", 30), ("T.b", 12)]);
     }
 }
 
@@ -290,8 +290,8 @@ fn struct_field_agrees() {
            let dut = S { .p, .y };\n\
          }\n",
     );
-    assert_agree(&d, &[("S.p.lo", 0x5), ("S.p.hi", 0xA)]);
-    assert_agree(&d, &[("S.p.lo", 0xF), ("S.p.hi", 0x0)]);
+    assert_agree(&d, &[("T.p.lo", 0x5), ("T.p.hi", 0xA)]);
+    assert_agree(&d, &[("T.p.lo", 0xF), ("T.p.hi", 0x0)]);
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn array_element_agrees() {
            let dut = A { .v, .y };\n\
          }\n",
     );
-    assert_agree(&d, &[("A.v[0]", 0x3), ("A.v[1]", 0xC)]);
+    assert_agree(&d, &[("T.v[0]", 0x3), ("T.v[1]", 0xC)]);
 }
 
 #[test]
@@ -326,9 +326,9 @@ fn char_compare_agrees() {
            let dut = Ch { .c, .is_a };\n\
          }\n",
     );
-    assert_agree(&d, &[("Ch.c", 'A' as u64)]);
-    assert_agree(&d, &[("Ch.c", 'B' as u64)]);
-    assert_agree(&d, &[("Ch.c", 0x20AC)]); // euro sign
+    assert_agree(&d, &[("T.c", 'A' as u64)]);
+    assert_agree(&d, &[("T.c", 'B' as u64)]);
+    assert_agree(&d, &[("T.c", 0x20AC)]); // euro sign
 }
 
 #[test]
@@ -351,6 +351,6 @@ fn combinational_chain_agrees() {
          }\n",
     );
     for v in [0u64, 10, 100, 254] {
-        assert_agree(&d, &[("Chain.i", v)]);
+        assert_agree(&d, &[("T.i", v)]);
     }
 }

@@ -49,7 +49,24 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("extern void sx_set(uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
     prog.push_str("extern void sx_settle(void);\n");
-    prog.push_str("static const char *g_msg;\n\n");
+    prog.push_str("static const char *g_msg;\n");
+    // The event wheel: earliest pending clock edge, and one step of the
+    // scheduler (advance to that edge, toggle the due clocks, settle).
+    prog.push_str(
+        "static uint64_t sx_next_edge(const uint64_t *next, int n) {\n\
+         \x20   uint64_t t = UINT64_MAX;\n\
+         \x20   for (int i = 0; i < n; i++) if (next[i] < t) t = next[i];\n\
+         \x20   return t;\n}\n\
+         static int sx_step_clock(uint64_t *now, uint64_t *next, const uint32_t *cid,\n\
+         \x20                        const uint64_t *half, int n) {\n\
+         \x20   uint64_t t = sx_next_edge(next, n);\n\
+         \x20   if (t == UINT64_MAX) return 0;\n\
+         \x20   if (t > *now) *now = t;\n\
+         \x20   for (int i = 0; i < n; i++)\n\
+         \x20       if (next[i] == t) { sx_set(cid[i], !sx_read(cid[i])); next[i] += half[i]; }\n\
+         \x20   sx_settle();\n\
+         \x20   return 1;\n}\n\n",
+    );
 
     let mut names = Vec::new();
     for &root in &tests {
@@ -118,8 +135,8 @@ struct Ctx<'a> {
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
     name: &'a str,
-    /// Signal ids of `clock(clk, ..)`-registered background clocks.
-    clocks: Vec<u32>,
+    /// `clock(clk, ..)`-registered background clocks: (signal id, half period fs).
+    clocks: Vec<(u32, u64)>,
 }
 
 impl Ctx<'_> {
@@ -128,6 +145,19 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!("int test_{}(void) {{\n    sx_reset();\n", self.name));
+
+        // The test's event wheel: sim time + per-clock next-edge state. Arrays
+        // are sized >=1 so clock-less tests still compile; `_nclk` grows as
+        // `clock()` statements register (source order matches scan order).
+        let n = self.clocks.len().max(1);
+        let cid: Vec<String> = self.clocks.iter().map(|(c, _)| c.to_string()).collect();
+        let half: Vec<String> = self.clocks.iter().map(|(_, h)| format!("{h}ULL")).collect();
+        b.push_str(&format!(
+            "    uint64_t _now = 0; (void)_now;\n             \x20   uint64_t _next[{n}] = {{{}}}; (void)_next;\n             \x20   static const uint32_t _cid[{n}] = {{{}}};\n             \x20   static const uint64_t _half[{n}] = {{{}}};\n             \x20   int _nclk = 0; (void)_nclk;\n",
+            vec!["0"; n].join(", "),
+            if cid.is_empty() { "0".to_string() } else { cid.join(", ") },
+            if half.is_empty() { "0".to_string() } else { half.join(", ") },
+        ));
 
         // Initial `let` values, then settle (mirrors the interpreter).
         for item in items {
@@ -223,13 +253,21 @@ impl Ctx<'_> {
                 ));
             }
             "wait" => {
-                // No timed behaviour beyond explicit edges: just settle.
-                b.push_str(&format!("{ind}sx_settle();\n"));
+                // Advance time without running the clocks (matches the runner).
+                b.push_str(&format!("{ind}_now += {}ULL; sx_settle();\n", duration_fs(args)));
             }
-            // clock(clk, period): register a background clock (init to 0).
+            // clock(clk, period): register a background clock on the wheel
+            // (init low; first toggle one half period from now).
             "clock" => {
                 if let Some(id) = args.first().and_then(expr_path).and_then(|p| self.map.get(&p)) {
-                    b.push_str(&format!("{ind}sx_set({}, 0); sx_settle();\n", id.0));
+                    if let Some(i) = self.clocks.iter().position(|(c, _)| *c == id.0) {
+                        b.push_str(&format!(
+                            "{ind}sx_set({}, 0); _next[{i}] = _now + {}ULL;                              _nclk = {}; sx_settle();\n",
+                            id.0,
+                            self.clocks[i].1,
+                            i + 1
+                        ));
+                    }
                 }
             }
             // await <duration> | <edge> | <condition>.
@@ -248,25 +286,21 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    /// The C that toggles every background clock once and settles.
-    fn step_clocks(&self) -> String {
-        let mut s = String::new();
-        for &c in &self.clocks {
-            s.push_str(&format!("sx_set({c}, !sx_read({c})); "));
-        }
-        s.push_str("sx_settle();");
-        s
-    }
-
-    /// `await <duration> | <edge> | <condition>` in the native harness: a
-    /// duration just settles (no wall-clock time in the binary); an edge or
-    /// condition steps the background clocks until it fires (bounded).
+    /// `await <duration> | <edge> | <condition>` in the native harness, on the
+    /// generated event wheel: a duration runs the clocks up to `now + dur`; an
+    /// edge or condition steps clock edges until it fires (bounded, mirroring
+    /// the runner's scheduler).
     fn emit_await(&self, args: &[ast::Expr], b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
-        let step = self.step_clocks();
         match args.first() {
             Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
-                b.push_str(&format!("{ind}sx_settle();\n"));
+                let dur = duration_fs(args);
+                b.push_str(&format!(
+                    "{ind}{{ uint64_t _tgt = _now + {dur}ULL; \
+                     while (sx_next_edge(_next, _nclk) <= _tgt) \
+                     sx_step_clock(&_now, _next, _cid, _half, _nclk); \
+                     _now = _tgt; sx_settle(); }}\n"
+                ));
             }
             Some(ast::Expr::SysAttr { base, attr, .. }) => {
                 let id = expr_path(base)
@@ -280,14 +314,16 @@ impl Ctx<'_> {
                 };
                 b.push_str(&format!(
                     "{ind}{{ uint64_t _p = sx_read({id}); \
-                     for (int _g = 0; _g < 1000000; _g++) {{ {step} \
+                     for (int _g = 0; _g < 1000000; _g++) {{ \
+                     if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; \
                      uint64_t _c = sx_read({id}); if ({hit}) break; _p = _c; }} }}\n"
                 ));
             }
             Some(cond) => {
                 let c = self.expr(cond)?;
                 b.push_str(&format!(
-                    "{ind}for (int _g = 0; _g < 1000000 && !({c}); _g++) {{ {step} }}\n"
+                    "{ind}for (int _g = 0; _g < 1000000 && !({c}); _g++) {{ \
+                     if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; }}\n"
                 ));
             }
             None => {}
@@ -381,23 +417,42 @@ fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
 
 // --- helpers (small replicas of interpreter internals) ---------------------
 
-/// Collect the signal ids of `clock(clk, ..)` calls in a test's body.
-fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec<u32> {
-    let mut ids = Vec::new();
+/// Collect `clock(clk, period)` calls in a test's body: (signal id, half fs).
+fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec<(u32, u64)> {
+    let mut clocks: Vec<(u32, u64)> = Vec::new();
     for item in items {
         if let ast::ImplItem::Stmt(ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })) = item {
             let is_clock = matches!(callee.as_ref(),
                 ast::Expr::Path(p) if p.segments.first().map(|s| s.text.as_str()) == Some("clock"));
             if is_clock {
                 if let Some(id) = args.first().and_then(expr_path).and_then(|p| map.get(&p)) {
-                    if !ids.contains(&id.0) {
-                        ids.push(id.0);
+                    if !clocks.iter().any(|(c, _)| *c == id.0) {
+                        let half = (duration_fs(&args[1..]) / 2).max(1);
+                        clocks.push((id.0, half));
                     }
                 }
             }
         }
     }
-    ids
+    clocks
+}
+
+/// The femtosecond duration of `10ns` / `10.ns`; a missing/unknown form
+/// defaults to the runner's half period (5 ns).
+fn duration_fs(args: &[ast::Expr]) -> u64 {
+    match args.first() {
+        Some(ast::Expr::SuffixLit { text, suffix, .. }) => {
+            parse_u64(text) * ast::suffix_scale(&suffix.text).unwrap_or(1_000_000) as u64
+        }
+        Some(ast::Expr::Field { base, field, .. }) => {
+            if let ast::Expr::Int { text, .. } = base.as_ref() {
+                parse_u64(text) * ast::suffix_scale(&field.text).unwrap_or(1_000_000) as u64
+            } else {
+                5_000_000
+            }
+        }
+        _ => 5_000_000,
+    }
 }
 
 fn is_test_entity(modules: &[Module], entity: &str) -> bool {
@@ -416,11 +471,14 @@ fn is_test_entity(modules: &[Module], entity: &str) -> bool {
 }
 
 fn build_map(hier: &Hierarchy, root: InstanceId, design: &Design) -> HashMap<String, SignalId> {
+    // DUTs lower per-instance under the testbench path (`<test>.<inst>.<port>`),
+    // so two instances of one entity stay distinct (matches siox-run's map).
+    let tb = &hier.instance(root).entity;
     let mut map = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
         for c in &child.connections {
-            let prefix = format!("{}.{}", child.entity, c.port);
+            let prefix = format!("{tb}.{}.{}", child.name, c.port);
             for (i, sig) in design.signals.iter().enumerate() {
                 let id = SignalId(i as u32);
                 if sig.path == prefix {

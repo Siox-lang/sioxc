@@ -29,7 +29,8 @@ assertions, and VCD export — predates this changelog. See
   trait.
 - **Differential harness** — the JIT is verified bit-for-bit against the
   interpreter oracle across the expression surface (`--features interp`).
-- Examples: `hierarchy_test`, `multiclock_test`, `await_test`, `top_counter`.
+- Examples: `hierarchy_test`, `multiclock_test`, `instances_test` (two
+  instances of one entity on different clocks), `await_test`, `top_counter`.
 
 ### Changed
 - **LLVM is the default execution engine.** `sioxc test` JIT-runs and
@@ -53,6 +54,14 @@ assertions, and VCD export — predates this changelog. See
   planned rustc/cargo split (the cargo-like `pcb`/`circuit` is a future repo).
 - `test` reports in **libtest style** (`running N tests` … `test result: …`).
 
+- **Tops-only lowering.** Only `#[top]`/`#[test]` roots lower; sub-entities and
+  a testbench's DUTs lower recursively per-instance (`CounterTest.dut.*`), so
+  two instances of one entity in a testbench no longer share state.
+- **The native test binary got a real event wheel** — generated C tracks
+  simulation time and per-clock next-edge state, so multiple clocks of
+  different periods interleave correctly (previously all clocks toggled in
+  lockstep) and `await <duration>` advances real time.
+
 ### Fixed
 - **JIT-traced VCD timestamps** were frozen at `#0` (the JIT engine reported
   time 0). The runner now owns time, so waveforms carry real timestamps and
@@ -68,5 +77,3 @@ assertions, and VCD export — predates this changelog. See
   impls, deleting the last numeric shim (#37). The compiler already inlines such
   impls (`Complex` in `std/math.siox` is the proof).
 - **cocotb** integration (VPI/GPI) is a later, separate layer (#36).
-- Two instances of the *same* entity at the testbench top level currently share
-  one DUT in the name map (#39).

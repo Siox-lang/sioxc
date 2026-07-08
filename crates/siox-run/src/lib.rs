@@ -273,13 +273,15 @@ fn run_one<'a>(
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
-    // of the DUTs it instantiates (`.clk = clk` aliases `clk` to `DUT.clk`). A
-    // struct port flattens to per-field entries (`.p = p` -> `p.valid`, ...).
+    // of the DUTs it instantiates. Each DUT is lowered per-instance under the
+    // testbench path (`<test>.<inst>.<port>`), so `.clk = clk` aliases `clk` to
+    // that instance's `clk` port — two instances of one entity stay distinct.
+    // A struct port flattens to per-field entries (`.p = p` -> `p.valid`, ...).
     let mut map: HashMap<String, SignalId> = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
         for c in &child.connections {
-            let prefix = format!("{}.{}", child.entity, c.port);
+            let prefix = format!("{}.{}.{}", name, child.name, c.port);
             for (i, sig) in design.signals.iter().enumerate() {
                 let id = SignalId(i as u32);
                 if sig.path == prefix {

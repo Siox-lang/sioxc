@@ -1,0 +1,25 @@
+module examples::instances_test;
+
+// Two instances of the SAME entity in one testbench, on different clocks.
+// Each DUT lowers per-instance under the testbench path (MI.cf.*, MI.cs.*),
+// so their state is independent — the classic shared-DUT collision test.
+
+using std::logic::{Logic, Clock};
+using std::bits::uint;
+
+entity Ctr { in clk: Clock; out n: uint[8]; }
+impl Ctr { let v: uint[8] = 0; if clk::rising { v = v + 1; } n = v; }
+
+#[test]
+entity MI {}
+impl MI {
+    let fast: Logic = '0'; let slow: Logic = '0';
+    let nf: uint[8]; let ns: uint[8];
+    let cf = Ctr { .clk = fast, .n = nf };
+    let cs = Ctr { .clk = slow, .n = ns };
+    clock(fast, 4ns);
+    clock(slow, 10ns);
+    await 40ns;
+    assert!(nf == 10, "fast Ctr: 10 rises by 40ns");
+    assert!(ns == 4, "slow Ctr: 4 rises by 40ns");
+}

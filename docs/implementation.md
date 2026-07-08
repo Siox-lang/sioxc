@@ -106,9 +106,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   under `path.s`, and every port connection becomes a driver (`in` reads the
   parent, `out` drives it). Multiple instances of one entity take per-instance
   params (`Reg<8>` and `Reg<4>` in one parent size correctly).
+- **Status (done):** tops-only lowering — only `#[top]`/`#[test]` roots lower;
+  everything else lowers recursively per-instance from there (no entity is
+  lowered standalone by type). A testbench's DUTs lower under the testbench
+  path (`CounterTest.dut.*`), so two instances of one entity stay distinct.
 - **Status (todo):** dynamic array indexing, method-call lowering; struct-typed
-  sub-instance ports (scalar ports wire today); avoid re-lowering a nested
-  entity standalone (harmless clutter under a `#[top]` wrapper).
+  sub-instance ports (scalar ports wire today).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -139,8 +142,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   multiple clocks interleave. `sioxc test [name]` runs all or a filtered subset
   in libtest style (`test … ok`/`FAILED`, `file:line:col`), exits nonzero on
   failure, and `--no-run` links a native multi-test binary.
-- **Status (todo):** `sioxc test <dir>` over a directory; multiple instances of
-  the same entity at the testbench top level (#39).
+- **Status (todo):** `sioxc test <dir>` over a directory.
 
 ### Stage 9 — Waveforms (`siox-wave`) — 🟢 partial
 - **Acceptance:** counter VCD shows `clk/rst/en/count`; FSM shows symbolic/
