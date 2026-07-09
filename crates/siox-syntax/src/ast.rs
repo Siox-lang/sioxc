@@ -239,7 +239,10 @@ pub struct Block {
 pub enum Stmt {
     Let(LetDecl),
     /// `target = expr;` — meaning resolved by context (spec 3.12).
-    Assign { target: Expr, value: Expr, span: Span },
+    /// `x = v;`, optionally delayed VHDL-style: `clk = !clk after 5ns;`
+    /// (`after` is testbench-only in Phase 1; the self-toggle idiom is the
+    /// canonical clock generator).
+    Assign { target: Expr, value: Expr, after: Option<Expr>, span: Span },
     If(IfStmt),
     Match(MatchStmt),
     /// `for i in 0..10 { ... }` over a static range (spec Stage 1 / 8).

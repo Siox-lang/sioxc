@@ -548,8 +548,15 @@ impl<'a> Parser<'a> {
         let lhs = self.parse_expr(false);
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr(false);
+            // Optional VHDL-style delay: `clk = !clk after 5ns;`.
+            let after = if self.at(TokenKind::Ident) && self.cur_text() == "after" {
+                self.bump();
+                Some(self.parse_expr(false))
+            } else {
+                None
+            };
             self.expect(TokenKind::Semi, "after an assignment");
-            Stmt::Assign { target: lhs, value, span: start.to(self.prev_span()) }
+            Stmt::Assign { target: lhs, value, after, span: start.to(self.prev_span()) }
         } else {
             // No implicit tail-expression returns: every expression statement is
             // terminated by `;`. A function returns a value via `return`.
@@ -619,7 +626,7 @@ impl<'a> Parser<'a> {
         let lhs = self.parse_expr(false);
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr(false);
-            Stmt::Assign { target: lhs, value, span: start.to(self.prev_span()) }
+            Stmt::Assign { target: lhs, value, after: None, span: start.to(self.prev_span()) }
         } else {
             Stmt::Expr(lhs)
         }

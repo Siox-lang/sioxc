@@ -403,6 +403,34 @@ mod tests {
         }\n";
 
     #[test]
+    fn after_clock_and_oneshot_delayed_write() {
+        // `clk = not clk after 5ns` is a 10ns-period clock; the one-shot
+        // `rst = '0' after 12ns` releases reset mid-run (VHDL semantics).
+        let results = run(
+            "module m;\n\
+             entity Ctr { in clk: Clock; in rst: Logic; out n: uint[8]; }\n\
+             impl Ctr {\n\
+               let v: uint[8] = 0;\n\
+               if clk::rising { if rst == '1' { v = 0; } else { v = v + 1; } }\n\
+               n = v;\n\
+             }\n\
+             #[test]\n\
+             entity T {}\n\
+             impl T {\n\
+               let clk: Logic = '0';\n\
+               let rst: Logic = '1';\n\
+               let n: uint[8];\n\
+               let dut = Ctr { .clk, .rst, .n };\n\
+               clk = not clk after 5ns;\n\
+               rst = '0' after 12ns;\n\
+               await 52ns;\n\
+               assert!(n == 4, \"rises at 15/25/35/45 count after reset drops at 12\");\n\
+             }\n",
+        );
+        assert!(results[0].passed, "{:?}", results[0].failure);
+    }
+
+    #[test]
     fn passing_test_entity_reports_pass() {
         let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 10, \"should be 10\");");
         let results = run(&src);

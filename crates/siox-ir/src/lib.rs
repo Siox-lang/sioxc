@@ -684,7 +684,18 @@ impl<'a> Lowering<'a> {
     /// the enclosing combinational conditions.
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         match stmt {
-            ast::Stmt::Assign { target, value, .. } => {
+            ast::Stmt::Assign { target, value, after, .. } => {
+                // `after` delays are testbench stimulus, not synthesizable
+                // hardware (Phase 1): reject rather than silently drop.
+                if after.is_some() {
+                    self.sink.emit(
+                        siox_diag::Diagnostic::error(
+                            "`after` delays are only allowed in #[test] testbenches (Phase 1)"
+                                .to_string(),
+                        )
+                        .with_code(siox_diag::codes::TYPE_MISMATCH),
+                    );
+                }
                 // A struct-typed target takes one driver per flattened field
                 // (struct copy, struct literal, or an inlined operator impl).
                 if let Some(tpath) = expr_path(target) {
@@ -843,7 +854,16 @@ impl<'a> Lowering<'a> {
     fn lower_event_block(&mut self, block: &ast::Block, cond: Option<Expr>, out: &mut Vec<NextUpdate>) {
         for s in &block.stmts {
             match s {
-                ast::Stmt::Assign { target, value, .. } => {
+                ast::Stmt::Assign { target, value, after, .. } => {
+                    if after.is_some() {
+                        self.sink.emit(
+                            siox_diag::Diagnostic::error(
+                                "`after` delays are only allowed in #[test] testbenches (Phase 1)"
+                                    .to_string(),
+                            )
+                            .with_code(siox_diag::codes::TYPE_MISMATCH),
+                        );
+                    }
                     if let Some(target) = self.target_signal(target) {
                         let expr = self.lower_expr(value);
                         out.push(NextUpdate { target, cond: cond.clone(), expr });

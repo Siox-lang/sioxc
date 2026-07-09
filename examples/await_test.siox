@@ -25,7 +25,7 @@ impl AwaitEdge {
     let count: uint[8];
     let dut = Counter<W = 8> { .clk, .rst, .en, .count };
 
-    clock(clk, 10ns);        // background 10ns clock
+    clk = not clk after 5ns; // background 10ns clock (VHDL-style)
     await clk::rising;       // first edge (still in reset)
     rst = '0';
     await count == 7;        // wait until the counter reaches 7

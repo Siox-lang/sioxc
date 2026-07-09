@@ -1686,13 +1686,28 @@ tick(clk);                  // one manual clock cycle (rise, half, fall, half)
 assert!(condition, "message");
 ```
 
-#### `await` and background clocks
+#### `after`, `await`, and background clocks
 
-For edge/level-driven stimulus (and to mirror cocotb's async model), a
-testbench can start a free-running background **clock** and `await` on it:
+Testbench assignments take an optional VHDL-style **`after`** delay. The
+self-toggle idiom is the canonical clock generator; any other right-hand side
+is a one-shot delayed write (the value is evaluated at schedule time, VHDL
+waveform semantics):
 
 ```siox
-clock(clk, 10ns);           // toggle clk every half period, forever
+clk = not clk after 5ns;    // free-running clock, 10ns period (VHDL style)
+rst = '0' after 12ns;       // one-shot: applied 12ns from now
+```
+
+`after` is **not a keyword** — like `not`, `wait`, and `await` it is a plain
+identifier recognized by position (between an assignment's value and `;`),
+and stays usable as a name everywhere else. `after` is testbench-only in
+Phase 1; hardware impls reject it. `clock(clk, period)` remains as sugar for
+the toggle idiom.
+
+For edge/level-driven stimulus (mirroring cocotb's async model), `await` waits
+on the scheduler those clocks run on:
+
+```siox
 await 10ns;                 // advance simulation time
 await clk::rising;          // wait for the next rising edge (::falling/::event)
 await count == 7;           // wait until a condition holds

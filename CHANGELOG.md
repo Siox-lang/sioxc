@@ -16,6 +16,12 @@ assertions, and VCD export — predates this changelog. See
   `await clk::rising` (edge; also `::falling`/`::event`), `await cond`
   (condition), and `clock(clk, period)` for a free-running background clock.
   Runs identically on the interpreter, the JIT, and the native test binary.
+- **VHDL-style delayed assignment** — `clk = not clk after 5ns;` is the
+  canonical clock generator (self-toggle registers on the event wheel), and
+  `rst = '0' after 12ns;` is a one-shot delayed write (value evaluated at
+  schedule time). `after` is positional, not a reserved word; testbench-only
+  (hardware rejects it); works on interp, JIT, and the native binary (clock
+  idiom; one-shots error cleanly there for now).
 - **Hierarchical simulation** — an entity may instantiate sub-entities; each
   instance lowers into its own signal namespace (`Add2.s1.a`) and every port
   connection becomes a driver. Multiple instances of one entity take

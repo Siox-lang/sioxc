@@ -190,7 +190,22 @@ impl Ctx<'_> {
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
-            ast::Stmt::Assign { target, value, .. } => {
+            ast::Stmt::Assign { target, value, after, .. } => {
+                if after.is_some() {
+                    // `clk = !clk after d;` registers on the event wheel; other
+                    // delayed writes aren't compiled yet.
+                    let (path, _) = after_toggle(target, value, after)
+                        .ok_or("only the `clk = not clk after d` form of `after` is supported in the native binary yet (use `sioxc test`)")?;
+                    let id = self.map.get(&path).ok_or_else(|| format!("unknown signal `{path}`"))?;
+                    if let Some(i) = self.clocks.iter().position(|(c, _)| *c == id.0) {
+                        b.push_str(&format!(
+                            "{ind}_next[{i}] = _now + {}ULL; _nclk = {}; sx_settle();\n",
+                            self.clocks[i].1,
+                            i + 1
+                        ));
+                    }
+                    return Ok(());
+                }
                 let name = expr_path(target).ok_or("unsupported assignment target")?;
                 let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
                 let e = self.expr(value)?;
@@ -417,21 +432,47 @@ fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
 
 // --- helpers (small replicas of interpreter internals) ---------------------
 
-/// Collect `clock(clk, period)` calls in a test's body: (signal id, half fs).
+/// A `clk = !clk after d;` self-toggle: `Some((clock path, half period))`.
+fn after_toggle(target: &ast::Expr, value: &ast::Expr, after: &Option<ast::Expr>) -> Option<(String, u64)> {
+    let delay = after.as_ref()?;
+    let path = expr_path(target)?;
+    if let ast::Expr::Unary { op: ast::UnOp::Not, rhs, .. } = value {
+        if expr_path(rhs).as_deref() == Some(path.as_str()) {
+            let half = duration_fs(std::slice::from_ref(delay)).max(1);
+            return Some((path, half));
+        }
+    }
+    None
+}
+
+/// Collect the background clocks in a test's body — `clock(clk, period)` calls
+/// and the VHDL-style `clk = !clk after half;` idiom: (signal id, half fs).
 fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec<(u32, u64)> {
     let mut clocks: Vec<(u32, u64)> = Vec::new();
+    let mut add = |id: u32, half: u64| {
+        if !clocks.iter().any(|(c, _)| *c == id) {
+            clocks.push((id, half));
+        }
+    };
     for item in items {
-        if let ast::ImplItem::Stmt(ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })) = item {
-            let is_clock = matches!(callee.as_ref(),
-                ast::Expr::Path(p) if p.segments.first().map(|s| s.text.as_str()) == Some("clock"));
-            if is_clock {
-                if let Some(id) = args.first().and_then(expr_path).and_then(|p| map.get(&p)) {
-                    if !clocks.iter().any(|(c, _)| *c == id.0) {
-                        let half = (duration_fs(&args[1..]) / 2).max(1);
-                        clocks.push((id.0, half));
+        match item {
+            ast::ImplItem::Stmt(ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })) => {
+                let is_clock = matches!(callee.as_ref(),
+                    ast::Expr::Path(p) if p.segments.first().map(|s| s.text.as_str()) == Some("clock"));
+                if is_clock {
+                    if let Some(id) = args.first().and_then(expr_path).and_then(|p| map.get(&p)) {
+                        add(id.0, (duration_fs(&args[1..]) / 2).max(1));
                     }
                 }
             }
+            ast::ImplItem::Stmt(ast::Stmt::Assign { target, value, after, .. }) => {
+                if let Some((path, half)) = after_toggle(target, value, after) {
+                    if let Some(id) = map.get(&path) {
+                        add(id.0, half);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     clocks

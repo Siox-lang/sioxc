@@ -213,8 +213,9 @@ impl Printer {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
-            Stmt::Assign { target, value, .. } => {
-                self.line(&format!("{} = {};", expr(target), expr(value)));
+            Stmt::Assign { target, value, after, .. } => {
+                let delay = after.as_ref().map(|d| format!(" after {}", expr(d))).unwrap_or_default();
+                self.line(&format!("{} = {}{delay};", expr(target), expr(value)));
             }
             Stmt::If(i) => self.if_stmt(i),
             Stmt::Match(m) => self.match_stmt(m),

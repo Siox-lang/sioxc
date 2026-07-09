@@ -304,6 +304,7 @@ fn run_one<'a>(
         record,
         samples: Vec::new(),
         clocks: Vec::new(),
+        oneshots: Vec::new(),
         time_fs: 0,
     };
 
@@ -387,6 +388,9 @@ struct Testbench<'a> {
     samples: Vec<Sample>,
     /// Background clocks driving `await` edges/conditions.
     clocks: Vec<ClockGen>,
+    /// One-shot delayed writes from `x = v after d;` — the value is evaluated
+    /// at schedule time (VHDL waveform semantics): (fire time fs, signal, value).
+    oneshots: Vec<(u64, SignalId, u128)>,
     /// Simulation time in femtoseconds. The runner owns the clock (the engine
     /// is purely combinational), so time is correct on any backend — including
     /// the JIT, whose settle-only engine has no notion of time.
@@ -451,7 +455,11 @@ impl Testbench<'_> {
 
     fn exec(&mut self, s: &ast::Stmt) {
         match s {
-            ast::Stmt::Assign { target, value, .. } => {
+            ast::Stmt::Assign { target, value, after, .. } => {
+                if let Some(delay) = after {
+                    self.exec_after(target, value, delay);
+                    return;
+                }
                 if let Some(path) = expr_path(target) {
                     // A string literal assigns each Char element (`s = "hi";`).
                     if let ast::Expr::StrLit { text, .. } = value {
@@ -593,10 +601,40 @@ impl Testbench<'_> {
         }
     }
 
-    /// Advance to the earliest pending clock edge and toggle it; false if there
-    /// are no background clocks.
+    /// `x = v after d;` — a VHDL-style delayed assignment. The self-toggle
+    /// idiom (`clk = !clk after 5ns;`) registers a free-running background
+    /// clock with `d` as its half period (the canonical clock generator); any
+    /// other RHS is evaluated now and applied at `now + d`.
+    fn exec_after(&mut self, target: &ast::Expr, value: &ast::Expr, delay: &ast::Expr) {
+        let Some(path) = expr_path(target) else { return };
+        let Some(&id) = self.map.get(&path) else { return };
+        let d = duration_fs(std::slice::from_ref(delay)).max(1);
+        if let ast::Expr::Unary { op: ast::UnOp::Not, rhs, .. } = value {
+            if expr_path(rhs).as_deref() == Some(path.as_str()) {
+                // The signal keeps its initial value; first toggle at `now + d`.
+                self.clocks.push(ClockGen { id, half_period: d, next_edge: self.time_fs + d });
+                return;
+            }
+        }
+        let v = self.eval_for(&path, value);
+        self.oneshots.push((self.time_fs + d, id, v));
+    }
+
+    /// The earliest pending scheduler event: a clock edge or a one-shot write.
+    fn next_event(&self) -> Option<u64> {
+        let c = self.clocks.iter().map(|c| c.next_edge).min();
+        let o = self.oneshots.iter().map(|&(t, _, _)| t).min();
+        match (c, o) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, None) => a,
+            (None, b) => b,
+        }
+    }
+
+    /// Advance to the earliest pending event and fire everything due at that
+    /// instant (clock toggles + one-shot writes); false if nothing is pending.
     fn step_one_clock(&mut self) -> bool {
-        let Some(t) = self.clocks.iter().map(|c| c.next_edge).min() else {
+        let Some(t) = self.next_event() else {
             return false;
         };
         if t > self.time_fs {
@@ -610,14 +648,26 @@ impl Testbench<'_> {
                 self.clocks[i].next_edge = t + self.clocks[i].half_period;
             }
         }
+        let mut fired = Vec::new();
+        self.oneshots.retain(|&(ft, id, v)| {
+            if ft == t {
+                fired.push((id, v));
+                false
+            } else {
+                true
+            }
+        });
+        for (id, v) in fired {
+            self.engine.set(id, v);
+        }
         self.engine.settle();
         self.sample();
         true
     }
 
-    /// Run background clocks up to (and including) `target` femtoseconds.
+    /// Run pending events up to (and including) `target` femtoseconds.
     fn run_clocks_until(&mut self, target: u64) {
-        while self.clocks.iter().map(|c| c.next_edge).min().is_some_and(|t| t <= target) {
+        while self.next_event().is_some_and(|t| t <= target) {
             self.step_one_clock();
         }
     }

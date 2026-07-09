@@ -17,8 +17,8 @@ impl MI {
     let nf: uint[8]; let ns: uint[8];
     let cf = Ctr { .clk = fast, .n = nf };
     let cs = Ctr { .clk = slow, .n = ns };
-    clock(fast, 4ns);
-    clock(slow, 10ns);
+    fast = not fast after 2ns;
+    slow = not slow after 5ns;
     await 40ns;
     assert!(nf == 10, "fast Ctr: 10 rises by 40ns");
     assert!(ns == 4, "slow Ctr: 4 rises by 40ns");
