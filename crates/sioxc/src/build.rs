@@ -260,16 +260,13 @@ impl Ctx<'_> {
             _ => "",
         };
         match name {
+            // `tick`/`wait` were removed: `await` is the one timing primitive
+            // (`wait` errors at parse; tick() returns to std later as source).
             "tick" => {
-                let clk = args.first().and_then(expr_path).ok_or("tick needs a signal")?;
-                let id = self.map.get(&clk).ok_or_else(|| format!("unknown clock `{clk}`"))?.0;
-                b.push_str(&format!(
-                    "{ind}sx_set({id}, 1); sx_settle();\n{ind}sx_set({id}, 0); sx_settle();\n"
-                ));
-            }
-            "wait" => {
-                // Advance time without running the clocks (matches the runner).
-                b.push_str(&format!("{ind}_now += {}ULL; sx_settle();\n", duration_fs(args)));
+                return Err("`tick()` was removed (it returns as a std function later); \
+                            write `clk = '1'; await 5ns; clk = '0';` or start a clock \
+                            generator (`clk = not clk after 5ns;`)"
+                    .into());
             }
             // clock(clk, period): register a background clock on the wheel
             // (init low; first toggle one half period from now).

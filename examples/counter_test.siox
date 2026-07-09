@@ -41,12 +41,14 @@ impl CounterTest {
         .count,
     };
 
-    wait 10.ns;
+    clk = not clk after 5ns;   // background clock, 10ns period
+
+    await 10ns;
     rst = '0';
 
     for i in 0..10 {
-        tick(clk);
+        await clk::rising;
     }
 
-    assert!(count == 10, "counter should reach 10 after 10 ticks");
+    assert!(count == 10, "counter should reach 10 after 10 rising edges");
 }

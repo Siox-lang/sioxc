@@ -396,9 +396,10 @@ mod tests {
           let en: Bit = '1';\n\
           let count: uint[8];\n\
           let dut = Counter<W = 8> { .clk, .rst, .en, .count };\n\
-          wait 10.ns;\n\
+          await 10ns;\n\
           rst = '0';\n\
-          for i in 0..10 { tick(clk); }\n\
+          clk = not clk after 5ns;\n\
+          for i in 0..10 { await clk::rising; }\n\
           PLACEHOLDER\n\
         }\n";
 
@@ -485,14 +486,14 @@ mod tests {
              impl T {\n\
                let clk: Logic = '0'; let start: Bit = '0'; let st: State;\n\
                let dut = Fsm { .clk, .start, .st };\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Idle, \"stays idle\");\n\
                start = '1';\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Run, \"-> run\");\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Done, \"-> done\");\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Idle, \"-> idle\");\n\
              }\n",
         );
@@ -630,10 +631,10 @@ mod tests {
                let d: uint[8] = 0; let q: uint[8];\n\
                let dut = Fifo1 { .clk, .valid, .ready, .d, .q };\n\
                d = 99; valid = '1';\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(q == 0, \"no capture without ready\");\n\
                ready = '1';\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(q == 99, \"captured on valid and ready\");\n\
              }\n",
         );
@@ -677,11 +678,11 @@ mod tests {
                let dut = Reg<W = 8> { .clk, .d, .q };\n\
                assert!(q == 0, \"starts at 0\");\n\
                d = 42;\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(q == 42, \"captures d\");\n\
                d = 7;\n\
                assert!(q == 42, \"holds between edges\");\n\
-               tick(clk);\n\
+               clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(q == 7, \"next edge\");\n\
              }\n",
         );
@@ -824,7 +825,7 @@ mod tests {
                let lit: Complex;\n\
                let bumped: Complex;\n\
                let dut = Src { .a, .lit, .bumped };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(lit.re == 10, \"10 + 5i re\");\n\
                assert!(lit.im == 5, \"10 + 5i im\");\n\
                assert!(bumped.re == 4, \"(1+2i) + 3 re\");\n\
@@ -882,17 +883,17 @@ mod tests {
                let lt: Bool; let le: Bool; let gt: Bool;\n\
                let ge: Bool; let eq: Bool; let ne: Bool;\n\
                let dut = Cmp { .a, .b, .lt, .le, .gt, .ge, .eq, .ne };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(lt, \"1.9 < 2.0\");\n\
                assert!(le, \"1.9 <= 2.0\");\n\
                assert!(ne, \"1.9 != 2.0\");\n\
                a = { .major = 2, .minor = 0 };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(eq, \"2.0 == 2.0\");\n\
                assert!(ge, \"2.0 >= 2.0\");\n\
                assert!(le, \"2.0 <= 2.0\");\n\
                a = { .major = 2, .minor = 1 };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(gt, \"2.1 > 2.0 (minor breaks the tie)\");\n\
                assert!(ne, \"2.1 != 2.0\");\n\
              }\n",
@@ -924,10 +925,10 @@ mod tests {
                let i: uint[8] = 10;\n\
                let o: uint[8];\n\
                let dut = Chain { .i, .o };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(o == 13, \"10 +1 +1 +1 propagates through the chain\");\n\
                i = 20;\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(o == 23, \"a new input re-propagates\");\n\
              }\n",
         );
@@ -949,11 +950,11 @@ mod tests {
                let s: string = \"hello\";\n\
                let o: string[5];\n\
                let dut = Echo { .s, .o };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(o == \"hello\", \"echoed string matches\");\n\
                assert!(o != \"world\", \"and differs from another\");\n\
                s = \"world\";\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(o == \"world\", \"reassignment propagates\");\n\
              }\n",
         );
@@ -978,11 +979,11 @@ mod tests {
                let is_a: Bool;\n\
                let echo: Char;\n\
                let dut = P { .c, .is_a, .echo };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(is_a, \"'A' == 'A' (symbol equality)\");\n\
                assert!(echo == 'A', \"symbol round-trips\");\n\
                c = '\u{20AC}';\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(echo == '\u{20AC}', \"non-ASCII symbols work (euro sign)\");\n\
                assert!(is_a == false, \"and are distinct from 'A'\");\n\
              }\n",
@@ -1012,7 +1013,7 @@ mod tests {
                let oc: Char;\n\
                let ob: Byte;\n\
                let dut = P { .c, .b, .oc, .ob };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(oc == 128512, \"21-bit code point survives (width > 16)\");\n\
                assert!(ob == 0, \"byte arithmetic wraps at 8 bits\");\n\
              }\n",
@@ -1047,7 +1048,7 @@ mod tests {
                let lo_up: uint[4];\n\
                let named: uint[4];\n\
                let dut = S { .w, .hi_dn, .lo_up, .named };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(hi_dn == 10, \"w[7..4] descending is MSB-first\");\n\
                assert!(lo_up == 5, \"w[4..7] ascending reverses bit order\");\n\
                assert!(named == 5, \"named range const slices (w[3..0])\");\n\
@@ -1071,7 +1072,7 @@ mod tests {
                let a: uint[8] = 5;\n\
                let y: uint[128];\n\
                let dut = Shifter { .a, .y };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y != 0, \"bits above 63 survive in wide slots\");\n\
                assert!(y >> 100 == 5, \"shifted value round-trips\");\n\
                assert!(y >> 50 != 5, \"value is genuinely above bit 63\");\n\
@@ -1110,7 +1111,7 @@ mod tests {
                let t: Time;\n\
                let z: Complex;\n\
                let dut = Src { .t, .z };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(t.fs == 10000000, \"10ns is 10^7 fs\");\n\
                assert!(z.re == 0, \"5i has no real part\");\n\
                assert!(z.im == 5, \"5i has im 5\");\n\
@@ -1141,12 +1142,12 @@ mod tests {
                let b: Complex = { .re = 0, .im = 5 };\n\
                let z: Complex;\n\
                let dut = Adder { .a, .b, .z };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(z.re == 10, \"10 + 5i has re 10\");\n\
                assert!(z.im == 5, \"10 + 5i has im 5\");\n\
                a = { .re = 3, .im = 4 };\n\
                b = { .re = 1, .im = 2 };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(z.re == 4, \"(3+4i)+(1+2i) re\");\n\
                assert!(z.im == 6, \"(3+4i)+(1+2i) im\");\n\
              }\n",
@@ -1180,14 +1181,14 @@ mod tests {
                let b: Volt = Volt::Low;\n\
                let y: Volt;\n\
                let dut = Mix { .a, .b, .y };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y == Volt::Low, \"Low + Low = Low\");\n\
                b = Volt::High;\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y == Volt::High, \"Low + High = High\");\n\
                a = Volt::High;\n\
                b = Volt::Low;\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y == Volt::High, \"High + Low = High\");\n\
              }\n",
         );
@@ -1207,11 +1208,11 @@ mod tests {
                let a: uint[8] = x\"AB\";\n\
                let y: uint[8];\n\
                let dut = Buf { .a, .y };\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y == x\"AB\", \"hex literal drives through\");\n\
                assert!(y == 171, \"and equals its decimal value\");\n\
                a = b\"01010101\";\n\
-               wait 1ns;\n\
+               await 1ns;\n\
                assert!(y == 85, \"binary literal too\");\n\
              }\n",
         );

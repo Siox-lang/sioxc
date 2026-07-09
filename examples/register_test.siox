@@ -38,13 +38,14 @@ impl RegisterTest {
     assert!(q == 0, "register starts at 0");
 
     d = 42;
-    tick(clk);
+    // A manual clock pulse is just code (tick() returns as std later).
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(q == 42, "register captures d on the rising edge");
 
     // Changing d without an edge does not change q.
     d = 7;
     assert!(q == 42, "q holds between edges");
 
-    tick(clk);
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(q == 7, "next edge captures the new d");
 }

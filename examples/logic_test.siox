@@ -33,30 +33,30 @@ impl LogicTest {
 
     let dut = Gates { .a, .b, .y_and, .y_or, .y_not };
 
-    wait 1ns;
+    await 1ns;
     assert!(y_and == '0', "0 and 0 = 0");
     assert!(y_or == '0', "0 or 0 = 0");
     assert!(y_not == '1', "not 0 = 1");
 
     a = '1';
     b = 'X';
-    wait 1ns;
+    await 1ns;
     assert!(y_and == 'X', "1 and X = X (unknown propagates)");
     assert!(y_or == '1', "1 or X = 1 (dominant operand decides)");
     assert!(y_not == '0', "not 1 = 0");
 
     a = 'X';
-    wait 1ns;
+    await 1ns;
     assert!(y_not == 'X', "not X = X (unknown propagates)");
 
     a = '0';
-    wait 1ns;
+    await 1ns;
     assert!(y_and == '0', "0 and X = 0 (dominant operand decides)");
     assert!(y_or == 'X', "0 or X = X (unknown propagates)");
 
     a = '1';
     b = '1';
-    wait 1ns;
+    await 1ns;
     assert!(y_and == '1', "1 and 1 = 1");
     assert!(y_or == '1', "1 or 1 = 1");
 }

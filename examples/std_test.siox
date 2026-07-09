@@ -30,10 +30,10 @@ impl StdTest {
     let buf = Buf { .a, .y };
 
     a = HIGH;
-    wait 1.ns;
+    await 1ns;
     assert!(y == HIGH, "buffer passes HIGH through");
 
     a = LOW;
-    wait 1.ns;
+    await 1ns;
     assert!(y == LOW, "buffer passes LOW through");
 }

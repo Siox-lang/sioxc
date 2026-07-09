@@ -530,24 +530,18 @@ impl Testbench<'_> {
             _ => "",
         };
         match name {
-            // tick(clk): a full clock cycle — rising edge, half period, falling
-            // edge, half period.
+            // `tick`/`wait` were removed in favour of the one timing
+            // primitive: start a generator (`clk = not clk after 5ns;`) and
+            // `await` on it. `wait` already errors at parse; `tick` is plain
+            // call syntax, so fail the test with the pointer instead.
             "tick" => {
-                if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
-                    self.engine.set(id, 1);
-                    self.engine.settle();
-                    self.sample();
-                    self.time_fs += HALF_PERIOD;
-                    self.engine.set(id, 0);
-                    self.engine.settle();
-                    self.sample();
-                    self.time_fs += HALF_PERIOD;
-                }
-            }
-            // wait <duration>: advance simulation time.
-            "wait" => {
-                self.time_fs += duration_fs(args);
-                self.sample();
+                self.failure = Some((
+                    "`tick()` was removed (it returns as a std function later); write \
+                     `clk = '1'; await 5ns; clk = '0';` or start a clock generator \
+                     (`clk = not clk after 5ns;`)"
+                        .to_string(),
+                    span,
+                ));
             }
             // clock(clk, period): start a free-running background clock.
             "clock" => {

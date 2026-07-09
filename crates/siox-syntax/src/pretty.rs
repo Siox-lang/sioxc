@@ -574,7 +574,7 @@ mod tests {
                let f = 100MHz;\n\
                let c = 5i;\n\
                y = x\"AB\";\n\
-               wait 1ns;\n\
+               await 1ns;\n\
              }\n",
         );
     }

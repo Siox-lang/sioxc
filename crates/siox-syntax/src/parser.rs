@@ -530,10 +530,14 @@ impl<'a> Parser<'a> {
             // waits for an edge; `await cond` waits until a condition holds.
             TokenKind::Ident if self.cur_text() == "wait" || self.cur_text() == "await" => {
                 let start = self.span();
-                let callee = Expr::Path(Path {
-                    segments: vec![self.parse_ident()],
-                    span: start,
-                });
+                // `await` is the one timing primitive; `wait` errors but is
+                // parsed as `await` so later stages still run (best-effort).
+                if self.cur_text() == "wait" {
+                    self.error_here("`wait` was removed; use `await <duration>`");
+                }
+                let mut ident = self.parse_ident();
+                ident.text = "await".to_string();
+                let callee = Expr::Path(Path { segments: vec![ident], span: start });
                 let arg = self.parse_expr(false);
                 self.expect(TokenKind::Semi, "after a timing primitive");
                 let span = start.to(self.prev_span());
@@ -1468,10 +1472,10 @@ mod tests {
     #[test]
     fn test_entity_with_stimulus() {
         let m = parse_ok(
-            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Logic = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  wait 10.ns;\n  rst = '0';\n  for i in 0..10 {\n    tick(clk);\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
+            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Logic = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk::rising;\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
-        // clk, dut, wait, rst=, for, assert.
+        // clk, dut, await, rst=, for, assert.
         assert_eq!(i.items.len(), 6);
         assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::Expr(Expr::Call { .. }))));
         assert!(matches!(i.items[4], ImplItem::Stmt(Stmt::For { .. })));

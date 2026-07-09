@@ -25,11 +25,11 @@ impl StringTest {
 
     let dut = Echo { .s, .o };
 
-    wait 1ns;
+    await 1ns;
     assert!(o == "hello", "the echoed string matches the input");
 
     s = "world";
-    wait 1ns;
+    await 1ns;
     assert!(o == "world", "reassignment propagates through");
     assert!(o != "hello", "and no longer matches the old value");
 }

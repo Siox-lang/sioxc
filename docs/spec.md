@@ -1064,7 +1064,7 @@ impl Suffix for Time {
 Two loaded types defining the same suffix is an ambiguity error at the use
 site. An unknown suffix is an error; a fixed fs/Hz scale table (typing the
 literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
-`wait 10ns` without imports. See docs/notes/literal-suffixes.md for the full
+`await 10ns` without imports. See docs/notes/literal-suffixes.md for the full
 design, including multi-type examples.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
@@ -1678,11 +1678,12 @@ A test entity may instantiate a DUT and create simulation stimulus.
 
 Keep this small initially.
 
-Primitives:
+Primitives — `await` is the one timing primitive (there is no `wait`, and a
+manual clock pulse is plain code; `tick()` returns later as a std function):
 
 ```siox
-wait 10.ns;                 // advance simulation time
-tick(clk);                  // one manual clock cycle (rise, half, fall, half)
+await 10ns;                            // advance simulation time
+clk = '1'; await 5ns; clk = '0';       // a manual pulse is just code
 assert!(condition, "message");
 ```
 
@@ -1740,11 +1741,13 @@ impl CounterTest {
         .count,
     };
 
-    wait 10.ns;
+    clk = not clk after 5ns;   // background clock, 10ns period
+
+    await 10ns;
     rst = '0';
 
     for i in 0..10 {
-        tick(clk);
+        await clk::rising;
     }
 
     assert!(count == 10, "counter should increment 10 times");
@@ -1984,15 +1987,14 @@ pub attr name: string for entity;
 
 ### `std::sim`
 
-Should contain test/simulation helpers:
+Should contain test/simulation helpers built on the `await`/`after`
+primitives — e.g. `tick(clk)` as library source once functions are callable
+from testbenches:
 
 ```siox
-wait
 tick
 run
 ```
-
-Exact syntax may be compiler built-in at first.
 
 ### Endgoal
 

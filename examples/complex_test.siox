@@ -37,20 +37,20 @@ impl ComplexTest {
 
     let dut = Adder { .a, .b, .z };
 
-    wait 1ns;
+    await 1ns;
     assert!(z.re == 10, "10 + 5i: real part");
     assert!(z.im == 5, "10 + 5i: imaginary part");
 
     a = { .re = 3, .im = 4 };
     b = { .re = 1, .im = 2 };
-    wait 1ns;
+    await 1ns;
     assert!(z.re == 4, "(3+4i) + (1+2i): real part");
     assert!(z.im == 6, "(3+4i) + (1+2i): imaginary part");
 
     let w: Complex;
     let imag = Imag { .z = w };
 
-    wait 1ns;
+    await 1ns;
     assert!(w.re == 10, "10 + 5i: real part");
     assert!(w.im == 5, "10 + 5i: imaginary part");
 }

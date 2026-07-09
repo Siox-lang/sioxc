@@ -22,6 +22,6 @@ impl HierTest {
     let a: uint[8] = 10;
     let y: uint[8];
     let dut = Add2 { .a, .y };
-    wait 1.ns;
+    await 1ns;
     assert!(y == 12, "10 + 2 == 12 through two nested Add1 instances");
 }

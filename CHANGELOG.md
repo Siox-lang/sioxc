@@ -68,6 +68,13 @@ assertions, and VCD export — predates this changelog. See
   different periods interleave correctly (previously all clocks toggled in
   lockstep) and `await <duration>` advances real time.
 
+- **`wait` and `tick()` removed — `await` is the one timing primitive.**
+  `wait` is a parse error (recovering as `await`); `tick()` fails with a
+  pointer to the replacements: a manual pulse is plain code
+  (`clk = '1'; await 5ns; clk = '0';`) and edge-driven tests use a generator
+  (`clk = not clk after 5ns;`) with `await clk::rising`. `tick()` returns
+  later as a std function. All examples converted.
+
 ### Fixed
 - **JIT-traced VCD timestamps** were frozen at `#0` (the JIT engine reported
   time 0). The runner now owns time, so waveforms carry real timestamps and

@@ -52,18 +52,18 @@ impl FsmTest {
         .st,
     };
 
-    // Idle with start low stays Idle.
-    tick(clk);
+    // Idle with start low stays Idle. (A pulse is plain code.)
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(st == State::Idle, "stays idle without start");
 
     // start raises the machine into Run, then it walks Run -> Done -> Idle.
     start = '1';
-    tick(clk);
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(st == State::Run, "idle + start -> run");
 
-    tick(clk);
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(st == State::Done, "run -> done");
 
-    tick(clk);
+    clk = '1'; await 5ns; clk = '0'; await 5ns;
     assert!(st == State::Idle, "done -> idle");
 }
