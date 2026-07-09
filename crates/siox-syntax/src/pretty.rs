@@ -567,11 +567,11 @@ mod tests {
     fn roundtrips_operator_traits() {
         roundtrip(
             "module m;\n\
-             pub trait \"+\" {\n\
+             pub trait Add2 {\n\
                fn apply(self, rhs: Self) -> Self;\n\
              }\n\
              struct V { x: Bit }\n\
-             impl \"+\" for V {\n\
+             impl Add2 for V {\n\
                fn apply(self, rhs: V) -> V {\n\
                  return self;\n\
                }\n\

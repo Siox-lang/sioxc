@@ -7,24 +7,24 @@ pub struct Complex {
     im: real,
 }
 
-impl "+" for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add for Complex {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
-    fn apply_int(self, rhs: integer) -> Complex {
+    fn add(self, rhs: integer) -> Complex {
         return Complex { .re = self.re + rhs, .im = self.im };
     }
 }
 
 // `10 + 5i`: a numeric left operand promotes into the Complex plane.
-impl "+" for integer {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add for integer {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self + rhs.re, .im = rhs.im };
     }
 }
 
-impl "-" for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Sub for Complex {
+    fn sub(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re - rhs.re, .im = self.im - rhs.im };
     }
 }

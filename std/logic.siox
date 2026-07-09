@@ -50,8 +50,8 @@ pub const HIGH: Bit = '1';
 // A dominant operand still decides ('0' and X = '0'; '1' or X = '1'),
 // otherwise the result is 'X'. `Bit` keeps the built-in two-value operators.
 
-impl "and" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl BitAnd for Logic {
+    fn bitand(self, rhs: Logic) -> Logic {
         if self == '0' or rhs == '0' {
             return '0';
         }
@@ -62,8 +62,8 @@ impl "and" for Logic {
     }
 }
 
-impl "or" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl BitOr for Logic {
+    fn bitor(self, rhs: Logic) -> Logic {
         if self == '1' or rhs == '1' {
             return '1';
         }
@@ -74,8 +74,8 @@ impl "or" for Logic {
     }
 }
 
-impl "xor" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl BitXor for Logic {
+    fn bitxor(self, rhs: Logic) -> Logic {
         if self == '0' and rhs == '0' {
             return '0';
         }
@@ -92,8 +92,8 @@ impl "xor" for Logic {
     }
 }
 
-impl "not" for Logic {
-    fn apply(self) -> Logic {
+impl Not for Logic {
+    fn not(self) -> Logic {
         if self == '0' {
             return '1';
         }
@@ -104,8 +104,8 @@ impl "not" for Logic {
     }
 }
 
-impl "nand" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl Nand for Logic {
+    fn nand(self, rhs: Logic) -> Logic {
         if self == '0' or rhs == '0' {
             return '1';
         }
@@ -116,8 +116,8 @@ impl "nand" for Logic {
     }
 }
 
-impl "nor" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl Nor for Logic {
+    fn nor(self, rhs: Logic) -> Logic {
         if self == '1' or rhs == '1' {
             return '0';
         }
@@ -128,8 +128,8 @@ impl "nor" for Logic {
     }
 }
 
-impl "xnor" for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl Xnor for Logic {
+    fn xnor(self, rhs: Logic) -> Logic {
         if self == '0' and rhs == '0' {
             return '1';
         }

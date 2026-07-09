@@ -4,9 +4,14 @@ using std::logic::{Bit, Bool};
 
 // Conversion traits for the standard library.
 //
-// Operator overloading (`impl "+" for T`) and literal suffixes/prefixes
-// (`impl Suffix for T`) are compiler mechanisms — spec 3.24/3.25 — and need
-// no declaration here.
+// Operator overloading is Rust-style (spec 3.25): `a + b` dispatches to
+// `impl Add for <type of a>` (method `add`, overloads select by the rhs
+// type), `and` to `BitAnd`, unary `not` to `Not`, and one `impl Ord`
+// (`fn cmp(self, rhs) -> Ordering`) derives all six comparisons. The trait
+// names are compiler builtins — like literal suffixes (`impl Suffix for T`,
+// spec 3.24) they need no declaration here. Future user-defined operators
+// are planned as `impl ops::custom<"sym", Rhs> for T`, keeping the named
+// set closed.
 //
 // `Boolean` gives a type a truth representation so it can be used directly
 // as a condition (in `if`, and later `while`/assertions). Truth is the
@@ -18,8 +23,8 @@ using std::logic::{Bit, Bool};
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
 
-// The result of a three-way comparison (`impl "<=>" for T`, spec 3.25).
-// One spaceship impl derives all of < <= > >= == != — like C++'s operator<=>.
+// The result of a three-way comparison (`impl Ord for T`, spec 3.25).
+// One `cmp` impl derives all of < <= > >= == != — like Rust's Ord.
 // Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
 // comparisons test against them.
 pub enum Ordering {

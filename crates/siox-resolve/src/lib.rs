@@ -29,13 +29,13 @@ use siox_diag::{codes, Diagnostic, DiagnosticSink, Span};
 use siox_syntax::ast::*;
 use siox_syntax::Module;
 
-/// The fixed operator set available for operator traits (`trait "+"`),
-/// matching the language's operator surface (word logic operators, VHDL
-/// style). User-defined operator *symbols* are out of scope; user impls of
-/// these operators for their own types are the point.
+/// The Rust-style operator traits (spec 3.25): `a + b` dispatches to `Add`,
+/// `and` to `BitAnd`, unary `not` to `Not`, and one `Ord` (`cmp -> Ordering`)
+/// impl derives all six comparisons. Seeded as builtins so `impl Add for T`
+/// needs no import; user-defined operator *symbols* are out of scope.
 pub const OPERATORS: &[&str] = &[
-    "+", "-", "*", "/", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "<=>", "and", "or", "xor",
-    "nand", "nor", "xnor", "not",
+    "Add", "Sub", "Mul", "Div", "Shl", "Shr", "BitAnd", "BitOr", "BitXor", "Nand", "Nor",
+    "Xnor", "Not", "Ord",
 ];
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
@@ -165,10 +165,9 @@ impl<'a> Resolver<'a> {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }
-        // Operator strings and the literal suffix/prefix hooks are compiler
-        // mechanisms (spec 3.24/3.25): `impl "+" for T` / `impl Suffix for T`
-        // need no trait declaration or import. Only valid operators are
-        // seeded, so `impl "+++" for T` fails as an unknown name.
+        // Operator traits and the literal suffix/prefix hooks are compiler
+        // mechanisms (spec 3.24/3.25): `impl Add for T` / `impl Suffix for T`
+        // need no trait declaration or import.
         for name in OPERATORS.iter().copied().chain(["Suffix", "Prefix"]) {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
@@ -218,17 +217,6 @@ impl<'a> Resolver<'a> {
                 self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);
             }
             Item::Trait(t) => {
-                // Operator traits (`trait "+"`) are limited to the fixed
-                // operator set; anything else is a typo, not a new operator.
-                let is_op = t.name.text.chars().next().is_some_and(|c| !(c.is_alphabetic() || c == '_'));
-                if is_op && !OPERATORS.contains(&t.name.text.as_str()) {
-                    self.sink.emit(
-                        Diagnostic::error(format!("unknown operator `\"{}\"`", t.name.text))
-                            .with_code(codes::UNKNOWN_NAME)
-                            .at(t.name.span)
-                            .help(format!("operator traits are limited to: {}", OPERATORS.join(" "))),
-                    );
-                }
                 self.declare(&t.name.text, DefKind::Trait, t.is_pub, t.name.span);
             }
             Item::AttrDecl(a) => {
@@ -759,15 +747,16 @@ mod tests {
     fn operator_traits_resolve_and_reject_unknown_operators() {
         // A fixed-set operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
-            "module m;\npub trait \"+\" {\n  fn apply(self, rhs: Self) -> Self;\n}\nstruct V { a: Bit }\nimpl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+            "module m;\nstruct V { a: Bit }\nimpl Add for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
         assert_eq!(errs, 0);
 
-        // An operator outside the fixed set is an error with the set in help.
-        let sink = diagnostics("module m;\npub trait \"+++\" {\n  fn apply(self) -> Self;\n}\n");
-        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::UNKNOWN_NAME)).unwrap();
-        assert!(d.message.contains("unknown operator"), "{}", d.message);
-        assert!(d.help.as_deref().unwrap_or("").contains("<<"));
+        // Quoted operator traits were removed with the Rust-style pivot.
+        let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply(self) -> Self;\n}\n");
+        assert!(
+            sink.diagnostics().iter().any(|d| d.message.contains("quoted operator traits")),
+            "expected the removal error"
+        );
     }
 
     #[test]

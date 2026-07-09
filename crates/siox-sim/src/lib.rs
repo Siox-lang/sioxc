@@ -800,7 +800,7 @@ mod tests {
                  return Complex { .re = 0, .im = v };\n\
                }\n\
              }\n\
-             impl \"+\" for Complex {\n\
+             impl Add for Complex {\n\
                fn apply(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
                }\n\
@@ -808,7 +808,7 @@ mod tests {
                  return Complex { .re = self.re + rhs, .im = self.im };\n\
                }\n\
              }\n\
-             impl \"+\" for integer {\n\
+             impl Add for integer {\n\
                fn apply(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self + rhs.re, .im = rhs.im };\n\
                }\n\
@@ -844,7 +844,7 @@ mod tests {
             "module m;\n\
              enum Ordering { Less, Equal, Greater }\n\
              struct Version { major: uint[8], minor: uint[8] }\n\
-             impl \"<=>\" for Version {\n\
+             impl Ord for Version {\n\
                fn apply(self, rhs: Version) -> Ordering {\n\
                  if self.major < rhs.major {\n\
                    return Ordering::Less;\n\
@@ -1128,7 +1128,7 @@ mod tests {
         let results = run(
             "module m;\n\
              struct Complex { re: uint[8], im: uint[8] }\n\
-             impl \"+\" for Complex {\n\
+             impl Add for Complex {\n\
                fn apply(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
                }\n\
@@ -1163,7 +1163,7 @@ mod tests {
         let results = run(
             "module m;\n\
              enum Volt { Low, High }\n\
-             impl \"+\" for Volt {\n\
+             impl Add for Volt {\n\
                fn apply(self, rhs: Volt) -> Volt {\n\
                  if self == Volt::High {\n\
                    return Volt::High;\n\

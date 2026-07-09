@@ -660,18 +660,20 @@ impl<'a> Checker<'a> {
                 let op_str = siox_syntax::pretty::bin_op(*op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
-                        let has_op = |op: &str| {
-                            self.trait_impls.get(op).is_some_and(|set| set.contains(&name))
+                        let has_op = |tr: &str| {
+                            self.trait_impls.get(tr).is_some_and(|set| set.contains(&name))
                         };
-                        // A three-way `<=>` impl derives every comparison
-                        // (spaceship, spec 3.25).
+                        // The Rust-style trait for this operator; one `Ord`
+                        // (cmp -> Ordering) impl derives every comparison.
+                        let tr = siox_syntax::ast::op_trait_name(op_str).unwrap_or(op_str);
                         let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
-                        let has = has_op(op_str) || (is_cmp && has_op("<=>"));
+                        let has = has_op(tr) || (is_cmp && has_op("Ord"));
                         if !has {
+                            let want = if is_cmp { "Ord" } else { tr };
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
-                                format!("no `impl \"{op_str}\"` for `{name}`"),
+                                format!("`{op_str}` needs an `impl {want} for {name}`"),
                             );
                         }
                     }
@@ -809,8 +811,11 @@ impl<'a> Checker<'a> {
                             .def(id)
                             .map(|d| &d.name)
                             .is_some_and(|name| {
+                                let op_str = siox_syntax::pretty::bin_op(*op);
+                                let tr = siox_syntax::ast::op_trait_name(op_str)
+                                    .unwrap_or(op_str);
                                 self.trait_impls
-                                    .get(siox_syntax::pretty::bin_op(*op))
+                                    .get(tr)
                                     .is_some_and(|set| set.contains(name))
                             });
                         if has_impl {
@@ -1222,11 +1227,11 @@ mod tests {
         let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { in p: V; in q: V; out y: Bit; }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
         // Without an impl, `+` on a struct is rejected.
         assert_eq!(check_src(&base.replace("OPIMPL\n", "")), 1);
-        // With `impl \"+\" for V`, it is accepted.
+        // With `impl Add for V`, it is accepted.
         assert_eq!(
             check_src(&base.replace(
                 "OPIMPL",
-                "impl \"+\" for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
+                "impl Add for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}"
             )),
             0
         );

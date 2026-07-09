@@ -1102,7 +1102,9 @@ impl<'a> Lowering<'a> {
     ) -> Option<Val> {
         let lhs_ty = self.operand_type_name(lhs)?;
         let rhs_ty = self.operand_type_name(rhs);
-        let fns = self.op_impls.get(&(op.to_string(), lhs_ty.clone()))?;
+        // `a + b` dispatches to the Rust-style trait (`Add`), spec 3.25.
+        let tr = siox_syntax::ast::op_trait_name(op).unwrap_or(op);
+        let fns = self.op_impls.get(&(tr.to_string(), lhs_ty.clone()))?;
 
         // Overload selection by the rhs parameter's type: `Self` reads as the
         // impl target; an unknown rhs type accepts a sole candidate.
@@ -1294,7 +1296,7 @@ impl<'a> Lowering<'a> {
             "<=" => (2, true),     // != Greater
             _ => return None,
         };
-        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else { return None };
+        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else { return None }; // -> Ord::cmp
         Some(Expr::Binary {
             op: if ne { BinOp::Ne } else { BinOp::Eq },
             lhs: Box::new(cmp),
@@ -1305,7 +1307,8 @@ impl<'a> Lowering<'a> {
     /// Inline a unary operator impl (`not a`): binds only `self`.
     fn inline_unary(&self, op: &str, rhs: &ast::Expr) -> Option<Val> {
         let ty = self.operand_type_name(rhs)?;
-        let fns = self.op_impls.get(&(op.to_string(), ty))?;
+        let tr = siox_syntax::ast::op_trait_name(op).unwrap_or(op);
+        let fns = self.op_impls.get(&(tr.to_string(), ty))?;
         let f = fns.first()?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();

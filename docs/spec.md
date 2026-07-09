@@ -1095,38 +1095,45 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ---
 
-### 3.25 Operator traits
+### 3.25 Operator traits (Rust-style)
 
-Operators are traits named by their operator string. The traits themselves
-are **compiler built-ins** — no declaration or import — and a type opts into
-an operator by implementing one, the way `std_logic_1164` defines `and` on
-`std_ulogic` as an ordinary function:
+Operator overloading follows Rust's `std::ops` model: each operator maps to
+a **named trait** with a method named after it, and a type opts into an
+operator by implementing that trait. The trait names are **compiler
+built-ins** — no declaration or import:
+
+| operator | trait | method |    | operator | trait | method |
+|---|---|---|---|---|---|---|
+| `+` | `Add` | `add` |    | `and` | `BitAnd` | `bitand` |
+| `-` | `Sub` | `sub` |    | `or` | `BitOr` | `bitor` |
+| `*` | `Mul` | `mul` |    | `xor` | `BitXor` | `bitxor` |
+| `/` | `Div` | `div` |    | `nand` | `Nand` | `nand` |
+| `<<` | `Shl` | `shl` |    | `nor` | `Nor` | `nor` |
+| `>>` | `Shr` | `shr` |    | `xnor` | `Xnor` | `xnor` |
+| `not` (unary) | `Not` | `not` |    | `< <= > >=` | `Ord` | `cmp` |
 
 ```siox
-impl "+" for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add for Complex {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
 ```
 
-The operator set is fixed, matching the language's operator surface:
-`+ - * / << >> == != < <= > >= <=> and or xor nand nor xnor not`.
-Implementing any other string is an error — user impls of these operators
-for user types are the point, not user-invented symbols. `Self` in an impl
-body refers to the implementing type.
-
 Using an operator on a user struct/enum without a matching impl is an error
-(`==`/`!=` stay built-in on enums as discriminant comparison).
+(`==`/`!=` stay built-in on enums as discriminant comparison). `Self` in an
+impl refers to the implementing type. User-invented operator *symbols* are
+out of scope for Phase 1; the planned escape hatch keeps the named set
+closed: `impl ops::custom<"sym", Rhs> for T`.
 
-**Three-way comparison (`<=>`).** One spaceship impl derives all six
-comparisons, like C++'s `operator<=>`. The impl returns `std::ops::Ordering`
-(`Less`/`Equal`/`Greater`); `a < b` lowers to `(a <=> b) == Ordering::Less`
-and so on. A direct impl of a specific comparison wins over the derivation:
+**Comparisons (`Ord`).** One `cmp` impl returning `std::ops::Ordering`
+(`Less`/`Equal`/`Greater`) derives all six comparisons — like Rust's `Ord`
+(or C++'s `operator<=>`): `a < b` lowers to `a.cmp(b) == Ordering::Less`,
+and struct equality (which has no built-in form) comes with it:
 
 ```siox
-impl "<=>" for Version {
-    fn apply(self, rhs: Version) -> Ordering {
+impl Ord for Version {
+    fn cmp(self, rhs: Version) -> Ordering {
         if self.major < rhs.major { return Ordering::Less; }
         if self.major > rhs.major { return Ordering::Greater; }
         if self.minor < rhs.minor { return Ordering::Less; }
@@ -1134,8 +1141,7 @@ impl "<=>" for Version {
         return Ordering::Equal;
     }
 }
-// v1 < v2, v1 >= v2, v1 == v2, ... all work — including struct
-// equality, which has no built-in form.
+// v1 < v2, v1 >= v2, v1 == v2, ... all work.
 ```
 
 The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
@@ -1147,21 +1153,22 @@ body must be `return e;` or `if`/`else` chains ending in returns (no loops,
 no state). Enum- and struct-typed operands are supported (a struct result
 lowers to one driver per field).
 
-**Mixed operands** overload by the rhs parameter's type — multiple fns under
-one impl, and impls on `integer` for literal left operands:
+**Mixed operands** overload by the rhs parameter's type — same-named methods
+under one impl, and impls on `integer` for literal left operands (until
+trait generics allow Rust's `impl Add<integer> for Complex` spelling):
 
 ```siox
-impl "+" for Complex {
-    fn apply(self, rhs: Complex) -> Complex { ... }
-    fn apply_int(self, rhs: integer) -> Complex { ... }   // z + 3
+impl Add for Complex {
+    fn add(self, rhs: Complex) -> Complex { ... }
+    fn add(self, rhs: integer) -> Complex { ... }   // z + 3
 }
 
-impl "+" for integer {
-    fn apply(self, rhs: Complex) -> Complex { ... }        // 10 + 5i
+impl Add for integer {
+    fn add(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
 }
 ```
 
-Selection is by (operator, lhs type, rhs type); `Self` in a parameter reads
+Selection is by (trait, lhs type, rhs type); `Self` in a parameter reads
 as the impl target.
 
 ---

@@ -438,9 +438,15 @@ impl<'a> Parser<'a> {
     /// traits (`trait "+"`, spec 3.25).
     fn parse_trait_name(&mut self) -> Ident {
         if self.at(TokenKind::StrLit) {
+            // Pre-Rust-style operator traits were quoted (`impl "+" for T`).
             let t = self.bump();
             let text = self.text_of(t.span).trim_matches('"').to_string();
-            Ident { text, span: t.span }
+            let name = crate::ast::op_trait_name(&text).unwrap_or("Add").to_string();
+            self.error_at(
+                t.span,
+                &format!("quoted operator traits were removed; use the Rust-style name (`{name}`)"),
+            );
+            Ident { text: name, span: t.span }
         } else {
             self.parse_ident()
         }

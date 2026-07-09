@@ -398,6 +398,30 @@ pub enum GenericArg {
 /// 10_000_000 (Hz).
 // ponytail: fixed table — becomes std-defined suffix declarations (Time/Freq/
 // Complex types) when literal-suffix overloading lands.
+/// Rust-style operator-trait names (spec 3.25): `a + b` dispatches to an
+/// `impl Add for <type of a>` with a method selected by the rhs type. Names
+/// follow Rust's `std::ops` where Rust has the operator; siox's extra logic
+/// words get matching names. `==`/`!=` stay built-in (or derive from `Ord`).
+pub fn op_trait_name(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "+" => "Add",
+        "-" => "Sub",
+        "*" => "Mul",
+        "/" => "Div",
+        "<<" => "Shl",
+        ">>" => "Shr",
+        "and" => "BitAnd",
+        "or" => "BitOr",
+        "xor" => "BitXor",
+        "nand" => "Nand",
+        "nor" => "Nor",
+        "xnor" => "Xnor",
+        "not" => "Not",
+        "<=>" => "Ord",
+        _ => return None,
+    })
+}
+
 pub fn suffix_scale(s: &str) -> Option<u128> {
     Some(match s {
         "fs" => 1,

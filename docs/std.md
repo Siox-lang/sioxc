@@ -6,7 +6,7 @@ parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
 Compiler *mechanisms* are never declared in std: operator overloading
-(`impl "+" for T`), literal suffixes/prefixes (`impl Suffix for T`), and the
+(`impl Add for T`), literal suffixes/prefixes (`impl Suffix for T`), and the
 operator set itself are built in (spec 3.24/3.25) — std and user code just
 write the impls, no trait declaration or import needed.
 
@@ -75,7 +75,7 @@ pub enum Ordering { Less, Equal, Greater }
 pub trait Boolean { fn as_bool(self) -> integer; }
 ```
 
-**`Ordering`** — the result of a three-way `impl "<=>" for T` (spaceship):
+**`Ordering`** — the result of `impl Ord for T` (`fn cmp`, derives all six comparisons):
 one impl derives all of `< <= > >= == !=` (spec 3.25).
 
 **`Boolean`** — a type usable as a condition provides `as_bool` returning
@@ -86,7 +86,7 @@ The overloading *mechanisms* — operator strings
 (`+ - * / << >> == != < <= > >= and or xor nand nor xnor not`), `Suffix`,
 `Prefix` — are compiler built-ins, not std declarations. Impls are inlined
 at lowering as pure expression trees; mixed operand types overload by the
-rhs parameter type, and `impl "+" for integer` catches literal left operands
+rhs parameter type, and `impl Add for integer` catches literal left operands
 (`10 + 5i`). Each fn of an `impl Suffix for T` defines the literal suffix of
 its name (`10ns` → `Time::ns(10)`); two loaded types defining one suffix is
 an ambiguity error. See spec 3.24/3.25 and notes/literal-suffixes.md.
