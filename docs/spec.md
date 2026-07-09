@@ -656,13 +656,16 @@ if sel {
 }
 ```
 
-Meaning:
-
-```text
-y = sel ? a : b
-```
+Meaning: a mux — `y` takes `a` when `sel` holds, else `b`.
 
 This allows clean default-then-override coding.
+
+**There is no ternary `?:` operator.** Conditional selection is always written
+with `if`/`else`: in hardware as default-then-override drivers (above), and in
+function bodies as `if`/`return` chains, which the compiler inlines into a
+single select. `if` as an *expression* (`let x = if c { a } else { b };`) is
+not in Phase 1; if selection-in-expression pressure appears, extend `if` —
+do not add `?:`.
 
 Invalid or warning-prone cases:
 
