@@ -580,6 +580,11 @@ impl<'a> Resolver<'a> {
             | Expr::StrLit { .. }
             | Expr::Bool { .. } => {}
             Expr::Path(p) => self.resolve_value_path(p),
+            Expr::IfExpr { cond, then, els, .. } => {
+                self.resolve_expr(cond);
+                self.resolve_expr(then);
+                self.resolve_expr(els);
+            }
             Expr::Field { base, .. } => self.resolve_expr(base),
             Expr::SysAttr { base, .. } => self.resolve_expr(base),
             Expr::Index { base, index, .. } => {

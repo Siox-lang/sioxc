@@ -719,6 +719,10 @@ impl<'a> Parser<'a> {
 
     fn parse_unary(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
+        // Rust-style if-expression: `if c { a } else { b }` (else required).
+        if self.at(TokenKind::If) {
+            return self.parse_if_expr();
+        }
         let op = match self.kind() {
             TokenKind::Minus => Some(UnOp::Neg),
             // `not` is the textual logical-negation prefix operator.
@@ -731,6 +735,33 @@ impl<'a> Parser<'a> {
             return Expr::Unary { op, rhs: Box::new(rhs), span: start.to(self.prev_span()) };
         }
         self.parse_postfix(no_struct)
+    }
+
+    /// `if c { a } else { b }` / `if c { a } else if d { b } else { c }` in
+    /// expression position. A value-producing `if` must be total, so `else`
+    /// is required; each branch is a single expression.
+    fn parse_if_expr(&mut self) -> Expr {
+        let start = self.span();
+        self.bump(); // `if`
+        let cond = self.parse_expr(true);
+        self.expect(TokenKind::LBrace, "to open an if-expression branch");
+        let then = self.parse_expr(false);
+        self.expect(TokenKind::RBrace, "to close an if-expression branch");
+        self.expect(TokenKind::Else, "— an `if` used as a value needs an `else` branch");
+        let els = if self.at(TokenKind::If) {
+            self.parse_if_expr()
+        } else {
+            self.expect(TokenKind::LBrace, "to open the else branch");
+            let e = self.parse_expr(false);
+            self.expect(TokenKind::RBrace, "to close the else branch");
+            e
+        };
+        Expr::IfExpr {
+            cond: Box::new(cond),
+            then: Box::new(then),
+            els: Box::new(els),
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_postfix(&mut self, no_struct: bool) -> Expr {

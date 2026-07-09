@@ -312,6 +312,9 @@ pub enum Expr {
     Range { lo: Box<Expr>, hi: Box<Expr>, span: Span },
     Unary { op: UnOp, rhs: Box<Expr>, span: Span },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// Rust-style `if c { a } else { b }` as a value (else required; branches
+    /// are single expressions). `else if` chains nest in `els`.
+    IfExpr { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr>, span: Span },
     /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
     Call { callee: Box<Expr>, args: Vec<Expr>, bang: bool, span: Span },
     /// Instance/struct construction `Counter<W = 8> { .clk, .count = c }`

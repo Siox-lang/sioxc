@@ -16,6 +16,11 @@ assertions, and VCD export — predates this changelog. See
   `await clk::rising` (edge; also `::falling`/`::event`), `await cond`
   (condition), and `clock(clk, period)` for a free-running background clock.
   Runs identically on the interpreter, the JIT, and the native test binary.
+- **Rust-style `if` expressions** — `y = if sel { a } else { b };` with
+  required `else` and `else if` chains; lowers to a select everywhere
+  (hardware drivers, operator-impl bodies via the inliner, testbench
+  evaluation, and the native binary as a C conditional). There is still no
+  `?:` — the spec freezes if/else as the only conditional form.
 - **VHDL-style delayed assignment** — `clk = not clk after 5ns;` is the
   canonical clock generator (self-toggle registers on the event wheel), and
   `rst = '0' after 12ns;` is a one-shot delayed write (value evaluated at

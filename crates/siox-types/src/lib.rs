@@ -626,6 +626,13 @@ impl<'a> Checker<'a> {
                 self.check_expr(hi, sym);
             }
             Expr::Unary { rhs, .. } => self.check_expr(rhs, sym),
+            Expr::IfExpr { cond, then, els, .. } => {
+                // Same condition rule as statement `if` (must be Boolean).
+                self.check_condition(cond, sym);
+                self.check_expr(cond, sym);
+                self.check_expr(then, sym);
+                self.check_expr(els, sym);
+            }
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
                 self.check_expr(rhs, sym);
@@ -743,6 +750,9 @@ impl<'a> Checker<'a> {
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
             Expr::Int { .. } => Ty::UInt(0),
+            // `if c { a } else { b }` takes its branches' type (the then arm;
+            // branch-mismatch diagnostics ride on assignment compatibility).
+            Expr::IfExpr { then, .. } => self.type_of(then, sym),
             // A suffix defined by `impl Suffix for T` types the literal as T;
             // the fixed fs/Hz table backs bare files as integer.
             Expr::SuffixLit { suffix, .. } => {
@@ -1004,6 +1014,7 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::Bool { span, .. }
         | Expr::Field { span, .. }
         | Expr::SysAttr { span, .. }
+        | Expr::IfExpr { span, .. }
         | Expr::Index { span, .. }
         | Expr::Range { span, .. }
         | Expr::Unary { span, .. }

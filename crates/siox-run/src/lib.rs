@@ -721,6 +721,13 @@ impl Testbench<'_> {
     /// Evaluate an AST expression against the simulator via the signal map.
     fn eval(&self, e: &ast::Expr) -> u128 {
         match e {
+            ast::Expr::IfExpr { cond, then, els, .. } => {
+                if !self.eval(cond).is_zero() {
+                    self.eval(then)
+                } else {
+                    self.eval(els)
+                }
+            }
             ast::Expr::Int { text, .. } => u128::from_u64(parse_u64(text)),
             ast::Expr::SuffixLit { text, suffix, .. } => u128::from_u64(
                 parse_u64(text).saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),

@@ -475,6 +475,14 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             format!("{}..{}", expr_prec(lo, RANGE_PREC + 1), expr_prec(hi, RANGE_PREC + 1)),
             RANGE_PREC,
         ),
+        Expr::IfExpr { cond, then, els, .. } => {
+            // An IfExpr in `els` prints as an `else if` chain.
+            let e = match els.as_ref() {
+                Expr::IfExpr { .. } => format!("else {}", expr(els)),
+                _ => format!("else {{ {} }}", expr(els)),
+            };
+            (format!("if {} {{ {} }} {}", expr(cond), expr(then), e), 0)
+        }
         Expr::Unary { op, rhs, .. } => {
             (format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)), UNARY_PREC)
         }
@@ -534,6 +542,13 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_if_expressions() {
+        roundtrip(
+            "module m;\nimpl E {\n    let y: Bit = if sel { a } else { b };\n    z = if x > 200 { 200 } else if x < 10 { 10 } else { x };\n}\n",
+        );
     }
 
     #[test]

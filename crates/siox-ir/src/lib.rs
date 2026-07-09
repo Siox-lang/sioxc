@@ -919,6 +919,12 @@ impl<'a> Lowering<'a> {
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
+            // `if c { a } else { b }` is a mux: lower to a select.
+            ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
+                cond: Box::new(self.lower_expr(cond)),
+                then: Box::new(self.lower_expr(then)),
+                els: Box::new(self.lower_expr(els)),
+            },
             // A decimal point makes it a `real` literal (`1.5`).
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 Expr::Real(text.parse().unwrap_or(0.0))
@@ -1058,6 +1064,7 @@ impl<'a> Lowering<'a> {
     /// declared width; a literal is its minimal width.
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         match e {
+            ast::Expr::IfExpr { then, .. } => self.ast_width(then),
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
             ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index).unwrap();
@@ -1358,6 +1365,10 @@ impl<'a> Lowering<'a> {
     /// `env`. Struct-typed locals and struct literals become per-field values.
     fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
+            ast::Expr::IfExpr { cond, then, els, .. } => {
+                let c = self.lower_scalar_env(cond, env);
+                select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
                 if let Some(v) = env.get(name) {
@@ -2149,6 +2160,21 @@ mod tests {
         assert!(wired("T.dut.mid", "T.dut.s1.y"), "mid <- s1.y");
         assert!(wired("T.dut.s2.a", "T.dut.mid"), "s2.a <- mid");
         assert!(wired("T.dut.y", "T.dut.s2.y"), "y <- s2.y");
+    }
+
+    #[test]
+    fn if_expression_lowers_to_select() {
+        let d = lower_src(
+            "module m;\n\
+             entity Mux { in sel: Bit; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+             impl Mux { y = if sel { a } else { b }; }\n\
+             #[test] entity T {}\n\
+             impl T { let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+               let dut = Mux { .sel, .a, .b, .y }; }\n",
+        );
+        let y = d.signals.iter().position(|s| s.path == "T.dut.y").map(|i| SignalId(i as u32)).unwrap();
+        let dr = d.drivers.iter().find(|dr| dr.target == y).unwrap();
+        assert!(matches!(&dr.expr, Expr::Select { .. }), "if-expression must lower to a select");
     }
 
     #[test]

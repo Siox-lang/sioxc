@@ -346,6 +346,9 @@ impl Ctx<'_> {
     /// Translate a testbench expression to a C expression string.
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
         Ok(match e {
+            ast::Expr::IfExpr { cond, then, els, .. } => {
+                format!("(({}) ? ({}) : ({}))", self.expr(cond)?, self.expr(then)?, self.expr(els)?)
+            }
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),

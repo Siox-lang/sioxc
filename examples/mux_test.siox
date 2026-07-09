@@ -2,13 +2,14 @@ module examples::mux_test;
 
 using std::logic::Bit;
 
-// A 2:1 mux written as default-then-override combinational logic (spec 3.14):
-// `y = b`, then `y = a` when `sel` — the later driver wins.
+// A 2:1 mux, written both ways: default-then-override drivers (spec 3.14),
+// and the equivalent Rust-style if-expression — both lower to one select.
 entity Mux {
     in sel: Bit;
     in a: Bit;
     in b: Bit;
     out y: Bit;
+    out z: Bit;
 }
 
 impl Mux {
@@ -17,6 +18,8 @@ impl Mux {
     if sel {
         y = a;
     }
+
+    z = if sel { a } else { b };
 }
 
 #[test]
@@ -27,18 +30,22 @@ impl MuxTest {
     let a: Bit = '1';
     let b: Bit = '0';
     let y: Bit;
+    let z: Bit;
 
     let dut = Mux {
         .sel,
         .a,
         .b,
         .y,
+        .z,
     };
 
-    // sel = 0 selects b.
+    // sel = 0 selects b — both spellings agree.
     assert!(y == '0', "sel=0 selects b");
+    assert!(z == '0', "if-expression mux agrees (sel=0)");
 
     sel = '1';
     // sel = 1 selects a.
     assert!(y == '1', "sel=1 selects a");
+    assert!(z == '1', "if-expression mux agrees (sel=1)");
 }
