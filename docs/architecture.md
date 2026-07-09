@@ -98,14 +98,18 @@ name-use site to the declaration it resolves to.
 
 ## The type kernel and the std shim
 
-The kernel's base types are **`integer` and `real`** only; `Bit`, `Logic`,
-`Bool`, `Clock` are canonical `enum` declarations in `std/logic.siox`, and
-`uint[N]`/`int[N]` are derived Logic vectors that accept `integer` on
-assignment (spec, "type kernel"). The CLI loads `std::` modules transitively
-from `--std <dir>` (default `./std`). As a shim until operator overloading can
-carry their semantics as source, `siox-resolve` still seeds those std type
-names (and the `std::attrs` attributes) and `siox-types`/`siox-ir` special-case
-them by name; the shim is deleted when operators move to std as trait impls.
+The kernel's base types are **`integer` and `real`** only — and only they have
+built-in operators. `Bit`, `Logic`, `Bool`, `Clock` are canonical `enum`
+declarations in `std/logic.siox`; `uint[N]`/`int[N]` are derived Logic vectors
+that accept `integer` on assignment (spec, "type kernel") and get their
+operators from **`std/bits.siox`** as Rust-style trait impls — including
+`int`'s sign-aware `Ord` (signed comparison is library source, not compiler
+code). The CLI loads `std::` modules transitively from `--std <dir>` (default
+`./std`); a file that never imports `std::bits` falls back to kernel word
+semantics (unsigned). Residual shim: `siox-resolve` still seeds the std type
+names (and `std::attrs` attributes), and widths/slices/literal typing remain
+compiler-known; signed `Div`/`Shr` for `int` are TODO in std (need bitwise
+masking helpers).
 
 ## Backend slot widths
 

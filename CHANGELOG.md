@@ -25,6 +25,13 @@ assertions, and VCD export — predates this changelog. See
   (`impl "+" for T`) are removed — a targeted parse error points at the
   Rust-style name. Future custom operators are reserved as
   `impl ops::custom<"sym", Rhs> for T`.
+- **uint/int operators moved to std** — only the kernel types (`integer`,
+  `real`) keep built-in operators; `uint[N]`/`int[N]` arithmetic and shifts
+  are now `impl Add for uint` etc. in `std/bits.siox`, and `int` gains
+  **signed comparison** via a sign-aware `impl Ord for int` (library source,
+  not compiler code; `self::width` is available inside operator impls).
+  Overload selection tightened: exact rhs match, then integer-literal
+  coercion — a sole candidate is never taken on a known mismatch.
 - **Python-style array iteration + testbench locals** — `for x in xs`
   iterates any array (`for i in 0..n` now binds `i` too); `xs::len` joins the
   `::` metadata attributes; testbench `let`s run in statement order and

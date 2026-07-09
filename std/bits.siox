@@ -1,6 +1,7 @@
 module std::bits;
 
 using std::logic::{Logic};
+using std::ops::{Ordering};
 
 // Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std,
 // where `unsigned`/`signed` are arrays of std_logic declared in library code).
@@ -10,8 +11,83 @@ using std::logic::{Logic};
 //
 // These are *derived* types: a uint[N]/int[N] is a vector of Logic with a
 // numeric interpretation, and assignment accepts the kernel base type
-// `integer` (`let x: uint[8] = 42;`). The kernel provides only `integer` and
-// `real`; the compiler currently implements uint/int intrinsically as part of
-// the same shim as std::logic — arithmetic, bitwise logic, comparisons,
-// shifts, slices (`x[7..4]`) and concatenation (`{hi, lo}`) move to std as
-// operator-trait impls when operator overloading (spec 3.13) lands.
+// `integer` (`let x: uint[8] = 42;`). Only the kernel types `integer` and
+// `real` have built-in operators; uint/int get theirs HERE, as Rust-style
+// trait impls (spec 3.25). Inside an operator impl the operands read as
+// kernel words, so `self + rhs` below is the built-in integer add — results
+// wrap to the target's width when stored, which is what makes uint[N]
+// modular. Comparisons on uint are the kernel's unsigned compare (no Ord
+// impl needed); int gets a sign-aware Ord below.
+
+// --- uint[N]: modular unsigned arithmetic ---------------------------------
+
+impl Add for uint {
+    fn add(self, rhs: uint) -> uint { return self + rhs; }
+}
+
+impl Sub for uint {
+    fn sub(self, rhs: uint) -> uint { return self - rhs; }
+}
+
+impl Mul for uint {
+    fn mul(self, rhs: uint) -> uint { return self * rhs; }
+}
+
+impl Div for uint {
+    fn div(self, rhs: uint) -> uint { return self / rhs; }
+}
+
+impl Shl for uint {
+    fn shl(self, rhs: uint) -> uint { return self << rhs; }
+}
+
+impl Shr for uint {
+    fn shr(self, rhs: uint) -> uint { return self >> rhs; }
+}
+
+// --- int[N]: two's-complement signed --------------------------------------
+
+impl Add for int {
+    fn add(self, rhs: int) -> int { return self + rhs; }
+}
+
+impl Sub for int {
+    fn sub(self, rhs: int) -> int { return self - rhs; }
+}
+
+impl Mul for int {
+    fn mul(self, rhs: int) -> int { return self * rhs; }
+}
+
+// TODO: signed division (sign handling around the kernel's unsigned divide)
+// and arithmetic shift-right (sign replication) still use the kernel word
+// forms; both need bitwise masking helpers to express here.
+impl Div for int {
+    fn div(self, rhs: int) -> int { return self / rhs; }
+}
+
+impl Shl for int {
+    fn shl(self, rhs: int) -> int { return self << rhs; }
+}
+
+impl Shr for int {
+    fn shr(self, rhs: int) -> int { return self >> rhs; }
+}
+
+// Sign-aware comparison: `self::width` is the operand's bit width, so
+// `self >> (self::width - 1)` is the sign bit. A negative orders below a
+// non-negative; same-sign two's-complement values order like their unsigned
+// words. One impl derives < <= > >= == != (spec 3.25).
+impl Ord for int {
+    fn cmp(self, rhs: int) -> Ordering {
+        if (self >> (self::width - 1)) > (rhs >> (rhs::width - 1)) {
+            return Ordering::Less;
+        }
+        if (self >> (self::width - 1)) < (rhs >> (rhs::width - 1)) {
+            return Ordering::Greater;
+        }
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}

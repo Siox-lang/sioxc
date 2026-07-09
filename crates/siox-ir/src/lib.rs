@@ -215,6 +215,9 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// Numeric-vector locals -> "uint" | "int", for operator-impl dispatch
+    /// (kernel `integer`/`real` keep builtin operators; uint/int live in std).
+    local_numeric: HashMap<String, String>,
 }
 
 /// A lowered value: a scalar expression, or one expression per struct field
@@ -274,6 +277,7 @@ impl<'a> Lowering<'a> {
             local_struct: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
+            local_numeric: HashMap::new(),
         }
     }
 
@@ -417,6 +421,7 @@ impl<'a> Lowering<'a> {
         let saved_struct = std::mem::take(&mut self.local_struct);
         let saved_char = std::mem::take(&mut self.local_char);
         let saved_array = std::mem::take(&mut self.local_array);
+        let saved_numeric = std::mem::take(&mut self.local_numeric);
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
 
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
@@ -506,6 +511,7 @@ impl<'a> Lowering<'a> {
         self.local_struct = saved_struct;
         self.local_char = saved_char;
         self.local_array = saved_array;
+        self.local_numeric = saved_numeric;
         self.cur_env = saved_env;
         ports
     }
@@ -609,6 +615,16 @@ impl<'a> Lowering<'a> {
             }
         } else {
             self.add_signal(entity, name, type_width(ty, env));
+            // uint[N]/int[N] dispatch their operators to std impls (spec 3.25).
+            if let ast::Type::Indexed { base, .. } = ty {
+                if let ast::Type::Path(p) = base.as_ref() {
+                    if let Some(k @ ("uint" | "int")) =
+                        p.segments.last().map(|s| s.text.as_str())
+                    {
+                        self.local_numeric.insert(name.to_string(), k.to_string());
+                    }
+                }
+            }
             // A `real` slot holds f64 bits and takes float arithmetic; a
             // `Char` slot holds a symbol.
             if let ast::Type::Path(p) = ty {
@@ -1115,35 +1131,59 @@ impl<'a> Lowering<'a> {
         let tr = siox_syntax::ast::op_trait_name(op).unwrap_or(op);
         let fns = self.op_impls.get(&(tr.to_string(), lhs_ty.clone()))?;
 
-        // Overload selection: the impl's declared rhs (`impl Add<integer>`)
-        // wins; otherwise the fn's rhs parameter type. `Self` (or no trait
-        // arg) reads as the impl target; an unknown rhs accepts a sole
-        // candidate.
-        let (f, _) = fns
-            .iter()
-            .find(|(f, rhs_arg)| {
-                let declared = rhs_arg.as_deref().or_else(|| {
-                    f.params
-                        .iter()
-                        .find(|p| !p.is_self)
-                        .and_then(|p| p.ty.as_ref())
-                        .and_then(type_head_name)
-                });
-                match (declared, &rhs_ty) {
-                    (Some("Self"), Some(r)) => *r == lhs_ty,
-                    (Some(dt), Some(r)) => dt == r,
-                    _ => fns.len() == 1,
+        // Overload selection. Each candidate's declared rhs type is the
+        // impl's trait argument (`impl Add<integer>`) or the fn's rhs
+        // parameter type, with `Self` reading as the impl target. Pass 1:
+        // exact rhs match. Pass 2: an `integer` operand (a literal) coerces
+        // to a Self-typed rhs (`a + 1`). A sole candidate is accepted only
+        // when the rhs operand's type is unknown — never on a known mismatch
+        // (so `10 + x` with x: uint does not inline a Complex impl).
+        let declared = |f: &ast::FnDecl, rhs_arg: &Option<String>| -> Option<String> {
+            let d = rhs_arg.clone().or_else(|| {
+                f.params
+                    .iter()
+                    .find(|p| !p.is_self)
+                    .and_then(|p| p.ty.as_ref())
+                    .and_then(type_head_name)
+                    .map(str::to_string)
+            })?;
+            Some(if d == "Self" { lhs_ty.clone() } else { d })
+        };
+        let f = match &rhs_ty {
+            Some(r) => fns
+                .iter()
+                .find(|(f, a)| declared(f, a).as_deref() == Some(r.as_str()))
+                .or_else(|| {
+                    if r == "integer" {
+                        fns.iter().find(|(f, a)| declared(f, a).as_deref() == Some(lhs_ty.as_str()))
+                    } else {
+                        None
+                    }
+                }),
+            None => {
+                if fns.len() == 1 {
+                    fns.first()
+                } else {
+                    None
                 }
-            })
-            .or_else(|| if fns.len() == 1 { fns.first() } else { None })?;
+            }
+        };
+        let (f, _) = f?;
         let body = f.body.as_ref()?;
 
-        // Bind `self` to the left operand and the first named param to the right.
+        // Bind `self` to the left operand and the first named param to the
+        // right — plus each operand's bit width, so a body can say
+        // `self::width` (needed for e.g. sign-aware `int` comparison).
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
+        fenv.insert("self::width".to_string(), Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)));
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
+                fenv.insert(
+                    format!("{}::width", n.text),
+                    Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
+                );
             }
         }
         self.inline_block(&body.stmts, &fenv)
@@ -1346,7 +1386,11 @@ impl<'a> Lowering<'a> {
                 if self.local_char.contains(&p) {
                     return Some("Char".to_string());
                 }
-                self.local_enum.get(&p).or_else(|| self.local_struct.get(&p)).cloned()
+                self.local_enum
+                    .get(&p)
+                    .or_else(|| self.local_struct.get(&p))
+                    .or_else(|| self.local_numeric.get(&p))
+                    .cloned()
             }
         }
     }
@@ -1380,6 +1424,16 @@ impl<'a> Lowering<'a> {
     /// `env`. Struct-typed locals and struct literals become per-field values.
     fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
+            // `self::width` inside an operator-impl body: the bound operand's
+            // width (inline_op stashes it under the "param::attr" key).
+            ast::Expr::SysAttr { base, attr, .. } => {
+                if let Some(v) = expr_path(base)
+                    .and_then(|p| env.get(&format!("{p}::{}", attr.text)))
+                {
+                    return v.clone();
+                }
+                Val::Scalar(self.lower_expr(e))
+            }
             ast::Expr::IfExpr { cond, then, els, .. } => {
                 let c = self.lower_scalar_env(cond, env);
                 select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))

@@ -25,7 +25,7 @@ is a documented shim, and the declaration here is canonical.
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool`, `Clock` enums; `LOW`/`HIGH`; Logic truth tables |
-| `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` surface (docs; ops intrinsic for now) |
+| `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as trait impls (incl. `int`'s signed `Ord`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -61,12 +61,19 @@ pub const HIGH: Bit = '1';
 ## `std::bits`
 
 `uint[N]` (VHDL `unsigned`) and `int[N]` (`signed`) are *derived* Logic
-vectors with numeric interpretation, but accept `integer` on assignment
-(`let x: uint[8] = 42;`). Arithmetic, bitwise logic, comparisons, shifts,
-slices (`x[7..4]`) and concatenation (`{hi, lo}`) are compiler-implemented
-as part of the type-kernel shim; they move here as operator impls when
-vector operators land. Bit-string literals `x"AB"` / `b"0101"` are sized
-`uint` constants (spec 3.24).
+vectors with numeric interpretation, and accept `integer` on assignment
+(`let x: uint[8] = 42;`). Only the kernel types (`integer`/`real`) have
+built-in operators; uint/int get theirs **here** as Rust-style trait impls:
+`Add`/`Sub`/`Mul`/`Div`/`Shl`/`Shr` over the kernel word operators (wrap at
+the stored width), and `int` gets a **sign-aware `impl Ord`** — signed
+comparison is library source, not compiler code (`-1 < 1` on int[8], while
+uint compares unsigned). Inside an operator impl, operands read as kernel
+words and `self::width` gives the operand's bit width. Remaining kernel
+territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
+literal typing; signed `Div`/`Shr` are TODO (need bitwise masking helpers).
+Bit-string literals `x"AB"` / `b"0101"` are sized `uint` constants (spec
+3.24). A file that never imports `std::bits` falls back to kernel word
+semantics.
 
 ## `std::ops`
 
