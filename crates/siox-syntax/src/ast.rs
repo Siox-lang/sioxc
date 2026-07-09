@@ -153,6 +153,10 @@ pub struct ImplDecl {
     pub params: Params,
     /// `Some(trait_path)` for `impl Trait for Target`.
     pub trait_: Option<Path>,
+    /// Rust-style trait type arguments: the `<integer>` in
+    /// `impl Add<integer> for Complex` (the rhs operand type). Empty when the
+    /// trait is unparameterized (`impl Add for T` reads as `Add<Self>`).
+    pub trait_args: Vec<GenericArg>,
     /// Optional leading direction for bus-mode impls (`impl out ...`).
     pub mode_dir: Option<Direction>,
     pub target: Type,

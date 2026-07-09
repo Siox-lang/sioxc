@@ -20,9 +20,11 @@ assertions, and VCD export — predates this changelog. See
   with Rust's `std::ops` names (`impl Add for Complex { fn add(...) }`,
   `BitAnd`/`bitand` for `and`, `Not` for unary `not`); one `impl Ord`
   (`fn cmp -> Ordering`) derives all six comparisons (replaces `impl "<=>"`).
-  Quoted operator-trait names (`impl "+" for T`) are removed — a targeted
-  parse error points at the Rust-style name. Future custom operators are
-  reserved as `impl ops::custom<"sym", Rhs> for T`.
+  Mixed operands use the trait's type argument, exactly Rust's spelling:
+  `impl Add<integer> for Complex`. Quoted operator-trait names
+  (`impl "+" for T`) are removed — a targeted parse error points at the
+  Rust-style name. Future custom operators are reserved as
+  `impl ops::custom<"sym", Rhs> for T`.
 - **Rust-style `if` expressions** — `y = if sel { a } else { b };` with
   required `else` and `else if` chains; lowers to a select everywhere
   (hardware drivers, operator-impl bodies via the inliner, testbench

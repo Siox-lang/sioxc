@@ -146,7 +146,14 @@ impl Printer {
                     [seg] => trait_name_str(&seg.text),
                     _ => path(tr),
                 };
-                format!("impl {name}{} for {} {{", params(&i.params), target)
+                let args = if i.trait_args.is_empty() {
+                    String::new()
+                } else {
+                    let list =
+                        i.trait_args.iter().map(generic_arg).collect::<Vec<_>>().join(", ");
+                    format!("<{list}>")
+                };
+                format!("impl {name}{args}{} for {} {{", params(&i.params), target)
             }
             None => format!("impl {}{} {{", target, params(&i.params)),
         };
@@ -542,6 +549,13 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_trait_type_args() {
+        roundtrip(
+            "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
+        );
     }
 
     #[test]

@@ -301,7 +301,8 @@ impl<'a> Parser<'a> {
         };
 
         if self.at(TokenKind::For) {
-            // `impl Trait<...> for [dir] Target`.
+            // `impl Trait<...> for [dir] Target` — `<...>` is the trait's type
+            // arguments (`impl Add<integer> for Complex`).
             self.bump();
             let trait_ = Some(head_path);
             let mode_dir = self.eat_direction();
@@ -310,6 +311,7 @@ impl<'a> Parser<'a> {
             return ImplDecl {
                 params,
                 trait_,
+                trait_args: head_args.unwrap_or_default(),
                 mode_dir: dir1.or(mode_dir),
                 target,
                 items,
@@ -334,7 +336,15 @@ impl<'a> Parser<'a> {
             };
         }
         let items = self.parse_impl_body();
-        ImplDecl { params, trait_: None, mode_dir: dir1, target, items, span: start.to(self.prev_span()) }
+        ImplDecl {
+            params,
+            trait_: None,
+            trait_args: Vec::new(),
+            mode_dir: dir1,
+            target,
+            items,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_impl_body(&mut self) -> Vec<ImplItem> {

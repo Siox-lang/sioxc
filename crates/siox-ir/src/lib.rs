@@ -187,9 +187,10 @@ struct Lowering<'a> {
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
-    /// (trait name, target type) -> the impl's fns, for operator inlining.
-    /// Multiple fns overload by rhs parameter type (`10 + 5i`).
-    op_impls: HashMap<(String, String), Vec<&'a ast::FnDecl>>,
+    /// (trait name, target type) -> the impl's fns with the impl's declared
+    /// rhs type (the `integer` in `impl Add<integer> for T`; `None` reads as
+    /// `Self`). Overloads select by that rhs, or the fn's rhs parameter type.
+    op_impls: HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
     suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
     /// Module-level integer constants (`const N: integer = 4`).
@@ -326,12 +327,20 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                             } else {
+                                // `impl Add<integer> for T`: the trait's type
+                                // argument names the rhs operand type.
+                                let rhs_arg = im.trait_args.first().and_then(|a| match a {
+                                    ast::GenericArg::Positional(ast::Expr::Path(p)) => {
+                                        p.segments.last().map(|s| s.text.clone())
+                                    }
+                                    _ => None,
+                                });
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
                                             .entry((tr.text.clone(), ty.to_string()))
                                             .or_default()
-                                            .push(f);
+                                            .push((f, rhs_arg.clone()));
                                     }
                                 }
                             }
@@ -1106,20 +1115,23 @@ impl<'a> Lowering<'a> {
         let tr = siox_syntax::ast::op_trait_name(op).unwrap_or(op);
         let fns = self.op_impls.get(&(tr.to_string(), lhs_ty.clone()))?;
 
-        // Overload selection by the rhs parameter's type: `Self` reads as the
-        // impl target; an unknown rhs type accepts a sole candidate.
-        let f = fns
+        // Overload selection: the impl's declared rhs (`impl Add<integer>`)
+        // wins; otherwise the fn's rhs parameter type. `Self` (or no trait
+        // arg) reads as the impl target; an unknown rhs accepts a sole
+        // candidate.
+        let (f, _) = fns
             .iter()
-            .find(|f| {
-                let param_ty = f
-                    .params
-                    .iter()
-                    .find(|p| !p.is_self)
-                    .and_then(|p| p.ty.as_ref())
-                    .and_then(type_head_name);
-                match (param_ty, &rhs_ty) {
+            .find(|(f, rhs_arg)| {
+                let declared = rhs_arg.as_deref().or_else(|| {
+                    f.params
+                        .iter()
+                        .find(|p| !p.is_self)
+                        .and_then(|p| p.ty.as_ref())
+                        .and_then(type_head_name)
+                });
+                match (declared, &rhs_ty) {
                     (Some("Self"), Some(r)) => *r == lhs_ty,
-                    (Some(pt), Some(r)) => pt == r,
+                    (Some(dt), Some(r)) => dt == r,
                     _ => fns.len() == 1,
                 }
             })
@@ -1309,7 +1321,7 @@ impl<'a> Lowering<'a> {
         let ty = self.operand_type_name(rhs)?;
         let tr = siox_syntax::ast::op_trait_name(op).unwrap_or(op);
         let fns = self.op_impls.get(&(tr.to_string(), ty))?;
-        let f = fns.first()?;
+        let (f, _) = fns.first()?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), self.lower_val_env(rhs, &HashMap::new()));

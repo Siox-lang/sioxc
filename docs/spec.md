@@ -1153,23 +1153,27 @@ body must be `return e;` or `if`/`else` chains ending in returns (no loops,
 no state). Enum- and struct-typed operands are supported (a struct result
 lowers to one driver per field).
 
-**Mixed operands** overload by the rhs parameter's type — same-named methods
-under one impl, and impls on `integer` for literal left operands (until
-trait generics allow Rust's `impl Add<integer> for Complex` spelling):
+**Mixed operands** use the trait's type argument, exactly Rust's spelling:
+`impl Add<Rhs> for T`. A bare `impl Add for T` reads as `Add<Self>`; impls
+on `integer` catch literal left operands:
 
 ```siox
 impl Add for Complex {
     fn add(self, rhs: Complex) -> Complex { ... }
+}
+
+impl Add<integer> for Complex {
     fn add(self, rhs: integer) -> Complex { ... }   // z + 3
 }
 
-impl Add for integer {
+impl Add<Complex> for integer {
     fn add(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
 }
 ```
 
-Selection is by (trait, lhs type, rhs type); `Self` in a parameter reads
-as the impl target.
+Selection is by (trait, lhs type, rhs type) — the trait argument declares
+the rhs, falling back to the method's rhs parameter type. `Self` reads as
+the impl target.
 
 ---
 

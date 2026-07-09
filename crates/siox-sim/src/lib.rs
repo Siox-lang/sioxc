@@ -801,15 +801,17 @@ mod tests {
                }\n\
              }\n\
              impl Add for Complex {\n\
-               fn apply(self, rhs: Complex) -> Complex {\n\
+               fn add(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };\n\
                }\n\
-               fn apply_int(self, rhs: integer) -> Complex {\n\
+             }\n\
+             impl Add<integer> for Complex {\n\
+               fn add(self, rhs: integer) -> Complex {\n\
                  return Complex { .re = self.re + rhs, .im = self.im };\n\
                }\n\
              }\n\
-             impl Add for integer {\n\
-               fn apply(self, rhs: Complex) -> Complex {\n\
+             impl Add<Complex> for integer {\n\
+               fn add(self, rhs: Complex) -> Complex {\n\
                  return Complex { .re = self + rhs.re, .im = rhs.im };\n\
                }\n\
              }\n\
