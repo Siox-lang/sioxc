@@ -1342,6 +1342,7 @@ fn is_sysattr(name: &str) -> bool {
             | "falling"
             | "edge"
             | "width"
+            | "len"
             | "range"
             | "high"
             | "low"

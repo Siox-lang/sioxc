@@ -306,54 +306,35 @@ fn run_one<'a>(
         clocks: Vec::new(),
         oneshots: Vec::new(),
         time_fs: 0,
+        locals: HashMap::new(),
     };
 
-    // Apply initial `let` values, then settle and record the starting state.
-    for im in body {
+    // One pass in source order: `let`s apply as they appear (sequential
+    // semantics — a mid-body let sees the signals as they are then), with a
+    // settle + baseline sample before the first stimulus statement.
+    let mut started = false;
+    'run: for im in body {
         for item in &im.items {
-            if let ast::ImplItem::Let(l) = item {
-                match &l.value {
-                    // A named construct is an instance; elaboration handled it.
-                    Some(ast::Expr::Construct { ty: Some(_), .. }) => {}
-                    // A name-less struct literal initialises each field signal.
-                    Some(ast::Expr::Construct { args, .. }) => {
-                        for c in args {
-                            if let Some(v) = &c.value {
-                                let field = format!("{}.{}", l.name.text, c.field.text);
-                                let val = tb.eval_for(&field, v);
-                                tb.set_name(&field, val);
-                            }
-                        }
+            match item {
+                ast::ImplItem::Let(l) => tb.apply_let(l),
+                ast::ImplItem::Stmt(s) => {
+                    if !started {
+                        tb.engine.settle();
+                        tb.sample();
+                        started = true;
                     }
-                    // `let s: string = "hello";` writes each Char element.
-                    Some(ast::Expr::StrLit { text, .. }) => {
-                        tb.set_string(&l.name.text, text);
+                    tb.exec(s);
+                    if tb.failure.is_some() {
+                        break 'run;
                     }
-                    Some(value) => {
-                        let v = tb.eval_for(&l.name.text, value);
-                        tb.set_name(&l.name.text, v);
-                    }
-                    None => {}
                 }
+                _ => {}
             }
         }
     }
-    tb.engine.settle();
-    tb.sample();
-
-    // Run the stimulus.
-    for im in body {
-        for item in &im.items {
-            if let ast::ImplItem::Stmt(s) = item {
-                tb.exec(s);
-                if tb.failure.is_some() {
-                    break;
-                }
-            }
-        }
-        if tb.failure.is_some() {
-            break;
-        }
+    if !started {
+        tb.engine.settle();
+        tb.sample();
     }
 
     let result = match tb.failure {
@@ -395,10 +376,65 @@ struct Testbench<'a> {
     /// is purely combinational), so time is correct on any backend — including
     /// the JIT, whose settle-only engine has no notion of time.
     time_fs: u64,
+    /// Testbench-local scalar values: unconnected `let`s and `for` loop
+    /// variables. Consulted before the signal map.
+    locals: HashMap<String, u128>,
 }
 
 impl Testbench<'_> {
+    /// Apply a `let` in statement order: DUT-connected names write signals;
+    /// an unconnected scalar becomes a testbench local.
+    fn apply_let(&mut self, l: &ast::LetDecl) {
+        match &l.value {
+            // A named construct is an instance; elaboration handled it.
+            Some(ast::Expr::Construct { ty: Some(_), .. }) => {}
+            // A name-less struct literal initialises each field signal.
+            Some(ast::Expr::Construct { args, .. }) => {
+                for c in args {
+                    if let Some(v) = &c.value {
+                        let field = format!("{}.{}", l.name.text, c.field.text);
+                        let val = self.eval_for(&field, v);
+                        self.set_name(&field, val);
+                    }
+                }
+            }
+            // `let s: string = "hello";` writes each Char element.
+            Some(ast::Expr::StrLit { text, .. }) => {
+                self.set_string(&l.name.text, text);
+            }
+            Some(value) => {
+                let v = self.eval_for(&l.name.text, value);
+                if self.map.contains_key(&l.name.text) {
+                    self.set_name(&l.name.text, v);
+                } else {
+                    self.locals.insert(l.name.text.clone(), v);
+                }
+            }
+            None => {
+                if !self.map.contains_key(&l.name.text) {
+                    self.locals.insert(l.name.text.clone(), 0);
+                }
+            }
+        }
+    }
+
+    /// Element count of a DUT-connected array (`xs[0]`, `xs[1]`, ... in the
+    /// signal map), if `path` names one.
+    fn array_len(&self, path: &str) -> Option<u64> {
+        let mut n = 0;
+        while self.map.contains_key(&format!("{path}[{n}]")) {
+            n += 1;
+        }
+        (n > 0).then_some(n)
+    }
+
     fn set_name(&mut self, name: &str, value: u128) {
+        if let std::collections::hash_map::Entry::Occupied(mut e) =
+            self.locals.entry(name.to_string())
+        {
+            e.insert(value);
+            return;
+        }
         if let Some(&id) = self.map.get(name) {
             self.engine.set(id, value);
         }
@@ -491,8 +527,29 @@ impl Testbench<'_> {
             ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, span }) => {
                 self.exec_call(callee, args, *bang, *span);
             }
-            ast::Stmt::For { range, body, .. } => {
-                for _ in 0..self.range_count(range) {
+            ast::Stmt::For { var, range, body, .. } => {
+                // `for x in xs` iterates an array's elements (Python-style);
+                // `for i in lo..hi` binds the index. The loop variable is a
+                // testbench local for the body's duration.
+                let elems: Vec<u128> = if let Some(path) = expr_path(range) {
+                    let n = self.array_len(&path).unwrap_or(0);
+                    (0..n)
+                        .map(|i| {
+                            self.map
+                                .get(&format!("{path}[{i}]"))
+                                .map(|&id| self.engine.read(id))
+                                .unwrap_or_else(|| u128::from_u64(0))
+                        })
+                        .collect()
+                } else if let ast::Expr::Range { lo, hi, .. } = range {
+                    let (a, b) = (self.eval(lo).to_u64(), self.eval(hi).to_u64());
+                    (a..b).map(u128::from_u64).collect()
+                } else {
+                    Vec::new()
+                };
+                let saved = self.locals.get(&var.text).copied();
+                for v in elems {
+                    self.locals.insert(var.text.clone(), v);
                     for s in &body.stmts {
                         self.exec(s);
                         if self.failure.is_some() {
@@ -500,6 +557,10 @@ impl Testbench<'_> {
                         }
                     }
                 }
+                match saved {
+                    Some(v) => self.locals.insert(var.text.clone(), v),
+                    None => self.locals.remove(&var.text),
+                };
             }
             ast::Stmt::If(iff) => {
                 let branch = if !self.eval(&iff.cond).is_zero() {
@@ -710,14 +771,6 @@ impl Testbench<'_> {
         None
     }
 
-    fn range_count(&self, range: &ast::Expr) -> u64 {
-        if let ast::Expr::Range { lo, hi, .. } = range {
-            let (a, b) = (self.eval(lo).to_u64(), self.eval(hi).to_u64());
-            return b.saturating_sub(a);
-        }
-        0
-    }
-
     /// Evaluate an AST expression against the simulator via the signal map.
     fn eval(&self, e: &ast::Expr) -> u128 {
         match e {
@@ -738,11 +791,21 @@ impl Testbench<'_> {
             }
             ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
             ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_value(*ch)),
-            ast::Expr::Path(p) if p.segments.len() == 1 => self
-                .map
-                .get(&p.segments[0].text)
-                .map(|&id| self.engine.read(id))
+            // `xs::len`: an array's element count (spec: `::` metadata).
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => expr_path(base)
+                .and_then(|p| self.array_len(&p))
+                .map(|n| u128::from_u64(n))
                 .unwrap_or_else(|| u128::from_u64(0)),
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                let name = &p.segments[0].text;
+                if let Some(&v) = self.locals.get(name) {
+                    return v;
+                }
+                self.map
+                    .get(name)
+                    .map(|&id| self.engine.read(id))
+                    .unwrap_or_else(|| u128::from_u64(0))
+            }
             // `Enum::Variant` evaluates to its discriminant.
             ast::Expr::Path(p) if p.segments.len() >= 2 => u128::from_u64(
                 self.enums
@@ -752,8 +815,17 @@ impl Testbench<'_> {
                     .unwrap_or(0),
             ),
             // A struct-field (`p.data`) or array-element (`a[2]`) read resolves
-            // through the flattened map.
+            // through the flattened map; a dynamic index (`xs[i]`) evaluates
+            // the index first.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
+                .or_else(|| {
+                    if let ast::Expr::Index { base, index, .. } = e {
+                        let b = expr_path(base)?;
+                        let i = self.eval(index).to_u64();
+                        return Some(format!("{b}[{i}]"));
+                    }
+                    None
+                })
                 .and_then(|p| self.map.get(&p))
                 .map(|&id| self.engine.read(id))
                 .unwrap_or_else(|| u128::from_u64(0)),

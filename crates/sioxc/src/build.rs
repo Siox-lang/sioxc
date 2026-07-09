@@ -74,7 +74,15 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         let map = build_map(hier, root, design);
         let items = test_items(modules, &name);
         let clocks = scan_clocks(&items, &map);
-        let ctx = Ctx { design, map: &map, enums: &enums, name: &name, clocks };
+        let ctx = Ctx {
+            design,
+            map: &map,
+            enums: &enums,
+            name: &name,
+            clocks,
+            locals: Default::default(),
+            tmp: Default::default(),
+        };
         prog.push_str(&ctx.gen_test_fn(&items)?);
         names.push(name);
     }
@@ -137,6 +145,10 @@ struct Ctx<'a> {
     name: &'a str,
     /// `clock(clk, ..)`-registered background clocks: (signal id, half period fs).
     clocks: Vec<(u32, u64)>,
+    /// Names currently bound as C locals (unconnected `let`s, loop variables).
+    locals: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Unique-suffix counter for generated C identifiers.
+    tmp: std::cell::Cell<usize>,
 }
 
 impl Ctx<'_> {
@@ -159,29 +171,44 @@ impl Ctx<'_> {
             if half.is_empty() { "0".to_string() } else { half.join(", ") },
         ));
 
-        // Initial `let` values, then settle (mirrors the interpreter).
+        // One pass in source order (sequential `let` semantics, mirroring
+        // the runner): connected lets write signals, unconnected scalars
+        // become C locals, and a settle precedes the first statement.
+        let mut started = false;
         for item in items {
-            if let ast::ImplItem::Let(l) = item {
-                match &l.value {
+            match item {
+                ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
-                    Some(v) => {
+                    value => {
                         if let Some(&id) = self.map.get(&l.name.text) {
-                            let e = self.expr(v)?;
-                            b.push_str(&format!("    sx_set({}, {e});\n", id.0));
+                            if let Some(v) = value {
+                                let e = self.expr(v)?;
+                                b.push_str(&format!("    sx_set({}, {e});\n", id.0));
+                            }
+                        } else {
+                            let e = match value {
+                                Some(v) => self.expr(v)?,
+                                None => "0".to_string(),
+                            };
+                            b.push_str(&format!("    uint64_t {} = {e};\n", l.name.text));
+                            self.locals.borrow_mut().insert(l.name.text.clone());
                         }
                     }
-                    None => {}
+                },
+                ast::ImplItem::Stmt(st) => {
+                    if !started {
+                        b.push_str("    sx_settle();\n");
+                        started = true;
+                    }
+                    self.stmt(st, &mut b, 1)?;
                 }
+                _ => {}
             }
         }
-        b.push_str("    sx_settle();\n");
-
-        // Stimulus statements.
-        for item in items {
-            if let ast::ImplItem::Stmt(s) = item {
-                self.stmt(s, &mut b, 1)?;
-            }
+        if !started {
+            b.push_str("    sx_settle();\n");
         }
+        self.locals.borrow_mut().clear();
 
         b.push_str("    return 0;\n}\n\n");
         Ok(b)
@@ -207,6 +234,11 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 let name = expr_path(target).ok_or("unsupported assignment target")?;
+                if self.locals.borrow().contains(&name) {
+                    let e = self.expr(value)?;
+                    b.push_str(&format!("{ind}{name} = {e};\n"));
+                    return Ok(());
+                }
                 let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
                 let e = self.expr(value)?;
                 b.push_str(&format!("{ind}sx_set({}, {e});\n{ind}sx_settle();\n", id.0));
@@ -215,14 +247,42 @@ impl Ctx<'_> {
                 self.call(callee, args, *bang, b, depth)?;
             }
             ast::Stmt::For { var, range, body, .. } => {
+                let v = &var.text;
+                // `for x in xs`: iterate a DUT-connected array via an id table.
+                if let Some((path, n)) =
+                    expr_path(range).and_then(|p| self.array_len(&p).map(|n| (p, n)))
+                {
+                    let k = self.tmp.get();
+                    self.tmp.set(k + 1);
+                    let ids: Vec<String> =
+                        (0..n).map(|i| self.map[&format!("{path}[{i}]")].0.to_string()).collect();
+                    b.push_str(&format!(
+                        "{ind}{{ static const uint32_t _a{k}[] = {{{}}};\n\
+                         {ind}for (int _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
+                         uint64_t {v} = sx_read(_a{k}[_i{k}]);\n",
+                        ids.join(", ")
+                    ));
+                    let fresh = self.locals.borrow_mut().insert(v.clone());
+                    for s in &body.stmts {
+                        self.stmt(s, b, depth + 1)?;
+                    }
+                    if fresh {
+                        self.locals.borrow_mut().remove(v);
+                    }
+                    b.push_str(&format!("{ind}}} }}\n"));
+                    return Ok(());
+                }
                 let (lo, hi) = match range {
                     ast::Expr::Range { lo, hi, .. } => (self.expr(lo)?, self.expr(hi)?),
-                    _ => return Err("`for` needs a range".into()),
+                    _ => return Err("`for` needs a range or an array".into()),
                 };
-                let v = &var.text;
                 b.push_str(&format!("{ind}for (uint64_t {v} = {lo}; {v} < {hi}; {v}++) {{\n"));
+                let fresh = self.locals.borrow_mut().insert(v.clone());
                 for s in &body.stmts {
                     self.stmt(s, b, depth + 1)?;
+                }
+                if fresh {
+                    self.locals.borrow_mut().remove(v);
                 }
                 b.push_str(&format!("{ind}}}\n"));
             }
@@ -298,6 +358,15 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Element count of a DUT-connected array in the signal map.
+    fn array_len(&self, path: &str) -> Option<u64> {
+        let mut n = 0;
+        while self.map.contains_key(&format!("{path}[{n}]")) {
+            n += 1;
+        }
+        (n > 0).then_some(n)
+    }
+
     /// `await <duration> | <edge> | <condition>` in the native harness, on the
     /// generated event wheel: a duration runs the clocks up to `now + dur`; an
     /// edge or condition steps clock edges until it fires (bounded, mirroring
@@ -353,6 +422,17 @@ impl Ctx<'_> {
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => {
+                let n = expr_path(base)
+                    .and_then(|p| self.array_len(&p))
+                    .ok_or("::len needs a connected array")?;
+                format!("{n}ULL")
+            }
+            ast::Expr::Path(p)
+                if p.segments.len() == 1 && self.locals.borrow().contains(&p.segments[0].text) =>
+            {
+                p.segments[0].text.clone()
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let id =
                     self.map.get(&p.segments[0].text).ok_or_else(|| unsup(&p.segments[0].text))?;

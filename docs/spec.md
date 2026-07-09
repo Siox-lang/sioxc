@@ -1728,6 +1728,17 @@ and stays usable as a name everywhere else. `after` is testbench-only in
 Phase 1; hardware impls reject it. `clock(clk, period)` remains as sugar for
 the toggle idiom.
 
+Testbench `let`s run in **statement order**; a name not connected to a DUT
+port is a plain local. `for` binds its loop variable, and any array iterates
+directly, Python-style — length is the `::len` system attribute (an
+elaboration-time fact, like `::width`):
+
+```siox
+let acc: uint[8] = 0;
+for x in xs { acc = acc + x; }      // desugars over 0..xs::len
+for i in 0..xs::len { acc = acc + xs[i]; }
+```
+
 For edge/level-driven stimulus (mirroring cocotb's async model), `await` waits
 on the scheduler those clocks run on:
 

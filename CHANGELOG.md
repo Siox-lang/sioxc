@@ -25,6 +25,11 @@ assertions, and VCD export — predates this changelog. See
   (`impl "+" for T`) are removed — a targeted parse error points at the
   Rust-style name. Future custom operators are reserved as
   `impl ops::custom<"sym", Rhs> for T`.
+- **Python-style array iteration + testbench locals** — `for x in xs`
+  iterates any array (`for i in 0..n` now binds `i` too); `xs::len` joins the
+  `::` metadata attributes; testbench `let`s run in statement order and
+  unconnected names are real locals. All three paths (interp, JIT, native
+  binary — arrays via generated id tables).
 - **Rust-style `if` expressions** — `y = if sel { a } else { b };` with
   required `else` and `else if` chains; lowers to a select everywhere
   (hardware drivers, operator-impl bodies via the inliner, testbench

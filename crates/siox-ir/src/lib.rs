@@ -1504,6 +1504,15 @@ impl<'a> Lowering<'a> {
     /// Lower a system attribute. `clk::rising`/`falling`/`edge` expand into
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
     fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
+        // `xs::len` is elaboration-time metadata: the array's element count.
+        if attr == "len" {
+            if let Some(indices) =
+                expr_path(base).and_then(|p| self.local_array.get(&p))
+            {
+                return Expr::Const(indices.len() as u64);
+            }
+            return Expr::Unknown;
+        }
         let Some(sig) = self.base_signal(base) else { return Expr::Unknown };
         match attr {
             "event" | "edge" => Expr::Event(sig),
