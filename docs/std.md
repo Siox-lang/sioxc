@@ -1,5 +1,8 @@
 # The siox standard library
 
+> Target picture + build order: [notes/std-proposal.md](notes/std-proposal.md).
+
+
 The standard library lives in `std/` as ordinary siox source, loaded
 transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a

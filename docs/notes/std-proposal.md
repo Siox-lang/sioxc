@@ -1,0 +1,194 @@
+# The siox standard library — proposal
+
+Status: **proposal** (2026-07-10). Companion to [std.md](../std.md), which
+documents what exists today; this note is the target picture and build order.
+
+## Design principles
+
+1. **The kernel stays minimal.** The compiler owns three base types
+   (`integer`, `real`, `Char`) and the *mechanisms* — operator/suffix trait
+   inlining, `::` metadata attributes, enums/structs/arrays. Everything with
+   domain semantics is std source. Proven pattern: `Logic` truth tables,
+   `Complex`, and `int`'s signed `Ord` are already library code.
+2. **One concept, one module.** Small files named by what they define, like
+   VHDL packages — not a kitchen-sink `util`.
+3. **Simulation-first, synthesis-aware.** Everything in the *types* layer must
+   be synthesizable later (pure functions, no state); the *simulation* layer
+   (io, rand, time) is testbench-only, like VHDL's textio or SV's `$display`.
+4. **A prelude ends import drift.** Today a file that never imports
+   `std::bits` silently falls back to kernel word semantics. A tiny
+   auto-loaded `std::prelude` (like VHDL's implicit `std.standard`, Rust's
+   prelude) makes the core types and their operators always mean one thing.
+
+## What the ancestors teach
+
+| Concern | VHDL | Verilog / SV | SystemC | siox home |
+| --- | --- | --- | --- | --- |
+| Scalar logic | `std_logic_1164` (9-value `std_ulogic`) | `logic` (4-value, builtin) | `sc_logic`/`sc_lv` (4-value) | `std::logic` (4-value ✅) |
+| Vector numerics | `numeric_std` (`unsigned`/`signed`) | packed vectors (builtin) | `sc_int`, `sc_bigint` | `std::bits` ✅ |
+| Conversions/resize | `numeric_std` (`resize`, `to_integer`) | `$unsigned`, casts | constructors | `std::bits` (**gap**) |
+| Ranged scalars | subtypes (`natural`, `positive`) | — | — | `std::numeric` ✅ |
+| Real math | `math_real` (sqrt, sin, log, uniform) | `$sqrt`… (SV) | `<cmath>` | `std::math` (**gap**) |
+| Complex | `math_complex` | — | — | `std::math` ✅ |
+| Fixed point | `fixed_pkg` (2008) | — | `sc_fixed` ★ | `std::fixed` (**future**) |
+| Time/units | `std.standard` `time` | timescale directive | `sc_time` | `std::sim` ✅ |
+| Text/strings | `std.standard` `string` | `string` (SV) | `std::string` | `std::text` (partial) |
+| TB output | `textio` (`write`/`report`) | `$display`/`$monitor` ★ | `cout`/`sc_report` | `std::io` (**gap**) |
+| Memory load | `textio` file read | `$readmemh` ★ | user code | `std::mem` (**gap**) |
+| Randomization | `math_real.uniform` | `$random`, `randomize()` ★ | `rand()` | `std::rand` (**gap**) |
+| Assertions | `assert … severity` | SVA, `$fatal…` | `sc_assert`/`sc_report` | `std::assert` (partial) |
+| Sim control | `std.env` (`stop`/`finish`) | `$stop`/`$finish` | `sc_stop` | `std::sim` (**gap**) |
+| TB channels | — | mailbox/semaphore (SV `std`) | `sc_fifo` ★ | `std::fifo` (**future**) |
+| Verification framework | — (OSVVM external) | UVM (external) | — | `std::verify` (**last**, with cocotb) |
+| Metadata | attributes (`'foo`) | `(* attr *)` | — | `std::attrs` ✅ |
+
+★ = the feature siox should copy from that ancestor specifically: SV's
+`$display`/`$readmemh`/`$random` ergonomics, SystemC's `sc_fixed` and
+`sc_fifo` shapes.
+
+## Module map
+
+```mermaid
+flowchart TD
+    subgraph kernel ["compiler kernel (not std)"]
+        K["integer · real · Char\noperator/suffix traits · :: attrs"]
+    end
+
+    subgraph core ["core types — synthesizable, auto-loaded via prelude"]
+        OPS["std::ops\nBoolean · Ordering"]
+        LOGIC["std::logic\nBit · Logic · Bool · Clock\ntruth tables"]
+        BITS["std::bits\nuint/int operators · signed Ord\n+ resize · to_integer · popcount · clog2-idx"]
+        NUM["std::numeric\nByte…Positive ranged ints"]
+        TEXT["std::text\nstring = Char[]\n+ Ascii/Unicode tables"]
+        MATH["std::math\nComplex ✅ + sqrt/sin/log/pow · PI · min/max/abs"]
+    end
+
+    subgraph simsvc ["simulation services — testbench-only"]
+        SIM["std::sim\nTime · Freq · suffixes\n+ stop() · finish()"]
+        IO["std::io  (new)\nprint!/format · file read"]
+        RAND["std::rand  (new)\nuniform · randint · seed"]
+        ASSERT["std::assert\nSeverity + check helpers"]
+    end
+
+    subgraph models ["models & verification — later"]
+        MEM["std::mem  (new)\nRam/Rom models · load_hex"]
+        FIXED["std::fixed  (future)\nufixed/sfixed"]
+        FIFO["std::fifo  (future)\nTB channels (needs processes)"]
+        VERIFY["std::verify  (last)\ndrivers · monitors · scoreboard\n(pairs with cocotb)"]
+    end
+
+    ATTRS["std::attrs\ntop · test · keep · …"]
+    PRELUDE(["std::prelude  (new)\nauto-loaded re-exports"])
+
+    K --> OPS
+    K --> LOGIC
+    OPS --> LOGIC
+    LOGIC --> BITS
+    OPS --> BITS
+    K --> NUM
+    K --> TEXT
+    K --> MATH
+    OPS --> MATH
+    NUM --> SIM
+    TEXT --> IO
+    SIM --> IO
+    MATH --> RAND
+    TEXT --> ASSERT
+    BITS --> MEM
+    IO --> MEM
+    BITS --> FIXED
+    SIM --> FIFO
+    RAND --> VERIFY
+    FIFO --> VERIFY
+    MEM --> VERIFY
+    PRELUDE -.re-exports.-> LOGIC
+    PRELUDE -.re-exports.-> BITS
+    PRELUDE -.re-exports.-> OPS
+    PRELUDE -.re-exports.-> NUM
+    K --> ATTRS
+```
+
+Arrows are `using` dependencies (a module imports the one above it). The
+layers are load-bearing: **core** must stay pure/synthesizable, **simulation
+services** may touch the runner (time, io, randomness), **models** build on
+both. `std::attrs` stands alone (metadata only). Nothing in a lower layer may
+import from a higher one — same layering rule as the compiler crates.
+
+## Per-module contents (target)
+
+**`std::prelude` (new).** Re-exports what every file wants: `Bit`, `Logic`,
+`Bool`, `Clock`, `uint`, `int`, `Boolean`, `Ordering`, `string`, the time
+suffixes. Auto-loaded by the compiler (kill the silent kernel-fallback);
+`--no-prelude` escape hatch later if wanted.
+
+**`std::ops`.** As today: `Boolean`, `Ordering`. Future: the reserved
+`ops::custom<"sym", Rhs>` hook for user operators.
+
+**`std::logic`.** As today (4-value `Logic` is deliberately reduced from
+VHDL's 9 — 'U'/'W' fold into 'X'; revisit only if resolution/strength
+modelling is ever needed). Add: `to_bit(Logic) -> Bit`, `is_defined`.
+
+**`std::bits`.** Operators ✅. Add, from `numeric_std`: `resize<W>(x)`,
+`to_integer(x)`, `zero_extend`/`sign_extend`, `popcount`, `reverse`,
+`onehot`; finish signed `Div`/arithmetic `Shr` for `int` (needs bitwise
+masking helpers — the concrete blocker worth solving here).
+
+**`std::numeric`.** As today. Add `clog2(n)` (address-width helper — SV's
+`$clog2`, used constantly for parameterized designs).
+
+**`std::math`.** `Complex` ✅. Add `math_real`'s core over kernel `real`:
+`sqrt`, `sin`, `cos`, `exp`, `log`, `pow`, `floor`, `ceil`, `round`,
+constants `PI`/`E`, and `abs`/`min`/`max` for `integer` + `real`. (Needs
+plain function calls in expressions — the main language gap this layer
+exposes.)
+
+**`std::text`.** `string` ✅. Add the promised encoding tables (`Ascii`,
+`Unicode`: `encode(Char) -> integer`, `decode(integer) -> Char`),
+`to_string(integer)`, string equality via `Ord`.
+
+**`std::sim`.** `Time`/`Freq` ✅. Add `stop()` (pause with status) and
+`finish()` (end simulation) — `std.env`/`$finish`; runner-implemented.
+
+**`std::io` (new).** Testbench printing — SV's killer ergonomics:
+`print!("count={}", count)` (runner-implemented like `assert!`), plus
+`read_lines(path)` for stimulus files. Testbench-only.
+
+**`std::rand` (new).** `uniform() -> real`, `randint(lo, hi)`, `seed(n)` —
+deterministic default seed so tests reproduce; the seed is printed on
+failure (SV-style repro).
+
+**`std::assert`.** `Severity` ✅. Add `check!(cond)` variants with severity,
+`expect_eq!(a, b)` printing both values on failure (needs std::io).
+
+**`std::mem` (new).** `Ram<W, DEPTH>` / `Rom<W, DEPTH>` entities +
+`load_hex(path)` initialization (`$readmemh`). First real *library
+hardware*, exercising generics + memories end to end.
+
+**`std::fixed` (future).** `ufixed`/`sfixed` after SystemC's `sc_fixed` /
+VHDL's `fixed_pkg` — valuable for DSP, but gated on the width/typing work
+maturing; do not start before `std::bits` conversions are done.
+
+**`std::fifo` (future).** `sc_fifo`-shaped testbench channels; needs
+processes (`loop { await … }`) first.
+
+**`std::verify` (last).** Drivers/monitors/scoreboards — designed together
+with the cocotb bridge so one verification model serves both native and
+Python testbenches.
+
+## Build order (the gap-filling roadmap)
+
+| Phase | Items | Unblocks / needs |
+| --- | --- | --- |
+| **S1** | `std::prelude` + auto-load | kills kernel-fallback divergence; trivial |
+| **S2** | `std::bits` conversions (`resize`, `to_integer`, extends) + bitwise masking helpers → finish signed `Div`/`Shr` | needs *free functions callable in expressions* (fn-call lowering — the single biggest language gap the std exposes) |
+| **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
+| **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |
+| **S5** | `std::rand`, `std::assert` helpers | S3 |
+| **S6** | `std::mem` (Ram/Rom + `load_hex`) | S2 + S3 |
+| **S7** | `std::text` encodings, `to_string` | S2 |
+| **S8** | `std::fixed`, `std::fifo`, `std::verify` | processes; cocotb timing |
+
+The through-line: **S2's "functions callable in expressions" is the keystone**
+— nearly every module past the prelude wants ordinary `fn` calls (not just
+operator-trait inlining) working in hardware and testbench expressions. That
+should be the next compiler feature, driven by the std's needs.
