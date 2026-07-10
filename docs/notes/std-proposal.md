@@ -129,17 +129,29 @@ hatch later if wanted.
 VHDL's 9 — 'U'/'W' fold into 'X'). Add: `to_bit(Logic) -> Bit`, `is_defined`,
 and **`impl Resolve for Logic`** (below).
 
-**Resolution (`Resolve` trait, in `std::ops`).** VHDL's resolved-signal model,
-as a trait instead of a language feature: `fn resolve(self, other: Self) ->
-Self`, an associative+commutative fold. When one signal has **multiple driver
-contexts**, the compiler folds them with the type's `resolve`
-(`resolve(d1, resolve(d2, …))`, inlined like any operator impl); a type
-*without* the impl makes multiple drivers an **elaboration error** — VHDL's
-unresolved-type safety rule, replacing today's silent last-wins. This is the
-prerequisite for `inout` port semantics and tristate buses ('Z' finally does
-something). Strength levels (weak 'H'/'L', pull-ups/open-drain) stay out
-until Phase 2/3 board modelling; widening `Logic` later only grows the
-`resolve` body. Slot: after S2.
+**Resolution (`Resolve` trait + resolved/unresolved types — DECIDED).**
+VHDL's resolved-signal model, as a trait plus a two-type surface (user
+decision 2026-07-10, full VHDL style):
+
+- The mechanism is the trait: `fn resolve(self, other: Self) -> Self` in
+  `std::ops`, an associative fold. Multiple driver contexts on one signal
+  fold via the type's `resolve` (inlined pairwise); a type **without** the
+  impl makes multiple drivers an **elaboration error**.
+- The surface is two types, like `std_logic`/`std_ulogic`: **`Logic` is
+  resolved** (carries `impl Resolve`, the default, prelude-exported) and the
+  **unresolved mirrors live in `std::logic::unresolved`** — same variants,
+  simply *no* `Resolve` impl, so the single-driver check applies. No new
+  machinery: unresolved-ness is the absence of the impl.
+- Crossing between them is an explicit conversion (`T(x)` form extended to
+  enum-to-enum with identical variants).
+- Note: until real module namespacing lands, the flat namespace means the
+  unresolved enums carry distinct names (`ULogic`, `UBit`);
+  `using ...::Logic as ULogic` renaming comes with namespacing.
+- `uint`/`int` stay vectors of (resolved) `Logic`, like `numeric_std`.
+
+Prerequisite for `inout` and tristate ('Z' finally does something).
+Strength levels (weak 'H'/'L', pull-ups) stay out until Phase 2/3 board
+modelling. Slot: after S2c.
 
 **`std::bits`.** Operators ✅. **No `to_integer`/`to_unsigned`** — those are
 VHDL toll booths for a type wall siox didn't build (uint/int already accept
@@ -205,7 +217,7 @@ Python testbenches.
 | **S1** ✅ | `std::prelude` + auto-load | done — bare files get signed int, Logic tables, `10ns` |
 | **S2a** ✅ | `T(x)` conversions + `resize(x, n)` + signed `Div`/arith `Shr` for `int` in std | done — sign/zero-extension from families; std source only |
 | **S2c** | free functions in expressions (fn-call lowering) | the keystone for math/popcount/clog2 |
-| **S2b** | `Resolve` trait + `impl Resolve for Logic`; multi-driver contexts fold or error | IR multi-context detection; unblocks `inout` |
+| **S2b** | `Resolve` trait + resolved `Logic` / `std::logic::unresolved` mirrors; multi-driver folds or errors | IR multi-context detection; unblocks `inout`; after S2c |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
 | **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |
 | **S5** | `std::rand`, `std::assert` helpers | S3 |
