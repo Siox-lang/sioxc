@@ -216,10 +216,10 @@ Python testbenches.
 | --- | --- | --- |
 | **S1** ✅ | `std::prelude` + auto-load | done — bare files get signed int, Logic tables, `10ns` |
 | **S2a** ✅ | `T(x)` conversions + `resize(x, n)` + signed `Div`/arith `Shr` for `int` in std | done — sign/zero-extension from families; std source only |
-| **S2c** | free functions in expressions (fn-call lowering) | the keystone for math/popcount/clog2 |
-| **S2b** | `Resolve` trait + resolved `Logic` / `std::logic::unresolved` mirrors; multi-driver folds or errors | IR multi-context detection; unblocks `inout`; after S2c |
+| **S2c** ✅ | free functions in expressions | done — inline + const-eval (clog2 in widths) |
+| **S2b** ✅ | `Resolve` + resolved `Logic` / `std::logic::unresolved` (`ULogic`); multi-context folds or errors | done — tristate buses work; `inout` semantics unblocked |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
-| **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |
+| **S4** ✅ | `std::math` real functions + `clog2`, `abs/min/max`, `PI`/`E` | done — libm/LLVM intrinsics; native links -lm |
 | **S5** | `std::rand`, `std::assert` helpers | S3 |
 | **S6** | `std::mem` (Ram/Rom + `load_hex`) | S2 + S3 |
 | **S7** | `std::text` encodings, `to_string` | S2 |

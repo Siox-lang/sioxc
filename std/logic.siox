@@ -145,3 +145,14 @@ impl Xnor for Logic {
         return 'X';
     }
 }
+
+// The std_logic resolution table, reduced to four values: 'Z' yields to any
+// driver, agreement stands, and contention is 'X'.
+impl Resolve for Logic {
+    fn resolve(self, rhs: Logic) -> Logic {
+        if self == 'Z' { return rhs; }
+        if rhs == 'Z' { return self; }
+        if self == rhs { return self; }
+        return 'X';
+    }
+}

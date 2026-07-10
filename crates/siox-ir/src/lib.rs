@@ -62,6 +62,10 @@ pub struct Driver {
     pub target: SignalId,
     pub cond: Option<Expr>,
     pub expr: Expr,
+    /// Driver context (spec 3.14): one per impl block / per port connection.
+    /// Within a context later drivers override; a signal driven from several
+    /// contexts folds via its type's `Resolve` impl (or errors without one).
+    pub ctx: u32,
 }
 
 /// An event-controlled block: on `condition`, queue `next(target) = expr`
@@ -206,6 +210,7 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     for name in &roots {
         l.lower_entity(name);
     }
+    l.resolve_driver_contexts();
     l.out
 }
 
@@ -256,6 +261,10 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// The active driver context (bumped per impl block / connection).
+    cur_ctx: u32,
+    /// Signal -> declared type name (enum / uint / int), for Resolve lookup.
+    sig_type: HashMap<u32, String>,
     /// Numeric-vector locals -> "uint" | "int", for operator-impl dispatch
     /// (kernel `integer`/`real` keep builtin operators; uint/int live in std).
     local_numeric: HashMap<String, String>,
@@ -322,6 +331,8 @@ impl<'a> Lowering<'a> {
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
             local_numeric: HashMap::new(),
+            cur_ctx: 0,
+            sig_type: HashMap::new(),
         }
     }
 
@@ -538,17 +549,21 @@ impl<'a> Lowering<'a> {
                 });
                 if dir == Some(ast::Direction::Out) {
                     if let Some(target) = self.target_signal(&value) {
-                        self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id) });
+                        let ctx = self.next_ctx();
+                        self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id), ctx });
                     }
                 } else {
                     let expr = self.lower_expr(&value);
-                    self.out.drivers.push(Driver { target: child_id, cond: None, expr });
+                    let ctx = self.next_ctx();
+                    self.out.drivers.push(Driver { target: child_id, cond: None, expr, ctx });
                 }
             }
         }
 
-        // Behaviour: each bare statement is a driver or an event block.
+        // Behaviour: each impl block is one driver context (spec 3.14 —
+        // override within, resolution across).
         for im in &impls {
+            self.cur_ctx += 1;
             for item in &im.items {
                 if let ast::ImplItem::Stmt(stmt) = item {
                     self.lower_stmt(stmt, None);
@@ -580,6 +595,100 @@ impl<'a> Lowering<'a> {
             }
         }
         out
+    }
+
+    /// Spec 3.14 + Resolve: a signal driven from several contexts folds each
+    /// context's contribution (its override chain over a 'Z' base) through
+    /// the type's `Resolve` impl; a type without one is unresolved, and
+    /// parallel drivers are an elaboration error.
+    fn resolve_driver_contexts(&mut self) {
+        use std::collections::BTreeMap;
+        // target -> ctx -> ordered driver indices
+        let mut by_target: BTreeMap<u32, BTreeMap<u32, Vec<usize>>> = BTreeMap::new();
+        for (i, d) in self.out.drivers.iter().enumerate() {
+            by_target.entry(d.target.0).or_default().entry(d.ctx).or_default().push(i);
+        }
+        let mut replaced: Vec<(u32, Expr)> = Vec::new();
+        for (t, ctxs) in &by_target {
+            if ctxs.len() < 2 {
+                continue;
+            }
+            let ty = self.sig_type.get(t).cloned().unwrap_or_default();
+            let has_resolve = self.op_impls.contains_key(&("Resolve".to_string(), ty.clone()));
+            let path = self.out.signals[*t as usize].path.clone();
+            if !has_resolve {
+                self.sink.emit(siox_diag::Diagnostic::error(format!(
+                    "`{path}` is driven from {} parallel contexts, but `{ty}` is \
+                     unresolved (no `impl Resolve`)",
+                    ctxs.len()
+                )));
+                continue;
+            }
+            // Each context: fold its drivers (later overrides) over a 'Z' base.
+            let mut contributions = Vec::new();
+            for idxs in ctxs.values() {
+                let mut acc = Expr::Logic('Z');
+                for &i in idxs {
+                    let d = &self.out.drivers[i];
+                    acc = match &d.cond {
+                        None => d.expr.clone(),
+                        Some(c) => Expr::Select {
+                            cond: Box::new(c.clone()),
+                            then: Box::new(d.expr.clone()),
+                            els: Box::new(acc),
+                        },
+                    };
+                }
+                contributions.push(acc);
+            }
+            // Pairwise resolve via the impl's inlined body.
+            let mut it = contributions.into_iter();
+            let mut folded = it.next().unwrap();
+            for c in it {
+                match self.inline_resolve(&ty, folded.clone(), c) {
+                    Some(r) => folded = r,
+                    None => {
+                        self.sink.emit(siox_diag::Diagnostic::error(format!(
+                            "could not inline `impl Resolve for {ty}` folding `{path}`"
+                        )));
+                        break;
+                    }
+                }
+            }
+            replaced.push((*t, folded));
+        }
+        for (t, expr) in replaced {
+            self.out.drivers.retain(|d| d.target.0 != t);
+            self.out.drivers.push(Driver {
+                target: SignalId(t),
+                cond: None,
+                expr,
+                ctx: 0,
+            });
+        }
+    }
+
+    /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
+    fn inline_resolve(&self, ty: &str, a: Expr, b: Expr) -> Option<Expr> {
+        let fns = self.op_impls.get(&("Resolve".to_string(), ty.to_string()))?;
+        let (f, _) = fns.first()?;
+        let body = f.body.as_ref()?;
+        let mut env: HashMap<String, Val> = HashMap::new();
+        env.insert("self".to_string(), Val::Scalar(a));
+        if let Some(p) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &p.name {
+                env.insert(n.text.clone(), Val::Scalar(b));
+            }
+        }
+        match self.inline_block(&body.stmts, &env)? {
+            Val::Scalar(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn next_ctx(&mut self) -> u32 {
+        self.cur_ctx += 1;
+        self.cur_ctx
     }
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
@@ -655,6 +764,9 @@ impl<'a> Lowering<'a> {
                 self.local_enum.insert(name.to_string(), p.segments[0].text.clone());
             }
             self.add_signal(entity, name, w);
+            if let (ast::Type::Path(p), Some(&id)) = (ty, self.locals.get(name)) {
+                self.sig_type.insert(id.0, p.segments[0].text.clone());
+            }
         } else if let Some((w, is_real)) = self.ranged_numeric(ty) {
             // `integer<lo..hi>` stores in the smallest width covering the
             // range (two's complement when lo < 0); `real<..>` stays f64.
@@ -673,6 +785,9 @@ impl<'a> Lowering<'a> {
                         p.segments.last().map(|s| s.text.as_str())
                     {
                         self.local_numeric.insert(name.to_string(), k.to_string());
+                        if let Some(&id) = self.locals.get(name) {
+                            self.sig_type.insert(id.0, k.to_string());
+                        }
                     }
                 }
             }
@@ -795,6 +910,7 @@ impl<'a> Lowering<'a> {
                                             target: sig,
                                             cond: cond.clone(),
                                             expr: Expr::Const(*c as u32 as u64),
+                                            ctx: self.cur_ctx,
                                         });
                                     }
                                 }
@@ -811,6 +927,7 @@ impl<'a> Lowering<'a> {
                                                     target: t,
                                                     cond: cond.clone(),
                                                     expr: Expr::Current(sv),
+                                                    ctx: self.cur_ctx,
                                                 });
                                             }
                                         }
@@ -829,6 +946,7 @@ impl<'a> Lowering<'a> {
                                         target: sig,
                                         cond: cond.clone(),
                                         expr,
+                                        ctx: self.cur_ctx,
                                     });
                                 }
                             }
@@ -838,7 +956,7 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
-                    self.out.drivers.push(Driver { target, cond, expr });
+                    self.out.drivers.push(Driver { target, cond, expr, ctx: self.cur_ctx });
                 }
             }
             ast::Stmt::If(iff) => {
@@ -2604,6 +2722,7 @@ mod tests {
                 target: SignalId(9), // out of range
                 cond: Some(Expr::Unknown),
                 expr: Expr::Slice { base: Box::new(Expr::Current(SignalId(0))), hi: 1, lo: 3 },
+                ctx: 0,
             }],
             event_blocks: vec![],
         };

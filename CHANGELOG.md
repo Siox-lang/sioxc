@@ -46,6 +46,17 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Module-level functions** — `fn` is an item: inlined in hardware,
+  const-evaluated in width positions (`uint[clog2(DEPTH)]`), callable in
+  testbenches. std gains `abs`/`min`/`max`, `clog2`.
+- **`std::math` real functions** — `sqrt`/`sin`/`cos`/`exp`/`log`/`pow`/
+  `floor`/`ceil`/`round` as kernel externs (libm / LLVM intrinsics), plus
+  `PI`/`E` real constants.
+- **Parallel-driver resolution (`Resolve`)** — a signal driven from several
+  contexts (impl blocks / connections) folds through its type's
+  `impl Resolve` (`Logic` gets the std_logic table: tristate buses work,
+  contention is 'X'); types without one error — the VHDL unresolved-type
+  safety rule. `std::logic::unresolved::ULogic` is the checked mirror.
 - **uint/int operators moved to std** — only the kernel types (`integer`,
   `real`) keep built-in operators; `uint[N]`/`int[N]` arithmetic and shifts
   are now `impl Add for uint` etc. in `std/bits.siox`, and `int` gains

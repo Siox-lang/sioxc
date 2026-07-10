@@ -1,0 +1,13 @@
+module std::logic::unresolved;
+
+// The unresolved mirror of `Logic` (VHDL's std_ulogic): the same four
+// values, but NO `Resolve` impl — so driving a ULogic signal from more than
+// one context is an elaboration error (the single-driver safety check).
+// Until module namespacing lands, the name is distinct (`ULogic`);
+// `using std::logic::unresolved::Logic as ULogic` arrives with namespacing.
+pub enum ULogic {
+    '0',
+    '1',
+    'Z',
+    'X',
+}

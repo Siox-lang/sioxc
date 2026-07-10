@@ -56,3 +56,11 @@ impl Boolean for Bool {
         }
     }
 }
+
+// Parallel-driver resolution (spec 3.14): when one signal is driven from
+// several contexts, the compiler folds the contributions pairwise through
+// the type's `resolve` (associative, commutative). A type WITHOUT an impl
+// is unresolved — parallel drivers on it are an elaboration error.
+pub trait Resolve {
+    fn resolve(self, rhs: Self) -> Self;
+}
