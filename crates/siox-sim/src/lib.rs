@@ -210,6 +210,25 @@ impl<'a, S: Slot> Simulator<'a, S> {
         match e {
             Expr::Const(v) => S::from_u64(*v),
             Expr::Real(x) => S::from_u64(x.to_bits()),
+            // Kernel real math on f64 bit patterns (libm, matching the JIT's
+            // LLVM intrinsics).
+            Expr::MathFn { op, args } => {
+                use siox_ir::MathOp;
+                let a = f64::from_bits(args.first().map(|a| self.eval(a).to_u64()).unwrap_or(0));
+                let b = || f64::from_bits(args.get(1).map(|a| self.eval(a).to_u64()).unwrap_or(0));
+                let r = match op {
+                    MathOp::Sqrt => a.sqrt(),
+                    MathOp::Sin => a.sin(),
+                    MathOp::Cos => a.cos(),
+                    MathOp::Exp => a.exp(),
+                    MathOp::Log => a.ln(),
+                    MathOp::Pow => a.powf(b()),
+                    MathOp::Floor => a.floor(),
+                    MathOp::Ceil => a.ceil(),
+                    MathOp::Round => a.round(),
+                };
+                S::from_u64(r.to_bits())
+            }
             Expr::Logic(c) => S::from_u64(logic_value(*c)),
             Expr::Current(id) => self.state[id.0 as usize].current,
             Expr::Old(id) => self.state[id.0 as usize].old,

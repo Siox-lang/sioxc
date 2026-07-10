@@ -57,3 +57,18 @@ pub fn max(a: integer, b: integer) -> integer {
     if a > b { return a; }
     return b;
 }
+
+// Kernel real math (VHDL math_real's core): bodyless declarations lower to
+// engine primitives (libm / LLVM intrinsics). All take and return `real`.
+pub fn sqrt(x: real) -> real;
+pub fn sin(x: real) -> real;
+pub fn cos(x: real) -> real;
+pub fn exp(x: real) -> real;
+pub fn log(x: real) -> real;
+pub fn pow(x: real, y: real) -> real;
+pub fn floor(x: real) -> real;
+pub fn ceil(x: real) -> real;
+pub fn round(x: real) -> real;
+
+pub const PI: real = 3.141592653589793;
+pub const E: real = 2.718281828459045;

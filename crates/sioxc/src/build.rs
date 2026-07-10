@@ -106,7 +106,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     siox_llvm::emit_object(design, &obj)?;
     std::fs::write(&csrc, prog).map_err(|e| e.to_string())?;
     let status = Command::new("clang")
-        .args([csrc.to_str().unwrap(), obj.to_str().unwrap(), "-O2", "-o", out.to_str().unwrap()])
+        .args([csrc.to_str().unwrap(), obj.to_str().unwrap(), "-O2", "-lm", "-o", out.to_str().unwrap()])
         .status()
         .map_err(|e| format!("failed to run clang: {e}"))?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -196,7 +196,7 @@ impl Ctx<'_> {
                     value => {
                         if let Some(&id) = self.map.get(&l.name.text) {
                             if let Some(v) = value {
-                                let e = self.expr(v)?;
+                                let e = self.value_for(id, v)?;
                                 b.push_str(&format!("    sx_set({}, {e});\n", id.0));
                             }
                         } else {
@@ -254,7 +254,7 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
-                let e = self.expr(value)?;
+                let e = self.value_for(id, value)?;
                 b.push_str(&format!("{ind}sx_set({}, {e});\n{ind}sx_settle();\n", id.0));
             }
             ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, .. }) => {
@@ -424,6 +424,19 @@ impl Ctx<'_> {
             None => {}
         }
         Ok(())
+    }
+
+    /// The C value for writing `e` to signal `id`: a real-typed target takes
+    /// a float literal's f64 bit pattern (matching the runner's eval_for).
+    fn value_for(&self, id: SignalId, e: &ast::Expr) -> Result<String, String> {
+        if self.design.signals[id.0 as usize].real {
+            if let ast::Expr::Int { text, .. } = e {
+                if let Ok(f) = text.parse::<f64>() {
+                    return Ok(format!("{}ULL", f.to_bits()));
+                }
+            }
+        }
+        self.expr(e)
     }
 
     /// A module-fn call as a C expression: bind the arguments, then flatten

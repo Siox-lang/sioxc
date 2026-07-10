@@ -97,8 +97,42 @@ pub enum Expr {
     /// `cond ? then : els` — produced by inlining operator-trait impl bodies
     /// (`if`/`else` chains of `return`s become nested selects).
     Select { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
+    /// A kernel math function over `real` (f64 bit-pattern operands): the
+    /// bodyless `fn sqrt(x: real) -> real;` declarations in std::math lower
+    /// here; engines map them to libm / LLVM intrinsics.
+    MathFn { op: MathOp, args: Vec<Expr> },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
+}
+
+/// The kernel real-math set (VHDL math_real's core).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MathOp {
+    Sqrt,
+    Sin,
+    Cos,
+    Exp,
+    Log,
+    Pow,
+    Floor,
+    Ceil,
+    Round,
+}
+
+/// The math op a bodyless std::math declaration names.
+pub fn math_op(name: &str) -> Option<MathOp> {
+    Some(match name {
+        "sqrt" => MathOp::Sqrt,
+        "sin" => MathOp::Sin,
+        "cos" => MathOp::Cos,
+        "exp" => MathOp::Exp,
+        "log" => MathOp::Log,
+        "pow" => MathOp::Pow,
+        "floor" => MathOp::Floor,
+        "ceil" => MathOp::Ceil,
+        "round" => MathOp::Round,
+        _ => return None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +234,8 @@ struct Lowering<'a> {
     inline_depth: std::cell::Cell<u32>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
+    /// Module-level `real` constants (`const PI: real = 3.14159...`).
+    consts_real: HashMap<String, f64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
     /// (left, right) so direction is preserved.
     const_ranges: HashMap<String, (i64, i64)>,
@@ -275,6 +311,7 @@ impl<'a> Lowering<'a> {
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
             consts: HashMap::new(),
+            consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
             cur_env: HashMap::new(),
@@ -313,6 +350,10 @@ impl<'a> Lowering<'a> {
                             }
                         } else if let Some(v) = eval_const(&c.value, &self.consts) {
                             self.consts.insert(c.name.text.clone(), v);
+                        } else if let ast::Expr::Int { text, .. } = &c.value {
+                            if let Ok(f) = text.parse::<f64>() {
+                                self.consts_real.insert(c.name.text.clone(), f);
+                            }
                         }
                     }
                     ast::Item::Using(u) => {
@@ -988,11 +1029,20 @@ impl<'a> Lowering<'a> {
             ),
             ast::Expr::Bool { value, .. } => Expr::Const(*value as u64),
             ast::Expr::LogicLit { ch, .. } => Expr::Logic(*ch),
-            ast::Expr::Path(p) if p.segments.len() == 1 => self
-                .locals
-                .get(&p.segments[0].text)
-                .map(|id| Expr::Current(*id))
-                .unwrap_or(Expr::Unknown),
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                let name = &p.segments[0].text;
+                if let Some(id) = self.locals.get(name) {
+                    return Expr::Current(*id);
+                }
+                // Module constants read as values (`x * PI`).
+                if let Some(&v) = self.cur_env.get(name) {
+                    return Expr::Const(v as u64);
+                }
+                if let Some(&f) = self.consts_real.get(name) {
+                    return Expr::Real(f);
+                }
+                Expr::Unknown
+            }
             // `Enum::Variant` lowers to its discriminant constant.
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
@@ -1301,6 +1351,7 @@ impl<'a> Lowering<'a> {
                 matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv)
             }
             Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
+            Expr::MathFn { .. } => true,
             _ => false,
         }
     }
@@ -1417,6 +1468,12 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
         let f = *self.free_fns.get(name)?;
+        // A bodyless declaration is a kernel extern (std::math's real fns).
+        if f.body.is_none() {
+            let op = math_op(name)?;
+            let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
+            return Some(Expr::MathFn { op, args });
+        }
         // Constant arguments: run the body statically.
         let consts: Option<Vec<i64>> = args
             .iter()
@@ -1776,6 +1833,11 @@ impl<'a> Lowering<'a> {
 pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
     match e {
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => out.push(*id),
+        Expr::MathFn { args, .. } => {
+            for a in args {
+                read_set(a, out);
+            }
+        }
         Expr::Unary { rhs, .. } => read_set(rhs, out),
         Expr::Binary { lhs, rhs, .. } => {
             read_set(lhs, out);
@@ -1799,6 +1861,11 @@ fn dedup(v: &mut Vec<SignalId>) {
 /// Validation walk over an expression (see [`Design::validate`]).
 fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
     match e {
+        Expr::MathFn { args, .. } => {
+            for a in args {
+                check_expr(a, n, issues, ctx);
+            }
+        }
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => {
             if id.0 >= n {
                 issues.push(format!("{ctx}: signal id {} out of range (n={n})", id.0));
@@ -2032,6 +2099,10 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 
 fn render(e: &Expr, d: &Design) -> String {
     match e {
+        Expr::MathFn { op, args } => {
+            let a = args.iter().map(|x| render(x, d)).collect::<Vec<_>>().join(", ");
+            format!("{op:?}({a})").to_lowercase()
+        }
         Expr::Const(v) => v.to_string(),
         Expr::Real(x) => format!("{x}"),
         Expr::Logic(c) => format!("'{c}'"),
