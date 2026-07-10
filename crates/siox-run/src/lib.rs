@@ -175,6 +175,7 @@ pub fn run_tests_with_engine<'e>(
 ) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
+    let fns = collect_fns(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -183,7 +184,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, false).0);
         }
     }
     results
@@ -201,6 +202,7 @@ pub fn run_test_traced_with_engine<'e>(
 ) -> Option<(TestResult, Vec<Sample>)> {
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
+    let fns = collect_fns(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
@@ -208,7 +210,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, true));
         }
     }
     None
@@ -232,6 +234,19 @@ fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64
                     next = disc + 1;
                 }
                 out.insert(e.name.text.clone(), vars);
+            }
+        }
+    }
+    out
+}
+
+/// Module-level functions by name (testbench-callable).
+fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Fn(f) = item {
+                out.insert(f.name.text.clone(), f);
             }
         }
     }
@@ -270,6 +285,7 @@ fn run_one<'a>(
     design: &Design,
     body: &[&ast::ImplDecl],
     enums: &'a HashMap<String, HashMap<String, u64>>,
+    fns: &'a HashMap<String, &'a ast::FnDecl>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -307,6 +323,7 @@ fn run_one<'a>(
         oneshots: Vec::new(),
         time_fs: 0,
         locals: HashMap::new(),
+        fns,
     };
 
     // One pass in source order: `let`s apply as they appear (sequential
@@ -379,6 +396,8 @@ struct Testbench<'a> {
     /// Testbench-local scalar values: unconnected `let`s and `for` loop
     /// variables. Consulted before the signal map.
     locals: HashMap<String, u128>,
+    /// Module-level functions callable from testbench expressions.
+    fns: &'a HashMap<String, &'a ast::FnDecl>,
 }
 
 impl Testbench<'_> {
@@ -772,13 +791,82 @@ impl Testbench<'_> {
     }
 
     /// Evaluate an AST expression against the simulator via the signal map.
+    /// Evaluate a module-level `fn` call in a testbench expression: bind the
+    /// arguments positionally and execute the `return`/`if` body.
+    fn eval_free_call(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        fenv: &HashMap<String, u128>,
+    ) -> u128 {
+        let name = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            _ => return 0,
+        };
+        let Some(f) = self.fns.get(name) else { return 0 };
+        let Some(body) = &f.body else { return 0 };
+        // Constant arguments: use the signed static evaluator (the dynamic
+        // path below is unsigned words, which breaks e.g. `abs(0 - 5)`).
+        let consts: Option<Vec<i64>> = args
+            .iter()
+            .map(|a| siox_ir::eval_const_fns(a, &HashMap::new(), self.fns, 0))
+            .collect();
+        if let Some(cs) = consts {
+            let mut cenv = HashMap::new();
+            for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
+                if let Some(n) = &p.name {
+                    cenv.insert(n.text.clone(), v);
+                }
+            }
+            if let Some(v) = siox_ir::eval_const_stmts(&body.stmts, &cenv, self.fns, 0) {
+                return v as u128;
+            }
+        }
+        let mut env = HashMap::new();
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                env.insert(n.text.clone(), self.eval_env(a, fenv));
+            }
+        }
+        self.eval_fn_stmts(&body.stmts, &env).unwrap_or(0)
+    }
+
+    fn eval_fn_stmts(&self, stmts: &[ast::Stmt], env: &HashMap<String, u128>) -> Option<u128> {
+        for st in stmts {
+            match st {
+                ast::Stmt::Return { value, .. } => {
+                    return Some(self.eval_env(value.as_ref()?, env));
+                }
+                ast::Stmt::If(iff) => {
+                    if !self.eval_env(&iff.cond, env).is_zero() {
+                        if let Some(v) = self.eval_fn_stmts(&iff.then.stmts, env) {
+                            return Some(v);
+                        }
+                    } else if let Some(ast::ElseBranch::Block(b)) = iff.else_.as_deref() {
+                        if let Some(v) = self.eval_fn_stmts(&b.stmts, env) {
+                            return Some(v);
+                        }
+                    }
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     fn eval(&self, e: &ast::Expr) -> u128 {
+        self.eval_env(e, &HashMap::new())
+    }
+
+    /// [`Self::eval`] with a function-parameter overlay (module-fn calls in
+    /// testbench expressions bind their arguments here).
+    fn eval_env(&self, e: &ast::Expr, fenv: &HashMap<String, u128>) -> u128 {
         match e {
             ast::Expr::IfExpr { cond, then, els, .. } => {
-                if !self.eval(cond).is_zero() {
-                    self.eval(then)
+                if !self.eval_env(cond, fenv).is_zero() {
+                    self.eval_env(then, fenv)
                 } else {
-                    self.eval(els)
+                    self.eval_env(els, fenv)
                 }
             }
             ast::Expr::Int { text, .. } => u128::from_u64(parse_u64(text)),
@@ -796,7 +884,7 @@ impl Testbench<'_> {
             // sign-extension is a hardware-lowering concern.
             ast::Expr::Call { callee, args, .. } => {
                 let Some(arg) = args.first() else { return 0 };
-                let v = self.eval(arg);
+                let v = self.eval_env(arg, fenv);
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }
                         if matches!(
@@ -804,19 +892,19 @@ impl Testbench<'_> {
                             Some("uint" | "int")
                         ) =>
                     {
-                        self.eval(index).to_u64() as u32
+                        self.eval_env(index, fenv).to_u64() as u32
                     }
                     ast::Expr::Path(p)
                         if p.segments.len() == 1 && p.segments[0].text == "resize" =>
                     {
-                        args.get(1).map(|n| self.eval(n).to_u64() as u32).unwrap_or(0)
+                        args.get(1).map(|n| self.eval_env(n, fenv).to_u64() as u32).unwrap_or(0)
                     }
                     ast::Expr::Path(p)
                         if p.segments.len() == 1 && p.segments[0].text == "integer" =>
                     {
                         return v;
                     }
-                    _ => return u128::from_u64(0),
+                    _ => return self.eval_free_call(callee, args, fenv),
                 };
                 if w == 0 || w >= 128 {
                     v
@@ -831,6 +919,9 @@ impl Testbench<'_> {
                 .unwrap_or_else(|| u128::from_u64(0)),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
+                if let Some(&v) = fenv.get(name) {
+                    return v;
+                }
                 if let Some(&v) = self.locals.get(name) {
                     return v;
                 }
@@ -854,7 +945,7 @@ impl Testbench<'_> {
                 .or_else(|| {
                     if let ast::Expr::Index { base, index, .. } = e {
                         let b = expr_path(base)?;
-                        let i = self.eval(index).to_u64();
+                        let i = self.eval_env(index, fenv).to_u64();
                         return Some(format!("{b}[{i}]"));
                     }
                     None
@@ -863,7 +954,7 @@ impl Testbench<'_> {
                 .map(|&id| self.engine.read(id))
                 .unwrap_or_else(|| u128::from_u64(0)),
             ast::Expr::Unary { op, rhs, .. } => {
-                let a = self.eval(rhs);
+                let a = self.eval_env(rhs, fenv);
                 match op {
                     ast::UnOp::Not => u128::from_u64(a.is_zero() as u64),
                     ast::UnOp::Neg => a.wrapping_neg(),
@@ -904,7 +995,7 @@ impl Testbench<'_> {
                         other => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
                     };
                 }
-                apply_binop(lower_ast_binop(*op), self.eval(lhs), self.eval(rhs))
+                apply_binop(lower_ast_binop(*op), self.eval_env(lhs, fenv), self.eval_env(rhs, fenv))
             }
             _ => u128::from_u64(0),
         }

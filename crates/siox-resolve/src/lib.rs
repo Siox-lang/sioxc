@@ -54,6 +54,8 @@ pub enum DefKind {
     Entity,
     Trait,
     Const,
+    /// A module-level function (inlined at lowering; const-evaluable).
+    Fn,
     TypeAlias,
     /// Declared metadata attribute (`attr top: Bool for entity;`).
     Attr,
@@ -183,6 +185,9 @@ impl<'a> Resolver<'a> {
 
     fn collect_item(&mut self, item: &Item) {
         match item {
+            Item::Fn(f) => {
+                self.declare(&f.name.text, DefKind::Fn, true, f.name.span);
+            }
             Item::Using(u) => match &u.kind {
                 UsingKind::Alias { name, .. } => {
                     self.declare(&name.text, DefKind::TypeAlias, false, name.span);
@@ -302,6 +307,16 @@ impl<'a> Resolver<'a> {
     fn resolve_item(&mut self, item: &Item) {
         match item {
             Item::Using(_) => {}
+            Item::Fn(f) => {
+                for p in &f.params {
+                    if let Some(t) = &p.ty {
+                        self.resolve_type(t);
+                    }
+                }
+                if let Some(t) = &f.ret {
+                    self.resolve_type(t);
+                }
+            }
             Item::Const(c) => {
                 self.resolve_type(&c.ty);
                 self.resolve_expr(&c.value);

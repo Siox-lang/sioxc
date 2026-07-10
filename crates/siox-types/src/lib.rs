@@ -267,6 +267,11 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Item::Fn(f) => {
+                if let Some(b) = &f.body {
+                    self.check_block(b);
+                }
+            }
             Item::Using(_) | Item::Struct(_) | Item::AttrDecl(_) => {}
         }
     }

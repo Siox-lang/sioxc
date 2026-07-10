@@ -69,6 +69,12 @@ impl<'a> Parser<'a> {
         let item = match self.kind() {
             TokenKind::Using => Item::Using(self.parse_using()),
             TokenKind::Const => Item::Const(self.parse_const(is_pub)),
+            TokenKind::Fn => {
+                let start = self.span();
+                self.bump();
+                let name = self.parse_ident();
+                Item::Fn(self.parse_fn_after_name(start, name))
+            }
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
@@ -77,7 +83,7 @@ impl<'a> Parser<'a> {
             TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
             _ => {
                 self.error_here(
-                    "expected an item (using, const, struct, enum, entity, impl, trait, attr)",
+                    "expected an item (using, const, fn, struct, enum, entity, impl, trait, attr)",
                 );
                 return None;
             }
@@ -93,6 +99,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Pub
                     | TokenKind::Extern
                     | TokenKind::Using
+                    | TokenKind::Fn
                     | TokenKind::Const
                     | TokenKind::Struct
                     | TokenKind::Enum

@@ -33,6 +33,10 @@ pub struct Ident {
 pub enum Item {
     Using(Using),
     Const(ConstDecl),
+    /// A module-level function (spec 3.25-adjacent): pure `return`/`if`-chain
+    /// bodies, inlined at lowering like operator impls; const-evaluable when
+    /// its arguments are (so `clog2(DEPTH)` works in width positions).
+    Fn(FnDecl),
     Struct(StructDecl),
     Enum(EnumDecl),
     Entity(EntityDecl),

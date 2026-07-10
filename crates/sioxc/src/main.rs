@@ -887,6 +887,7 @@ fn dump_items(m: &Module) {
 
 fn describe_item(item: &Item) -> (&'static str, String) {
     match item {
+        Item::Fn(f) => ("fn", f.name.text.clone()),
         Item::Using(u) => {
             let name = match &u.kind {
                 UsingKind::Alias { name, .. } => name.text.clone(),

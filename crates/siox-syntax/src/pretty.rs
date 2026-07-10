@@ -51,6 +51,7 @@ impl Printer {
         match item {
             Item::Using(u) => self.using(u),
             Item::Const(c) => self.const_decl(c),
+            Item::Fn(f) => self.fn_decl(f),
             Item::Struct(s) => self.struct_decl(s),
             Item::Enum(e) => self.enum_decl(e),
             Item::Entity(e) => self.entity(e),

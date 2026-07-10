@@ -193,6 +193,11 @@ struct Lowering<'a> {
     op_impls: HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
     suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
+    /// Module-level functions, inlined at call sites / const-evaluated.
+    free_fns: HashMap<String, &'a ast::FnDecl>,
+    /// Inline depth guard (recursive fns must const-fold; runaway inlining
+    /// stops here).
+    inline_depth: std::cell::Cell<u32>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
@@ -267,6 +272,8 @@ impl<'a> Lowering<'a> {
             enum_reprs: HashMap::new(),
             op_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
+            free_fns: HashMap::new(),
+            inline_depth: std::cell::Cell::new(0),
             consts: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
@@ -287,6 +294,9 @@ impl<'a> Lowering<'a> {
                 match item {
                     ast::Item::Entity(e) => {
                         self.entities.insert(e.name.text.clone(), e);
+                    }
+                    ast::Item::Fn(f) => {
+                        self.free_fns.insert(f.name.text.clone(), f);
                     }
                     ast::Item::Struct(s) => {
                         self.structs.insert(s.name.text.clone(), s);
@@ -614,7 +624,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         } else {
-            self.add_signal(entity, name, type_width(ty, env));
+            self.add_signal(entity, name, type_width(ty, env, &self.free_fns));
             // uint[N]/int[N] dispatch their operators to std impls (spec 3.25).
             if let ast::Type::Indexed { base, .. } = ty {
                 if let ast::Type::Path(p) = base.as_ref() {
@@ -946,6 +956,7 @@ impl<'a> Lowering<'a> {
         match e {
             ast::Expr::Call { callee, args, .. } => self
                 .lower_conversion(callee, args, &HashMap::new())
+                .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
                 .unwrap_or(Expr::Unknown),
             // `if c { a } else { b }` is a mux: lower to a select.
             ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
@@ -1391,6 +1402,62 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &env)
     }
 
+    /// Lower a call to a module-level `fn`: const-fold when every argument
+    /// const-evaluates (so `clog2(DEPTH)` is a constant), else inline the
+    /// body like an operator impl (params bound positionally, with
+    /// `param::width` available). Depth-guarded against runaway recursion.
+    fn lower_free_call(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let name = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            _ => return None,
+        };
+        let f = *self.free_fns.get(name)?;
+        // Constant arguments: run the body statically.
+        let consts: Option<Vec<i64>> = args
+            .iter()
+            .map(|a| eval_const_fns(a, &self.cur_env, &self.free_fns, 0))
+            .collect();
+        if let Some(cs) = consts {
+            let mut fenv = self.cur_env.clone();
+            for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
+                if let Some(n) = &p.name {
+                    fenv.insert(n.text.clone(), v);
+                }
+            }
+            if let Some(v) =
+                eval_const_stmts(&f.body.as_ref()?.stmts, &fenv, &self.free_fns, 0)
+            {
+                return Some(Expr::Const(v as u64));
+            }
+        }
+        // Dynamic arguments: inline the body as an expression tree.
+        if self.inline_depth.get() > 16 {
+            return None;
+        }
+        self.inline_depth.set(self.inline_depth.get() + 1);
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                fenv.insert(n.text.clone(), self.lower_val_env(a, env));
+                fenv.insert(
+                    format!("{}::width", n.text),
+                    Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
+                );
+            }
+        }
+        let out = match f.body.as_ref().and_then(|b| self.inline_block(&b.stmts, &fenv)) {
+            Some(Val::Scalar(v)) => Some(v),
+            _ => None,
+        };
+        self.inline_depth.set(self.inline_depth.get() - 1);
+        out
+    }
+
     /// Lower a conversion expression (spec 3.17): `uint[16](x)` resizes,
     /// `int[8](x)` truncates, `integer(x)` crosses to the kernel word, and
     /// `resize(x, n)` is the family-preserving spelling (n const-evaluable —
@@ -1537,7 +1604,10 @@ impl<'a> Lowering<'a> {
                 select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))
             }
             ast::Expr::Call { callee, args, .. } => {
-                match self.lower_conversion(callee, args, env) {
+                match self
+                    .lower_conversion(callee, args, env)
+                    .or_else(|| self.lower_free_call(callee, args, env))
+                {
                     Some(v) => Val::Scalar(v),
                     None => Val::Scalar(self.lower_expr(e)),
                 }
@@ -2081,7 +2151,7 @@ fn parse_int(text: &str) -> Option<u64> {
 
 /// Bit width from a type annotation, substituting parameters from `env` (so
 /// `uint[W]` with `W=8` is width 8). `0` means parametric / not yet known.
-fn type_width(t: &ast::Type, env: &HashMap<String, i64>) -> u32 {
+fn type_width(t: &ast::Type, env: &HashMap<String, i64>, fns: &HashMap<String, &ast::FnDecl>) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
@@ -2093,32 +2163,74 @@ fn type_width(t: &ast::Type, env: &HashMap<String, i64>) -> u32 {
         // span; unconstrained `T[]` stays width 0 ("set at use").
         ast::Type::Indexed { index: None, .. } => 0,
         ast::Type::Indexed { index: Some(index), .. } => match index.as_ref() {
-            ast::Expr::Range { lo, hi, .. } => match (eval_const(lo, env), eval_const(hi, env)) {
-                (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
-                _ => 0,
-            },
-            e => eval_const(e, env).map(|v| v.max(0) as u32).unwrap_or(0),
+            ast::Expr::Range { lo, hi, .. } => {
+                match (eval_const_fns(lo, env, fns, 0), eval_const_fns(hi, env, fns, 0)) {
+                    (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
+                    _ => 0,
+                }
+            }
+            e => eval_const_fns(e, env, fns, 0).map(|v| v.max(0) as u32).unwrap_or(0),
         },
         ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => {
-            type_width(base, env)
+            type_width(base, env, fns)
         }
     }
 }
 
 /// Const-evaluate a width expression against a parameter environment.
 fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
+    eval_const_fns(e, env, &HashMap::new(), 0)
+}
+
+/// [`eval_const`] with module functions in scope: a call whose arguments
+/// const-evaluate runs the function body statically (recursion allowed to a
+/// bounded depth) — `clog2(DEPTH)` works in width positions.
+pub fn eval_const_fns(
+    e: &ast::Expr,
+    env: &HashMap<String, i64>,
+    fns: &HashMap<String, &ast::FnDecl>,
+    depth: u32,
+) -> Option<i64> {
+    if depth > 64 {
+        return None;
+    }
     match e {
         ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
+        ast::Expr::Bool { value, .. } => Some(*value as i64),
         ast::Expr::Path(p) if p.segments.len() == 1 => env.get(&p.segments[0].text).copied(),
+        ast::Expr::IfExpr { cond, then, els, .. } => {
+            if eval_const_fns(cond, env, fns, depth + 1)? != 0 {
+                eval_const_fns(then, env, fns, depth + 1)
+            } else {
+                eval_const_fns(els, env, fns, depth + 1)
+            }
+        }
+        ast::Expr::Call { callee, args, .. } => {
+            let name = match callee.as_ref() {
+                ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
+                _ => return None,
+            };
+            let f = fns.get(name.as_str())?;
+            let body = f.body.as_ref()?;
+            let mut fenv = HashMap::new();
+            for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+                let n = p.name.as_ref()?;
+                fenv.insert(n.text.clone(), eval_const_fns(a, env, fns, depth + 1)?);
+            }
+            eval_const_stmts(&body.stmts, &fenv, fns, depth + 1)
+        }
         ast::Expr::Unary { op, rhs, .. } => {
-            let v = eval_const(rhs, env)?;
+            let v = eval_const_fns(rhs, env, fns, depth + 1)?;
             Some(match op {
                 ast::UnOp::Neg => -v,
-                ast::UnOp::Not => !v,
+                ast::UnOp::Not => (v == 0) as i64,
             })
         }
         ast::Expr::Binary { op, lhs, rhs, .. } => {
-            let (a, b) = (eval_const(lhs, env)?, eval_const(rhs, env)?);
+            let (a, b) = (
+                eval_const_fns(lhs, env, fns, depth + 1)?,
+                eval_const_fns(rhs, env, fns, depth + 1)?,
+            );
             Some(match op {
                 ast::BinOp::Add => a + b,
                 ast::BinOp::Sub => a - b,
@@ -2126,11 +2238,60 @@ fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
                 ast::BinOp::Div if b != 0 => a / b,
                 ast::BinOp::Shl => a << b,
                 ast::BinOp::Shr => a >> b,
+                ast::BinOp::Eq => (a == b) as i64,
+                ast::BinOp::Ne => (a != b) as i64,
+                ast::BinOp::Lt => (a < b) as i64,
+                ast::BinOp::Le => (a <= b) as i64,
+                ast::BinOp::Gt => (a > b) as i64,
+                ast::BinOp::Ge => (a >= b) as i64,
+                ast::BinOp::And => (a != 0 && b != 0) as i64,
+                ast::BinOp::Or => (a != 0 || b != 0) as i64,
                 _ => return None,
             })
         }
         _ => None,
     }
+}
+
+/// Statically execute a const-fn body: `return`s and `if`/`else` chains.
+pub fn eval_const_stmts(
+    stmts: &[ast::Stmt],
+    env: &HashMap<String, i64>,
+    fns: &HashMap<String, &ast::FnDecl>,
+    depth: u32,
+) -> Option<i64> {
+    for st in stmts {
+        match st {
+            ast::Stmt::Return { value, .. } => {
+                return eval_const_fns(value.as_ref()?, env, fns, depth);
+            }
+            ast::Stmt::If(iff) => {
+                if eval_const_fns(&iff.cond, env, fns, depth)? != 0 {
+                    if let Some(v) = eval_const_stmts(&iff.then.stmts, env, fns, depth) {
+                        return Some(v);
+                    }
+                } else {
+                    match iff.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(b)) => {
+                            if let Some(v) = eval_const_stmts(&b.stmts, env, fns, depth) {
+                                return Some(v);
+                            }
+                        }
+                        Some(ast::ElseBranch::If(inner)) => {
+                            if let Some(v) =
+                                eval_const_stmts(std::slice::from_ref(&ast::Stmt::If(inner.clone())), env, fns, depth)
+                            {
+                                return Some(v);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
@@ -2220,7 +2381,7 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
         for item in &m.items {
             if let ast::Item::Enum(e) = item {
                 let w = match &e.repr {
-                    Some(t) => type_width(t, &empty),
+                    Some(t) => type_width(t, &empty, &HashMap::new()),
                     None => {
                         let n = e.variants.len().max(1) as u32;
                         if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }

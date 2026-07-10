@@ -41,6 +41,14 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         return Err("no #[test] entity to build a test binary from".into());
     }
     let enums = enum_discriminants(modules);
+    let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Fn(f) = item {
+                fns.insert(f.name.text.clone(), f);
+            }
+        }
+    }
 
     // Header, one `int test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
@@ -82,6 +90,8 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             clocks,
             locals: Default::default(),
             tmp: Default::default(),
+            fns: &fns,
+            fn_env: Default::default(),
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
         names.push(name);
@@ -149,6 +159,10 @@ struct Ctx<'a> {
     locals: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Unique-suffix counter for generated C identifiers.
     tmp: std::cell::Cell<usize>,
+    /// Module-level functions (testbench-callable; translated to C ternaries).
+    fns: &'a HashMap<String, &'a ast::FnDecl>,
+    /// Parameter-substitution stack while translating a fn body.
+    fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
 }
 
 impl Ctx<'_> {
@@ -412,6 +426,71 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// A module-fn call as a C expression: bind the arguments, then flatten
+    /// the `return`/`if` body into nested conditionals.
+    fn c_fn_call(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Result<String, String> {
+        let name = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            _ => return Err("unsupported call in testbench expression".into()),
+        };
+        let f = self
+            .fns
+            .get(name)
+            .ok_or_else(|| format!("unsupported call `{name}` in testbench expression"))?;
+        let body = f.body.as_ref().ok_or("fn has no body")?;
+        // Constant arguments fold statically (also the only way a recursive
+        // fn like clog2 compiles here).
+        let consts: Option<Vec<i64>> = args
+            .iter()
+            .map(|a| siox_ir::eval_const_fns(a, &HashMap::new(), self.fns, 0))
+            .collect();
+        if let Some(cs) = consts {
+            let mut cenv = HashMap::new();
+            for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
+                if let Some(n) = &p.name {
+                    cenv.insert(n.text.clone(), v);
+                }
+            }
+            if let Some(v) = siox_ir::eval_const_stmts(&body.stmts, &cenv, self.fns, 0) {
+                return Ok(format!("{}ULL", v as u64));
+            }
+        }
+        if self.tmp.get() > 4096 {
+            return Err(format!("fn `{name}` recurses without constant arguments"));
+        }
+        self.tmp.set(self.tmp.get() + 64);
+        let mut env = HashMap::new();
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                env.insert(n.text.clone(), format!("({})", self.expr(a)?));
+            }
+        }
+        self.fn_env.borrow_mut().push(env);
+        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_env.borrow_mut().pop();
+        self.tmp.set(self.tmp.get() - 64);
+        out
+    }
+
+    /// `return e;` / `if c { .. } else { .. }` chains as nested C ternaries.
+    fn c_fn_stmts(&self, stmts: &[ast::Stmt]) -> Result<String, String> {
+        match stmts.first() {
+            Some(ast::Stmt::Return { value: Some(v), .. }) => {
+                Ok(format!("({})", self.expr(v)?))
+            }
+            Some(ast::Stmt::If(iff)) => {
+                let c = self.expr(&iff.cond)?;
+                let t = self.c_fn_stmts(&iff.then.stmts)?;
+                let e = match iff.else_.as_deref() {
+                    Some(ast::ElseBranch::Block(b)) => self.c_fn_stmts(&b.stmts)?,
+                    _ => self.c_fn_stmts(&stmts[1..])?,
+                };
+                Ok(format!("(({c}) ? {t} : {e})"))
+            }
+            _ => Err("fn bodies compile as return/if chains only".into()),
+        }
+    }
+
     /// Translate a testbench expression to a C expression string.
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
         Ok(match e {
@@ -448,7 +527,7 @@ impl Ctx<'_> {
                     {
                         return Ok(format!("({v})"));
                     }
-                    _ => return Err("unsupported call in testbench expression".into()),
+                    _ => return self.c_fn_call(callee, args),
                 };
                 if w == 0 || w >= 64 {
                     format!("({v})")
@@ -461,6 +540,16 @@ impl Ctx<'_> {
                     .and_then(|p| self.array_len(&p))
                     .ok_or("::len needs a connected array")?;
                 format!("{n}ULL")
+            }
+            ast::Expr::Path(p)
+                if p.segments.len() == 1
+                    && self
+                        .fn_env
+                        .borrow()
+                        .last()
+                        .is_some_and(|m| m.contains_key(&p.segments[0].text)) =>
+            {
+                self.fn_env.borrow().last().unwrap()[&p.segments[0].text].clone()
             }
             ast::Expr::Path(p)
                 if p.segments.len() == 1 && self.locals.borrow().contains(&p.segments[0].text) =>
