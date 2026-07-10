@@ -57,7 +57,7 @@ flowchart TD
     subgraph core ["core types — synthesizable, auto-loaded via prelude"]
         OPS["std::ops\nBoolean · Ordering"]
         LOGIC["std::logic\nBit · Logic · Bool · Clock\ntruth tables"]
-        BITS["std::bits\nuint/int operators · signed Ord\n+ resize (family-preserving) · popcount · reverse · onehot"]
+        BITS["std::bits\nuint/int operators · signed Ord\n+ resize(x, n) · popcount · reverse · onehot"]
         NUM["std::numeric\nByte…Positive ranged ints"]
         TEXT["std::text\nstring = Char[]\n+ Ascii/Unicode tables"]
         MATH["std::math\nComplex ✅ + sqrt/sin/log/pow · PI · min/max/abs"]
@@ -146,9 +146,12 @@ VHDL toll booths for a type wall siox didn't build (uint/int already accept
 `integer`; mixed arithmetic coerces). The fundamental conversion mechanism
 is the language-level form **`T(x)`**: `uint[16](x)` resizes, `integer(x)`
 crosses to the kernel, and zero- vs sign-extension falls out of the target
-type. **`resize<W>(x)` stays** as std sugar over `T(x)` because it is
+type. **`resize(x, n)` stays** as std sugar over `T(x)`, VHDL-spelled — because
+the language is fully static, a value argument in width position *is* a
+generic argument (`n` must be const-evaluable at elaboration, same engine as
+`uint[W+1]` widths), so no generic-fn machinery is needed. And it is
 *family-preserving*: it changes width while keeping uint/int-ness (and thus
-the right extension) — parameterized code writes `resize<W+1>(x)` without
+the right extension) — parameterized code writes `resize(x, W + 1)` without
 re-stating the type family the way `uint[W+1](x)` must. Plus the genuinely
 computational: `popcount`, `reverse`, `onehot`, and the bitwise masking
 helpers that finish signed `Div`/arithmetic `Shr` for `int`.
