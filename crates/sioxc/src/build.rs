@@ -422,6 +422,40 @@ impl Ctx<'_> {
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
+            // Conversions mask to the target width (testbench side).
+            ast::Expr::Call { callee, args, .. } => {
+                let arg = args.first().ok_or("conversion needs an argument")?;
+                let v = self.expr(arg)?;
+                let w = match callee.as_ref() {
+                    ast::Expr::Index { base, index, .. }
+                        if matches!(expr_path(base).as_deref(), Some("uint" | "int")) =>
+                    {
+                        parse_u64(match index.as_ref() {
+                            ast::Expr::Int { text, .. } => text,
+                            _ => return Err("conversion width must be a constant here".into()),
+                        })
+                    }
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1 && p.segments[0].text == "resize" =>
+                    {
+                        match args.get(1) {
+                            Some(ast::Expr::Int { text, .. }) => parse_u64(text),
+                            _ => return Err("resize width must be a constant here".into()),
+                        }
+                    }
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1 && p.segments[0].text == "integer" =>
+                    {
+                        return Ok(format!("({v})"));
+                    }
+                    _ => return Err("unsupported call in testbench expression".into()),
+                };
+                if w == 0 || w >= 64 {
+                    format!("({v})")
+                } else {
+                    format!("(({v}) & {}ULL)", (1u64 << w) - 1)
+                }
+            }
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => {
                 let n = expr_path(base)
                     .and_then(|p| self.array_len(&p))

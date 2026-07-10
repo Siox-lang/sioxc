@@ -944,6 +944,9 @@ impl<'a> Lowering<'a> {
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
+            ast::Expr::Call { callee, args, .. } => self
+                .lower_conversion(callee, args, &HashMap::new())
+                .unwrap_or(Expr::Unknown),
             // `if c { a } else { b }` is a mux: lower to a select.
             ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
                 cond: Box::new(self.lower_expr(cond)),
@@ -1090,6 +1093,26 @@ impl<'a> Lowering<'a> {
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         match e {
             ast::Expr::IfExpr { then, .. } => self.ast_width(then),
+            // A conversion is as wide as its target (64 for kernel integer).
+            ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
+                ast::Expr::Index { base, index, .. }
+                    if matches!(
+                        expr_path(base).as_deref(),
+                        Some("uint" | "int")
+                    ) =>
+                {
+                    eval_const(index, &self.cur_env).map(|w| w as u32).unwrap_or(64)
+                }
+                ast::Expr::Path(p)
+                    if p.segments.len() == 1 && p.segments[0].text == "resize" =>
+                {
+                    args.get(1)
+                        .and_then(|n| eval_const(n, &self.cur_env))
+                        .map(|w| w as u32)
+                        .unwrap_or(64)
+                }
+                _ => 64,
+            },
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
             ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index).unwrap();
@@ -1368,6 +1391,81 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &env)
     }
 
+    /// Lower a conversion expression (spec 3.17): `uint[16](x)` resizes,
+    /// `int[8](x)` truncates, `integer(x)` crosses to the kernel word, and
+    /// `resize(x, n)` is the family-preserving spelling (n const-evaluable —
+    /// the language is static, so a value argument in width position is a
+    /// generic argument). Semantics on the word IR: an `int`-family source
+    /// sign-extends into the full word first (`v - 2^w` when the sign bit is
+    /// set); the target width truncates via a slice; widening to `uint`
+    /// zero-extends implicitly. `None` when `callee` is not a conversion.
+    fn lower_conversion(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        // Target: (is_resize, family, width). Width None = kernel integer.
+        let head = |e: &ast::Expr| match e {
+            ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+            _ => None,
+        };
+        let (target_w, resize) = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "integer" => {
+                (None, false)
+            }
+            ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
+                let n = args.get(1)?;
+                let w = match self.lower_scalar_env(n, env) {
+                    Expr::Const(c) => c as u32,
+                    _ => eval_const(n, &self.cur_env)? as u32,
+                };
+                (Some(w), true)
+            }
+            ast::Expr::Index { base, index, .. }
+                if matches!(head(base).as_deref(), Some("uint" | "int")) =>
+            {
+                let w = match self.lower_scalar_env(index, env) {
+                    Expr::Const(c) => c as u32,
+                    _ => eval_const(index, &self.cur_env)? as u32,
+                };
+                (Some(w), false)
+            }
+            _ => return None,
+        };
+        let _ = resize;
+        let arg = args.first()?;
+        let mut v = self.lower_scalar_env(arg, env);
+        // An int-family source carries a sign: extend it into the full word
+        // so the target's masking (or the kernel) sees the numeric value.
+        let src_int = matches!(self.operand_type_name(arg).as_deref(), Some("int"));
+        let src_w = self.ast_width(arg);
+        if src_int && src_w > 0 && src_w < 64 {
+            let sign = Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Binary {
+                    op: BinOp::Shr,
+                    lhs: Box::new(v.clone()),
+                    rhs: Box::new(Expr::Const((src_w - 1) as u64)),
+                }),
+                rhs: Box::new(Expr::Const(1)),
+            };
+            v = Expr::Select {
+                cond: Box::new(sign),
+                then: Box::new(Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(v.clone()),
+                    rhs: Box::new(Expr::Const(1u64 << src_w)),
+                }),
+                els: Box::new(v),
+            };
+        }
+        Some(match target_w {
+            Some(w) if w > 0 && w < 64 => Expr::Slice { base: Box::new(v), hi: w - 1, lo: 0 },
+            _ => v,
+        })
+    }
+
     /// The type name an operand contributes to operator-impl lookup: a local's
     /// declared enum/struct, a suffix literal's target type, an enum variant's
     /// enum, or `integer` for a bare numeric literal.
@@ -1437,6 +1535,12 @@ impl<'a> Lowering<'a> {
             ast::Expr::IfExpr { cond, then, els, .. } => {
                 let c = self.lower_scalar_env(cond, env);
                 select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))
+            }
+            ast::Expr::Call { callee, args, .. } => {
+                match self.lower_conversion(callee, args, env) {
+                    Some(v) => Val::Scalar(v),
+                    None => Val::Scalar(self.lower_expr(e)),
+                }
             }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;

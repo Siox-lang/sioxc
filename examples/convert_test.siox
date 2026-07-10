@@ -1,0 +1,54 @@
+module examples::convert_test;
+
+// T(x) conversions: widen (zero/sign per target), narrow, cross to kernel.
+entity Conv {
+    in u8: uint[8];
+    in s8: int[8];
+    out wide: uint[16];
+    out swide: int[16];
+    out narrow: uint[4];
+    out rz: uint[16];
+}
+impl Conv {
+    wide = uint[16](u8);
+    swide = int[16](s8);        // sign-extends (source is int)
+    narrow = uint[4](u8);       // truncates
+    rz = resize(u8, 16);        // family-preserving spelling
+}
+
+// Signed division + arithmetic shift, from std source.
+entity SMath {
+    in a: int[8];
+    in b: int[8];
+    out q: int[8];
+    out sh: int[8];
+}
+impl SMath {
+    q = a / b;
+    sh = a >> 1;
+}
+
+#[test]
+entity S2Test {}
+impl S2Test {
+    let u8: uint[8] = 200; let s8: int[8] = 240;   // s8 = -16
+    let wide: uint[16]; let swide: int[16]; let narrow: uint[4]; let rz: uint[16];
+    let c = Conv { .u8, .s8, .wide, .swide, .narrow, .rz };
+
+    let a: int[8] = 236;   // -20
+    let b: int[8] = 3;
+    let q: int[8]; let sh: int[8];
+    let m = SMath { .a, .b, .q, .sh };
+
+    await 1ns;
+    assert!(wide == 200, "zero-extend");
+    assert!(swide == 65520, "sign-extend: -16 in 16 bits = 0xFFF0");
+    assert!(narrow == 8, "truncate: 200 & 0xF");
+    assert!(rz == 200, "resize spelling");
+    assert!(q == 250, "-20 / 3 = -6 (0xFA)");
+    assert!(sh == 246, "-20 >> 1 arithmetic = -10 (0xF6)");
+
+    b = 253;   // -3
+    await 1ns;
+    assert!(q == 6, "-20 / -3 = 6");
+}

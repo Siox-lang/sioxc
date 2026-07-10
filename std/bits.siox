@@ -59,19 +59,40 @@ impl Mul for int {
     fn mul(self, rhs: int) -> int { return self * rhs; }
 }
 
-// TODO: signed division (sign handling around the kernel's unsigned divide)
-// and arithmetic shift-right (sign replication) still use the kernel word
-// forms; both need bitwise masking helpers to express here.
+// Signed division: divide the magnitudes with the kernel's unsigned divide,
+// then restore the sign. `resize(0 - x, w)` is |x| for a negative x (the
+// word-wrapping negate, truncated back to the operand's width); results
+// wrap to the target's width when stored, which re-encodes a negative
+// quotient as two's complement.
 impl Div for int {
-    fn div(self, rhs: int) -> int { return self / rhs; }
+    fn div(self, rhs: int) -> int {
+        if ((self >> (self::width - 1)) == 1) and ((rhs >> (rhs::width - 1)) == 1) {
+            return resize(0 - self, self::width) / resize(0 - rhs, rhs::width);
+        }
+        if (self >> (self::width - 1)) == 1 {
+            return 0 - (resize(0 - self, self::width) / rhs);
+        }
+        if (rhs >> (rhs::width - 1)) == 1 {
+            return 0 - (self / resize(0 - rhs, rhs::width));
+        }
+        return self / rhs;
+    }
 }
 
 impl Shl for int {
     fn shl(self, rhs: int) -> int { return self << rhs; }
 }
 
+// Arithmetic shift-right: replicate the sign into the vacated top bits.
+// `(1 << w) - (1 << (w - n))` is a mask of the top n bits (the shifted-in
+// positions); the shifted value's top bits are zero, so `+` sets them.
 impl Shr for int {
-    fn shr(self, rhs: int) -> int { return self >> rhs; }
+    fn shr(self, rhs: int) -> int {
+        if (self >> (self::width - 1)) == 1 {
+            return (self >> rhs) + ((1 << self::width) - (1 << (self::width - rhs)));
+        }
+        return self >> rhs;
+    }
 }
 
 // Sign-aware comparison: `self::width` is the operand's bit width, so

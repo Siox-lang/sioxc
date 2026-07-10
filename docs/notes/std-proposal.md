@@ -154,7 +154,7 @@ generic argument (`n` must be const-evaluable at elaboration, same engine as
 the right extension) — parameterized code writes `resize(x, W + 1)` without
 re-stating the type family the way `uint[W+1](x)` must. Plus the genuinely
 computational: `popcount`, `reverse`, `onehot`, and the bitwise masking
-helpers that finish signed `Div`/arithmetic `Shr` for `int`.
+helpers. Signed `Div`/arithmetic `Shr` ✅ (std source, via `resize` + `self::width`).
 
 **`std::numeric`.** As today. Add `clog2(n)` (address-width helper — SV's
 `$clog2`, used constantly for parameterized designs).
@@ -203,7 +203,8 @@ Python testbenches.
 | Phase | Items | Unblocks / needs |
 | --- | --- | --- |
 | **S1** ✅ | `std::prelude` + auto-load | done — bare files get signed int, Logic tables, `10ns` |
-| **S2** | the `T(x)` conversion expression (`uint[16](x)`, `integer(x)`; sign/zero-extend from the target) + free functions in expressions (fn-call lowering) + masking helpers → finish signed `Div`/`Shr` | `T(x)` is language-level (typechecker already advertises it); fn calls remain the keystone for math/popcount/etc. |
+| **S2a** ✅ | `T(x)` conversions + `resize(x, n)` + signed `Div`/arith `Shr` for `int` in std | done — sign/zero-extension from families; std source only |
+| **S2c** | free functions in expressions (fn-call lowering) | the keystone for math/popcount/clog2 |
 | **S2b** | `Resolve` trait + `impl Resolve for Logic`; multi-driver contexts fold or error | IR multi-context detection; unblocks `inout` |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
 | **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |

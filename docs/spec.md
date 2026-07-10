@@ -789,6 +789,22 @@ This is especially important for `Logic` to `Bit` because unknown/high-impedance
 
 ---
 
+
+**Explicit conversions** use type application — `T(x)` — plus the
+family-preserving `resize`:
+
+```siox
+y = uint[16](a);      // widen: zero-extends (uint target)
+z = int[16](s);       // widen: sign-extends when the source is int
+n = uint[4](a);       // narrow: truncates
+k = integer(s);       // cross to the kernel word (sign-extending from int)
+r = resize(a, W + 1); // keeps uint/int-ness; width is const-evaluable
+```
+
+Extension comes from the source/target families; `resize(x, n)` takes its
+width as a value argument because the language is static — a const-evaluable
+value argument in width position *is* a generic argument.
+
 ### 3.18 `in`, `out`, and `inout` are permission/connection semantics
 
 Directions define who may drive/read a field at an entity boundary.

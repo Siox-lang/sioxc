@@ -791,6 +791,39 @@ impl Testbench<'_> {
             }
             ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
             ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_value(*ch)),
+            // Conversions (spec 3.17): testbench evaluation masks to the
+            // target width (`integer(x)` passes through); source
+            // sign-extension is a hardware-lowering concern.
+            ast::Expr::Call { callee, args, .. } => {
+                let Some(arg) = args.first() else { return 0 };
+                let v = self.eval(arg);
+                let w = match callee.as_ref() {
+                    ast::Expr::Index { base, index, .. }
+                        if matches!(
+                            expr_path(base).as_deref(),
+                            Some("uint" | "int")
+                        ) =>
+                    {
+                        self.eval(index).to_u64() as u32
+                    }
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1 && p.segments[0].text == "resize" =>
+                    {
+                        args.get(1).map(|n| self.eval(n).to_u64() as u32).unwrap_or(0)
+                    }
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1 && p.segments[0].text == "integer" =>
+                    {
+                        return v;
+                    }
+                    _ => return u128::from_u64(0),
+                };
+                if w == 0 || w >= 128 {
+                    v
+                } else {
+                    v & ((1u128 << w) - 1)
+                }
+            }
             // `xs::len`: an array's element count (spec: `::` metadata).
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => expr_path(base)
                 .and_then(|p| self.array_len(&p))

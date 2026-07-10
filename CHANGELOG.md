@@ -25,6 +25,17 @@ assertions, and VCD export — predates this changelog. See
   (`impl "+" for T`) are removed — a targeted parse error points at the
   Rust-style name. Future custom operators are reserved as
   `impl ops::custom<"sym", Rhs> for T`.
+- **Explicit conversions: `T(x)` and `resize(x, n)`** — `uint[16](a)`
+  zero-extends, `int[16](s)` sign-extends from an int source, `uint[4](a)`
+  truncates, `integer(s)` crosses to the kernel; `resize` keeps the family
+  and takes its width as a const-evaluable value argument. Typed as their
+  target (the E-P003 friction now has its answer); lowered in hardware
+  (sign-extension included), masked in testbench evaluation and the native
+  binary.
+- **Signed division and arithmetic shift-right for `int`** — now std source
+  (`std/bits.siox`), built on `resize` and `self::width`: magnitude divide +
+  sign restore; top-bit mask fill. `-20 / 3 = -6`, `-20 >> 1 = -10`, verified
+  on interp, JIT, and native.
 - **`std::prelude`, auto-loaded** — `Bit`/`Logic`/`Bool`/`Clock`,
   `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` are in scope in
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the

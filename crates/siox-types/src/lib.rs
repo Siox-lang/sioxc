@@ -831,7 +831,37 @@ impl<'a> Checker<'a> {
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
             Expr::Concat { .. } => Ty::UInt(0),
-            Expr::Field { .. } | Expr::Index { .. } | Expr::Call { .. } | Expr::Range { .. } => {
+            // Conversion expressions type as their target (spec 3.17):
+            // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
+            Expr::Call { callee, args, .. } => match callee.as_ref() {
+                Expr::Index { base, index, .. } => {
+                    let head = match base.as_ref() {
+                        Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+                        _ => "",
+                    };
+                    let w = signed_lit(index).unwrap_or(0).max(0) as u32;
+                    match head {
+                        "uint" => Ty::UInt(w),
+                        "int" => Ty::Int(w),
+                        _ => Ty::Error,
+                    }
+                }
+                Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
+                    "integer" => Ty::UInt(0),
+                    // resize keeps the argument's family at the new width.
+                    "resize" => {
+                        let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
+                        match args.first().map(|a| self.type_of(a, sym)) {
+                            Some(Ty::Int(_)) => Ty::Int(w),
+                            Some(Ty::UInt(_)) => Ty::UInt(w),
+                            _ => Ty::UInt(w),
+                        }
+                    }
+                    _ => Ty::Error,
+                },
+                _ => Ty::Error,
+            },
+            Expr::Field { .. } | Expr::Index { .. } | Expr::Range { .. } => {
                 Ty::Error
             }
         }
