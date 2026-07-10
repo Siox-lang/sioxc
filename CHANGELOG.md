@@ -46,6 +46,10 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Conversion fit checking** — a constant conversion argument must be
+  representable in the target: `uint[4](300)` / `int[4](-9)` are
+  compile-time errors (signed domains respected; simple const expressions
+  fold). Dynamic range checks deferred to the simulation-reporting design.
 - **The `From` conversion trait** — `T(x)` on a named type dispatches to
   `impl From<Source> for T` (struct-valued results included): `Complex(10)`,
   and the `Logic(u)`/`ULogic(l)` resolved/unresolved crossing, all std

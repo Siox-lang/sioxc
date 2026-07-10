@@ -820,6 +820,12 @@ Extension comes from the source/target families; `resize(x, n)` takes its
 width as a value argument because the language is static — a const-evaluable
 value argument in width position *is* a generic argument.
 
+**Constant conversion arguments must fit the target**: `uint[4](300)` and
+`int[4](-9)` are compile-time errors (`-8..7` is int[4]'s domain), the same
+rule as ranged-numeric initialisers. Dynamic values get simulation-time
+range checks when the simulation-reporting machinery lands (with `assert`
+severity/`print!`).
+
 **Named types convert through the `From` trait** (std::ops): `T(x)` on a
 struct/enum dispatches to `impl From<Source> for T`, selected by the
 argument's type — `Complex(10)`, or the resolved/unresolved crossing

@@ -632,6 +632,63 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Compile-time fit check for conversion expressions with constant
+    /// arguments: the value must be representable in the target container.
+    fn check_conversion_fit(&mut self, callee: &Expr, args: &[Expr], site: &Expr) {
+        // Target family + width from the conversion callee shape.
+        let (family, width) = match callee {
+            Expr::Index { base, index, .. } => {
+                let head = match base.as_ref() {
+                    Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+                    _ => return,
+                };
+                let Some(w) = signed_lit(index) else { return };
+                match head {
+                    "uint" | "int" => (head.to_string(), w),
+                    _ => return,
+                }
+            }
+            Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
+                let Some(w) = args.get(1).and_then(signed_lit) else { return };
+                // resize keeps the argument's family; a bare literal is uint-ish.
+                ("uint".to_string(), w)
+            }
+            _ => return,
+        };
+        if !(1..=64).contains(&width) {
+            return;
+        }
+        fn const_fold(e: &Expr) -> Option<i64> {
+            match e {
+                Expr::Binary { op, lhs, rhs, .. } => {
+                    let (a, b) = (const_fold(lhs)?, const_fold(rhs)?);
+                    Some(match op {
+                        BinOp::Add => a + b,
+                        BinOp::Sub => a - b,
+                        BinOp::Mul => a * b,
+                        BinOp::Div if b != 0 => a / b,
+                        _ => return None,
+                    })
+                }
+                _ => signed_lit(e),
+            }
+        }
+        let Some(v) = args.first().and_then(const_fold) else { return };
+        let fits = if family == "int" {
+            let half = 1i64 << (width - 1);
+            (-half..half).contains(&v)
+        } else {
+            v >= 0 && (width == 64 || v < (1i64 << width))
+        };
+        if !fits {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(site),
+                format!("`{v}` does not fit in `{family}[{width}]`"),
+            );
+        }
+    }
+
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
@@ -731,6 +788,11 @@ impl<'a> Checker<'a> {
                 for a in args {
                     self.check_expr(a, sym);
                 }
+                // A constant conversion argument must FIT the target
+                // (spec 3.17/3.26): `uint[4](300)` is a compile-time error,
+                // like `let b: Byte = 300`. Dynamic values get simulation
+                // range checks later (with the S3 reporting machinery).
+                self.check_conversion_fit(callee, args, e);
             }
             Expr::Construct { args, .. } => {
                 for c in args {
