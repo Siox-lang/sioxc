@@ -64,6 +64,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.y", 8)],
             drivers: vec![Driver {
+                ctx: 0,
                 target: SignalId(2),
                 cond: None,
                 expr: Expr::Binary {

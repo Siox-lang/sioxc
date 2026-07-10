@@ -546,6 +546,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.y", 8)],
             drivers: vec![Driver {
+                ctx: 0,
                 target: SignalId(2),
                 cond: None,
                 expr: Expr::Binary {
@@ -573,6 +574,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 128)],
             drivers: vec![Driver {
+                ctx: 0,
                 target: SignalId(0),
                 cond: None,
                 expr: Expr::Const(1),
@@ -589,9 +591,9 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.c", 8), sig("E.y", 8)],
             drivers: vec![
-                Driver { target: SignalId(3), cond: None, expr: Expr::Current(SignalId(2)) }, // y=c
-                Driver { target: SignalId(2), cond: None, expr: Expr::Current(SignalId(1)) }, // c=b
-                Driver { target: SignalId(1), cond: None, expr: Expr::Current(SignalId(0)) }, // b=a
+                Driver { target: SignalId(3), cond: None, expr: Expr::Current(SignalId(2)), ctx: 0 }, // y=c
+                Driver { target: SignalId(2), cond: None, expr: Expr::Current(SignalId(1)), ctx: 0 }, // c=b
+                Driver { target: SignalId(1), cond: None, expr: Expr::Current(SignalId(0)), ctx: 0 }, // b=a
             ],
             event_blocks: vec![],
         };
