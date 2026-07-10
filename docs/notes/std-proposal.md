@@ -125,8 +125,20 @@ suffixes. Auto-loaded by the compiler (kill the silent kernel-fallback);
 `ops::custom<"sym", Rhs>` hook for user operators.
 
 **`std::logic`.** As today (4-value `Logic` is deliberately reduced from
-VHDL's 9 — 'U'/'W' fold into 'X'; revisit only if resolution/strength
-modelling is ever needed). Add: `to_bit(Logic) -> Bit`, `is_defined`.
+VHDL's 9 — 'U'/'W' fold into 'X'). Add: `to_bit(Logic) -> Bit`, `is_defined`,
+and **`impl Resolve for Logic`** (below).
+
+**Resolution (`Resolve` trait, in `std::ops`).** VHDL's resolved-signal model,
+as a trait instead of a language feature: `fn resolve(self, other: Self) ->
+Self`, an associative+commutative fold. When one signal has **multiple driver
+contexts**, the compiler folds them with the type's `resolve`
+(`resolve(d1, resolve(d2, …))`, inlined like any operator impl); a type
+*without* the impl makes multiple drivers an **elaboration error** — VHDL's
+unresolved-type safety rule, replacing today's silent last-wins. This is the
+prerequisite for `inout` port semantics and tristate buses ('Z' finally does
+something). Strength levels (weak 'H'/'L', pull-ups/open-drain) stay out
+until Phase 2/3 board modelling; widening `Logic` later only grows the
+`resolve` body. Slot: after S2.
 
 **`std::bits`.** Operators ✅. Add, from `numeric_std`: `resize<W>(x)`,
 `to_integer(x)`, `zero_extend`/`sign_extend`, `popcount`, `reverse`,
@@ -181,6 +193,7 @@ Python testbenches.
 | --- | --- | --- |
 | **S1** | `std::prelude` + auto-load | kills kernel-fallback divergence; trivial |
 | **S2** | `std::bits` conversions (`resize`, `to_integer`, extends) + bitwise masking helpers → finish signed `Div`/`Shr` | needs *free functions callable in expressions* (fn-call lowering — the single biggest language gap the std exposes) |
+| **S2b** | `Resolve` trait + `impl Resolve for Logic`; multi-driver contexts fold or error | IR multi-context detection; unblocks `inout` |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
 | **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |
 | **S5** | `std::rand`, `std::assert` helpers | S3 |
