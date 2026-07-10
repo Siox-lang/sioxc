@@ -406,18 +406,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.builder.build_select(c, t, e, "sel").unwrap().into_int_value()
             }
             Expr::MathFn { op, args } => {
-                // Kernel real math: f64 bit-pattern operands -> LLVM intrinsic.
+                // Kernel real math: a direct libm call — the std declaration
+                // (`pub fn sqrt(x: real) -> real;`) IS the C symbol. The JIT
+                // resolves it from the process; the native link uses -lm.
                 use siox_ir::MathOp;
                 let name = match op {
-                    MathOp::Sqrt => "llvm.sqrt.f64",
-                    MathOp::Sin => "llvm.sin.f64",
-                    MathOp::Cos => "llvm.cos.f64",
-                    MathOp::Exp => "llvm.exp.f64",
-                    MathOp::Log => "llvm.log.f64",
-                    MathOp::Pow => "llvm.pow.f64",
-                    MathOp::Floor => "llvm.floor.f64",
-                    MathOp::Ceil => "llvm.ceil.f64",
-                    MathOp::Round => "llvm.round.f64",
+                    MathOp::Sqrt => "sqrt",
+                    MathOp::Sin => "sin",
+                    MathOp::Cos => "cos",
+                    MathOp::Exp => "exp",
+                    MathOp::Log => "log",
+                    MathOp::Pow => "pow",
+                    MathOp::Floor => "floor",
+                    MathOp::Ceil => "ceil",
+                    MathOp::Round => "round",
                 };
                 let f64t = self.ctx.f64_type();
                 let vals: Vec<_> = args
@@ -430,14 +432,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                             .into_float_value()
                     })
                     .collect();
-                let intr = inkwell::intrinsics::Intrinsic::find(name)
-                    .expect("known intrinsic");
-                // Intrinsics overload on ONE type parameter (llvm.pow.f64's
-                // second arg is fixed by it), so declare with a single f64.
-                let decl_types: Vec<inkwell::types::BasicTypeEnum> = vec![f64t.into()];
-                let f = intr
-                    .get_declaration(&self.module, &decl_types)
-                    .expect("intrinsic declaration");
+                let f = self.module.get_function(name).unwrap_or_else(|| {
+                    let params: Vec<inkwell::types::BasicMetadataTypeEnum> =
+                        vec![f64t.into(); vals.len()];
+                    self.module.add_function(
+                        name,
+                        f64t.fn_type(&params, false),
+                        Some(inkwell::module::Linkage::External),
+                    )
+                });
                 let call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
                     vals.iter().map(|v| (*v).into()).collect();
                 let r = match self
@@ -447,7 +450,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .try_as_basic_value()
                 {
                     inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
-                    _ => panic!("math intrinsic returns a value"),
+                    _ => panic!("libm call returns a value"),
                 };
                 self.builder
                     .build_bit_cast(r, self.i64t(), "fbits")
