@@ -57,7 +57,7 @@ flowchart TD
     subgraph core ["core types — synthesizable, auto-loaded via prelude"]
         OPS["std::ops\nBoolean · Ordering"]
         LOGIC["std::logic\nBit · Logic · Bool · Clock\ntruth tables"]
-        BITS["std::bits\nuint/int operators · signed Ord\n+ popcount · reverse · onehot"]
+        BITS["std::bits\nuint/int operators · signed Ord\n+ resize (family-preserving) · popcount · reverse · onehot"]
         NUM["std::numeric\nByte…Positive ranged ints"]
         TEXT["std::text\nstring = Char[]\n+ Ascii/Unicode tables"]
         MATH["std::math\nComplex ✅ + sqrt/sin/log/pow · PI · min/max/abs"]
@@ -141,12 +141,15 @@ something). Strength levels (weak 'H'/'L', pull-ups/open-drain) stay out
 until Phase 2/3 board modelling; widening `Logic` later only grows the
 `resolve` body. Slot: after S2.
 
-**`std::bits`.** Operators ✅. **No `to_integer`/`to_unsigned`/`resize`** —
-those are VHDL toll booths for a type wall siox didn't build (uint/int
-already accept `integer`; mixed arithmetic coerces). Width/type moves use
-the language-level conversion form **`T(x)`** instead: `uint[16](x)` is
-resize, `integer(x)` crosses to the kernel, and zero- vs sign-extension
-falls out of the target type. What stays here is the genuinely
+**`std::bits`.** Operators ✅. **No `to_integer`/`to_unsigned`** — those are
+VHDL toll booths for a type wall siox didn't build (uint/int already accept
+`integer`; mixed arithmetic coerces). The fundamental conversion mechanism
+is the language-level form **`T(x)`**: `uint[16](x)` resizes, `integer(x)`
+crosses to the kernel, and zero- vs sign-extension falls out of the target
+type. **`resize<W>(x)` stays** as std sugar over `T(x)` because it is
+*family-preserving*: it changes width while keeping uint/int-ness (and thus
+the right extension) — parameterized code writes `resize<W+1>(x)` without
+re-stating the type family the way `uint[W+1](x)` must. Plus the genuinely
 computational: `popcount`, `reverse`, `onehot`, and the bitwise masking
 helpers that finish signed `Div`/arithmetic `Shr` for `int`.
 
