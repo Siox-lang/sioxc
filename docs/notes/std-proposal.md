@@ -26,7 +26,7 @@ documents what exists today; this note is the target picture and build order.
 | --- | --- | --- | --- | --- |
 | Scalar logic | `std_logic_1164` (9-value `std_ulogic`) | `logic` (4-value, builtin) | `sc_logic`/`sc_lv` (4-value) | `std::logic` (4-value ✅) |
 | Vector numerics | `numeric_std` (`unsigned`/`signed`) | packed vectors (builtin) | `sc_int`, `sc_bigint` | `std::bits` ✅ |
-| Conversions/resize | `numeric_std` (`resize`, `to_integer`) | `$unsigned`, casts | constructors | `std::bits` (**gap**) |
+| Conversions/resize | `numeric_std` (`resize`, `to_integer`) | `$unsigned`, casts | constructors | language `T(x)` form (**gap**) |
 | Ranged scalars | subtypes (`natural`, `positive`) | — | — | `std::numeric` ✅ |
 | Real math | `math_real` (sqrt, sin, log, uniform) | `$sqrt`… (SV) | `<cmath>` | `std::math` (**gap**) |
 | Complex | `math_complex` | — | — | `std::math` ✅ |
@@ -57,7 +57,7 @@ flowchart TD
     subgraph core ["core types — synthesizable, auto-loaded via prelude"]
         OPS["std::ops\nBoolean · Ordering"]
         LOGIC["std::logic\nBit · Logic · Bool · Clock\ntruth tables"]
-        BITS["std::bits\nuint/int operators · signed Ord\n+ resize · to_integer · popcount · clog2-idx"]
+        BITS["std::bits\nuint/int operators · signed Ord\n+ popcount · reverse · onehot"]
         NUM["std::numeric\nByte…Positive ranged ints"]
         TEXT["std::text\nstring = Char[]\n+ Ascii/Unicode tables"]
         MATH["std::math\nComplex ✅ + sqrt/sin/log/pow · PI · min/max/abs"]
@@ -141,10 +141,14 @@ something). Strength levels (weak 'H'/'L', pull-ups/open-drain) stay out
 until Phase 2/3 board modelling; widening `Logic` later only grows the
 `resolve` body. Slot: after S2.
 
-**`std::bits`.** Operators ✅. Add, from `numeric_std`: `resize<W>(x)`,
-`to_integer(x)`, `zero_extend`/`sign_extend`, `popcount`, `reverse`,
-`onehot`; finish signed `Div`/arithmetic `Shr` for `int` (needs bitwise
-masking helpers — the concrete blocker worth solving here).
+**`std::bits`.** Operators ✅. **No `to_integer`/`to_unsigned`/`resize`** —
+those are VHDL toll booths for a type wall siox didn't build (uint/int
+already accept `integer`; mixed arithmetic coerces). Width/type moves use
+the language-level conversion form **`T(x)`** instead: `uint[16](x)` is
+resize, `integer(x)` crosses to the kernel, and zero- vs sign-extension
+falls out of the target type. What stays here is the genuinely
+computational: `popcount`, `reverse`, `onehot`, and the bitwise masking
+helpers that finish signed `Div`/arithmetic `Shr` for `int`.
 
 **`std::numeric`.** As today. Add `clog2(n)` (address-width helper — SV's
 `$clog2`, used constantly for parameterized designs).
@@ -193,7 +197,7 @@ Python testbenches.
 | Phase | Items | Unblocks / needs |
 | --- | --- | --- |
 | **S1** ✅ | `std::prelude` + auto-load | done — bare files get signed int, Logic tables, `10ns` |
-| **S2** | `std::bits` conversions (`resize`, `to_integer`, extends) + bitwise masking helpers → finish signed `Div`/`Shr` | needs *free functions callable in expressions* (fn-call lowering — the single biggest language gap the std exposes) |
+| **S2** | the `T(x)` conversion expression (`uint[16](x)`, `integer(x)`; sign/zero-extend from the target) + free functions in expressions (fn-call lowering) + masking helpers → finish signed `Div`/`Shr` | `T(x)` is language-level (typechecker already advertises it); fn calls remain the keystone for math/popcount/etc. |
 | **S2b** | `Resolve` trait + `impl Resolve for Logic`; multi-driver contexts fold or error | IR multi-context detection; unblocks `inout` |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
 | **S4** | `std::math` real functions + `clog2`, `abs/min/max` | same fn-call lowering; JIT maps to libm |
