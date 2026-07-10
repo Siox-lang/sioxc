@@ -227,6 +227,9 @@ pub struct FnParam {
 
 #[derive(Clone, Debug)]
 pub struct LetDecl {
+    /// Metadata attributes on the declaration (`#[external_clock] let p =
+    /// Pll { .. };`) — per-instance values for type-targeted attrs (spec 3.5).
+    pub attrs: Vec<Attr>,
     pub name: Ident,
     pub ty: Option<Type>,
     pub value: Option<Expr>,

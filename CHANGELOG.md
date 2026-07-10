@@ -25,6 +25,11 @@ assertions, and VCD export — predates this changelog. See
   (`impl "+" for T`) are removed — a targeted parse error points at the
   Rust-style name. Future custom operators are reserved as
   `impl ops::custom<"sym", Rhs> for T`.
+- **Type-targeted attributes** — `pub attr external_clock: Bool for Pll;`
+  declares an attribute valid only on that type; applied per instance
+  (`#[external_clock = true] let p = Pll { .. };`), validated (E-P006 on the
+  wrong target, unknown names reported), and preserved through elaboration
+  (shown in `sioxc tree`) for future export to external tools.
 - **Explicit conversions: `T(x)` and `resize(x, n)`** — `uint[16](a)`
   zero-extends, `int[16](s)` sign-extends from an int source, `uint[4](a)`
   truncates, `integer(s)` crosses to the kernel; `resize` keeps the family

@@ -340,7 +340,12 @@ fn fn_param(p: &FnParam) -> String {
 }
 
 fn let_decl(l: &LetDecl) -> String {
-    let mut s = format!("let {}", l.name.text);
+    let mut s = String::new();
+    for a in &l.attrs {
+        s.push_str(&attr(a));
+        s.push(' ');
+    }
+    s.push_str(&format!("let {}", l.name.text));
     if let Some(t) = &l.ty {
         s.push_str(&format!(": {}", type_str(t)));
     }
@@ -447,6 +452,11 @@ const RANGE_PREC: u8 = 1;
 
 fn expr(e: &Expr) -> String {
     expr_prec(e, 0)
+}
+
+/// Render one expression (for other crates, e.g. attribute values in `tree`).
+pub fn expr_string(e: &Expr) -> String {
+    expr(e)
 }
 
 /// Render `e`, wrapping it in parentheses if its own precedence is below

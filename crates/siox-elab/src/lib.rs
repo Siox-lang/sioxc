@@ -99,6 +99,10 @@ pub struct Connection {
 pub struct Instance {
     /// Instance name (the `let` binding; equals the entity name for a root).
     pub name: String,
+    /// Metadata attributes from the instance `let` (`#[external_clock = true]
+    /// let p = Pll { .. };`) — (name, pretty-printed value). Preserved for
+    /// external tools (netlist/constraint emission, spec 3.5).
+    pub attrs: Vec<(String, Option<String>)>,
     /// Entity type being instantiated.
     pub entity: String,
     pub params: Vec<(String, ParamValue)>,
@@ -136,10 +140,18 @@ impl Hierarchy {
         let pad = "  ".repeat(depth);
         let params = format_params(&inst.params);
         let tag = if inst.is_extern { " [extern]" } else { "" };
+        let attrs = inst
+            .attrs
+            .iter()
+            .map(|(n, v)| match v {
+                Some(v) => format!(" #[{n} = {v}]"),
+                None => format!(" #[{n}]"),
+            })
+            .collect::<String>();
         if is_root {
-            out.push_str(&format!("{pad}{}{params}{tag}\n", inst.entity));
+            out.push_str(&format!("{pad}{}{params}{tag}{attrs}\n", inst.entity));
         } else {
-            out.push_str(&format!("{pad}{}: {}{params}{tag}\n", inst.name, inst.entity));
+            out.push_str(&format!("{pad}{}: {}{params}{tag}{attrs}\n", inst.name, inst.entity));
         }
         for c in &inst.connections {
             out.push_str(&format!("{pad}  .{}: {} <- {}\n", c.port, c.ty, c.signal));
@@ -188,7 +200,7 @@ fn elaborate_roots(
                         .iter()
                         .map(|p| (p.name.text.clone(), ParamValue::Unknown))
                         .collect();
-                    let id = e.build(&ent.name.text, &ent.name.text, params, Vec::new(), &mut stack);
+                    let id = e.build(&ent.name.text, &ent.name.text, params, Vec::new(), Vec::new(), &mut stack);
                     e.out.roots.push(id);
                 }
             }
@@ -230,6 +242,7 @@ impl<'a> Elaborator<'a> {
         entity_name: &str,
         params: Vec<(String, ParamValue)>,
         connections: Vec<Connection>,
+        attrs: Vec<(String, Option<String>)>,
         stack: &mut Vec<String>,
     ) -> InstanceId {
         // Cycle guard: an entity may not (transitively) instantiate itself.
@@ -244,6 +257,7 @@ impl<'a> Elaborator<'a> {
             }
             return self.push(Instance {
                 name: inst_name.to_string(),
+                attrs,
                 entity: entity_name.to_string(),
                 params,
                 connections,
@@ -272,7 +286,15 @@ impl<'a> Elaborator<'a> {
                 let child_env = param_env(&cparams);
                 let cconns = self.resolve_connections(sub_decl, spec.args, spec.site, &child_env);
                 self.check_widths(&parent_signals, &cconns, spec.site);
-                let child = self.build(&spec.name, sub, cparams, cconns, stack);
+                let child_attrs = spec
+                    .attrs
+                    .iter()
+                    .map(|a| {
+                        let name = a.name.segments.last().map(|s| s.text.clone()).unwrap_or_default();
+                        (name, a.value.as_ref().map(siox_syntax::pretty::expr_string))
+                    })
+                    .collect();
+                let child = self.build(&spec.name, sub, cparams, cconns, child_attrs, stack);
                 children.push(child);
             }
         }
@@ -280,6 +302,7 @@ impl<'a> Elaborator<'a> {
 
         self.push(Instance {
             name: inst_name.to_string(),
+            attrs,
             entity: entity_name.to_string(),
             params,
             connections,
@@ -310,6 +333,7 @@ impl<'a> Elaborator<'a> {
                                 name: l.name.text.as_str(),
                                 ty,
                                 args,
+                                attrs: &l.attrs,
                                 site: *span,
                             });
                         }
@@ -435,6 +459,7 @@ struct InstanceSpec<'a> {
     name: &'a str,
     ty: &'a Type,
     args: &'a [ConnectArg],
+    attrs: &'a [Attr],
     site: Span,
 }
 

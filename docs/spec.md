@@ -298,6 +298,21 @@ means:
 #[top = true]
 ```
 
+**Type-targeted attributes.** A target may also be a *type name*, declaring
+an attribute valid only on that entity/struct or on declarations/instances
+of it — vendor metadata, like Vivado's `ASYNC_REG`/`DONT_TOUCH`:
+
+```siox
+pub attr external_clock: Bool for Pll;
+
+#[external_clock = true]
+let p = Pll { .clk, .locked };
+```
+
+Applying it to anything else is `E-P006`. Instance attributes are preserved
+through elaboration (visible in `sioxc tree`) so synthesis/constraint
+backends can export them to external tools.
+
 ---
 
 ### 3.6 Metadata attributes do not change core semantics by default

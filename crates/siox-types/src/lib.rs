@@ -252,7 +252,7 @@ impl<'a> Checker<'a> {
             }
             Item::Entity(e) => {
                 for a in &e.attrs {
-                    self.check_attr_target(a);
+                    self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
                     self.check_attr_value(a);
                     if let Some(v) = &a.value {
                         self.check_expr(v, sym);
@@ -272,19 +272,24 @@ impl<'a> Checker<'a> {
     }
 
     /// Spec 3.5: an attribute may only be applied to a target its declaration
-    /// allows. Attributes currently attach to entities only, so the target is
-    /// always `entity`. Unknown attribute names are reported by name resolution.
-    fn check_attr_target(&mut self, a: &Attr) {
+    /// allows. Targets are item kinds (`entity`, `let`, `port`) or **type
+    /// names** — `pub attr external_clock: Bool for Pll;` is valid only on
+    /// the `Pll` entity or on declarations/instances of `Pll` (per-instance
+    /// vendor metadata, preserved for external tools). Unknown attribute
+    /// names on entities are reported by name resolution.
+    fn check_attr_target(&mut self, a: &Attr, kind: &str, type_name: Option<&str>) {
         let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
-        let verdict = self
-            .attr_targets
-            .get(name)
-            .map(|targets| (targets.iter().any(|t| t == "entity"), targets.join(", ")));
+        let verdict = self.attr_targets.get(name).map(|targets| {
+            let ok = targets
+                .iter()
+                .any(|t| t == kind || Some(t.as_str()) == type_name);
+            (ok, targets.join(", "))
+        });
         if let Some((false, allowed)) = verdict {
             self.error(
                 codes::INVALID_ATTR_TARGET,
                 a.name.span,
-                format!("attribute `{name}` cannot be applied to an entity (allowed: {allowed})"),
+                format!("attribute `{name}` cannot be applied to this {kind} (allowed: {allowed})"),
             );
         }
     }
@@ -295,6 +300,29 @@ impl<'a> Checker<'a> {
             match item {
                 ImplItem::Const(c) => self.check_expr(&c.value, &sym),
                 ImplItem::Let(l) => {
+                    // Per-instance attributes: valid for `let` targets or when
+                    // a named target matches the declaration's type (the
+                    // instance's entity, or the annotated type head).
+                    let type_name: Option<String> = match &l.value {
+                        Some(Expr::Construct { ty: Some(t), .. }) => {
+                            type_head_name(t).map(str::to_string)
+                        }
+                        _ => l.ty.as_ref().and_then(type_head_name).map(str::to_string),
+                    };
+                    for a in &l.attrs {
+                        let name =
+                            a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+                        if !self.attr_targets.contains_key(name) {
+                            self.error(
+                                codes::UNKNOWN_NAME,
+                                a.name.span,
+                                format!("unknown attribute `{name}`"),
+                            );
+                            continue;
+                        }
+                        self.check_attr_target(a, "let", type_name.as_deref());
+                        self.check_attr_value(a);
+                    }
                     if let Some(v) = &l.value {
                         self.check_init(l.ty.as_ref(), v, &sym);
                         self.check_expr(v, &sym);
