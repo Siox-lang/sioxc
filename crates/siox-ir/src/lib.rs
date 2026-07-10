@@ -1093,6 +1093,10 @@ impl<'a> Lowering<'a> {
             ast::Expr::Call { callee, args, .. } => self
                 .lower_conversion(callee, args, &HashMap::new())
                 .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
+                .or_else(|| match self.lower_from(callee, args, &HashMap::new()) {
+                    Some(Val::Scalar(v)) => Some(v),
+                    _ => None,
+                })
                 .unwrap_or(Expr::Unknown),
             // `if c { a } else { b }` is a mux: lower to a select.
             ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
@@ -1548,6 +1552,56 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &env)
     }
 
+    /// `T(x)` on a named type: dispatch to `impl From<Source> for T`,
+    /// selected by the argument's type (sole impl accepted for an unknown
+    /// source). Struct-valued results come back as per-field values.
+    fn lower_from(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let target = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            _ => return None,
+        };
+        let fns = self.op_impls.get(&("From".to_string(), target.to_string()))?;
+        let arg = args.first()?;
+        let src = self.operand_type_name(arg);
+        let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
+            a.clone().or_else(|| {
+                f.params
+                    .iter()
+                    .find(|p| !p.is_self)
+                    .and_then(|p| p.ty.as_ref())
+                    .and_then(type_head_name)
+                    .map(str::to_string)
+            })
+        };
+        let (f, _) = match &src {
+            Some(sty) => fns.iter().find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
+            None => {
+                if fns.len() == 1 {
+                    fns.first()
+                } else {
+                    None
+                }
+            }
+        }?;
+        let body = f.body.as_ref()?;
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        if let Some(p) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &p.name {
+                fenv.insert(n.text.clone(), self.lower_val_env(arg, env));
+                fenv.insert(
+                    format!("{}::width", n.text),
+                    Val::Scalar(Expr::Const(self.ast_width(arg) as u64)),
+                );
+            }
+        }
+        self.inline_block(&body.stmts, &fenv)
+    }
+
     /// Lower a call to a module-level `fn`: const-fold when every argument
     /// const-evaluates (so `clog2(DEPTH)` is a constant), else inline the
     /// body like an operator impl (params bound positionally, with
@@ -1771,7 +1825,10 @@ impl<'a> Lowering<'a> {
                     .or_else(|| self.lower_free_call(callee, args, env))
                 {
                     Some(v) => Val::Scalar(v),
-                    None => Val::Scalar(self.lower_expr(e)),
+                    None => match self.lower_from(callee, args, env) {
+                        Some(v) => v,
+                        None => Val::Scalar(self.lower_expr(e)),
+                    },
                 }
             }
             ast::Expr::Path(p) if p.segments.len() == 1 => {

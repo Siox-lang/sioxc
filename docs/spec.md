@@ -820,6 +820,13 @@ Extension comes from the source/target families; `resize(x, n)` takes its
 width as a value argument because the language is static — a const-evaluable
 value argument in width position *is* a generic argument.
 
+**Named types convert through the `From` trait** (std::ops): `T(x)` on a
+struct/enum dispatches to `impl From<Source> for T`, selected by the
+argument's type — `Complex(10)`, or the resolved/unresolved crossing
+`Logic(u)` / `ULogic(l)` (both are std source). Conversions never fire
+implicitly — only at a conversion expression. Kernel numeric conversions
+stay width-driven builtins.
+
 ### 3.18 `in`, `out`, and `inout` are permission/connection semantics
 
 Directions define who may drive/read a field at an entity boundary.

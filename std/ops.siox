@@ -64,3 +64,12 @@ impl Boolean for Bool {
 pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }
+
+// Explicit conversion for named types (spec 3.17): `T(x)` on a struct/enum
+// dispatches to `impl From<Source> for T` (the trait argument names the
+// source, like `Add<Rhs>`). Conversions NEVER fire implicitly — only at a
+// conversion expression. Kernel numeric conversions (`uint[16](x)`,
+// `integer(x)`, `resize`) stay width-driven builtins.
+pub trait From {
+    fn from(v: Self) -> Self;
+}

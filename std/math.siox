@@ -33,6 +33,13 @@ impl Sub for Complex {
     }
 }
 
+// `Complex(10)`: an explicit conversion from the kernel integer.
+impl From<integer> for Complex {
+    fn from(v: integer) -> Complex {
+        return Complex { .re = v, .im = 0 };
+    }
+}
+
 // `5i` is a pure imaginary: Complex::i(5.0).
 impl Suffix for Complex {
     fn i(v: real) -> Complex {

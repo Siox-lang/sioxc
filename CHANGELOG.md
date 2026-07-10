@@ -46,6 +46,11 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **The `From` conversion trait** — `T(x)` on a named type dispatches to
+  `impl From<Source> for T` (struct-valued results included): `Complex(10)`,
+  and the `Logic(u)`/`ULogic(l)` resolved/unresolved crossing, all std
+  source. Char literals now type into user enums with matching character
+  variants. Nothing converts implicitly (spec 3.17 unchanged).
 - **`extern "C"` blocks** — foreign C functions callable from siox
   (`real` = double, integer types = 64-bit words), in hardware and
   testbenches; std::math is now literally an extern block over libm, and any

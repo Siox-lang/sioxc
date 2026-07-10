@@ -624,11 +624,25 @@ impl<'a> Checker<'a> {
     /// Whether `value` may be assigned to a target of type `lhs` without an
     /// explicit conversion. Integer and logic *literals* are polymorphic; an
     /// `Error` type on either side suppresses the check.
+    /// Whether `id` is an enum declaring the character variant `ch`.
+    fn enum_has_char_variant(&self, id: siox_resolve::DefId, ch: char) -> bool {
+        let Some(d) = self.resolved.def(id) else { return false };
+        self.enum_variants.get(&d.name).is_some_and(|vars| {
+            vars.iter().any(|v| v.trim_matches('\'') == ch.to_string())
+        })
+    }
+
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
             Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Real | Ty::Error),
-            Expr::LogicLit { .. } => {
+            Expr::LogicLit { ch, .. } => {
+                // A character literal reads through its context type (spec:
+                // type kernel): builtin scalars, `Char`, or a user enum with
+                // a matching character variant (e.g. ULogic's 'Z').
+                if let Ty::Named(id) = lhs {
+                    return self.enum_has_char_variant(*id, *ch);
+                }
                 matches!(lhs, Ty::Bit | Ty::Logic | Ty::Char | Ty::Error)
             }
             _ => compatible(lhs, &self.type_of(value, sym)),
@@ -888,6 +902,15 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
+                    // A named struct/enum: a `From` conversion, typed as the target.
+                    name
+                        if matches!(
+                            self.path_ty(p),
+                            Ty::Named(_)
+                        ) && name != "integer" && name != "resize" =>
+                    {
+                        self.path_ty(p)
+                    }
                     "integer" => Ty::UInt(0),
                     // resize keeps the argument's family at the new width.
                     "resize" => {

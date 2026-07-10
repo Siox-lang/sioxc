@@ -11,3 +11,25 @@ pub enum ULogic {
     'Z',
     'X',
 }
+
+using std::logic::{Logic};
+
+// Crossing between the resolved and unresolved worlds is explicit (spec
+// 3.17): `Logic(u)` / `ULogic(l)`. The four values correspond one to one.
+impl From<ULogic> for Logic {
+    fn from(v: ULogic) -> Logic {
+        if v == '0' { return '0'; }
+        if v == '1' { return '1'; }
+        if v == 'Z' { return 'Z'; }
+        return 'X';
+    }
+}
+
+impl From<Logic> for ULogic {
+    fn from(v: Logic) -> ULogic {
+        if v == '0' { return '0'; }
+        if v == '1' { return '1'; }
+        if v == 'Z' { return 'Z'; }
+        return 'X';
+    }
+}
