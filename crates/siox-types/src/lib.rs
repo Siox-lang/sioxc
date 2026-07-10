@@ -802,6 +802,14 @@ impl<'a> Checker<'a> {
                     return Ty::Bool;
                 }
                 let lhs_ty = self.type_of(lhs, sym);
+                // An integer literal joins the other operand's numeric type
+                // (`100 / r` with r: int[8] is an int[8], via the std
+                // `impl Div<int> for integer`).
+                if matches!(lhs_ty, Ty::UInt(0)) {
+                    if let r @ (Ty::Int(_) | Ty::UInt(_)) = self.type_of(rhs, sym) {
+                        return r;
+                    }
+                }
                 // A mixed-operand operator impl (`10 + 5i`) yields the
                 // impl-owning operand's type.
                 if !matches!(lhs_ty, Ty::Named(_)) {
