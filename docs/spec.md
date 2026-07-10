@@ -1239,6 +1239,25 @@ are non-numeric symbols; see "The type kernel".)
 
 ---
 
+### 3.27 Foreign C functions (`extern "C"`)
+
+C libraries connect through Rust-style extern blocks:
+
+```siox
+extern "C" {
+    pub fn sqrt(x: real) -> real;      // std::math is exactly this
+    pub fn labs(v: integer) -> integer;
+}
+```
+
+Type mapping: `real` is `double`; `integer` and the word-sized numeric types
+are 64-bit words. Calls are usable in hardware expressions and testbenches.
+The JIT resolves symbols from the process; the native binary resolves them at
+link time (the math library is linked by default); the interpreter — the
+differential oracle — evaluates the libm set natively and does not call
+arbitrary foreign code. Only the `"C"` ABI is supported.
+
+
 ## 4. Phase 1 implementation stages
 
 Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.

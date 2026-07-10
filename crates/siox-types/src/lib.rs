@@ -272,7 +272,7 @@ impl<'a> Checker<'a> {
                     self.check_block(b);
                 }
             }
-            Item::Using(_) | Item::Struct(_) | Item::AttrDecl(_) => {}
+            Item::Using(_) | Item::Struct(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
         }
     }
 

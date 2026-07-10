@@ -888,6 +888,9 @@ fn dump_items(m: &Module) {
 fn describe_item(item: &Item) -> (&'static str, String) {
     match item {
         Item::Fn(f) => ("fn", f.name.text.clone()),
+        Item::ExternBlock { abi, fns, .. } => {
+            ("extern", format!("\"{abi}\" ({} fns)", fns.len()))
+        }
         Item::Using(u) => {
             let name = match &u.kind {
                 UsingKind::Alias { name, .. } => name.text.clone(),

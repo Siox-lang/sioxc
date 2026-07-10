@@ -37,6 +37,11 @@ pub enum Item {
     /// bodies, inlined at lowering like operator impls; const-evaluable when
     /// its arguments are (so `clog2(DEPTH)` works in width positions).
     Fn(FnDecl),
+    /// `extern "C" { fn sqrt(x: real) -> real; ... }` — foreign C functions
+    /// callable from siox: `real` maps to `double`, integer-shaped types to
+    /// 64-bit words. Engines call the named symbols (JIT: process symbols;
+    /// native: the linked libraries).
+    ExternBlock { abi: String, fns: Vec<FnDecl>, span: Span },
     Struct(StructDecl),
     Enum(EnumDecl),
     Entity(EntityDecl),

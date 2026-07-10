@@ -46,6 +46,10 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`extern "C"` blocks** — foreign C functions callable from siox
+  (`real` = double, integer types = 64-bit words), in hardware and
+  testbenches; std::math is now literally an extern block over libm, and any
+  C symbol works (`labs` from libc verified in hardware on JIT + native).
 - **Module-level functions** — `fn` is an item: inlined in hardware,
   const-evaluated in width positions (`uint[clog2(DEPTH)]`), callable in
   testbenches. std gains `abs`/`min`/`max`, `clog2`.

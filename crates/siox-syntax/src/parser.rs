@@ -62,6 +62,38 @@ impl<'a> Parser<'a> {
         let is_pub = self.eat(TokenKind::Pub);
         let is_extern = self.eat(TokenKind::Extern);
 
+        // `extern "C" { fn ...; }` — a foreign-function block.
+        if is_extern && self.at(TokenKind::StrLit) {
+            let start = self.span();
+            let t = self.bump();
+            let abi = self.text_of(t.span).trim_matches('"').to_string();
+            if abi != "C" {
+                self.error_at(t.span, "only the \"C\" ABI is supported");
+            }
+            self.expect(TokenKind::LBrace, "to open an extern block");
+            let mut fns = Vec::new();
+            while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                let before = self.pos;
+                self.eat(TokenKind::Pub);
+                if self.eat(TokenKind::Fn) {
+                    let fstart = self.span();
+                    let name = self.parse_ident();
+                    let f = self.parse_fn_after_name(fstart, name);
+                    if f.body.is_some() {
+                        self.error_at(f.name.span, "extern functions have no body");
+                    }
+                    fns.push(f);
+                } else {
+                    self.error_here("expected `fn` declarations in an extern block");
+                }
+                if self.pos == before {
+                    self.bump();
+                }
+            }
+            self.expect(TokenKind::RBrace, "to close an extern block");
+            return Some(Item::ExternBlock { abi, fns, span: start.to(self.prev_span()) });
+        }
+
         if !attrs.is_empty() && !self.at(TokenKind::Entity) {
             self.error_here("attributes are only allowed on entities");
         }

@@ -405,57 +405,56 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let e = self.emit(els);
                 self.builder.build_select(c, t, e, "sel").unwrap().into_int_value()
             }
-            Expr::MathFn { op, args } => {
-                // Kernel real math: a direct libm call — the std declaration
-                // (`pub fn sqrt(x: real) -> real;`) IS the C symbol. The JIT
-                // resolves it from the process; the native link uses -lm.
-                use siox_ir::MathOp;
-                let name = match op {
-                    MathOp::Sqrt => "sqrt",
-                    MathOp::Sin => "sin",
-                    MathOp::Cos => "cos",
-                    MathOp::Exp => "exp",
-                    MathOp::Log => "log",
-                    MathOp::Pow => "pow",
-                    MathOp::Floor => "floor",
-                    MathOp::Ceil => "ceil",
-                    MathOp::Round => "round",
-                };
+            Expr::CCall { name, args, f64_args, f64_ret } => {
+                // Foreign C call: `real` params are doubles (bit-cast from the
+                // word), everything else i64. JIT resolves the symbol from the
+                // process; native from the linked libraries.
+                use inkwell::types::BasicMetadataTypeEnum as MT;
+                use inkwell::values::BasicMetadataValueEnum as MV;
                 let f64t = self.ctx.f64_type();
-                let vals: Vec<_> = args
-                    .iter()
-                    .map(|a| {
-                        let v = self.emit(a);
-                        self.builder
-                            .build_bit_cast(v, f64t, "farg")
-                            .unwrap()
-                            .into_float_value()
-                    })
-                    .collect();
+                let mut ptypes: Vec<MT> = Vec::new();
+                let mut vals: Vec<MV> = Vec::new();
+                for (i, a) in args.iter().enumerate() {
+                    let v = self.emit(a);
+                    if f64_args.get(i).copied().unwrap_or(false) {
+                        ptypes.push(f64t.into());
+                        vals.push(
+                            self.builder
+                                .build_bit_cast(v, f64t, "farg")
+                                .unwrap()
+                                .into_float_value()
+                                .into(),
+                        );
+                    } else {
+                        ptypes.push(self.i64t().into());
+                        vals.push(v.into());
+                    }
+                }
                 let f = self.module.get_function(name).unwrap_or_else(|| {
-                    let params: Vec<inkwell::types::BasicMetadataTypeEnum> =
-                        vec![f64t.into(); vals.len()];
-                    self.module.add_function(
-                        name,
-                        f64t.fn_type(&params, false),
-                        Some(inkwell::module::Linkage::External),
-                    )
+                    let fnty = if *f64_ret {
+                        f64t.fn_type(&ptypes, false)
+                    } else {
+                        self.i64t().fn_type(&ptypes, false)
+                    };
+                    self.module.add_function(name, fnty, Some(inkwell::module::Linkage::External))
                 });
-                let call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
-                    vals.iter().map(|v| (*v).into()).collect();
                 let r = match self
                     .builder
-                    .build_call(f, &call_args, "math")
+                    .build_call(f, &vals, "ccall")
                     .unwrap()
                     .try_as_basic_value()
                 {
-                    inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
-                    _ => panic!("libm call returns a value"),
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => panic!("extern fn returns a value"),
                 };
-                self.builder
-                    .build_bit_cast(r, self.i64t(), "fbits")
-                    .unwrap()
-                    .into_int_value()
+                if *f64_ret {
+                    self.builder
+                        .build_bit_cast(r.into_float_value(), self.i64t(), "fbits")
+                        .unwrap()
+                        .into_int_value()
+                } else {
+                    r.into_int_value()
+                }
             }
             Expr::Unknown => self.c(0),
         }

@@ -52,6 +52,15 @@ impl Printer {
             Item::Using(u) => self.using(u),
             Item::Const(c) => self.const_decl(c),
             Item::Fn(f) => self.fn_decl(f),
+            Item::ExternBlock { abi, fns, .. } => {
+                self.line(&format!("extern \"{abi}\" {{"));
+                self.indent += 1;
+                for f in fns {
+                    self.fn_decl(f);
+                }
+                self.indent -= 1;
+                self.line("}");
+            }
             Item::Struct(s) => self.struct_decl(s),
             Item::Enum(e) => self.enum_decl(e),
             Item::Entity(e) => self.entity(e),

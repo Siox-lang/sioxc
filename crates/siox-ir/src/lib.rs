@@ -101,43 +101,15 @@ pub enum Expr {
     /// `cond ? then : els` — produced by inlining operator-trait impl bodies
     /// (`if`/`else` chains of `return`s become nested selects).
     Select { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
-    /// A kernel math function over `real` (f64 bit-pattern operands): the
-    /// bodyless `fn sqrt(x: real) -> real;` declarations in std::math lower
-    /// here; engines map them to libm / LLVM intrinsics.
-    MathFn { op: MathOp, args: Vec<Expr> },
+    /// A foreign C call (`extern "C"` declarations, spec 3.27): `real`
+    /// parameters/results are f64 (bit-pattern operands), everything else a
+    /// 64-bit word. Engines call the named symbol (JIT: process symbols;
+    /// native: linked libraries; the interpreter evaluates the libm set).
+    CCall { name: String, args: Vec<Expr>, f64_args: Vec<bool>, f64_ret: bool },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
 }
 
-/// The kernel real-math set (VHDL math_real's core).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MathOp {
-    Sqrt,
-    Sin,
-    Cos,
-    Exp,
-    Log,
-    Pow,
-    Floor,
-    Ceil,
-    Round,
-}
-
-/// The math op a bodyless std::math declaration names.
-pub fn math_op(name: &str) -> Option<MathOp> {
-    Some(match name {
-        "sqrt" => MathOp::Sqrt,
-        "sin" => MathOp::Sin,
-        "cos" => MathOp::Cos,
-        "exp" => MathOp::Exp,
-        "log" => MathOp::Log,
-        "pow" => MathOp::Pow,
-        "floor" => MathOp::Floor,
-        "ceil" => MathOp::Ceil,
-        "round" => MathOp::Round,
-        _ => return None,
-    })
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
@@ -345,6 +317,11 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Fn(f) => {
                         self.free_fns.insert(f.name.text.clone(), f);
+                    }
+                    ast::Item::ExternBlock { fns, .. } => {
+                        for f in fns {
+                            self.free_fns.insert(f.name.text.clone(), f);
+                        }
                     }
                     ast::Item::Struct(s) => {
                         self.structs.insert(s.name.text.clone(), s);
@@ -1469,7 +1446,7 @@ impl<'a> Lowering<'a> {
                 matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv)
             }
             Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
-            Expr::MathFn { .. } => true,
+            Expr::CCall { f64_ret, .. } => *f64_ret,
             _ => false,
         }
     }
@@ -1586,11 +1563,21 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
         let f = *self.free_fns.get(name)?;
-        // A bodyless declaration is a kernel extern (std::math's real fns).
+        // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
-            let op = math_op(name)?;
+            let is_real = |t: &Option<ast::Type>| {
+                matches!(t, Some(ast::Type::Path(p))
+                    if p.segments.last().map(|s| s.text.as_str()) == Some("real"))
+            };
+            let f64_args = f
+                .params
+                .iter()
+                .filter(|p| !p.is_self)
+                .map(|p| is_real(&p.ty))
+                .collect();
+            let f64_ret = is_real(&f.ret);
             let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
-            return Some(Expr::MathFn { op, args });
+            return Some(Expr::CCall { name: name.to_string(), args, f64_args, f64_ret });
         }
         // Constant arguments: run the body statically.
         let consts: Option<Vec<i64>> = args
@@ -1951,7 +1938,7 @@ impl<'a> Lowering<'a> {
 pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
     match e {
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => out.push(*id),
-        Expr::MathFn { args, .. } => {
+        Expr::CCall { args, .. } => {
             for a in args {
                 read_set(a, out);
             }
@@ -1979,7 +1966,7 @@ fn dedup(v: &mut Vec<SignalId>) {
 /// Validation walk over an expression (see [`Design::validate`]).
 fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
     match e {
-        Expr::MathFn { args, .. } => {
+        Expr::CCall { args, .. } => {
             for a in args {
                 check_expr(a, n, issues, ctx);
             }
@@ -2217,9 +2204,9 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 
 fn render(e: &Expr, d: &Design) -> String {
     match e {
-        Expr::MathFn { op, args } => {
+        Expr::CCall { name, args, .. } => {
             let a = args.iter().map(|x| render(x, d)).collect::<Vec<_>>().join(", ");
-            format!("{op:?}({a})").to_lowercase()
+            format!("{name}({a})")
         }
         Expr::Const(v) => v.to_string(),
         Expr::Real(x) => format!("{x}"),

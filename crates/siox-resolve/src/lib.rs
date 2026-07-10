@@ -188,6 +188,11 @@ impl<'a> Resolver<'a> {
             Item::Fn(f) => {
                 self.declare(&f.name.text, DefKind::Fn, true, f.name.span);
             }
+            Item::ExternBlock { fns, .. } => {
+                for f in fns {
+                    self.declare(&f.name.text, DefKind::Fn, true, f.name.span);
+                }
+            }
             Item::Using(u) => match &u.kind {
                 UsingKind::Alias { name, .. } => {
                     self.declare(&name.text, DefKind::TypeAlias, false, name.span);
@@ -317,6 +322,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(t);
                 }
             }
+            Item::ExternBlock { .. } => {}
             Item::Const(c) => {
                 self.resolve_type(&c.ty);
                 self.resolve_expr(&c.value);

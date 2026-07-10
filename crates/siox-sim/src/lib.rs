@@ -212,20 +212,22 @@ impl<'a, S: Slot> Simulator<'a, S> {
             Expr::Real(x) => S::from_u64(x.to_bits()),
             // Kernel real math on f64 bit patterns (libm, matching the JIT's
             // LLVM intrinsics).
-            Expr::MathFn { op, args } => {
-                use siox_ir::MathOp;
+            // Foreign C calls: the interpreter (the oracle) evaluates the
+            // libm set natively; other externs need the compiled backend.
+            Expr::CCall { name, args, .. } => {
                 let a = f64::from_bits(args.first().map(|a| self.eval(a).to_u64()).unwrap_or(0));
                 let b = || f64::from_bits(args.get(1).map(|a| self.eval(a).to_u64()).unwrap_or(0));
-                let r = match op {
-                    MathOp::Sqrt => a.sqrt(),
-                    MathOp::Sin => a.sin(),
-                    MathOp::Cos => a.cos(),
-                    MathOp::Exp => a.exp(),
-                    MathOp::Log => a.ln(),
-                    MathOp::Pow => a.powf(b()),
-                    MathOp::Floor => a.floor(),
-                    MathOp::Ceil => a.ceil(),
-                    MathOp::Round => a.round(),
+                let r = match name.as_str() {
+                    "sqrt" => a.sqrt(),
+                    "sin" => a.sin(),
+                    "cos" => a.cos(),
+                    "exp" => a.exp(),
+                    "log" => a.ln(),
+                    "pow" => a.powf(b()),
+                    "floor" => a.floor(),
+                    "ceil" => a.ceil(),
+                    "round" => a.round(),
+                    _ => return S::from_u64(0),
                 };
                 S::from_u64(r.to_bits())
             }
