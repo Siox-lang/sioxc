@@ -902,12 +902,20 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
-                    // A named struct/enum: a `From` conversion, typed as the target.
+                    // A named struct/enum: a `From` conversion, typed as the
+                    // target (fn calls and kernel conversions fall through).
                     name
-                        if matches!(
-                            self.path_ty(p),
-                            Ty::Named(_)
-                        ) && name != "integer" && name != "resize" =>
+                        if name != "integer"
+                            && name != "resize"
+                            && match self.path_ty(p) {
+                                Ty::Named(id) => self
+                                    .resolved
+                                    .def(id)
+                                    .is_some_and(|d| {
+                                        matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                                    }),
+                                _ => false,
+                            } =>
                     {
                         self.path_ty(p)
                     }
