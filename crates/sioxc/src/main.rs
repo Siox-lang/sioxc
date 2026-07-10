@@ -246,6 +246,20 @@ fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, E
 fn load_std_deps(fe: &mut FrontendOut, std_root: &Path, trace: bool) {
     let mut loaded: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut queue: Vec<AstPath> = using_bases(fe.entry());
+    // The prelude is implicitly imported by every file (like VHDL's
+    // std.standard): auto-load `std::prelude`, which transitively pulls the
+    // core modules, so e.g. `int` always compares signed. Skipped silently
+    // when the std root has no prelude (bare-kernel test setups).
+    if std_root.join("prelude.siox").exists() {
+        let seg = |t: &str| siox_syntax::ast::Ident {
+            text: t.to_string(),
+            span: siox_diag::Span::new(siox_diag::FileId(0), 0..0),
+        };
+        queue.push(AstPath {
+            segments: vec![seg("std"), seg("prelude")],
+            span: siox_diag::Span::new(siox_diag::FileId(0), 0..0),
+        });
+    }
     while let Some(base) = queue.pop() {
         let Some(file) = std_file(std_root, &base) else { continue };
         if !loaded.insert(file.clone()) {

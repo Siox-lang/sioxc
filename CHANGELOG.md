@@ -25,6 +25,11 @@ assertions, and VCD export — predates this changelog. See
   (`impl "+" for T`) are removed — a targeted parse error points at the
   Rust-style name. Future custom operators are reserved as
   `impl ops::custom<"sym", Rhs> for T`.
+- **`std::prelude`, auto-loaded** — `Bit`/`Logic`/`Bool`/`Clock`,
+  `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` are in scope in
+  every file with no `using` (like VHDL's implicit `std.standard`). Ends the
+  silent kernel-fallback: a bare file now gets signed `int` comparison and
+  `10ns` out of the box. A std root without `prelude.siox` skips it silently.
 - **uint/int operators moved to std** — only the kernel types (`integer`,
   `real`) keep built-in operators; `uint[N]`/`int[N]` arithmetic and shifts
   are now `impl Add for uint` etc. in `std/bits.siox`, and `int` gains

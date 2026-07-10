@@ -105,8 +105,9 @@ that accept `integer` on assignment (spec, "type kernel") and get their
 operators from **`std/bits.siox`** as Rust-style trait impls — including
 `int`'s sign-aware `Ord` (signed comparison is library source, not compiler
 code). The CLI loads `std::` modules transitively from `--std <dir>` (default
-`./std`); a file that never imports `std::bits` falls back to kernel word
-semantics (unsigned). Residual shim: `siox-resolve` still seeds the std type
+`./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
+compile, so the core types always carry their std semantics — the kernel
+word fallback only applies when the std root has no prelude at all. Residual shim: `siox-resolve` still seeds the std type
 names (and `std::attrs` attributes), and widths/slices/literal typing remain
 compiler-known; signed `Div`/`Shr` for `int` are TODO in std (need bitwise
 masking helpers).

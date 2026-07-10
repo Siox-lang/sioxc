@@ -27,6 +27,7 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`/`Clock`, `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool`, `Clock` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as trait impls (incl. `int`'s signed `Ord`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |

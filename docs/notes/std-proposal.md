@@ -116,10 +116,11 @@ import from a higher one — same layering rule as the compiler crates.
 
 ## Per-module contents (target)
 
-**`std::prelude` (new).** Re-exports what every file wants: `Bit`, `Logic`,
+**`std::prelude` ✅.** Re-exports what every file wants: `Bit`, `Logic`,
 `Bool`, `Clock`, `uint`, `int`, `Boolean`, `Ordering`, `string`, the time
-suffixes. Auto-loaded by the compiler (kill the silent kernel-fallback);
-`--no-prelude` escape hatch later if wanted.
+suffixes. Auto-loaded by the compiler (a std root without `prelude.siox` is
+skipped silently — bare-kernel setups keep working); `--no-prelude` escape
+hatch later if wanted.
 
 **`std::ops`.** As today: `Boolean`, `Ordering`. Future: the reserved
 `ops::custom<"sym", Rhs>` hook for user operators.
@@ -191,7 +192,7 @@ Python testbenches.
 
 | Phase | Items | Unblocks / needs |
 | --- | --- | --- |
-| **S1** | `std::prelude` + auto-load | kills kernel-fallback divergence; trivial |
+| **S1** ✅ | `std::prelude` + auto-load | done — bare files get signed int, Logic tables, `10ns` |
 | **S2** | `std::bits` conversions (`resize`, `to_integer`, extends) + bitwise masking helpers → finish signed `Div`/`Shr` | needs *free functions callable in expressions* (fn-call lowering — the single biggest language gap the std exposes) |
 | **S2b** | `Resolve` trait + `impl Resolve for Logic`; multi-driver contexts fold or error | IR multi-context detection; unblocks `inout` |
 | **S3** | `std::io.print!` + `std::sim.stop/finish` | runner builtins, like `assert!` |
