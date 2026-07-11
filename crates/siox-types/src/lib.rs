@@ -328,6 +328,32 @@ impl<'a> Checker<'a> {
         out
     }
 
+    /// If `name` is an array-derived Logic family (`struct F : Logic[]` /
+    /// `: Bit[]`, bodyless), returns its signedness — a nominal numeric vector
+    /// (spec: derived types §5). `impl Signed for F` marks it signed. This is
+    /// how uint/int and future fixed-point families are recognized without
+    /// hardcoding their names.
+    fn logic_vector_family(&self, name: &str) -> Option<bool> {
+        let (base, own) = self.structs.get(name)?;
+        if !own.is_empty() {
+            return None; // named fields => an aggregate, not a bare vector
+        }
+        let base = base.as_ref()?;
+        // Element type of the array base must be a scalar logic type.
+        let elem = match base {
+            Type::Indexed { base, .. } => type_head_name(base),
+            _ => return None,
+        }?;
+        if !matches!(elem, "Logic" | "Bit" | "ULogic" | "Clock") {
+            return None;
+        }
+        let signed = self
+            .trait_impls
+            .get("Signed")
+            .is_some_and(|s| s.contains(name));
+        Some(signed)
+    }
+
     /// Whether a base type resolves (through aliases) to an array shape.
     fn is_array_base(&self, ty: &Type) -> bool {
         match ty {
@@ -1196,9 +1222,15 @@ impl<'a> Checker<'a> {
                 "range" => Ty::Error,
                 name => match self.aliases.get(name) {
                     Some(t) => self.ast_ty(&t.clone()),
-                    None => {
-                        self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
-                    }
+                    None => match self.logic_vector_family(name) {
+                        // An array-derived Logic family behaves as a numeric
+                        // vector: width applies via `F[N]` (ast_ty's Indexed).
+                        Some(true) => Ty::Int(0),
+                        Some(false) => Ty::UInt(0),
+                        None => {
+                            self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+                        }
+                    },
                 },
             }
         } else {

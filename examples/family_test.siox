@@ -1,0 +1,17 @@
+module examples::family_test;
+
+// A user-defined Logic-vector family — behaves like uint with no compiler
+// knowledge of its name, purely from `struct F : Logic[]`.
+struct Word : Logic[];
+
+entity E { in a: Word[8]; out y: Word[8]; }
+impl E { y = a; }
+
+#[test]
+entity FamTest {}
+impl FamTest {
+    let a: Word[8] = 200; let y: Word[8];
+    let d = E { .a, .y };
+    await 1ns;
+    assert!(y == 200, "user Logic-vector family: width + literal + eq");
+}

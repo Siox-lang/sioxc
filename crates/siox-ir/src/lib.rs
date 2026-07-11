@@ -157,6 +157,7 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
     l.enum_reprs = enum_reprs(modules);
+    l.vector_families = vector_families(modules);
     {
         let enums = enum_index(modules);
         for (name, e) in &enums {
@@ -254,7 +255,11 @@ struct Lowering<'a> {
     cur_ctx: u32,
     /// Signal -> declared type name (enum / uint / int), for Resolve lookup.
     sig_type: HashMap<u32, String>,
-    /// Numeric-vector locals -> "uint" | "int", for operator-impl dispatch
+    /// Array-derived Logic vector families (`struct F : Logic[]`) -> signed?.
+    /// uint/int are just the first two; the family set is read from the
+    /// declarations, not hardcoded.
+    vector_families: HashMap<String, bool>,
+    /// Numeric-vector locals -> the family name, for operator-impl dispatch
     /// (kernel `integer`/`real` keep builtin operators; uint/int live in std).
     local_numeric: HashMap<String, String>,
 }
@@ -321,6 +326,7 @@ impl<'a> Lowering<'a> {
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
             local_numeric: HashMap::new(),
+            vector_families: HashMap::new(),
             cur_ctx: 0,
             sig_type: HashMap::new(),
         }
@@ -875,7 +881,9 @@ impl<'a> Lowering<'a> {
             for (fname, fty) in fields {
                 self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
             }
-        } else if let Some((elem, indices)) = array_of(ty, env, &self.const_ranges) {
+        } else if let Some((elem, indices)) =
+            array_of(ty, env, &self.const_ranges, &self.vector_families)
+        {
             let elem = elem.clone();
             self.local_array.insert(name.to_string(), indices.clone());
             for i in indices {
@@ -902,15 +910,16 @@ impl<'a> Lowering<'a> {
             }
         } else {
             self.add_signal(entity, name, type_width(ty, env, &self.free_fns));
-            // uint[N]/int[N] dispatch their operators to std impls (spec 3.25).
+            // A Logic-vector family `F[N]` dispatches its operators to
+            // `impl _ for F` (spec 3.25). uint/int are recognized the same way
+            // as any user `struct F : Logic[]`.
             if let ast::Type::Indexed { base, .. } = ty {
                 if let ast::Type::Path(p) = base.as_ref() {
-                    if let Some(k @ ("uint" | "int")) =
-                        p.segments.last().map(|s| s.text.as_str())
-                    {
-                        self.local_numeric.insert(name.to_string(), k.to_string());
+                    let head = p.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+                    if matches!(head, "uint" | "int") || self.vector_families.contains_key(head) {
+                        self.local_numeric.insert(name.to_string(), head.to_string());
                         if let Some(&id) = self.locals.get(name) {
-                            self.sig_type.insert(id.0, k.to_string());
+                            self.sig_type.insert(id.0, head.to_string());
                         }
                     }
                 }
@@ -1978,7 +1987,10 @@ impl<'a> Lowering<'a> {
         let mut v = self.lower_scalar_env(arg, env);
         // An int-family source carries a sign: extend it into the full word
         // so the target's masking (or the kernel) sees the numeric value.
-        let src_int = matches!(self.operand_type_name(arg).as_deref(), Some("int"));
+        let src_int = self
+            .operand_type_name(arg)
+            .as_deref()
+            .is_some_and(|n| n == "int" || self.vector_families.get(n) == Some(&true));
         let src_w = self.ast_width(arg);
         if src_int && src_w > 0 && src_w < 64 {
             let sign = Expr::Binary {
@@ -2791,6 +2803,47 @@ pub fn eval_const_stmts(
 /// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
 /// honoured; unspecified variants continue from the previous discriminant + 1.
 /// Index every enum declaration by name (for base-chain resolution).
+/// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
+/// bodyless) with their signedness (`impl Signed for F`). uint/int are just
+/// members — the compiler recognizes the shape, not the names.
+fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
+    let mut signed = std::collections::HashSet::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                let is_signed = im
+                    .trait_
+                    .as_ref()
+                    .map(|t| t.segments.last().map(|s| s.text.as_str()) == Some("Signed"))
+                    .unwrap_or(false);
+                if is_signed {
+                    if let Some(h) = type_head_name(&im.target) {
+                        signed.insert(h.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Struct(st) = item {
+                if !st.fields.is_empty() {
+                    continue;
+                }
+                let elem = match &st.base {
+                    Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
+                    _ => None,
+                };
+                if matches!(elem, Some("Logic" | "Bit" | "ULogic" | "Clock")) {
+                    out.insert(st.name.text.clone(), signed.contains(&st.name.text));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
     let mut out = HashMap::new();
     for m in modules {
@@ -2880,9 +2933,12 @@ fn array_of<'t>(
     ty: &'t ast::Type,
     env: &HashMap<String, i64>,
     const_ranges: &HashMap<String, (i64, i64)>,
+    families: &HashMap<String, bool>,
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
     let ast::Type::Indexed { base, index: Some(index), .. } = ty else { return None };
-    if is_int_type(base) {
+    // A Logic-vector family (uint/int/user) `F[N]` is one N-bit signal, not an
+    // N-element array.
+    if is_int_type(base) || type_head_name(base).is_some_and(|h| families.contains_key(h)) {
         return None;
     }
     let bounds = match index.as_ref() {
