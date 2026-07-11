@@ -1,5 +1,5 @@
 module examples::from_test;
-using std::logic::unresolved::{ULogic};
+using std::logic::{ULogic};
 
 struct Pair { lo: uint[8], hi: uint[8] }
 

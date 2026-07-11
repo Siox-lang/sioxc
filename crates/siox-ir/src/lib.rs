@@ -2673,24 +2673,65 @@ pub fn eval_const_stmts(
 
 /// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
 /// honoured; unspecified variants continue from the previous discriminant + 1.
-fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
+/// Index every enum declaration by name (for base-chain resolution).
+fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Enum(e) = item {
-                let mut vars = HashMap::new();
-                let mut next = 0u64;
-                for v in &e.variants {
-                    let disc = match &v.value {
-                        Some(ast::Expr::Int { text, .. }) => parse_int(text).unwrap_or(next),
-                        _ => next,
-                    };
-                    vars.insert(v.name.text.clone(), disc);
-                    next = disc + 1;
-                }
-                out.insert(e.name.text.clone(), vars);
+                out.insert(e.name.text.clone(), e);
             }
         }
+    }
+    out
+}
+
+/// The `: Type` head name when it names another enum — i.e. a derivation
+/// base rather than a numeric repr.
+fn enum_base_name<'a>(e: &ast::EnumDecl, enums: &HashMap<String, &'a ast::EnumDecl>) -> Option<String> {
+    let name = type_head_name(e.repr.as_ref()?)?;
+    enums.contains_key(name).then(|| name.to_string())
+}
+
+/// An enum's effective variants, base chain first then its own declared ones
+/// (spec: nominal derivation). `(name, explicit discriminant)`.
+fn effective_variants(
+    name: &str,
+    enums: &HashMap<String, &ast::EnumDecl>,
+    seen: &mut Vec<String>,
+) -> Vec<(String, Option<i64>)> {
+    let Some(e) = enums.get(name) else { return Vec::new() };
+    if seen.iter().any(|n| n == name) {
+        return Vec::new(); // cycle guard
+    }
+    seen.push(name.to_string());
+    let mut out = match enum_base_name(e, enums) {
+        Some(base) => effective_variants(&base, enums, seen),
+        None => Vec::new(),
+    };
+    for v in &e.variants {
+        let disc = match &v.value {
+            Some(ast::Expr::Int { text, .. }) => parse_int(text).map(|n| n as i64),
+            _ => None,
+        };
+        out.push((v.name.text.clone(), disc));
+    }
+    seen.pop();
+    out
+}
+
+fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
+    let enums = enum_index(modules);
+    let mut out = HashMap::new();
+    for name in enums.keys() {
+        let mut vars = HashMap::new();
+        let mut next = 0u64;
+        for (v, disc) in effective_variants(name, &enums, &mut Vec::new()) {
+            let d = disc.map(|d| d as u64).unwrap_or(next);
+            vars.insert(v, d);
+            next = d + 1;
+        }
+        out.insert(name.clone(), vars);
     }
     out
 }
@@ -2753,20 +2794,18 @@ fn is_int_type(ty: &ast::Type) -> bool {
 /// else the bits needed for the variant count.
 fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
     let empty = HashMap::new();
+    let enums = enum_index(modules);
     let mut out = HashMap::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Enum(e) = item {
-                let w = match &e.repr {
-                    Some(t) => type_width(t, &empty, &HashMap::new()),
-                    None => {
-                        let n = e.variants.len().max(1) as u32;
-                        if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }
-                    }
-                };
-                out.insert(e.name.text.clone(), w);
-            }
-        }
+    for (name, e) in &enums {
+        // A numeric `: repr` sets the width explicitly; otherwise the width
+        // covers the effective variant count (inherited + declared).
+        let w = if e.repr.is_some() && enum_base_name(e, &enums).is_none() {
+            type_width(e.repr.as_ref().unwrap(), &empty, &HashMap::new())
+        } else {
+            let n = effective_variants(name, &enums, &mut Vec::new()).len().max(1) as u32;
+            if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }
+        };
+        out.insert(name.clone(), w);
     }
     out
 }

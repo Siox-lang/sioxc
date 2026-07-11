@@ -233,6 +233,19 @@ impl<'a> Parser<'a> {
         self.bump(); // `struct`
         let name = self.parse_ident();
         let params = self.parse_params_opt();
+        // Nominal derivation: `struct B : A` / `struct B : A { ... }`.
+        let base = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
+        // A derived struct may be bodyless (`struct B : A;` newtype form).
+        if base.is_some() && self.eat(TokenKind::Semi) {
+            return StructDecl {
+                is_pub,
+                name,
+                params,
+                base,
+                fields: Vec::new(),
+                span: start.to(self.prev_span()),
+            };
+        }
         self.expect(TokenKind::LBrace, "to open a struct body");
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -246,7 +259,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a struct body");
-        StructDecl { is_pub, name, params, fields, span: start.to(self.prev_span()) }
+        StructDecl { is_pub, name, params, base, fields, span: start.to(self.prev_span()) }
     }
 
     fn parse_enum(&mut self, is_pub: bool) -> EnumDecl {
@@ -254,6 +267,11 @@ impl<'a> Parser<'a> {
         self.bump(); // `enum`
         let name = self.parse_ident();
         let repr = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
+        // A derived enum may be bodyless (`enum Logic : ULogic;` — same
+        // variants, new nominal type).
+        if repr.is_some() && self.eat(TokenKind::Semi) {
+            return EnumDecl { is_pub, name, repr, variants: Vec::new(), span: start.to(self.prev_span()) };
+        }
         self.expect(TokenKind::LBrace, "to open an enum body");
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {

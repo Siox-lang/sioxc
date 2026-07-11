@@ -95,6 +95,10 @@ pub struct StructDecl {
     pub is_pub: bool,
     pub name: Ident,
     pub params: Params,
+    /// Nominal derivation base (`struct B : A`): `B` reuses `A`'s
+    /// representation as a distinct type, optionally adding `fields`. `None`
+    /// for a plain aggregate struct.
+    pub base: Option<Type>,
     pub fields: Vec<Field>,
     pub span: Span,
 }
@@ -111,6 +115,9 @@ pub struct Field {
 pub struct EnumDecl {
     pub is_pub: bool,
     pub name: Ident,
+    /// The `: Type` after the name. When it resolves to an enum this is a
+    /// nominal derivation BASE (`enum Logic : ULogic` inherits its variants);
+    /// when numeric it is the discriminant representation (`enum S : uint[2]`).
     pub repr: Option<Type>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,

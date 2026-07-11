@@ -117,8 +117,12 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<String, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
-    /// Enum name -> its variant names (for match-exhaustiveness).
+    /// Enum name -> its EFFECTIVE variant names (inherited + own).
     enum_variants: HashMap<String, Vec<String>>,
+    /// Enum name -> only its own declared variants (pre-inheritance).
+    own_variants: HashMap<String, Vec<String>>,
+    /// Enum name -> the head name after `:` (a base enum or numeric repr).
+    enum_bases: HashMap<String, String>,
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -168,6 +172,8 @@ impl<'a> Checker<'a> {
             attr_value_kinds,
             trait_impls,
             enum_variants: HashMap::new(),
+            own_variants: HashMap::new(),
+            enum_bases: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
         }
@@ -224,8 +230,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Item::Enum(e) => {
-                        let vars = e.variants.iter().map(|v| v.name.text.clone()).collect();
+                        let vars: Vec<String> =
+                            e.variants.iter().map(|v| v.name.text.clone()).collect();
+                        self.own_variants.insert(e.name.text.clone(), vars.clone());
                         self.enum_variants.insert(e.name.text.clone(), vars);
+                        if let Some(t) = &e.repr {
+                            if let Some(h) = type_head_name(t) {
+                                self.enum_bases.insert(e.name.text.clone(), h.to_string());
+                            }
+                        }
                     }
                     Item::Using(u) => {
                         if let UsingKind::Alias { name, ty } = &u.kind {
@@ -234,6 +247,32 @@ impl<'a> Checker<'a> {
                     }
                     _ => {}
                 }
+            }
+        }
+        // Nominal enum derivation: prepend base variants (spec derived types).
+        // A base that isn't a known enum is a numeric repr — ignore it.
+        let names: Vec<String> = self.enum_variants.keys().cloned().collect();
+        for name in &names {
+            let mut chain = Vec::new();
+            let mut cur = name.clone();
+            let mut prefix: Vec<String> = Vec::new();
+            while let Some(base) = self.enum_bases.get(&cur).cloned() {
+                if !self.enum_variants.contains_key(&base) || chain.contains(&base) {
+                    break; // numeric repr, or cycle
+                }
+                chain.push(base.clone());
+                cur = base;
+            }
+            // Walk the chain furthest-ancestor first, collecting their own vars.
+            for anc in chain.iter().rev() {
+                if let Some(vs) = self.own_variants.get(anc) {
+                    prefix.extend(vs.iter().cloned());
+                }
+            }
+            if !prefix.is_empty() {
+                let own = self.enum_variants.get(name).cloned().unwrap_or_default();
+                prefix.extend(own);
+                self.enum_variants.insert(name.clone(), prefix);
             }
         }
     }

@@ -98,7 +98,16 @@ impl Printer {
 
     fn struct_decl(&mut self, s: &StructDecl) {
         let kw = pub_kw(s.is_pub);
-        self.line(&format!("{kw}struct {}{} {{", s.name.text, params(&s.params)));
+        let base = match &s.base {
+            Some(t) => format!(" : {}", type_str(t)),
+            None => String::new(),
+        };
+        // Bodyless newtype: `struct B : A;`.
+        if s.base.is_some() && s.fields.is_empty() {
+            self.line(&format!("{kw}struct {}{}{base};", s.name.text, params(&s.params)));
+            return;
+        }
+        self.line(&format!("{kw}struct {}{}{base} {{", s.name.text, params(&s.params)));
         self.indent += 1;
         for f in &s.fields {
             self.line(&format!("{}: {},", f.name.text, type_str(&f.ty)));
@@ -113,6 +122,10 @@ impl Printer {
             Some(t) => format!(": {}", type_str(t)),
             None => String::new(),
         };
+        if e.repr.is_some() && e.variants.is_empty() {
+            self.line(&format!("{kw}enum {}{repr};", e.name.text));
+            return;
+        }
         self.line(&format!("{kw}enum {}{repr} {{", e.name.text));
         self.indent += 1;
         for v in &e.variants {
