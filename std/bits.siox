@@ -57,24 +57,10 @@ impl Shr for uint {
     fn shr(self, rhs: uint) -> uint { return self >> rhs; }
 }
 
-// Bitwise ops: inside the impl the operands read as kernel words, so
-// `and`/`or`/`xor`/`not` here are the built-in bitwise operations, per-bit
-// across the vector's width.
-impl BitAnd for uint {
-    fn bitand(self, rhs: uint) -> uint { return self and rhs; }
-}
-
-impl BitOr for uint {
-    fn bitor(self, rhs: uint) -> uint { return self or rhs; }
-}
-
-impl BitXor for uint {
-    fn bitxor(self, rhs: uint) -> uint { return self xor rhs; }
-}
-
-impl Not for uint {
-    fn not(self) -> uint { return not self; }
-}
+// Bitwise `and`/`or`/`xor`/`not` are INTRINSIC to bit-derived types (they are
+// "boolean, per bit"), so uint/int/any #[vector] family gets them from the
+// kernel — no per-type impl, the way VHDL defines them once for logic vectors.
+// Only Logic overrides them (below), for its 4-value 'X'/'Z' truth table.
 
 // --- int[N]: two's-complement signed --------------------------------------
 

@@ -1199,6 +1199,19 @@ The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types
 (`Logic` truth tables, `Complex`, ...).
 
+**Boolean operators are boolean-per-bit.** `and`/`or`/`xor`/`nand`/`nor`/
+`xnor`/`not` are one family — there is no separate bitwise-vs-logical pair.
+Their meaning is fixed by the operand type: on a `Bool` they are plain
+boolean; on a **bit-derived type** (`Bit`, `Logic`, `uint`, `int`, any
+`#[vector]` family) they apply **per bit and return the same bit array**, the
+way VHDL's `and`/`or` work on `std_logic_vector` (`"1010" and "0110"` =
+`"0010"`). Boolean is simply the one-bit case of boolean-per-bit. Because it
+is intrinsic to being bits, no per-type `impl` is needed — the kernel
+provides it for every bit-derived type; only `Logic` overrides it, for its
+four-value `'X'`/`'Z'` truth table. These operators are **rejected on
+non-bit-derived types** (`real`, `Char`): per-bit boolean has no meaning
+there.
+
 Operator impls are **inlined at lowering time** as pure expression trees: the
 body must be `return e;` or `if`/`else` chains ending in returns (no loops,
 no state). Enum- and struct-typed operands are supported (a struct result

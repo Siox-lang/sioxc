@@ -116,9 +116,9 @@ pub fn logic_value(c: char) -> u64 {
     }
 }
 
-/// `and`/`or`/`xor` are **bitwise** (the `BitAnd`/`BitOr`/`BitXor` traits),
-/// matching the LLVM backend; for boolean 0/1 operands this coincides with the
-/// logical reading, so conditions still behave correctly.
+/// `and`/`or`/`xor` are "boolean, per bit": on a bit array they apply per bit
+/// (VHDL logic-vector style), on a one-bit Boolean they are plain boolean —
+/// one operation, the width decides. Matches the LLVM backend.
 pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
     let bool_s = |v: bool| S::from_u64(v as u64);
     match op {

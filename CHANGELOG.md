@@ -46,6 +46,15 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Boolean operators are boolean-per-bit** — `and`/`or`/`xor`/`not` are one
+  family (no bitwise-vs-logical pair): plain boolean on `Bool`, and per-bit
+  on bit-derived types, returning the same bit array (VHDL logic-vector
+  style, `uint[32] and uint[32] -> uint[32]`). Intrinsic to bit types — no
+  per-type impl (the redundant uint impls were removed; Logic keeps its
+  4-value truth table). Rejected on non-bit types (`real`/`Char`). Fixes the
+  earlier logical-vs-bitwise confusion: the engines were logical on
+  multi-bit words (`12 and 10` gave 1); now correctly per-bit (8) on all
+  three engines.
 - **Generic functions, trait bounds, and `where`** — `fn maxi<T: Ord>(a, b)`
   (or the `where T: Ord` spelling, exact sugar). Fns inline, so a call is a
   monomorphization: the body dispatches operators on the caller's concrete

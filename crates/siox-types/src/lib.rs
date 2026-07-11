@@ -962,7 +962,20 @@ impl<'a> Checker<'a> {
                 self.check_expr(lo, sym);
                 self.check_expr(hi, sym);
             }
-            Expr::Unary { rhs, .. } => self.check_expr(rhs, sym),
+            Expr::Unary { op, rhs, span } => {
+                self.check_expr(rhs, sym);
+                // `not` is per-bit boolean — bit-derived / Boolean operands only.
+                if matches!(op, UnOp::Not) {
+                    let t = self.type_of(rhs, sym);
+                    if matches!(t, Ty::Real | Ty::Char) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!("`not` is a per-bit operator; `{}` is not a bit-derived type", ty_name(&t)),
+                        );
+                    }
+                }
+            }
             Expr::IfExpr { cond, then, els, .. } => {
                 // Same condition rule as statement `if` (must be Boolean).
                 self.check_condition(cond, sym);
@@ -991,10 +1004,31 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
+                let op_str = siox_syntax::pretty::bin_op(*op);
+                // The boolean operators (`and`/`or`/`xor`/...) are "boolean,
+                // per bit": on a bit array they act element-wise and return
+                // the same array, on `Bool` they are plain boolean. They are
+                // only meaningful on Boolean and bit-derived types — never on
+                // `real` or `Char`.
+                if matches!(op_str, "and" | "or" | "xor" | "nand" | "nor" | "xnor") {
+                    let bad = [lhs, rhs]
+                        .into_iter()
+                        .map(|o| self.type_of(o, sym))
+                        .find(|t| matches!(t, Ty::Real | Ty::Char));
+                    if let Some(t) = bad {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!(
+                                "`{op_str}` is a boolean/per-bit operator; `{}` is not a bit-derived type",
+                                ty_name(&t)
+                            ),
+                        );
+                    }
+                }
                 // A user struct/enum operand needs an operator-trait impl
                 // (spec 3.25); intrinsic numerics keep built-in semantics.
                 // `==`/`!=` on enums stay built-in (discriminant compare).
-                let op_str = siox_syntax::pretty::bin_op(*op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
                         let has_op = |tr: &str| {
@@ -1705,6 +1739,21 @@ mod tests {
             "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  fn as_bool(self) -> integer {\n    match self {\n      State::Idle => return 0,\n      _ => return 1,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(with, 0);
+    }
+
+    #[test]
+    fn boolean_ops_reject_non_bit_types() {
+        // `and`/`or`/`not` are boolean-per-bit: bit-derived / Boolean only.
+        assert_eq!(
+            check_src("module m;\nentity E { in a: real; in b: real; out y: real; }\nimpl E { y = a and b; }\n"),
+            1,
+            "`and` on real is rejected"
+        );
+        assert_eq!(
+            check_src("module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\nimpl E { y = a and b; }\n"),
+            0,
+            "`and` on a bit array is fine (per-bit, returns the array)"
+        );
     }
 
     #[test]
