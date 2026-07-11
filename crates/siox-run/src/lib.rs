@@ -179,6 +179,7 @@ pub fn run_tests_with_engine<'e>(
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
+    let families = siox_ir::vector_families(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -187,7 +188,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &families, false).0);
         }
     }
     results
@@ -206,6 +207,7 @@ pub fn run_test_traced_with_engine<'e>(
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
+    let families = siox_ir::vector_families(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
@@ -213,7 +215,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &families, true));
         }
     }
     None
@@ -302,6 +304,7 @@ fn run_one<'a>(
     body: &[&ast::ImplDecl],
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    families: &'a HashMap<String, bool>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -340,6 +343,7 @@ fn run_one<'a>(
         time_fs: 0,
         locals: HashMap::new(),
         fns,
+        families,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
         warnings: Vec::new(),
@@ -430,6 +434,8 @@ struct Testbench<'a> {
     locals: HashMap<String, u128>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    /// `#[vector]` families (name -> signed), for testbench conversions.
+    families: &'a HashMap<String, bool>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
     /// unless a failure was already recorded).
     halted: bool,
@@ -1108,10 +1114,9 @@ impl Testbench<'_> {
                 let v = self.eval_env(arg, fenv);
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }
-                        if matches!(
-                            expr_path(base).as_deref(),
-                            Some("uint" | "int")
-                        ) =>
+                        if expr_path(base)
+                            .as_deref()
+                            .is_some_and(|h| self.families.contains_key(h)) =>
                     {
                         self.eval_env(index, fenv).to_u64() as u32
                     }

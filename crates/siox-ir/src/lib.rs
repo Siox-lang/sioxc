@@ -916,7 +916,7 @@ impl<'a> Lowering<'a> {
             if let ast::Type::Indexed { base, .. } = ty {
                 if let ast::Type::Path(p) = base.as_ref() {
                     let head = p.segments.last().map(|s| s.text.as_str()).unwrap_or("");
-                    if matches!(head, "uint" | "int") || self.vector_families.contains_key(head) {
+                    if self.vector_families.contains_key(head) {
                         self.local_numeric.insert(name.to_string(), head.to_string());
                         if let Some(&id) = self.locals.get(name) {
                             self.sig_type.insert(id.0, head.to_string());
@@ -1421,10 +1421,9 @@ impl<'a> Lowering<'a> {
             // A conversion is as wide as its target (64 for kernel integer).
             ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { base, index, .. }
-                    if matches!(
-                        expr_path(base).as_deref(),
-                        Some("uint" | "int")
-                    ) =>
+                    if expr_path(base)
+                        .as_deref()
+                        .is_some_and(|h| self.vector_families.contains_key(h)) =>
                 {
                     eval_const(index, &self.cur_env).map(|w| w as u32).unwrap_or(64)
                 }
@@ -1972,7 +1971,7 @@ impl<'a> Lowering<'a> {
                 (Some(w), true)
             }
             ast::Expr::Index { base, index, .. }
-                if matches!(head(base).as_deref(), Some("uint" | "int")) =>
+                if head(base).as_deref().is_some_and(|h| self.vector_families.contains_key(h)) =>
             {
                 let w = match self.lower_scalar_env(index, env) {
                     Expr::Const(c) => c as u32,
@@ -1990,7 +1989,7 @@ impl<'a> Lowering<'a> {
         let src_int = self
             .operand_type_name(arg)
             .as_deref()
-            .is_some_and(|n| n == "int" || self.vector_families.get(n) == Some(&true));
+            .is_some_and(|n| self.vector_families.get(n) == Some(&true));
         let src_w = self.ast_width(arg);
         if src_int && src_w > 0 && src_w < 64 {
             let sign = Expr::Binary {
@@ -2806,7 +2805,7 @@ pub fn eval_const_stmts(
 /// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
 /// bodyless) with their signedness (`impl Signed for F`). uint/int are just
 /// members — the compiler recognizes the shape, not the names.
-fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
+pub fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
     // A struct is a numeric vector family iff it carries `#[vector]` (spec
     // 3.5); `#[signed]` selects two's-complement. Explicit, not shape-inferred.
     let has = |st: &ast::StructDecl, n: &str| {

@@ -45,8 +45,9 @@ pub enum EType {
     Logic,
     Bool,
     Clock,
-    UInt(Option<u32>),
-    Int(Option<u32>),
+    /// A packed bit vector (`#[vector]` families: uint/int and user types).
+    /// The compiler has no `uint`/`int` by name — only unsigned/signed vectors.
+    Vector { width: Option<u32>, signed: bool },
     Named(String),
     Array { elem: Box<EType>, len: Option<u32> },
     Other(String),
@@ -58,7 +59,7 @@ impl EType {
     /// compares actual bit-vector widths, not single-bit kinds.
     pub fn width(&self) -> Option<u32> {
         match self {
-            EType::UInt(w) | EType::Int(w) => *w,
+            EType::Vector { width, .. } => *width,
             EType::Array { len, .. } => *len,
             _ => None,
         }
@@ -72,10 +73,12 @@ impl fmt::Display for EType {
             EType::Logic => write!(f, "Logic"),
             EType::Bool => write!(f, "Bool"),
             EType::Clock => write!(f, "Clock"),
-            EType::UInt(None) => write!(f, "uint"),
-            EType::UInt(Some(w)) => write!(f, "uint[{w}]"),
-            EType::Int(None) => write!(f, "int"),
-            EType::Int(Some(w)) => write!(f, "int[{w}]"),
+            EType::Vector { width: None, signed } => {
+                write!(f, "{}", if *signed { "int" } else { "uint" })
+            }
+            EType::Vector { width: Some(w), signed } => {
+                write!(f, "{}[{w}]", if *signed { "int" } else { "uint" })
+            }
             EType::Named(n) => write!(f, "{n}"),
             EType::Array { elem, len: Some(l) } => write!(f, "{elem}[{l}]"),
             EType::Array { elem, len: None } => write!(f, "{elem}[]"),
@@ -185,6 +188,7 @@ fn elaborate_roots(
         sink,
         entities: HashMap::new(),
         impls: HashMap::new(),
+        families: HashMap::new(),
         out: Hierarchy::default(),
     };
     e.collect(modules);
@@ -214,6 +218,8 @@ struct Elaborator<'a> {
     entities: HashMap<String, &'a EntityDecl>,
     /// Entity name -> its inherent impls (where instances live).
     impls: HashMap<String, Vec<&'a ImplDecl>>,
+    /// `#[vector]` families (struct name -> signed), for width-typing vectors.
+    families: HashMap<String, bool>,
     out: Hierarchy,
 }
 
@@ -224,6 +230,16 @@ impl<'a> Elaborator<'a> {
                 match item {
                     Item::Entity(e) => {
                         self.entities.insert(e.name.text.clone(), e);
+                    }
+                    Item::Struct(st) => {
+                        let has = |n: &str| {
+                            st.attrs.iter().any(|a| {
+                                a.name.segments.last().map(|s| s.text.as_str()) == Some(n)
+                            })
+                        };
+                        if has("vector") {
+                            self.families.insert(st.name.text.clone(), has("signed"));
+                        }
                     }
                     Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
@@ -373,7 +389,7 @@ impl<'a> Elaborator<'a> {
                 None => arg.field.text.clone(),
                 Some(e) => render_signal(e),
             };
-            let ty = concrete_ty(port_ty, env);
+            let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
             conns.push(Connection { port, signal, ty });
         }
@@ -398,10 +414,11 @@ impl<'a> Elaborator<'a> {
     /// with `env` substituted, used to width-check the connections made to its
     /// child instances.
     fn entity_signals(&self, entity_name: &str, env: &HashMap<String, i64>) -> HashMap<String, EType> {
+        let families = &self.families;
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.entities.get(entity_name) {
             for p in &edecl.ports {
-                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env));
+                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env, families));
             }
         }
         if let Some(impls) = self.impls.get(entity_name) {
@@ -409,7 +426,7 @@ impl<'a> Elaborator<'a> {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(l.name.text.clone(), concrete_ty(t, env));
+                            sigs.insert(l.name.text.clone(), concrete_ty(t, env, families));
                         }
                     }
                 }
@@ -539,23 +556,26 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
+fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashMap<String, bool>) -> EType {
     match t {
         Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") => EType::Bit,
             Some("Logic") => EType::Logic,
             Some("Bool") => EType::Bool,
             Some("Clock") => EType::Clock,
-            Some("uint") | Some("integer") => EType::UInt(None),
-            Some("int") => EType::Int(None),
+            // The kernel word is an unbounded unsigned vector.
+            Some("integer") => EType::Vector { width: None, signed: false },
+            // A `#[vector]` family is a bit vector; anything else is a name.
+            Some(name) if families.contains_key(name) => {
+                EType::Vector { width: None, signed: families[name] }
+            }
             Some(other) => EType::Named(other.to_string()),
             None => EType::Other(String::new()),
         },
         Type::Indexed { base, index, .. } => {
             let len = index.as_deref().and_then(|i| index_width(i, env));
-            match concrete_ty(base, env) {
-                EType::UInt(_) => EType::UInt(len),
-                EType::Int(_) => EType::Int(len),
+            match concrete_ty(base, env, families) {
+                EType::Vector { signed, .. } => EType::Vector { width: len, signed },
                 elem => EType::Array { elem: Box::new(elem), len },
             }
         }
@@ -688,6 +708,11 @@ mod tests {
     use siox_diag::FileId;
 
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
+        // uint/int are `#[vector]` library types, not seeded.
+        let src = format!(
+            "{src}\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n"
+        );
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
@@ -762,7 +787,7 @@ mod tests {
         let dut = hier.instance(root.children[0]);
         // `count: uint[W]` with W=8 becomes `uint[8]`.
         let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
-        assert_eq!(count.ty, EType::UInt(Some(8)));
+        assert_eq!(count.ty, EType::Vector { width: Some(8), signed: false });
     }
 
     #[test]

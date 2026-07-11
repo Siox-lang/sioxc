@@ -32,10 +32,11 @@ pub enum Ty {
     /// The kernel base type `Char`: a non-numeric character symbol.
     /// Equality is intrinsic; numbers only exist via std encoding tables.
     Char,
-    /// `uint[N]` / `int[N]`. Width `0` means "not yet known" (parametric, e.g.
-    /// `uint[W]`); the concrete width is resolved during elaboration.
-    UInt(u32),
-    Int(u32),
+    /// A packed bit vector — every `#[vector]` family (uint/int and user
+    /// types). Width `0` means "not yet known" (parametric `F[W]`) or the
+    /// unbounded kernel `integer`. The compiler has NO notion of `uint`/`int`
+    /// by name; those are std names for the unsigned/signed cases.
+    Vector { width: u32, signed: bool },
     /// Named struct / enum / entity, keyed by its definition.
     Named(siox_resolve::DefId),
     /// `T[range]` array/vector of a digital element type.
@@ -691,8 +692,8 @@ impl<'a> Checker<'a> {
             Ty::Bit => Some("Bit".to_string()),
             Ty::Logic => Some("Logic".to_string()),
             Ty::Bool => Some("Bool".to_string()),
-            Ty::UInt(_) => Some("uint".to_string()),
-            Ty::Int(_) => Some("int".to_string()),
+            Ty::Vector { signed: false, .. } => Some("uint".to_string()),
+            Ty::Vector { signed: true, .. } => Some("int".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
@@ -796,22 +797,21 @@ impl<'a> Checker<'a> {
     /// arguments: the value must be representable in the target container.
     fn check_conversion_fit(&mut self, callee: &Expr, args: &[Expr], site: &Expr) {
         // Target family + width from the conversion callee shape.
-        let (family, width) = match callee {
+        let (signed, width) = match callee {
             Expr::Index { base, index, .. } => {
                 let head = match base.as_ref() {
                     Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
                     _ => return,
                 };
                 let Some(w) = signed_lit(index) else { return };
-                match head {
-                    "uint" | "int" => (head.to_string(), w),
-                    _ => return,
+                match self.vector_families.get(head) {
+                    Some(&signed) => (signed, w),
+                    None => return,
                 }
             }
             Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                 let Some(w) = args.get(1).and_then(signed_lit) else { return };
-                // resize keeps the argument's family; a bare literal is uint-ish.
-                ("uint".to_string(), w)
+                (false, w) // resize width bound; the family is the argument's
             }
             _ => return,
         };
@@ -834,7 +834,7 @@ impl<'a> Checker<'a> {
             }
         }
         let Some(v) = args.first().and_then(const_fold) else { return };
-        let fits = if family == "int" {
+        let fits = if signed {
             let half = 1i64 << (width - 1);
             (-half..half).contains(&v)
         } else {
@@ -844,7 +844,7 @@ impl<'a> Checker<'a> {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(site),
-                format!("`{v}` does not fit in `{family}[{width}]`"),
+                format!("`{v}` does not fit in `{}[{width}]`", if signed { "int" } else { "uint" }),
             );
         }
     }
@@ -852,7 +852,7 @@ impl<'a> Checker<'a> {
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
-            Expr::Int { .. } => matches!(lhs, Ty::UInt(_) | Ty::Int(_) | Ty::Real | Ty::Error),
+            Expr::Int { .. } => matches!(lhs, Ty::Vector { signed: false, .. } | Ty::Vector { signed: true, .. } | Ty::Real | Ty::Error),
             Expr::LogicLit { ch, .. } => {
                 // A character literal reads through its context type (spec:
                 // type kernel): builtin scalars, `Char`, or a user enum with
@@ -907,7 +907,7 @@ impl<'a> Checker<'a> {
                     if matches!(lit.as_ref(), Expr::LogicLit { .. })
                         && matches!(
                             self.type_of(other, sym),
-                            Ty::UInt(_) | Ty::Int(_) | Ty::Real
+                            Ty::Vector { signed: false, .. } | Ty::Vector { signed: true, .. } | Ty::Real
                         )
                     {
                         self.error(
@@ -1020,7 +1020,7 @@ impl<'a> Checker<'a> {
     /// checks rather than producing a false positive.
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
-            Expr::Int { .. } => Ty::UInt(0),
+            Expr::Int { .. } => Ty::Vector { width: 0, signed: false },
             // `if c { a } else { b }` takes its branches' type (the then arm;
             // branch-mismatch diagnostics ride on assignment compatibility).
             Expr::IfExpr { then, .. } => self.type_of(then, sym),
@@ -1039,10 +1039,10 @@ impl<'a> Checker<'a> {
                         .map(|i| Ty::Named(siox_resolve::DefId(i as u32)))
                         .unwrap_or(Ty::Error);
                 }
-                if suffix_scale(&suffix.text).is_some() { Ty::UInt(0) } else { Ty::Error }
+                if suffix_scale(&suffix.text).is_some() { Ty::Vector { width: 0, signed: false } } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
-                Ty::UInt(digits.len() as u32 * if *base == 'x' { 4 } else { 1 })
+                Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 }, signed: false }
             }
             Expr::LogicLit { .. } => Ty::Logic,
             Expr::Bool { .. } => Ty::Bool,
@@ -1063,7 +1063,7 @@ impl<'a> Checker<'a> {
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
                 "event" | "rising" | "falling" | "edge" => Ty::Bool,
                 "old" => self.type_of(base, sym),
-                "width" | "high" | "low" | "left" | "right" => Ty::UInt(0),
+                "width" | "high" | "low" | "left" | "right" => Ty::Vector { width: 0, signed: false },
                 _ => Ty::Error,
             },
             Expr::Binary { op, lhs, rhs, .. } => {
@@ -1074,8 +1074,8 @@ impl<'a> Checker<'a> {
                 // An integer literal joins the other operand's numeric type
                 // (`100 / r` with r: int[8] is an int[8], via the std
                 // `impl Div<int> for integer`).
-                if matches!(lhs_ty, Ty::UInt(0)) {
-                    if let r @ (Ty::Int(_) | Ty::UInt(_)) = self.type_of(rhs, sym) {
+                if matches!(lhs_ty, Ty::Vector { width: 0, signed: false }) {
+                    if let r @ (Ty::Vector { signed: true, .. } | Ty::Vector { signed: false, .. }) = self.type_of(rhs, sym) {
                         return r;
                     }
                 }
@@ -1107,7 +1107,7 @@ impl<'a> Checker<'a> {
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
-            Expr::Concat { .. } => Ty::UInt(0),
+            Expr::Concat { .. } => Ty::Vector { width: 0, signed: false },
             // Conversion expressions type as their target (spec 3.17):
             // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call { callee, args, .. } => match callee.as_ref() {
@@ -1117,10 +1117,9 @@ impl<'a> Checker<'a> {
                         _ => "",
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
-                    match head {
-                        "uint" => Ty::UInt(w),
-                        "int" => Ty::Int(w),
-                        _ => Ty::Error,
+                    match self.vector_families.get(head) {
+                        Some(&signed) => Ty::Vector { width: w, signed },
+                        None => Ty::Error,
                     }
                 }
                 Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
@@ -1141,15 +1140,15 @@ impl<'a> Checker<'a> {
                     {
                         self.path_ty(p)
                     }
-                    "integer" => Ty::UInt(0),
+                    "integer" => Ty::Vector { width: 0, signed: false },
                     "Char" => Ty::Char,
                     // resize keeps the argument's family at the new width.
                     "resize" => {
                         let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
                         match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Int(_)) => Ty::Int(w),
-                            Some(Ty::UInt(_)) => Ty::UInt(w),
-                            _ => Ty::UInt(w),
+                            Some(Ty::Vector { signed: true, .. }) => Ty::Vector { width: w, signed: true },
+                            Some(Ty::Vector { signed: false, .. }) => Ty::Vector { width: w, signed: false },
+                            _ => Ty::Vector { width: w, signed: false },
                         }
                     }
                     _ => Ty::Error,
@@ -1215,7 +1214,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Resolve a type annotation to a [`Ty`]. Parametric widths (`uint[W]`)
-    /// become `UInt(0)` until elaboration fills them in.
+    /// become `Vector { width: 0, .. }` until elaboration fills them in.
     fn ast_ty(&self, t: &Type) -> Ty {
         match t {
             Type::Path(p) => self.path_ty(p),
@@ -1223,8 +1222,7 @@ impl<'a> Checker<'a> {
                 // Unconstrained (`Char[]`): width 0 = "set at use".
                 let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
-                    Ty::UInt(_) => Ty::UInt(width),
-                    Ty::Int(_) => Ty::Int(width),
+                    Ty::Vector { signed, .. } => Ty::Vector { width, signed },
                     other => Ty::Array { elem: Box::new(other), len: width },
                 }
             }
@@ -1245,7 +1243,7 @@ impl<'a> Checker<'a> {
                 // `integer` is the kernel word; `uint`/`int` are no longer
                 // names here — they resolve as array-derived Logic families
                 // (`struct uint : Logic[]` in std::bits) via the arm below.
-                "integer" => Ty::UInt(0),
+                "integer" => Ty::Vector { width: 0, signed: false },
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
                 // Elaboration-time range constants (`const BYTE: range`);
@@ -1256,8 +1254,8 @@ impl<'a> Checker<'a> {
                     None => match self.logic_vector_family(name) {
                         // An array-derived Logic family behaves as a numeric
                         // vector: width applies via `F[N]` (ast_ty's Indexed).
-                        Some(true) => Ty::Int(0),
-                        Some(false) => Ty::UInt(0),
+                        Some(true) => Ty::Vector { width: 0, signed: true },
+                        Some(false) => Ty::Vector { width: 0, signed: false },
                         None => {
                             self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
                         }
@@ -1306,7 +1304,9 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
     }
     match (lhs, rhs) {
         (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
-        (UInt(a), UInt(b)) | (Int(a), Int(b)) => *a == 0 || *b == 0 || a == b,
+        (Vector { width: a, signed: sa }, Vector { width: b, signed: sb }) => {
+            sa == sb && (*a == 0 || *b == 0 || a == b)
+        }
         (Named(a), Named(b)) => a == b,
         // Whole-array copy: same element type, matching length (0 = unset).
         (Array { elem: ea, len: la }, Array { elem: eb, len: lb }) => {
@@ -1323,10 +1323,10 @@ fn ty_name(t: &Ty) -> String {
         Ty::Bool => "Bool".to_string(),
         Ty::Real => "real".to_string(),
         Ty::Char => "Char".to_string(),
-        Ty::UInt(0) => "uint".to_string(),
-        Ty::UInt(w) => format!("uint[{w}]"),
-        Ty::Int(0) => "int".to_string(),
-        Ty::Int(w) => format!("int[{w}]"),
+        Ty::Vector { width: 0, signed: false } => "uint".to_string(),
+        Ty::Vector { width: w, signed: false } => format!("uint[{w}]"),
+        Ty::Vector { width: 0, signed: true } => "int".to_string(),
+        Ty::Vector { width: w, signed: true } => format!("int[{w}]"),
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array { .. } => "an array".to_string(),
         Ty::Error => "<unknown>".to_string(),

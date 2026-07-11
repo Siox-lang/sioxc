@@ -41,6 +41,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         return Err("no #[test] entity to build a test binary from".into());
     }
     let enums = enum_discriminants(modules);
+    let families = siox_ir::vector_families(modules);
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
     for m in modules {
         for item in &m.items {
@@ -126,6 +127,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             design,
             map: &map,
             enums: &enums,
+            families: &families,
             name: &name,
             clocks,
             locals: Default::default(),
@@ -194,6 +196,7 @@ struct Ctx<'a> {
     design: &'a Design,
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
+    families: &'a HashMap<String, bool>,
     name: &'a str,
     /// `clock(clk, ..)`-registered background clocks: (signal id, half period fs).
     clocks: Vec<(u32, u64)>,
@@ -656,7 +659,9 @@ impl Ctx<'_> {
                 let v = self.expr(arg)?;
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }
-                        if matches!(expr_path(base).as_deref(), Some("uint" | "int")) =>
+                        if expr_path(base)
+                            .as_deref()
+                            .is_some_and(|h| self.families.contains_key(h)) =>
                     {
                         parse_u64(match index.as_ref() {
                             ast::Expr::Int { text, .. } => text,
