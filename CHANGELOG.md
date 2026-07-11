@@ -46,18 +46,19 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
-- **S5 `std::rand` + S7 text encodings** — `rand!()`/`randint!(lo, hi)`/
-  `uniform!()`/`seed!(n)` as bang *expressions* (impure, per the rule): one
-  deterministic xorshift64* shared by the runner and the native harness, so
-  every engine reproduces the same sequence from the same seed. `std::text`
+- **S5 `std::rand` + S7 text encodings** — `rand()`/`randint(lo, hi)`/
+  `uniform()`/`seed(n)` as ordinary runtime functions: one deterministic
+  xorshift64* shared by the runner and the native harness, so every engine
+  reproduces the same sequence from the same seed. `std::text`
   gains the encoding tables (`unicode`/`ascii`/`char_of`) over the new
   `Char(n)` conversion; character literals write natively as code points.
-- **S3: `print!`, `stop!`, `finish!`** — the pure/bang rule lands: plain
-  calls are pure values, bang forms are simulation actions. `print!`
-  format-expands at compile time (`{}` renders per argument kind, reals as
-  floats), `stop!`/`finish!` end a test cleanly with the time. All three
-  paths (native compiles print! to printf). `clock()` removed — the
-  `after`-form is the one generator.
+- **S3: `print!`, `stop()`, `finish()`** — the bang marks a *macro*
+  (compile-time expansion / source capture: `print!`, `assert!`); everything
+  else is an ordinary function — the language does not classify functions by
+  purity. `print!` format-expands at compile time (`{}` renders per argument
+  kind, reals as floats); `stop()`/`finish()` end a test cleanly with the
+  time. All three paths (native compiles print! to printf). `clock()`
+  removed — the `after`-form is the one generator.
 - **Dynamic range asserts + real initial values** — a ranged numeric
   (`integer<1..10>`) is checked after every settle on all three paths;
   leaving the domain fails the simulation with the signal, value, and time

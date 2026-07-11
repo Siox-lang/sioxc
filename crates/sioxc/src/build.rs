@@ -431,12 +431,12 @@ impl Ctx<'_> {
                 b.push_str(&format!("{ind}printf(\"{cfmt}\\n\"{call_args});\n"));
             }
             // seed!(n): reseed the deterministic RNG.
-            "seed" if bang => {
+            "seed" => {
                 let n = self.expr(args.first().ok_or("seed! needs a value")?)?;
                 b.push_str(&format!("{ind}g_rand = ({n}) ? ({n}) : 1;\n"));
             }
             // stop!/finish!: end the test cleanly (passing).
-            "stop" | "finish" if bang => {
+            "stop" | "finish" => {
                 b.push_str(&format!(
                     "{ind}printf(\"{name} at %llu fs\\n\", (unsigned long long)_now); return 0;\n"
                 ));
@@ -546,10 +546,19 @@ impl Ctx<'_> {
             ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return Err("unsupported call in testbench expression".into()),
         };
-        let f = self
-            .fns
-            .get(name)
-            .ok_or_else(|| format!("unsupported call `{name}` in testbench expression"))?;
+        let Some(f) = self.fns.get(name) else {
+            // Runtime-provided functions (std::rand).
+            return match name {
+                "rand" => Ok("sx_rand()".to_string()),
+                "randint" => {
+                    let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;
+                    let hi = self.expr(args.get(1).ok_or("randint needs bounds")?)?;
+                    Ok(format!("(({lo}) + sx_rand() % ((({hi}) - ({lo})) + 1))"))
+                }
+                _ => Err(format!("unsupported call `{name}` in testbench expression")),
+            };
+        };
+        let f = f;
         let body = f.body.as_ref().ok_or("fn has no body")?;
         // Constant arguments fold statically (also the only way a recursive
         // fn like clog2 compiles here).
@@ -614,22 +623,6 @@ impl Ctx<'_> {
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
-            // Bang expressions: the deterministic RNG.
-            ast::Expr::Call { callee, args, bang, .. } if *bang => {
-                let name = match callee.as_ref() {
-                    ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-                    _ => return Err("unsupported bang expression".into()),
-                };
-                match name {
-                    "rand" => "sx_rand()".to_string(),
-                    "randint" => {
-                        let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;
-                        let hi = self.expr(args.get(1).ok_or("randint needs bounds")?)?;
-                        format!("(({lo}) + sx_rand() % ((({hi}) - ({lo})) + 1))")
-                    }
-                    _ => return Err(format!("unsupported bang expression `{name}!`")),
-                }
-            }
             // Conversions mask to the target width (testbench side).
             ast::Expr::Call { callee, args, .. } => {
                 let arg = args.first().ok_or("conversion needs an argument")?;

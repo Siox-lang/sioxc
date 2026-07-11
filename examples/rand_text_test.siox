@@ -15,13 +15,13 @@ impl RandTextTest {
     assert!(unicode(char_of(955)) == 955, "round-trip a code point");
 
     // Deterministic randomization: same seed -> same sequence, every engine.
-    seed!(42);
-    let a: uint[8] = randint!(10, 20);
-    let b: uint[8] = randint!(10, 20);
+    seed(42);
+    let a: uint[8] = randint(10, 20);
+    let b: uint[8] = randint(10, 20);
     print!("randints: {} {}", a, b);
     assert!((a >= 10) and (a <= 20), "randint in bounds");
     assert!((b >= 10) and (b <= 20), "randint in bounds");
-    seed!(42);
-    let a2: uint[8] = randint!(10, 20);
+    seed(42);
+    let a2: uint[8] = randint(10, 20);
     assert!(a2 == a, "reseeding reproduces");
 }

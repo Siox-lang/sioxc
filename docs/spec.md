@@ -1791,17 +1791,21 @@ and stays usable as a name everywhere else. `after` is testbench-only in
 Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
 the after-form is the one generator.)
 
-#### Pure calls vs. bang actions
+#### Macros vs. functions
 
-A plain call is a **pure value** (a module `fn`: inlinable, const-evaluable,
-synthesizable; `extern "C"` fns are assumed pure). A **bang form is a
-simulation action**, interpreted by the runtime:
+The **bang marks a macro** — a compile-time syntactic form (format-string
+expansion, source-location capture), like Rust's. Everything else is an
+ordinary function; the language does not classify functions as pure,
+impure, or procedures:
 
 ```siox
-print!("n = {} and sqrt({}) = {}", n, x, y);  // {} renders per argument kind
-assert!(cond, "message");                     // records a failure + location
-stop!();                                      // halt here (test passes so far)
-finish!();                                    // end the simulation cleanly
+print!("n = {} and sqrt({}) = {}", n, x, y);  // macro: {} expands per argument kind
+assert!(cond, "message");                     // macro: captures the source location
+
+stop();                                       // function: halt (test passes so far)
+finish();                                     // function: end the simulation cleanly
+seed(42);                                     // functions: deterministic RNG
+let r: uint[8] = randint(10, 20);             //   (runtime-provided, std::rand)
 ```
 
 `print!` auto-newlines (like `$display`); real values print as floats, `Char`

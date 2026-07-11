@@ -697,12 +697,12 @@ impl Testbench<'_> {
                 println!("{out}");
             }
             // seed!(n): reseed the deterministic RNG.
-            "seed" if bang => {
+            "seed" => {
                 let n = args.first().map(|a| self.eval(a).to_u64()).unwrap_or(1);
                 self.rand_state.set(if n == 0 { 1 } else { n });
             }
             // stop!() / finish!(): end the test cleanly at this point.
-            "stop" | "finish" if bang => {
+            "stop" | "finish" => {
                 println!("{} at {} fs", name, self.time_fs);
                 self.halted = true;
             }
@@ -909,7 +909,24 @@ impl Testbench<'_> {
             ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return 0,
         };
-        let Some(f) = self.fns.get(name) else { return 0 };
+        let Some(f) = self.fns.get(name) else {
+            // Runtime-provided functions (std::rand): ordinary calls, no
+            // special syntax — the runtime supplies the implementation.
+            return match name {
+                "rand" => u128::from_u64(self.next_rand()),
+                "uniform" => {
+                    let x = (self.next_rand() >> 11) as f64 / (1u64 << 53) as f64;
+                    u128::from_u64(x.to_bits())
+                }
+                "randint" => {
+                    let lo = args.first().map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(0);
+                    let hi = args.get(1).map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(lo);
+                    let span = hi.saturating_sub(lo).saturating_add(1).max(1);
+                    u128::from_u64(lo + self.next_rand() % span)
+                }
+                _ => u128::from_u64(0),
+            };
+        };
         let Some(body) = &f.body else { return 0 };
         // Constant arguments: use the signed static evaluator (the dynamic
         // path below is unsigned words, which breaks e.g. `abs(0 - 5)`).
@@ -988,26 +1005,6 @@ impl Testbench<'_> {
             // Conversions (spec 3.17): testbench evaluation masks to the
             // target width (`integer(x)` passes through); source
             // sign-extension is a hardware-lowering concern.
-            ast::Expr::Call { callee, args, bang, .. } if *bang => {
-                let name = match callee.as_ref() {
-                    ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-                    _ => return 0,
-                };
-                match name {
-                    "rand" => u128::from_u64(self.next_rand()),
-                    "uniform" => {
-                        let f = (self.next_rand() >> 11) as f64 / (1u64 << 53) as f64;
-                        u128::from_u64(f.to_bits())
-                    }
-                    "randint" => {
-                        let lo = args.first().map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(0);
-                        let hi = args.get(1).map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(lo);
-                        let span = hi.saturating_sub(lo).saturating_add(1).max(1);
-                        u128::from_u64(lo + self.next_rand() % span)
-                    }
-                    _ => u128::from_u64(0),
-                }
-            }
             ast::Expr::Call { callee, args, .. } => {
                 let Some(arg) = args.first() else { return 0 };
                 let v = self.eval_env(arg, fenv);

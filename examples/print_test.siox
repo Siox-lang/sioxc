@@ -12,6 +12,6 @@ impl S3Test {
     await 1ns;
     print!("n = {} and sqrt({}) = {}", n, x, y);
     assert!(n == 42, "sanity");
-    finish!();
+    finish();
     assert!(n == 0, "unreachable after finish!");
 }
