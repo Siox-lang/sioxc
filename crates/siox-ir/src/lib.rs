@@ -227,6 +227,10 @@ struct Lowering<'a> {
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
+    /// Type-family of each generic-fn parameter during inlining (param name ->
+    /// the concrete argument's family), so operator dispatch in the body uses
+    /// the caller's type (e.g. int's signed `Ord`, not the kernel compare).
+    param_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
     /// Module-level `real` constants (`const PI: real = 3.14159...`).
@@ -314,6 +318,7 @@ impl<'a> Lowering<'a> {
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
+            param_types: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
             consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
@@ -1918,6 +1923,8 @@ impl<'a> Lowering<'a> {
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
         let mut fenv: HashMap<String, Val> = HashMap::new();
+        // Saved param-family bindings to restore after this inline (nesting).
+        let mut saved: Vec<(String, Option<String>)> = Vec::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
@@ -1925,12 +1932,24 @@ impl<'a> Lowering<'a> {
                     format!("{}::width", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
                 );
+                // Propagate the argument's family so the body dispatches
+                // operators on the caller's concrete type.
+                if let Some(fam) = self.operand_type_name(a) {
+                    let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
+                    saved.push((n.text.clone(), prev));
+                }
             }
         }
         let out = match f.body.as_ref().and_then(|b| self.inline_block(&b.stmts, &fenv)) {
             Some(Val::Scalar(v)) => Some(v),
             _ => None,
         };
+        for (name, prev) in saved.into_iter().rev() {
+            match prev {
+                Some(v) => self.param_types.borrow_mut().insert(name, v),
+                None => self.param_types.borrow_mut().remove(&name),
+            };
+        }
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
     }
@@ -2032,6 +2051,10 @@ impl<'a> Lowering<'a> {
                 .then(|| p.segments[0].text.clone()),
             _ => {
                 let p = expr_path(e)?;
+                // A generic-fn parameter reads as its caller's concrete family.
+                if let Some(fam) = self.param_types.borrow().get(&p) {
+                    return Some(fam.clone());
+                }
                 if self.local_char.contains(&p) {
                     return Some("Char".to_string());
                 }

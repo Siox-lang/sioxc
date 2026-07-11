@@ -467,6 +467,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_after_name(&mut self, start: Span, name: Ident) -> FnDecl {
+        let generics = self.parse_params_opt();
         let params = self.parse_fn_params();
         let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()) } else { None };
         let body = if self.at(TokenKind::LBrace) {
@@ -475,7 +476,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Semi, "after a method signature");
             None
         };
-        FnDecl { name, params, ret, body, span: start.to(self.prev_span()) }
+        FnDecl { name, generics, params, ret, body, span: start.to(self.prev_span()) }
     }
 
     fn parse_fn_params(&mut self) -> Vec<FnParam> {

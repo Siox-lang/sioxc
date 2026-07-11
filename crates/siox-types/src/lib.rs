@@ -129,6 +129,9 @@ struct Checker<'a> {
     /// Struct name -> signedness, for structs carrying `#[vector]` (an
     /// array-derived numeric family). Membership is the attribute, not shape.
     vector_families: HashMap<String, bool>,
+    /// Generic module fns: name -> (type params with bounds, value params).
+    /// Bounds are checked at each call (spec: generic bounds).
+    generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -184,6 +187,7 @@ impl<'a> Checker<'a> {
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
             vector_families: HashMap::new(),
+            generic_fns: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
         }
@@ -271,6 +275,16 @@ impl<'a> Checker<'a> {
                         self.enum_bases.insert(e.name.text.clone(), h.to_string());
                     }
                 }
+            }
+            Item::Fn(f) if !f.generics.params.is_empty() => {
+                let vps = f
+                    .params
+                    .iter()
+                    .filter(|p| !p.is_self)
+                    .filter_map(|p| Some((p.name.as_ref()?.text.clone(), p.ty.clone()?)))
+                    .collect();
+                self.generic_fns
+                    .insert(f.name.text.clone(), (f.generics.params.clone(), vps));
             }
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
@@ -428,8 +442,13 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Fn(f) => {
-                if let Some(b) = &f.body {
-                    self.check_block(b);
+                // A generic fn's body is verified at each call (it inlines),
+                // where the concrete types are known; checking it abstractly
+                // (operators on the opaque `T`) would wrongly reject it.
+                if f.generics.params.is_empty() {
+                    if let Some(b) = &f.body {
+                        self.check_block(b);
+                    }
                 }
             }
             Item::Struct(st) => self.check_struct(st),
@@ -793,6 +812,60 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Enforce a generic fn's trait bounds at the call site (spec: generic
+    /// bounds). Each type parameter is inferred from the value argument whose
+    /// declared type names it; a bound `T: Tr` requires the inferred type to
+    /// satisfy `Tr`. Fns inline, so the call *is* the monomorphization —
+    /// checking here gives an early, clear error instead of a post-inline one.
+    fn check_generic_bounds(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
+        let Expr::Path(p) = callee else { return };
+        if p.segments.len() != 1 {
+            return;
+        }
+        let Some((generics, vparams)) = self.generic_fns.get(&p.segments[0].text).cloned() else {
+            return;
+        };
+        for gp in &generics {
+            let Some(bound) = &gp.bound else { continue };
+            let Some(trait_name) = type_head_name(bound) else { continue };
+            // Infer the type param from the first value param named after it.
+            let inferred = vparams.iter().position(|(_, t)| type_head_name(t) == Some(&gp.name.text))
+                .and_then(|i| args.get(i))
+                .map(|a| self.type_of(a, sym));
+            let Some(ty) = inferred else { continue };
+            if !self.satisfies(&ty, trait_name) {
+                let name = ty_name(&ty);
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    format!(
+                        "`{name}` does not satisfy the bound `{}: {trait_name}`",
+                        gp.name.text
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Whether `ty` satisfies trait bound `trait_name`. A named struct/enum
+    /// must have an explicit `impl Tr for it`; kernel scalars and vectors are
+    /// assumed to carry the built-in capabilities (arithmetic, comparison), so
+    /// they are accepted leniently — this catches a custom type missing the
+    /// impl without false-flagging uint/int/etc.
+    fn satisfies(&self, ty: &Ty, trait_name: &str) -> bool {
+        match self.type_kind_name(ty) {
+            Some(kind) => {
+                if self.trait_impls.get(trait_name).is_some_and(|s| s.contains(&kind)) {
+                    return true;
+                }
+                // A named (struct/enum) type without the impl fails; a kernel
+                // scalar / vector is accepted (built-in capability).
+                !matches!(ty, Ty::Named(_))
+            }
+            None => true,
+        }
+    }
+
     /// Compile-time fit check for conversion expressions with constant
     /// arguments: the value must be representable in the target container.
     fn check_conversion_fit(&mut self, callee: &Expr, args: &[Expr], site: &Expr) {
@@ -953,6 +1026,7 @@ impl<'a> Checker<'a> {
                 // like `let b: Byte = 300`. Dynamic values get simulation
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
+                self.check_generic_bounds(callee, args, sym);
             }
             Expr::Construct { args, .. } => {
                 for c in args {

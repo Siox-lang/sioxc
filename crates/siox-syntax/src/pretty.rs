@@ -229,7 +229,7 @@ impl Printer {
         };
         match &f.body {
             Some(body) => {
-                self.line(&format!("fn {}({ps}){ret} {{", f.name.text));
+                self.line(&format!("fn {}{}({ps}){ret} {{", f.name.text, params(&f.generics)));
                 self.indent += 1;
                 for s in &body.stmts {
                     self.stmt(s);
@@ -237,7 +237,7 @@ impl Printer {
                 self.indent -= 1;
                 self.line("}");
             }
-            None => self.line(&format!("fn {}({ps}){ret};", f.name.text)),
+            None => self.line(&format!("fn {}{}({ps}){ret};", f.name.text, params(&f.generics))),
         }
     }
 
@@ -585,6 +585,13 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    #[test]
+    fn roundtrips_generic_fn() {
+        roundtrip(
+            "module m;\nfn maxi<T: Ord>(a: T, b: T) -> T {\n    if a > b {\n        return a;\n    }\n    return b;\n}\n",
+        );
     }
 
     #[test]

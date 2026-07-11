@@ -371,6 +371,10 @@ impl<'a> Resolver<'a> {
         match item {
             Item::Using(_) => {}
             Item::Fn(f) => {
+                // A generic fn's type params (`<T: Ord>`) scope over its
+                // signature, so `a: T` resolves.
+                self.enter();
+                self.bind_params(&f.generics);
                 for p in &f.params {
                     if let Some(t) = &p.ty {
                         self.resolve_type(t);
@@ -379,6 +383,7 @@ impl<'a> Resolver<'a> {
                 if let Some(t) = &f.ret {
                     self.resolve_type(t);
                 }
+                self.exit();
             }
             Item::ExternBlock { .. } => {}
             Item::Const(c) => {

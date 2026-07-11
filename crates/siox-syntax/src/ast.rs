@@ -228,6 +228,10 @@ pub struct Attr {
 #[derive(Clone, Debug)]
 pub struct FnDecl {
     pub name: Ident,
+    /// Type parameters with optional trait bounds: `fn max<T: Ord>(...)`.
+    /// Bounds are checked at each call site (fns inline, so a call is a
+    /// monomorphization). Empty for a non-generic fn.
+    pub generics: Params,
     pub params: Vec<FnParam>,
     pub ret: Option<Type>,
     /// `None` for a trait requirement signature without a body.
