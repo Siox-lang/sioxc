@@ -325,6 +325,7 @@ fn run_one<'a>(
         locals: HashMap::new(),
         fns,
         halted: false,
+        rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
     };
 
     // One pass in source order: `let`s apply as they appear (sequential
@@ -402,6 +403,10 @@ struct Testbench<'a> {
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
     /// unless a failure was already recorded).
     halted: bool,
+    /// xorshift64* state for `rand!`/`randint!`/`uniform!` — deterministic
+    /// default seed so runs reproduce; `seed!(n)` reseeds. The native harness
+    /// uses the same algorithm, so all three engines agree.
+    rand_state: std::cell::Cell<u64>,
 }
 
 impl Testbench<'_> {
@@ -691,6 +696,11 @@ impl Testbench<'_> {
                 out.push_str(rest);
                 println!("{out}");
             }
+            // seed!(n): reseed the deterministic RNG.
+            "seed" if bang => {
+                let n = args.first().map(|a| self.eval(a).to_u64()).unwrap_or(1);
+                self.rand_state.set(if n == 0 { 1 } else { n });
+            }
             // stop!() / finish!(): end the test cleanly at this point.
             "stop" | "finish" if bang => {
                 println!("{} at {} fs", name, self.time_fs);
@@ -843,6 +853,16 @@ impl Testbench<'_> {
         }
     }
 
+    /// One xorshift64* step (Marsaglia; * variant's output multiply).
+    fn next_rand(&self) -> u64 {
+        let mut x = self.rand_state.get();
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rand_state.set(x);
+        x.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
     /// Render one `print!` argument by its kind.
     fn render_arg(&self, a: &ast::Expr) -> String {
         let v = self.eval(a);
@@ -968,6 +988,26 @@ impl Testbench<'_> {
             // Conversions (spec 3.17): testbench evaluation masks to the
             // target width (`integer(x)` passes through); source
             // sign-extension is a hardware-lowering concern.
+            ast::Expr::Call { callee, args, bang, .. } if *bang => {
+                let name = match callee.as_ref() {
+                    ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+                    _ => return 0,
+                };
+                match name {
+                    "rand" => u128::from_u64(self.next_rand()),
+                    "uniform" => {
+                        let f = (self.next_rand() >> 11) as f64 / (1u64 << 53) as f64;
+                        u128::from_u64(f.to_bits())
+                    }
+                    "randint" => {
+                        let lo = args.first().map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(0);
+                        let hi = args.get(1).map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(lo);
+                        let span = hi.saturating_sub(lo).saturating_add(1).max(1);
+                        u128::from_u64(lo + self.next_rand() % span)
+                    }
+                    _ => u128::from_u64(0),
+                }
+            }
             ast::Expr::Call { callee, args, .. } => {
                 let Some(arg) = args.first() else { return 0 };
                 let v = self.eval_env(arg, fenv);
@@ -986,7 +1026,8 @@ impl Testbench<'_> {
                         args.get(1).map(|n| self.eval_env(n, fenv).to_u64() as u32).unwrap_or(0)
                     }
                     ast::Expr::Path(p)
-                        if p.segments.len() == 1 && p.segments[0].text == "integer" =>
+                        if p.segments.len() == 1
+                            && matches!(p.segments[0].text.as_str(), "integer" | "Char") =>
                     {
                         return v;
                     }

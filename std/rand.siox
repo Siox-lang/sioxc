@@ -1,0 +1,13 @@
+module std::rand;
+
+// Deterministic randomization for testbenches (SV's $random, reproducible).
+// These are BANG forms — impure simulation actions/values, not pure fns
+// (spec: pure calls vs bang actions):
+//
+//   rand!()            a raw 64-bit random word
+//   randint!(lo, hi)   an integer in lo..hi inclusive
+//   uniform!()         a real in 0.0..1.0
+//   seed!(n)           reseed (the default seed is fixed, so runs reproduce)
+//
+// The runner and the native harness share one xorshift64* generator, so all
+// three engines produce identical sequences from the same seed.

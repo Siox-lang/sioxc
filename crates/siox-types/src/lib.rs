@@ -982,6 +982,7 @@ impl<'a> Checker<'a> {
                         self.path_ty(p)
                     }
                     "integer" => Ty::UInt(0),
+                    "Char" => Ty::Char,
                     // resize keeps the argument's family at the new width.
                     "resize" => {
                         let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;

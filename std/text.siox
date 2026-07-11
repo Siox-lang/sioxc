@@ -17,3 +17,19 @@ module std::text;
 // set at use — by an explicit length (`string[5]`) or, later, inferred from
 // a string literal (`let s = "hello";` -> Char[5]).
 pub using string = Char[];
+
+// Encoding tables (spec: type kernel — characters have no numbers except
+// through a table). `Char` stores Unicode code points, so the Unicode table
+// is the identity; Ascii is its 7-bit prefix (-1 = not representable).
+pub fn unicode(c: Char) -> integer {
+    return integer(c);
+}
+
+pub fn char_of(n: integer) -> Char {
+    return Char(n);
+}
+
+pub fn ascii(c: Char) -> integer {
+    if integer(c) < 128 { return integer(c); }
+    return 0 - 1;
+}

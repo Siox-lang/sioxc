@@ -224,9 +224,9 @@ Python testbenches.
 | **S2b** ✅ | `Resolve` + resolved `Logic` / `std::logic::unresolved` (`ULogic`); multi-context folds or errors | done — tristate buses work; `inout` semantics unblocked |
 | **S3** ✅ | `print!` + `stop!`/`finish!` (bang actions) + dynamic range asserts | done — pure-call/bang-action rule |
 | **S4** ✅ | `std::math` real functions + `clog2`, `abs/min/max`, `PI`/`E` | done — libm/LLVM intrinsics; native links -lm |
-| **S5** | `std::rand`, `std::assert` helpers | S3 |
+| **S5** ✅ | `std::rand` (rand!/randint!/uniform!/seed! — bang expressions, one xorshift64* across all engines) | done |
 | **S6** | dynamic array indexing (compiler) + `std::io::load_hex` | memories are vendor/user domain |
-| **S7** | `std::text` encodings, `to_string` | S2 |
+| **S7** ✅ | `std::text` encodings (unicode/ascii/char_of over `Char(n)`/`integer(c)`) | done; `to_string` waits on array-returning fns |
 | **S8** | `std::fixed`, `std::fifo`, `std::verify` | processes; cocotb timing |
 
 The through-line: **S2's "functions callable in expressions" is the keystone**

@@ -1744,6 +1744,10 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "integer" => {
                 (None, false)
             }
+            // `Char(n)`: a code point becomes a symbol (32-bit storage).
+            ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "Char" => {
+                (Some(32), false)
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                 let n = args.get(1)?;
                 let w = match self.lower_scalar_env(n, env) {
@@ -2490,6 +2494,10 @@ pub fn eval_const_fns(
                 ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
                 _ => return None,
             };
+            // Kernel conversions are value-transparent in const context.
+            if name == "integer" || name == "Char" {
+                return eval_const_fns(args.first()?, env, fns, depth + 1);
+            }
             let f = fns.get(name.as_str())?;
             let body = f.body.as_ref()?;
             let mut fenv = HashMap::new();

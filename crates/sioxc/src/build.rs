@@ -59,6 +59,13 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
+    // xorshift64* with the runner's constants: identical random sequences.
+    prog.push_str(
+        "static uint64_t g_rand = 0x9E3779B97F4A7C15ULL;\n\
+         static uint64_t sx_rand(void) {\n\
+         \x20   g_rand ^= g_rand >> 12; g_rand ^= g_rand << 25; g_rand ^= g_rand >> 27;\n\
+         \x20   return g_rand * 0x2545F4914F6CDD1DULL;\n}\n",
+    );
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
@@ -423,6 +430,11 @@ impl Ctx<'_> {
                 };
                 b.push_str(&format!("{ind}printf(\"{cfmt}\\n\"{call_args});\n"));
             }
+            // seed!(n): reseed the deterministic RNG.
+            "seed" if bang => {
+                let n = self.expr(args.first().ok_or("seed! needs a value")?)?;
+                b.push_str(&format!("{ind}g_rand = ({n}) ? ({n}) : 1;\n"));
+            }
             // stop!/finish!: end the test cleanly (passing).
             "stop" | "finish" if bang => {
                 b.push_str(&format!(
@@ -500,11 +512,18 @@ impl Ctx<'_> {
     /// The C value for writing `e` to signal `id`: a real-typed target takes
     /// a float literal's f64 bit pattern (matching the runner's eval_for).
     fn value_for(&self, id: SignalId, e: &ast::Expr) -> Result<String, String> {
-        if self.design.signals[id.0 as usize].real {
+        let sig = &self.design.signals[id.0 as usize];
+        if sig.real {
             if let ast::Expr::Int { text, .. } = e {
                 if let Ok(f) = text.parse::<f64>() {
                     return Ok(format!("{}ULL", f.to_bits()));
                 }
+            }
+        }
+        // A char-typed target reads a character literal as its code point.
+        if sig.char {
+            if let ast::Expr::LogicLit { ch, .. } = e {
+                return Ok(format!("{}ULL", *ch as u32));
             }
         }
         self.expr(e)
@@ -595,6 +614,22 @@ impl Ctx<'_> {
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
+            // Bang expressions: the deterministic RNG.
+            ast::Expr::Call { callee, args, bang, .. } if *bang => {
+                let name = match callee.as_ref() {
+                    ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+                    _ => return Err("unsupported bang expression".into()),
+                };
+                match name {
+                    "rand" => "sx_rand()".to_string(),
+                    "randint" => {
+                        let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;
+                        let hi = self.expr(args.get(1).ok_or("randint needs bounds")?)?;
+                        format!("(({lo}) + sx_rand() % ((({hi}) - ({lo})) + 1))")
+                    }
+                    _ => return Err(format!("unsupported bang expression `{name}!`")),
+                }
+            }
             // Conversions mask to the target width (testbench side).
             ast::Expr::Call { callee, args, .. } => {
                 let arg = args.first().ok_or("conversion needs an argument")?;
@@ -617,7 +652,8 @@ impl Ctx<'_> {
                         }
                     }
                     ast::Expr::Path(p)
-                        if p.segments.len() == 1 && p.segments[0].text == "integer" =>
+                        if p.segments.len() == 1
+                            && matches!(p.segments[0].text.as_str(), "integer" | "Char") =>
                     {
                         return Ok(format!("({v})"));
                     }
