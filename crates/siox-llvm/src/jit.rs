@@ -70,7 +70,7 @@ mod tests {
     use siox_ir::{BinOp, Driver, Expr, Signal, SignalId};
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false }
+        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0 }
     }
 
     #[test]

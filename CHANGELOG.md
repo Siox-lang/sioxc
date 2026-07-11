@@ -46,6 +46,12 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Dynamic range asserts + real initial values** — a ranged numeric
+  (`integer<1..10>`) is checked after every settle on all three paths;
+  leaving the domain fails the simulation with the signal, value, and time
+  (`n = 11 left its range 1..10 at 95000000 fs`). Enabler: `let v: T = 1;`
+  initial values now actually apply (VHDL-style Signal.init in both engines'
+  reset) instead of everything starting at zero.
 - **Conversion fit checking** — a constant conversion argument must be
   representable in the target: `uint[4](300)` / `int[4](-9)` are
   compile-time errors (signed domains respected; simple const expressions

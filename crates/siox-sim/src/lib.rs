@@ -61,7 +61,15 @@ const MAX_DELTAS: usize = 10_000;
 
 impl<'a, S: Slot> Simulator<'a, S> {
     pub fn new(design: &'a Design) -> Self {
-        let state = vec![SignalState::default(); design.signals.len()];
+        // Signals reset to their declared initial values (VHDL-style).
+        let state = design
+            .signals
+            .iter()
+            .map(|sig| {
+                let v = S::from_u64(sig.init);
+                SignalState { current: v, old: v, event: false }
+            })
+            .collect();
         // Combinational processes and their sensitivity, for event-driven
         // dispatch (only recompute a target when a signal it reads changes).
         let mut comb = Vec::new();

@@ -53,6 +53,13 @@ pub struct Signal {
     /// code point — an implementation detail); character literals compared or
     /// assigned to it read through the Unicode table.
     pub char: bool,
+    /// A ranged numeric's value domain (`integer<lo..hi>`, spec 3.26): the
+    /// simulation checks every settled value against it — a dynamic range
+    /// assert. Plain `uint[N]`/`int[N]` wrap instead (documented semantics).
+    pub range: Option<(i64, i64)>,
+    /// The declared initial value's bit pattern (`let v: T = 1;`): engines
+    /// reset signals to it (VHDL-style initial values), not to zero.
+    pub init: u64,
 }
 
 /// A combinational driver: `signal = expr` under `cond` (spec 3.14 source-order
@@ -504,6 +511,14 @@ impl<'a> Lowering<'a> {
                     } else {
                         self.add_signal(path, &l.name.text, 0);
                     }
+                    // A constant initializer is the signal's reset value.
+                    if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
+                        if let Some(bits) = self.const_init_bits(v) {
+                            let w = self.out.signals[id.0 as usize].width;
+                            let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
+                            self.out.signals[id.0 as usize].init = masked;
+                        }
+                    }
                 }
             }
         }
@@ -663,6 +678,29 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The bit pattern of a constant `let` initializer: integers, logic
+    /// literals, enum variants, booleans, and real literals (f64 bits).
+    fn const_init_bits(&self, e: &ast::Expr) -> Option<u64> {
+        match e {
+            ast::Expr::Int { text, .. } if text.contains('.') => {
+                text.parse::<f64>().ok().map(f64::to_bits)
+            }
+            ast::Expr::LogicLit { ch, .. } => Some(match ch {
+                '1' | 'H' => 1,
+                'Z' => 2,
+                'X' | 'U' | 'W' => 3,
+                _ => 0,
+            }),
+            ast::Expr::Bool { value, .. } => Some(*value as u64),
+            ast::Expr::Path(p) if p.segments.len() >= 2 => self
+                .enum_variants
+                .get(&p.segments[0].text)
+                .and_then(|m| m.get(&p.segments[1].text))
+                .copied(),
+            _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
+        }
+    }
+
     fn next_ctx(&mut self) -> u32 {
         self.cur_ctx += 1;
         self.cur_ctx
@@ -670,7 +708,14 @@ impl<'a> Lowering<'a> {
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
         let id = SignalId(self.out.signals.len() as u32);
-        self.out.signals.push(Signal { path: format!("{entity}.{name}"), width, real: false, char: false });
+        self.out.signals.push(Signal {
+            path: format!("{entity}.{name}"),
+            width,
+            real: false,
+            char: false,
+            range: None,
+            init: 0,
+        });
         self.locals.insert(name.to_string(), id);
     }
 
@@ -744,14 +789,16 @@ impl<'a> Lowering<'a> {
             if let (ast::Type::Path(p), Some(&id)) = (ty, self.locals.get(name)) {
                 self.sig_type.insert(id.0, p.segments[0].text.clone());
             }
-        } else if let Some((w, is_real)) = self.ranged_numeric(ty) {
+        } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
             // `integer<lo..hi>` stores in the smallest width covering the
-            // range (two's complement when lo < 0); `real<..>` stays f64.
+            // range (two's complement when lo < 0); `real<..>` stays f64. The
+            // bounds ride on the signal for the simulation's range checks.
             self.add_signal(entity, name, w);
-            if is_real {
-                if let Some(&id) = self.locals.get(name) {
+            if let Some(&id) = self.locals.get(name) {
+                if is_real {
                     self.out.signals[id.0 as usize].real = true;
                 }
+                self.out.signals[id.0 as usize].range = range;
             }
         } else {
             self.add_signal(entity, name, type_width(ty, env, &self.free_fns));
@@ -790,7 +837,7 @@ impl<'a> Lowering<'a> {
     /// The storage width of a value-range-constrained numeric type
     /// (`integer<lo..hi>` / `real<lo..hi>`), if `ty` is one. Returns
     /// `(width, is_real)`.
-    fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool)> {
+    fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool, Option<(i64, i64)>)> {
         let ast::Type::Generic { base, args, .. } = ty else { return None };
         let ast::Type::Path(p) = base.as_ref() else { return None };
         let kind = p.segments.last().map(|s| s.text.as_str())?;
@@ -799,7 +846,7 @@ impl<'a> Lowering<'a> {
         }
         let [ast::GenericArg::Positional(arg)] = args.as_slice() else { return None };
         if kind == "real" {
-            return Some((64, true)); // range is a constraint, storage is f64
+            return Some((64, true, None)); // range is a constraint, storage is f64
         }
         let (a, b) = match arg {
             ast::Expr::Range { lo, hi, .. } => {
@@ -820,10 +867,10 @@ impl<'a> Lowering<'a> {
                 (hi as i128) < (1i128 << w.min(63)) || w >= 64
             };
             if fits {
-                return Some((w, false));
+                return Some((w, false, Some((lo, hi))));
             }
         }
-        Some((64, false))
+        Some((64, false, None))
     }
 
     /// The bit width of `ty` if it names a known enum.
@@ -2758,7 +2805,7 @@ mod tests {
         // A lowered counter is well-formed.
         assert!(lower_src(COUNTER).validate().is_empty());
 
-        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false };
+        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false, range: None, init: 0 };
         // Out-of-range signal id, an Unknown, a bad slice, and a width-0 signal.
         let bad = Design {
             signals: vec![sig(0)], // width 0 -> flagged

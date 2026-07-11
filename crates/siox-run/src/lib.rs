@@ -506,6 +506,42 @@ impl Testbench<'_> {
             let values = (0..n).map(|i| self.engine.read(SignalId(i))).collect();
             self.samples.push(Sample { time_fs: self.time_fs, values });
         }
+        self.check_ranges();
+    }
+
+    /// The dynamic range assert (spec 3.26): after every settle, a ranged
+    /// numeric's settled value must lie in its declared domain — leaving it
+    /// fails the test, like an assertion. Plain uint/int wrap instead.
+    fn check_ranges(&mut self) {
+        if self.failure.is_some() {
+            return;
+        }
+        let design = self.engine.design();
+        for (i, sig) in design.signals.iter().enumerate() {
+            let Some((lo, hi)) = sig.range else { continue };
+            let raw = self.engine.read(SignalId(i as u32)).to_u64();
+            // Decode two's complement when the domain dips below zero.
+            let v = if lo < 0 && sig.width > 0 && sig.width < 64 {
+                let sign = 1u64 << (sig.width - 1);
+                if raw & sign != 0 {
+                    (raw as i64) - (1i64 << sig.width)
+                } else {
+                    raw as i64
+                }
+            } else {
+                raw as i64
+            };
+            if v < lo || v > hi {
+                self.failure = Some((
+                    format!(
+                        "`{}` = {v} left its range {lo}..{hi} at {} fs",
+                        sig.path, self.time_fs
+                    ),
+                    Span::new(siox_diag::FileId(0), 0..0),
+                ));
+                return;
+            }
+        }
     }
 
     fn exec(&mut self, s: &ast::Stmt) {

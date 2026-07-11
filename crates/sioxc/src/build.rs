@@ -76,6 +76,37 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
          \x20   return 1;\n}\n\n",
     );
 
+    // The dynamic range assert (spec 3.26): after settles, ranged numerics
+    // must lie in their domain.
+    let ranged: Vec<(u32, &siox_ir::Signal)> = design
+        .signals
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| s.range.map(|_| (i as u32, s)))
+        .collect();
+    if !ranged.is_empty() {
+        prog.push_str("static int sx_check_ranges(void) {\n    int64_t v;\n");
+        for (id, sig) in &ranged {
+            let (lo, hi) = sig.range.unwrap();
+            let decode = if lo < 0 && sig.width > 0 && sig.width < 64 {
+                format!(
+                    "v = (int64_t)sx_read({id}); if (v & {s}LL) v -= {m}LL;",
+                    s = 1u64 << (sig.width - 1),
+                    m = 1u64 << sig.width
+                )
+            } else {
+                format!("v = (int64_t)sx_read({id});")
+            };
+            prog.push_str(&format!(
+                "    {decode}\n    if (v < {lo}LL || v > {hi}LL) {{ g_msg = \"`{}` left its range {lo}..{hi}\"; return 1; }}\n",
+                sig.path
+            ));
+        }
+        prog.push_str("    return 0;\n}\n\n");
+    } else {
+        prog.push_str("static int sx_check_ranges(void) { return 0; }\n\n");
+    }
+
     let mut names = Vec::new();
     for &root in &tests {
         let name = hier.instance(root).entity.clone();
@@ -225,6 +256,9 @@ impl Ctx<'_> {
         self.locals.borrow_mut().clear();
 
         b.push_str("    return 0;\n}\n\n");
+        // Post-settle range asserts (values persist, so checking at the next
+        // settle also catches violations that occur inside await loops).
+        let b = b.replace("sx_settle();", "sx_settle(); if (sx_check_ranges()) return 1;");
         Ok(b)
     }
 

@@ -117,14 +117,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let i32 = self.ctx.i32_type();
         let void = self.ctx.void_type();
 
-        // void sx_reset(void): zero cur/old/event.
+        // void sx_reset(void): signals take their declared initial values
+        // (VHDL-style); events clear.
         let f = self.module.add_function("sx_reset", void.fn_type(&[], false), None);
         self.builder.position_at_end(self.ctx.append_basic_block(f, "e"));
         for id in 0..self.n {
-            let z = i64.const_zero();
-            self.store("cur", SignalId(id), z);
-            self.store("old", SignalId(id), z);
-            self.store("event", SignalId(id), z);
+            let init = i64.const_int(self.design.signals[id as usize].init, false);
+            self.store("cur", SignalId(id), init);
+            self.store("old", SignalId(id), init);
+            self.store("event", SignalId(id), i64.const_zero());
         }
         self.builder.build_return(None).unwrap();
 
@@ -539,7 +540,7 @@ mod tests {
     use siox_ir::{Design, Driver, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false }
+        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0 }
     }
 
     #[test]
