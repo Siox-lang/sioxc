@@ -1208,9 +1208,13 @@ way VHDL's `and`/`or` work on `std_logic_vector` (`"1010" and "0110"` =
 `"0010"`). Boolean is simply the one-bit case of boolean-per-bit. Because it
 is intrinsic to being bits, no per-type `impl` is needed — the kernel
 provides it for every bit-derived type; only `Logic` overrides it, for its
-four-value `'X'`/`'Z'` truth table. These operators are **rejected on
-non-bit-derived types** (`real`, `Char`): per-bit boolean has no meaning
-there.
+four-value `'X'`/`'Z'` truth table. These operators are **rejected on the number kernels** `integer` and `real`
+(and on `Char`): a number is not a bit collection, so per-bit boolean has no
+meaning — `intA and intB` is an error. A literal is exempt (it is a bit-mask
+that takes the other operand's width: `b and 0xFF`). Comparison operators
+(`==`, `<`, `>=`, ...) yield a `Bool`, so their results *do* combine with
+boolean operators: `(a >= b) and (c < d)` is the idiomatic way to build a
+compound condition from numbers.
 
 Operator impls are **inlined at lowering time** as pure expression trees: the
 body must be `return e;` or `if`/`else` chains ending in returns (no loops,

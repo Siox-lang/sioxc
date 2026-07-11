@@ -27,6 +27,10 @@ pub enum Ty {
     Bit,
     Logic,
     Bool,
+    /// The kernel base type `integer` — an unbounded mathematical number, NOT
+    /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
+    /// comparison, but has NO per-bit boolean operators (unlike uint/int).
+    Integer,
     /// The kernel base type `real` (f64 in simulation).
     Real,
     /// The kernel base type `Char`: a non-numeric character symbol.
@@ -711,6 +715,7 @@ impl<'a> Checker<'a> {
             Ty::Bit => Some("Bit".to_string()),
             Ty::Logic => Some("Logic".to_string()),
             Ty::Bool => Some("Bool".to_string()),
+            Ty::Integer => Some("integer".to_string()),
             Ty::Vector { signed: false, .. } => Some("uint".to_string()),
             Ty::Vector { signed: true, .. } => Some("int".to_string()),
             Ty::Real => Some("real".to_string()),
@@ -925,7 +930,7 @@ impl<'a> Checker<'a> {
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
-            Expr::Int { .. } => matches!(lhs, Ty::Vector { signed: false, .. } | Ty::Vector { signed: true, .. } | Ty::Real | Ty::Error),
+            Expr::Int { .. } => matches!(lhs, Ty::Vector { .. } | Ty::Integer | Ty::Real | Ty::Error),
             Expr::LogicLit { ch, .. } => {
                 // A character literal reads through its context type (spec:
                 // type kernel): builtin scalars, `Char`, or a user enum with
@@ -993,7 +998,7 @@ impl<'a> Checker<'a> {
                     if matches!(lit.as_ref(), Expr::LogicLit { .. })
                         && matches!(
                             self.type_of(other, sym),
-                            Ty::Vector { signed: false, .. } | Ty::Vector { signed: true, .. } | Ty::Real
+                            Ty::Vector { .. } | Ty::Integer | Ty::Real
                         )
                     {
                         self.error(
@@ -1011,19 +1016,28 @@ impl<'a> Checker<'a> {
                 // only meaningful on Boolean and bit-derived types — never on
                 // `real` or `Char`.
                 if matches!(op_str, "and" | "or" | "xor" | "nand" | "nor" | "xnor") {
-                    let bad = [lhs, rhs]
-                        .into_iter()
-                        .map(|o| self.type_of(o, sym))
-                        .find(|t| matches!(t, Ty::Real | Ty::Char));
-                    if let Some(t) = bad {
-                        self.error(
-                            codes::TYPE_MISMATCH,
-                            *span,
-                            format!(
-                                "`{op_str}` is a boolean/per-bit operator; `{}` is not a bit-derived type",
-                                ty_name(&t)
-                            ),
+                    for operand in [lhs, rhs] {
+                        let t = self.type_of(operand, sym);
+                        // A literal is a bit-mask that coerces to the other
+                        // operand's width (`b and 31`); a non-literal number
+                        // (`integer`/`real`) or a `Char` is not bit-derived.
+                        let is_lit = matches!(
+                            operand.as_ref(),
+                            Expr::Int { .. } | Expr::SuffixLit { .. } | Expr::BitStrLit { .. }
                         );
+                        let bad = matches!(t, Ty::Real | Ty::Char)
+                            || (matches!(t, Ty::Integer) && !is_lit);
+                        if bad {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!(
+                                    "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/uint/int); `{}` is a number",
+                                    ty_name(&t)
+                                ),
+                            );
+                            break;
+                        }
                     }
                 }
                 // A user struct/enum operand needs an operator-trait impl
@@ -1128,7 +1142,7 @@ impl<'a> Checker<'a> {
     /// checks rather than producing a false positive.
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
-            Expr::Int { .. } => Ty::Vector { width: 0, signed: false },
+            Expr::Int { .. } => Ty::Integer,
             // `if c { a } else { b }` takes its branches' type (the then arm;
             // branch-mismatch diagnostics ride on assignment compatibility).
             Expr::IfExpr { then, .. } => self.type_of(then, sym),
@@ -1147,7 +1161,7 @@ impl<'a> Checker<'a> {
                         .map(|i| Ty::Named(siox_resolve::DefId(i as u32)))
                         .unwrap_or(Ty::Error);
                 }
-                if suffix_scale(&suffix.text).is_some() { Ty::Vector { width: 0, signed: false } } else { Ty::Error }
+                if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
                 Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 }, signed: false }
@@ -1171,7 +1185,7 @@ impl<'a> Checker<'a> {
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
                 "event" | "rising" | "falling" | "edge" => Ty::Bool,
                 "old" => self.type_of(base, sym),
-                "width" | "high" | "low" | "left" | "right" => Ty::Vector { width: 0, signed: false },
+                "width" | "high" | "low" | "left" | "right" => Ty::Integer,
                 _ => Ty::Error,
             },
             Expr::Binary { op, lhs, rhs, .. } => {
@@ -1182,7 +1196,7 @@ impl<'a> Checker<'a> {
                 // An integer literal joins the other operand's numeric type
                 // (`100 / r` with r: int[8] is an int[8], via the std
                 // `impl Div<int> for integer`).
-                if matches!(lhs_ty, Ty::Vector { width: 0, signed: false }) {
+                if matches!(lhs_ty, Ty::Integer) {
                     if let r @ (Ty::Vector { signed: true, .. } | Ty::Vector { signed: false, .. }) = self.type_of(rhs, sym) {
                         return r;
                     }
@@ -1248,7 +1262,7 @@ impl<'a> Checker<'a> {
                     {
                         self.path_ty(p)
                     }
-                    "integer" => Ty::Vector { width: 0, signed: false },
+                    "integer" => Ty::Integer,
                     "Char" => Ty::Char,
                     // resize keeps the argument's family at the new width.
                     "resize" => {
@@ -1351,7 +1365,7 @@ impl<'a> Checker<'a> {
                 // `integer` is the kernel word; `uint`/`int` are no longer
                 // names here — they resolve as array-derived Logic families
                 // (`struct uint : Logic[]` in std::bits) via the arm below.
-                "integer" => Ty::Vector { width: 0, signed: false },
+                "integer" => Ty::Integer,
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
                 // Elaboration-time range constants (`const BYTE: range`);
@@ -1412,6 +1426,10 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
     }
     match (lhs, rhs) {
         (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
+        // `integer` is the number kernel; it coerces to/from any bit vector
+        // (a uint[8] accepts `42`, and a vector's value is an integer).
+        (Integer, Integer) => true,
+        (Integer, Vector { .. }) | (Vector { .. }, Integer) => true,
         (Vector { width: a, signed: sa }, Vector { width: b, signed: sb }) => {
             sa == sb && (*a == 0 || *b == 0 || a == b)
         }
@@ -1431,6 +1449,7 @@ fn ty_name(t: &Ty) -> String {
         Ty::Bool => "Bool".to_string(),
         Ty::Real => "real".to_string(),
         Ty::Char => "Char".to_string(),
+        Ty::Integer => "integer".to_string(),
         Ty::Vector { width: 0, signed: false } => "uint".to_string(),
         Ty::Vector { width: w, signed: false } => format!("uint[{w}]"),
         Ty::Vector { width: 0, signed: true } => "int".to_string(),
@@ -1753,6 +1772,24 @@ mod tests {
             check_src("module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\nimpl E { y = a and b; }\n"),
             0,
             "`and` on a bit array is fine (per-bit, returns the array)"
+        );
+        // integer is a number, not bits — no boolean operators on it.
+        assert_eq!(
+            check_src("module m;\nentity E { in a: integer; in b: integer; out y: integer; }\nimpl E { y = a and b; }\n"),
+            1,
+            "`and` on integer variables is rejected"
+        );
+        // ...but a literal mask coerces to the bit operand's width.
+        assert_eq!(
+            check_src("module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = a and 15; }\n"),
+            0,
+            "`b and 15` (literal mask) is fine"
+        );
+        // comparison results are Bool, so boolean ops chain them.
+        assert_eq!(
+            check_src("module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: Bool; }\nimpl E { y = (a > b) and (a != b); }\n"),
+            0,
+            "boolean ops on comparison results are fine"
         );
     }
 
