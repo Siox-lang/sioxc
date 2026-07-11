@@ -27,6 +27,9 @@ pub trait Slot: Copy + PartialEq + PartialOrd + core::fmt::Debug + Default {
     fn wrapping_shl(self, n: u32) -> Self;
     fn wrapping_shr(self, n: u32) -> Self;
     fn bitand(self, o: Self) -> Self;
+    fn bitor(self, o: Self) -> Self;
+    fn bitxor(self, o: Self) -> Self;
+    fn bitnot(self) -> Self;
     fn is_zero(self) -> bool;
     fn one() -> Self;
     fn wrapping_neg(self) -> Self;
@@ -69,6 +72,15 @@ macro_rules! impl_slot {
             fn bitand(self, o: Self) -> Self {
                 self & o
             }
+            fn bitor(self, o: Self) -> Self {
+                self | o
+            }
+            fn bitxor(self, o: Self) -> Self {
+                self ^ o
+            }
+            fn bitnot(self) -> Self {
+                !self
+            }
             fn is_zero(self) -> bool {
                 self == 0
             }
@@ -104,10 +116,10 @@ pub fn logic_value(c: char) -> u64 {
     }
 }
 
-/// `and`/`or`/... are evaluated as logical (boolean) operators in Phase 1, which
-/// is correct for conditions; bitwise-on-vectors is a later, width-aware concern.
+/// `and`/`or`/`xor` are **bitwise** (the `BitAnd`/`BitOr`/`BitXor` traits),
+/// matching the LLVM backend; for boolean 0/1 operands this coincides with the
+/// logical reading, so conditions still behave correctly.
 pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
-    let (la, lb) = (!a.is_zero(), !b.is_zero());
     let bool_s = |v: bool| S::from_u64(v as u64);
     match op {
         BinOp::Add => a.wrapping_add(b),
@@ -116,12 +128,12 @@ pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
         BinOp::Div => a.checked_div(b).unwrap_or_else(|| S::from_u64(0)),
         BinOp::Shl => a.wrapping_shl(b.to_u64() as u32),
         BinOp::Shr => a.wrapping_shr(b.to_u64() as u32),
-        BinOp::And => bool_s(la && lb),
-        BinOp::Nand => bool_s(!(la && lb)),
-        BinOp::Or => bool_s(la || lb),
-        BinOp::Nor => bool_s(!(la || lb)),
-        BinOp::Xor => bool_s(la ^ lb),
-        BinOp::Xnor => bool_s(!(la ^ lb)),
+        BinOp::And => a.bitand(b),
+        BinOp::Nand => a.bitand(b).bitnot(),
+        BinOp::Or => a.bitor(b),
+        BinOp::Nor => a.bitor(b).bitnot(),
+        BinOp::Xor => a.bitxor(b),
+        BinOp::Xnor => a.bitxor(b).bitnot(),
         BinOp::Eq => bool_s(a == b),
         BinOp::Ne => bool_s(a != b),
         // Float arithmetic on f64-bit values (`real` operands, low 64 bits).

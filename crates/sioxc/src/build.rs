@@ -782,8 +782,9 @@ fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
         Le => "<=",
         Gt => ">",
         Ge => ">=",
-        And => "&&",
-        Or => "||",
+        And => "&",
+        Or => "|",
+        Xor => "^",
         _ => return Err("unsupported operator in testbench expression".into()),
     })
 }

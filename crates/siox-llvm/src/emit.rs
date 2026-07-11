@@ -482,9 +482,6 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             let c = self.builder.build_int_compare(p, a, b, s).unwrap();
             self.zext(c)
         };
-        // Word logical ops: (a != 0) OP (b != 0).
-        let la = || self.builder.build_int_compare(IntPredicate::NE, a, self.c(0), "la").unwrap();
-        let lb = || self.builder.build_int_compare(IntPredicate::NE, b, self.c(0), "lb").unwrap();
         match op {
             BinOp::Add => self.builder.build_int_add(a, b, "add").unwrap(),
             BinOp::Sub => self.builder.build_int_sub(a, b, "sub").unwrap(),
@@ -498,20 +495,22 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             }
             BinOp::Shl => self.builder.build_left_shift(a, b, "shl").unwrap(),
             BinOp::Shr => self.builder.build_right_shift(a, b, false, "shr").unwrap(),
-            BinOp::And => self.zext(self.builder.build_and(la(), lb(), "and").unwrap()),
-            BinOp::Or => self.zext(self.builder.build_or(la(), lb(), "or").unwrap()),
-            BinOp::Xor => self.zext(self.builder.build_xor(la(), lb(), "xor").unwrap()),
+            // Bitwise (the BitAnd/BitOr/BitXor traits) — for boolean 0/1
+            // operands this matches the logical reading.
+            BinOp::And => self.builder.build_and(a, b, "and").unwrap(),
+            BinOp::Or => self.builder.build_or(a, b, "or").unwrap(),
+            BinOp::Xor => self.builder.build_xor(a, b, "xor").unwrap(),
             BinOp::Nand => {
-                let v = self.builder.build_and(la(), lb(), "nand0").unwrap();
-                self.zext(self.builder.build_not(v, "nand").unwrap())
+                let v = self.builder.build_and(a, b, "nand0").unwrap();
+                self.builder.build_not(v, "nand").unwrap()
             }
             BinOp::Nor => {
-                let v = self.builder.build_or(la(), lb(), "nor0").unwrap();
-                self.zext(self.builder.build_not(v, "nor").unwrap())
+                let v = self.builder.build_or(a, b, "nor0").unwrap();
+                self.builder.build_not(v, "nor").unwrap()
             }
             BinOp::Xnor => {
-                let v = self.builder.build_xor(la(), lb(), "xnor0").unwrap();
-                self.zext(self.builder.build_not(v, "xnor").unwrap())
+                let v = self.builder.build_xor(a, b, "xnor0").unwrap();
+                self.builder.build_not(v, "xnor").unwrap()
             }
             BinOp::Eq => cmp(IntPredicate::EQ, "eq"),
             BinOp::Ne => cmp(IntPredicate::NE, "ne"),
