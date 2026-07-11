@@ -26,7 +26,7 @@ use std::process::ExitCode;
 mod build;
 
 use clap::{Parser, Subcommand};
-use siox_diag::{DiagnosticSink, Severity, SourceMap};
+use siox_diag::{DiagnosticSink, Severity, SourceMap, Span};
 use siox_syntax::ast::{Item, Module, Path as AstPath, UsingKind};
 use siox_syntax::token::{Token, TokenKind};
 use siox_syntax::{lexer::Lexer, parser, pretty};
@@ -737,19 +737,27 @@ fn cmd_test(
     // libtest-style report (the rustc parallel).
     println!("\nrunning {} test{}", results.len(), if results.len() == 1 { "" } else { "s" });
     let mut failures: Vec<(&str, String)> = Vec::new();
+    let mut warn_count = 0usize;
+    let loc_of = |s: Span| {
+        let (line, col) = sem.fe.sources.line_col(s.file, s.start);
+        let name = sem.fe.sources.get(s.file).map(|f| f.name.as_str()).unwrap_or("?");
+        format!(" ({name}:{line}:{col})")
+    };
     for r in &results {
+        for (msg, span) in &r.warnings {
+            warn_count += 1;
+            eprintln!("warning: {msg}{}", loc_of(*span));
+        }
         if r.passed {
-            println!("test {} ... ok", r.name);
+            let tail = if r.warnings.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} warning{})", r.warnings.len(), if r.warnings.len() == 1 { "" } else { "s" })
+            };
+            println!("test {} ... ok{tail}", r.name);
         } else {
             println!("test {} ... FAILED", r.name);
-            let loc = r
-                .span
-                .map(|s| {
-                    let (line, col) = sem.fe.sources.line_col(s.file, s.start);
-                    let name = sem.fe.sources.get(s.file).map(|f| f.name.as_str()).unwrap_or("?");
-                    format!(" ({name}:{line}:{col})")
-                })
-                .unwrap_or_default();
+            let loc = r.span.map(loc_of).unwrap_or_default();
             let msg = r.failure.as_deref().unwrap_or("assertion failed");
             failures.push((&r.name, format!("{msg}{loc}")));
         }
@@ -763,7 +771,12 @@ fn cmd_test(
     let failed = failures.len();
     let passed = results.len() - failed;
     let verdict = if failed == 0 { "ok" } else { "FAILED" };
-    println!("\ntest result: {verdict}. {passed} passed; {failed} failed");
+    let warn_tail = if warn_count > 0 {
+        format!("; {warn_count} warning{}", if warn_count == 1 { "" } else { "s" })
+    } else {
+        String::new()
+    };
+    println!("\ntest result: {verdict}. {passed} passed; {failed} failed{warn_tail}");
     if failed > 0 {
         ExitCode::FAILURE
     } else {

@@ -58,6 +58,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\n");
+    prog.push_str("static int g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     // xorshift64* with the runner's constants: identical random sequences.
     prog.push_str(
@@ -178,8 +179,10 @@ fn gen_main(names: &[String]) -> String {
         ));
     }
     m.push_str(
-        "    printf(\"\\ntest result: %s. %d passed; %d failed; %d filtered out\\n\",\n\
-         \x20          failed ? \"FAILED\" : \"ok\", ran - failed, failed, filtered);\n",
+        "    printf(\"\\ntest result: %s. %d passed; %d failed; %d filtered out\",\n\
+         \x20          failed ? \"FAILED\" : \"ok\", ran - failed, failed, filtered);\n\
+         \x20   if (g_warnings) printf(\"; %d warning%s\", g_warnings, g_warnings == 1 ? \"\" : \"s\");\n\
+         \x20   printf(\"\\n\");\n",
     );
     m.push_str("    return failed ? 1 : 0;\n}\n");
     m
@@ -449,6 +452,16 @@ impl Ctx<'_> {
                 // Record the failure message and fail this test; `main` prints
                 // the `test <name> ... FAILED` line and the message.
                 b.push_str(&format!("{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"));
+            }
+            // warn!(cond, msg): non-fatal — report to stderr, keep running.
+            "warn" if bang => {
+                let cond = args.first().ok_or("warn needs a condition")?;
+                let c = self.expr(cond)?;
+                let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "warning".into());
+                let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
+                b.push_str(&format!(
+                    "{ind}if (!({c})) {{ fprintf(stderr, \"warning: {msg}\\n\"); g_warnings++; }}\n"
+                ));
             }
             _ => {}
         }

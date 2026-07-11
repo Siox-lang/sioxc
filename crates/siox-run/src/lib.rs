@@ -144,6 +144,9 @@ pub struct TestResult {
     pub failure: Option<String>,
     /// Span of the failing assertion, for `file:line:col` rendering.
     pub span: Option<Span>,
+    /// Non-fatal `warn!` reports (message + span): the test still passes, but
+    /// the summary surfaces them.
+    pub warnings: Vec<(String, Span)>,
 }
 
 /// A snapshot of every signal's value at one simulation time, recorded during a
@@ -339,6 +342,7 @@ fn run_one<'a>(
         fns,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
+        warnings: Vec::new(),
     };
 
     // One pass in source order: `let`s apply as they appear (sequential
@@ -369,11 +373,22 @@ fn run_one<'a>(
         tb.sample();
     }
 
+    let warnings = std::mem::take(&mut tb.warnings);
     let result = match tb.failure {
-        Some((msg, span)) => {
-            TestResult { name: name.to_string(), passed: false, failure: Some(msg), span: Some(span) }
-        }
-        None => TestResult { name: name.to_string(), passed: true, failure: None, span: None },
+        Some((msg, span)) => TestResult {
+            name: name.to_string(),
+            passed: false,
+            failure: Some(msg),
+            span: Some(span),
+            warnings,
+        },
+        None => TestResult {
+            name: name.to_string(),
+            passed: true,
+            failure: None,
+            span: None,
+            warnings,
+        },
     };
     (result, tb.samples)
 }
@@ -396,6 +411,8 @@ struct Testbench<'a> {
     /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
     enums: &'a HashMap<String, HashMap<String, u64>>,
     failure: Option<(String, Span)>,
+    /// Non-fatal `warn!(cond, msg)` reports collected during the run.
+    warnings: Vec<(String, Span)>,
     /// When set, a sample is recorded after each simulation step.
     record: bool,
     samples: Vec<Sample>,
@@ -777,6 +794,18 @@ impl Testbench<'_> {
                         .and_then(str_lit)
                         .unwrap_or_else(|| "assertion failed".to_string());
                     self.failure = Some((msg, span));
+                }
+            }
+            // warn!(cond, msg): a non-fatal assertion — records a warning but
+            // lets the test continue (the recoverable tier; SV `$warning`).
+            "warn" if bang => {
+                let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
+                if !ok {
+                    let msg = args
+                        .get(1)
+                        .and_then(str_lit)
+                        .unwrap_or_else(|| "warning".to_string());
+                    self.warnings.push((msg, span));
                 }
             }
             _ => {}

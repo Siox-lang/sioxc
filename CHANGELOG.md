@@ -46,6 +46,12 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`warn!` + the no-exceptions decision** — siox has no `throw`/`catch`
+  (incompatible with synthesizable hardware and pure inlined functions);
+  errors are signals, panics, or probe-and-branch. `warn!(cond, "msg")` is
+  the non-fatal sibling of `assert!`: reports to stderr and counts in the
+  test summary (`ok ... 1 passed; 0 failed; 2 warnings`) without failing.
+  All three engines.
 - **`std::fs` primitives** — Rust-shaped file IO: `read(path)` fills a
   declared array with the file's bytes, `read_to_string(path)` gives a
   string its length, `exists(path)` probes. No handles, no modes, no `with`

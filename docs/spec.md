@@ -1812,6 +1812,22 @@ let r: uint[8] = randint(10, 20);             //   (runtime-provided, std::rand)
 as the character, everything else as decimal. Range violations on ranged
 numerics report automatically — no syntax.
 
+`warn!(cond, "msg")` is the **non-fatal** sibling of `assert!`: a false
+condition reports to stderr and counts toward the test's warning total, but
+the test still passes. It is the recoverable tier of error handling.
+
+#### No exceptions
+
+siox has no `throw`/`catch`. Hardware has no exceptions — no call stack, no
+unwinding — and functions are pure inlined expressions with nothing to
+unwind, so exception control flow has no meaning here. Errors instead take
+one of three forms: **hardware error conditions are ordinary signals**
+(`out error: Bit`, ready/valid); **fatal simulation errors** (`assert!`,
+range violations, missing files) fail the test, like a panic; and
+**recoverable conditions** use probe-and-branch (`if exists(p) { read(p) }
+else { ... }`) or `warn!`. A `Result`-style value would ride on future
+payload-carrying enums — never a keyword.
+
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
 directly, Python-style — length is the `::len` system attribute (an
