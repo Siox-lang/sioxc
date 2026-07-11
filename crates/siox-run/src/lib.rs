@@ -324,6 +324,7 @@ fn run_one<'a>(
         time_fs: 0,
         locals: HashMap::new(),
         fns,
+        halted: false,
     };
 
     // One pass in source order: `let`s apply as they appear (sequential
@@ -341,7 +342,7 @@ fn run_one<'a>(
                         started = true;
                     }
                     tb.exec(s);
-                    if tb.failure.is_some() {
+                    if tb.failure.is_some() || tb.halted {
                         break 'run;
                     }
                 }
@@ -398,6 +399,9 @@ struct Testbench<'a> {
     locals: HashMap<String, u128>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
+    /// unless a failure was already recorded).
+    halted: bool,
 }
 
 impl Testbench<'_> {
@@ -607,7 +611,7 @@ impl Testbench<'_> {
                     self.locals.insert(var.text.clone(), v);
                     for s in &body.stmts {
                         self.exec(s);
-                        if self.failure.is_some() {
+                        if self.failure.is_some() || self.halted {
                             return;
                         }
                     }
@@ -630,7 +634,7 @@ impl Testbench<'_> {
                 if let Some(stmts) = branch {
                     for s in stmts {
                         self.exec(s);
-                        if self.failure.is_some() {
+                        if self.failure.is_some() || self.halted {
                             return;
                         }
                     }
@@ -659,17 +663,39 @@ impl Testbench<'_> {
                     span,
                 ));
             }
-            // clock(clk, period): start a free-running background clock.
+            // clock() was sugar; the canonical generator is the after-form.
             "clock" => {
-                if let Some(id) = args.first().and_then(|a| self.signal_of(a)) {
-                    let half = (duration_fs(&args[1..]) / 2).max(1);
-                    self.engine.set(id, 0);
-                    let next = self.time_fs + half;
-                    self.clocks.push(ClockGen { id, half_period: half, next_edge: next });
-                }
+                self.failure = Some((
+                    "`clock()` was removed; write `clk = not clk after <half-period>;`"
+                        .to_string(),
+                    span,
+                ));
             }
             // await <duration> | <edge> | <condition>.
             "await" => self.do_await(args),
+            // print!("n={} at {}", n, t): simulation output. `{}` renders per
+            // the argument's kind (real -> float, Char -> the character,
+            // else decimal); auto-newline, like $display.
+            "print" if bang => {
+                let Some(ast::Expr::StrLit { text, .. }) = args.first() else { return };
+                let mut out = String::new();
+                let mut vals = args[1..].iter();
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find("{}") {
+                    out.push_str(&rest[..i]);
+                    if let Some(a) = vals.next() {
+                        out.push_str(&self.render_arg(a));
+                    }
+                    rest = &rest[i + 2..];
+                }
+                out.push_str(rest);
+                println!("{out}");
+            }
+            // stop!() / finish!(): end the test cleanly at this point.
+            "stop" | "finish" if bang => {
+                println!("{} at {} fs", name, self.time_fs);
+                self.halted = true;
+            }
             // assert!(cond, "msg"): record the first failure.
             "assert" if bang => {
                 let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
@@ -815,6 +841,30 @@ impl Testbench<'_> {
             }
             guard += 1;
         }
+    }
+
+    /// Render one `print!` argument by its kind.
+    fn render_arg(&self, a: &ast::Expr) -> String {
+        let v = self.eval(a);
+        // A signal argument renders per its declared kind.
+        if let Some(p) = expr_path(a) {
+            if let Some(&id) = self.map.get(&p) {
+                let sig = &self.engine.design().signals[id.0 as usize];
+                if sig.real {
+                    return format!("{}", f64::from_bits(v.to_u64()));
+                }
+                if sig.char {
+                    return char::from_u32(v.to_u64() as u32).map(String::from).unwrap_or_default();
+                }
+            }
+        }
+        // A real literal keeps its float face.
+        if let ast::Expr::Int { text, .. } = a {
+            if text.contains('.') {
+                return text.clone();
+            }
+        }
+        format!("{}", v.to_u64())
     }
 
     fn signal_of(&self, e: &ast::Expr) -> Option<SignalId> {

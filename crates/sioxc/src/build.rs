@@ -58,6 +58,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\n");
+    prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
@@ -378,20 +379,56 @@ impl Ctx<'_> {
             }
             // clock(clk, period): register a background clock on the wheel
             // (init low; first toggle one half period from now).
+            // clock() was sugar; the canonical generator is the after-form.
             "clock" => {
-                if let Some(id) = args.first().and_then(expr_path).and_then(|p| self.map.get(&p)) {
-                    if let Some(i) = self.clocks.iter().position(|(c, _)| *c == id.0) {
-                        b.push_str(&format!(
-                            "{ind}sx_set({}, 0); _next[{i}] = _now + {}ULL;                              _nclk = {}; sx_settle();\n",
-                            id.0,
-                            self.clocks[i].1,
-                            i + 1
-                        ));
-                    }
-                }
+                return Err(
+                    "`clock()` was removed; write `clk = not clk after <half-period>;`".into(),
+                );
             }
             // await <duration> | <edge> | <condition>.
             "await" => self.emit_await(args, b, depth)?,
+            // print!: expand the format at compile time into a printf.
+            "print" if bang => {
+                let Some(ast::Expr::StrLit { text, .. }) = args.first() else {
+                    return Err("print! needs a format string".into());
+                };
+                let mut cfmt = String::new();
+                let mut cargs = Vec::new();
+                let mut vals = args[1..].iter();
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find("{}") {
+                    cfmt.push_str(&rest[..i].replace('%', "%%").replace('"', "\\\""));
+                    if let Some(a) = vals.next() {
+                        let is_real = expr_path(a)
+                            .and_then(|p| self.map.get(&p))
+                            .map(|id| self.design.signals[id.0 as usize].real)
+                            .unwrap_or_else(|| {
+                                matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
+                            });
+                        if is_real {
+                            cfmt.push_str("%g");
+                            cargs.push(format!("sx_f64({})", self.value_for_print(a)?));
+                        } else {
+                            cfmt.push_str("%llu");
+                            cargs.push(format!("(unsigned long long)({})", self.expr(a)?));
+                        }
+                    }
+                    rest = &rest[i + 2..];
+                }
+                cfmt.push_str(&rest.replace('%', "%%").replace('"', "\\\""));
+                let call_args = if cargs.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", cargs.join(", "))
+                };
+                b.push_str(&format!("{ind}printf(\"{cfmt}\\n\"{call_args});\n"));
+            }
+            // stop!/finish!: end the test cleanly (passing).
+            "stop" | "finish" if bang => {
+                b.push_str(&format!(
+                    "{ind}printf(\"{name} at %llu fs\\n\", (unsigned long long)_now); return 0;\n"
+                ));
+            }
             "assert" if bang => {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
@@ -471,6 +508,16 @@ impl Ctx<'_> {
             }
         }
         self.expr(e)
+    }
+
+    /// A `print!` real argument as a u64-bit-pattern C expression.
+    fn value_for_print(&self, a: &ast::Expr) -> Result<String, String> {
+        if let ast::Expr::Int { text, .. } = a {
+            if let Ok(f) = text.parse::<f64>() {
+                return Ok(format!("{}ULL", f.to_bits()));
+            }
+        }
+        self.expr(a)
     }
 
     /// A module-fn call as a C expression: bind the arguments, then flatten
@@ -706,15 +753,6 @@ fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec
     };
     for item in items {
         match item {
-            ast::ImplItem::Stmt(ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })) => {
-                let is_clock = matches!(callee.as_ref(),
-                    ast::Expr::Path(p) if p.segments.first().map(|s| s.text.as_str()) == Some("clock"));
-                if is_clock {
-                    if let Some(id) = args.first().and_then(expr_path).and_then(|p| map.get(&p)) {
-                        add(id.0, (duration_fs(&args[1..]) / 2).max(1));
-                    }
-                }
-            }
             ast::ImplItem::Stmt(ast::Stmt::Assign { target, value, after, .. }) => {
                 if let Some((path, half)) = after_toggle(target, value, after) {
                     if let Some(id) = map.get(&path) {

@@ -46,6 +46,12 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **S3: `print!`, `stop!`, `finish!`** — the pure/bang rule lands: plain
+  calls are pure values, bang forms are simulation actions. `print!`
+  format-expands at compile time (`{}` renders per argument kind, reals as
+  floats), `stop!`/`finish!` end a test cleanly with the time. All three
+  paths (native compiles print! to printf). `clock()` removed — the
+  `after`-form is the one generator.
 - **Dynamic range asserts + real initial values** — a ranged numeric
   (`integer<1..10>`) is checked after every settle on all three paths;
   leaving the domain fails the simulation with the signal, value, and time

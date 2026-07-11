@@ -1785,11 +1785,28 @@ clk = not clk after 5ns;    // free-running clock, 10ns period (VHDL style)
 rst = '0' after 12ns;       // one-shot: applied 12ns from now
 ```
 
-`after` is **not a keyword** — like `not`, `wait`, and `await` it is a plain
+`after` is **not a keyword** — like `not` and `await` it is a plain
 identifier recognized by position (between an assignment's value and `;`),
 and stays usable as a name everywhere else. `after` is testbench-only in
-Phase 1; hardware impls reject it. `clock(clk, period)` remains as sugar for
-the toggle idiom.
+Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
+the after-form is the one generator.)
+
+#### Pure calls vs. bang actions
+
+A plain call is a **pure value** (a module `fn`: inlinable, const-evaluable,
+synthesizable; `extern "C"` fns are assumed pure). A **bang form is a
+simulation action**, interpreted by the runtime:
+
+```siox
+print!("n = {} and sqrt({}) = {}", n, x, y);  // {} renders per argument kind
+assert!(cond, "message");                     // records a failure + location
+stop!();                                      // halt here (test passes so far)
+finish!();                                    // end the simulation cleanly
+```
+
+`print!` auto-newlines (like `$display`); real values print as floats, `Char`
+as the character, everything else as decimal. Range violations on ranged
+numerics report automatically — no syntax.
 
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
