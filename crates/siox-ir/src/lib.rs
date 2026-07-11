@@ -2045,6 +2045,17 @@ impl<'a> Lowering<'a> {
             ast::Expr::SuffixLit { suffix, .. } => {
                 self.suffix_impls.get(&suffix.text).map(|(ty, _)| ty.clone())
             }
+            // A conversion expression `F[N](x)` / `F(x)` reads as its target
+            // family, so operators on it dispatch correctly (`int[32](a) < ..`
+            // uses int's signed Ord).
+            ast::Expr::Call { callee, .. } => {
+                let head = match callee.as_ref() {
+                    ast::Expr::Index { base, .. } => expr_path(base),
+                    ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+                    _ => None,
+                }?;
+                self.vector_families.contains_key(&head).then_some(head)
+            }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
                 .contains_key(&p.segments[0].text)

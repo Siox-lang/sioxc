@@ -1,0 +1,87 @@
+module examples::riscv_alu_test;
+
+using std::bits::{uint, int};
+
+// RV32I ALU operation select (funct3 + bit30 encoding, flattened).
+enum AluOp: uint[4] {
+    Add = 0, Sub = 1, Sll = 2, Slt = 3, Sltu = 4,
+    Xor = 5, Srl = 6, Sra = 7, Or = 8, And = 9,
+}
+
+// A single-cycle RV32I ALU: two 32-bit operands, a 4-bit op, a result, and a
+// zero flag (used by branch comparison).
+entity Alu {
+    in a: uint[32];
+    in b: uint[32];
+    in op: AluOp;
+    out y: uint[32];
+    out zero: Logic;
+}
+
+impl Alu {
+    let sh: uint[32];
+    sh = b and 31;                 // shift amount is the low 5 bits
+    let r: uint[32];
+    r = 0;                         // default (also covers invalid op codes)
+
+    match op {
+        AluOp::Add  => { r = a + b; }
+        AluOp::Sub  => { r = a - b; }
+        AluOp::Sll  => { r = a << sh; }
+        AluOp::Slt  => { r = if int[32](a) < int[32](b) { 1 } else { 0 }; }
+        AluOp::Sltu => { r = if a < b { 1 } else { 0 }; }
+        AluOp::Xor  => { r = a xor b; }
+        AluOp::Srl  => { r = a >> sh; }
+        AluOp::Sra  => { r = uint[32](int[32](a) >> int[32](sh)); }
+        AluOp::Or   => { r = a or b; }
+        AluOp::And  => { r = a and b; }
+    }
+
+    y = r;
+    zero = if r == 0 { '1' } else { '0' };
+}
+
+#[test]
+entity AluTest {}
+impl AluTest {
+    let a: uint[32] = 0; let b: uint[32] = 0; let op: AluOp;
+    let y: uint[32]; let zero: Logic;
+    let dut = Alu { .a, .b, .op, .y, .zero };
+
+    a = 100; b = 30; op = AluOp::Add;  await 1ns;
+    assert!(y == 130, "add");
+    assert!(zero == '0', "add nonzero");
+
+    op = AluOp::Sub;  await 1ns;
+    assert!(y == 70, "sub");
+
+    a = 5; b = 5; op = AluOp::Sub;  await 1ns;
+    assert!(zero == '1', "sub-to-zero sets zero flag");
+
+    a = 1; b = 4; op = AluOp::Sll;  await 1ns;
+    assert!(y == 16, "sll 1 << 4");
+
+    a = 240; b = 15; op = AluOp::And;  await 1ns;
+    assert!(y == 0, "0xF0 & 0x0F = 0");
+
+    a = 240; b = 15; op = AluOp::Or;  await 1ns;
+    assert!(y == 255, "0xF0 | 0x0F = 0xFF");
+
+    a = 255; b = 15; op = AluOp::Xor;  await 1ns;
+    assert!(y == 240, "0xFF ^ 0x0F = 0xF0");
+
+    a = 256; b = 4; op = AluOp::Srl;  await 1ns;
+    assert!(y == 16, "256 >> 4 = 16");
+
+    // Signed set-less-than: -1 (0xFFFFFFFF) < 1 signed.
+    a = 4294967295; b = 1; op = AluOp::Slt;  await 1ns;
+    assert!(y == 1, "slt: -1 < 1 signed");
+
+    // Unsigned: 0xFFFFFFFF is NOT < 1 unsigned.
+    op = AluOp::Sltu;  await 1ns;
+    assert!(y == 0, "sltu: 0xFFFFFFFF not < 1 unsigned");
+
+    // Arithmetic shift right of a negative number keeps the sign.
+    a = 4294967288; b = 1; op = AluOp::Sra;  await 1ns;  // -8 >> 1 = -4
+    assert!(y == 4294967292, "sra: -8 >> 1 = -4 (0xFFFFFFFC)");
+}
