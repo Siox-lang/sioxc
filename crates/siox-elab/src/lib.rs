@@ -232,13 +232,21 @@ impl<'a> Elaborator<'a> {
                         self.entities.insert(e.name.text.clone(), e);
                     }
                     Item::Struct(st) => {
-                        let has = |n: &str| {
-                            st.attrs.iter().any(|a| {
-                                a.name.segments.last().map(|s| s.text.as_str()) == Some(n)
-                            })
-                        };
-                        if has("vector") {
-                            self.families.insert(st.name.text.clone(), has("signed"));
+                        // Bit vector by shape (`struct uint : Logic[]`), signed
+                        // by `#[signed]`.
+                        let is_vec = st.fields.is_empty()
+                            && matches!(
+                                st.base.as_ref().and_then(|b| match b {
+                                    Type::Indexed { base, .. } => type_head_name(base),
+                                    _ => None,
+                                }),
+                                Some("Logic" | "Bit" | "ULogic" | "Clock")
+                            );
+                        if is_vec {
+                            let signed = st.attrs.iter().any(|a| {
+                                a.name.segments.last().map(|s| s.text.as_str()) == Some("signed")
+                            });
+                            self.families.insert(st.name.text.clone(), signed);
                         }
                     }
                     Item::Impl(im) if im.trait_.is_none() => {
@@ -710,7 +718,7 @@ mod tests {
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // uint/int are `#[vector]` library types, not seeded.
         let src = format!(
-            "{src}\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n"
+            "{src}\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();

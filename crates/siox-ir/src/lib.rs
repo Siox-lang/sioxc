@@ -2837,27 +2837,40 @@ pub fn eval_const_stmts(
 /// honoured; unspecified variants continue from the previous discriminant + 1.
 /// Index every enum declaration by name (for base-chain resolution).
 /// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
-/// bodyless) with their signedness (`impl Signed for F`). uint/int are just
-/// members — the compiler recognizes the shape, not the names.
+/// -> signedness. A bodyless struct whose base is an array of a bit scalar
+/// (`struct uint : Logic[]`) IS a bit vector — no annotation needed, the shape
+/// says so. `#[signed]` marks two's-complement. uint/int are just members.
 pub fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
-    // A struct is a numeric vector family iff it carries `#[vector]` (spec
-    // 3.5); `#[signed]` selects two's-complement. Explicit, not shape-inferred.
-    let has = |st: &ast::StructDecl, n: &str| {
+    let signed = |st: &ast::StructDecl| {
         st.attrs
             .iter()
-            .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(n))
+            .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("signed"))
     };
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(st) = item {
-                if has(st, "vector") {
-                    out.insert(st.name.text.clone(), has(st, "signed"));
+                if is_bit_vector_struct(st) {
+                    out.insert(st.name.text.clone(), signed(st));
                 }
             }
         }
     }
     out
+}
+
+/// A bodyless struct deriving from an array of bit scalars — a packed bit
+/// vector (`struct F : Logic[]` / `: Bit[]`). This is what makes uint/int and
+/// user vectors; the shape is the definition, not an attribute.
+fn is_bit_vector_struct(st: &ast::StructDecl) -> bool {
+    if !st.fields.is_empty() {
+        return false;
+    }
+    let elem = match &st.base {
+        Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
+        _ => None,
+    };
+    matches!(elem, Some("Logic" | "Bit" | "ULogic" | "Clock"))
 }
 
 fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
@@ -3026,7 +3039,7 @@ mod tests {
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
         let src = format!(
-            "{src}\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n"
+            "{src}\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();

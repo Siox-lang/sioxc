@@ -12,10 +12,8 @@ pub attr keep: Bool for let, port;  // keep through optimization
 pub attr library: string for entity;
 pub attr name: string for entity;
 
-// Representation metadata for array-derived numeric families (spec 3.5): how
-// the compiler lays a `struct F : Logic[]` out. `#[vector]` packs it into one
-// N-bit signal with integer-valued arithmetic (instead of N Logic
-// sub-signals); `#[signed]` makes that interpretation two's-complement. This
-// is what makes uint/int ordinary library types rather than compiler names.
-pub attr vector: Bool for struct;
+// An array of bits is a bit vector by shape (`struct uint : Logic[]`), so no
+// annotation says "this is a vector". `#[signed]` marks the two's-complement
+// interpretation — the one thing the `Logic[]` shape cannot express (uint and
+// int are the same shape).
 pub attr signed: Bool for struct;

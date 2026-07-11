@@ -446,7 +446,7 @@ struct Testbench<'a> {
     locals: HashMap<String, u128>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
-    /// `#[vector]` families (name -> signed), for testbench conversions.
+    /// Bit-vector families (name -> signed), for testbench conversions.
     families: &'a HashMap<String, bool>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
     /// unless a failure was already recorded).

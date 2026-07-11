@@ -154,7 +154,6 @@ impl<'a> Checker<'a> {
             ("keep", &["let", "port"]),
             ("library", &["entity"]),
             ("name", &["entity"]),
-            ("vector", &["struct"]),
             ("signed", &["struct"]),
         ] {
             attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
@@ -293,13 +292,23 @@ impl<'a> Checker<'a> {
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
-                let has = |n: &str| {
-                    st.attrs
+                // A bodyless struct over an array of bit scalars is a bit
+                // vector by shape (`struct uint : Logic[]`); `#[signed]` marks
+                // two's-complement. No `#[vector]` annotation.
+                let is_vec = st.fields.is_empty()
+                    && matches!(
+                        st.base.as_ref().and_then(|b| match b {
+                            Type::Indexed { base, .. } => type_head_name(base),
+                            _ => None,
+                        }),
+                        Some("Logic" | "Bit" | "ULogic" | "Clock")
+                    );
+                if is_vec {
+                    let signed = st
+                        .attrs
                         .iter()
-                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(n))
-                };
-                if has("vector") {
-                    self.vector_families.insert(st.name.text.clone(), has("signed"));
+                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("signed"));
+                    self.vector_families.insert(st.name.text.clone(), signed);
                 }
             }
             Item::Using(u) => {
@@ -1496,7 +1505,7 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
-    const VEC: &str = "\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n";
+    const VEC: &str = "\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");

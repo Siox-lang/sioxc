@@ -870,7 +870,7 @@ mod tests {
         let (_, errors) = resolve_src(
             "module m;\n\
              using std::logic::{Bit, Logic, Clock};\n\
-             #[vector] struct uint : Logic[];\n\
+             struct uint : Logic[];\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Clock;\n\

@@ -298,13 +298,14 @@ means:
 #[top = true]
 ```
 
-**Representation attributes.** `#[vector]` on an array-derived type
-(`struct F : Logic[]`) tells the compiler to lay it out as one packed N-bit
-signal with integer-valued arithmetic, rather than N separate `Logic`
-sub-signals; `#[signed]` selects two's-complement interpretation. This is how
-`uint`/`int` are defined — ordinary library `struct`s in `std/bits.siox`, not
-compiler-magic names — and a user `#[vector] struct MyWord : Logic[];` gets
-identical treatment. The std, not the compiler, says how and why.
+**Bit vectors are recognized by shape.** A bodyless struct deriving from an
+array of a bit scalar — `struct uint : Logic[]` — *is* a packed bit vector
+(one N-bit signal); no annotation is needed, since an array of bits already
+says so. The one thing the shape cannot express is signedness (uint and int
+are both `Logic[]`), so `#[signed]` marks two's-complement:
+`#[signed] pub struct int : Logic[];`. This is how `uint`/`int` are defined —
+ordinary library `struct`s in `std/bits.siox`, not compiler-magic names — and
+a user `struct MyWord : Logic[];` gets identical treatment.
 
 **Type-targeted attributes.** A target may also be a *type name*, declaring
 an attribute valid only on that entity/struct or on declarations/instances
@@ -1203,7 +1204,7 @@ semantics; operator traits extend the same syntax to std and user types
 `xnor`/`not` are one family — there is no separate bitwise-vs-logical pair.
 Their meaning is fixed by the operand type: on a `Bool` they are plain
 boolean; on a **bit-derived type** (`Bit`, `Logic`, `uint`, `int`, any
-`#[vector]` family) they apply **per bit and return the same bit array**, the
+any bit-vector family) they apply **per bit and return the same bit array**, the
 way VHDL's `and`/`or` work on `std_logic_vector` (`"1010" and "0110"` =
 `"0010"`). Boolean is simply the one-bit case of boolean-per-bit. Because it
 is intrinsic to being bits, no per-type `impl` is needed — the kernel

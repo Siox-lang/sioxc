@@ -3,16 +3,14 @@ module std::bits;
 using std::logic::{Logic};
 using std::ops::{Ordering};
 
-// uint and int are ordinary library types, not compiler-magic names: two
-// array-derived Logic vector families. The `#[vector]` attribute tells the
-// compiler HOW to lay them out — one packed N-bit signal with integer-valued
-// arithmetic, rather than N separate Logic sub-signals — and `#[signed]`
-// selects two's-complement. Nothing here is keyed on the names uint/int; a
-// user `#[vector] struct MyWord : Logic[];` gets identical treatment.
-#[vector]
+// uint and int are ordinary library types, not compiler-magic names: an
+// array of Logic IS a bit vector, so deriving from `Logic[]` is all it takes
+// — no annotation. `#[signed]` is the one thing the shape can't say (uint and
+// int are both `Logic[]`): it selects two's-complement. A user
+// `struct MyWord : Logic[];` gets identical treatment.
 pub struct uint : Logic[];
 
-#[vector] #[signed]
+#[signed]
 pub struct int : Logic[];
 
 // Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std,

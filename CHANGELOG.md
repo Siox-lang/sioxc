@@ -46,6 +46,12 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`#[vector]` removed — bit vectors are recognized by shape** — an array
+  of bits *is* a vector, so a bodyless struct deriving from `Logic[]`/`Bit[]`
+  (`struct uint : Logic[]`) is a packed bit vector with no annotation needed;
+  the shape is the definition. Only `#[signed]` remains, for the one thing the
+  shape can't say (uint and int are both `Logic[]`). All three engines'
+  recognizers (types/elab/ir) switched from reading the attribute to the shape.
 - **Boolean operators are boolean-per-bit** — `and`/`or`/`xor`/`not` are one
   family (no bitwise-vs-logical pair): plain boolean on `Bool`, and per-bit
   on bit-derived types, returning the same bit array (VHDL logic-vector
