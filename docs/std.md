@@ -100,7 +100,7 @@ at lowering as pure expression trees; mixed operand types overload by the
 rhs parameter type, and `impl Add for integer` catches literal left operands
 (`10 + 5i`). Each fn of an `impl Suffix for T` defines the literal suffix of
 its name (`10ns` → `Time::ns(10)`); two loaded types defining one suffix is
-an ambiguity error. See spec 3.24/3.25 and notes/literal-suffixes.md.
+an ambiguity error. See spec 3.24/3.25.
 
 ## `std::math`
 

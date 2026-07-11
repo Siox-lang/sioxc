@@ -1128,8 +1128,7 @@ impl Suffix for Time {
 Two loaded types defining the same suffix is an ambiguity error at the use
 site. An unknown suffix is an error; a fixed fs/Hz scale table (typing the
 literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
-`await 10ns` without imports. See docs/notes/literal-suffixes.md for the full
-design, including multi-type examples.
+`await 10ns` without imports.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
 a sized `uint` constant. The `Prefix` trait is their declared home
