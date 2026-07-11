@@ -225,7 +225,7 @@ Python testbenches.
 | **S3** ✅ | `print!` + `stop!`/`finish!` (bang actions) + dynamic range asserts | done — pure-call/bang-action rule |
 | **S4** ✅ | `std::math` real functions + `clog2`, `abs/min/max`, `PI`/`E` | done — libm/LLVM intrinsics; native links -lm |
 | **S5** ✅ | `std::rand` (rand!/randint!/uniform!/seed! — bang expressions, one xorshift64* across all engines) | done |
-| **S6** | dynamic array indexing (compiler) + `std::io::load_hex` | memories are vendor/user domain |
+| **S6** ✅ | `std::fs` primitives: `read`/`read_to_string` (elaboration-time in initializers — include_bytes! style — runtime in testbenches) + `exists` | format loaders (hex/CSV) are parsing libraries, NOT std; dynamic array indexing still open (compiler) |
 | **S7** ✅ | `std::text` encodings (unicode/ascii/char_of over `Char(n)`/`integer(c)`) | done; `to_string` waits on array-returning fns |
 | **S8** | `std::fixed`, `std::fifo`, `std::verify` | processes; cocotb timing |
 

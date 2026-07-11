@@ -46,6 +46,14 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`std::fs` primitives** — Rust-shaped file IO: `read(path)` fills a
+  declared array with the file's bytes, `read_to_string(path)` gives a
+  string its length, `exists(path)` probes. No handles, no modes, no `with`
+  — nothing to close. In initializer position the *compiler* reads the file
+  (include_bytes! style): contents bake into `Signal.init`, so the native
+  binary carries its ROM with zero runtime IO (verified: binary passes after
+  the source file is deleted). Format loaders (hex images, CSV) are parsing
+  libraries, deliberately NOT std.
 - **S5 `std::rand` + S7 text encodings** — `rand()`/`randint(lo, hi)`/
   `uniform()`/`seed(n)` as ordinary runtime functions: one deterministic
   xorshift64* shared by the runner and the native harness, so every engine

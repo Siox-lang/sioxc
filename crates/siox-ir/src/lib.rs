@@ -505,11 +505,86 @@ impl<'a> Lowering<'a> {
                             self.add_char_array(path, &l.name.text, text.chars().count());
                             continue;
                         }
+                        // `let s: string = read_to_string("f.txt");` — the
+                        // compiler reads the file; its length sets the range.
+                        if let Some(fpath) =
+                            l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read_to_string"))
+                        {
+                            match std::fs::read_to_string(fpath) {
+                                Ok(text) => {
+                                    let chars: Vec<char> = text.chars().collect();
+                                    self.add_char_array(path, &l.name.text, chars.len());
+                                    for (i, c) in chars.iter().enumerate() {
+                                        if let Some(&id) =
+                                            self.locals.get(&format!("{}[{i}]", l.name.text))
+                                        {
+                                            self.out.signals[id.0 as usize].init = *c as u32 as u64;
+                                        }
+                                    }
+                                }
+                                Err(e) => self.sink.emit(siox_diag::Diagnostic::error(format!(
+                                    "read_to_string(\"{fpath}\"): {e}"
+                                ))),
+                            }
+                            continue;
+                        }
                     }
                     if let Some(ty) = &l.ty {
                         self.add_typed_signal(path, &l.name.text, ty, env);
                     } else {
                         self.add_signal(path, &l.name.text, 0);
+                    }
+                    // `let rom: uint[8][N] = read("rom.bin");` — the compiler
+                    // reads the file and bakes it into the element inits
+                    // (little-endian packing for elements wider than a byte;
+                    // a shorter file leaves the tail at 0; longer errors).
+                    if let Some(fpath) =
+                        l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read"))
+                    {
+                        if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
+                            match std::fs::read(fpath) {
+                                Ok(bytes) => {
+                                    let ew = self
+                                        .locals
+                                        .get(&format!("{}[{}]", l.name.text, indices[0]))
+                                        .map(|&id| self.out.signals[id.0 as usize].width)
+                                        .unwrap_or(8)
+                                        .max(1);
+                                    let per = ew.div_ceil(8) as usize;
+                                    if bytes.len() > per * indices.len() {
+                                        self.sink.emit(siox_diag::Diagnostic::error(format!(
+                                            "read(\"{fpath}\"): {} bytes do not fit `{}` \
+                                             ({} elements x {per} bytes)",
+                                            bytes.len(),
+                                            l.name.text,
+                                            indices.len()
+                                        )));
+                                    }
+                                    for (n, i) in indices.iter().enumerate() {
+                                        let mut v = 0u64;
+                                        for b in 0..per {
+                                            let byte = bytes.get(n * per + b).copied().unwrap_or(0);
+                                            v |= (byte as u64) << (8 * b);
+                                        }
+                                        if let Some(&id) =
+                                            self.locals.get(&format!("{}[{i}]", l.name.text))
+                                        {
+                                            let w = self.out.signals[id.0 as usize].width;
+                                            let masked = if w > 0 && w < 64 {
+                                                v & ((1u64 << w) - 1)
+                                            } else {
+                                                v
+                                            };
+                                            self.out.signals[id.0 as usize].init = masked;
+                                        }
+                                    }
+                                }
+                                Err(e) => self.sink.emit(siox_diag::Diagnostic::error(format!(
+                                    "read(\"{fpath}\"): {e}"
+                                ))),
+                            }
+                            continue;
+                        }
                     }
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
@@ -674,6 +749,20 @@ impl<'a> Lowering<'a> {
         }
         match self.inline_block(&body.stmts, &env)? {
             Val::Scalar(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// A `read("path")` / `read_to_string("path")` initializer's literal
+    /// path, when `e` is one (elaboration-time file reads, spec std::fs).
+    fn fs_read_call<'e>(e: &'e ast::Expr, which: &str) -> Option<&'e str> {
+        let ast::Expr::Call { callee, args, .. } = e else { return None };
+        let ast::Expr::Path(p) = callee.as_ref() else { return None };
+        if p.segments.len() != 1 || p.segments[0].text != which {
+            return None;
+        }
+        match args.first() {
+            Some(ast::Expr::StrLit { text, .. }) => Some(text),
             _ => None,
         }
     }

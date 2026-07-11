@@ -549,6 +549,20 @@ impl Ctx<'_> {
         let Some(f) = self.fns.get(name) else {
             // Runtime-provided functions (std::rand).
             return match name {
+                "exists" => {
+                    let path = match args.first() {
+                        Some(ast::Expr::StrLit { text, .. }) => text.clone(),
+                        _ => return Err("exists() needs a literal path".into()),
+                    };
+                    Ok(format!(
+                        "({{ FILE *_f = fopen(\"{path}\", \"rb\"); int _e = _f != 0; if (_f) fclose(_f); _e; }})"
+                    ))
+                }
+                "read" | "read_to_string" => Err(format!(
+                    "runtime `{name}()` is not compiled into the native binary yet; \
+                     use it in initializer position (`let x: T[N] = {name}(..);`) \
+                     or run with `sioxc test`"
+                )),
                 "rand" => Ok("sx_rand()".to_string()),
                 "randint" => {
                     let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;

@@ -240,6 +240,19 @@ fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64
     out
 }
 
+/// The literal path of a `read`/`read_to_string` call, when `e` is one.
+fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
+    let ast::Expr::Call { callee, args, .. } = e else { return None };
+    let ast::Expr::Path(p) = callee.as_ref() else { return None };
+    if p.segments.len() != 1 || p.segments[0].text != which {
+        return None;
+    }
+    match args.first() {
+        Some(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
+        _ => None,
+    }
+}
+
 /// Module-level functions by name (testbench-callable).
 fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     let mut out = HashMap::new();
@@ -430,6 +443,37 @@ impl Testbench<'_> {
             Some(ast::Expr::StrLit { text, .. }) => {
                 self.set_string(&l.name.text, text);
             }
+            // Runtime file reads (std::fs): fill the array element-wise.
+            Some(v) if fs_read_path(v, "read_to_string").is_some() => {
+                let fpath = fs_read_path(v, "read_to_string").unwrap();
+                match std::fs::read_to_string(&fpath) {
+                    Ok(text) => {
+                        for (i, c) in text.chars().enumerate() {
+                            self.set_elem(&l.name.text, i, c as u32 as u128);
+                        }
+                    }
+                    Err(e) => {
+                        self.failure = Some((
+                            format!("read_to_string(\"{fpath}\"): {e}"),
+                            l.name.span,
+                        ));
+                    }
+                }
+            }
+            Some(v) if fs_read_path(v, "read").is_some() => {
+                let fpath = fs_read_path(v, "read").unwrap();
+                match std::fs::read(&fpath) {
+                    Ok(bytes) => {
+                        for (i, b) in bytes.iter().enumerate() {
+                            self.set_elem(&l.name.text, i, *b as u128);
+                        }
+                    }
+                    Err(e) => {
+                        self.failure =
+                            Some((format!("read(\"{fpath}\"): {e}"), l.name.span));
+                    }
+                }
+            }
             Some(value) => {
                 let v = self.eval_for(&l.name.text, value);
                 if self.map.contains_key(&l.name.text) {
@@ -446,11 +490,24 @@ impl Testbench<'_> {
         }
     }
 
-    /// Element count of a DUT-connected array (`xs[0]`, `xs[1]`, ... in the
-    /// signal map), if `path` names one.
+    /// Write one array element: to the DUT signal when connected, else to a
+    /// testbench-local element slot.
+    fn set_elem(&mut self, name: &str, i: usize, v: u128) {
+        let key = format!("{name}[{i}]");
+        if let Some(&id) = self.map.get(&key) {
+            self.engine.set(id, v);
+        } else {
+            self.locals.insert(key, v);
+        }
+    }
+
+    /// Element count of an array — DUT-connected (`xs[0]` in the signal map)
+    /// or a testbench-local one.
     fn array_len(&self, path: &str) -> Option<u64> {
         let mut n = 0;
-        while self.map.contains_key(&format!("{path}[{n}]")) {
+        while self.map.contains_key(&format!("{path}[{n}]"))
+            || self.locals.contains_key(&format!("{path}[{n}]"))
+        {
             n += 1;
         }
         (n > 0).then_some(n)
@@ -599,10 +656,15 @@ impl Testbench<'_> {
                     let n = self.array_len(&path).unwrap_or(0);
                     (0..n)
                         .map(|i| {
-                            self.map
-                                .get(&format!("{path}[{i}]"))
-                                .map(|&id| self.engine.read(id))
-                                .unwrap_or_else(|| u128::from_u64(0))
+                            let key = format!("{path}[{i}]");
+                            if let Some(&v) = self.locals.get(&key) {
+                                v
+                            } else {
+                                self.map
+                                    .get(&key)
+                                    .map(|&id| self.engine.read(id))
+                                    .unwrap_or_else(|| u128::from_u64(0))
+                            }
                         })
                         .collect()
                 } else if let ast::Expr::Range { lo, hi, .. } = range {
@@ -913,6 +975,13 @@ impl Testbench<'_> {
             // Runtime-provided functions (std::rand): ordinary calls, no
             // special syntax — the runtime supplies the implementation.
             return match name {
+                "exists" => {
+                    let p = match args.first() {
+                        Some(ast::Expr::StrLit { text, .. }) => text.clone(),
+                        _ => return u128::from_u64(0),
+                    };
+                    u128::from_u64(std::path::Path::new(&p).exists() as u64)
+                }
                 "rand" => u128::from_u64(self.next_rand()),
                 "uniform" => {
                     let x = (self.next_rand() >> 11) as f64 / (1u64 << 53) as f64;
@@ -1065,18 +1134,29 @@ impl Testbench<'_> {
             // A struct-field (`p.data`) or array-element (`a[2]`) read resolves
             // through the flattened map; a dynamic index (`xs[i]`) evaluates
             // the index first.
-            ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
-                .or_else(|| {
+            ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                let key = expr_path(e).or_else(|| {
                     if let ast::Expr::Index { base, index, .. } = e {
                         let b = expr_path(base)?;
                         let i = self.eval_env(index, fenv).to_u64();
                         return Some(format!("{b}[{i}]"));
                     }
                     None
-                })
-                .and_then(|p| self.map.get(&p))
-                .map(|&id| self.engine.read(id))
-                .unwrap_or_else(|| u128::from_u64(0)),
+                });
+                match key {
+                    Some(p) => {
+                        if let Some(&v) = self.locals.get(&p) {
+                            v
+                        } else {
+                            self.map
+                                .get(&p)
+                                .map(|&id| self.engine.read(id))
+                                .unwrap_or_else(|| u128::from_u64(0))
+                        }
+                    }
+                    None => u128::from_u64(0),
+                }
+            }
             ast::Expr::Unary { op, rhs, .. } => {
                 let a = self.eval_env(rhs, fenv);
                 match op {

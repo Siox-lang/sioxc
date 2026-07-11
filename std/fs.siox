@@ -1,0 +1,17 @@
+module std::fs;
+
+// File primitives (Rust's std::fs shape: functions returning values; errors
+// are simulation/compile failures — a missing stimulus file fails the run).
+// Runtime-provided, like std::rand. std ships the PRIMITIVE only: format
+// loaders (hex images, CSV stimulus, ...) are parsing libraries, not std.
+//
+//   read(path)             file bytes fill the declared array
+//                          (`let rom: uint[8][256] = read("rom.bin");`
+//                          little-endian packing for wider elements; a
+//                          shorter file leaves the tail at 0, a longer one
+//                          errors). In initializer position the COMPILER
+//                          reads the file (include_bytes!-style): contents
+//                          bake into the design, zero runtime IO.
+//   read_to_string(path)   file contents as a string; in initializer
+//                          position the Char[] length comes from the file
+//   exists(path)           whether the path exists (never fails)
