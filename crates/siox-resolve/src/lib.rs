@@ -113,6 +113,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.collect_item(item);
         }
     }
+    r.inherit_enum_variants();
     for m in modules {
         for item in &m.items {
             r.resolve_imports(item);
@@ -126,6 +127,16 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.out
 }
 
+/// The head identifier of a type expression (`uint[8]` -> `uint`), for
+/// derivation-base lookup.
+fn type_head(t: &Type) -> Option<&str> {
+    match t {
+        Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head(base),
+        Type::Mode { inner, .. } => type_head(inner),
+    }
+}
+
 struct Resolver<'a> {
     sink: &'a mut DiagnosticSink,
     out: Resolved,
@@ -135,6 +146,9 @@ struct Resolver<'a> {
     attrs: HashMap<String, DefId>,
     /// Enum `DefId` -> (variant name -> variant `DefId`).
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
+    /// Enum name -> its `DefId`, and enum name -> base head name (derivation).
+    enum_ids: HashMap<String, DefId>,
+    enum_derives: HashMap<String, String>,
     /// Lexical scopes for params/locals, innermost last.
     scopes: Vec<HashMap<String, DefId>>,
 }
@@ -147,6 +161,8 @@ impl<'a> Resolver<'a> {
             globals: HashMap::new(),
             attrs: HashMap::new(),
             enum_variants: HashMap::new(),
+            enum_ids: HashMap::new(),
+            enum_derives: HashMap::new(),
             scopes: Vec::new(),
         }
     }
@@ -178,6 +194,42 @@ impl<'a> Resolver<'a> {
         for name in ["top", "test", "keep", "library", "name"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.attrs.insert(name.to_string(), id);
+        }
+    }
+
+    /// Nominal enum derivation: a derived enum's associated-variant paths
+    /// (`Child::InheritedVariant`) resolve to the base's variants. Merge
+    /// base-chain variant entries into each derived enum's table.
+    fn inherit_enum_variants(&mut self) {
+        let names: Vec<String> = self.enum_ids.keys().cloned().collect();
+        for name in &names {
+            // Walk the derivation chain (nearest base first) collecting the
+            // variant maps of every ancestor enum.
+            let mut inherited: Vec<HashMap<String, DefId>> = Vec::new();
+            let mut cur = name.clone();
+            let mut guard = 0;
+            while let Some(base) = self.enum_derives.get(&cur).cloned() {
+                let Some(&bid) = self.enum_ids.get(&base) else { break };
+                if let Some(m) = self.enum_variants.get(&bid) {
+                    inherited.push(m.clone());
+                }
+                cur = base;
+                guard += 1;
+                if guard > 64 {
+                    break;
+                }
+            }
+            if inherited.is_empty() {
+                continue;
+            }
+            let id = self.enum_ids[name];
+            let own = self.enum_variants.entry(id).or_default();
+            // Ancestors furthest-first, without overwriting nearer/own entries.
+            for m in inherited.into_iter().rev() {
+                for (v, vid) in m {
+                    own.entry(v).or_insert(vid);
+                }
+            }
         }
     }
 
@@ -222,6 +274,12 @@ impl<'a> Resolver<'a> {
                     vars.insert(v.name.text.clone(), vid);
                 }
                 self.enum_variants.insert(id, vars);
+                self.enum_ids.insert(e.name.text.clone(), id);
+                if let Some(t) = &e.repr {
+                    if let Some(h) = type_head(t) {
+                        self.enum_derives.insert(e.name.text.clone(), h.to_string());
+                    }
+                }
             }
             Item::Entity(e) => {
                 self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);

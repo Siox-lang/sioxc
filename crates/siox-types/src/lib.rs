@@ -1563,4 +1563,30 @@ mod tests {
         );
         assert_eq!(with, 0);
     }
+
+    #[test]
+    fn derived_struct_field_collision_errors() {
+        // A field re-declaring an inherited one is rejected.
+        let n = check_src(
+            "module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n",
+        );
+        assert_eq!(n, 1, "duplicate inherited field");
+        // A fresh field name is fine.
+        let ok = check_src(
+            "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n",
+        );
+        assert_eq!(ok, 0);
+    }
+
+    #[test]
+    fn field_adding_over_array_base_errors() {
+        // Deriving fields over an array-shaped base is rejected; the bodyless
+        // form is allowed.
+        let bad = check_src(
+            "module m;\nstruct Foo : Bit[] { parity: Bit }\n",
+        );
+        assert_eq!(bad, 1, "fields over array base");
+        let ok = check_src("module m;\nstruct Word : Bit[];\n");
+        assert_eq!(ok, 0, "bodyless array-derived is fine");
+    }
 }

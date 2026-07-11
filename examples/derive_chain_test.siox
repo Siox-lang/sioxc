@@ -1,0 +1,44 @@
+module examples::derive_chain_test;
+using std::logic::{ULogic};
+
+// A user derivation chain of named enums, mirroring the logic hierarchy.
+enum Base { A, B }
+enum Extended : Base { C }
+
+struct Header { valid: Bit, kind: uint[4] }
+struct Packet : Header { data: uint[8] }
+
+entity DUT {
+    in clk: Clock;
+    in u: ULogic;
+    in v: Bit; in k: uint[4]; in dt: uint[8];
+    out clk_bit: Bit;      // Clock -> Bit (derivation-total, auto)
+    out lg: Logic;         // ULogic -> Logic (widening/same-variant, auto)
+    out hk: uint[4];       // Packet -> Header projection (auto)
+    out ext: Extended;     // Base -> Extended (widening, auto)
+}
+impl DUT {
+    clk_bit = Bit(clk);
+    lg = Logic(u);
+    let pkt: Packet;
+    pkt = Packet { .valid = v, .kind = k, .data = dt };
+    let h: Header;
+    h = Header(pkt);
+    hk = h.kind;
+    let b: Base = Base::A;
+    ext = Extended(b);
+}
+
+#[test]
+entity ChainTest {}
+impl ChainTest {
+    let clk: Clock = '1'; let u: ULogic = 'Z';
+    let v: Bit = '1'; let k: uint[4] = 7; let dt: uint[8] = 42;
+    let clk_bit: Bit; let lg: Logic; let hk: uint[4]; let ext: Extended;
+    let d = DUT { .clk, .u, .v, .k, .dt, .clk_bit, .lg, .hk, .ext };
+    await 1ns;
+    assert!(clk_bit == '1', "Clock -> Bit");
+    assert!(lg == 'Z', "ULogic -> Logic keeps 'Z'");
+    assert!(hk == 7, "Packet -> Header projection");
+    assert!(ext == Extended::A, "Base -> Extended widening keeps A");
+}

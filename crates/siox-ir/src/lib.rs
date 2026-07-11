@@ -3124,6 +3124,56 @@ mod tests {
     }
 
     #[test]
+    fn derived_enum_width_covers_inherited_variants() {
+        // Ext has 4 effective variants (A, B inherited + C, D) -> 2 bits.
+        let d = lower_src(
+            "module m;\n\
+             enum Base { A, B }\n\
+             enum Ext : Base { C, D }\n\
+             entity E { out x: Ext; }\n\
+             impl E { x = Ext::A; }\n\
+             #[top] entity H {}\n\
+             impl H { let x: Ext; let dut = E { .x }; }\n",
+        );
+        let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
+        assert_eq!(sig.width, 2, "inherited variants widen the enum");
+    }
+
+    #[test]
+    fn derived_struct_inherits_base_fields() {
+        // Packet flattens Header's fields (base-first) then its own.
+        let d = lower_src(
+            "module m;\n\
+             struct Header { valid: Bit, kind: uint[4] }\n\
+             struct Packet : Header { data: uint[8] }\n\
+             entity E { out p: Packet; }\n\
+             impl E {}\n\
+             #[top] entity H {}\n\
+             impl H { let p: Packet; let dut = E { .p }; }\n",
+        );
+        let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
+        assert_eq!(width("H.dut.p.valid"), Some(1), "inherited field");
+        assert_eq!(width("H.dut.p.kind"), Some(4), "inherited field");
+        assert_eq!(width("H.dut.p.data"), Some(8), "own field");
+    }
+
+    #[test]
+    fn same_variant_enum_derivation_is_representation_identical() {
+        // A bodyless derivation keeps the base's width and discriminants.
+        let d = lower_src(
+            "module m;\n\
+             enum Base { A, B, C }\n\
+             enum Alias : Base;\n\
+             entity E { out x: Alias; }\n\
+             impl E { x = Alias::B; }\n\
+             #[top] entity H {}\n\
+             impl H { let x: Alias; let dut = E { .x }; }\n",
+        );
+        let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
+        assert_eq!(sig.width, 2, "3 variants -> 2 bits, same as base");
+    }
+
+    #[test]
     fn rising_lowers_to_event_old_current() {
         let d = lower_src(COUNTER);
         let rendered = d.to_ir_string();

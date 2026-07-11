@@ -46,6 +46,11 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`Clock : Bit` + inherited enum-variant paths** — `Clock` now derives
+  from `Bit` (was a duplicate declaration), so `Clock(b)`/`Bit(clk)` convert
+  for free. `Child::InheritedVariant` paths (`Extended::A` from a base enum)
+  now resolve. Tests across syntax/types/ir plus an end-to-end derivation
+  showcase (examples/derive_chain_test.siox).
 - **Nominal type derivation** — `enum B : A` / `struct B : A` (with
   optional `{ … }` to extend) create distinct types reusing a base's
   representation. std's logic scalars became the chain `Bit → ULogic : Bit →

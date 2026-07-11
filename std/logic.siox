@@ -47,12 +47,10 @@ pub enum Bool {
     true,
 }
 
-// A Bit carrying clock intent; edge detection is built-in syntax
-// (`clk::rising` / `clk::falling`, the analogue of VHDL's `rising_edge`).
-pub enum Clock {
-    '0',
-    '1',
-}
+// A Bit carrying clock intent — the same two values, a distinct nominal type
+// (edge detection is built-in syntax: `clk::rising` / `clk::falling`, the
+// analogue of VHDL's `rising_edge`). `Clock(b)` / `Bit(clk)` convert freely.
+pub enum Clock : Bit;
 
 // Named levels, for readability at connection sites.
 pub const LOW: Bit = '0';

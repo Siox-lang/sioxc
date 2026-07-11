@@ -585,6 +585,19 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_derived_types() {
+        roundtrip(
+            "module m;\n\
+             enum Bit { '0', '1' }\n\
+             enum ULogic : Bit { 'Z', 'X' }\n\
+             enum Logic : ULogic;\n\
+             struct Header { valid: Bit }\n\
+             struct Packet : Header { data: uint[8] }\n\
+             struct Word : Bit[];\n",
+        );
+    }
+
+    #[test]
     fn roundtrips_trait_type_args() {
         roundtrip(
             "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
