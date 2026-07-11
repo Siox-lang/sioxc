@@ -1826,6 +1826,25 @@ and stays usable as a name everywhere else. `after` is testbench-only in
 Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
 the after-form is the one generator.)
 
+#### Generic functions and trait bounds
+
+A function may be generic over a type with an optional trait bound:
+
+```siox
+fn maxi<T: Ord>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Ord
+    if a > b { return a; }
+    return b;
+}
+```
+
+Functions inline, so a call is its own monomorphization: the body dispatches
+operators on the caller's concrete type (`int`'s signed `Ord`, not the kernel
+compare), and the bound is checked at the call site — a named struct/enum must
+carry an explicit `impl Tr`, while kernel scalars and vectors satisfy the
+built-in capabilities. `where T: Ord` is exact sugar for `<T: Ord>`; the two
+forms parse to the same declaration. Abstract bodies are not type-checked on
+their own — each call is.
+
 #### Macros vs. functions
 
 The **bang marks a macro** — a compile-time syntactic form (format-string

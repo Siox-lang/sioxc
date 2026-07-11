@@ -46,6 +46,13 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Generic functions, trait bounds, and `where`** — `fn maxi<T: Ord>(a, b)`
+  (or the `where T: Ord` spelling, exact sugar). Fns inline, so a call is a
+  monomorphization: the body dispatches operators on the caller's concrete
+  type, and the bound is enforced at the call site (a named type needs an
+  explicit `impl Tr`; kernel scalars/vectors satisfy built-ins). Verified on
+  interp/JIT/native (examples/generic_test.siox, where_test.siox). The
+  `where`-clause proposal note is now implemented and removed.
 - **Built-in uint/int fully removed** — the compiler no longer has `UInt(w)`
   / `Int(w)` types or any `uint`/`int` name-check. Its only numeric-vector
   notion is a generic `Ty::Vector { width, signed }` / `EType::Vector` — a

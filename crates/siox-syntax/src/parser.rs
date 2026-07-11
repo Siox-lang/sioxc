@@ -467,9 +467,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fn_after_name(&mut self, start: Span, name: Ident) -> FnDecl {
-        let generics = self.parse_params_opt();
+        let mut generics = self.parse_params_opt();
         let params = self.parse_fn_params();
         let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()) } else { None };
+        self.parse_where_into(&mut generics);
         let body = if self.at(TokenKind::LBrace) {
             Some(self.parse_block())
         } else {
@@ -477,6 +478,34 @@ impl<'a> Parser<'a> {
             None
         };
         FnDecl { name, generics, params, ret, body, span: start.to(self.prev_span()) }
+    }
+
+    /// Parse an optional `where` clause and desugar its predicates onto the
+    /// declaration's generic parameters: `where T: Ord` sets the bound of the
+    /// param `T`, so `fn f<T>(..) where T: Ord` == `fn f<T: Ord>(..)`.
+    fn parse_where_into(&mut self, generics: &mut Params) {
+        if !(self.at(TokenKind::Ident) && self.cur_text() == "where") {
+            return;
+        }
+        self.bump(); // `where`
+        while !self.at(TokenKind::LBrace) && !self.at(TokenKind::Semi) && !self.at(TokenKind::Eof) {
+            let tspan = self.span();
+            let target = self.parse_type();
+            self.expect(TokenKind::Colon, "in a `where` predicate");
+            let bound = self.parse_type();
+            // Attach the bound to the matching generic parameter.
+            let head = match &target {
+                Type::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+                _ => None,
+            };
+            match head.and_then(|h| generics.params.iter_mut().find(|p| p.name.text == h)) {
+                Some(p) => p.bound = Some(bound),
+                None => self.error_at(tspan, "`where` names an unknown type parameter"),
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
     }
 
     fn parse_fn_params(&mut self) -> Vec<FnParam> {

@@ -595,6 +595,21 @@ mod tests {
     }
 
     #[test]
+    fn where_clause_desugars_to_inline_bounds() {
+        // `where T: Ord` parses to the same AST as `<T: Ord>`; printing is
+        // canonical (inline) and re-parses identically.
+        let mut sink = DiagnosticSink::new();
+        let m = crate::parse_module(
+            FileId(0),
+            "module m;\nfn f<T>(a: T) -> T\nwhere\n    T: Ord,\n{\n    return a;\n}\n",
+            &mut sink,
+        );
+        assert_eq!(sink.error_count(), 0);
+        let printed = print_module(&m);
+        assert!(printed.contains("fn f<T: Ord>(a: T)"), "where should print inline:\n{printed}");
+    }
+
+    #[test]
     fn roundtrips_derived_types() {
         roundtrip(
             "module m;\n\
