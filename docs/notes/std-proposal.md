@@ -34,7 +34,7 @@ documents what exists today; this note is the target picture and build order.
 | Time/units | `std.standard` `time` | timescale directive | `sc_time` | `std::sim` ✅ |
 | Text/strings | `std.standard` `string` | `string` (SV) | `std::string` | `std::text` (partial) |
 | TB output | `textio` (`write`/`report`) | `$display`/`$monitor` ★ | `cout`/`sc_report` | `std::io` (**gap**) |
-| Memory load | `textio` file read | `$readmemh` ★ | user code | `std::mem` (**gap**) |
+| Memory load | `textio` file read | `$readmemh` ★ | user code | `std::io::load_hex` (**gap**) |
 | Randomization | `math_real.uniform` | `$random`, `randomize()` ★ | `rand()` | `std::rand` (**gap**) |
 | Assertions | `assert … severity` | SVA, `$fatal…` | `sc_assert`/`sc_report` | `std::assert` (partial) |
 | Sim control | `std.env` (`stop`/`finish`) | `$stop`/`$finish` | `sc_stop` | `std::sim` (**gap**) |
@@ -71,7 +71,7 @@ flowchart TD
     end
 
     subgraph models ["models & verification — later"]
-        MEM["std::mem  (new)\nRam/Rom models · load_hex"]
+        MEM["vendor IP (NOT std)\nextern entities + attrs\nvia pcb packages"]
         FIXED["std::fixed  (future)\nufixed/sfixed"]
         FIFO["std::fifo  (future)\nTB channels (needs processes)"]
         VERIFY["std::verify  (last)\ndrivers · monitors · scoreboard\n(pairs with cocotb)"]
@@ -195,9 +195,13 @@ failure (SV-style repro).
 **`std::assert`.** `Severity` ✅. Add `check!(cond)` variants with severity,
 `expect_eq!(a, b)` printing both values on failure (needs std::io).
 
-**`std::mem` (new).** `Ram<W, DEPTH>` / `Rom<W, DEPTH>` entities +
-`load_hex(path)` initialization (`$readmemh`). First real *library
-hardware*, exercising generics + memories end to end.
+**Memories — NOT std** (decided 2026-07-11). RAM/ROM is vendor hardware:
+inferred by synthesis from arrays, or instantiated from vendor primitives
+(Xilinx BRAM/XPM, ...). Vendor IP arrives as **`extern entity` packages with
+type-targeted attributes** through the pcb/circuit ecosystem — never std.
+What remains here: `load_hex(path)` (`$readmemh`) is a *simulation service*
+and moves under `std::io`; the language gap memories actually need is
+**dynamic array indexing** in lowering (compiler work).
 
 **`std::fixed` (future).** `ufixed`/`sfixed` after SystemC's `sc_fixed` /
 VHDL's `fixed_pkg` — valuable for DSP, but gated on the width/typing work
@@ -221,7 +225,7 @@ Python testbenches.
 | **S3** ✅ | `print!` + `stop!`/`finish!` (bang actions) + dynamic range asserts | done — pure-call/bang-action rule |
 | **S4** ✅ | `std::math` real functions + `clog2`, `abs/min/max`, `PI`/`E` | done — libm/LLVM intrinsics; native links -lm |
 | **S5** | `std::rand`, `std::assert` helpers | S3 |
-| **S6** | `std::mem` (Ram/Rom + `load_hex`) | S2 + S3 |
+| **S6** | dynamic array indexing (compiler) + `std::io::load_hex` | memories are vendor/user domain |
 | **S7** | `std::text` encodings, `to_string` | S2 |
 | **S8** | `std::fixed`, `std::fifo`, `std::verify` | processes; cocotb timing |
 
