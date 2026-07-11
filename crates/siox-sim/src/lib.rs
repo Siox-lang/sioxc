@@ -382,7 +382,11 @@ mod tests {
     use siox_diag::DiagnosticSink;
 
     /// Lower a source string through the full frontend into IR.
+    const VEC: &str = "\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n";
+
     fn lower(src: &str) -> Design {
+        let src = format!("{src}{VEC}");
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");
@@ -395,6 +399,8 @@ mod tests {
 
     /// Lower + run the test entities in a source string.
     fn run(src: &str) -> Vec<TestResult> {
+        let src = format!("{src}{VEC}");
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");
@@ -730,6 +736,7 @@ mod tests {
     #[test]
     fn name_filter_selects_a_test() {
         let src = COUNTER_TEST.replace("PLACEHOLDER", "assert!(count == 10, \"ok\");");
+        let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), &src, &mut sink);
         let modules = std::slice::from_ref(&module);

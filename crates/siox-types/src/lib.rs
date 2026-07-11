@@ -125,6 +125,9 @@ struct Checker<'a> {
     enum_bases: HashMap<String, String>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
+    /// Struct name -> signedness, for structs carrying `#[vector]` (an
+    /// array-derived numeric family). Membership is the attribute, not shape.
+    vector_families: HashMap<String, bool>,
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -143,6 +146,8 @@ impl<'a> Checker<'a> {
             ("keep", &["let", "port"]),
             ("library", &["entity"]),
             ("name", &["entity"]),
+            ("vector", &["struct"]),
+            ("signed", &["struct"]),
         ] {
             attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
         }
@@ -177,6 +182,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
+            vector_families: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
         }
@@ -268,6 +274,14 @@ impl<'a> Checker<'a> {
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
+                let has = |n: &str| {
+                    st.attrs
+                        .iter()
+                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(n))
+                };
+                if has("vector") {
+                    self.vector_families.insert(st.name.text.clone(), has("signed"));
+                }
             }
             Item::Using(u) => {
                 if let UsingKind::Alias { name, ty } = &u.kind {
@@ -311,6 +325,14 @@ impl<'a> Checker<'a> {
     /// index/field access models would collide), and no field may collide
     /// with an inherited one.
     fn check_struct(&mut self, st: &StructDecl) {
+        for a in &st.attrs {
+            let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+            if !self.attr_targets.contains_key(name) {
+                self.error(codes::UNKNOWN_NAME, a.name.span, format!("unknown attribute `{name}`"));
+                continue;
+            }
+            self.check_attr_target(a, "struct", Some(st.name.text.as_str()));
+        }
         let Some(base) = &st.base else { return };
         // Array-shaped base + fields is rejected (after alias resolution).
         if !st.fields.is_empty() && self.is_array_base(base) {
@@ -356,24 +378,9 @@ impl<'a> Checker<'a> {
     /// how uint/int and future fixed-point families are recognized without
     /// hardcoding their names.
     fn logic_vector_family(&self, name: &str) -> Option<bool> {
-        let (base, own) = self.structs.get(name)?;
-        if !own.is_empty() {
-            return None; // named fields => an aggregate, not a bare vector
-        }
-        let base = base.as_ref()?;
-        // Element type of the array base must be a scalar logic type.
-        let elem = match base {
-            Type::Indexed { base, .. } => type_head_name(base),
-            _ => return None,
-        }?;
-        if !matches!(elem, "Logic" | "Bit" | "ULogic" | "Clock") {
-            return None;
-        }
-        let signed = self
-            .trait_impls
-            .get("Signed")
-            .is_some_and(|s| s.contains(name));
-        Some(signed)
+        // Membership is the `#[vector]` attribute (spec 3.5) — the compiler no
+        // longer infers it from the `: Logic[]` shape.
+        self.vector_families.get(name).copied()
     }
 
     /// Whether a base type resolves (through aliases) to an array shape.
@@ -1362,7 +1369,7 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
-    const VEC: &str = "\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n";
+    const VEC: &str = "\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");

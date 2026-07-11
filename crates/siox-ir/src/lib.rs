@@ -2807,36 +2807,19 @@ pub fn eval_const_stmts(
 /// bodyless) with their signedness (`impl Signed for F`). uint/int are just
 /// members — the compiler recognizes the shape, not the names.
 fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
-    let mut signed = std::collections::HashSet::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Impl(im) = item {
-                let is_signed = im
-                    .trait_
-                    .as_ref()
-                    .map(|t| t.segments.last().map(|s| s.text.as_str()) == Some("Signed"))
-                    .unwrap_or(false);
-                if is_signed {
-                    if let Some(h) = type_head_name(&im.target) {
-                        signed.insert(h.to_string());
-                    }
-                }
-            }
-        }
-    }
+    // A struct is a numeric vector family iff it carries `#[vector]` (spec
+    // 3.5); `#[signed]` selects two's-complement. Explicit, not shape-inferred.
+    let has = |st: &ast::StructDecl, n: &str| {
+        st.attrs
+            .iter()
+            .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(n))
+    };
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(st) = item {
-                if !st.fields.is_empty() {
-                    continue;
-                }
-                let elem = match &st.base {
-                    Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
-                    _ => None,
-                };
-                if matches!(elem, Some("Logic" | "Bit" | "ULogic" | "Clock")) {
-                    out.insert(st.name.text.clone(), signed.contains(&st.name.text));
+                if has(st, "vector") {
+                    out.insert(st.name.text.clone(), has(st, "signed"));
                 }
             }
         }
@@ -2961,9 +2944,11 @@ fn array_of<'t>(
     Some((base, indices))
 }
 
+/// The kernel `integer` scalar (a bare word). uint/int are NOT here — they
+/// are `#[vector]` families recognized via the family set, not by name.
 fn is_int_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Path(p)
-        if matches!(p.segments.last().map(|s| s.text.as_str()), Some("uint" | "int" | "integer")))
+        if p.segments.last().map(|s| s.text.as_str()) == Some("integer"))
 }
 
 /// Build `enum name -> bit width`: the `repr` width if given (`enum S: uint[2]`),
@@ -3006,6 +2991,11 @@ mod tests {
     use siox_diag::FileId;
 
     fn lower_src(src: &str) -> Design {
+        // uint/int are library types (attribute-marked vectors), not seeded.
+        let src = format!(
+            "{src}\n#[vector] struct uint : Logic[];\n#[vector] #[signed] struct int : Logic[];\n"
+        );
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");

@@ -93,6 +93,9 @@ pub struct Param {
 #[derive(Clone, Debug)]
 pub struct StructDecl {
     pub is_pub: bool,
+    /// Declaration attributes (`#[vector]`, `#[signed]`): representation
+    /// metadata read by the compiler (spec 3.5).
+    pub attrs: Vec<Attr>,
     pub name: Ident,
     pub params: Params,
     /// Nominal derivation base (`struct B : A`): `B` reuses `A`'s

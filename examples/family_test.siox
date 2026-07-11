@@ -2,6 +2,7 @@ module examples::family_test;
 
 // A user-defined Logic-vector family — behaves like uint with no compiler
 // knowledge of its name, purely from `struct F : Logic[]`.
+#[vector]
 struct Word : Logic[];
 
 entity E { in a: Word[8]; out y: Word[8]; }

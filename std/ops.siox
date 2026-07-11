@@ -61,12 +61,6 @@ impl Boolean for Bool {
 // several contexts, the compiler folds the contributions pairwise through
 // the type's `resolve` (associative, commutative). A type WITHOUT an impl
 // is unresolved — parallel drivers on it are an elaboration error.
-// Marker trait: an array-derived Logic family that implements `Signed` is a
-// signed vector (two's-complement interpretation); without it, unsigned.
-// This is how the numeric families declare their interpretation to the
-// compiler instead of being magic names.
-pub trait Signed {}
-
 pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }

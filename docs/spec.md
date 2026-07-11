@@ -298,6 +298,14 @@ means:
 #[top = true]
 ```
 
+**Representation attributes.** `#[vector]` on an array-derived type
+(`struct F : Logic[]`) tells the compiler to lay it out as one packed N-bit
+signal with integer-valued arithmetic, rather than N separate `Logic`
+sub-signals; `#[signed]` selects two's-complement interpretation. This is how
+`uint`/`int` are defined — ordinary library `struct`s in `std/bits.siox`, not
+compiler-magic names — and a user `#[vector] struct MyWord : Logic[];` gets
+identical treatment. The std, not the compiler, says how and why.
+
 **Type-targeted attributes.** A target may also be a *type name*, declaring
 an attribute valid only on that entity/struct or on declarations/instances
 of it — vendor metadata, like Vivado's `ASYNC_REG`/`DONT_TOUCH`:

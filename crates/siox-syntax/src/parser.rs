@@ -94,8 +94,8 @@ impl<'a> Parser<'a> {
             return Some(Item::ExternBlock { abi, fns, span: start.to(self.prev_span()) });
         }
 
-        if !attrs.is_empty() && !self.at(TokenKind::Entity) {
-            self.error_here("attributes are only allowed on entities");
+        if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Struct) {
+            self.error_here("attributes are only allowed on entities and structs");
         }
 
         let item = match self.kind() {
@@ -107,7 +107,7 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 Item::Fn(self.parse_fn_after_name(start, name))
             }
-            TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
+            TokenKind::Struct => Item::Struct(self.parse_struct(is_pub, attrs)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
             TokenKind::Impl => Item::Impl(self.parse_impl()),
@@ -228,7 +228,7 @@ impl<'a> Parser<'a> {
 
     // --- struct / enum ------------------------------------------------------
 
-    fn parse_struct(&mut self, is_pub: bool) -> StructDecl {
+    fn parse_struct(&mut self, is_pub: bool, attrs: Vec<Attr>) -> StructDecl {
         let start = self.span();
         self.bump(); // `struct`
         let name = self.parse_ident();
@@ -239,6 +239,7 @@ impl<'a> Parser<'a> {
         if base.is_some() && self.eat(TokenKind::Semi) {
             return StructDecl {
                 is_pub,
+                attrs,
                 name,
                 params,
                 base,
@@ -259,7 +260,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a struct body");
-        StructDecl { is_pub, name, params, base, fields, span: start.to(self.prev_span()) }
+        StructDecl { is_pub, attrs, name, params, base, fields, span: start.to(self.prev_span()) }
     }
 
     fn parse_enum(&mut self, is_pub: bool) -> EnumDecl {

@@ -46,6 +46,13 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Representation attributes `#[vector]` / `#[signed]`** — the numeric-vector
+  layout is now *declared by std*, not inferred by the compiler from the
+  `: Logic[]` shape. `std/bits.siox` marks `#[vector] struct uint` and
+  `#[vector] #[signed] struct int`; the compiler recognizes families by the
+  attribute and drops the last name-recognition residuals (`is_int_type` is
+  now `integer`-only). Attributes attach to struct declarations, validated
+  against a `struct` target. Replaces the short-lived `Signed` marker trait.
 - **uint/int dropped as compiler-magic names** — they are now ordinary
   `struct uint : Logic[]` / `struct int : Logic[]` declarations in
   `std/bits.siox`, no longer seeded builtins. The compiler recognizes any
