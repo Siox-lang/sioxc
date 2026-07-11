@@ -184,6 +184,17 @@ impl<'a> Checker<'a> {
 
     /// First pass: record entity port types and declared attribute targets.
     fn collect(&mut self, modules: &[Module]) {
+        // Two passes: gather type declarations (structs, enums, aliases,
+        // attrs, impls) first, so entity-port typing below can already see
+        // e.g. `struct uint : Logic[]` regardless of module/item order.
+        for m in modules {
+            for item in &m.items {
+                if matches!(item, Item::Entity(_)) {
+                    continue;
+                }
+                self.collect_decl(item);
+            }
+        }
         for m in modules {
             for item in &m.items {
                 match item {
@@ -199,65 +210,77 @@ impl<'a> Checker<'a> {
                             .collect();
                         self.entities.insert(e.name.text.clone(), ports);
                     }
-                    Item::AttrDecl(a) => {
-                        let targets = a.targets.iter().map(|t| t.text.clone()).collect();
-                        self.attr_targets.insert(a.name.text.clone(), targets);
-                        let kind = match type_head_name(&a.ty) {
-                            Some("Bool") => AttrValueTy::Bool,
-                            Some("string") | Some("str") => AttrValueTy::Str,
-                            _ => AttrValueTy::Other,
-                        };
-                        self.attr_value_kinds.insert(a.name.text.clone(), kind);
-                    }
-                    Item::Impl(im) => {
-                        // Record `impl Trait for Type` so trait-driven checks
-                        // (e.g. conditions) can ask "does T implement Trait?".
-                        if let Some(tr) = &im.trait_ {
-                            let trait_name = tr.segments.last().map(|s| s.text.clone());
-                            let target = type_head_name(&im.target).map(|s| s.to_string());
-                            if let (Some(t), Some(ty)) = (trait_name, target) {
-                                // `impl Suffix for T`: each fn's name is a
-                                // literal suffix producing a T (spec 3.24).
-                                if t == "Suffix" {
-                                    for it in &im.items {
-                                        if let ImplItem::Fn(f) = it {
-                                            self.suffix_types
-                                                .entry(f.name.text.clone())
-                                                .or_default()
-                                                .push(ty.clone());
-                                        }
-                                    }
-                                }
-                                self.trait_impls.entry(t).or_default().insert(ty);
-                            }
-                        }
-                    }
-                    Item::Enum(e) => {
-                        let vars: Vec<String> =
-                            e.variants.iter().map(|v| v.name.text.clone()).collect();
-                        self.own_variants.insert(e.name.text.clone(), vars.clone());
-                        self.enum_variants.insert(e.name.text.clone(), vars);
-                        if let Some(t) = &e.repr {
-                            if let Some(h) = type_head_name(t) {
-                                self.enum_bases.insert(e.name.text.clone(), h.to_string());
-                            }
-                        }
-                    }
-                    Item::Struct(st) => {
-                        let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
-                        self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
-                    }
-                    Item::Using(u) => {
-                        if let UsingKind::Alias { name, ty } = &u.kind {
-                            self.aliases.insert(name.text.clone(), ty.clone());
-                        }
-                    }
                     _ => {}
                 }
             }
         }
-        // Nominal enum derivation: prepend base variants (spec derived types).
-        // A base that isn't a known enum is a numeric repr — ignore it.
+        // (inherited enum variants are expanded in collect_decl's tail)
+        self.expand_inherited_variants();
+    }
+
+    /// Collect one non-entity type declaration.
+    fn collect_decl(&mut self, item: &Item) {
+        match item {
+            Item::AttrDecl(a) => {
+                let targets = a.targets.iter().map(|t| t.text.clone()).collect();
+                self.attr_targets.insert(a.name.text.clone(), targets);
+                let kind = match type_head_name(&a.ty) {
+                    Some("Bool") => AttrValueTy::Bool,
+                    Some("string") | Some("str") => AttrValueTy::Str,
+                    _ => AttrValueTy::Other,
+                };
+                self.attr_value_kinds.insert(a.name.text.clone(), kind);
+            }
+            Item::Impl(im) => {
+                // Record `impl Trait for Type` so trait-driven checks (e.g.
+                // conditions) can ask "does T implement Trait?".
+                if let Some(tr) = &im.trait_ {
+                    let trait_name = tr.segments.last().map(|s| s.text.clone());
+                    let target = type_head_name(&im.target).map(|s| s.to_string());
+                    if let (Some(t), Some(ty)) = (trait_name, target) {
+                        // `impl Suffix for T`: each fn's name is a literal
+                        // suffix producing a T (spec 3.24).
+                        if t == "Suffix" {
+                            for it in &im.items {
+                                if let ImplItem::Fn(f) = it {
+                                    self.suffix_types
+                                        .entry(f.name.text.clone())
+                                        .or_default()
+                                        .push(ty.clone());
+                                }
+                            }
+                        }
+                        self.trait_impls.entry(t).or_default().insert(ty);
+                    }
+                }
+            }
+            Item::Enum(e) => {
+                let vars: Vec<String> =
+                    e.variants.iter().map(|v| v.name.text.clone()).collect();
+                self.own_variants.insert(e.name.text.clone(), vars.clone());
+                self.enum_variants.insert(e.name.text.clone(), vars);
+                if let Some(t) = &e.repr {
+                    if let Some(h) = type_head_name(t) {
+                        self.enum_bases.insert(e.name.text.clone(), h.to_string());
+                    }
+                }
+            }
+            Item::Struct(st) => {
+                let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
+                self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
+            }
+            Item::Using(u) => {
+                if let UsingKind::Alias { name, ty } = &u.kind {
+                    self.aliases.insert(name.text.clone(), ty.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Nominal enum derivation: prepend base variants (spec derived types).
+    /// A base that isn't a known enum is a numeric repr — ignore it.
+    fn expand_inherited_variants(&mut self) {
         let names: Vec<String> = self.enum_variants.keys().cloned().collect();
         for name in &names {
             let mut chain = Vec::new();
@@ -270,7 +293,6 @@ impl<'a> Checker<'a> {
                 chain.push(base.clone());
                 cur = base;
             }
-            // Walk the chain furthest-ancestor first, collecting their own vars.
             for anc in chain.iter().rev() {
                 if let Some(vs) = self.own_variants.get(anc) {
                     prefix.extend(vs.iter().cloned());
@@ -1213,8 +1235,10 @@ impl<'a> Checker<'a> {
                 // A clock is a single-bit signal; treat it as Bit for checking
                 // (clock-as-condition correctness is a separate, later concern).
                 "Clock" => Ty::Bit,
-                "uint" | "integer" => Ty::UInt(0),
-                "int" => Ty::Int(0),
+                // `integer` is the kernel word; `uint`/`int` are no longer
+                // names here — they resolve as array-derived Logic families
+                // (`struct uint : Logic[]` in std::bits) via the arm below.
+                "integer" => Ty::UInt(0),
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
                 // Elaboration-time range constants (`const BYTE: range`);
@@ -1338,7 +1362,11 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
+    const VEC: &str = "\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n";
+
     fn check_src(src: &str) -> usize {
+        let src = format!("{src}{VEC}");
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
@@ -1350,6 +1378,8 @@ mod tests {
 
     /// The number of warnings with a given code emitted while checking `src`.
     fn warnings(src: &str, code: &str) -> usize {
+        let src = format!("{src}{VEC}");
+        let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         let resolved = siox_resolve::resolve(std::slice::from_ref(&module), &mut sink);

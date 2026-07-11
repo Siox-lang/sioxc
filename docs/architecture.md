@@ -100,17 +100,26 @@ name-use site to the declaration it resolves to.
 
 The kernel's base types are **`integer` and `real`** only — and only they have
 built-in operators. `Bit`, `Logic`, `Bool`, `Clock` are canonical `enum`
-declarations in `std/logic.siox`; `uint[N]`/`int[N]` are derived Logic vectors
-that accept `integer` on assignment (spec, "type kernel") and get their
-operators from **`std/bits.siox`** as Rust-style trait impls — including
+declarations in `std/logic.siox`; **`uint`/`int` are ordinary `struct
+uint : Logic[]` / `struct int : Logic[]` declarations in `std/bits.siox`** —
+no longer seeded compiler names. The compiler recognizes any array-derived
+Logic family (`struct F : Logic[]`) as a numeric vector and reads
+`impl Signed` for the interpretation, so uint/int and future fixed-point
+families share one mechanism. They accept `integer` on assignment (spec,
+"type kernel") and get their operators from `std/bits.siox` as Rust-style
+trait impls — including
 `int`'s sign-aware `Ord` (signed comparison is library source, not compiler
 code). The CLI loads `std::` modules transitively from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
 compile, so the core types always carry their std semantics — the kernel
-word fallback only applies when the std root has no prelude at all. Residual shim: `siox-resolve` still seeds the std type
-names (and `std::attrs` attributes), and widths/slices/literal typing remain
-compiler-known; signed `Div`/`Shr` for `int` are TODO in std (need bitwise
-masking helpers).
+word fallback only applies when the std root has no prelude at all. `siox-resolve` still seeds the scalar names (`Bit`, `Logic`, `integer`,
+...), but **not `uint`/`int`** — those come from their std declarations. The
+efficient internal `UInt(w)/Int(w)` encoding remains, but it is now populated
+from the declaration (family shape + `Signed`), not triggered by a magic
+name. Residual name-recognition survives in a few structural spots
+(array-vs-vector, conversion syntax, elab width) and could be generalized to
+the family set later; it is harmless (the compiler knowing its stdlib's
+vector shapes).
 
 ## Backend slot widths
 

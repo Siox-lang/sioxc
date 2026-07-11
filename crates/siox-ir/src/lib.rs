@@ -2937,8 +2937,11 @@ fn array_of<'t>(
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
     let ast::Type::Indexed { base, index: Some(index), .. } = ty else { return None };
     // A Logic-vector family (uint/int/user) `F[N]` is one N-bit signal, not an
-    // N-element array.
-    if is_int_type(base) || type_head_name(base).is_some_and(|h| families.contains_key(h)) {
+    // N-element array — but only when the base is DIRECTLY the family (`uint`),
+    // not when it is itself indexed (`uint[8][4]` is an array of vectors).
+    let base_is_family = matches!(base.as_ref(), ast::Type::Path(p)
+        if p.segments.last().map(|s| s.text.as_str()).is_some_and(|h| families.contains_key(h)));
+    if is_int_type(base) || base_is_family {
         return None;
     }
     let bounds = match index.as_ref() {

@@ -10,6 +10,12 @@ use siox_ir::{Design, SignalId};
 use siox_sim::Simulator;
 
 fn lower(src: &str) -> Design {
+    // uint/int are library types now (not seeded); the differential sources
+    // are self-contained, so declare the vector families locally.
+    let src = format!(
+        "{src}\ntrait Signed {{}}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {{}}\n"
+    );
+    let src = src.as_str();
     let mut sink = DiagnosticSink::new();
     let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
     assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");

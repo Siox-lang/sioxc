@@ -46,6 +46,16 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **uint/int dropped as compiler-magic names** — they are now ordinary
+  `struct uint : Logic[]` / `struct int : Logic[]` declarations in
+  `std/bits.siox`, no longer seeded builtins. The compiler recognizes any
+  array-derived Logic family (`struct F : Logic[]`) as a numeric vector and
+  reads `impl Signed` (std::ops) for the interpretation — so a user
+  `struct Word : Logic[]` behaves exactly like uint, and fixed-point families
+  follow the same path. Resolve seed + the `path_ty` name-mapping removed;
+  the efficient `UInt(w)/Int(w)` encoding is now derived from the
+  declaration. Whole suite (126 tests, incl. the JIT-vs-interp differential
+  harness) + corpus green across all three engines.
 - **`Clock : Bit` + inherited enum-variant paths** — `Clock` now derives
   from `Bit` (was a duplicate declaration), so `Clock(b)`/`Bit(clk)` convert
   for free. `Child::InheritedVariant` paths (`Extended::A` from a base enum)

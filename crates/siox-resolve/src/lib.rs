@@ -176,7 +176,7 @@ impl<'a> Resolver<'a> {
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
         for name in [
-            "integer", "real", "Char", "Bit", "Logic", "Bool", "Clock", "uint", "int", "string",
+            "integer", "real", "Char", "Bit", "Logic", "Bool", "Clock", "string",
             "range",
         ]
         {
@@ -865,7 +865,7 @@ mod tests {
         let (_, errors) = resolve_src(
             "module m;\n\
              using std::logic::{Bit, Logic, Clock};\n\
-             using std::bits::uint;\n\
+             struct uint : Logic[];\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Clock;\n\
