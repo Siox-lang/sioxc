@@ -46,6 +46,15 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Built-in uint/int fully removed** — the compiler no longer has `UInt(w)`
+  / `Int(w)` types or any `uint`/`int` name-check. Its only numeric-vector
+  notion is a generic `Ty::Vector { width, signed }` / `EType::Vector` — a
+  packed bit vector, the irreducible hardware fact. All recognition
+  (array-vs-vector, conversion syntax, port width, signedness) flows through
+  the `#[vector]` family set. `uint`/`int` are purely std names; the strings
+  survive in the compiler only as conventional display/trait-key output for
+  an unsigned/signed vector. Suite (default + interp) + corpus green on all
+  three engines.
 - **Representation attributes `#[vector]` / `#[signed]`** — the numeric-vector
   layout is now *declared by std*, not inferred by the compiler from the
   `: Logic[]` shape. `std/bits.siox` marks `#[vector] struct uint` and
