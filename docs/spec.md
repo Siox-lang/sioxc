@@ -1275,6 +1275,34 @@ arbitrary foreign code. Only the `"C"` ABI is supported.
 
 Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.
 
+
+### 3.28 Nominal type derivation
+
+A new nominal type may derive from an existing one, reusing its representation
+while being a distinct type. `using` stays an exact alias; `:` derives:
+
+```siox
+enum Logic : ULogic;            // same variants, new type (gains its own impls)
+enum ULogic : Bit { 'Z', 'X' }  // inherit Bit's variants, add more
+struct Packet : Header { data: uint[8] }   // inherit Header's fields, add more
+struct Meter : real;            // a newtype over a scalar
+```
+
+Rules: an enum base must be an enum (its variants come first, so a
+same-variant derivation is representation-identical); a field-adding struct
+body needs a struct-shaped base — deriving fields over an *array* base is an
+error (index vs. field access would collide; use composition). Duplicate
+inherited variants/fields are errors. A derived type's own trait impls never
+leak to its base — this is how `Logic : ULogic` gains `Resolve` while
+`ULogic` stays unresolved.
+
+**Conversions follow from derivation.** `T(x)` (the only conversion syntax —
+no `as`, never implicit) is *auto-synthesized* when the derivation makes it
+total: a parent-struct projection (`Header(pkt)`) or an enum whose every
+source variant exists in the target (`Logic(u)`, `ULogic(bit)`). Non-total
+directions (adding fields, narrowing an enum) require an explicit
+`impl From<S> for T`, which `T(x)` also dispatches to. Because the mechanism
+is a constructor call, a conversion is always visible at the site.
 ---
 
 ## Stage 1 — Syntax freeze and examples

@@ -1,0 +1,24 @@
+module examples::derive_test;
+
+struct Header { valid: Bit, kind: uint[4] }
+struct Packet : Header { data: uint[8] }
+
+entity Rx { in p_valid: Bit; in p_kind: uint[4]; in p_data: uint[8];
+            out ok: Bit; out d: uint[8]; }
+impl Rx {
+    let pkt: Packet;
+    pkt = Packet { .valid = p_valid, .kind = p_kind, .data = p_data };
+    ok = pkt.valid;      // inherited field
+    d = pkt.data;        // own field
+}
+
+#[test]
+entity SD {}
+impl SD {
+    let p_valid: Bit = '1'; let p_kind: uint[4] = 3; let p_data: uint[8] = 200;
+    let ok: Bit; let d: uint[8];
+    let r = Rx { .p_valid, .p_kind, .p_data, .ok, .d };
+    await 1ns;
+    assert!(ok == 1, "inherited field valid");
+    assert!(d == 200, "own field data");
+}

@@ -157,6 +157,14 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
     l.enum_reprs = enum_reprs(modules);
+    {
+        let enums = enum_index(modules);
+        for (name, e) in &enums {
+            if let Some(b) = enum_base_name(e, &enums) {
+                l.enum_bases.insert(name.clone(), b);
+            }
+        }
+    }
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
@@ -205,6 +213,8 @@ struct Lowering<'a> {
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
+    /// Enum name -> base enum name (derivation chain, enums only).
+    enum_bases: HashMap<String, String>,
     /// (trait name, target type) -> the impl's fns with the impl's declared
     /// rhs type (the `integer` in `impl Add<integer> for T`; `None` reads as
     /// `Self`). Overloads select by that rhs, or the fn's rhs parameter type.
@@ -294,6 +304,7 @@ impl<'a> Lowering<'a> {
             enum_variants: HashMap::new(),
             structs: HashMap::new(),
             enum_reprs: HashMap::new(),
+            enum_bases: HashMap::new(),
             op_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
@@ -977,7 +988,16 @@ impl<'a> Lowering<'a> {
         if let ast::Type::Path(p) = ty {
             if p.segments.len() == 1 {
                 if let Some(s) = self.structs.get(&p.segments[0].text) {
-                    return Some(s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())).collect());
+                    // Derived struct: inherited base fields come first, then
+                    // the struct's own (spec: nominal derivation).
+                    let mut fields = match &s.base {
+                        Some(b) => self.struct_fields(b).unwrap_or_default(),
+                        None => Vec::new(),
+                    };
+                    fields.extend(
+                        s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())),
+                    );
+                    return Some(fields);
                 }
             }
         }
@@ -1688,6 +1708,101 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &env)
     }
 
+    /// Synthesize a total derivation conversion `target(x)` when no explicit
+    /// `From` impl exists (spec: derived types §14). Two total cases:
+    ///  - enums connected by a derivation chain where every source variant
+    ///    exists in the target — representation-identity (base-first
+    ///    discriminants), so the value passes through unchanged;
+    ///  - a source struct that derives (transitively) from the target struct
+    ///    — project onto the inherited fields.
+    fn derived_conversion(
+        &self,
+        target: &str,
+        src: Option<&str>,
+        arg: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let src = src?;
+        // Enum case: chain-connected and source variants subset of target.
+        if let (Some(sv), Some(tv)) =
+            (self.enum_variants.get(src), self.enum_variants.get(target))
+        {
+            let connected =
+                self.enum_ancestor(src, target) || self.enum_ancestor(target, src);
+            let total = sv.keys().all(|v| tv.contains_key(v));
+            if connected && total {
+                return Some(self.lower_val_env(arg, env)); // identity
+            }
+            return None;
+        }
+        // Struct case: project a derived struct onto its base fields by
+        // reading the source's per-field signals (a bare struct path isn't
+        // itself a Val::Fields).
+        if self.struct_derives_from(src, target) {
+            let base = expr_path(arg)?;
+            let fields = self
+                .struct_field_names(target)
+                .into_iter()
+                .map(|n| {
+                    let expr = self
+                        .locals
+                        .get(&format!("{base}.{n}"))
+                        .map(|&id| Expr::Current(id))
+                        .unwrap_or(Expr::Unknown);
+                    (n, expr)
+                })
+                .collect();
+            return Some(Val::Fields(fields));
+        }
+        None
+    }
+
+    /// Whether `anc` is a (transitive) enum-derivation ancestor of `name`.
+    fn enum_ancestor(&self, anc: &str, name: &str) -> bool {
+        let mut cur = name.to_string();
+        let mut guard = 0;
+        while let Some(b) = self.enum_bases.get(&cur) {
+            if b == anc {
+                return true;
+            }
+            cur = b.clone();
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Whether struct `name` derives (transitively) from struct `base`.
+    fn struct_derives_from(&self, name: &str, base: &str) -> bool {
+        let mut cur = name.to_string();
+        let mut guard = 0;
+        while let Some(s) = self.structs.get(&cur) {
+            let Some(b) = s.base.as_ref().and_then(type_head_name) else { return false };
+            if b == base {
+                return true;
+            }
+            cur = b.to_string();
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+        }
+        false
+    }
+
+    /// A struct type's full (inherited + own) field names, base chain first.
+    fn struct_field_names(&self, name: &str) -> Vec<String> {
+        let Some(s) = self.structs.get(name) else { return Vec::new() };
+        let mut out = match s.base.as_ref().and_then(type_head_name) {
+            Some(b) => self.struct_field_names(b),
+            None => Vec::new(),
+        };
+        out.extend(s.fields.iter().map(|f| f.name.text.clone()));
+        out
+    }
+
     /// `T(x)` on a named type: dispatch to `impl From<Source> for T`,
     /// selected by the argument's type (sole impl accepted for an unknown
     /// source). Struct-valued results come back as per-field values.
@@ -1701,9 +1816,13 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return None,
         };
-        let fns = self.op_impls.get(&("From".to_string(), target.to_string()))?;
         let arg = args.first()?;
         let src = self.operand_type_name(arg);
+        // No explicit `impl From<src> for target`: try a derivation-total
+        // conversion (spec: T(x) is auto for total derivations).
+        let Some(fns) = self.op_impls.get(&("From".to_string(), target.to_string())) else {
+            return self.derived_conversion(target, src.as_deref(), arg, env);
+        };
         let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
             a.clone().or_else(|| {
                 f.params
@@ -1714,16 +1833,14 @@ impl<'a> Lowering<'a> {
                     .map(str::to_string)
             })
         };
-        let (f, _) = match &src {
+        let chosen = match &src {
             Some(sty) => fns.iter().find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
-            None => {
-                if fns.len() == 1 {
-                    fns.first()
-                } else {
-                    None
-                }
-            }
-        }?;
+            None => (fns.len() == 1).then(|| &fns[0]),
+        };
+        let (f, _) = match chosen {
+            Some(c) => c,
+            None => return self.derived_conversion(target, src.as_deref(), arg, env),
+        };
         let body = f.body.as_ref()?;
         let mut fenv: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {

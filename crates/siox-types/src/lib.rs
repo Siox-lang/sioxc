@@ -123,6 +123,8 @@ struct Checker<'a> {
     own_variants: HashMap<String, Vec<String>>,
     /// Enum name -> the head name after `:` (a base enum or numeric repr).
     enum_bases: HashMap<String, String>,
+    /// Struct name -> (derivation base, own field names) for inheritance.
+    structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -174,6 +176,7 @@ impl<'a> Checker<'a> {
             enum_variants: HashMap::new(),
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
+            structs: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
         }
@@ -240,6 +243,10 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
+                    Item::Struct(st) => {
+                        let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
+                        self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
+                    }
                     Item::Using(u) => {
                         if let UsingKind::Alias { name, ty } = &u.kind {
                             self.aliases.insert(name.text.clone(), ty.clone());
@@ -277,6 +284,64 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Derived-struct validation (spec: nominal derivation): a field-adding
+    /// body requires a struct-shaped base (arrays reject fields — the
+    /// index/field access models would collide), and no field may collide
+    /// with an inherited one.
+    fn check_struct(&mut self, st: &StructDecl) {
+        let Some(base) = &st.base else { return };
+        // Array-shaped base + fields is rejected (after alias resolution).
+        if !st.fields.is_empty() && self.is_array_base(base) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                st.name.span,
+                "cannot add fields when deriving from an array type; use the \
+                 bodyless form `struct B : A;` or explicit composition"
+                    .to_string(),
+            );
+            return;
+        }
+        // Field-name collisions with the inherited base fields.
+        let inherited = self.base_struct_fields(base);
+        for f in &st.fields {
+            if inherited.iter().any(|n| n == &f.name.text) {
+                self.error(
+                    codes::DUPLICATE_ITEM,
+                    f.name.span,
+                    format!("field `{}` already exists in the base struct", f.name.text),
+                );
+            }
+        }
+    }
+
+    /// The (transitive) field names of a struct-shaped base type.
+    fn base_struct_fields(&self, ty: &Type) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(head) = type_head_name(ty) {
+            if let Some((base, own)) = self.structs.get(head) {
+                if let Some(b) = base {
+                    out.extend(self.base_struct_fields(b));
+                }
+                out.extend(own.iter().cloned());
+            }
+        }
+        out
+    }
+
+    /// Whether a base type resolves (through aliases) to an array shape.
+    fn is_array_base(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Indexed { .. } => true,
+            Type::Path(p) if p.segments.len() == 1 => {
+                match self.aliases.get(&p.segments[0].text) {
+                    Some(t) => self.is_array_base(t),
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn check_item(&mut self, item: &Item) {
         let sym = HashMap::new();
         let sym = &sym;
@@ -311,7 +376,8 @@ impl<'a> Checker<'a> {
                     self.check_block(b);
                 }
             }
-            Item::Using(_) | Item::Struct(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
+            Item::Struct(st) => self.check_struct(st),
+            Item::Using(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
         }
     }
 

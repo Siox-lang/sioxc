@@ -46,6 +46,16 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Nominal type derivation** — `enum B : A` / `struct B : A` (with
+  optional `{ … }` to extend) create distinct types reusing a base's
+  representation. std's logic scalars became the chain `Bit → ULogic : Bit →
+  Logic : ULogic`, retiring `std/logic/unresolved.siox` — the
+  resolved/unresolved split is now a real derivation (Logic gains `Resolve`,
+  ULogic doesn't). Total conversions are auto-synthesized for `T(x)`
+  (parent-struct projection, enum variant-subset — representation-identity),
+  so the explicit crossing impls are gone; non-total directions still need
+  `impl From`. Never implicit, no `as`. Array-base-with-fields and duplicate
+  inherited members are errors. All engines.
 - **`warn!` + the no-exceptions decision** — siox has no `throw`/`catch`
   (incompatible with synthesizable hardware and pure inlined functions);
   errors are signals, panics, or probe-and-branch. `warn!(cond, "msg")` is
