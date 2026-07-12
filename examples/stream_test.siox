@@ -1,0 +1,40 @@
+module examples::stream_test;
+
+using std::logic::Logic;
+using std::bits::uint;
+
+// A struct-typed port carries a whole bundle (a valid/data handshake) across an
+// instance boundary in one connection. Each field wires independently: the
+// producer drives `link.valid`/`link.data`, the consumer reads them.
+struct Stream { valid: Logic, data: uint[8] }
+
+entity Producer { out s: Stream; }
+impl Producer {
+    s.valid = '1';
+    s.data = 42;
+}
+
+entity Consumer { in s: Stream; out got: uint[8]; }
+impl Consumer {
+    got = if s.valid == '1' { s.data } else { 0 };
+}
+
+// The two blocks wire together through one `Stream` net — the pattern real
+// ready/valid pipelines are built from.
+entity Link { out got: uint[8]; }
+impl Link {
+    let wire: Stream;
+    let p = Producer { .s = wire };
+    let c = Consumer { .s = wire, .got };
+}
+
+#[test]
+entity StreamTest {}
+
+impl StreamTest {
+    let got: uint[8];
+    let dut = Link { .got };
+    await 1ns;
+    print!("got={}", got);
+    assert!(got == 42, "the struct bundle carries data across the instance boundary");
+}

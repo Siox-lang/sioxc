@@ -466,3 +466,34 @@ fn inout_tristate_bus_agrees() {
         assert_agree(&d, &[("T.ea", ea), ("T.da", da), ("T.eb", eb), ("T.db", db)]);
     }
 }
+
+#[test]
+fn struct_port_across_instances_agrees() {
+    // A struct-typed port bundles valid+data across an instance boundary; each
+    // field wires independently (producer -> net -> consumer). The JIT must
+    // match the interpreter oracle on the resulting flattened signals.
+    let d = lower(
+        "module m;\n\
+         enum Logic { '0', '1' }\n\
+         struct Stream { valid: Logic, data: uint[8] }\n\
+         entity Producer { in vin: Logic; in din: uint[8]; out s: Stream; }\n\
+         impl Producer { s.valid = vin; s.data = din; }\n\
+         entity Consumer { in s: Stream; out got: uint[8]; }\n\
+         impl Consumer { got = if s.valid == '1' { s.data } else { 0 }; }\n\
+         entity Link { in vin: Logic; in din: uint[8]; out got: uint[8]; }\n\
+         impl Link {\n\
+           let wire: Stream;\n\
+           let p = Producer { .vin, .din, .s = wire };\n\
+           let c = Consumer { .s = wire, .got };\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let vin: Logic; let din: uint[8]; let got: uint[8];\n\
+           let dut = Link { .vin, .din, .got };\n\
+         }\n",
+    );
+    for (vin, din) in [(1u64, 42u64), (0, 42), (1, 200), (0, 7)] {
+        assert_agree(&d, &[("T.vin", vin), ("T.din", din)]);
+    }
+}

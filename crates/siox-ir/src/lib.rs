@@ -525,11 +525,21 @@ impl<'a> Lowering<'a> {
                 self.locals.insert(p.name.text.clone(), net);
             }
         }
-        let ports: HashMap<String, (SignalId, Option<ast::Direction>)> = edecl
-            .ports
-            .iter()
-            .filter_map(|p| self.locals.get(&p.name.text).map(|&id| (p.name.text.clone(), (id, p.dir))))
-            .collect();
+        // The port map. A scalar port is one entry (`s`); a struct/array port
+        // flattens to one entry per leaf (`s.valid`, `s.data`, `bus[0]`), each
+        // tagged with the port's direction, so a parent can wire every leaf.
+        // (Only port signals exist in `locals` at this point — `let` state
+        // signals are added below — so the prefix scan can't catch a non-port.)
+        let mut ports: HashMap<String, (SignalId, Option<ast::Direction>)> = HashMap::new();
+        for p in &edecl.ports {
+            let dot = format!("{}.", p.name.text);
+            let idx = format!("{}[", p.name.text);
+            for (k, &id) in &self.locals {
+                if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
+                    ports.insert(k.clone(), (id, p.dir));
+                }
+            }
+        }
 
         // `let` items: instance bindings are collected for recursion; the rest
         // become state signals.
@@ -698,25 +708,61 @@ impl<'a> Lowering<'a> {
 
             let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &aliases);
             for c in conns {
-                let Some(&(child_id, dir)) = sub_ports.get(&c.field.text) else { continue };
-                // An aliased inout needs no connection driver: the child body
-                // already drives and reads the shared net directly.
-                if dir == Some(ast::Direction::Inout) && aliases.contains_key(&c.field.text) {
-                    continue;
-                }
+                let field = &c.field.text;
                 // `.p` shorthand means the parent signal `p`.
                 let value = c.value.clone().unwrap_or_else(|| {
                     ast::Expr::Path(ast::Path { segments: vec![c.field.clone()], span: c.field.span })
                 });
-                if dir == Some(ast::Direction::Out) {
-                    if let Some(target) = self.target_signal(&value) {
-                        let ctx = self.next_ctx();
-                        self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id), ctx });
+                // The child port's leaves: the port itself (`s`) plus any
+                // flattened struct/array members (`s.valid`, `bus[0]`).
+                let dot = format!("{field}.");
+                let idx = format!("{field}[");
+                let mut leaves: Vec<(String, SignalId, Option<ast::Direction>)> = sub_ports
+                    .iter()
+                    .filter(|(k, _)| **k == *field || k.starts_with(&dot) || k.starts_with(&idx))
+                    .map(|(k, &(id, d))| (k.clone(), id, d))
+                    .collect();
+                if leaves.is_empty() {
+                    continue;
+                }
+
+                // A scalar port (one leaf named exactly `field`): the connection
+                // value may be any expression (`.en = ea`, `.val = 5`).
+                if leaves.len() == 1 && leaves[0].0 == *field {
+                    let (_, child_id, dir) = leaves[0];
+                    // An aliased inout is already wired to the shared net.
+                    if dir == Some(ast::Direction::Inout) && aliases.contains_key(field) {
+                        continue;
                     }
-                } else {
-                    let expr = self.lower_expr(&value);
+                    if dir == Some(ast::Direction::Out) {
+                        if let Some(target) = self.target_signal(&value) {
+                            let ctx = self.next_ctx();
+                            self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id), ctx });
+                        }
+                    } else {
+                        let expr = self.lower_expr(&value);
+                        let ctx = self.next_ctx();
+                        self.out.drivers.push(Driver { target: child_id, cond: None, expr, ctx });
+                    }
+                    continue;
+                }
+
+                // A composite (struct/array) port: wire each leaf to the matching
+                // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
+                // The parent side must be a signal path.
+                let Some(base) = expr_path(&value) else { continue };
+                leaves.sort_by(|a, b| a.0.cmp(&b.0));
+                for (k, child_id, dir) in leaves {
+                    let suffix = &k[field.len()..]; // ".valid", "[0]"
+                    let Some(&parent_id) = self.locals.get(&format!("{base}{suffix}")) else {
+                        continue;
+                    };
                     let ctx = self.next_ctx();
-                    self.out.drivers.push(Driver { target: child_id, cond: None, expr, ctx });
+                    if dir == Some(ast::Direction::Out) {
+                        self.out.drivers.push(Driver { target: parent_id, cond: None, expr: Expr::Current(child_id), ctx });
+                    } else {
+                        self.out.drivers.push(Driver { target: child_id, cond: None, expr: Expr::Current(parent_id), ctx });
+                    }
                 }
             }
         }
