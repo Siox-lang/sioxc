@@ -11,6 +11,14 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-12
+
+First tagged release. The full Phase-1 pipeline works — lexer, parser, name
+resolution, type/kind checking, elaboration, digital IR, and a delta-cycle
+simulator with `#[test]` discovery, `await`/clock timing, assertions, and VCD
+output — behind two engines (an LLVM JIT/AOT backend and a delta-cycle
+interpreter that doubles as a differential oracle).
+
 ### Added
 - **Safety lints** — **possible latch** (`W-P002`: a combinational signal only
   ever assigned under a condition holds its old value otherwise) and **unused
