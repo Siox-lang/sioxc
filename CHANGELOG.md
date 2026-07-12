@@ -11,6 +11,13 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Changed
+- The runnable `.siox` example/conformance corpus moved out of `examples/` into
+  a sibling repo, [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests).
+  CI checks it out and runs it against the freshly-built compiler, so a
+  regression still fails the build. The Rust unit/integration tests and the
+  differential harness stay in-tree (they exercise crate internals).
+
 ## [0.1.0] - 2026-07-12
 
 First tagged release. The full Phase-1 pipeline works — lexer, parser, name

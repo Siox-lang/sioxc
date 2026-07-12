@@ -13,11 +13,14 @@ fn test_no_run_builds_a_runnable_binary() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let out = std::env::temp_dir().join(format!("siox_counter_{}", std::process::id()));
 
-    // Build from the repo root so `./std` resolves.
+    // Build from the repo root so `./std` resolves. The counter fixture lives
+    // in-tree (the runnable `.siox` corpus moved to the siox-tests repo, but a
+    // self-contained fixture keeps this integration test independent).
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let fixture = "crates/sioxc/tests/fixtures/counter_test.siox";
     let status = Command::new(siox)
         .current_dir(root)
-        .args(["test", "examples/counter_test.siox", "--no-run", "-o", out.to_str().unwrap()])
+        .args(["test", fixture, "--no-run", "-o", out.to_str().unwrap()])
         .status()
         .unwrap();
     assert!(status.success(), "siox test --no-run failed");

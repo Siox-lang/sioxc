@@ -38,12 +38,27 @@ jobs:
       - name: Test (LLVM-free, interpreter)
         run: cargo test --workspace --no-default-features --features interp
 
-      - name: Check the example corpus compiles cleanly
+      # The runnable `.siox` corpus lives in a sibling repo; check it out and
+      # run every program through the freshly-built compiler, so a regression
+      # here fails this build.
+      - name: Check out the conformance corpus
+        uses: actions/checkout@v4
+        with:
+          repository: Siox-lang/siox-tests
+          path: siox-tests
+
+      - name: Check the conformance corpus compiles cleanly
         run: |
+          cargo build -q --no-default-features --features interp -p sioxc
+          SIOXC="$PWD/target/debug/sioxc"
+          STD="$PWD/std"
+          # Run from inside the corpus so programs that read data files
+          # (fs_test's rom.bin / banner.txt) resolve them relative to CWD.
+          cd siox-tests
           fail=0
-          for f in examples/*.siox; do
+          for f in *.siox; do
             echo "== $f =="
-            if ! cargo run -q --no-default-features --features interp -p sioxc -- check "$f" --std std; then
+            if ! "$SIOXC" check "$f" --std "$STD"; then
               echo "::error file=$f::check failed"
               fail=1
             fi

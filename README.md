@@ -111,9 +111,10 @@ sioxc tree <file>            # elaborated instance hierarchy
 ```
 
 By default the standard library is loaded from `./std`; pass `--std <dir>` to
-point elsewhere. See [`examples/`](examples/) for runnable programs (counters,
-FSMs, a FIFO, SPI, RISC-V ALU/decoder fragments, tristate buses, generate
-loops, and more).
+point elsewhere. The runnable `.siox` corpus — counters, FSMs, a FIFO, SPI,
+RISC-V ALU/decoder fragments, tristate buses, generate loops, and more — lives
+in a sibling repo, [**Siox-lang/siox-tests**](https://github.com/Siox-lang/siox-tests),
+which this project's CI runs on every change.
 
 ## What the language has
 
