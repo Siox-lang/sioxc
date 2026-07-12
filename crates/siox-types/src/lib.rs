@@ -1142,6 +1142,8 @@ impl<'a> Checker<'a> {
     /// checks rather than producing a false positive.
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
+            // A numeric literal is `integer`, or `real` when it has a point.
+            Expr::Int { text, .. } if text.contains('.') => Ty::Real,
             Expr::Int { .. } => Ty::Integer,
             // `if c { a } else { b }` takes its branches' type (the then arm;
             // branch-mismatch diagnostics ride on assignment compatibility).
@@ -1170,7 +1172,10 @@ impl<'a> Checker<'a> {
             // overrides it (Bit/Logic/Clock/enum) via `assignable`.
             Expr::LogicLit { .. } => Ty::Char,
             Expr::Bool { .. } => Ty::Bool,
-            Expr::StrLit { .. } => Ty::Error,
+            // A string literal is `string` = `Char[N]`.
+            Expr::StrLit { text, .. } => {
+                Ty::Array { elem: Box::new(Ty::Char), len: text.chars().count() as u32 }
+            }
             Expr::Path(p) => {
                 if p.segments.len() == 1 {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
@@ -1771,6 +1776,35 @@ mod tests {
             0,
             "char literals in if-expr branches read through the Bit target"
         );
+    }
+
+    #[test]
+    fn literals_default_to_their_core_types() {
+        let ty = |src: &str| {
+            let mut sink = DiagnosticSink::new();
+            let m = siox_syntax::parse_module(FileId(0), src, &mut sink);
+            let r = siox_resolve::resolve(std::slice::from_ref(&m), &mut sink);
+            let c = Checker::new(&mut sink, &r);
+            c.type_of(&value_expr(&m), &HashMap::new())
+        };
+        // helper: the value in `impl E { y = <value>; }`
+        fn value_expr(m: &siox_syntax::Module) -> Expr {
+            for item in &m.items {
+                if let Item::Impl(im) = item {
+                    for it in &im.items {
+                        if let ImplItem::Stmt(Stmt::Assign { value, .. }) = it {
+                            return value.clone();
+                        }
+                    }
+                }
+            }
+            panic!("no assignment");
+        }
+        assert!(matches!(ty("module m;\nimpl E { y = 42; }\n"), Ty::Integer));
+        assert!(matches!(ty("module m;\nimpl E { y = 3.14; }\n"), Ty::Real));
+        assert!(matches!(ty("module m;\nimpl E { y = '0'; }\n"), Ty::Char));
+        assert!(matches!(ty("module m;\nimpl E { y = \"abc\"; }\n"), Ty::Array { .. }));
+        assert!(matches!(ty("module m;\nimpl E { y = true; }\n"), Ty::Bool));
     }
 
     #[test]
