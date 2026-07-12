@@ -1053,6 +1053,21 @@ let byte: Logic[7..0] = data[7..0];
 let bit0: Logic = data[0];
 ```
 
+**Partial (slice) assignment.** The left side of an assignment may be a
+bit-slice, updating only those bits and holding the rest:
+
+```siox
+y = 0;
+y[3..0] = a;          // low nibble = a, high nibble stays 0  -> y = a
+status[7] = err;      // set one bit
+```
+
+It is a read-modify-write. Combinational partial writes merge with the
+signal's prior driver in the same context (`y = base; y[hi..lo] = v;`); in a
+clocked block a partial write holds the untouched bits from the register's
+current value (`if clk::rising { reg[3..0] = x; }` writes the low nibble and
+keeps the top).
+
 **Direction.** A width-only index is ascending: `Bit[4]` declares elements
 `0..3`. A written range keeps its direction: `Logic[7..0]` declares
 elements 7 down to 0 (descending), `Bit[0..3]` ascending. Slices follow the

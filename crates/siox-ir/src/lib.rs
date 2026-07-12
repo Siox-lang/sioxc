@@ -1113,6 +1113,31 @@ impl<'a> Lowering<'a> {
                             ctx: self.cur_ctx,
                         });
                     }
+                } else if let Some((sig, hi, lo)) = self.slice_target(target) {
+                    // Partial write: merge over the prior driver (`y = base;
+                    // y[3..0] = a;`), else over 0.
+                    let v = self.lower_expr(value);
+                    let width = self.out.signals[sig.0 as usize].width;
+                    let base = self
+                        .out
+                        .drivers
+                        .iter()
+                        .rev()
+                        .find(|d| d.target == sig && d.ctx == self.cur_ctx && d.cond.is_none())
+                        .map(|d| d.expr.clone())
+                        .unwrap_or(Expr::Const(0));
+                    let merged = self.merge_slice(base, hi, lo, v, width);
+                    if let Some(d) = self
+                        .out
+                        .drivers
+                        .iter_mut()
+                        .rev()
+                        .find(|d| d.target == sig && d.ctx == self.cur_ctx && d.cond.is_none())
+                    {
+                        d.expr = merged;
+                    } else {
+                        self.out.drivers.push(Driver { target: sig, cond, expr: merged, ctx: self.cur_ctx });
+                    }
                 }
             }
             ast::Stmt::If(iff) => {
@@ -1219,6 +1244,13 @@ impl<'a> Lowering<'a> {
                         out.push(NextUpdate { target, cond: cond.clone(), expr });
                     } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
                         out.extend(ups);
+                    } else if let Some((sig, hi, lo)) = self.slice_target(target) {
+                        // Register bit-field update: next(y) holds the other
+                        // bits (read-modify-write on the current value).
+                        let v = self.lower_expr(value);
+                        let width = self.out.signals[sig.0 as usize].width;
+                        let expr = self.merge_slice(Expr::Current(sig), hi, lo, v, width);
+                        out.push(NextUpdate { target: sig, cond: cond.clone(), expr });
                     }
                 }
                 ast::Stmt::If(iff) => {
@@ -1324,6 +1356,41 @@ impl<'a> Lowering<'a> {
             });
         }
         Some(updates)
+    }
+
+    /// A slice-assignment target `y[hi..lo]`: the base signal and the
+    /// (normalized) bit range.
+    fn slice_target(&self, target: &ast::Expr) -> Option<(SignalId, u32, u32)> {
+        let ast::Expr::Index { base, index, .. } = target else { return None };
+        let (a, b) = self.slice_bounds(index)?;
+        let sig = *self.locals.get(&expr_path(base)?)?;
+        Some((sig, a.max(b) as u32, a.min(b) as u32))
+    }
+
+    /// A partial (bit-slice) write as a read-modify-write over `base`:
+    /// `(base & keep) | ((value & slice_mask) << lo)`, where `keep` clears the
+    /// [hi..lo] window. `width` is the target signal's width.
+    fn merge_slice(&self, base: Expr, hi: u32, lo: u32, value: Expr, width: u32) -> Expr {
+        let slice_w = hi - lo + 1;
+        let slice_mask = if slice_w >= 64 { u64::MAX } else { (1u64 << slice_w) - 1 };
+        let full = if width == 0 || width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let keep = full & !(slice_mask << lo);
+        let kept = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(base),
+            rhs: Box::new(Expr::Const(keep)),
+        };
+        let masked = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(value),
+            rhs: Box::new(Expr::Const(slice_mask)),
+        };
+        let shifted = Expr::Binary {
+            op: BinOp::Shl,
+            lhs: Box::new(masked),
+            rhs: Box::new(Expr::Const(lo as u64)),
+        };
+        Expr::Binary { op: BinOp::Or, lhs: Box::new(kept), rhs: Box::new(shifted) }
     }
 
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
@@ -3268,6 +3335,22 @@ mod tests {
         assert_eq!(width("H.dut.a[0]"), Some(1)); // array element
         assert_eq!(width("H.dut.a[2]"), Some(1));
         assert_eq!(width("H.dut.s"), Some(2)); // enum repr width
+    }
+
+    #[test]
+    fn partial_bit_slice_write() {
+        // `y = 0; y[3..0] = a` merges: low nibble = a, high bits held from 0.
+        let d = lower_src(
+            "module m;\n\
+             entity E { in a: uint[4]; out y: uint[8]; }\n\
+             impl E { y = 0; y[3..0] = a; }\n\
+             #[top] entity H {}\n\
+             impl H { let a: uint[4]; let y: uint[8]; let dut = E { .a, .y }; }\n",
+        );
+        // The y driver should be a read-modify-write (an Or of a masked base
+        // and a shifted value), not a bare assignment.
+        let dr = d.drivers.iter().find(|dr| d.signals[dr.target.0 as usize].path == "H.dut.y").unwrap();
+        assert!(matches!(dr.expr, Expr::Binary { op: BinOp::Or, .. }), "slice write merges: {:?}", dr.expr);
     }
 
     #[test]

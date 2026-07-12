@@ -1,0 +1,43 @@
+module examples::slice_write_test;
+using std::bits::uint;
+// Register bit-field update + two-field combinational pack.
+entity E {
+    in clk: Clock;
+    in lo_in: uint[4];
+    in hi_in: uint[4];
+    in we_lo: Bit;
+    out reg: uint[8];
+    out packed: uint[8];
+}
+impl E {
+    let r: uint[8] = 0;
+    if clk::rising {
+        if we_lo {
+            r[3..0] = lo_in;      // update only the low nibble; high holds
+        }
+    }
+    reg = r;
+
+    // combinational pack: two nibbles into one byte
+    packed = 0;
+    packed[7..4] = hi_in;
+    packed[3..0] = lo_in;
+}
+#[test] entity T {}
+impl T {
+    let clk: Logic = '0'; let lo_in: uint[4] = 0; let hi_in: uint[4] = 0; let we_lo: Bit = '0';
+    let reg: uint[8]; let packed: uint[8];
+    let d = E { .clk, .lo_in, .hi_in, .we_lo, .reg, .packed };
+    clk = not clk after 5ns;
+
+    hi_in = 10; lo_in = 5; await 1ns;
+    assert!(packed == 165, "pack: hi=A lo=5 -> 0xA5");
+
+    // write low nibble = 7 into reg (which is 0)
+    we_lo = '1'; lo_in = 7; await 10ns; we_lo = '0';
+    assert!(reg == 7, "reg low nibble = 7, high held 0");
+
+    // change lo_in but don't write -> reg holds
+    lo_in = 3; await 10ns;
+    assert!(reg == 7, "reg holds without write-enable");
+}
