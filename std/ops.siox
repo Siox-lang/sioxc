@@ -61,13 +61,6 @@ impl Boolean for Bool {
 // several contexts, the compiler folds the contributions pairwise through
 // the type's `resolve` (associative, commutative). A type WITHOUT an impl
 // is unresolved — parallel drivers on it are an elaboration error.
-// Signedness is a capability, like int's Ord/Shr/Div — a trait, not metadata.
-// A bit vector that implements `Signed` is two's-complement; without it,
-// unsigned. It is the one thing the `Logic[]` shape cannot express (uint and
-// int are the same shape). The compiler reads it only to sign-extend on
-// widening; comparison/shift/division signedness live in int's own impls.
-pub trait Signed {}
-
 pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }

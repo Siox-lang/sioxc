@@ -301,15 +301,15 @@ means:
 **Bit vectors are recognized by shape.** A bodyless struct deriving from an
 array of a bit scalar — `struct uint : Logic[]` — *is* a packed bit vector
 (one N-bit signal); no annotation is needed, since an array of bits already
-says so. The one thing the shape cannot express is signedness (uint and int are both
-`Logic[]`) — and signedness is a *capability* (it changes comparison, shift,
-division, and widening), so it is a **trait**, not metadata:
-`impl Signed for int {}` (std::ops). This is how `uint`/`int` are defined —
-ordinary library `struct`s in `std/bits.siox`, not compiler-magic names — and
-a user `struct MyWord : Logic[];` is an unsigned vector (`impl Signed for
-MyWord {}` makes it signed). The compiler reads `Signed` only to sign-extend
-on widening; the rest of int's signed behaviour is its own `Ord`/`Shr`/`Div`
-impls.
+says so. The compiler tracks **no signedness at all** — `uint` and `int` are the same
+shape (`Logic[]`), and their difference is entirely their **operator impls**:
+`int` has a signed `Ord` (compare), an arithmetic `Shr`, and a signed `Div`;
+`uint` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
+marker (attribute or trait) — signedness is behaviour, and behaviour lives in
+impls. The one thing that is not an operator — sign-extension when widening —
+is therefore a library function, `std::bits::sext`: `int[16](sext(x))` widens
+a signed vector, while a bare `int[16](x)` is a raw resize (zero-extend /
+truncate).
 
 **Type-targeted attributes.** A target may also be a *type name*, declaring
 an attribute valid only on that entity/struct or on declarations/instances

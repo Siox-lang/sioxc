@@ -5,16 +5,12 @@ using std::ops::{Ordering};
 
 // uint and int are ordinary library types, not compiler-magic names: an
 // array of Logic IS a bit vector, so deriving from `Logic[]` is all it takes.
-// int is two's-complement because it implements the `Signed` capability
-// (std::ops) — the one thing the `Logic[]` shape can't say, expressed as a
-// trait like int's other signed behaviours. A user `struct MyWord : Logic[];`
-// is an unsigned vector; `impl Signed for MyWord {}` makes it signed.
-using std::ops::{Signed};
-
+// There is no signed/unsigned marker — signedness is entirely defined by the
+// operator impls below (int's Ord is a signed compare, its Shr an arithmetic
+// shift, its Div a signed divide). The compiler tracks no signedness; it just
+// dispatches operators to whichever impls a type declares.
 pub struct uint : Logic[];
 pub struct int : Logic[];
-
-impl Signed for int {}
 
 // Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std,
 // where `unsigned`/`signed` are arrays of std_logic declared in library code).
@@ -64,6 +60,20 @@ impl Shr for uint {
 // Only Logic overrides them (below), for its 4-value 'X'/'Z' truth table.
 
 // --- int[N]: two's-complement signed --------------------------------------
+
+// Sign-extension is a library operation now that the compiler tracks no
+// signedness: `integer(x)` reads the raw (unsigned) bits, so `sext` recovers
+// the signed value by subtracting 2^width when the sign bit is set. Widen a
+// signed vector with `int[N](sext(x))`.
+pub fn sext(x: int) -> integer {
+    // Test the sign bit on the RAW value: `x >> ..` would use int's own
+    // (arithmetic) shift, but here we want the plain top bit.
+    if (integer(x) >> (x::width - 1)) == 1 {
+        return integer(x) - (1 << x::width);
+    }
+    return integer(x);
+}
+
 
 impl Add for int {
     fn add(self, rhs: int) -> int { return self + rhs; }

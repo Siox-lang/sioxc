@@ -1510,7 +1510,7 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
-    const VEC: &str = "\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n";
+    const VEC: &str = "\nstruct uint : Logic[];\nstruct int : Logic[];\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");

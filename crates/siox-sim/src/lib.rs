@@ -382,7 +382,7 @@ mod tests {
     use siox_diag::DiagnosticSink;
 
     /// Lower a source string through the full frontend into IR.
-    const VEC: &str = "\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n";
+    const VEC: &str = "\nstruct uint : Logic[];\nstruct int : Logic[];\n";
 
     fn lower(src: &str) -> Design {
         let src = format!("{src}{VEC}");

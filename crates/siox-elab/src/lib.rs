@@ -735,7 +735,7 @@ mod tests {
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // uint/int are `#[vector]` library types, not seeded.
         let src = format!(
-            "{src}\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n"
+            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();

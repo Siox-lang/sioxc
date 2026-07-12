@@ -11,7 +11,7 @@ entity Conv {
 }
 impl Conv {
     wide = uint[16](u8);
-    swide = int[16](s8);        // sign-extends (source is int)
+    swide = int[16](sext(s8));   // signed widening: sext then convert
     narrow = uint[4](u8);       // truncates
     rz = resize(u8, 16);        // family-preserving spelling
 }

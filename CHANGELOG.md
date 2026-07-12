@@ -46,6 +46,14 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **No signedness marker at all — it lives in the operator impls** — the
+  `Signed` trait is gone too. `int` is signed purely because its `Ord`/`Shr`/
+  `Div` impls are (signed compare, arithmetic shift, signed divide),
+  dispatched by type at lowering; `uint` uses the kernel's unsigned ops. The
+  compiler tracks no signedness. Sign-extension on widening — the one thing
+  that isn't an operator — becomes the library `std::bits::sext`:
+  `int[16](sext(x))` for signed widening, bare `int[16](x)` is a raw resize.
+  All engines green.
 - **`#[signed]` removed — signedness is the `Signed` capability trait** —
   unlike `#[vector]` (structural, redundant with shape), signedness is a
   *capability* (it changes comparison, shift, division, widening), so it

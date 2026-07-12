@@ -3054,7 +3054,7 @@ mod tests {
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
         let src = format!(
-            "{src}\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n"
+            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
