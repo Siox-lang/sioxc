@@ -70,7 +70,7 @@ mod tests {
     use siox_ir::{BinOp, Driver, Expr, Signal, SignalId};
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0 }
+        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }
     }
 
     #[test]
@@ -89,6 +89,7 @@ mod tests {
                 },
             }],
             event_blocks: vec![],
+            enum_syms: Default::default(),
         };
         with_jit(&design, |jit| {
             jit.set(0, 30);

@@ -48,7 +48,7 @@ mod tests {
     use std::process::Command;
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0 }
+        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }
     }
 
     /// Emit an adder to a native object, link a C `main` that drives it, and
@@ -74,6 +74,7 @@ mod tests {
                 },
             }],
             event_blocks: vec![],
+            enum_syms: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));

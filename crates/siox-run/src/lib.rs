@@ -991,6 +991,16 @@ impl Testbench<'_> {
                 if sig.char {
                     return char::from_u32(v.to_u64() as u32).map(String::from).unwrap_or_default();
                 }
+                // An enum-typed signal renders its stored discriminant as the
+                // variant symbol (`'X'` for Logic, `Idle` for an FSM state).
+                // `enum_syms` spans every module, `std` included.
+                if let Some(ety) = &sig.enum_type {
+                    if let Some(sym) =
+                        self.engine.design().enum_syms.get(ety).and_then(|m| m.get(&v.to_u64()))
+                    {
+                        return sym.clone();
+                    }
+                }
             }
         }
         // A real literal keeps its float face.

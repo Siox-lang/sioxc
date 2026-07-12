@@ -35,6 +35,10 @@ pub struct Design {
     pub signals: Vec<Signal>,
     pub drivers: Vec<Driver>,
     pub event_blocks: Vec<EventBlock>,
+    /// Enum name -> (discriminant -> variant symbol), over every module
+    /// (including `std`). Consumers render a `Signal::enum_type` value as its
+    /// symbol (`'X'`, `Idle`) instead of a bare number.
+    pub enum_syms: HashMap<String, HashMap<u64, String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -60,6 +64,10 @@ pub struct Signal {
     /// The declared initial value's bit pattern (`let v: T = 1;`): engines
     /// reset signals to it (VHDL-style initial values), not to zero.
     pub init: u64,
+    /// The enum type name, when this signal holds an enum value (`Logic`,
+    /// `Bit`, a user FSM `State`). Lets consumers render the stored
+    /// discriminant as its variant symbol (`'X'`, `Idle`) instead of a number.
+    pub enum_type: Option<String>,
 }
 
 /// A combinational driver: `signal = expr` under `cond` (spec 3.14 source-order
@@ -156,6 +164,15 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     let mut l = Lowering::new(sink);
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
+    // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
+    // consumers can render stored discriminants symbolically.
+    l.out.enum_syms = l
+        .enum_variants
+        .iter()
+        .map(|(ty, vars)| {
+            (ty.clone(), vars.iter().map(|(sym, &d)| (d, sym.clone())).collect())
+        })
+        .collect();
     l.enum_reprs = enum_reprs(modules);
     l.vector_families = vector_families(modules);
     {
@@ -881,6 +898,7 @@ impl<'a> Lowering<'a> {
             char: false,
             range: None,
             init: 0,
+            enum_type: None,
         });
         self.locals.insert(name.to_string(), id);
     }
@@ -956,6 +974,8 @@ impl<'a> Lowering<'a> {
             self.add_signal(entity, name, w);
             if let (ast::Type::Path(p), Some(&id)) = (ty, self.locals.get(name)) {
                 self.sig_type.insert(id.0, p.segments[0].text.clone());
+                // Record the enum type so consumers render variants symbolically.
+                self.out.signals[id.0 as usize].enum_type = Some(p.segments[0].text.clone());
             }
         } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
             // `integer<lo..hi>` stores in the smallest width covering the
@@ -3411,6 +3431,27 @@ mod tests {
         lower(modules, &hier, &mut sink)
     }
 
+    #[test]
+    fn enum_signals_carry_symbols() {
+        // A Logic-typed signal records its enum type, and the design exports the
+        // discriminant -> symbol map (with std's char-variant names) so
+        // consumers can print `'X'` instead of `3`.
+        let d = lower_src(
+            "module m;\n\
+             enum Logic { '0', '1', 'Z', 'X' }\n\
+             enum State { Idle, Run }\n\
+             entity E { in a: Logic; out s: State; }\n\
+             impl E { s = State::Idle; }\n\
+             #[top] entity Top {}\n\
+             impl Top { let a: Logic; let s: State; let e = E { .a, .s }; }\n",
+        );
+        let sig = |p: &str| d.signals.iter().find(|s| s.path == p).unwrap();
+        assert_eq!(sig("Top.e.a").enum_type.as_deref(), Some("Logic"));
+        assert_eq!(sig("Top.e.s").enum_type.as_deref(), Some("State"));
+        assert_eq!(d.enum_syms["Logic"].get(&3).map(String::as_str), Some("'X'"));
+        assert_eq!(d.enum_syms["State"].get(&0).map(String::as_str), Some("Idle"));
+    }
+
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
           in clk: Clock;\n\
@@ -3512,7 +3553,7 @@ mod tests {
         // A lowered counter is well-formed.
         assert!(lower_src(COUNTER).validate().is_empty());
 
-        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false, range: None, init: 0 };
+        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false, range: None, init: 0, enum_type: None };
         // Out-of-range signal id, an Unknown, a bad slice, and a width-0 signal.
         let bad = Design {
             signals: vec![sig(0)], // width 0 -> flagged
@@ -3523,6 +3564,7 @@ mod tests {
                 ctx: 0,
             }],
             event_blocks: vec![],
+            enum_syms: HashMap::new(),
         };
         let issues = bad.validate();
         assert!(issues.iter().any(|i| i.contains("unknown width")), "{issues:?}");

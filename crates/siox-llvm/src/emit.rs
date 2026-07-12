@@ -539,7 +539,7 @@ mod tests {
     use siox_ir::{Design, Driver, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0 }
+        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }
     }
 
     #[test]
@@ -558,6 +558,7 @@ mod tests {
                 },
             }],
             event_blocks: vec![],
+            enum_syms: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // State layout, accessors, settle, and the add+mask are present.
@@ -582,6 +583,7 @@ mod tests {
                 expr: Expr::Const(1),
             }],
             event_blocks: vec![],
+            enum_syms: Default::default(),
         };
         emit_module_ir(&design);
     }
@@ -598,6 +600,7 @@ mod tests {
                 Driver { target: SignalId(1), cond: None, expr: Expr::Current(SignalId(0)), ctx: 0 }, // b=a
             ],
             event_blocks: vec![],
+            enum_syms: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // In the settle body, the store to b's slot precedes the store to y's.

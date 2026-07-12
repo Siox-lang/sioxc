@@ -423,13 +423,30 @@ impl Ctx<'_> {
                 while let Some(i) = rest.find("{}") {
                     cfmt.push_str(&rest[..i].replace('%', "%%").replace('"', "\\\""));
                     if let Some(a) = vals.next() {
-                        let is_real = expr_path(a)
+                        let sig = expr_path(a)
                             .and_then(|p| self.map.get(&p))
-                            .map(|id| self.design.signals[id.0 as usize].real)
-                            .unwrap_or_else(|| {
-                                matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
-                            });
-                        if is_real {
+                            .map(|id| &self.design.signals[id.0 as usize]);
+                        let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
+                            matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
+                        });
+                        // An enum-typed signal prints its variant symbol via a
+                        // ternary over the value (a clang statement-expression
+                        // evaluates the operand once).
+                        let enum_syms = sig
+                            .and_then(|s| s.enum_type.as_ref())
+                            .and_then(|ety| self.design.enum_syms.get(ety));
+                        if let Some(syms) = enum_syms {
+                            let mut tern = String::from("\"?\"");
+                            for (disc, sym) in syms {
+                                let esc = sym.replace('\\', "\\\\").replace('"', "\\\"");
+                                tern = format!("(_v=={disc}?\"{esc}\":{tern})");
+                            }
+                            cfmt.push_str("%s");
+                            cargs.push(format!(
+                                "({{ long long _v = (long long)({}); {tern}; }})",
+                                self.expr(a)?
+                            ));
+                        } else if is_real {
                             cfmt.push_str("%g");
                             cargs.push(format!("sx_f64({})", self.value_for_print(a)?));
                         } else {
