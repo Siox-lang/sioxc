@@ -39,6 +39,10 @@ pub struct Design {
     /// (including `std`). Consumers render a `Signal::enum_type` value as its
     /// symbol (`'X'`, `Idle`) instead of a bare number.
     pub enum_syms: HashMap<String, HashMap<u64, String>>,
+    /// Directory that relative `read`/`read_to_string`/`exists` paths resolve
+    /// against — the design's source directory. Empty means the current working
+    /// directory (the default; a bare `Design` reads CWD-relative).
+    pub base_dir: std::path::PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -159,9 +163,25 @@ pub enum BinOp {
     FDiv,
 }
 
-/// Lower the elaborated design into simulation IR.
+/// Lower the elaborated design into simulation IR. Relative file-read paths
+/// resolve against the current working directory (see [`lower_in`] to set a
+/// source-relative base directory).
 pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) -> Design {
+    lower_in(modules, hier, sink, std::path::Path::new(""))
+}
+
+/// Lower with `base_dir` as the root that relative `read`/`read_to_string`
+/// paths resolve against (the design's source directory), so a program that
+/// bakes in a data file works regardless of the working directory.
+pub fn lower_in(
+    modules: &[Module],
+    hier: &Hierarchy,
+    sink: &mut DiagnosticSink,
+    base_dir: &std::path::Path,
+) -> Design {
     let mut l = Lowering::new(sink);
+    l.base_dir = base_dir.to_path_buf();
+    l.out.base_dir = base_dir.to_path_buf();
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
     // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
@@ -222,6 +242,8 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
 
 struct Lowering<'a> {
     sink: &'a mut DiagnosticSink,
+    /// Root for relative compile-time file reads (the source directory).
+    base_dir: std::path::PathBuf,
     entities: HashMap<String, &'a ast::EntityDecl>,
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
     /// Entity name -> its instance's concrete parameter values.
@@ -325,6 +347,7 @@ impl<'a> Lowering<'a> {
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Lowering {
             sink,
+            base_dir: std::path::PathBuf::new(),
             entities: HashMap::new(),
             impls: HashMap::new(),
             entity_params: HashMap::new(),
@@ -582,7 +605,7 @@ impl<'a> Lowering<'a> {
                         if let Some(fpath) =
                             l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read_to_string"))
                         {
-                            match std::fs::read_to_string(fpath) {
+                            match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                 Ok(text) => {
                                     let chars: Vec<char> = text.chars().collect();
                                     self.add_char_array(path, &l.name.text, chars.len());
@@ -614,7 +637,7 @@ impl<'a> Lowering<'a> {
                         l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read"))
                     {
                         if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
-                            match std::fs::read(fpath) {
+                            match std::fs::read(self.base_dir.join(fpath)) {
                                 Ok(bytes) => {
                                     let ew = self
                                         .locals
@@ -3680,6 +3703,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: HashMap::new(),
+            base_dir: Default::default(),
         };
         let issues = bad.validate();
         assert!(issues.iter().any(|i| i.contains("unknown width")), "{issues:?}");

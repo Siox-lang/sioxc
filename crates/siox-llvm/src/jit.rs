@@ -90,6 +90,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         };
         with_jit(&design, |jit| {
             jit.set(0, 30);

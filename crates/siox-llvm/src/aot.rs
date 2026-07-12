@@ -75,6 +75,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));

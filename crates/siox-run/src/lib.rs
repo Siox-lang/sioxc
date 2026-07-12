@@ -481,7 +481,7 @@ impl Testbench<'_> {
             // Runtime file reads (std::fs): fill the array element-wise.
             Some(v) if fs_read_path(v, "read_to_string").is_some() => {
                 let fpath = fs_read_path(v, "read_to_string").unwrap();
-                match std::fs::read_to_string(&fpath) {
+                match std::fs::read_to_string(self.engine.design().base_dir.join(&fpath)) {
                     Ok(text) => {
                         for (i, c) in text.chars().enumerate() {
                             self.set_elem(&l.name.text, i, c as u32 as u128);
@@ -497,7 +497,7 @@ impl Testbench<'_> {
             }
             Some(v) if fs_read_path(v, "read").is_some() => {
                 let fpath = fs_read_path(v, "read").unwrap();
-                match std::fs::read(&fpath) {
+                match std::fs::read(self.engine.design().base_dir.join(&fpath)) {
                     Ok(bytes) => {
                         for (i, b) in bytes.iter().enumerate() {
                             self.set_elem(&l.name.text, i, *b as u128);
@@ -1043,7 +1043,7 @@ impl Testbench<'_> {
                         Some(ast::Expr::StrLit { text, .. }) => text.clone(),
                         _ => return u128::from_u64(0),
                     };
-                    u128::from_u64(std::path::Path::new(&p).exists() as u64)
+                    u128::from_u64(self.engine.design().base_dir.join(&p).exists() as u64)
                 }
                 "rand" => u128::from_u64(self.next_rand()),
                 "uniform" => {

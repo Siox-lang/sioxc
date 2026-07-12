@@ -98,6 +98,7 @@ mod tests {
             drivers: vec![],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         }
     }
 

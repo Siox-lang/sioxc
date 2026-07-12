@@ -11,6 +11,14 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Fixed
+- **File reads are now source-relative.** `read`/`read_to_string`/`exists`
+  resolve a relative path against the `.siox` file's own directory (like
+  `include_bytes!`), not the process working directory, so a program that bakes
+  in a data file works no matter where it is compiled from. Absolute paths are
+  unchanged. Applies to compile-time bakes, the interpreter/JIT runtime, and the
+  native binary's `exists`.
+
 ### Changed
 - The runnable `.siox` example/conformance corpus moved out of `examples/` into
   a sibling repo, [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests).

@@ -598,8 +598,17 @@ impl Ctx<'_> {
                         Some(ast::Expr::StrLit { text, .. }) => text.clone(),
                         _ => return Err("exists() needs a literal path".into()),
                     };
+                    // Resolve relative to the design's source directory, then
+                    // escape for the C string literal.
+                    let full = self
+                        .design
+                        .base_dir
+                        .join(&path)
+                        .to_string_lossy()
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"");
                     Ok(format!(
-                        "({{ FILE *_f = fopen(\"{path}\", \"rb\"); int _e = _f != 0; if (_f) fclose(_f); _e; }})"
+                        "({{ FILE *_f = fopen(\"{full}\", \"rb\"); int _e = _f != 0; if (_f) fclose(_f); _e; }})"
                     ))
                 }
                 "read" | "read_to_string" => Err(format!(

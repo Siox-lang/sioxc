@@ -559,6 +559,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // State layout, accessors, settle, and the add+mask are present.
@@ -584,6 +585,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         };
         emit_module_ir(&design);
     }
@@ -601,6 +603,7 @@ mod tests {
             ],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            base_dir: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // In the settle body, the store to b's slot precedes the store to y's.

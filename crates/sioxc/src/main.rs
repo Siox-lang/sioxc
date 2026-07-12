@@ -374,7 +374,7 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     if !sem.fe.sink.has_errors() {
         let modules = sem.fe.modules.as_slice();
         let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-        let _ = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+        let _ = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     }
     eprintln!();
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
@@ -410,7 +410,7 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         eprintln!("siox build: no entity named `{top}`");
         return ExitCode::FAILURE;
     }
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
@@ -478,7 +478,7 @@ fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode
     };
     let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
@@ -506,7 +506,7 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     };
     let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
@@ -573,7 +573,7 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
     eprintln!("== stage 5: elaborate == {} instance(s)", hier.instances.len());
 
     let before = sem.fe.sink.error_count();
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     eprintln!(
         "== stage 6: lower == {} signal(s), {} driver(s), {} event block(s), {} diagnostic(s)",
         design.signals.len(),
@@ -703,7 +703,7 @@ fn cmd_test(
 
     let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
@@ -828,7 +828,7 @@ fn cmd_wave(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
     };
     let modules = sem.fe.modules.as_slice();
     let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;

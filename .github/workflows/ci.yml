@@ -49,16 +49,12 @@ jobs:
 
       - name: Check the conformance corpus compiles cleanly
         run: |
-          cargo build -q --no-default-features --features interp -p sioxc
-          SIOXC="$PWD/target/debug/sioxc"
-          STD="$PWD/std"
-          # Run from inside the corpus so programs that read data files
-          # (fs_test's rom.bin / banner.txt) resolve them relative to CWD.
-          cd siox-tests
+          # File reads (fs_test's rom.bin / banner.txt) resolve relative to each
+          # program's own directory, so no need to run from inside the corpus.
           fail=0
-          for f in *.siox; do
+          for f in siox-tests/*.siox; do
             echo "== $f =="
-            if ! "$SIOXC" check "$f" --std "$STD"; then
+            if ! cargo run -q --no-default-features --features interp -p sioxc -- check "$f" --std std; then
               echo "::error file=$f::check failed"
               fail=1
             fi
