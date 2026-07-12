@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Safety lints** — **possible latch** (`W-P002`: a combinational signal only
+  ever assigned under a condition holds its old value otherwise) and **unused
+  import** (`W-P005`: a `using` name never referenced in its file; std excluded).
+  `sioxc check` now elaborates and lowers, so structural diagnostics — these
+  lints and the existing unresolved-multiple-drivers error — surface at check
+  time instead of only under `test`/`sim`.
 - **Struct/array-typed ports across instances** — a bundle port (`in s: Stream`,
   `in v: uint[8][3]`) now wires leaf-by-leaf across an instance boundary
   (`.s = link` connects `s.valid`<->`link.valid`, `s.data`<->`link.data`).

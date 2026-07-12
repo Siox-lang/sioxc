@@ -179,10 +179,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   CLI renders `severity[code]: message --> file:line:col`, help lines, and
   related-span labels. Errors carry actionable help + "did you mean?"
   suggestions (edit distance) and related spans (duplicate items). Warnings
-  emitted: **non-exhaustive enum match** (`W-P007`) and **unreachable match
-  arm** (`W-P006`, after `_` or a repeated variant).
-- **Status (todo):** the remaining warnings — multiple drivers, possible latch,
-  unused signal/param/import, suspicious `Logic` compare/reset.
+  emitted: **non-exhaustive enum match** (`W-P007`), **unreachable match
+  arm** (`W-P006`), **possible latch** (`W-P002`, a combinational signal only
+  assigned under a condition), and **unused import** (`W-P005`, per-file, std
+  excluded). **Multiple drivers on an unresolved type** is a hard error (the
+  `Resolve` safety rule), now surfaced by `check` (which elaborates + lowers).
+- **Status (todo):** the remaining warnings — unused signal/param (the IR can't
+  see a testbench's reads, so this needs use-tracking that spans the runner),
+  suspicious `Logic` compare/reset.
 
 ### Stage 11 — Standard library (`std/`) — 🟢 (documented in docs/std.md)
 - **Acceptance:** counter/FSM/stream/tests compile with standard imports only.
