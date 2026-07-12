@@ -517,6 +517,18 @@ impl Testbench<'_> {
         self.engine.set(id, v);
     }
 
+    /// The element count of an array-of-vectors type: `uint[8][5]` -> 5.
+    fn declared_len(&self, ty: &ast::Type) -> Option<usize> {
+        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+            if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
+                if let ast::Expr::Int { text, .. } = i.as_ref() {
+                    return text.parse().ok();
+                }
+            }
+        }
+        None
+    }
+
     /// Mask `v` to `name`'s declared local width (wrap at 2^w), matching what
     /// the engines do for hardware signals. Names without a recorded width
     /// (loop vars, integers, reals) pass through.
@@ -597,8 +609,24 @@ impl Testbench<'_> {
                 }
             }
             None => {
-                if !self.map.contains_key(&l.name.text) {
-                    self.locals.insert(l.name.text.clone(), 0);
+                // A DUT-connected array registers its *elements* in the signal
+                // map (`xs[0]`), not the base name — don't shadow those with
+                // locals.
+                let elem_connected =
+                    self.map.contains_key(&format!("{}[0]", l.name.text));
+                if !self.map.contains_key(&l.name.text) && !elem_connected {
+                    // A local array gets one slot per element, so indexing and
+                    // `::len` see it; scalars get a single slot.
+                    match l.ty.as_ref().and_then(|t| self.declared_len(t)) {
+                        Some(n) => {
+                            for i in 0..n {
+                                self.locals.insert(format!("{}[{i}]", l.name.text), 0);
+                            }
+                        }
+                        None => {
+                            self.locals.insert(l.name.text.clone(), 0);
+                        }
+                    }
                 }
             }
         }

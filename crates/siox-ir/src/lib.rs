@@ -1730,6 +1730,40 @@ impl<'a> Lowering<'a> {
                     if let Some(Val::Scalar(v)) = self.inline_unary("not", rhs) {
                         return v;
                     }
+                    // "Boolean per bit": `not` on a vector-valued signal
+                    // reference (name, field, element, slice) inverts every
+                    // bit — lower to `x xor mask` so the engines need no
+                    // width knowledge. A 1-bit operand keeps the boolean
+                    // form (same 0<->1 either way), as do compound
+                    // expressions (`not (a == b)`) and enum-typed signals
+                    // (their `not` is the impl above, or undefined).
+                    let is_vector_ref = match rhs.as_ref() {
+                        // A slice is always a bit vector.
+                        ast::Expr::Index { index, .. }
+                            if self.slice_bounds(index).is_some() =>
+                        {
+                            true
+                        }
+                        ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                            expr_path(rhs)
+                                .and_then(|p| self.locals.get(&p))
+                                .map(|&id| self.out.signals[id.0 as usize].enum_type.is_none())
+                                .unwrap_or(false)
+                        }
+                        _ => false,
+                    };
+                    if is_vector_ref {
+                        let w = self.ast_width(rhs);
+                        if w > 1 && w <= 64 {
+                            let mask =
+                                if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+                            return Expr::Binary {
+                                op: BinOp::Xor,
+                                lhs: Box::new(self.lower_expr(rhs)),
+                                rhs: Box::new(Expr::Const(mask)),
+                            };
+                        }
+                    }
                 }
                 Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr(rhs)) }
             }
@@ -2597,6 +2631,13 @@ impl<'a> Lowering<'a> {
                 expr_path(base).and_then(|p| self.local_array.get(&p))
             {
                 return Expr::Const(indices.len() as u64);
+            }
+            return Expr::Unknown;
+        }
+        // `x::width` is elaboration-time metadata too: the signal's bit width.
+        if attr == "width" {
+            if let Some(sig) = self.base_signal(base) {
+                return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
             }
             return Expr::Unknown;
         }
