@@ -12,6 +12,13 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Generate loops** — `for i in lo..hi { let inst = Sub { .. } }` unrolls to
+  one sub-instance per iteration, with the loop index substituted into instance
+  names, type arguments, and indexed connections (`.x = wires[i]`,
+  `.y = wires[i+1]`, folded to concrete element signals). Unrolled identically
+  in the elaborator (hierarchy/`siox tree`) and the IR lowerer (signals and
+  connection drivers), so the interpreter, JIT, and native binary all see the
+  same instance graph (differential-tested, both loop directions).
 - **`await` / `clock` timing primitives** — `await 10ns` (advance time),
   `await clk::rising` (edge; also `::falling`/`::event`), `await cond`
   (condition), and `clock(clk, period)` for a free-running background clock.
@@ -231,6 +238,14 @@ assertions, and VCD export — predates this changelog. See
   instances of one entity on different clocks), `await_test`, `top_counter`.
 
 ### Changed
+- **Loop ranges are now inclusive and directional.** A numeric `for i in
+  lo..hi` range includes both ends and follows its written direction (`0..2` →
+  `0,1,2`; `2..0` → `2,1,0`), matching bit slices, array types, and `range`
+  constants — `..` now means the same thing everywhere (it is *not* Python's
+  half-open `range`). Loops were previously half-open and ascending-only; an
+  index loop over an `N`-element array now runs `0..N-1`. Applied uniformly in
+  the elaborator, the IR lowerer, the testbench interpreter, and the C/native
+  emitter.
 - **LLVM is the default execution engine.** `sioxc test` JIT-runs and
   `sioxc sim --wave` JIT-traces; the default build needs an LLVM toolchain
   (`--no-default-features` for an LLVM-free build).

@@ -2000,7 +2000,7 @@ impl CounterTest {
     await 10ns;
     rst = '0';
 
-    for i in 0..10 {
+    for i in 0..9 {            // inclusive: 0,1,...,9 — ten rising edges
         await clk::rising;
     }
 

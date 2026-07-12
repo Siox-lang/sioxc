@@ -77,9 +77,11 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   const-evaluation and substitution into concrete port types (`uint[W]` →
   `uint[8]`), `.clk`-shorthand connection resolution, missing-port (`E-P005`) and
   unknown-port checks, **port-connection width checking** (a port's width must
-  match the signal it connects to, `E-P003`), extern black boxes, cycle
-  detection, and `siox tree`.
-- **Status (todo):** generated instances (loops/arrays), bus-mode leaf
+  match the signal it connects to, `E-P003`), **generate loops** (`for i in
+  lo..hi { let inst = Sub { .. } }` unrolled over an inclusive, directional
+  static range, the loop index substituted into names and indexed connections),
+  extern black boxes, cycle detection, and `siox tree`.
+- **Status (todo):** instance arrays (`let s: Sub[4]`), bus-mode leaf
   expansion, full direction analysis, and propagating concrete parameter widths
   down into instance signal types.
 
