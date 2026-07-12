@@ -1104,6 +1104,15 @@ impl<'a> Lowering<'a> {
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
                     self.out.drivers.push(Driver { target, cond, expr, ctx: self.cur_ctx });
+                } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
+                    for u in ups {
+                        self.out.drivers.push(Driver {
+                            target: u.target,
+                            cond: u.cond,
+                            expr: u.expr,
+                            ctx: self.cur_ctx,
+                        });
+                    }
                 }
             }
             ast::Stmt::If(iff) => {
@@ -1208,6 +1217,8 @@ impl<'a> Lowering<'a> {
                     if let Some(target) = self.target_signal(target) {
                         let expr = self.lower_expr(value);
                         out.push(NextUpdate { target, cond: cond.clone(), expr });
+                    } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
+                        out.extend(ups);
                     }
                 }
                 ast::Stmt::If(iff) => {
@@ -1254,6 +1265,67 @@ impl<'a> Lowering<'a> {
 
     /// The signal an assignment target refers to — a bare name or a struct-field
     /// path (`s.data`).
+    /// A dynamic array read `mem[addr]`: select among the flattened element
+    /// signals by the runtime index — `addr==0 ? mem[0] : addr==1 ? mem[1] :
+    /// ... : mem[last]`. Out-of-range reads the last element (defined, not UB).
+    fn lower_dynamic_read(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
+        let bpath = expr_path(base)?;
+        let indices = self.local_array.get(&bpath)?.clone();
+        let (&last, rest) = indices.split_last()?;
+        let idx = self.lower_expr(index);
+        let elem = |i: i64| {
+            self.locals
+                .get(&format!("{bpath}[{i}]"))
+                .map(|&s| Expr::Current(s))
+                .unwrap_or(Expr::Unknown)
+        };
+        let mut acc = elem(last);
+        for &i in rest.iter().rev() {
+            acc = Expr::Select {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(idx.clone()),
+                    rhs: Box::new(Expr::Const(i as u64)),
+                }),
+                then: Box::new(elem(i)),
+                els: Box::new(acc),
+            };
+        }
+        Some(acc)
+    }
+
+    /// A dynamic array write `mem[addr] = v`: update EVERY element,
+    /// each gated by `addr == i` (and the enclosing condition). One element
+    /// takes the new value; the rest hold (a `None` cond means unconditional,
+    /// so we always attach the match condition).
+    fn dynamic_write(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        cond: &Option<Expr>,
+    ) -> Option<Vec<NextUpdate>> {
+        let ast::Expr::Index { base, index, .. } = target else { return None };
+        let bpath = expr_path(base)?;
+        let indices = self.local_array.get(&bpath)?.clone();
+        let idx = self.lower_expr(index);
+        let expr = self.lower_expr(value);
+        let mut updates = Vec::new();
+        for i in indices {
+            let sig = *self.locals.get(&format!("{bpath}[{i}]"))?;
+            let hit = Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(idx.clone()),
+                rhs: Box::new(Expr::Const(i as u64)),
+            };
+            updates.push(NextUpdate {
+                target: sig,
+                cond: Some(and(cond.clone(), hit)),
+                expr: self.coerce_to_target(sig, expr.clone()),
+            });
+        }
+        Some(updates)
+    }
+
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
         expr_path(target).and_then(|p| self.locals.get(&p).copied())
     }
@@ -1354,11 +1426,19 @@ impl<'a> Lowering<'a> {
                 }
             }
             // A struct-field (`s.data`) or constant array-element (`a[2]`) access
-            // resolves to its flattened signal.
-            ast::Expr::Field { .. } | ast::Expr::Index { .. } => expr_path(e)
-                .and_then(|p| self.locals.get(&p).copied())
-                .map(Expr::Current)
-                .unwrap_or(Expr::Unknown),
+            // resolves to its flattened signal; a *dynamic* array index
+            // (`mem[addr]`) becomes a mux tree over the element signals.
+            ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                if let Some(id) = expr_path(e).and_then(|p| self.locals.get(&p).copied()) {
+                    return Expr::Current(id);
+                }
+                if let ast::Expr::Index { base, index, .. } = e {
+                    if let Some(v) = self.lower_dynamic_read(base, index) {
+                        return v;
+                    }
+                }
+                Expr::Unknown
+            }
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
                 // `not` on an enum-typed operand inlines its impl (`impl
