@@ -421,3 +421,48 @@ fn generate_loop_descending_agrees() {
         assert_agree(&d, &[("T.a", v)]);
     }
 }
+
+#[test]
+fn inout_tristate_bus_agrees() {
+    // Two bidirectional pads share one net. `inout` ports alias the net, so the
+    // two drivers fold through `impl Resolve for Logic`: a driven level beats
+    // 'Z', disagreement is 'X'. The JIT must match the interpreter oracle across
+    // drive/tristate/contention combinations.
+    let d = lower(
+        "module m;\n\
+         enum Logic { '0', '1', 'Z', 'X' }\n\
+         trait Resolve { fn resolve(self, rhs: Logic) -> Logic; }\n\
+         impl Resolve for Logic {\n\
+           fn resolve(self, rhs: Logic) -> Logic {\n\
+             if self == 'Z' { return rhs; }\n\
+             if rhs == 'Z' { return self; }\n\
+             if self == rhs { return self; }\n\
+             return 'X';\n\
+           }\n\
+         }\n\
+         entity Pad { in drive: Logic; in en: Logic; inout pin: Logic; out sensed: Logic; }\n\
+         impl Pad { pin = if en == '1' { drive } else { 'Z' }; sensed = pin; }\n\
+         entity Bus { in da: Logic; in ea: Logic; in db: Logic; in eb: Logic; out sa: Logic; out sb: Logic; }\n\
+         impl Bus {\n\
+           let wire: Logic;\n\
+           let a = Pad { .drive = da, .en = ea, .pin = wire, .sensed = sa };\n\
+           let b = Pad { .drive = db, .en = eb, .pin = wire, .sensed = sb };\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let da: Logic; let ea: Logic; let db: Logic; let eb: Logic; let sa: Logic; let sb: Logic;\n\
+           let dut = Bus { .da, .ea, .db, .eb, .sa, .sb };\n\
+         }\n",
+    );
+    // Logic codes: '0'=0 '1'=1 'Z'=2 'X'=3.
+    for (ea, da, eb, db) in [
+        (1u64, 1u64, 2u64, 0u64), // A drives 1, B tristate
+        (2, 0, 1, 0),             // B drives 0, A tristate
+        (1, 1, 1, 0),             // both drive, disagree -> X
+        (1, 1, 1, 1),             // both drive 1 -> 1
+        (2, 0, 2, 0),             // neither drives -> Z
+    ] {
+        assert_agree(&d, &[("T.ea", ea), ("T.da", da), ("T.eb", eb), ("T.db", db)]);
+    }
+}

@@ -443,7 +443,7 @@ impl<'a> Lowering<'a> {
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        self.lower_body(name, name, &env);
+        self.lower_body(name, name, &env, &HashMap::new());
     }
 
     /// Lower each `let inst = Sub { .. }` DUT of a testbench into its own
@@ -459,7 +459,7 @@ impl<'a> Lowering<'a> {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
                             sub_env.extend(self.construct_params(cty, env));
-                            self.lower_body(sub, &sub_path, &sub_env);
+                            self.lower_body(sub, &sub_path, &sub_env, &HashMap::new());
                         }
                     }
                 }
@@ -478,6 +478,7 @@ impl<'a> Lowering<'a> {
         ename: &str,
         path: &str,
         env: &HashMap<String, i64>,
+        aliases: &HashMap<String, SignalId>,
     ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
         let Some(edecl) = self.entities.get(ename).copied() else {
             return HashMap::new();
@@ -493,8 +494,19 @@ impl<'a> Lowering<'a> {
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
 
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
+        // An `inout` port aliased to a parent net reuses that net's signal
+        // instead of allocating its own: the body's `pin = expr` then drives the
+        // shared net (resolving across instances) and reads of `pin` read the
+        // resolved value — Verilog's bidirectional-port model.
         for p in &edecl.ports {
             self.add_typed_signal(path, &p.name.text, &p.ty, env);
+            // An aliased `inout` port repoints its name at the shared parent net
+            // (keeping the type metadata just registered), so the body drives and
+            // reads that net directly. The port's own allocated signal is left
+            // unused.
+            if let Some(&net) = aliases.get(&p.name.text) {
+                self.locals.insert(p.name.text.clone(), net);
+            }
         }
         let ports: HashMap<String, (SignalId, Option<ast::Direction>)> = edecl
             .ports
@@ -639,9 +651,42 @@ impl<'a> Lowering<'a> {
             let sub_path = format!("{path}.{inst}");
             let mut sub_env = self.consts.clone();
             sub_env.extend(self.construct_params(cty, env));
-            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env);
+
+            // Resolve `inout` connections to the parent net they share *before*
+            // lowering the child, so its port aliases to that net. A scalar
+            // inout whose parent side isn't a plain signal is left un-aliased
+            // (falls back to the in/out wiring below).
+            let mut aliases: HashMap<String, SignalId> = HashMap::new();
+            if let Some(decl) = self.entities.get(sub_ename).copied() {
+                for p in &decl.ports {
+                    if p.dir != Some(ast::Direction::Inout) {
+                        continue;
+                    }
+                    let value = conns
+                        .iter()
+                        .find(|c| c.field.text == p.name.text)
+                        .map(|c| {
+                            c.value.clone().unwrap_or_else(|| {
+                                ast::Expr::Path(ast::Path {
+                                    segments: vec![c.field.clone()],
+                                    span: c.field.span,
+                                })
+                            })
+                        });
+                    if let Some(net) = value.and_then(|v| self.target_signal(&v)) {
+                        aliases.insert(p.name.text.clone(), net);
+                    }
+                }
+            }
+
+            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &aliases);
             for c in conns {
                 let Some(&(child_id, dir)) = sub_ports.get(&c.field.text) else { continue };
+                // An aliased inout needs no connection driver: the child body
+                // already drives and reads the shared net directly.
+                if dir == Some(ast::Direction::Inout) && aliases.contains_key(&c.field.text) {
+                    continue;
+                }
                 // `.p` shorthand means the parent signal `p`.
                 let value = c.value.clone().unwrap_or_else(|| {
                     ast::Expr::Path(ast::Path { segments: vec![c.field.clone()], span: c.field.span })
