@@ -301,11 +301,15 @@ means:
 **Bit vectors are recognized by shape.** A bodyless struct deriving from an
 array of a bit scalar — `struct uint : Logic[]` — *is* a packed bit vector
 (one N-bit signal); no annotation is needed, since an array of bits already
-says so. The one thing the shape cannot express is signedness (uint and int
-are both `Logic[]`), so `#[signed]` marks two's-complement:
-`#[signed] pub struct int : Logic[];`. This is how `uint`/`int` are defined —
+says so. The one thing the shape cannot express is signedness (uint and int are both
+`Logic[]`) — and signedness is a *capability* (it changes comparison, shift,
+division, and widening), so it is a **trait**, not metadata:
+`impl Signed for int {}` (std::ops). This is how `uint`/`int` are defined —
 ordinary library `struct`s in `std/bits.siox`, not compiler-magic names — and
-a user `struct MyWord : Logic[];` gets identical treatment.
+a user `struct MyWord : Logic[];` is an unsigned vector (`impl Signed for
+MyWord {}` makes it signed). The compiler reads `Signed` only to sign-extend
+on widening; the rest of int's signed behaviour is its own `Ord`/`Shr`/`Div`
+impls.
 
 **Type-targeted attributes.** A target may also be a *type name*, declaring
 an attribute valid only on that entity/struct or on declarations/instances

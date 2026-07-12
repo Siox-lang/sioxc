@@ -46,6 +46,15 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **`#[signed]` removed — signedness is the `Signed` capability trait** —
+  unlike `#[vector]` (structural, redundant with shape), signedness is a
+  *capability* (it changes comparison, shift, division, widening), so it
+  belongs as a trait like int's other signed behaviours, not metadata.
+  `impl Signed for int {}` (std::ops) replaces `#[signed]`; the compiler reads
+  it only to sign-extend on widening (compare/shift/div are already int's own
+  impls). A user `struct MyWord : Logic[];` is unsigned; `impl Signed for
+  MyWord {}` makes it signed (sign-extends on widen — verified). No struct
+  carries a compiler attribute anymore.
 - **`#[vector]` removed — bit vectors are recognized by shape** — an array
   of bits *is* a vector, so a bodyless struct deriving from `Logic[]`/`Bit[]`
   (`struct uint : Logic[]`) is a packed bit vector with no annotation needed;

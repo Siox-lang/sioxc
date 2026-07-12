@@ -209,6 +209,13 @@ impl<'a> Checker<'a> {
                 self.collect_decl(item);
             }
         }
+        // Signedness (impl Signed for T) BEFORE entity ports are typed, so an
+        // `int` port and an `int[16](..)` conversion agree.
+        if let Some(signed) = self.trait_impls.get("Signed").cloned() {
+            for (name, is_signed) in self.vector_families.iter_mut() {
+                *is_signed = signed.contains(name);
+            }
+        }
         for m in modules {
             for item in &m.items {
                 match item {
@@ -293,8 +300,8 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
                 // A bodyless struct over an array of bit scalars is a bit
-                // vector by shape (`struct uint : Logic[]`); `#[signed]` marks
-                // two's-complement. No `#[vector]` annotation.
+                // vector by shape (`struct uint : Logic[]`); signedness comes
+                // from `impl Signed for T`, applied in a post-pass.
                 let is_vec = st.fields.is_empty()
                     && matches!(
                         st.base.as_ref().and_then(|b| match b {
@@ -304,11 +311,9 @@ impl<'a> Checker<'a> {
                         Some("Logic" | "Bit" | "ULogic" | "Clock")
                     );
                 if is_vec {
-                    let signed = st
-                        .attrs
-                        .iter()
-                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("signed"));
-                    self.vector_families.insert(st.name.text.clone(), signed);
+                    // Signedness (impl Signed for T) is applied in a post-pass,
+                    // since the impl may be collected after the struct.
+                    self.vector_families.insert(st.name.text.clone(), false);
                 }
             }
             Item::Using(u) => {
@@ -1505,7 +1510,7 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
-    const VEC: &str = "\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n";
+    const VEC: &str = "\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");

@@ -4,14 +4,17 @@ using std::logic::{Logic};
 using std::ops::{Ordering};
 
 // uint and int are ordinary library types, not compiler-magic names: an
-// array of Logic IS a bit vector, so deriving from `Logic[]` is all it takes
-// — no annotation. `#[signed]` is the one thing the shape can't say (uint and
-// int are both `Logic[]`): it selects two's-complement. A user
-// `struct MyWord : Logic[];` gets identical treatment.
-pub struct uint : Logic[];
+// array of Logic IS a bit vector, so deriving from `Logic[]` is all it takes.
+// int is two's-complement because it implements the `Signed` capability
+// (std::ops) — the one thing the `Logic[]` shape can't say, expressed as a
+// trait like int's other signed behaviours. A user `struct MyWord : Logic[];`
+// is an unsigned vector; `impl Signed for MyWord {}` makes it signed.
+using std::ops::{Signed};
 
-#[signed]
+pub struct uint : Logic[];
 pub struct int : Logic[];
+
+impl Signed for int {}
 
 // Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std,
 // where `unsigned`/`signed` are arrays of std_logic declared in library code).

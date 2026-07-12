@@ -2839,19 +2839,34 @@ pub fn eval_const_stmts(
 /// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
 /// -> signedness. A bodyless struct whose base is an array of a bit scalar
 /// (`struct uint : Logic[]`) IS a bit vector — no annotation needed, the shape
-/// says so. `#[signed]` marks two's-complement. uint/int are just members.
+/// says so. Signedness is the `Signed` capability. uint/int are just members.
 pub fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
-    let signed = |st: &ast::StructDecl| {
-        st.attrs
-            .iter()
-            .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("signed"))
-    };
+    // Signedness is the `Signed` capability (impl Signed for T), a trait like
+    // int's other signed behaviours — not a metadata attribute.
+    let mut signed = std::collections::HashSet::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                let is_signed = im
+                    .trait_
+                    .as_ref()
+                    .and_then(|t| t.segments.last())
+                    .map(|s| s.text == "Signed")
+                    .unwrap_or(false);
+                if is_signed {
+                    if let Some(h) = type_head_name(&im.target) {
+                        signed.insert(h.to_string());
+                    }
+                }
+            }
+        }
+    }
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(st) = item {
                 if is_bit_vector_struct(st) {
-                    out.insert(st.name.text.clone(), signed(st));
+                    out.insert(st.name.text.clone(), signed.contains(&st.name.text));
                 }
             }
         }
@@ -3039,7 +3054,7 @@ mod tests {
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
         let src = format!(
-            "{src}\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n"
+            "{src}\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();

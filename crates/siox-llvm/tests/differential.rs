@@ -13,7 +13,7 @@ fn lower(src: &str) -> Design {
     // uint/int are library types now (not seeded); the differential sources
     // are self-contained, so declare the vector families locally.
     let src = format!(
-        "{src}\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n"
+        "{src}\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n"
     );
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();

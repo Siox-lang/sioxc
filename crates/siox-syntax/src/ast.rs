@@ -93,8 +93,8 @@ pub struct Param {
 #[derive(Clone, Debug)]
 pub struct StructDecl {
     pub is_pub: bool,
-    /// Declaration attributes (e.g. `#[signed]` on a bit-vector struct):
-    /// representation metadata read by the compiler (spec 3.5).
+    /// Declaration attributes (`#[...]`), if any: metadata read by the
+    /// compiler (spec 3.5). Structs carry no compiler attributes today.
     pub attrs: Vec<Attr>,
     pub name: Ident,
     pub params: Params,

@@ -225,6 +225,7 @@ struct Elaborator<'a> {
 
 impl<'a> Elaborator<'a> {
     fn collect(&mut self, modules: &'a [Module]) {
+        let mut signed_targets: Vec<String> = Vec::new();
         for m in modules {
             for item in &m.items {
                 match item {
@@ -232,8 +233,8 @@ impl<'a> Elaborator<'a> {
                         self.entities.insert(e.name.text.clone(), e);
                     }
                     Item::Struct(st) => {
-                        // Bit vector by shape (`struct uint : Logic[]`), signed
-                        // by `#[signed]`.
+                        // Bit vector by shape (`struct uint : Logic[]`);
+                        // signedness is set below from `impl Signed`.
                         let is_vec = st.fields.is_empty()
                             && matches!(
                                 st.base.as_ref().and_then(|b| match b {
@@ -243,10 +244,20 @@ impl<'a> Elaborator<'a> {
                                 Some("Logic" | "Bit" | "ULogic" | "Clock")
                             );
                         if is_vec {
-                            let signed = st.attrs.iter().any(|a| {
-                                a.name.segments.last().map(|s| s.text.as_str()) == Some("signed")
-                            });
-                            self.families.insert(st.name.text.clone(), signed);
+                            self.families.insert(st.name.text.clone(), false);
+                        }
+                    }
+                    // `impl Signed for T`: mark the vector family signed.
+                    Item::Impl(im)
+                        if im
+                            .trait_
+                            .as_ref()
+                            .and_then(|t| t.segments.last())
+                            .map(|s| s.text == "Signed")
+                            .unwrap_or(false) =>
+                    {
+                        if let Some(h) = type_head_name(&im.target) {
+                            signed_targets.push(h.to_string());
                         }
                     }
                     Item::Impl(im) if im.trait_.is_none() => {
@@ -256,6 +267,12 @@ impl<'a> Elaborator<'a> {
                     }
                     _ => {}
                 }
+            }
+        }
+        // Order-independent: apply `impl Signed` after all items are seen.
+        for t in signed_targets {
+            if let Some(v) = self.families.get_mut(&t) {
+                *v = true;
             }
         }
     }
@@ -718,7 +735,7 @@ mod tests {
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // uint/int are `#[vector]` library types, not seeded.
         let src = format!(
-            "{src}\nstruct uint : Logic[];\n#[signed] struct int : Logic[];\n"
+            "{src}\ntrait Signed {}\nstruct uint : Logic[];\nstruct int : Logic[];\nimpl Signed for int {}\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
