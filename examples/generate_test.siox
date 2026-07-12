@@ -14,7 +14,7 @@ entity Chain { in a: uint[8]; out b: uint[8]; }
 impl Chain {
     let wires: uint[8][4];
     wires[0] = a;
-    for i in 0..3 {
+    for i in 0..2 {
         let inc = Inc { .x = wires[i], .y = wires[i+1] };
     }
     b = wires[3];

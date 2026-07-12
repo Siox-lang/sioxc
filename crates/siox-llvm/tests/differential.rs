@@ -374,7 +374,38 @@ fn generate_loop_chain_agrees() {
          impl Chain {\n\
            let wires: uint[8][4];\n\
            wires[0] = a;\n\
-           for i in 0..3 {\n\
+           for i in 0..2 {\n\
+             let inc = Inc { .x = wires[i], .y = wires[i+1] };\n\
+           }\n\
+           b = wires[3];\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: uint[8]; let b: uint[8];\n\
+           let dut = Chain { .a, .b };\n\
+         }\n",
+    );
+    for v in [0u64, 10, 42, 252] {
+        assert_agree(&d, &[("T.a", v)]);
+    }
+}
+
+#[test]
+fn generate_loop_descending_agrees() {
+    // The same three-incrementer chain built by a *descending* generate loop
+    // (`2..0` -> 2,1,0). Range endpoints are inclusive and directional, so this
+    // instantiates the identical stage set in reverse iteration order; the
+    // lowered design — and thus both engines — must match the ascending build.
+    let d = lower(
+        "module m;\n\
+         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         impl Inc { y = x + 1; }\n\
+         entity Chain { in a: uint[8]; out b: uint[8]; }\n\
+         impl Chain {\n\
+           let wires: uint[8][4];\n\
+           wires[0] = a;\n\
+           for i in 2..0 {\n\
              let inc = Inc { .x = wires[i], .y = wires[i+1] };\n\
            }\n\
            b = wires[3];\n\

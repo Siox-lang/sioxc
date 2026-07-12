@@ -1396,7 +1396,8 @@ Define exact syntax for:
 - Assignments.
 - If/else.
 - Match.
-- Loops over static ranges.
+- Loops over static ranges (inclusive and directional: `0..2` is `0,1,2`,
+  `2..0` is `2,1,0`).
 - Instance construction.
 - Array/range syntax.
 - Literals.
@@ -1942,12 +1943,20 @@ payload-carrying enums — never a keyword.
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
 directly, Python-style — length is the `::len` system attribute (an
-elaboration-time fact, like `::width`):
+elaboration-time fact, like `::width`).
+
+A numeric range `lo..hi` in a `for` is **inclusive and directional**, exactly
+like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`
+and `2..0` visits `2, 1, 0` — reversing the endpoints reverses the traversal
+over the *same* set. (This is not Python's half-open `range`; siox gives `..`
+one meaning everywhere.) So an index loop over an `N`-element array runs to
+`N-1`:
 
 ```siox
 let acc: uint[8] = 0;
-for x in xs { acc = acc + x; }      // desugars over 0..xs::len
-for i in 0..xs::len { acc = acc + xs[i]; }
+for x in xs { acc = acc + x; }          // element iteration (no bounds needed)
+for i in 0..xs::len - 1 { acc = acc + xs[i]; }   // 0,1,...,len-1
+for i in xs::len - 1..0 { acc = acc + xs[i]; }   // same, high index first
 ```
 
 For edge/level-driven stimulus (mirroring cocotb's async model), `await` waits

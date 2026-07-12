@@ -391,7 +391,9 @@ impl<'a> Elaborator<'a> {
                     if let (ParamValue::Int(a), ParamValue::Int(b)) =
                         (eval(lo, env), eval(hi, env))
                     {
-                        for i in a..b {
+                        // Inclusive, directional range (`0..2` -> 0,1,2;
+                        // `2..0` -> 2,1,0), matching slices/array ranges.
+                        for i in loop_range(a, b) {
                             let mut e = env.clone();
                             e.insert(var.text.clone(), i);
                             for st in &body.stmts {
@@ -569,6 +571,18 @@ fn eval_params(edecl: &EntityDecl, ty: &Type, env: &HashMap<String, i64>) -> Vec
         }
     }
     out
+}
+
+/// The values a `for i in lo..hi` loop visits. Endpoints are **inclusive and
+/// directional**, matching bit slices and array ranges: `0..2` -> 0,1,2 and
+/// `2..0` -> 2,1,0. (Kept in sync with `siox_ir::loop_range`, which owns the
+/// canonical definition; the crate layering forbids depending on it here.)
+fn loop_range(a: i64, b: i64) -> Vec<i64> {
+    if a <= b {
+        (a..=b).collect()
+    } else {
+        (b..=a).rev().collect()
+    }
 }
 
 /// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving

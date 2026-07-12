@@ -434,7 +434,7 @@ mod tests {
           await 10ns;\n\
           rst = '0';\n\
           clk = not clk after 5ns;\n\
-          for i in 0..10 { await clk::rising; }\n\
+          for i in 0..9 { await clk::rising; }\n\
           PLACEHOLDER\n\
         }\n";
 

@@ -338,7 +338,18 @@ impl Ctx<'_> {
                     ast::Expr::Range { lo, hi, .. } => (self.expr(lo)?, self.expr(hi)?),
                     _ => return Err("`for` needs a range or an array".into()),
                 };
-                b.push_str(&format!("{ind}for (uint64_t {v} = {lo}; {v} < {hi}; {v}++) {{\n"));
+                // Inclusive, directional range (`0..2` -> 0,1,2; `2..0` -> 2,1,0):
+                // step by the sign of hi-lo and break *after* running the body at
+                // `hi`. The counter is signed so a descending loop to 0 doesn't
+                // wrap; `{v}` is exposed as uint64_t to match index/value use.
+                let k = self.tmp.get();
+                self.tmp.set(k + 1);
+                b.push_str(&format!(
+                    "{ind}{{ int64_t _lo{k} = (int64_t)({lo}), _hi{k} = (int64_t)({hi});\n\
+                     {ind}int _st{k} = _lo{k} <= _hi{k} ? 1 : -1;\n\
+                     {ind}for (int64_t _c{k} = _lo{k}; ; _c{k} += _st{k}) {{\n\
+                     {ind}uint64_t {v} = (uint64_t)_c{k};\n"
+                ));
                 let fresh = self.locals.borrow_mut().insert(v.clone());
                 for s in &body.stmts {
                     self.stmt(s, b, depth + 1)?;
@@ -346,7 +357,7 @@ impl Ctx<'_> {
                 if fresh {
                     self.locals.borrow_mut().remove(v);
                 }
-                b.push_str(&format!("{ind}}}\n"));
+                b.push_str(&format!("{ind}if (_c{k} == _hi{k}) break;\n{ind}}} }}\n"));
             }
             ast::Stmt::If(iff) => {
                 let c = self.expr(&iff.cond)?;

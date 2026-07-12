@@ -703,8 +703,14 @@ impl Testbench<'_> {
                         })
                         .collect()
                 } else if let ast::Expr::Range { lo, hi, .. } = range {
+                    // Inclusive, directional (`0..2` -> 0,1,2; `2..0` -> 2,1,0),
+                    // matching bit slices and array ranges.
                     let (a, b) = (self.eval(lo).to_u64(), self.eval(hi).to_u64());
-                    (a..b).map(u128::from_u64).collect()
+                    if a <= b {
+                        (a..=b).map(u128::from_u64).collect()
+                    } else {
+                        (b..=a).rev().map(u128::from_u64).collect()
+                    }
                 } else {
                     Vec::new()
                 };

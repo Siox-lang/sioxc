@@ -46,7 +46,7 @@ impl CounterTest {
     await 10ns;
     rst = '0';
 
-    for i in 0..10 {
+    for i in 0..9 {
         await clk::rising;
     }
 

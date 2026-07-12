@@ -3095,7 +3095,7 @@ fn gather_generate(
         }
         ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
             if let (Some(a), Some(b)) = (eval_const(lo, env), eval_const(hi, env)) {
-                for i in a..b {
+                for i in loop_range(a, b) {
                     let mut e = env.clone();
                     e.insert(var.text.clone(), i);
                     let mut idx = loop_idx.to_vec();
@@ -3195,6 +3195,17 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
             span: *span,
         },
         other => other.clone(),
+    }
+}
+
+/// The values a `for i in lo..hi` loop visits. Range endpoints are **inclusive
+/// and directional**, matching bit slices and array ranges elsewhere in the
+/// language: `0..2` yields 0,1,2 and `2..0` yields 2,1,0.
+pub fn loop_range(a: i64, b: i64) -> Vec<i64> {
+    if a <= b {
+        (a..=b).collect()
+    } else {
+        (b..=a).rev().collect()
     }
 }
 
