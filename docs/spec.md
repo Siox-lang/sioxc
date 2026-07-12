@@ -477,6 +477,16 @@ let p: Packet = Packet { .valid = '1', .data = 5 };  // explicit
 let q: Packet = { .valid = '1', .data = 5 };         // type from `q: Packet`
 ```
 
+**Character literals are context-typed.** A `'x'` literal defaults to `Char`
+(`let i = '0';` gives `i: Char`), but when a type is supplied — an annotation,
+a port, an assignment target, or a comparison counterpart — it takes that type
+instead: `let i: Logic = '0';` is a `Logic`, `let b: Bit = '1';` a `Bit`, and
+`s == 'Z'` reads `'Z'` as `s`'s type. The context reaches through an
+if-expression too, so `b = if c { '1' } else { '0' };` with `b: Bit` types the
+branches as `Bit`. This is because `Bit`/`Logic`/`Clock` are enums whose
+variants are written as char literals, so `'0'` is genuinely ambiguous until
+context resolves it.
+
 Bits are concatenated with a brace list of positional values, most-significant
 first (distinguished from a struct literal by the absence of leading `.`):
 

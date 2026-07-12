@@ -934,6 +934,12 @@ impl<'a> Checker<'a> {
                 }
                 matches!(lhs, Ty::Bit | Ty::Logic | Ty::Char | Ty::Error)
             }
+            // An if-expression is assignable if both branches are — so char
+            // literals in the branches read through the target type
+            // (`b: Bit = if c { '1' } else { '0' }`).
+            Expr::IfExpr { then, els, .. } => {
+                self.assignable(lhs, then, sym) && self.assignable(lhs, els, sym)
+            }
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }
@@ -1160,7 +1166,9 @@ impl<'a> Checker<'a> {
             Expr::BitStrLit { base, digits, .. } => {
                 Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 } }
             }
-            Expr::LogicLit { .. } => Ty::Logic,
+            // A char literal defaults to `Char`; an annotation/target
+            // overrides it (Bit/Logic/Clock/enum) via `assignable`.
+            Expr::LogicLit { .. } => Ty::Char,
             Expr::Bool { .. } => Ty::Bool,
             Expr::StrLit { .. } => Ty::Error,
             Expr::Path(p) => {
@@ -1742,6 +1750,27 @@ mod tests {
             "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  fn as_bool(self) -> integer {\n    match self {\n      State::Idle => return 0,\n      _ => return 1,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(with, 0);
+    }
+
+    #[test]
+    fn char_literal_defaults_to_char_but_takes_annotated_type() {
+        // Bare: '0' is a Char.  Annotated / if-expr context: it takes the
+        // target type (Bit/Logic), including through an if-expression.
+        assert_eq!(
+            check_src("module m;\nentity E { out y: Bit; }\nimpl E { y = '0'; }\n"),
+            0,
+            "'0' assigns to a Bit output"
+        );
+        assert_eq!(
+            check_src("module m;\nentity E { out y: Logic; }\nimpl E { y = '1'; }\n"),
+            0,
+            "'1' assigns to a Logic output"
+        );
+        assert_eq!(
+            check_src("module m;\nentity E { in c: Bit; out y: Bit; }\nimpl E { y = if c { '1' } else { '0' }; }\n"),
+            0,
+            "char literals in if-expr branches read through the Bit target"
+        );
     }
 
     #[test]
