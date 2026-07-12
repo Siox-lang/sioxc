@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # The portable, toolchain-only path: the interpreter engine (which is the
+  # reference oracle) plus the whole frontend. The default `llvm` backend needs
+  # a matching local LLVM (see the README) and is validated locally, not here.
+  test:
+    name: build + test (interpreter path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build (LLVM-free, interpreter)
+        run: cargo build --workspace --no-default-features --features interp
+
+      - name: Test (LLVM-free, interpreter)
+        run: cargo test --workspace --no-default-features --features interp
+
+      - name: Check the example corpus compiles cleanly
+        run: |
+          fail=0
+          for f in examples/*.siox; do
+            echo "== $f =="
+            if ! cargo run -q --no-default-features --features interp -p sioxc -- check "$f" --std std; then
+              echo "::error file=$f::check failed"
+              fail=1
+            fi
+          done
+          exit $fail
