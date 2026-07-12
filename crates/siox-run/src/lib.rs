@@ -324,7 +324,11 @@ fn run_one<'a>(
     // testbench path (`<test>.<inst>.<port>`), so `.clk = clk` aliases `clk` to
     // that instance's `clk` port — two instances of one entity stay distinct.
     // A struct port flattens to per-field entries (`.p = p` -> `p.valid`, ...).
+    // One testbench name can connect to SEVERAL ports (`.x` on two DUTs, one
+    // clock into many instances): `map` keeps one binding for reads, `aliases`
+    // keeps them all so a write drives every connected port.
     let mut map: HashMap<String, SignalId> = HashMap::new();
+    let mut aliases: HashMap<String, Vec<SignalId>> = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
         for c in &child.connections {
@@ -333,10 +337,13 @@ fn run_one<'a>(
                 let id = SignalId(i as u32);
                 if sig.path == prefix {
                     map.insert(c.signal.clone(), id);
+                    aliases.entry(c.signal.clone()).or_default().push(id);
                 } else if let Some(suffix) = sig.path.strip_prefix(&prefix) {
                     // A struct field (`.valid`) or array element (`[0]`) leaf.
                     if suffix.starts_with('.') || suffix.starts_with('[') {
-                        map.insert(format!("{}{suffix}", c.signal), id);
+                        let key = format!("{}{suffix}", c.signal);
+                        map.insert(key.clone(), id);
+                        aliases.entry(key).or_default().push(id);
                     }
                 }
             }
@@ -346,6 +353,7 @@ fn run_one<'a>(
     let mut tb = Testbench {
         engine,
         map,
+        aliases,
         enums,
         failure: None,
         record,
@@ -423,8 +431,11 @@ struct ClockGen {
 
 struct Testbench<'a> {
     engine: Box<dyn Engine + 'a>,
-    /// Test-local signal name -> design signal id.
+    /// Test-local signal name -> design signal id (one binding, for reads).
     map: HashMap<String, SignalId>,
+    /// Test-local signal name -> EVERY connected port's signal id: a write
+    /// drives them all (`.x` shared by two DUTs, one clock into many).
+    aliases: HashMap<String, Vec<SignalId>>,
     /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
     enums: &'a HashMap<String, HashMap<String, u64>>,
     failure: Option<(String, Span)>,
@@ -484,6 +495,15 @@ impl Testbench<'_> {
             }
         }
         None
+    }
+
+    /// Every design signal a testbench name is connected to (usually one; more
+    /// when several DUT ports share the name). Cloned so callers can mutate.
+    fn alias_ids(&self, name: &str) -> Vec<siox_ir::SignalId> {
+        match self.aliases.get(name) {
+            Some(ids) => ids.clone(),
+            None => self.map.get(name).map(|&id| vec![id]).unwrap_or_default(),
+        }
     }
 
     /// Drive a DUT signal, masking the value to the signal's declared width so
@@ -588,8 +608,10 @@ impl Testbench<'_> {
     /// testbench-local element slot.
     fn set_elem(&mut self, name: &str, i: usize, v: u128) {
         let key = format!("{name}[{i}]");
-        if let Some(&id) = self.map.get(&key) {
-            self.set_signal(id, v);
+        if self.map.contains_key(&key) {
+            for id in self.alias_ids(&key) {
+                self.set_signal(id, v);
+            }
         } else {
             let v = self.mask_local(&key, v);
             self.locals.insert(key, v);
@@ -616,8 +638,10 @@ impl Testbench<'_> {
             e.insert(masked);
             return;
         }
-        if let Some(&id) = self.map.get(name) {
-            self.set_signal(id, value);
+        if self.map.contains_key(name) {
+            for id in self.alias_ids(name) {
+                self.set_signal(id, value);
+            }
         }
     }
 
@@ -929,17 +953,25 @@ impl Testbench<'_> {
     /// other RHS is evaluated now and applied at `now + d`.
     fn exec_after(&mut self, target: &ast::Expr, value: &ast::Expr, delay: &ast::Expr) {
         let Some(path) = expr_path(target) else { return };
-        let Some(&id) = self.map.get(&path) else { return };
+        if !self.map.contains_key(&path) {
+            return;
+        }
+        let ids = self.alias_ids(&path);
         let d = duration_fs(std::slice::from_ref(delay)).max(1);
         if let ast::Expr::Unary { op: ast::UnOp::Not, rhs, .. } = value {
             if expr_path(rhs).as_deref() == Some(path.as_str()) {
                 // The signal keeps its initial value; first toggle at `now + d`.
-                self.clocks.push(ClockGen { id, half_period: d, next_edge: self.time_fs + d });
+                // A shared clock toggles every connected port in phase.
+                for id in ids {
+                    self.clocks.push(ClockGen { id, half_period: d, next_edge: self.time_fs + d });
+                }
                 return;
             }
         }
         let v = self.eval_for(&path, value);
-        self.oneshots.push((self.time_fs + d, id, v));
+        for id in ids {
+            self.oneshots.push((self.time_fs + d, id, v));
+        }
     }
 
     /// The earliest pending scheduler event: a clock edge or a one-shot write.

@@ -497,3 +497,31 @@ fn struct_port_across_instances_agrees() {
         assert_agree(&d, &[("T.vin", vin), ("T.din", din)]);
     }
 }
+
+#[test]
+fn bit_pattern_match_agrees() {
+    // `match` over bit patterns with `?` don't-cares (spec 3.22): each arm
+    // lowers to `(scrut & mask) == value` with first-match priority. Both
+    // engines must classify every opcode identically.
+    let d = lower(
+        "module m;\n\
+         entity Dec { in op: uint[4]; out kind: uint[2]; }\n\
+         impl Dec {\n\
+           match op {\n\
+             b\"00??\" => { kind = 0; }\n\
+             b\"01??\" => { kind = 1; }\n\
+             b\"1?1?\" => { kind = 2; }\n\
+             _ => { kind = 3; }\n\
+           }\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let op: uint[4]; let kind: uint[2];\n\
+           let dut = Dec { .op, .kind };\n\
+         }\n",
+    );
+    for op in 0u64..16 {
+        assert_agree(&d, &[("T.op", op)]);
+    }
+}

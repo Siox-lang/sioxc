@@ -764,8 +764,23 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Pattern::Wildcard
             }
-            // Bit-pattern patterns (`b"01??"`) will return via the string-overload
-            // mechanism; for now a pattern is a wildcard or an enum path.
+            // A bit pattern `b"01??"` / `x"A?"` (spec 3.22): a one-letter
+            // prefix glued to a string, like the bit-string literal. `?`
+            // digits are don't-cares.
+            TokenKind::Ident
+                if matches!(self.cur_text(), "x" | "b")
+                    && self.kind_at(self.pos + 1) == &TokenKind::StrLit
+                    && self.span_at(self.pos + 1).start == self.span().end =>
+            {
+                let p = self.bump();
+                let base = self.text_of(p.span).to_string();
+                let t = self.bump();
+                let digits = self.text_of(t.span).trim_matches('"');
+                Pattern::BitPattern {
+                    text: format!("{base}\"{digits}\""),
+                    span: p.span.to(t.span),
+                }
+            }
             _ => Pattern::Path(self.parse_path()),
         }
     }

@@ -244,6 +244,9 @@ struct Lowering<'a> {
     sink: &'a mut DiagnosticSink,
     /// Root for relative compile-time file reads (the source directory).
     base_dir: std::path::PathBuf,
+    /// Signals given a default by a match wildcard arm — excluded from the
+    /// possible-latch lint even though their lowered drivers are conditional.
+    lint_defaulted: std::collections::HashSet<u32>,
     entities: HashMap<String, &'a ast::EntityDecl>,
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
     /// Entity name -> its instance's concrete parameter values.
@@ -348,6 +351,7 @@ impl<'a> Lowering<'a> {
         Lowering {
             sink,
             base_dir: std::path::PathBuf::new(),
+            lint_defaulted: std::collections::HashSet::new(),
             entities: HashMap::new(),
             impls: HashMap::new(),
             entity_params: HashMap::new(),
@@ -852,7 +856,11 @@ impl<'a> Lowering<'a> {
             *e |= d.cond.is_none();
         }
         for (t, default) in &has_default {
-            if *default || sequential.contains(t) || ctxs[t].len() > 1 {
+            if *default
+                || sequential.contains(t)
+                || ctxs[t].len() > 1
+                || self.lint_defaulted.contains(t)
+            {
                 continue;
             }
             let path = self.out.signals[*t as usize].path.clone();
@@ -1359,6 +1367,18 @@ impl<'a> Lowering<'a> {
                 let mut remaining = cond;
                 for arm in &m.arms {
                     let mc = self.arm_match_cond(&arm.pattern, &scrut);
+                    // A wildcard arm is the match's default branch: its direct
+                    // assignments cover "everything else", so those targets are
+                    // not latches even though the lowered driver is conditional.
+                    if mc.is_none() {
+                        for s in &arm.body.stmts {
+                            if let ast::Stmt::Assign { target, .. } = s {
+                                if let Some(id) = self.target_signal(target) {
+                                    self.lint_defaulted.insert(id.0);
+                                }
+                            }
+                        }
+                    }
                     let fire = match &mc {
                         Some(c) => Some(and(remaining.clone(), c.clone())),
                         None => remaining.clone(),
@@ -1378,7 +1398,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// The condition under which a match arm fires: `scrut == <variant value>`
-    /// for an enum path, or always (`None`) for a wildcard.
+    /// for an enum path, `(scrut & mask) == value` for a bit pattern with `?`
+    /// don't-cares (spec 3.22), or always (`None`) for a wildcard.
     fn arm_match_cond(&self, pattern: &ast::Pattern, scrut: &Expr) -> Option<Expr> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
@@ -1390,7 +1411,18 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(0);
                 Some(eq(scrut.clone(), Expr::Const(disc)))
             }
-            // Wildcard and (for now) bit patterns match anything.
+            ast::Pattern::BitPattern { text, .. } => {
+                let (mask, value) = bit_pattern_mask(text)?;
+                Some(eq(
+                    Expr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(scrut.clone()),
+                        rhs: Box::new(Expr::Const(mask)),
+                    },
+                    Expr::Const(value),
+                ))
+            }
+            // A wildcard matches anything.
             _ => None,
         }
     }
@@ -2841,6 +2873,45 @@ impl Design {
 
 // --- expression builders ----------------------------------------------------
 
+/// Decode a bit-pattern literal (`b"01??"` / `x"A?"`, spec 3.22) into a
+/// `(mask, value)` pair: an input matches when `input & mask == value`. `?`
+/// digits are don't-cares (mask 0); a hex `?` masks its whole nibble. `_`
+/// separators are ignored. `None` when the text isn't a well-formed pattern
+/// (an invalid digit, or wider than 64 bits).
+pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
+    let (base, digits) = match text.split_once('"') {
+        Some((b, rest)) => (b, rest.trim_end_matches('"')),
+        None => return None,
+    };
+    let per: u32 = match base {
+        "b" => 1,
+        "x" => 4,
+        _ => return None,
+    };
+    let mut mask = 0u64;
+    let mut value = 0u64;
+    let mut bits = 0u32;
+    for c in digits.chars() {
+        if c == '_' {
+            continue;
+        }
+        bits += per;
+        if bits > 64 {
+            return None;
+        }
+        let (m, v) = match c {
+            '?' => (0, 0),
+            _ => {
+                let d = c.to_digit(if per == 1 { 2 } else { 16 })? as u64;
+                (((1u64 << per) - 1), d)
+            }
+        };
+        mask = (mask << per) | m;
+        value = (value << per) | v;
+    }
+    Some((mask, value))
+}
+
 fn not(e: Expr) -> Expr {
     Expr::Unary { op: UnOp::Not, rhs: Box::new(e) }
 }
@@ -3550,6 +3621,15 @@ mod tests {
         let hier = siox_elab::elaborate(modules, &typed, &mut sink);
         let _ = lower(modules, &hier, &mut sink);
         sink.diagnostics().iter().map(|d| format!("{:?}: {}", d.code, d.message)).collect()
+    }
+
+    #[test]
+    fn bit_pattern_masks() {
+        assert_eq!(bit_pattern_mask("b\"01??\""), Some((0b1100, 0b0100)));
+        assert_eq!(bit_pattern_mask("b\"0000_11??\""), Some((0b11111100, 0b00001100)));
+        assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
+        assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
+        assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
     }
 
     #[test]
