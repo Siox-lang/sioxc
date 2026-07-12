@@ -20,6 +20,8 @@ siox-ir.workspace = true
 siox-run.workspace = true
 siox-sim = { workspace = true, optional = true }
 siox-wave.workspace = true
+# default-features off at the workspace level (no inkwell); sioxc's `llvm`
+# feature (below) enables `siox-llvm/llvm` when an LLVM toolchain is present.
 siox-llvm.workspace = true
 clap.workspace = true
 

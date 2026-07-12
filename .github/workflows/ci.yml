@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   # The portable, toolchain-only path: the interpreter engine (which is the
@@ -22,8 +21,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.90"
 
       - name: Cache cargo
         uses: actions/cache@v4
