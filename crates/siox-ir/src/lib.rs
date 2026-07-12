@@ -215,6 +215,7 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     for name in &roots {
         l.lower_entity(name);
     }
+    l.lint_possible_latches();
     l.resolve_driver_contexts();
     l.out
 }
@@ -802,6 +803,45 @@ impl<'a> Lowering<'a> {
             }
         }
         out
+    }
+
+    /// Possible-latch lint (W-P002): a *combinational* signal that is only ever
+    /// assigned under a condition keeps its previous value when no condition
+    /// holds — an inferred latch. We flag the clean case: a single driver
+    /// context whose drivers are all conditional. Event-block (sequential)
+    /// signals hold by design, and multi-context signals go through `Resolve`,
+    /// so both are excluded to avoid false positives.
+    fn lint_possible_latches(&mut self) {
+        use std::collections::{BTreeMap, BTreeSet};
+        // Sequential state: any signal a clocked block updates.
+        let mut sequential: BTreeSet<u32> = BTreeSet::new();
+        for eb in &self.out.event_blocks {
+            for u in &eb.updates {
+                sequential.insert(u.target.0);
+            }
+        }
+        // Per signal: its driver contexts, and whether any driver is a default.
+        let mut ctxs: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+        let mut has_default: BTreeMap<u32, bool> = BTreeMap::new();
+        for d in &self.out.drivers {
+            ctxs.entry(d.target.0).or_default().insert(d.ctx);
+            let e = has_default.entry(d.target.0).or_insert(false);
+            *e |= d.cond.is_none();
+        }
+        for (t, default) in &has_default {
+            if *default || sequential.contains(t) || ctxs[t].len() > 1 {
+                continue;
+            }
+            let path = self.out.signals[*t as usize].path.clone();
+            self.sink.emit(
+                siox_diag::Diagnostic::warning(format!(
+                    "`{path}` is only assigned under a condition, so it holds its \
+                     previous value otherwise (inferred latch)"
+                ))
+                .with_code(siox_diag::codes::POSSIBLE_LATCH)
+                .help("give it an unconditional default assignment"),
+            );
+        }
     }
 
     /// Spec 3.14 + Resolve: a signal driven from several contexts folds each
@@ -3475,6 +3515,35 @@ mod tests {
         let typed = siox_types::check(modules, &resolved, &mut sink);
         let hier = siox_elab::elaborate(modules, &typed, &mut sink);
         lower(modules, &hier, &mut sink)
+    }
+
+    fn lower_diags(src: &str) -> Vec<String> {
+        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n");
+        let mut sink = DiagnosticSink::new();
+        let module = siox_syntax::parse_module(FileId(0), &src, &mut sink);
+        let modules = std::slice::from_ref(&module);
+        let resolved = siox_resolve::resolve(modules, &mut sink);
+        let typed = siox_types::check(modules, &resolved, &mut sink);
+        let hier = siox_elab::elaborate(modules, &typed, &mut sink);
+        let _ = lower(modules, &hier, &mut sink);
+        sink.diagnostics().iter().map(|d| format!("{:?}: {}", d.code, d.message)).collect()
+    }
+
+    #[test]
+    fn possible_latch_lint() {
+        // `y` is only assigned under a condition (inferred latch); `z` has an
+        // unconditional default and must not be flagged.
+        let diags = lower_diags(
+            "module m;\n\
+             entity L { in c: Logic; in a: uint[8]; out y: uint[8]; out z: uint[8]; }\n\
+             impl L { if c == '1' { y = a; } z = a; }\n\
+             #[top] entity Top {}\n\
+             impl Top { let c: Logic; let a: uint[8]; let y: uint[8]; let z: uint[8];\n\
+               let d = L { .c, .a, .y, .z }; }\n",
+        );
+        let latch: Vec<&String> = diags.iter().filter(|d| d.contains("W-P002")).collect();
+        assert_eq!(latch.len(), 1, "exactly one latch warning: {diags:?}");
+        assert!(latch[0].contains(".y"), "flags y, not z: {latch:?}");
     }
 
     #[test]

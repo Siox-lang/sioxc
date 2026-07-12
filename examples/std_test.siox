@@ -4,12 +4,8 @@ module examples::std_test;
 // from `--std` (default ./std) and resolution binds the names to the actual
 // `pub` declarations.
 
-using std::logic::{Bit, Clock, LOW, HIGH};
-using std::bits::{uint};
-using std::ops::{Boolean};
+using std::logic::{Bit, LOW, HIGH};
 using std::attrs::{test};
-using std::assert::{Severity};
-using std::sim::{NS};
 
 entity Buf {
     in a: Bit;

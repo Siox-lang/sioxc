@@ -124,6 +124,14 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_item(item);
         }
     }
+    // The std library is not linted (its imports serve the whole library, not
+    // this compilation); only warn about unused imports in the user's files.
+    let std_files: std::collections::HashSet<siox_diag::FileId> = modules
+        .iter()
+        .filter(|m| m.path.segments.first().map(|s| s.text.as_str()) == Some("std"))
+        .map(|m| m.span.file)
+        .collect();
+    r.lint_unused_imports(&std_files);
     r.out
 }
 
@@ -151,6 +159,9 @@ struct Resolver<'a> {
     enum_derives: HashMap<String, String>,
     /// Lexical scopes for params/locals, innermost last.
     scopes: Vec<HashMap<String, DefId>>,
+    /// `using` import sites `(name span, imported DefId)`, for the unused-import
+    /// lint after all references are resolved.
+    import_sites: Vec<(Span, DefId)>,
 }
 
 impl<'a> Resolver<'a> {
@@ -164,6 +175,7 @@ impl<'a> Resolver<'a> {
             enum_ids: HashMap::new(),
             enum_derives: HashMap::new(),
             scopes: Vec::new(),
+            import_sites: Vec::new(),
         }
     }
 
@@ -301,6 +313,33 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Unused-import lint (W-P005): a `using base::{name}` whose imported
+    /// declaration is never referenced elsewhere in the same file. Usage is
+    /// scoped by file (an import serves its own module), and the import's own
+    /// name span is excluded so the binding doesn't count as a use of itself.
+    fn lint_unused_imports(&mut self, std_files: &std::collections::HashSet<siox_diag::FileId>) {
+        let sites = std::mem::take(&mut self.import_sites);
+        for (imp_span, id) in sites {
+            if std_files.contains(&imp_span.file) {
+                continue;
+            }
+            let used = self
+                .out
+                .uses
+                .iter()
+                .any(|(s, d)| *d == id && s.file == imp_span.file && *s != imp_span);
+            if !used {
+                let name = self.out.def(id).map(|d| d.name.clone()).unwrap_or_default();
+                self.sink.emit(
+                    Diagnostic::warning(format!("unused import: `{name}`"))
+                        .with_code(codes::UNUSED_IMPORT)
+                        .at(imp_span)
+                        .help("remove it"),
+                );
+            }
+        }
+    }
+
     /// Bind each `using base::{names}` name to the declaration another loaded
     /// module (or a builtin) provides. Runs after all modules are collected;
     /// an import that matches nothing is a hard error.
@@ -312,6 +351,7 @@ impl<'a> Resolver<'a> {
             match found {
                 Some(id) => {
                     self.out.uses.insert(n.span, id);
+                    self.import_sites.push((n.span, id));
                 }
                 None => {
                     let base_str =
@@ -825,6 +865,33 @@ mod tests {
         let module = siox_syntax::parse_module(FileId(0), src, &mut sink);
         resolve(std::slice::from_ref(&module), &mut sink);
         sink
+    }
+
+    #[test]
+    fn unused_import_lint() {
+        // A provider module (`std::lib`) and a user module that imports two of
+        // its names but only uses one. The unused one warns; the used one and
+        // the std module's own items do not.
+        let mut sink = DiagnosticSink::new();
+        let provider = siox_syntax::parse_module(
+            FileId(0),
+            "module std::lib;\npub enum Used { A, B }\npub enum Dead { C }\n",
+            &mut sink,
+        );
+        let user = siox_syntax::parse_module(
+            FileId(1),
+            "module m;\nusing std::lib::{Used, Dead};\nentity E { in a: Used; }\n",
+            &mut sink,
+        );
+        resolve(&[provider, user], &mut sink);
+        let unused: Vec<&str> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::UNUSED_IMPORT))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(unused.len(), 1, "one unused-import warning: {unused:?}");
+        assert!(unused[0].contains("Dead"), "flags Dead, not Used: {unused:?}");
     }
 
     #[test]

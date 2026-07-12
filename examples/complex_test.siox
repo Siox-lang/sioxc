@@ -3,7 +3,6 @@ module examples::complex_test;
 // Complex arithmetic from the standard library: `+` on std::math::Complex
 // resolves to its operator-trait impl, inlined into the IR per field.
 
-using std::logic::{Bit};
 using std::math::{Complex};
 using std::attrs::{test};
 

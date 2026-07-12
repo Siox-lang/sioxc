@@ -364,10 +364,18 @@ fn run_semantic(path: &Path, std_root: &Path, trace: bool) -> Result<Semantic, E
 
 /// `siox check`: parse -> resolve -> typecheck. `-v` adds the token/item dump.
 fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
-    let sem = match run_semantic(path, std_root, verbose) {
+    let mut sem = match run_semantic(path, std_root, verbose) {
         Ok(s) => s,
         Err(code) => return code,
     };
+    // Elaborate + lower so structural diagnostics (multiple drivers, possible
+    // latch, unused signals) surface at check time, not only under test/sim.
+    // Skip if earlier stages already failed — later stages assume a clean AST.
+    if !sem.fe.sink.has_errors() {
+        let modules = sem.fe.modules.as_slice();
+        let hier = siox_elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+        let _ = siox_ir::lower(modules, &hier, &mut sem.fe.sink);
+    }
     eprintln!();
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {

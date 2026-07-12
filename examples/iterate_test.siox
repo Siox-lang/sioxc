@@ -1,5 +1,4 @@
 module examples::iterate_test;
-using std::logic::{Bit};
 using std::bits::uint;
 entity Sum { in xs: uint[8][4]; out total: uint[8]; }
 impl Sum {
