@@ -1,0 +1,29 @@
+module examples::regfile_test;
+using std::bits::uint;
+entity RF {
+    in clk: Clock;
+    in we: Bit;
+    in waddr: uint[2];
+    in wdata: uint[8];
+    in raddr: uint[2];
+    out rdata: uint[8];
+}
+impl RF {
+    let regs: uint[8][4];
+    if clk::rising {
+        if we {
+            regs[waddr] = wdata;   // dynamic write
+        }
+    }
+    rdata = regs[raddr];           // dynamic read
+}
+#[test] entity T {}
+impl T {
+    let clk: Logic = '0'; let we: Bit; let waddr: uint[2]; let wdata: uint[8];
+    let raddr: uint[2]; let rdata: uint[8];
+    let d = RF { .clk, .we, .waddr, .wdata, .raddr, .rdata };
+    clk = not clk after 5ns;
+    we = '1'; waddr = 2; wdata = 99; await 10ns;   // write reg[2]=99
+    we = '0'; raddr = 2; await 10ns;
+    assert!(rdata == 99, "wrote and read reg[2]");
+}
