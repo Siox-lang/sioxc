@@ -262,7 +262,7 @@ struct Lowering<'a> {
     /// Array-derived Logic vector families (`struct F : Logic[]`) -> signed?.
     /// uint/int are just the first two; the family set is read from the
     /// declarations, not hardcoded.
-    vector_families: HashMap<String, bool>,
+    vector_families: std::collections::HashSet<String>,
     /// Numeric-vector locals -> the family name, for operator-impl dispatch
     /// (kernel `integer`/`real` keep builtin operators; uint/int live in std).
     local_numeric: HashMap<String, String>,
@@ -331,7 +331,7 @@ impl<'a> Lowering<'a> {
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
             local_numeric: HashMap::new(),
-            vector_families: HashMap::new(),
+            vector_families: std::collections::HashSet::new(),
             cur_ctx: 0,
             sig_type: HashMap::new(),
         }
@@ -921,7 +921,7 @@ impl<'a> Lowering<'a> {
             if let ast::Type::Indexed { base, .. } = ty {
                 if let ast::Type::Path(p) = base.as_ref() {
                     let head = p.segments.last().map(|s| s.text.as_str()).unwrap_or("");
-                    if self.vector_families.contains_key(head) {
+                    if self.vector_families.contains(head) {
                         self.local_numeric.insert(name.to_string(), head.to_string());
                         if let Some(&id) = self.locals.get(name) {
                             self.sig_type.insert(id.0, head.to_string());
@@ -1428,7 +1428,7 @@ impl<'a> Lowering<'a> {
                 ast::Expr::Index { base, index, .. }
                     if expr_path(base)
                         .as_deref()
-                        .is_some_and(|h| self.vector_families.contains_key(h)) =>
+                        .is_some_and(|h| self.vector_families.contains(h)) =>
                 {
                     eval_const(index, &self.cur_env).map(|w| w as u32).unwrap_or(64)
                 }
@@ -1990,7 +1990,7 @@ impl<'a> Lowering<'a> {
                 (Some(w), true)
             }
             ast::Expr::Index { base, index, .. }
-                if head(base).as_deref().is_some_and(|h| self.vector_families.contains_key(h)) =>
+                if head(base).as_deref().is_some_and(|h| self.vector_families.contains(h)) =>
             {
                 let w = match self.lower_scalar_env(index, env) {
                     Expr::Const(c) => c as u32,
@@ -2002,34 +2002,9 @@ impl<'a> Lowering<'a> {
         };
         let _ = resize;
         let arg = args.first()?;
-        let mut v = self.lower_scalar_env(arg, env);
-        // An int-family source carries a sign: extend it into the full word
-        // so the target's masking (or the kernel) sees the numeric value.
-        let src_int = self
-            .operand_type_name(arg)
-            .as_deref()
-            .is_some_and(|n| self.vector_families.get(n) == Some(&true));
-        let src_w = self.ast_width(arg);
-        if src_int && src_w > 0 && src_w < 64 {
-            let sign = Expr::Binary {
-                op: BinOp::Eq,
-                lhs: Box::new(Expr::Binary {
-                    op: BinOp::Shr,
-                    lhs: Box::new(v.clone()),
-                    rhs: Box::new(Expr::Const((src_w - 1) as u64)),
-                }),
-                rhs: Box::new(Expr::Const(1)),
-            };
-            v = Expr::Select {
-                cond: Box::new(sign),
-                then: Box::new(Expr::Binary {
-                    op: BinOp::Sub,
-                    lhs: Box::new(v.clone()),
-                    rhs: Box::new(Expr::Const(1u64 << src_w)),
-                }),
-                els: Box::new(v),
-            };
-        }
+        // Conversions are a raw resize (zero-extend / truncate). Signed
+        // widening is the library `std::bits::sext`, not the compiler's job.
+        let v = self.lower_scalar_env(arg, env);
         Some(match target_w {
             Some(w) if w > 0 && w < 64 => Expr::Slice { base: Box::new(v), hi: w - 1, lo: 0 },
             _ => v,
@@ -2054,7 +2029,7 @@ impl<'a> Lowering<'a> {
                     ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
                     _ => None,
                 }?;
-                self.vector_families.contains_key(&head).then_some(head)
+                self.vector_families.contains(&head).then_some(head)
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
@@ -2840,33 +2815,15 @@ pub fn eval_const_stmts(
 /// -> signedness. A bodyless struct whose base is an array of a bit scalar
 /// (`struct uint : Logic[]`) IS a bit vector — no annotation needed, the shape
 /// says so. Signedness is the `Signed` capability. uint/int are just members.
-pub fn vector_families(modules: &[Module]) -> HashMap<String, bool> {
-    // Signedness is the `Signed` capability (impl Signed for T), a trait like
-    // int's other signed behaviours — not a metadata attribute.
-    let mut signed = std::collections::HashSet::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Impl(im) = item {
-                let is_signed = im
-                    .trait_
-                    .as_ref()
-                    .and_then(|t| t.segments.last())
-                    .map(|s| s.text == "Signed")
-                    .unwrap_or(false);
-                if is_signed {
-                    if let Some(h) = type_head_name(&im.target) {
-                        signed.insert(h.to_string());
-                    }
-                }
-            }
-        }
-    }
-    let mut out = HashMap::new();
+pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
+    // The set of bit-vector families by shape. No signedness — that lives in
+    // each type's operator impls.
+    let mut out = std::collections::HashSet::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(st) = item {
                 if is_bit_vector_struct(st) {
-                    out.insert(st.name.text.clone(), signed.contains(&st.name.text));
+                    out.insert(st.name.text.clone());
                 }
             }
         }
@@ -2977,14 +2934,14 @@ fn array_of<'t>(
     ty: &'t ast::Type,
     env: &HashMap<String, i64>,
     const_ranges: &HashMap<String, (i64, i64)>,
-    families: &HashMap<String, bool>,
+    families: &std::collections::HashSet<String>,
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
     let ast::Type::Indexed { base, index: Some(index), .. } = ty else { return None };
     // A Logic-vector family (uint/int/user) `F[N]` is one N-bit signal, not an
     // N-element array — but only when the base is DIRECTLY the family (`uint`),
     // not when it is itself indexed (`uint[8][4]` is an array of vectors).
     let base_is_family = matches!(base.as_ref(), ast::Type::Path(p)
-        if p.segments.last().map(|s| s.text.as_str()).is_some_and(|h| families.contains_key(h)));
+        if p.segments.last().map(|s| s.text.as_str()).is_some_and(|h| families.contains(h)));
     if is_int_type(base) || base_is_family {
         return None;
     }

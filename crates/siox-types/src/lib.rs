@@ -40,7 +40,7 @@ pub enum Ty {
     /// types). Width `0` means "not yet known" (parametric `F[W]`) or the
     /// unbounded kernel `integer`. The compiler has NO notion of `uint`/`int`
     /// by name; those are std names for the unsigned/signed cases.
-    Vector { width: u32, signed: bool },
+    Vector { width: u32 },
     /// Named struct / enum / entity, keyed by its definition.
     Named(siox_resolve::DefId),
     /// `T[range]` array/vector of a digital element type.
@@ -132,7 +132,7 @@ struct Checker<'a> {
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// Struct name -> signedness, for structs carrying `#[vector]` (an
     /// array-derived numeric family). Membership is the attribute, not shape.
-    vector_families: HashMap<String, bool>,
+    vector_families: HashSet<String>,
     /// Generic module fns: name -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
@@ -154,7 +154,6 @@ impl<'a> Checker<'a> {
             ("keep", &["let", "port"]),
             ("library", &["entity"]),
             ("name", &["entity"]),
-            ("signed", &["struct"]),
         ] {
             attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
         }
@@ -189,7 +188,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
-            vector_families: HashMap::new(),
+            vector_families: HashSet::new(),
             generic_fns: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -207,13 +206,6 @@ impl<'a> Checker<'a> {
                     continue;
                 }
                 self.collect_decl(item);
-            }
-        }
-        // Signedness (impl Signed for T) BEFORE entity ports are typed, so an
-        // `int` port and an `int[16](..)` conversion agree.
-        if let Some(signed) = self.trait_impls.get("Signed").cloned() {
-            for (name, is_signed) in self.vector_families.iter_mut() {
-                *is_signed = signed.contains(name);
             }
         }
         for m in modules {
@@ -311,9 +303,7 @@ impl<'a> Checker<'a> {
                         Some("Logic" | "Bit" | "ULogic" | "Clock")
                     );
                 if is_vec {
-                    // Signedness (impl Signed for T) is applied in a post-pass,
-                    // since the impl may be collected after the struct.
-                    self.vector_families.insert(st.name.text.clone(), false);
+                    self.vector_families.insert(st.name.text.clone());
                 }
             }
             Item::Using(u) => {
@@ -358,14 +348,6 @@ impl<'a> Checker<'a> {
     /// index/field access models would collide), and no field may collide
     /// with an inherited one.
     fn check_struct(&mut self, st: &StructDecl) {
-        for a in &st.attrs {
-            let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
-            if !self.attr_targets.contains_key(name) {
-                self.error(codes::UNKNOWN_NAME, a.name.span, format!("unknown attribute `{name}`"));
-                continue;
-            }
-            self.check_attr_target(a, "struct", Some(st.name.text.as_str()));
-        }
         let Some(base) = &st.base else { return };
         // Array-shaped base + fields is rejected (after alias resolution).
         if !st.fields.is_empty() && self.is_array_base(base) {
@@ -405,15 +387,11 @@ impl<'a> Checker<'a> {
         out
     }
 
-    /// If `name` is an array-derived Logic family (`struct F : Logic[]` /
-    /// `: Bit[]`, bodyless), returns its signedness — a nominal numeric vector
-    /// (spec: derived types §5). `impl Signed for F` marks it signed. This is
-    /// how uint/int and future fixed-point families are recognized without
-    /// hardcoding their names.
-    fn logic_vector_family(&self, name: &str) -> Option<bool> {
-        // Membership is the `#[vector]` attribute (spec 3.5) — the compiler no
-        // longer infers it from the `: Logic[]` shape.
-        self.vector_families.get(name).copied()
+    /// Whether `name` is a bit-vector family (`struct F : Logic[]`),
+    /// recognized by shape. There is no signedness — that lives in the
+    /// family's operator impls.
+    fn is_vector_family(&self, name: &str) -> bool {
+        self.vector_families.contains(name)
     }
 
     /// Whether a base type resolves (through aliases) to an array shape.
@@ -730,8 +708,7 @@ impl<'a> Checker<'a> {
             Ty::Logic => Some("Logic".to_string()),
             Ty::Bool => Some("Bool".to_string()),
             Ty::Integer => Some("integer".to_string()),
-            Ty::Vector { signed: false, .. } => Some("uint".to_string()),
-            Ty::Vector { signed: true, .. } => Some("int".to_string()),
+            Ty::Vector { .. } => Some("uint".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
@@ -889,21 +866,25 @@ impl<'a> Checker<'a> {
     /// arguments: the value must be representable in the target container.
     fn check_conversion_fit(&mut self, callee: &Expr, args: &[Expr], site: &Expr) {
         // Target family + width from the conversion callee shape.
-        let (signed, width) = match callee {
+        let width = match callee {
             Expr::Index { base, index, .. } => {
                 let head = match base.as_ref() {
                     Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
                     _ => return,
                 };
-                let Some(w) = signed_lit(index) else { return };
-                match self.vector_families.get(head) {
-                    Some(&signed) => (signed, w),
+                if !self.vector_families.contains(head) {
+                    return;
+                }
+                match signed_lit(index) {
+                    Some(w) => w,
                     None => return,
                 }
             }
             Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
-                let Some(w) = args.get(1).and_then(signed_lit) else { return };
-                (false, w) // resize width bound; the family is the argument's
+                match args.get(1).and_then(signed_lit) {
+                    Some(w) => w,
+                    None => return,
+                }
             }
             _ => return,
         };
@@ -926,17 +907,16 @@ impl<'a> Checker<'a> {
             }
         }
         let Some(v) = args.first().and_then(const_fold) else { return };
-        let fits = if signed {
-            let half = 1i64 << (width - 1);
-            (-half..half).contains(&v)
-        } else {
-            v >= 0 && (width == 64 || v < (1i64 << width))
-        };
+        // No signedness: a literal fits an N-bit vector if it lands in the
+        // union of the unsigned (0..2^N) and signed (-2^(N-1)..) ranges.
+        let hi = if width == 64 { i64::MAX } else { (1i64 << width) - 1 };
+        let lo = -(1i64 << (width - 1));
+        let fits = v >= lo && v <= hi;
         if !fits {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(site),
-                format!("`{v}` does not fit in `{}[{width}]`", if signed { "int" } else { "uint" }),
+                format!("`{v}` does not fit in a {width}-bit vector"),
             );
         }
     }
@@ -1178,7 +1158,7 @@ impl<'a> Checker<'a> {
                 if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
-                Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 }, signed: false }
+                Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 } }
             }
             Expr::LogicLit { .. } => Ty::Logic,
             Expr::Bool { .. } => Ty::Bool,
@@ -1211,7 +1191,7 @@ impl<'a> Checker<'a> {
                 // (`100 / r` with r: int[8] is an int[8], via the std
                 // `impl Div<int> for integer`).
                 if matches!(lhs_ty, Ty::Integer) {
-                    if let r @ (Ty::Vector { signed: true, .. } | Ty::Vector { signed: false, .. }) = self.type_of(rhs, sym) {
+                    if let r @ Ty::Vector { .. } = self.type_of(rhs, sym) {
                         return r;
                     }
                 }
@@ -1243,7 +1223,7 @@ impl<'a> Checker<'a> {
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
-            Expr::Concat { .. } => Ty::Vector { width: 0, signed: false },
+            Expr::Concat { .. } => Ty::Vector { width: 0 },
             // Conversion expressions type as their target (spec 3.17):
             // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call { callee, args, .. } => match callee.as_ref() {
@@ -1254,7 +1234,7 @@ impl<'a> Checker<'a> {
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
                     match self.vector_families.get(head) {
-                        Some(&signed) => Ty::Vector { width: w, signed },
+                        Some(_) => Ty::Vector { width: w },
                         None => Ty::Error,
                     }
                 }
@@ -1282,9 +1262,8 @@ impl<'a> Checker<'a> {
                     "resize" => {
                         let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
                         match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Vector { signed: true, .. }) => Ty::Vector { width: w, signed: true },
-                            Some(Ty::Vector { signed: false, .. }) => Ty::Vector { width: w, signed: false },
-                            _ => Ty::Vector { width: w, signed: false },
+                            Some(Ty::Vector { .. }) => Ty::Vector { width: w },
+                            _ => Ty::Vector { width: w },
                         }
                     }
                     _ => Ty::Error,
@@ -1358,7 +1337,7 @@ impl<'a> Checker<'a> {
                 // Unconstrained (`Char[]`): width 0 = "set at use".
                 let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
-                    Ty::Vector { signed, .. } => Ty::Vector { width, signed },
+                    Ty::Vector { .. } => Ty::Vector { width },
                     other => Ty::Array { elem: Box::new(other), len: width },
                 }
             }
@@ -1387,15 +1366,10 @@ impl<'a> Checker<'a> {
                 "range" => Ty::Error,
                 name => match self.aliases.get(name) {
                     Some(t) => self.ast_ty(&t.clone()),
-                    None => match self.logic_vector_family(name) {
-                        // An array-derived Logic family behaves as a numeric
-                        // vector: width applies via `F[N]` (ast_ty's Indexed).
-                        Some(true) => Ty::Vector { width: 0, signed: true },
-                        Some(false) => Ty::Vector { width: 0, signed: false },
-                        None => {
-                            self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
-                        }
-                    },
+                    // A bit-vector family (`struct F : Logic[]`): width applies
+                    // via `F[N]` (ast_ty's Indexed).
+                    None if self.is_vector_family(name) => Ty::Vector { width: 0 },
+                    None => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
                 },
             }
         } else {
@@ -1444,9 +1418,7 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         // (a uint[8] accepts `42`, and a vector's value is an integer).
         (Integer, Integer) => true,
         (Integer, Vector { .. }) | (Vector { .. }, Integer) => true,
-        (Vector { width: a, signed: sa }, Vector { width: b, signed: sb }) => {
-            sa == sb && (*a == 0 || *b == 0 || a == b)
-        }
+        (Vector { width: a }, Vector { width: b }) => *a == 0 || *b == 0 || a == b,
         (Named(a), Named(b)) => a == b,
         // Whole-array copy: same element type, matching length (0 = unset).
         (Array { elem: ea, len: la }, Array { elem: eb, len: lb }) => {
@@ -1464,10 +1436,8 @@ fn ty_name(t: &Ty) -> String {
         Ty::Real => "real".to_string(),
         Ty::Char => "Char".to_string(),
         Ty::Integer => "integer".to_string(),
-        Ty::Vector { width: 0, signed: false } => "uint".to_string(),
-        Ty::Vector { width: w, signed: false } => format!("uint[{w}]"),
-        Ty::Vector { width: 0, signed: true } => "int".to_string(),
-        Ty::Vector { width: w, signed: true } => format!("int[{w}]"),
+        Ty::Vector { width: 0 } => "uint".to_string(),
+        Ty::Vector { width: w } => format!("uint[{w}]"),
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array { .. } => "an array".to_string(),
         Ty::Error => "<unknown>".to_string(),

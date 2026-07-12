@@ -97,9 +97,6 @@ impl Printer {
     }
 
     fn struct_decl(&mut self, s: &StructDecl) {
-        for a in &s.attrs {
-            self.line(&attr(a));
-        }
         let kw = pub_kw(s.is_pub);
         let base = match &s.base {
             Some(t) => format!(" : {}", type_str(t)),

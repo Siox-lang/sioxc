@@ -46,6 +46,14 @@ assertions, and VCD export — predates this changelog. See
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
   silent kernel-fallback: a bare file now gets signed `int` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
+- **Signedness fully erased from the compiler's types** — the vestigial
+  `signed` field on `Ty::Vector` / `EType::Vector` is gone (both are now just
+  `{ width }`), `vector_families` is a membership set (not name->signed), the
+  dead sign-extension path in lowering is removed, and the struct-attribute
+  machinery (added only for `#[vector]`/`#[signed]`) is reverted — no struct
+  carries attributes. `int` and `uint` are now the *same* compiler type
+  (a bit vector of width N), distinguished purely by their operator impls;
+  errors show both as `uint[N]`. All engines + differential green.
 - **No signedness marker at all — it lives in the operator impls** — the
   `Signed` trait is gone too. `int` is signed purely because its `Ord`/`Shr`/
   `Div` impls are (signed compare, arithmetic shift, signed divide),

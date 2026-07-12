@@ -196,7 +196,7 @@ struct Ctx<'a> {
     design: &'a Design,
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
-    families: &'a HashMap<String, bool>,
+    families: &'a std::collections::HashSet<String>,
     name: &'a str,
     /// `clock(clk, ..)`-registered background clocks: (signal id, half period fs).
     clocks: Vec<(u32, u64)>,
@@ -661,7 +661,7 @@ impl Ctx<'_> {
                     ast::Expr::Index { base, index, .. }
                         if expr_path(base)
                             .as_deref()
-                            .is_some_and(|h| self.families.contains_key(h)) =>
+                            .is_some_and(|h| self.families.contains(h)) =>
                     {
                         parse_u64(match index.as_ref() {
                             ast::Expr::Int { text, .. } => text,

@@ -316,7 +316,7 @@ fn run_one<'a>(
     body: &[&ast::ImplDecl],
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
-    families: &'a HashMap<String, bool>,
+    families: &'a std::collections::HashSet<String>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -447,7 +447,7 @@ struct Testbench<'a> {
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Bit-vector families (name -> signed), for testbench conversions.
-    families: &'a HashMap<String, bool>,
+    families: &'a std::collections::HashSet<String>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
     /// unless a failure was already recorded).
     halted: bool,
@@ -1128,7 +1128,7 @@ impl Testbench<'_> {
                     ast::Expr::Index { base, index, .. }
                         if expr_path(base)
                             .as_deref()
-                            .is_some_and(|h| self.families.contains_key(h)) =>
+                            .is_some_and(|h| self.families.contains(h)) =>
                     {
                         self.eval_env(index, fenv).to_u64() as u32
                     }

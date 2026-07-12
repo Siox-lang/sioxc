@@ -45,9 +45,9 @@ pub enum EType {
     Logic,
     Bool,
     Clock,
-    /// A packed bit vector (`#[vector]` families: uint/int and user types).
-    /// The compiler has no `uint`/`int` by name — only unsigned/signed vectors.
-    Vector { width: Option<u32>, signed: bool },
+    /// A packed bit vector — every `struct F : Logic[]` family (uint/int and
+    /// user types). No signedness; that lives in the operator impls.
+    Vector { width: Option<u32> },
     Named(String),
     Array { elem: Box<EType>, len: Option<u32> },
     Other(String),
@@ -73,12 +73,8 @@ impl fmt::Display for EType {
             EType::Logic => write!(f, "Logic"),
             EType::Bool => write!(f, "Bool"),
             EType::Clock => write!(f, "Clock"),
-            EType::Vector { width: None, signed } => {
-                write!(f, "{}", if *signed { "int" } else { "uint" })
-            }
-            EType::Vector { width: Some(w), signed } => {
-                write!(f, "{}[{w}]", if *signed { "int" } else { "uint" })
-            }
+            EType::Vector { width: None } => write!(f, "uint"),
+            EType::Vector { width: Some(w) } => write!(f, "uint[{w}]"),
             EType::Named(n) => write!(f, "{n}"),
             EType::Array { elem, len: Some(l) } => write!(f, "{elem}[{l}]"),
             EType::Array { elem, len: None } => write!(f, "{elem}[]"),
@@ -188,7 +184,7 @@ fn elaborate_roots(
         sink,
         entities: HashMap::new(),
         impls: HashMap::new(),
-        families: HashMap::new(),
+        families: HashSet::new(),
         out: Hierarchy::default(),
     };
     e.collect(modules);
@@ -218,14 +214,13 @@ struct Elaborator<'a> {
     entities: HashMap<String, &'a EntityDecl>,
     /// Entity name -> its inherent impls (where instances live).
     impls: HashMap<String, Vec<&'a ImplDecl>>,
-    /// `#[vector]` families (struct name -> signed), for width-typing vectors.
-    families: HashMap<String, bool>,
+    /// Bit-vector families (`struct F : Logic[]`), for width-typing vectors.
+    families: HashSet<String>,
     out: Hierarchy,
 }
 
 impl<'a> Elaborator<'a> {
     fn collect(&mut self, modules: &'a [Module]) {
-        let mut signed_targets: Vec<String> = Vec::new();
         for m in modules {
             for item in &m.items {
                 match item {
@@ -233,8 +228,7 @@ impl<'a> Elaborator<'a> {
                         self.entities.insert(e.name.text.clone(), e);
                     }
                     Item::Struct(st) => {
-                        // Bit vector by shape (`struct uint : Logic[]`);
-                        // signedness is set below from `impl Signed`.
+                        // Bit vector by shape (`struct uint : Logic[]`).
                         let is_vec = st.fields.is_empty()
                             && matches!(
                                 st.base.as_ref().and_then(|b| match b {
@@ -244,20 +238,7 @@ impl<'a> Elaborator<'a> {
                                 Some("Logic" | "Bit" | "ULogic" | "Clock")
                             );
                         if is_vec {
-                            self.families.insert(st.name.text.clone(), false);
-                        }
-                    }
-                    // `impl Signed for T`: mark the vector family signed.
-                    Item::Impl(im)
-                        if im
-                            .trait_
-                            .as_ref()
-                            .and_then(|t| t.segments.last())
-                            .map(|s| s.text == "Signed")
-                            .unwrap_or(false) =>
-                    {
-                        if let Some(h) = type_head_name(&im.target) {
-                            signed_targets.push(h.to_string());
+                            self.families.insert(st.name.text.clone());
                         }
                     }
                     Item::Impl(im) if im.trait_.is_none() => {
@@ -267,12 +248,6 @@ impl<'a> Elaborator<'a> {
                     }
                     _ => {}
                 }
-            }
-        }
-        // Order-independent: apply `impl Signed` after all items are seen.
-        for t in signed_targets {
-            if let Some(v) = self.families.get_mut(&t) {
-                *v = true;
             }
         }
     }
@@ -581,7 +556,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashMap<String, bool>) -> EType {
+fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>) -> EType {
     match t {
         Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") => EType::Bit,
@@ -589,18 +564,16 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashMap<String, 
             Some("Bool") => EType::Bool,
             Some("Clock") => EType::Clock,
             // The kernel word is an unbounded unsigned vector.
-            Some("integer") => EType::Vector { width: None, signed: false },
-            // A `#[vector]` family is a bit vector; anything else is a name.
-            Some(name) if families.contains_key(name) => {
-                EType::Vector { width: None, signed: families[name] }
-            }
+            Some("integer") => EType::Vector { width: None },
+            // A bit-vector family (`struct F : Logic[]`); else a name.
+            Some(name) if families.contains(name) => EType::Vector { width: None },
             Some(other) => EType::Named(other.to_string()),
             None => EType::Other(String::new()),
         },
         Type::Indexed { base, index, .. } => {
             let len = index.as_deref().and_then(|i| index_width(i, env));
             match concrete_ty(base, env, families) {
-                EType::Vector { signed, .. } => EType::Vector { width: len, signed },
+                EType::Vector { .. } => EType::Vector { width: len },
                 elem => EType::Array { elem: Box::new(elem), len },
             }
         }
@@ -812,7 +785,7 @@ mod tests {
         let dut = hier.instance(root.children[0]);
         // `count: uint[W]` with W=8 becomes `uint[8]`.
         let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
-        assert_eq!(count.ty, EType::Vector { width: Some(8), signed: false });
+        assert_eq!(count.ty, EType::Vector { width: Some(8) });
     }
 
     #[test]

@@ -12,4 +12,4 @@ pub attr keep: Bool for let, port;  // keep through optimization
 pub attr library: string for entity;
 pub attr name: string for entity;
 
-// (Signedness is the `Signed` capability trait in std::ops, not an attribute.)
+// (uint/int are bit vectors by shape; signedness is their operator impls.)
