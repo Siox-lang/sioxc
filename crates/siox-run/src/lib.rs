@@ -354,6 +354,7 @@ fn run_one<'a>(
         oneshots: Vec::new(),
         time_fs: 0,
         locals: HashMap::new(),
+        local_widths: HashMap::new(),
         fns,
         families,
         halted: false,
@@ -444,6 +445,10 @@ struct Testbench<'a> {
     /// Testbench-local scalar values: unconnected `let`s and `for` loop
     /// variables. Consulted before the signal map.
     locals: HashMap<String, u128>,
+    /// Declared bit width of a testbench local (`let c: uint[8]` -> 8), keyed
+    /// by base name; writes to the local (or its `[i]` elements) mask to it so
+    /// arithmetic wraps exactly like the equivalent hardware signal.
+    local_widths: HashMap<String, u32>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Bit-vector families (name -> signed), for testbench conversions.
@@ -458,9 +463,62 @@ struct Testbench<'a> {
 }
 
 impl Testbench<'_> {
+    /// The declared bit width of a vector-family type: `uint[8]` -> 8, and the
+    /// element width of an array of one (`uint[8][4]` -> 8). Anything else
+    /// (enums, integer, real, structs) has no maskable width here.
+    fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
+        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+            // `F[w][n]`: an array of vectors — the element width governs.
+            if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
+                return self.declared_width(base);
+            }
+            let head = match base.as_ref() {
+                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
+                _ => return None,
+            };
+            if !self.families.contains(head) {
+                return None;
+            }
+            if let ast::Expr::Int { text, .. } = i.as_ref() {
+                return text.parse().ok();
+            }
+        }
+        None
+    }
+
+    /// Drive a DUT signal, masking the value to the signal's declared width so
+    /// a testbench expression that overflowed (e.g. `0 - 7` evaluated in wide
+    /// arithmetic) lands as the same bit pattern a hardware driver would
+    /// produce. Reals pass through (f64 bits are not a bit vector).
+    fn set_signal(&mut self, id: siox_ir::SignalId, v: u128) {
+        let sig = &self.engine.design().signals[id.0 as usize];
+        let w = sig.width;
+        let v = if !sig.real && w > 0 && (w as usize) < 128 { v & ((1u128 << w) - 1) } else { v };
+        self.engine.set(id, v);
+    }
+
+    /// Mask `v` to `name`'s declared local width (wrap at 2^w), matching what
+    /// the engines do for hardware signals. Names without a recorded width
+    /// (loop vars, integers, reals) pass through.
+    fn mask_local(&self, name: &str, v: u128) -> u128 {
+        // `xs[3]` masks by its base array's element width.
+        let base = name.split('[').next().unwrap_or(name);
+        match self.local_widths.get(base) {
+            Some(&w) if w > 0 && (w as usize) < 128 => v & ((1u128 << w) - 1),
+            _ => v,
+        }
+    }
+
     /// Apply a `let` in statement order: DUT-connected names write signals;
     /// an unconnected scalar becomes a testbench local.
     fn apply_let(&mut self, l: &ast::LetDecl) {
+        // Record the declared width first, so this let's own initializer and
+        // every later assignment mask consistently.
+        if !self.map.contains_key(&l.name.text) {
+            if let Some(w) = l.ty.as_ref().and_then(|t| self.declared_width(t)) {
+                self.local_widths.insert(l.name.text.clone(), w);
+            }
+        }
         match &l.value {
             // A named construct is an instance; elaboration handled it.
             Some(ast::Expr::Construct { ty: Some(_), .. }) => {}
@@ -514,6 +572,7 @@ impl Testbench<'_> {
                 if self.map.contains_key(&l.name.text) {
                     self.set_name(&l.name.text, v);
                 } else {
+                    let v = self.mask_local(&l.name.text, v);
                     self.locals.insert(l.name.text.clone(), v);
                 }
             }
@@ -530,8 +589,9 @@ impl Testbench<'_> {
     fn set_elem(&mut self, name: &str, i: usize, v: u128) {
         let key = format!("{name}[{i}]");
         if let Some(&id) = self.map.get(&key) {
-            self.engine.set(id, v);
+            self.set_signal(id, v);
         } else {
+            let v = self.mask_local(&key, v);
             self.locals.insert(key, v);
         }
     }
@@ -549,14 +609,15 @@ impl Testbench<'_> {
     }
 
     fn set_name(&mut self, name: &str, value: u128) {
+        let masked = self.mask_local(name, value);
         if let std::collections::hash_map::Entry::Occupied(mut e) =
             self.locals.entry(name.to_string())
         {
-            e.insert(value);
+            e.insert(masked);
             return;
         }
         if let Some(&id) = self.map.get(name) {
-            self.engine.set(id, value);
+            self.set_signal(id, value);
         }
     }
 
@@ -919,7 +980,7 @@ impl Testbench<'_> {
             }
         });
         for (id, v) in fired {
-            self.engine.set(id, v);
+            self.set_signal(id, v);
         }
         self.engine.settle();
         self.sample();
