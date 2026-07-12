@@ -1330,6 +1330,40 @@ impl<'a> Lowering<'a> {
                     } else {
                         self.out.drivers.push(Driver { target: sig, cond, expr: merged, ctx: self.cur_ctx });
                     }
+                } else if let ast::Expr::Concat { parts, .. } = target {
+                    // `{hi, lo} = w;` unpacks the value MSB-first: each part
+                    // takes its width's slice of the RHS.
+                    let v = self.lower_expr(value);
+                    let mut off: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
+                    for part in parts {
+                        let w = self.ast_width(part);
+                        let Some(t) = self.target_signal(part) else {
+                            self.sink.emit(siox_diag::Diagnostic::error(
+                                "each part of a concat assignment target must be a signal"
+                                    .to_string(),
+                            ));
+                            continue;
+                        };
+                        let expr = Expr::Slice {
+                            base: Box::new(v.clone()),
+                            hi: off - 1,
+                            lo: off - w,
+                        };
+                        self.out.drivers.push(Driver {
+                            target: t,
+                            cond: cond.clone(),
+                            expr,
+                            ctx: self.cur_ctx,
+                        });
+                        off -= w;
+                    }
+                } else {
+                    // Anything else is a target shape the lowering doesn't
+                    // understand — say so rather than silently dropping it.
+                    self.sink.emit(siox_diag::Diagnostic::error(format!(
+                        "cannot lower this assignment target: `{}`",
+                        siox_syntax::pretty::expr_string(target)
+                    )));
                 }
             }
             ast::Stmt::If(iff) => {
@@ -1467,6 +1501,33 @@ impl<'a> Lowering<'a> {
                         let width = self.out.signals[sig.0 as usize].width;
                         let expr = self.merge_slice(Expr::Current(sig), hi, lo, v, width);
                         out.push(NextUpdate { target: sig, cond: cond.clone(), expr });
+                    } else if let ast::Expr::Concat { parts, .. } = target {
+                        // `{hi, lo} = w;` in a clocked block: each part takes
+                        // its width's slice of the RHS, MSB-first.
+                        let v = self.lower_expr(value);
+                        let mut off: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
+                        for part in parts {
+                            let w = self.ast_width(part);
+                            let Some(t) = self.target_signal(part) else {
+                                self.sink.emit(siox_diag::Diagnostic::error(
+                                    "each part of a concat assignment target must be a signal"
+                                        .to_string(),
+                                ));
+                                continue;
+                            };
+                            let expr = Expr::Slice {
+                                base: Box::new(v.clone()),
+                                hi: off - 1,
+                                lo: off - w,
+                            };
+                            out.push(NextUpdate { target: t, cond: cond.clone(), expr });
+                            off -= w;
+                        }
+                    } else {
+                        self.sink.emit(siox_diag::Diagnostic::error(format!(
+                            "cannot lower this assignment target: `{}`",
+                            siox_syntax::pretty::expr_string(target)
+                        )));
                     }
                 }
                 ast::Stmt::If(iff) => {

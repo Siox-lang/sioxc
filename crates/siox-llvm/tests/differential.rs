@@ -525,3 +525,23 @@ fn bit_pattern_match_agrees() {
         assert_agree(&d, &[("T.op", op)]);
     }
 }
+
+#[test]
+fn concat_assignment_target_agrees() {
+    // `{hi, lo} = w` unpacks MSB-first: each part takes its width's slice of
+    // the RHS, in combinational and clocked forms alike.
+    let d = lower(
+        "module m;\n\
+         entity Split { in w: uint[8]; out hi: uint[4]; out lo: uint[4]; }\n\
+         impl Split { {hi, lo} = w; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let w: uint[8]; let hi: uint[4]; let lo: uint[4];\n\
+           let dut = Split { .w, .hi, .lo };\n\
+         }\n",
+    );
+    for w in [0u64, 0xA3, 0xFF, 0x0F, 0xF0] {
+        assert_agree(&d, &[("T.w", w)]);
+    }
+}
