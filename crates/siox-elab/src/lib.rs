@@ -283,8 +283,8 @@ impl<'a> Elaborator<'a> {
         }
 
         let is_extern = self.entities.get(entity_name).map(|e| e.is_extern).unwrap_or(true);
-        let specs = self.gather_instances(entity_name, is_extern);
         let env = param_env(&params);
+        let specs = self.gather_instances(entity_name, is_extern, &env);
         // This instance's own signals (ports + impl lets), for width-checking the
         // connections of the children it instantiates.
         let parent_signals = self.entity_signals(entity_name, &env);
@@ -300,7 +300,13 @@ impl<'a> Elaborator<'a> {
                 // the child's resolved params.
                 let cparams = eval_params(sub_decl, spec.ty, &env);
                 let child_env = param_env(&cparams);
-                let cconns = self.resolve_connections(sub_decl, spec.args, spec.site, &child_env);
+                let cconns = self.resolve_connections(
+                    sub_decl,
+                    spec.args,
+                    spec.site,
+                    &child_env,
+                    &spec.loop_env,
+                );
                 self.check_widths(&parent_signals, &cconns, spec.site);
                 let child_attrs = spec
                     .attrs
@@ -328,7 +334,12 @@ impl<'a> Elaborator<'a> {
     }
 
     /// Collect the instance-construction sites inside an entity's impl bodies.
-    fn gather_instances(&self, entity_name: &str, is_extern: bool) -> Vec<InstanceSpec<'a>> {
+    fn gather_instances(
+        &self,
+        entity_name: &str,
+        is_extern: bool,
+        env: &HashMap<String, i64>,
+    ) -> Vec<InstanceSpec<'a>> {
         let mut specs = Vec::new();
         if is_extern {
             return specs;
@@ -336,28 +347,62 @@ impl<'a> Elaborator<'a> {
         if let Some(impls) = self.impls.get(entity_name) {
             for im in impls {
                 for item in &im.items {
-                    let let_decl = match item {
-                        ImplItem::Let(l) => Some(l),
-                        ImplItem::Stmt(Stmt::Let(l)) => Some(l),
-                        _ => None,
-                    };
-                    if let Some(l) = let_decl {
-                        // Only a *named* construct (`Counter<W=8> { ... }`) is an
-                        // instance; a name-less `{ .f = v }` is a struct value.
-                        if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
-                            specs.push(InstanceSpec {
-                                name: l.name.text.as_str(),
-                                ty,
-                                args,
-                                attrs: &l.attrs,
-                                site: *span,
-                            });
-                        }
+                    match item {
+                        ImplItem::Let(l) => self.gather_let(l, env, &mut specs),
+                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &mut specs),
+                        _ => {}
                     }
                 }
             }
         }
         specs
+    }
+
+    /// One `let x = Entity { .. }` -> an instance spec (with the current loop
+    /// bindings for its connection rendering).
+    fn gather_let(&self, l: &'a LetDecl, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+        if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
+            // A generated instance gets the loop index appended for a unique
+            // name; a plain one keeps its declared name.
+            let name = if env.is_empty() {
+                l.name.text.clone()
+            } else {
+                let idx: Vec<String> = env.values().map(|v| v.to_string()).collect();
+                format!("{}_{}", l.name.text, idx.join("_"))
+            };
+            out.push(InstanceSpec {
+                name,
+                ty,
+                args,
+                attrs: &l.attrs,
+                site: *span,
+                loop_env: env.clone(),
+            });
+        }
+    }
+
+    /// A statement inside an impl body / loop: `let` instances and `for` loops
+    /// (unrolled over a static range, binding the loop variable).
+    fn gather_stmt(&self, s: &'a Stmt, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+        match s {
+            Stmt::Let(l) => self.gather_let(l, env, out),
+            Stmt::For { var, range, body, .. } => {
+                if let Expr::Range { lo, hi, .. } = range {
+                    if let (ParamValue::Int(a), ParamValue::Int(b)) =
+                        (eval(lo, env), eval(hi, env))
+                    {
+                        for i in a..b {
+                            let mut e = env.clone();
+                            e.insert(var.text.clone(), i);
+                            for st in &body.stmts {
+                                self.gather_stmt(st, &e, out);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Resolve `{ .clk, .count = c }` against the sub-entity's ports, reporting
@@ -368,6 +413,7 @@ impl<'a> Elaborator<'a> {
         args: &[ConnectArg],
         site: Span,
         env: &HashMap<String, i64>,
+        render_env: &HashMap<String, i64>,
     ) -> Vec<Connection> {
         let ports: HashMap<&str, &Type> =
             edecl.ports.iter().map(|p| (p.name.text.as_str(), &p.ty)).collect();
@@ -387,7 +433,7 @@ impl<'a> Elaborator<'a> {
             let signal = match &arg.value {
                 // `.clk` shorthand means `.clk = clk`.
                 None => arg.field.text.clone(),
-                Some(e) => render_signal(e),
+                Some(e) => render_signal(e, render_env),
             };
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
@@ -473,11 +519,14 @@ impl<'a> Elaborator<'a> {
 
 /// An instance-construction site discovered in an impl body.
 struct InstanceSpec<'a> {
-    name: &'a str,
+    name: String,
     ty: &'a Type,
     args: &'a [ConnectArg],
     attrs: &'a [Attr],
     site: Span,
+    /// Loop-variable bindings for a generated instance (`for i in 0..N`),
+    /// substituted into the connection signal names (`wires[i]`).
+    loop_env: HashMap<String, i64>,
 }
 
 fn is_root(e: &EntityDecl) -> bool {
@@ -668,11 +717,21 @@ fn parse_int(text: &str) -> Option<i64> {
 
 /// Render the local signal a port connects to. Bare paths render as their name;
 /// other expressions render to a placeholder for the tree view.
-fn render_signal(e: &Expr) -> String {
+fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
         Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
         Expr::Int { text, .. } => text.clone(),
         Expr::LogicLit { ch, .. } => format!("'{ch}'"),
+        // An indexed connection (`wires[i]`) names the flattened element
+        // signal, with the (loop/const) index evaluated.
+        Expr::Index { base, index, .. } => {
+            let b = render_signal(base, env);
+            match eval(index, env) {
+                ParamValue::Int(i) => format!("{b}[{i}]"),
+                _ => format!("{b}[<expr>]"),
+            }
+        }
+        Expr::Field { base, field, .. } => format!("{}.{}", render_signal(base, env), field.text),
         _ => "<expr>".to_string(),
     }
 }

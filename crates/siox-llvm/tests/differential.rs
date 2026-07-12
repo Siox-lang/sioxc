@@ -360,3 +360,33 @@ fn combinational_chain_agrees() {
         assert_agree(&d, &[("T.i", v)]);
     }
 }
+
+#[test]
+fn generate_loop_chain_agrees() {
+    // A generate loop unrolls three incrementer instances wired head-to-tail
+    // through a flattened wire array (`wires[i] -> wires[i+1]`). Both engines
+    // must see the same lowered instance graph and agree signal-for-signal.
+    let d = lower(
+        "module m;\n\
+         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         impl Inc { y = x + 1; }\n\
+         entity Chain { in a: uint[8]; out b: uint[8]; }\n\
+         impl Chain {\n\
+           let wires: uint[8][4];\n\
+           wires[0] = a;\n\
+           for i in 0..3 {\n\
+             let inc = Inc { .x = wires[i], .y = wires[i+1] };\n\
+           }\n\
+           b = wires[3];\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: uint[8]; let b: uint[8];\n\
+           let dut = Chain { .a, .b };\n\
+         }\n",
+    );
+    for v in [0u64, 10, 42, 252] {
+        assert_agree(&d, &[("T.a", v)]);
+    }
+}

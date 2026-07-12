@@ -506,6 +506,16 @@ impl<'a> Lowering<'a> {
         // become state signals.
         let impls: Vec<&ast::ImplDecl> = self.impls.get(ename).cloned().unwrap_or_default();
         let mut subinsts: Vec<(String, ast::Type, Vec<ast::ConnectArg>)> = Vec::new();
+        // Generate loops (`for i in 0..n { let s = Sub { .. } }`) unroll here,
+        // substituting the loop index into each instance's type args and
+        // connections so the flattened element signals (`wires[i]`) resolve.
+        for im in &impls {
+            for item in &im.items {
+                if let ast::ImplItem::Stmt(s) = item {
+                    gather_generate(s, env, &[], &mut subinsts);
+                }
+            }
+        }
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
@@ -3057,6 +3067,180 @@ fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64
 /// The dotted signal path of a name, struct-field, or constant-index access:
 /// `s` -> `"s"`, `s.data` -> `"s.data"`, `a[2]` -> `"a[2]"`. A dynamic index or
 /// anything else (calls, slices) yields `None`.
+/// Unroll a generate `for i in a..b { let s = Sub {..} }` into concrete
+/// sub-instances, substituting the loop index into each instance's name, type
+/// arguments, and connection expressions. Plain `let` instances inside the loop
+/// body are handled too; nested loops recurse. Non-instance statements are
+/// left for the behavioural pass.
+fn gather_generate(
+    s: &ast::Stmt,
+    env: &HashMap<String, i64>,
+    loop_idx: &[i64],
+    out: &mut Vec<(String, ast::Type, Vec<ast::ConnectArg>)>,
+) {
+    match s {
+        ast::Stmt::Let(l) => {
+            if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
+                // A generated instance (inside a loop) gets the enclosing loop
+                // indices appended for a unique name, matching the elaborator's
+                // `<name>_<i>` convention.
+                let name = if loop_idx.is_empty() {
+                    l.name.text.clone()
+                } else {
+                    let idx: Vec<String> = loop_idx.iter().map(|v| v.to_string()).collect();
+                    format!("{}_{}", l.name.text, idx.join("_"))
+                };
+                out.push((name, cty.clone(), args.clone()));
+            }
+        }
+        ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
+            if let (Some(a), Some(b)) = (eval_const(lo, env), eval_const(hi, env)) {
+                for i in a..b {
+                    let mut e = env.clone();
+                    e.insert(var.text.clone(), i);
+                    let mut idx = loop_idx.to_vec();
+                    idx.push(i);
+                    for st in &body.stmts {
+                        // Substitute the loop index throughout the statement so
+                        // `Sub<W=i>` and `wires[i]` become concrete before the
+                        // instance is recorded.
+                        let st = subst_stmt(st, &var.text, i);
+                        gather_generate(&st, &e, &idx, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Substitute a bound integer for a single-segment path variable throughout a
+/// statement (used to unroll generate loops).
+fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
+    match s {
+        ast::Stmt::Let(l) => {
+            let mut l = l.clone();
+            l.value = l.value.as_ref().map(|v| subst_expr(v, var, val));
+            ast::Stmt::Let(l)
+        }
+        ast::Stmt::For { var: v, range, body, span } => ast::Stmt::For {
+            var: v.clone(),
+            range: subst_expr(range, var, val),
+            body: {
+                let mut b = body.clone();
+                b.stmts = b.stmts.iter().map(|st| subst_stmt(st, var, val)).collect();
+                b
+            },
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Deep-clone an expression, replacing every bare `var` reference with the
+/// integer literal `val`. Also rewrites index/type-argument expressions.
+fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
+    use ast::Expr;
+    let sub = |x: &Expr| Box::new(subst_expr(x, var, val));
+    match e {
+        Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => {
+            Expr::Int { text: val.to_string(), span: p.span }
+        }
+        Expr::Field { base, field, span } => {
+            Expr::Field { base: sub(base), field: field.clone(), span: *span }
+        }
+        Expr::SysAttr { base, attr, span } => {
+            Expr::SysAttr { base: sub(base), attr: attr.clone(), span: *span }
+        }
+        Expr::Index { base, index, span } => {
+            Expr::Index { base: sub(base), index: sub(index), span: *span }
+        }
+        Expr::Range { lo, hi, span } => Expr::Range { lo: sub(lo), hi: sub(hi), span: *span },
+        // Fold constant arithmetic so a substituted index like `wires[i+1]`
+        // becomes the literal `wires[2]` that `expr_path` can resolve.
+        Expr::Unary { op, rhs, span } => {
+            let n = Expr::Unary { op: *op, rhs: sub(rhs), span: *span };
+            fold_const(n, *span)
+        }
+        Expr::Binary { op, lhs, rhs, span } => {
+            let n = Expr::Binary { op: *op, lhs: sub(lhs), rhs: sub(rhs), span: *span };
+            fold_const(n, *span)
+        }
+        Expr::IfExpr { cond, then, els, span } => Expr::IfExpr {
+            cond: sub(cond),
+            then: sub(then),
+            els: sub(els),
+            span: *span,
+        },
+        Expr::Call { callee, args, bang, span } => Expr::Call {
+            callee: sub(callee),
+            args: args.iter().map(|a| subst_expr(a, var, val)).collect(),
+            bang: *bang,
+            span: *span,
+        },
+        Expr::Concat { parts, span } => Expr::Concat {
+            parts: parts.iter().map(|p| subst_expr(p, var, val)).collect(),
+            span: *span,
+        },
+        Expr::Construct { ty, args, span } => Expr::Construct {
+            ty: ty.as_ref().map(|t| subst_type(t, var, val)),
+            args: args
+                .iter()
+                .map(|a| ast::ConnectArg {
+                    field: a.field.clone(),
+                    value: a.value.as_ref().map(|v| subst_expr(v, var, val)),
+                    span: a.span,
+                })
+                .collect(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Collapse a now-constant arithmetic node to an integer literal, so unrolled
+/// index expressions resolve as plain `Int`s. Non-constant nodes pass through.
+fn fold_const(e: ast::Expr, span: siox_diag::Span) -> ast::Expr {
+    match eval_const(&e, &HashMap::new()) {
+        Some(v) => ast::Expr::Int { text: v.to_string(), span },
+        None => e,
+    }
+}
+
+/// Substitute the loop index into a type's index/generic-argument expressions.
+fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
+    match t {
+        ast::Type::Indexed { base, index, span } => ast::Type::Indexed {
+            base: Box::new(subst_type(base, var, val)),
+            index: index.as_ref().map(|i| Box::new(subst_expr(i, var, val))),
+            span: *span,
+        },
+        ast::Type::Generic { base, args, span } => ast::Type::Generic {
+            base: Box::new(subst_type(base, var, val)),
+            args: args
+                .iter()
+                .map(|a| match a {
+                    ast::GenericArg::Positional(e) => {
+                        ast::GenericArg::Positional(subst_expr(e, var, val))
+                    }
+                    ast::GenericArg::Named { name, value } => ast::GenericArg::Named {
+                        name: name.clone(),
+                        value: subst_expr(value, var, val),
+                    },
+                })
+                .collect(),
+            span: *span,
+        },
+        ast::Type::Mode { dir, inner, mode, span } => ast::Type::Mode {
+            dir: *dir,
+            inner: Box::new(subst_type(inner, var, val)),
+            mode: mode.clone(),
+            span: *span,
+        },
+        ast::Type::Path(_) => t.clone(),
+    }
+}
+
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
