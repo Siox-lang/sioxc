@@ -112,8 +112,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   everything else lowers recursively per-instance from there (no entity is
   lowered standalone by type). A testbench's DUTs lower under the testbench
   path (`CounterTest.dut.*`), so two instances of one entity stay distinct.
-- **Status (todo):** dynamic array indexing, method-call lowering; struct-typed
-  sub-instance ports (scalar ports wire today).
+- **Status (done):** dynamic array indexing (`regs[addr]` at a runtime index —
+  a mux tree to read, per-element gated writes); **struct/array-typed ports
+  across instances** (each leaf wires: `.s = link` -> `s.valid`<->`link.valid`);
+  **`inout` bidirectional ports** (alias the shared net so parallel drivers fold
+  through `Resolve` — Verilog's model).
+- **Status (todo):** method-call lowering; composite (struct) `inout` ports
+  (scalar/vector inout works).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
@@ -129,8 +134,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   Idle → Run), a **ready/valid handshake** (compound condition in an event
   block), **struct-field signals** (`p.data` per field), and **array-element
   signals** (`a[2]` per element).
-- **Status (todo):** dynamic (non-constant) array indexing; proper logic-value
-  (X/Z) modelling; cascaded event domains.
+- **Status (done):** four-value logic — a `Logic` scalar carries `'0'/'1'/'Z'/'X'`
+  and the std_logic truth tables (`and`/`or`/`xor`/`not`) inline correctly
+  (`'X' and '1' == 'X'`, `'0' and 'X' == '0'`); parallel drivers fold through
+  `impl Resolve for Logic`; verified interpreter == JIT == native.
+- **Status (todo):** cascaded event domains; X/Z propagation through vector
+  arithmetic (scalar Logic is exact).
 
 ### Stage 8 — Tests, assertions, stimulus (`siox-run`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
@@ -143,7 +152,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   (`clk::rising`) / a condition — driven by the runner-owned event wheel, so
   multiple clocks interleave. `sioxc test [name]` runs all or a filtered subset
   in libtest style (`test … ok`/`FAILED`, `file:line:col`), exits nonzero on
-  failure, and `--no-run` links a native multi-test binary.
+  failure, and `--no-run` links a native multi-test binary. **`print!`** renders
+  each argument by kind: reals as floats, `Char` as the character, and
+  enum/`Logic` values as their variant symbol (`'X'`, `Idle`) via the design's
+  `enum_syms` map — on all three engines.
 - **Status (todo):** `sioxc test <dir>` over a directory.
 
 ### Stage 9 — Waveforms (`siox-wave`) — 🟢 partial
@@ -156,7 +168,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   ~100 ns, count reaching 10).
 - **Status (done, cont.):** struct fields and array elements appear as separate
   trace paths (`p.valid`, `a[2]`) since composite signals are flattened in the IR.
-- **Status (todo):** enum values as symbolic names; FST.
+- **Status (todo):** enum values as symbolic names *in the VCD* (the
+  `Design::enum_syms` map already backs symbolic `print!`; wiring it into the
+  dump — or a GTKWave translate filter — is what remains); FST.
 
 ### Stage 10 — Diagnostics & lints (`siox-diag` + all) — 🟢 (ongoing)
 - **Acceptance:** every diagnostic has a code, a main span, a message, optional

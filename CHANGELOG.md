@@ -12,6 +12,19 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Struct/array-typed ports across instances** — a bundle port (`in s: Stream`,
+  `in v: uint[8][3]`) now wires leaf-by-leaf across an instance boundary
+  (`.s = link` connects `s.valid`<->`link.valid`, `s.data`<->`link.data`).
+  Unblocks ready/valid handshakes and buses between blocks — the shape real
+  multi-block designs are built from.
+- **`inout` bidirectional ports / tristate buses** — an `inout` port aliases the
+  net it connects to (Verilog's model): the body's `pin = expr` drives the shared
+  net and reads of `pin` read the resolved value, so parallel pads fold through
+  `impl Resolve for Logic` — a driven '0'/'1' beats 'Z', contention is 'X'.
+- **Symbolic enum/`Logic` printing** — `print!("{}", sig)` shows a variant symbol
+  (`'X'`, `Idle`) instead of the raw discriminant, on the interpreter, JIT, and
+  native binary. Signals carry their enum type and the design exports a
+  discriminant→symbol map (`enum_syms`) spanning std.
 - **Generate loops** — `for i in lo..hi { let inst = Sub { .. } }` unrolls to
   one sub-instance per iteration, with the loop index substituted into instance
   names, type arguments, and indexed connections (`.x = wires[i]`,
