@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Instance arrays and sub-instance port access.** An instance's ports are now
+  readable as `<inst>.<port>` (`b = s.y`), so an output may be left open at
+  construction and read directly — only `in` ports must be wired. Building on
+  that, `let stage: Sub[N]` declares an array of instances, constructed
+  element-wise (`stage[i] = Sub { .. }`, typically in a generate loop) and
+  indexable from anywhere (`stage[i].port`). Works on all three engines.
 - **Combinational-loop lint (`W-P010`).** A combinational signal whose value
   depends on itself with no register in the path (a zero-delay cycle with no
   settled value) is flagged at compile time — the simulators otherwise stop it

@@ -545,3 +545,33 @@ fn concat_assignment_target_agrees() {
         assert_agree(&d, &[("T.w", w)]);
     }
 }
+
+#[test]
+fn instance_array_agrees() {
+    // An array of instances (`let stage: Inc[3]`) built element-wise in a
+    // generate loop, wired head-to-tail, with an element's output read from
+    // outside the loop (`stage[1].y`). Both engines must match.
+    let d = lower(
+        "module m;\n\
+         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         impl Inc { y = x + 1; }\n\
+         entity Chain { in a: uint[8]; out b: uint[8]; out mid: uint[8]; }\n\
+         impl Chain {\n\
+           let w: uint[8][4];\n\
+           w[0] = a;\n\
+           let stage: Inc[3];\n\
+           for i in 0..2 { stage[i] = Inc { .x = w[i], .y = w[i+1] }; }\n\
+           b = w[3];\n\
+           mid = stage[1].y;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: uint[8]; let b: uint[8]; let mid: uint[8];\n\
+           let dut = Chain { .a, .b, .mid };\n\
+         }\n",
+    );
+    for a in [0u64, 10, 40, 250] {
+        assert_agree(&d, &[("T.a", a)]);
+    }
+}

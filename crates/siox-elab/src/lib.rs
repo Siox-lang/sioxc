@@ -386,6 +386,19 @@ impl<'a> Elaborator<'a> {
     fn gather_stmt(&self, s: &'a Stmt, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
         match s {
             Stmt::Let(l) => self.gather_let(l, env, out),
+            // Instance-array element construction: `stage[i] = Sub { .. }`. The
+            // target renders to the element name (`stage[1]`) with the loop
+            // index evaluated, so `stage[i].port` reads resolve to it.
+            Stmt::Assign { target, value: Expr::Construct { ty: Some(ty), args, span }, .. } => {
+                out.push(InstanceSpec {
+                    name: render_signal(target, env),
+                    ty,
+                    args,
+                    attrs: &[],
+                    site: *span,
+                    loop_env: env.clone(),
+                });
+            }
             Stmt::For { var, range, body, .. } => {
                 if let Expr::Range { lo, hi, .. } = range {
                     if let (ParamValue::Int(a), ParamValue::Int(b)) =
@@ -443,10 +456,12 @@ impl<'a> Elaborator<'a> {
         }
 
         for p in &edecl.ports {
-            if !connected.contains(&p.name.text) {
+            // An `in` port must be driven; an `out`/`inout` port may be left
+            // open — its value is still readable as `<instance>.<port>`.
+            if !connected.contains(&p.name.text) && p.dir == Some(Direction::In) {
                 self.sink.emit(
                     Diagnostic::error(format!(
-                        "port `{}` of `{}` is not connected",
+                        "input port `{}` of `{}` is not connected",
                         p.name.text, edecl.name.text
                     ))
                     .with_code(codes::MISSING_PORT_CONNECTION)

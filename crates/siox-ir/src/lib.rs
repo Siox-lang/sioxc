@@ -785,6 +785,12 @@ impl<'a> Lowering<'a> {
             }
 
             let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &aliases);
+            // Expose the sub-instance's ports in this scope so `inst.port`
+            // (and `stage[i].port`) reads resolve to the child's signal —
+            // an output need not be wired to a local to be read.
+            for (port, &(sig, _)) in &sub_ports {
+                self.locals.entry(format!("{inst}.{port}")).or_insert(sig);
+            }
             for c in conns {
                 let field = &c.field.text;
                 // `.p` shorthand means the parent signal `p`.
@@ -3557,6 +3563,14 @@ fn gather_generate(
                 out.push((name, cty.clone(), args.clone()));
             }
         }
+        // Instance-array element: `stage[i] = Sub { .. }` (index already
+        // substituted). The rendered target (`stage[1]`) is the instance name,
+        // matching the elaborator so `stage[i].port` reads line up.
+        ast::Stmt::Assign { target, value: ast::Expr::Construct { ty: Some(cty), args, .. }, .. } => {
+            if let Some(name) = expr_path(target) {
+                out.push((name, cty.clone(), args.clone()));
+            }
+        }
         ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
             if let (Some(a), Some(b)) = (eval_const(lo, env), eval_const(hi, env)) {
                 for i in loop_range(a, b) {
@@ -3595,6 +3609,14 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
                 b.stmts = b.stmts.iter().map(|st| subst_stmt(st, var, val)).collect();
                 b
             },
+            span: *span,
+        },
+        // `stage[i] = Sub { .x = w[i] }`: substitute in both the indexed target
+        // and the construct, so instance-array elements unroll concretely.
+        ast::Stmt::Assign { target, value, after, span } => ast::Stmt::Assign {
+            target: subst_expr(target, var, val),
+            value: subst_expr(value, var, val),
+            after: after.as_ref().map(|a| subst_expr(a, var, val)),
             span: *span,
         },
         other => other.clone(),

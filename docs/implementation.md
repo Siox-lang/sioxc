@@ -82,9 +82,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   lo..hi { let inst = Sub { .. } }` unrolled over an inclusive, directional
   static range, the loop index substituted into names and indexed connections),
   extern black boxes, cycle detection, and `siox tree`.
-- **Status (todo):** instance arrays (`let s: Sub[4]`), bus-mode leaf
-  expansion, full direction analysis, and propagating concrete parameter widths
-  down into instance signal types.
+- **Status (done, cont.):** **sub-instance port access** — an instance's ports
+  are readable as `<inst>.<port>`, so an output may be left unconnected at
+  construction and read directly (only `in` ports must be wired). **Instance
+  arrays** — `let stage: Sub[N]` built element-wise (`stage[i] = Sub { .. }`, in
+  a generate loop) creates named, indexable instances whose ports read as
+  `stage[i].port`.
+- **Status (todo):** bus-mode leaf expansion, full direction analysis, and
+  propagating concrete parameter widths down into instance signal types.
 
 ### Stage 6 — Digital IR (`siox-ir`) — 🟢 partial
 - **Acceptance:** event vs. combinational deps explicit; sequential updates
