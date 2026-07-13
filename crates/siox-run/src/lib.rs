@@ -191,6 +191,7 @@ pub fn run_tests_with_engine<'e>(
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
+    let op_impls = collect_op_impls(modules);
     let families = siox_ir::vector_families(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
@@ -200,7 +201,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &families, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &families, false).0);
         }
     }
     results
@@ -219,6 +220,7 @@ pub fn run_test_traced_with_engine<'e>(
     let (entities, impls) = collect_defs(modules);
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
+    let op_impls = collect_op_impls(modules);
     let families = siox_ir::vector_families(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -227,7 +229,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &families, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &families, true));
         }
     }
     None
@@ -271,6 +273,29 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
 }
 
 /// Module-level functions by name (testbench-callable).
+/// Operator-trait impls, `(trait, target type) -> first fn` (`impl Div for
+/// int` -> `div`). The testbench evaluator dispatches typed binary operators
+/// through these, mirroring the IR's hardware inlining.
+fn collect_op_impls(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
+                let target = type_head_name(&im.target);
+                if let (Some(tr), Some(ty)) = (tr, target) {
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            out.entry((tr.text.clone(), ty.to_string())).or_insert(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     let mut out = HashMap::new();
     for m in modules {
@@ -316,6 +341,7 @@ fn run_one<'a>(
     body: &[&ast::ImplDecl],
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
     families: &'a std::collections::HashSet<String>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
@@ -363,7 +389,9 @@ fn run_one<'a>(
         time_fs: 0,
         locals: HashMap::new(),
         local_widths: HashMap::new(),
+        local_families: HashMap::new(),
         fns,
+        op_impls,
         families,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
@@ -460,8 +488,14 @@ struct Testbench<'a> {
     /// by base name; writes to the local (or its `[i]` elements) mask to it so
     /// arithmetic wraps exactly like the equivalent hardware signal.
     local_widths: HashMap<String, u32>,
+    /// Declared vector family of a testbench name (`let a: int[8]` -> "int"),
+    /// connected or local — binary operators on it dispatch to the family's
+    /// operator impls (int's signed Div/Ord), mirroring hardware inlining.
+    local_families: HashMap<String, String>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    /// Operator-trait impls `(trait, type) -> fn`, for typed operator dispatch.
+    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Bit-vector families (name -> signed), for testbench conversions.
     families: &'a std::collections::HashSet<String>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
@@ -474,6 +508,28 @@ struct Testbench<'a> {
 }
 
 impl Testbench<'_> {
+    /// The declared `(family, width)` of a vector-family type: `int[8]` ->
+    /// ("int", 8), and the element of an array of one. None for enums,
+    /// kernel numerics, and structs.
+    fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
+        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+            if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
+                return self.declared_family(base);
+            }
+            let head = match base.as_ref() {
+                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
+                _ => return None,
+            };
+            if !self.families.contains(head) {
+                return None;
+            }
+            if let ast::Expr::Int { text, .. } = i.as_ref() {
+                return Some((head.to_string(), text.parse().ok()?));
+            }
+        }
+        None
+    }
+
     /// The declared bit width of a vector-family type: `uint[8]` -> 8, and the
     /// element width of an array of one (`uint[8][4]` -> 8). Anything else
     /// (enums, integer, real, structs) has no maskable width here.
@@ -550,6 +606,11 @@ impl Testbench<'_> {
             if let Some(w) = l.ty.as_ref().and_then(|t| self.declared_width(t)) {
                 self.local_widths.insert(l.name.text.clone(), w);
             }
+        }
+        // The vector family is recorded for every declared name (connected
+        // ports too): operators on it dispatch to the family's impls.
+        if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t)) {
+            self.local_families.insert(l.name.text.clone(), fam);
         }
         match &l.value {
             // A named construct is an instance; elaboration handled it.
@@ -1336,6 +1397,15 @@ impl Testbench<'_> {
                     v & ((1u128 << w) - 1)
                 }
             }
+            // `x::width`: an impl body's bound width (`self::width`) or a
+            // testbench name's declared/connected width.
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "width" => {
+                let Some(path) = expr_path(base) else { return u128::from_u64(0) };
+                if let Some(&v) = fenv.get(&format!("{path}::width")) {
+                    return v;
+                }
+                u128::from_u64(self.name_width(&path).unwrap_or(0) as u64)
+            }
             // `xs::len`: an array's element count (spec: `::` metadata).
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => expr_path(base)
                 .and_then(|p| self.array_len(&p))
@@ -1430,9 +1500,107 @@ impl Testbench<'_> {
                         other => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
                     };
                 }
+                // A typed operand dispatches to its family's operator impl
+                // (int's signed Div/Ord), exactly like hardware inlining.
+                if let Some(v) = self.dispatch_binop(*op, lhs, rhs, fenv) {
+                    return v;
+                }
                 apply_binop(lower_ast_binop(*op), self.eval_env(lhs, fenv), self.eval_env(rhs, fenv))
             }
             _ => u128::from_u64(0),
+        }
+    }
+
+    /// The declared family of a bare-name operand (`a` with `let a: int[8]`).
+    /// Compound expressions fall back to raw semantics, like impl bodies.
+    fn operand_family(&self, e: &ast::Expr) -> Option<(String, String)> {
+        if let ast::Expr::Path(p) = e {
+            if p.segments.len() == 1 {
+                let name = &p.segments[0].text;
+                return self.local_families.get(name).map(|f| (f.clone(), name.clone()));
+            }
+        }
+        None
+    }
+
+    /// The bit width a testbench name carries: a local's declared width or the
+    /// connected signal's.
+    fn name_width(&self, name: &str) -> Option<u32> {
+        if let Some(&w) = self.local_widths.get(name) {
+            return Some(w);
+        }
+        self.map
+            .get(name)
+            .map(|&id| self.engine.design().signals[id.0 as usize].width)
+    }
+
+    /// Evaluate `lhs op rhs` through the lhs family's operator impl, when one
+    /// exists. Comparisons derive from `Ord::cmp` (Less/Equal/Greater), other
+    /// operators from their named trait; the result masks to the operand
+    /// width. Inside the impl body operands are plain fenv names, so nested
+    /// operators stay raw — no recursive dispatch.
+    fn dispatch_binop(
+        &self,
+        op: ast::BinOp,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        fenv: &HashMap<String, u128>,
+    ) -> Option<u128> {
+        let (fam, lname) = self.operand_family(lhs)?;
+        let lname = lname.as_str();
+        let op_str = siox_syntax::pretty::bin_op(op);
+        // `==`/`!=` are built-in bit equality *at the type's width*: mask both
+        // sides so `q == 0 - 3` compares the same 8-bit patterns hardware does.
+        if matches!(op_str, "==" | "!=") {
+            let w = self.name_width(lname)?;
+            if w == 0 || (w as usize) >= 128 {
+                return None;
+            }
+            let m = (1u128 << w) - 1;
+            let a = self.eval_env(lhs, fenv) & m;
+            let b = self.eval_env(rhs, fenv) & m;
+            let eq = a == b;
+            return Some(u128::from_u64(((eq) == (op_str == "==")) as u64));
+        }
+        // Comparisons: (Ordering discriminant to compare, negate) — the same
+        // table the IR uses. `==`/`!=` stay raw bit equality.
+        let cmp = match op_str {
+            "<" => Some((0u64, false)),
+            ">" => Some((2, false)),
+            ">=" => Some((0, true)),
+            "<=" => Some((2, true)),
+            _ => None,
+        };
+        let tr = match cmp {
+            Some(_) => "Ord",
+            None => siox_syntax::ast::op_trait_name(op_str)?,
+        };
+        let f = self.op_impls.get(&(tr.to_string(), fam))?;
+        let body = f.body.as_ref()?;
+
+        let w = self.name_width(lname).unwrap_or(0);
+        let mut env: HashMap<String, u128> = HashMap::new();
+        env.insert("self".to_string(), self.eval_env(lhs, fenv));
+        env.insert("self::width".to_string(), u128::from_u64(w as u64));
+        if let Some(pdecl) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &pdecl.name {
+                let rw = match rhs {
+                    ast::Expr::Path(p) if p.segments.len() == 1 => {
+                        self.name_width(&p.segments[0].text).unwrap_or(w)
+                    }
+                    _ => w,
+                };
+                env.insert(n.text.clone(), self.eval_env(rhs, fenv));
+                env.insert(format!("{}::width", n.text), u128::from_u64(rw as u64));
+            }
+        }
+        let r = self.eval_fn_stmts(&body.stmts, &env)?;
+        match cmp {
+            Some((want, ne)) => {
+                Some(u128::from_u64(((r.to_u64() == want) != ne) as u64))
+            }
+            None if w > 0 && (w as usize) < 128 => Some(r & ((1u128 << w) - 1)),
+            None => Some(r),
         }
     }
 

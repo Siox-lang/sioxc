@@ -116,10 +116,25 @@ errors + keep-going), 80-deep expression nesting, all CLI debug commands
 (`ast`/`ir`/`tree`/`tokens`/`emit-llvm`), and bare AOT compilation of a
 `#[top]` design.
 
-## Still open (task list)
+## Round 9 — testbench operator dispatch (fix for #20 / 1.3)
 
-- **#20** — testbench eval doesn't dispatch operator impls (signed int ops on
-  locals give unsigned results; hardware correct).
+The one big design gap left from Round 1: testbench expressions evaluated
+every binary operator with raw unsigned semantics, so `-7 / 2` and `-7 < 2`
+on `int[8]` locals gave unsigned results while the same expressions in
+hardware inlined int's signed Div/Ord impls.
+
+| # | What landed | Where |
+|---|-------------|-------|
+| 9.1 | Binary operators on a family-typed name (declared `int[8]`/`uint[8]`, connected or local) dispatch to the family's std operator impl: the fn body evaluates with `self`/`rhs` (+ `::width`) bound; comparisons derive from `Ord::cmp` via the same Less/Equal/Greater table the IR uses; results mask to the operand width. Inside an impl body operands are plain bound names, so nested operators stay raw — no recursive dispatch, mirroring the IR's inlining rule. | runner (`dispatch_binop`) |
+| 9.2 | The native C emitter does the same: the impl body inlines as a C expression through the existing `fn_env` substitution stack (`c_dispatch_binop`); `resize(x, self::width)` inside a body resolves the bound width. | sioxc build.rs |
+| 9.3 | `==`/`!=` on a family-typed name compare **at the type's width** (both sides masked), so `q == 0 - 3` matches the 253 bit pattern like hardware does. | both |
+| 9.4 | `x::width` now evaluates in testbench expressions (bound width inside impl bodies; declared/connected width elsewhere). | both |
+
+Verified: `-7/2 = -3`, signed `<`/`>`, arithmetic `>>`, and width-masked `==`
+identical on interpreter, JIT, and native; suites, corpus, and the three-way
+sweep all green. Regression test: `signed_local_test.siox` in the corpus.
+
+## Still open (task list)
 - **#11** — testbench loopback (DUT out→in via one local) doesn't propagate.
 - **Round 5 item 5.4** — native-emitter expression coverage (struct/string
   literals, enum refs, module consts) — loud errors, not silent.

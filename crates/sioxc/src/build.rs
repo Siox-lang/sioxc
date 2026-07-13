@@ -42,6 +42,21 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     }
     let enums = enum_discriminants(modules);
     let families = siox_ir::vector_families(modules);
+    let mut op_impls: HashMap<(String, String), &ast::FnDecl> = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
+                if let (Some(tr), Some(ty)) = (tr, type_head_name(&im.target)) {
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            op_impls.entry((tr.text.clone(), ty.to_string())).or_insert(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
     for m in modules {
         for item in &m.items {
@@ -132,6 +147,8 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             clocks,
             locals: Default::default(),
             local_widths: Default::default(),
+            local_families: Default::default(),
+            op_impls: &op_impls,
             aliases: &aliases,
             tmp: Default::default(),
             fns: &fns,
@@ -148,7 +165,10 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     let obj = tmp.join("design.o");
     let csrc = tmp.join("sim.c");
     siox_llvm::emit_object(design, &obj)?;
-    std::fs::write(&csrc, prog).map_err(|e| e.to_string())?;
+    std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
+    if std::env::var("SIOX_DEBUG_C").is_ok() {
+        let _ = std::fs::write("/tmp/siox_debug.c", &prog);
+    }
     let status = Command::new("clang")
         .args([csrc.to_str().unwrap(), obj.to_str().unwrap(), "-O2", "-lm", "-o", out.to_str().unwrap()])
         .status()
@@ -207,6 +227,11 @@ struct Ctx<'a> {
     /// Declared bit width of a C local (`let c: uint[8]` -> 8): writes mask to
     /// it so arithmetic wraps exactly like the equivalent hardware signal.
     local_widths: std::cell::RefCell<HashMap<String, u32>>,
+    /// Declared vector family of a testbench name (`let a: int[8]` -> "int"),
+    /// connected or local — operators on it inline the family's impls.
+    local_families: std::cell::RefCell<HashMap<String, String>>,
+    /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
+    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
@@ -237,6 +262,116 @@ fn mask_c(e: &str, w: u32) -> String {
 }
 
 impl Ctx<'_> {
+    /// The declared `(family, width)` of a vector-family type (`int[8]` ->
+    /// ("int", 8)). Mirrors the runner's rule.
+    fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
+        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+            if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
+                return self.declared_family(base);
+            }
+            let head = match base.as_ref() {
+                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
+                _ => return None,
+            };
+            if !self.families.contains(head) {
+                return None;
+            }
+            if let ast::Expr::Int { text, .. } = i.as_ref() {
+                return Some((head.to_string(), text.parse().ok()?));
+            }
+        }
+        None
+    }
+
+    /// The bit width a testbench name carries: a local's declared width or the
+    /// connected signal's.
+    fn name_width(&self, name: &str) -> Option<u32> {
+        if let Some(&w) = self.local_widths.borrow().get(name) {
+            return Some(w);
+        }
+        self.map.get(name).map(|&id| self.design.signals[id.0 as usize].width)
+    }
+
+    /// Translate `lhs op rhs` through the lhs family's operator impl as an
+    /// inline C expression, when one exists — the native mirror of the
+    /// runner's `dispatch_binop`. Comparisons derive from `Ord::cmp`.
+    fn c_dispatch_binop(
+        &self,
+        op: ast::BinOp,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+    ) -> Result<Option<String>, String> {
+        let (fam, lname) = match lhs {
+            ast::Expr::Path(p) if p.segments.len() == 1 => {
+                let name = p.segments[0].text.clone();
+                match self.local_families.borrow().get(&name) {
+                    Some(f) => (f.clone(), name),
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        let op_str = siox_syntax::pretty::bin_op(op);
+        // `==`/`!=`: bit equality at the type's width (mask both sides).
+        if matches!(op_str, "==" | "!=") {
+            let Some(w) = self.name_width(&lname) else { return Ok(None) };
+            if w == 0 || w >= 64 {
+                return Ok(None);
+            }
+            let a = mask_c(&self.expr(lhs)?, w);
+            let b = mask_c(&self.expr(rhs)?, w);
+            return Ok(Some(format!(
+                "(({a}) {} ({b}))",
+                if op_str == "==" { "==" } else { "!=" }
+            )));
+        }
+        let cmp = match op_str {
+            "<" => Some((0u64, false)),
+            ">" => Some((2, false)),
+            ">=" => Some((0, true)),
+            "<=" => Some((2, true)),
+            _ => None,
+        };
+        let tr = match cmp {
+            Some(_) => "Ord",
+            None => match siox_syntax::ast::op_trait_name(op_str) {
+                Some(t) => t,
+                None => return Ok(None),
+            },
+        };
+        let Some(f) = self.op_impls.get(&(tr.to_string(), fam)) else {
+            return Ok(None);
+        };
+        let Some(body) = f.body.as_ref() else { return Ok(None) };
+
+        let w = self.name_width(&lname).unwrap_or(0);
+        let mut env = HashMap::new();
+        env.insert("self".to_string(), format!("({})", self.expr(lhs)?));
+        env.insert("self::width".to_string(), format!("{w}ULL"));
+        if let Some(pdecl) = f.params.iter().find(|p| !p.is_self) {
+            if let Some(n) = &pdecl.name {
+                let rw = match rhs {
+                    ast::Expr::Path(p) if p.segments.len() == 1 => {
+                        self.name_width(&p.segments[0].text).unwrap_or(w)
+                    }
+                    _ => w,
+                };
+                env.insert(n.text.clone(), format!("({})", self.expr(rhs)?));
+                env.insert(format!("{}::width", n.text), format!("{rw}ULL"));
+            }
+        }
+        self.fn_env.borrow_mut().push(env);
+        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_env.borrow_mut().pop();
+        let r = out?;
+        Ok(Some(match cmp {
+            Some((want, ne)) => {
+                format!("(({r}) {} {want}ULL)", if ne { "!=" } else { "==" })
+            }
+            None => mask_c(&r, w),
+        }))
+    }
+
     /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
     /// element width of an array of one). Mirrors the runner's rule.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
@@ -286,6 +421,13 @@ impl Ctx<'_> {
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
                     value => {
+                        // Record the vector family for every declared name
+                        // (connected ports too): operators dispatch on it.
+                        if let Some((fam, _)) =
+                            l.ty.as_ref().and_then(|t| self.declared_family(t))
+                        {
+                            self.local_families.borrow_mut().insert(l.name.text.clone(), fam);
+                        }
                         if let Some(&id) = self.map.get(&l.name.text) {
                             if let Some(v) = value {
                                 let e = self.value_for(id, v)?;
@@ -837,7 +979,16 @@ impl Ctx<'_> {
                     {
                         match args.get(1) {
                             Some(ast::Expr::Int { text, .. }) => parse_u64(text),
-                            _ => return Err("resize width must be a constant here".into()),
+                            // `resize(x, self::width)` inside an inlined
+                            // operator impl: the bound width is a C literal
+                            // like `8ULL` — recover the number.
+                            Some(other) => {
+                                let c = self.expr(other)?;
+                                c.trim_end_matches("ULL")
+                                    .parse()
+                                    .map_err(|_| "resize width must be a constant here".to_string())?
+                            }
+                            None => return Err("resize width must be a constant here".into()),
                         }
                     }
                     ast::Expr::Path(p)
@@ -861,6 +1012,15 @@ impl Ctx<'_> {
                 } else {
                     format!("(({v}) & {}ULL)", (1u64 << w) - 1)
                 }
+            }
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "width" => {
+                let path = expr_path(base).ok_or("::width needs a named base")?;
+                if let Some(v) =
+                    self.fn_env.borrow().last().and_then(|m| m.get(&format!("{path}::width")))
+                {
+                    return Ok(v.clone());
+                }
+                format!("{}ULL", self.name_width(&path).ok_or("unknown ::width")?)
             }
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => {
                 let n = expr_path(base)
@@ -911,6 +1071,11 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // A typed operand inlines its family's operator impl (int's
+                // signed Div/Ord), matching the runner.
+                if let Some(v) = self.c_dispatch_binop(*op, lhs, rhs)? {
+                    return Ok(v);
+                }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(*op)?, self.expr(rhs)?);
                 format!("({a} {o} {c})")
             }
