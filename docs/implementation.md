@@ -186,8 +186,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   suggestions (edit distance) and related spans (duplicate items). Warnings
   emitted: **non-exhaustive enum match** (`W-P007`), **unreachable match
   arm** (`W-P006`), **possible latch** (`W-P002`, a combinational signal only
-  assigned under a condition), and **unused import** (`W-P005`, per-file, std
-  excluded). **Multiple drivers on an unresolved type** is a hard error (the
+  assigned under a condition), **combinational loop** (`W-P010`, a comb signal
+  that depends on itself with no register in the path), and **unused import**
+  (`W-P005`, per-file, std excluded). **Multiple drivers on an unresolved type** is a hard error (the
   `Resolve` safety rule), now surfaced by `check` (which elaborates + lowers).
 - **Status (todo):** the remaining warnings — unused signal/param (the IR can't
   see a testbench's reads, so this needs use-tracking that spans the runner),

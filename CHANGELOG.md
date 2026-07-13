@@ -12,6 +12,10 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Combinational-loop lint (`W-P010`).** A combinational signal whose value
+  depends on itself with no register in the path (a zero-delay cycle with no
+  settled value) is flagged at compile time — the simulators otherwise stop it
+  at an arbitrary point.
 - **Symbolic enum values in VCD waveforms.** A named enum (an FSM `State`,
   `Bool`) dumps as a VCD `string` variable, so a waveform viewer shows `Idle`/
   `Run`/`false`/`true` instead of a raw discriminant. Logic scalars keep their

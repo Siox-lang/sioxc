@@ -237,6 +237,7 @@ pub fn lower_in(
     }
     l.lint_possible_latches();
     l.resolve_driver_contexts();
+    l.lint_combinational_loops();
     l.out
 }
 
@@ -879,6 +880,69 @@ impl<'a> Lowering<'a> {
             }
         }
         out
+    }
+
+    /// Combinational-loop lint (W-P010): a combinational signal whose value
+    /// depends on itself through only combinational drivers is a zero-delay
+    /// cycle with no register to break it — it has no well-defined settled
+    /// value (the engines stop it at an arbitrary point). Event-block
+    /// (sequential) targets break a cycle, so only comb→comb edges count.
+    fn lint_combinational_loops(&mut self) {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+        let procs = self.out.processes();
+        // Signals driven combinationally, and for each its comb dependencies
+        // (reads that are themselves combinational targets).
+        let comb_targets: HashSet<u32> = procs
+            .iter()
+            .filter_map(|p| match p.kind {
+                ProcessKind::Comb { target, .. } => Some(target.0),
+                _ => None,
+            })
+            .collect();
+        let mut deps: HashMap<u32, Vec<u32>> = HashMap::new();
+        for p in &procs {
+            if let ProcessKind::Comb { target, .. } = p.kind {
+                let e = deps.entry(target.0).or_default();
+                for r in &p.reads {
+                    if comb_targets.contains(&r.0) {
+                        e.push(r.0);
+                    }
+                }
+            }
+        }
+        // A signal on a cycle can reach itself. Report each such signal once.
+        let reaches_self = |start: u32| -> bool {
+            let mut stack = deps.get(&start).cloned().unwrap_or_default();
+            let mut seen: HashSet<u32> = HashSet::new();
+            while let Some(n) = stack.pop() {
+                if n == start {
+                    return true;
+                }
+                if seen.insert(n) {
+                    if let Some(next) = deps.get(&n) {
+                        stack.extend(next.iter().copied());
+                    }
+                }
+            }
+            false
+        };
+        let mut looped: BTreeSet<u32> = BTreeSet::new();
+        for &t in &comb_targets {
+            if reaches_self(t) {
+                looped.insert(t);
+            }
+        }
+        for t in looped {
+            let path = self.out.signals[t as usize].path.clone();
+            self.sink.emit(
+                siox_diag::Diagnostic::warning(format!(
+                    "`{path}` is in a combinational loop — its value depends on itself \
+                     with no register in the path, so it has no settled value"
+                ))
+                .with_code(siox_diag::codes::COMBINATIONAL_LOOP)
+                .help("break the loop with a clocked register, or an unconditional default"),
+            );
+        }
     }
 
     /// Possible-latch lint (W-P002): a *combinational* signal that is only ever
@@ -3785,6 +3849,31 @@ mod tests {
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn combinational_loop_lint() {
+        // `t = t + a;` is a zero-delay self-cycle -> flagged; a plain chain
+        // (`y = x + 1`) is not.
+        let diags = lower_diags(
+            "module m;\n\
+             entity L { in a: uint[8]; out y: uint[8]; }\n\
+             impl L { let t: uint[8]; t = t + a; y = t; }\n\
+             #[top] entity Top {}\n\
+             impl Top { let a: uint[8]; let y: uint[8]; let d = L { .a, .y }; }\n",
+        );
+        let loops: Vec<&String> = diags.iter().filter(|d| d.contains("W-P010")).collect();
+        assert!(!loops.is_empty(), "self-cycle flagged: {diags:?}");
+        assert!(loops.iter().any(|d| d.contains(".t")), "names t: {loops:?}");
+
+        let ok = lower_diags(
+            "module m;\n\
+             entity C { in x: uint[8]; out y: uint[8]; }\n\
+             impl C { y = x + 1; }\n\
+             #[top] entity Top {}\n\
+             impl Top { let x: uint[8]; let y: uint[8]; let d = C { .x, .y }; }\n",
+        );
+        assert!(!ok.iter().any(|d| d.contains("W-P010")), "no false positive: {ok:?}");
     }
 
     #[test]
