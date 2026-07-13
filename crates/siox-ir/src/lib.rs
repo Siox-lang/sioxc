@@ -3480,7 +3480,7 @@ fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
 
 /// The `: Type` head name when it names another enum — i.e. a derivation
 /// base rather than a numeric repr.
-fn enum_base_name<'a>(e: &ast::EnumDecl, enums: &HashMap<String, &'a ast::EnumDecl>) -> Option<String> {
+fn enum_base_name(e: &ast::EnumDecl, enums: &HashMap<String, &ast::EnumDecl>) -> Option<String> {
     let name = type_head_name(e.repr.as_ref()?)?;
     enums.contains_key(name).then(|| name.to_string())
 }

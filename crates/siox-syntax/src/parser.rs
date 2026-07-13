@@ -550,7 +550,7 @@ impl<'a> Parser<'a> {
             let name = crate::ast::op_trait_name(&text).unwrap_or("Add").to_string();
             self.error_at(
                 t.span,
-                &format!("quoted operator traits were removed; use the Rust-style name (`{name}`)"),
+                format!("quoted operator traits were removed; use the Rust-style name (`{name}`)"),
             );
             Ident { text: name, span: t.span }
         } else {

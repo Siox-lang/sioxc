@@ -198,7 +198,7 @@ pub fn run_tests_with_engine<'e>(
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
-        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        let selected = filter.is_none_or(|f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
@@ -227,7 +227,7 @@ pub fn run_test_traced_with_engine<'e>(
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
-        let selected = filter.map_or(true, |f| inst.entity.contains(f));
+        let selected = filter.is_none_or(|f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
@@ -1480,7 +1480,7 @@ impl Testbench<'_> {
             // `xs::len`: an array's element count (spec: `::` metadata).
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => expr_path(base)
                 .and_then(|p| self.array_len(&p))
-                .map(|n| u128::from_u64(n))
+                .map(u128::from_u64)
                 .unwrap_or_else(|| u128::from_u64(0)),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;

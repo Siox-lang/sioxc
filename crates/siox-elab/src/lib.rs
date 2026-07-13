@@ -163,7 +163,7 @@ impl Hierarchy {
 
 /// Elaborate starting from every `#[top]` / `#[test]` entity.
 pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -> Hierarchy {
-    elaborate_roots(modules, typed, sink, |ent| is_root(ent))
+    elaborate_roots(modules, typed, sink, is_root)
 }
 
 /// Elaborate rooted at a single named entity — for `sioxc build`, which builds

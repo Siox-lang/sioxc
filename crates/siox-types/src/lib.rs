@@ -210,20 +210,17 @@ impl<'a> Checker<'a> {
         }
         for m in modules {
             for item in &m.items {
-                match item {
-                    Item::Entity(e) => {
-                        let ports = e
-                            .ports
-                            .iter()
-                            .map(|p| PortInfo {
-                                name: p.name.text.clone(),
-                                ty: self.ast_ty(&p.ty),
-                                dir: p.dir,
-                            })
-                            .collect();
-                        self.entities.insert(e.name.text.clone(), ports);
-                    }
-                    _ => {}
+                if let Item::Entity(e) = item {
+                    let ports = e
+                        .ports
+                        .iter()
+                        .map(|p| PortInfo {
+                            name: p.name.text.clone(),
+                            ty: self.ast_ty(&p.ty),
+                            dir: p.dir,
+                        })
+                        .collect();
+                    self.entities.insert(e.name.text.clone(), ports);
                 }
             }
         }

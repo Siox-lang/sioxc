@@ -3,8 +3,8 @@
 //! [`Simulator`] evaluates a `siox-ir` `Design` directly and implements
 //! [`siox_run::Engine`], so the shared test runner can drive it. It is kept as
 //! the **differential oracle** verifying the compiled (LLVM) backend, and as the
-//! >64-bit fallback. See `siox-run` for the runner and `siox-llvm` for the
-//! default engine.
+//! wider-than-64-bit fallback. See `siox-run` for the runner and `siox-llvm`
+//! for the default engine.
 //!
 //! `settle` runs the delta cycle: mark `::event` for stimulus changes, evaluate
 //! combinational drivers to a fixpoint, fire event blocks (next-state from
