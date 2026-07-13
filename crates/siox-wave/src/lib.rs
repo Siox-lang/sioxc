@@ -5,6 +5,7 @@
 //! `$scope`/`$var` per signal (grouped by the `Entity.signal` path prefix), then
 //! `#time` value-change records. Enum symbolic names and FST are follow-ups.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 
 use siox_ir::Design;
@@ -37,6 +38,22 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         })
         .collect();
 
+    // A non-logic enum (an FSM `State`, `Bool`) dumps as a VCD `string` var —
+    // the de-facto extension that waveform viewers (GTKWave, Surfer) render as
+    // text — so states show as `Idle`/`Run` rather than a bare discriminant.
+    // Logic scalars, handled above, keep their native 0/1/z/x.
+    let name_tables: Vec<Option<&HashMap<u64, String>>> = design
+        .signals
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if logic_tables[i].is_some() {
+                return None;
+            }
+            design.enum_syms.get(s.enum_type.as_deref()?)
+        })
+        .collect();
+
     writeln!(out, "$timescale 1fs $end")?;
 
     // Group signals into scopes by the part of the path before the first `.`.
@@ -52,8 +69,12 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         writeln!(out, "$scope module {scope} $end")?;
         for &i in idxs {
             let (_, name) = split_path(&design.signals[i].path);
-            let w = if logic_tables[i].is_some() { 1 } else { vcd_width(design.signals[i].width) };
-            writeln!(out, "$var wire {w} {} {name} $end", ids[i])?;
+            if name_tables[i].is_some() {
+                writeln!(out, "$var string 1 {} {name} $end", ids[i])?;
+            } else {
+                let w = if logic_tables[i].is_some() { 1 } else { vcd_width(design.signals[i].width) };
+                writeln!(out, "$var wire {w} {} {name} $end", ids[i])?;
+            }
         }
         writeln!(out, "$upscope $end")?;
     }
@@ -80,12 +101,18 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         }
         for (i, v) in changes {
             last[i] = Some(v);
-            match &logic_tables[i] {
-                Some(table) => {
-                    let ch = table.get(v as usize).copied().unwrap_or('x');
-                    writeln!(out, "{ch}{}", ids[i])?;
+            if let Some(table) = &logic_tables[i] {
+                let ch = table.get(v as usize).copied().unwrap_or('x');
+                writeln!(out, "{ch}{}", ids[i])?;
+            } else if let Some(names) = name_tables[i] {
+                // A `string` value change: `s<symbol> <id>` (unknown
+                // discriminants — never expected — fall back to the number).
+                match names.get(&(v as u64)) {
+                    Some(sym) => writeln!(out, "s{sym} {}", ids[i])?,
+                    None => writeln!(out, "s{v} {}", ids[i])?,
                 }
-                None => write_value(out, v, design.signals[i].width, &ids[i])?,
+            } else {
+                write_value(out, v, design.signals[i].width, &ids[i])?;
             }
         }
     }
@@ -152,6 +179,45 @@ mod tests {
         assert!(vcd.contains("#0\n0v0\nb0 v1"));
         assert!(vcd.contains("#5\n1v0"));
         assert!(vcd.contains("#10\n0v0\nb11 v1"));
+    }
+
+    #[test]
+    fn enum_signals_dump_symbolically() {
+        // A logic scalar (Bit: '0'/'1') dumps native 0/1; a named enum (State)
+        // dumps as a VCD `string` var with its variant names.
+        let mut enum_syms: HashMap<String, HashMap<u64, String>> = HashMap::new();
+        enum_syms.insert(
+            "Bit".into(),
+            HashMap::from([(0, "'0'".into()), (1, "'1'".into())]),
+        );
+        enum_syms.insert(
+            "State".into(),
+            HashMap::from([(0, "Idle".into()), (1, "Run".into()), (2, "Done".into())]),
+        );
+        let design = Design {
+            signals: vec![
+                Signal { path: "M.b".into(), width: 1, real: false, char: false, range: None, init: 0, enum_type: Some("Bit".into()) },
+                Signal { path: "M.st".into(), width: 2, real: false, char: false, range: None, init: 0, enum_type: Some("State".into()) },
+            ],
+            drivers: vec![],
+            event_blocks: vec![],
+            enum_syms,
+            base_dir: Default::default(),
+        };
+        let samples = vec![
+            Sample { time_fs: 0, values: vec![0, 0] },
+            Sample { time_fs: 5, values: vec![1, 1] }, // b -> '1', st -> Run
+            Sample { time_fs: 10, values: vec![1, 2] }, // st -> Done
+        ];
+        let mut buf = Vec::new();
+        write_vcd(&mut buf, &design, &samples).unwrap();
+        let vcd = String::from_utf8(buf).unwrap();
+        assert!(vcd.contains("$var wire 1 v0 b $end"), "Bit is a 1-bit wire");
+        assert!(vcd.contains("$var string 1 v1 st $end"), "State is a string var");
+        assert!(vcd.contains("0v0"), "Bit dumps native 0/1");
+        assert!(vcd.contains("sIdle v1"), "state 0 -> Idle");
+        assert!(vcd.contains("sRun v1"), "state 1 -> Run");
+        assert!(vcd.contains("sDone v1"), "state 2 -> Done");
     }
 
     #[test]

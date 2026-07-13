@@ -171,9 +171,11 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   ~100 ns, count reaching 10).
 - **Status (done, cont.):** struct fields and array elements appear as separate
   trace paths (`p.valid`, `a[2]`) since composite signals are flattened in the IR.
-- **Status (todo):** enum values as symbolic names *in the VCD* (the
-  `Design::enum_syms` map already backs symbolic `print!`; wiring it into the
-  dump — or a GTKWave translate filter — is what remains); FST.
+- **Status (done, cont.):** **symbolic values** — a logic scalar (`Bit`/`Logic`/
+  `Clock`) dumps a 1-bit `0/1/z/x`; a named enum (an FSM `State`, `Bool`) dumps a
+  VCD `string` var (`$var string 1 …`, `sIdle …`), so viewers show `Idle`/`Run`
+  instead of a discriminant. Backed by `Design::enum_syms`.
+- **Status (todo):** FST output for large designs.
 
 ### Stage 10 — Diagnostics & lints (`siox-diag` + all) — 🟢 (ongoing)
 - **Acceptance:** every diagnostic has a code, a main span, a message, optional

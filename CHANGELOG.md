@@ -12,6 +12,10 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Symbolic enum values in VCD waveforms.** A named enum (an FSM `State`,
+  `Bool`) dumps as a VCD `string` variable, so a waveform viewer shows `Idle`/
+  `Run`/`false`/`true` instead of a raw discriminant. Logic scalars keep their
+  native `0/1/z/x`.
 - **`sioxc test <dir>`** runs every `.siox` file in a directory (sorted), each
   under its own header, then prints an aggregate line; the exit code is nonzero
   if any file failed. A file with no `#[test]` entity reports zero tests rather
