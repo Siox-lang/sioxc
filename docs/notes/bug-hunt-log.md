@@ -91,6 +91,31 @@ Probes: `match` and `else if` in `#[test]` bodies, all three engines.
 | 7.1 | String escapes (`\n`, `\t`, `\"`, `\\`) were kept raw (round-2 finding 2.4): `print!("tab\there")` printed the backslash. | **Fixed**: the parser unescapes the literal body once (unknown escapes keep the backslash, best-effort). |
 | 7.2 | With real control characters in strings, the native emitter's C-literal embedding was incomplete — a `\` + `e` sequence corrupted the printf format. | **Fixed**: one shared `c_escape` (backslash first, then quote/newline/tab/CR) for print formats, assert/warn messages, and enum symbols. |
 
+## Round 8 — full-surface survey (findings only; fixes follow)
+
+Per instruction: finish the hunt first, then fix. Areas swept: VCD waveforms,
+the scheduler, >64-bit signals, nested composite ports, std library, parser
+recovery, the CLI surface, and derived-type conversions.
+
+| # | Finding | Severity |
+|---|---------|----------|
+| 8.1 | **Derivation conversions are broken everywhere.** `Clock(b)` / `ULogic(b)` / `Logic(u)` — which `std/logic.siox` promises the compiler synthesizes from the derivation chain — return **0** in testbench evaluation, and in hardware lower to `Unknown`, making the JIT refuse the whole design. | **High** — wrong answers + refused designs for a documented feature. |
+| 8.2 | **JIT-unavailable + no fallback prints no test summary.** A >64-bit design (or any unlowerable one) on the default build prints one stderr note and exits 1 — no `test result: FAILED`, nothing that looks like a test ran. | **Medium** — CI/log consumers see silence. |
+| 8.3 | **4-value `Logic` dumps raw codes in VCD.** A 2-bit `$var wire 2` shows `b10`/`b11` where VCD has native `z`/`x` scalar states — waveform viewers show 2/3 instead of Z/X. | **Medium** — misleading waveforms for the flagship 4-value type. |
+| 8.4 | `std/rand.siox` declares nothing — `using std::rand::{randint}` errors while bare `randint(..)` calls work (runtime-provided, undeclared). | Low — inconsistent surface. |
+| 8.5 | `sioxc test <dir>` fails with the raw OS error "Is a directory". The directory runner is a known todo; the message should say so. | Low — UX. |
+| 8.6 | VCD cosmetics: duplicate `#0` timestamp blocks; no `$dumpvars` section. Viewers tolerate both. | Info. |
+
+Verified correct in the sweep: VCD structure/timing (per-change dumps, correct
+timestamps), scheduler (zero-duration await, condition await, falling edges,
+two independent clocks incl. a coincident edge), 128-bit arithmetic via the
+interpreter fallback (carry across the 64-bit boundary), nested struct ports
+across instances, `std::math` (sqrt/abs/min/max/pow), rand determinism
+(identical sequences on all three engines), parser error recovery (multiple
+errors + keep-going), 80-deep expression nesting, all CLI debug commands
+(`ast`/`ir`/`tree`/`tokens`/`emit-llvm`), and bare AOT compilation of a
+`#[top]` design.
+
 ## Still open (task list)
 
 - **#20** — testbench eval doesn't dispatch operator impls (signed int ops on
