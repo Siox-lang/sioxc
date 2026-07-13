@@ -93,6 +93,7 @@ interpreter engine and `--backend interp`.
 | `ir` · `ast` · `tree` · `tokens` · `emit-llvm` | debug dumps of each stage |
 
 All commands take `--std <dir>` (default `./std`) for the standard library root.
-Example programs live in [`../examples`](../examples) — counter, register, mux,
-FSM, struct/array, four-value logic, complex arithmetic, hierarchy, multi-clock,
-and `await` tests, each a runnable `#[test]` entity.
+Runnable example programs live in the
+[Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) corpus. For a
+usage-first walkthrough (get the compiler → write a circuit → run it → view
+waveforms), see the [top-level README](../README.md).
