@@ -496,17 +496,66 @@ impl<'a> Lowering<'a> {
     /// sub-instances). No testbench signals, statements, or top connections.
     fn lower_testbench_duts(&mut self, name: &str, env: &HashMap<String, i64>) {
         let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
+        // Every port a testbench name is connected to, across all DUTs — when
+        // one name binds an `out` and `in` ports (a DUT feeding another, or
+        // its own input), the out drives the ins as real hardware, so the
+        // value propagates on every settle without runner involvement.
+        let mut bindings: HashMap<String, Vec<(SignalId, Option<ast::Direction>)>> =
+            HashMap::new();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    if let Some(ast::Expr::Construct { ty: Some(cty), .. }) = &l.value {
+                    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
                         if let Some(sub) = type_head_name(cty) {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
                             sub_env.extend(self.construct_params(cty, env));
-                            self.lower_body(sub, &sub_path, &sub_env, &HashMap::new());
+                            let sub_ports =
+                                self.lower_body(sub, &sub_path, &sub_env, &HashMap::new());
+                            for c in args {
+                                // `.p` shorthand means the testbench name `p`.
+                                let tbname = match &c.value {
+                                    None => c.field.text.clone(),
+                                    Some(v) => match expr_path(v) {
+                                        Some(p) => p,
+                                        None => continue, // literal/expression
+                                    },
+                                };
+                                if let Some(&(sig, dir)) = sub_ports.get(&c.field.text) {
+                                    bindings.entry(tbname).or_default().push((sig, dir));
+                                }
+                            }
                         }
                     }
+                }
+            }
+        }
+        for ports in bindings.values() {
+            let outs: Vec<SignalId> = ports
+                .iter()
+                .filter(|(_, d)| *d == Some(ast::Direction::Out))
+                .map(|&(s, _)| s)
+                .collect();
+            let ins: Vec<SignalId> = ports
+                .iter()
+                .filter(|(_, d)| *d == Some(ast::Direction::In))
+                .map(|&(s, _)| s)
+                .collect();
+            if outs.is_empty() || ins.is_empty() {
+                continue;
+            }
+            // Each out contributes in its own context; several outs onto one
+            // name then fold through the type's Resolve (or error), exactly
+            // like parallel drivers anywhere else.
+            for &o in &outs {
+                let ctx = self.next_ctx();
+                for &i in &ins {
+                    self.out.drivers.push(Driver {
+                        target: i,
+                        cond: None,
+                        expr: Expr::Current(o),
+                        ctx,
+                    });
                 }
             }
         }

@@ -134,10 +134,26 @@ Verified: `-7/2 = -3`, signed `<`/`>`, arithmetic `>>`, and width-masked `==`
 identical on interpreter, JIT, and native; suites, corpus, and the three-way
 sweep all green. Regression test: `signed_local_test.siox` in the corpus.
 
+## Round 10 — testbench feedback wiring (fix for #11)
+
+A testbench local bound to one DUT's `out` and another's `in` (or a DUT's own
+input) never propagated — the runner only aliases names; nothing carried the
+output's value into the input. Chained DUTs needed a hardware wrapper (the SPI
+loopback workaround).
+
+| # | What landed |
+|---|-------------|
+| 10.1 | Testbench lowering collects every port each name binds; a name with an `out` and `in` bindings gets real feedback drivers (`in <- Current(out)`) in the lowered design — propagation happens on every settle, on all three engines, with zero runner involvement. Several outs onto one name each take their own driver context, so they fold through `Resolve` (or error) exactly like parallel drivers anywhere else. |
+| 10.2 | A DUT output wired back to its **own** input (`Inc { .x = w, .y = w }`) is a zero-delay combinational loop with no fixpoint: the settle iteration cap stops it at an arbitrary value rather than hanging. Honest limitation — an oscillation warning would be the polish (not done). |
+
+Regression test: `chain_test.siox` in the corpus (Inc→Dbl through a local,
+re-propagation on change), green on interpreter, JIT, and native.
+
 ## Still open (task list)
-- **#11** — testbench loopback (DUT out→in via one local) doesn't propagate.
 - **Round 5 item 5.4** — native-emitter expression coverage (struct/string
   literals, enum refs, module consts) — loud errors, not silent.
+- **Round 10 item 10.2** — no oscillation warning when a zero-delay
+  combinational loop fails to converge.
 - **Round 2 item 2.6** — compound literal masks (`0xFF and 0x0F` as an
   operand) rejected by types; policy question.
 
