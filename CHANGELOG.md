@@ -26,6 +26,11 @@ assertions, and VCD export — predates this changelog. See
   than failing.
 
 ### Fixed
+- **Module `const`s now resolve in testbench expressions.** A bare `const`
+  reference (`HIGH`, a user const) evaluated to `0` in the testbench evaluator —
+  correct only for consts that happened to be zero (`LOW`). Now collected to a
+  fixpoint (literals, logic chars, enum variants, other consts, const-fn
+  arithmetic) and resolved on the interpreter, JIT, and native binary.
 - **File reads are now source-relative.** `read`/`read_to_string`/`exists`
   resolve a relative path against the `.siox` file's own directory (like
   `include_bytes!`), not the process working directory, so a program that bakes

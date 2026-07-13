@@ -149,6 +149,22 @@ loopback workaround).
 Regression test: `chain_test.siox` in the corpus (Inc→Dbl through a local,
 re-propagation on change), green on interpreter, JIT, and native.
 
+## Round 11 — polish/completeness sweep (post-bug-hunt features)
+
+Working the polish/completeness backlog; one item exposed a real bug.
+
+| # | What landed |
+|---|-------------|
+| 11.1 | **`sioxc test <dir>`** runs every `.siox` in a directory, per-file reports + an aggregate + nonzero exit on any failure; a no-`#[test]` file reports zero tests instead of a spurious engine-build failure. |
+| 11.2 | **Symbolic enum values in VCD** — named enums (`State`, `Bool`) dump as VCD `string` vars (`sIdle …`); logic scalars keep `0/1/z/x`. |
+| 11.3 | **Combinational-loop lint `W-P010`** — a comb signal that reaches itself through comb→comb edges is flagged statically (the loopback case; the Inc→Dbl chain is not). |
+| 11.4 | **Module consts were unresolved in testbench expressions — a real correctness bug.** The runner returned 0 for any bare name not a local/signal, so `HIGH` (`'1'`) evaluated to **0**; std_test only passed because it used HIGH symmetrically. `eval_const_fns` didn't even handle `LogicLit`. Fixed: a fixpoint const collector (literals, logic chars, enum variants, other consts, const-fn arithmetic) threaded into the runner and the native emitter; bare names resolve to their const value on all three engines. |
+
+Still open: derived-enum *inherited* variants in the native emitter (`Extended::A`
+where `A` is inherited from `Base`) — derive_chain_test doesn't build native;
+struct/string literal testbench exprs in the native emitter (loud errors, JIT
+covers them); instance arrays (redundant with generate loops unless indexable).
+
 ## Still open (task list)
 - **Round 5 item 5.4** — native-emitter expression coverage (struct/string
   literals, enum refs, module consts) — loud errors, not silent.

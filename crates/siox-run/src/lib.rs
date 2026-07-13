@@ -192,6 +192,7 @@ pub fn run_tests_with_engine<'e>(
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
+    let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
@@ -201,7 +202,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &families, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &consts, &families, false).0);
         }
     }
     results
@@ -221,6 +222,7 @@ pub fn run_test_traced_with_engine<'e>(
     let enums = enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
+    let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -229,7 +231,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &families, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &consts, &families, true));
         }
     }
     None
@@ -296,6 +298,71 @@ fn collect_op_impls(modules: &[Module]) -> HashMap<(String, String), &ast::FnDec
     out
 }
 
+/// Module-level `const` values, for testbench expressions (`LOW`, `HIGH`, a
+/// user `const`). Evaluated to a fixpoint so a const may reference another
+/// regardless of declaration order.
+fn collect_consts(
+    modules: &[Module],
+    enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &HashMap<String, &ast::FnDecl>,
+) -> HashMap<String, u128> {
+    let decls: Vec<&ast::ConstDecl> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|it| match it {
+            ast::Item::Const(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let mut out: HashMap<String, u128> = HashMap::new();
+    // Fixpoint: at most one new const resolves per pass in the worst case.
+    for _ in 0..=decls.len() {
+        let mut progressed = false;
+        for c in &decls {
+            if out.contains_key(&c.name.text) {
+                continue;
+            }
+            if let Some(v) = eval_tb_const(&c.value, &out, enums, fns) {
+                out.insert(c.name.text.clone(), v);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    out
+}
+
+/// Evaluate a constant expression for the testbench: literals, logic chars,
+/// enum variants, other consts, and const-fn arithmetic.
+fn eval_tb_const(
+    e: &ast::Expr,
+    consts: &HashMap<String, u128>,
+    enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &HashMap<String, &ast::FnDecl>,
+) -> Option<u128> {
+    match e {
+        ast::Expr::Int { text, .. } => Some(u128::from_u64(parse_u64(text))),
+        ast::Expr::Bool { value, .. } => Some(u128::from_u64(*value as u64)),
+        ast::Expr::LogicLit { ch, .. } => Some(u128::from_u64(logic_value(*ch))),
+        ast::Expr::Path(p) if p.segments.len() == 1 => {
+            consts.get(&p.segments[0].text).copied()
+        }
+        ast::Expr::Path(p) if p.segments.len() >= 2 => enums
+            .get(&p.segments[0].text)
+            .and_then(|m| m.get(&p.segments[1].text))
+            .map(|&d| u128::from_u64(d)),
+        // Arithmetic / const-fn: reuse the shared signed evaluator with the
+        // already-known consts as the environment.
+        _ => {
+            let env: HashMap<String, i64> =
+                consts.iter().map(|(k, &v)| (k.clone(), v.to_u64() as i64)).collect();
+            siox_ir::eval_const_fns(e, &env, fns, 0).map(|v| u128::from_u64(v as u64))
+        }
+    }
+}
+
 fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     let mut out = HashMap::new();
     for m in modules {
@@ -342,6 +409,7 @@ fn run_one<'a>(
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    consts: &'a HashMap<String, u128>,
     families: &'a std::collections::HashSet<String>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
@@ -392,6 +460,7 @@ fn run_one<'a>(
         local_families: HashMap::new(),
         fns,
         op_impls,
+        consts,
         families,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
@@ -496,6 +565,8 @@ struct Testbench<'a> {
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Operator-trait impls `(trait, type) -> fn`, for typed operator dispatch.
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Module-level `const` values, for bare-name references in expressions.
+    consts: &'a HashMap<String, u128>,
     /// Bit-vector families (name -> signed), for testbench conversions.
     families: &'a std::collections::HashSet<String>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
@@ -1419,10 +1490,11 @@ impl Testbench<'_> {
                 if let Some(&v) = self.locals.get(name) {
                     return v;
                 }
-                self.map
-                    .get(name)
-                    .map(|&id| self.engine.read(id))
-                    .unwrap_or_else(|| u128::from_u64(0))
+                if let Some(&id) = self.map.get(name) {
+                    return self.engine.read(id);
+                }
+                // A module-level `const` (`LOW`, `HIGH`, a user const).
+                self.consts.get(name).copied().unwrap_or_else(|| u128::from_u64(0))
             }
             // `Enum::Variant` evaluates to its discriminant.
             ast::Expr::Path(p) if p.segments.len() >= 2 => u128::from_u64(

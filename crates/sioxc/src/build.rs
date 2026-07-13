@@ -65,6 +65,31 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             }
         }
     }
+    // Module consts (LOW/HIGH, user consts), to a fixpoint so order-independent.
+    let const_decls: Vec<&ast::ConstDecl> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|it| match it {
+            ast::Item::Const(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let mut consts: HashMap<String, u128> = HashMap::new();
+    for _ in 0..=const_decls.len() {
+        let mut progressed = false;
+        for c in &const_decls {
+            if consts.contains_key(&c.name.text) {
+                continue;
+            }
+            if let Some(v) = eval_c_const(&c.value, &consts, &enums, &fns) {
+                consts.insert(c.name.text.clone(), v);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
 
     // Header, one `int test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
@@ -149,6 +174,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             local_widths: Default::default(),
             local_families: Default::default(),
             op_impls: &op_impls,
+            consts: &consts,
             aliases: &aliases,
             tmp: Default::default(),
             fns: &fns,
@@ -232,6 +258,8 @@ struct Ctx<'a> {
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Module-level `const` values, for bare-name references.
+    consts: &'a HashMap<String, u128>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
@@ -250,6 +278,31 @@ fn c_escape(t: &str) -> String {
         .replace('\n', "\\n")
         .replace('\t', "\\t")
         .replace('\r', "\\r")
+}
+
+/// Evaluate a module `const` initializer for the native testbench: literals,
+/// logic chars, enum variants, other consts, and const-fn arithmetic.
+fn eval_c_const(
+    e: &ast::Expr,
+    consts: &HashMap<String, u128>,
+    enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &HashMap<String, &ast::FnDecl>,
+) -> Option<u128> {
+    match e {
+        ast::Expr::Int { text, .. } => Some(parse_u64(text) as u128),
+        ast::Expr::Bool { value, .. } => Some(*value as u128),
+        ast::Expr::LogicLit { ch, .. } => Some(logic_value(*ch) as u128),
+        ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
+        ast::Expr::Path(p) if p.segments.len() >= 2 => enums
+            .get(&p.segments[0].text)
+            .and_then(|m| m.get(&p.segments[1].text))
+            .map(|&d| d as u128),
+        _ => {
+            let env: HashMap<String, i64> =
+                consts.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
+            siox_ir::eval_const_fns(e, &env, fns, 0).map(|v| v as u128)
+        }
+    }
 }
 
 /// Wrap a C expression so it masks to `w` bits (wrap at 2^w).
@@ -1044,9 +1097,13 @@ impl Ctx<'_> {
                 p.segments[0].text.clone()
             }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
-                let id =
-                    self.map.get(&p.segments[0].text).ok_or_else(|| unsup(&p.segments[0].text))?;
-                format!("sx_read({})", id.0)
+                if let Some(&id) = self.map.get(&p.segments[0].text) {
+                    format!("sx_read({})", id.0)
+                } else if let Some(&v) = self.consts.get(&p.segments[0].text) {
+                    format!("{}ULL", v as u64)
+                } else {
+                    return Err(unsup(&p.segments[0].text));
+                }
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
                 // Enum::Variant -> discriminant.
