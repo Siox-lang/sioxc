@@ -13,6 +13,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | -------- | ---------- |
 | [language-features.md](language-features.md) | **The language at a glance** — a one-page tour of what siox can express, above the full spec. |
 | [editor.md](editor.md) | **Editor support** — setting up the `siox-lsp` language server and what it provides. |
+| [waveforms.md](waveforms.md) | **Waveforms** — producing a VCD and viewing it in Surfer or GTKWave, and how siox values render. |
 | [spec.md](spec.md) | The **Phase 1 language specification** — the authority for syntax and semantics. Kept current as the language evolves. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |

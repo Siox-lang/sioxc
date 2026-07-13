@@ -35,9 +35,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Acceptance:** the required examples (counter, register, mux, FSM,
   ready/valid, enum monitor, test entity, extern entity, attribute usage) have
   final syntax.
-- **Status:** grammar is implemented in the parser; `examples/counter.siox` and
-  `examples/counter_tb.siox` exist. More example programs still to be added as
-  regression fixtures.
+- **Status:** grammar is implemented in the parser; the runnable example/
+  conformance corpus (counters, FSMs, a FIFO, SPI, RISC-V fragments, …) lives in
+  the [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) repo, which
+  CI runs against every build.
 
 ### Stage 2 — Lexer & parser (`siox-syntax`) — 🟢
 - **Acceptance:** valid examples parse; invalid syntax gives useful spans; the
@@ -143,7 +144,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 
 ### Stage 8 — Tests, assertions, stimulus (`siox-run`) — 🟢 partial
 - **Acceptance:** passing assertions report success; failures report
-  file/span/message; multiple tests run; `siox test examples/` works.
+  file/span/message; multiple tests run; `sioxc test <dir>` runs a whole corpus.
 - **Status (done):** the runner discovers `#[test]` entities, maps their signals
   to the DUT via the elaborated connections, and drives the stimulus (`let`
   initials, assignments, `tick(clk)`, `wait`, `for`, `if`, `assert!(cond,
@@ -208,16 +209,16 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   literal-suffix impls — `10ns`, `100MHz` — plus FS..MS integer constants),
   `std::math` (`Complex` over `real` — f64 in simulation — with `"+"`/`"-"`
   impls incl. mixed-operand `10 + 5i` and the `i` suffix; exercised by
-  `examples/complex_test.siox`; the operator/Suffix/Prefix mechanisms are
+  `complex_test`; the operator/Suffix/Prefix mechanisms are
   compiler built-ins, not std declarations).
   `std::logic` now carries the **four-value truth tables** for
   `and or xor nand nor xnor` on `Logic` as ordinary operator impls
-  (X/Z propagation, `examples/logic_test.siox`) — std_logic_1164's core as
+  (X/Z propagation, `logic_test`) — std_logic_1164's core as
   library source. Full reference: docs/std.md.
   The kernel's base types are only `integer` and `real` (spec "type kernel");
   the checker/IR still recognize the std::logic/std::bits names intrinsically
   as a shim until operator overloading carries their semantics in source.
-  `examples/std_test.siox` exercises every module through real imports.
+  `std_test` exercises every module through real imports.
 
 ### Stage 12 — CLI & workflow (`sioxc`) — 🟢
 - **Acceptance:** `sioxc check` succeeds; `sioxc sim --wave` produces a waveform;

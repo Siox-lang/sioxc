@@ -185,7 +185,7 @@ uint64_t sx_time(void);
 
 - `siox test --backend=llvm` passes the entire example corpus with results
   and VCDs identical to the interpreter (B4).
-- `siox build examples/counter_test.siox -o sim && ./sim` prints the same
+- `sioxc test counter_test.siox --no-run -o sim && ./sim` prints the same
   PASS and exit code as `siox test` (B5).
 - A 10⁸-cycle counter benchmark shows a clear compiled-over-interpreted
   win before any optimization stage; static scheduling and type narrowing

@@ -1483,7 +1483,7 @@ Implement:
 The compiler can run:
 
 ```bash
-siox parse examples/counter.siox
+siox parse counter.siox
 ```
 
 and print a stable AST or pretty-printed source.
@@ -2042,7 +2042,7 @@ Export simulation traces for debugging.
 ### Example CLI
 
 ```bash
-siox sim examples/counter_test.siox --wave counter.vcd
+siox sim counter_test.siox --wave counter.vcd
 ```
 
 ### Endgoal
@@ -2294,9 +2294,9 @@ A user can write examples, check them, run simulations, and inspect output.
 
 ### Acceptance criteria
 
-- `siox check examples/counter.siox` reports success.
-- `siox sim examples/counter_test.siox --wave counter.vcd` produces a waveform.
-- `siox test examples/` runs all tests.
+- `siox check counter.siox` reports success.
+- `siox sim counter_test.siox --wave counter.vcd` produces a waveform.
+- `siox test <dir>` runs all tests.
 - Compiler exits nonzero on failed checks/tests.
 
 ---
