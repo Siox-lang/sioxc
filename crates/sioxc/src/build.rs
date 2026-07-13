@@ -120,9 +120,9 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     let mut names = Vec::new();
     for &root in &tests {
         let name = hier.instance(root).entity.clone();
-        let map = build_map(hier, root, design);
+        let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, &name);
-        let clocks = scan_clocks(&items, &map);
+        let clocks = scan_clocks(&items, &aliases);
         let ctx = Ctx {
             design,
             map: &map,
@@ -131,6 +131,8 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             name: &name,
             clocks,
             locals: Default::default(),
+            local_widths: Default::default(),
+            aliases: &aliases,
             tmp: Default::default(),
             fns: &fns,
             fn_env: Default::default(),
@@ -202,6 +204,11 @@ struct Ctx<'a> {
     clocks: Vec<(u32, u64)>,
     /// Names currently bound as C locals (unconnected `let`s, loop variables).
     locals: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Declared bit width of a C local (`let c: uint[8]` -> 8): writes mask to
+    /// it so arithmetic wraps exactly like the equivalent hardware signal.
+    local_widths: std::cell::RefCell<HashMap<String, u32>>,
+    /// Testbench name -> EVERY connected port's signal id (a write drives all).
+    aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
     tmp: std::cell::Cell<usize>,
     /// Module-level functions (testbench-callable; translated to C ternaries).
@@ -210,7 +217,37 @@ struct Ctx<'a> {
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
 }
 
+/// Wrap a C expression so it masks to `w` bits (wrap at 2^w).
+fn mask_c(e: &str, w: u32) -> String {
+    if w > 0 && w < 64 {
+        format!("(({e}) & {:#x}ULL)", (1u64 << w) - 1)
+    } else {
+        e.to_string()
+    }
+}
+
 impl Ctx<'_> {
+    /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
+    /// element width of an array of one). Mirrors the runner's rule.
+    fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
+        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+            if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
+                return self.declared_width(base);
+            }
+            let head = match base.as_ref() {
+                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
+                _ => return None,
+            };
+            if !self.families.contains(head) {
+                return None;
+            }
+            if let ast::Expr::Int { text, .. } = i.as_ref() {
+                return text.parse().ok();
+            }
+        }
+        None
+    }
+
     /// `int test_<name>(void) { ... }` — 0 on pass, 1 on the first failed
     /// assert (printing its message first, like a panic).
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
@@ -249,6 +286,15 @@ impl Ctx<'_> {
                                 Some(v) => self.expr(v)?,
                                 None => "0".to_string(),
                             };
+                            // A vector-family local wraps at its declared
+                            // width, like the equivalent hardware signal.
+                            let e = match l.ty.as_ref().and_then(|t| self.declared_width(t)) {
+                                Some(w) => {
+                                    self.local_widths.borrow_mut().insert(l.name.text.clone(), w);
+                                    mask_c(&e, w)
+                                }
+                                None => e,
+                            };
                             b.push_str(&format!("    uint64_t {} = {e};\n", l.name.text));
                             self.locals.borrow_mut().insert(l.name.text.clone());
                         }
@@ -285,25 +331,40 @@ impl Ctx<'_> {
                     // delayed writes aren't compiled yet.
                     let (path, _) = after_toggle(target, value, after)
                         .ok_or("only the `clk = not clk after d` form of `after` is supported in the native binary yet (use `sioxc test`)")?;
-                    let id = self.map.get(&path).ok_or_else(|| format!("unknown signal `{path}`"))?;
-                    if let Some(i) = self.clocks.iter().position(|(c, _)| *c == id.0) {
-                        b.push_str(&format!(
-                            "{ind}_next[{i}] = _now + {}ULL; _nclk = {}; sx_settle();\n",
-                            self.clocks[i].1,
-                            i + 1
-                        ));
+                    if !self.map.contains_key(&path) {
+                        return Err(format!("unknown signal `{path}`"));
+                    }
+                    for id in self.aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
+                        if let Some(i) = self.clocks.iter().position(|(c, _)| *c == id.0) {
+                            b.push_str(&format!(
+                                "{ind}_next[{i}] = _now + {}ULL; _nclk = {}; sx_settle();\n",
+                                self.clocks[i].1,
+                                i + 1
+                            ));
+                        }
                     }
                     return Ok(());
                 }
                 let name = expr_path(target).ok_or("unsupported assignment target")?;
                 if self.locals.borrow().contains(&name) {
                     let e = self.expr(value)?;
+                    let e = match self.local_widths.borrow().get(&name) {
+                        Some(&w) => mask_c(&e, w),
+                        None => e,
+                    };
                     b.push_str(&format!("{ind}{name} = {e};\n"));
                     return Ok(());
                 }
                 let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
                 let e = self.value_for(id, value)?;
-                b.push_str(&format!("{ind}sx_set({}, {e});\n{ind}sx_settle();\n", id.0));
+                // Drive every port this name connects to (sx_set masks to each
+                // signal's width).
+                b.push_str(&format!("{ind}{{ uint64_t _v = {e};"));
+                for a in self.aliases.get(&name).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    b.push_str(&format!(" sx_set({}, _v);", a.0));
+                }
+                b.push_str(&format!(" }}\n{ind}sx_settle();\n"));
+                let _ = id;
             }
             ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, .. }) => {
                 self.call(callee, args, *bang, b, depth)?;
@@ -779,7 +840,13 @@ impl Ctx<'_> {
                 let (a, o, c) = (self.expr(lhs)?, c_binop(*op)?, self.expr(rhs)?);
                 format!("({a} {o} {c})")
             }
-            _ => return Err("unsupported testbench expression".into()),
+            other => {
+                // Say WHICH expression, so the report is actionable.
+                return Err(format!(
+                    "unsupported testbench expression: `{}`",
+                    siox_syntax::pretty::expr_string(other)
+                ));
+            }
         })
     }
 
@@ -843,7 +910,10 @@ fn after_toggle(target: &ast::Expr, value: &ast::Expr, after: &Option<ast::Expr>
 
 /// Collect the background clocks in a test's body — `clock(clk, period)` calls
 /// and the VHDL-style `clk = !clk after half;` idiom: (signal id, half fs).
-fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec<(u32, u64)> {
+fn scan_clocks(
+    items: &[&ast::ImplItem],
+    aliases: &HashMap<String, Vec<SignalId>>,
+) -> Vec<(u32, u64)> {
     let mut clocks: Vec<(u32, u64)> = Vec::new();
     let mut add = |id: u32, half: u64| {
         if !clocks.iter().any(|(c, _)| *c == id) {
@@ -854,7 +924,8 @@ fn scan_clocks(items: &[&ast::ImplItem], map: &HashMap<String, SignalId>) -> Vec
         match item {
             ast::ImplItem::Stmt(ast::Stmt::Assign { target, value, after, .. }) => {
                 if let Some((path, half)) = after_toggle(target, value, after) {
-                    if let Some(id) = map.get(&path) {
+                    // A clock shared by several DUTs toggles every port.
+                    for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
                         add(id.0, half);
                     }
                 }
@@ -898,11 +969,18 @@ fn is_test_entity(modules: &[Module], entity: &str) -> bool {
     false
 }
 
-fn build_map(hier: &Hierarchy, root: InstanceId, design: &Design) -> HashMap<String, SignalId> {
+fn build_map(
+    hier: &Hierarchy,
+    root: InstanceId,
+    design: &Design,
+) -> (HashMap<String, SignalId>, HashMap<String, Vec<SignalId>>) {
     // DUTs lower per-instance under the testbench path (`<test>.<inst>.<port>`),
     // so two instances of one entity stay distinct (matches siox-run's map).
+    // `aliases` keeps EVERY binding of a name (one clock into many DUTs), so a
+    // write drives all connected ports.
     let tb = &hier.instance(root).entity;
     let mut map = HashMap::new();
+    let mut aliases: HashMap<String, Vec<SignalId>> = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
         for c in &child.connections {
@@ -911,15 +989,18 @@ fn build_map(hier: &Hierarchy, root: InstanceId, design: &Design) -> HashMap<Str
                 let id = SignalId(i as u32);
                 if sig.path == prefix {
                     map.insert(c.signal.clone(), id);
+                    aliases.entry(c.signal.clone()).or_default().push(id);
                 } else if let Some(suffix) = sig.path.strip_prefix(&prefix) {
                     if suffix.starts_with('.') || suffix.starts_with('[') {
-                        map.insert(format!("{}{suffix}", c.signal), id);
+                        let key = format!("{}{suffix}", c.signal);
+                        map.insert(key.clone(), id);
+                        aliases.entry(key).or_default().push(id);
                     }
                 }
             }
         }
     }
-    map
+    (map, aliases)
 }
 
 fn test_items<'a>(modules: &'a [Module], entity: &str) -> Vec<&'a ast::ImplItem> {

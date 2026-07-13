@@ -146,7 +146,17 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_switch(sig, done, &cases).unwrap();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            self.store("cur", SignalId(id as u32), val);
+            // Mask to the signal's width, exactly like the interpreter's
+            // `set` — outside writers (runner, native harness, FFI) may hand
+            // in a value wider than the signal.
+            let w = self.design.signals[id].width;
+            let stored = if w > 0 && w < 64 {
+                let m = i64.const_int((1u64 << w) - 1, false);
+                self.builder.build_and(val, m, "m").unwrap()
+            } else {
+                val
+            };
+            self.store("cur", SignalId(id as u32), stored);
             self.builder.build_unconditional_branch(done).unwrap();
         }
         self.builder.position_at_end(done);
