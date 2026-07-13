@@ -2487,7 +2487,11 @@ impl<'a> Lowering<'a> {
                     ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
                     _ => None,
                 }?;
-                self.vector_families.contains(&head).then_some(head)
+                // A conversion reads as its target: a vector family
+                // (`int[32](a)`) or an enum (`ULogic(b)` inside
+                // `Logic(ULogic(b))`).
+                (self.vector_families.contains(&head) || self.enum_variants.contains_key(&head))
+                    .then_some(head)
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants

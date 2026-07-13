@@ -1320,6 +1320,14 @@ impl Testbench<'_> {
                     {
                         return v;
                     }
+                    // An enum-derivation conversion (`Clock(b)`, `Logic(u)`):
+                    // representation-identity along the chain — pass through.
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1
+                            && self.enums.contains_key(&p.segments[0].text) =>
+                    {
+                        return v;
+                    }
                     _ => return self.eval_free_call(callee, args, fenv),
                 };
                 if w == 0 || w >= 128 {

@@ -846,6 +846,14 @@ impl Ctx<'_> {
                     {
                         return Ok(format!("({v})"));
                     }
+                    // An enum-derivation conversion (`Clock(b)`, `Logic(u)`):
+                    // representation-identity along the chain — pass through.
+                    ast::Expr::Path(p)
+                        if p.segments.len() == 1
+                            && self.enums.contains_key(&p.segments[0].text) =>
+                    {
+                        return Ok(format!("({v})"));
+                    }
                     _ => return self.c_fn_call(callee, args),
                 };
                 if w == 0 || w >= 64 {

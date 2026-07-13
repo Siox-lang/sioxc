@@ -362,7 +362,15 @@ impl<'a> Resolver<'a> {
                     ))
                     .with_code(codes::UNRESOLVED_IMPORT)
                     .at(n.span);
-                    if let Some(s) = self.suggest(&n.text) {
+                    // std::rand / std::fs ship runtime-provided functions that
+                    // are documented but not declared — callable bare.
+                    if matches!(base_str.as_str(), "std::rand" | "std::fs") {
+                        diag = diag.help(format!(
+                            "`{base_str}` functions are runtime-provided: call \
+                             `{}(..)` directly, no import needed",
+                            n.text
+                        ));
+                    } else if let Some(s) = self.suggest(&n.text) {
                         diag = diag.help(format!("did you mean `{s}`?"));
                     }
                     self.sink.emit(diag);

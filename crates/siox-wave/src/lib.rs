@@ -14,6 +14,29 @@ use siox_run::Sample;
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {
     let ids: Vec<String> = (0..design.signals.len()).map(|i| format!("v{i}")).collect();
 
+    // A logic-scalar enum (Bit/ULogic/Logic/Clock: every variant a quoted
+    // logic character) dumps as a 1-bit VCD scalar with native 0/1/z/x states
+    // instead of its raw discriminant — what waveform viewers expect.
+    let logic_tables: Vec<Option<Vec<char>>> = design
+        .signals
+        .iter()
+        .map(|s| {
+            let syms = design.enum_syms.get(s.enum_type.as_deref()?)?;
+            let mut table = vec!['x'; syms.keys().max().map(|&m| m as usize + 1)?];
+            for (&d, sym) in syms {
+                let ch = sym.strip_prefix('\'')?.strip_suffix('\'')?.chars().next()?;
+                table[d as usize] = match ch {
+                    '0' | 'L' => '0',
+                    '1' | 'H' => '1',
+                    'Z' => 'z',
+                    'X' | 'U' | 'W' | '-' => 'x',
+                    _ => return None,
+                };
+            }
+            Some(table)
+        })
+        .collect();
+
     writeln!(out, "$timescale 1fs $end")?;
 
     // Group signals into scopes by the part of the path before the first `.`.
@@ -29,7 +52,8 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         writeln!(out, "$scope module {scope} $end")?;
         for &i in idxs {
             let (_, name) = split_path(&design.signals[i].path);
-            writeln!(out, "$var wire {} {} {name} $end", vcd_width(design.signals[i].width), ids[i])?;
+            let w = if logic_tables[i].is_some() { 1 } else { vcd_width(design.signals[i].width) };
+            writeln!(out, "$var wire {w} {} {name} $end", ids[i])?;
         }
         writeln!(out, "$upscope $end")?;
     }
@@ -56,7 +80,13 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         }
         for (i, v) in changes {
             last[i] = Some(v);
-            write_value(out, v, design.signals[i].width, &ids[i])?;
+            match &logic_tables[i] {
+                Some(table) => {
+                    let ch = table.get(v as usize).copied().unwrap_or('x');
+                    writeln!(out, "{ch}{}", ids[i])?;
+                }
+                None => write_value(out, v, design.signals[i].width, &ids[i])?,
+            }
         }
     }
     Ok(())

@@ -99,12 +99,12 @@ recovery, the CLI surface, and derived-type conversions.
 
 | # | Finding | Severity |
 |---|---------|----------|
-| 8.1 | **Derivation conversions are broken everywhere.** `Clock(b)` / `ULogic(b)` / `Logic(u)` — which `std/logic.siox` promises the compiler synthesizes from the derivation chain — return **0** in testbench evaluation, and in hardware lower to `Unknown`, making the JIT refuse the whole design. | **High** — wrong answers + refused designs for a documented feature. |
-| 8.2 | **JIT-unavailable + no fallback prints no test summary.** A >64-bit design (or any unlowerable one) on the default build prints one stderr note and exits 1 — no `test result: FAILED`, nothing that looks like a test ran. | **Medium** — CI/log consumers see silence. |
-| 8.3 | **4-value `Logic` dumps raw codes in VCD.** A 2-bit `$var wire 2` shows `b10`/`b11` where VCD has native `z`/`x` scalar states — waveform viewers show 2/3 instead of Z/X. | **Medium** — misleading waveforms for the flagship 4-value type. |
-| 8.4 | `std/rand.siox` declares nothing — `using std::rand::{randint}` errors while bare `randint(..)` calls work (runtime-provided, undeclared). | Low — inconsistent surface. |
-| 8.5 | `sioxc test <dir>` fails with the raw OS error "Is a directory". The directory runner is a known todo; the message should say so. | Low — UX. |
-| 8.6 | VCD cosmetics: duplicate `#0` timestamp blocks; no `$dumpvars` section. Viewers tolerate both. | Info. |
+| 8.1 | **Derivation conversions are broken everywhere.** `Clock(b)` / `ULogic(b)` / `Logic(u)` — which `std/logic.siox` promises the compiler synthesizes from the derivation chain — return **0** in testbench evaluation, and in hardware lower to `Unknown`, making the JIT refuse the whole design. | **High** — **FIXED**: the IR's source-type inference sees through enum-conversion calls (so nested `Logic(ULogic(b))` reaches the existing `derived_conversion`); the runner and native emitter pass enum conversions through as representation-identity. All three engines agree. |
+| 8.2 | **JIT-unavailable + no fallback prints no test summary.** A >64-bit design (or any unlowerable one) on the default build prints one stderr note and exits 1 — no `test result: FAILED`, nothing that looks like a test ran. | **Medium** — **FIXED**: prints a proper `test result: FAILED. no engine can run this design (…)` with the `--features interp` hint; exit stays 1. |
+| 8.3 | **4-value `Logic` dumps raw codes in VCD.** A 2-bit `$var wire 2` shows `b10`/`b11` where VCD has native `z`/`x` scalar states — waveform viewers show 2/3 instead of Z/X. | **Medium** — **FIXED**: a logic-scalar enum (every variant a quoted logic char) declares `$var wire 1` and dumps `0/1/z/x` states (L/H fold to 0/1, U/W/- to x). Uses the `enum_syms` map, so it also covers user-defined logic enums. |
+| 8.4 | `std/rand.siox` declares nothing — `using std::rand::{randint}` errors while bare `randint(..)` calls work (runtime-provided, undeclared). | Low — surveyed further: `std::fs` has the same comment-only convention, so this is the *design* (runtime fns need no import). **FIXED as a diagnostic**: the unresolved-import error for `std::rand`/`std::fs` now says to call the function directly. |
+| 8.5 | `sioxc test <dir>` fails with the raw OS error "Is a directory". The directory runner is a known todo; the message should say so. | Low — **FIXED**: a directory input now explains the limitation and shows the per-file form. |
+| 8.6 | VCD cosmetics: duplicate `#0` timestamp blocks; no `$dumpvars` section. Viewers tolerate both. | Info — left as-is. |
 
 Verified correct in the sweep: VCD structure/timing (per-change dumps, correct
 timestamps), scheduler (zero-duration await, condition await, falling edges,

@@ -208,6 +208,15 @@ impl FrontendOut {
 /// imports from `std_root`. With `trace`, narrates the lex/parse steps. Does not
 /// render diagnostics — the caller decides when. `Err` only on a read failure.
 fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, ExitCode> {
+    if path.is_dir() {
+        eprintln!(
+            "error: {} is a directory; running a whole directory is not supported yet — \
+             pass one .siox file (e.g. `sioxc test {}/<file>.siox`)",
+            path.display(),
+            path.display()
+        );
+        return Err(ExitCode::FAILURE);
+    }
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -736,7 +745,15 @@ fn cmd_test(
                 }
                 #[cfg(not(feature = "interp"))]
                 {
+                    // No engine can run this design: report it as a proper
+                    // failed run, not just a stderr note — CI and humans both
+                    // look for the `test result:` line.
                     eprintln!("backend: llvm unavailable: {e}");
+                    println!(
+                        "\nrunning 0 tests\n\ntest result: FAILED. no engine can run this \
+                         design ({e}); rebuild with `--features interp` for the interpreter \
+                         fallback"
+                    );
                     return ExitCode::FAILURE;
                 }
             }
