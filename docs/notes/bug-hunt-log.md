@@ -84,15 +84,22 @@ Probes: `match` and `else if` in `#[test]` bodies, all three engines.
 | 6.2 | `else if` chains in a testbench were **silently skipped** too (the runner's If handler had "else-if: skip for now"). | **Fixed**: recursive `exec_if`. |
 | 6.3 | The native emitter had both holes as well — it *built* the binary and the match body never ran. | **Fixed**: `match` translates to a C if/else-if chain over the scrutinee; else-if recurses (`c_if`). |
 
+## Round 7 — string escapes (this round)
+
+| # | Finding | Verdict |
+|---|---------|---------|
+| 7.1 | String escapes (`\n`, `\t`, `\"`, `\\`) were kept raw (round-2 finding 2.4): `print!("tab\there")` printed the backslash. | **Fixed**: the parser unescapes the literal body once (unknown escapes keep the backslash, best-effort). |
+| 7.2 | With real control characters in strings, the native emitter's C-literal embedding was incomplete — a `\` + `e` sequence corrupted the printf format. | **Fixed**: one shared `c_escape` (backslash first, then quote/newline/tab/CR) for print formats, assert/warn messages, and enum symbols. |
+
 ## Still open (task list)
 
 - **#20** — testbench eval doesn't dispatch operator impls (signed int ops on
   locals give unsigned results; hardware correct).
-- **#21** — string escapes kept raw.
-- **#22** — testbench-level `match` silently skipped (runner and native).
 - **#11** — testbench loopback (DUT out→in via one local) doesn't propagate.
-- **#23 items 5.4** — native-emitter expression coverage (struct/string
-  literals, enum refs, module consts).
+- **Round 5 item 5.4** — native-emitter expression coverage (struct/string
+  literals, enum refs, module consts) — loud errors, not silent.
+- **Round 2 item 2.6** — compound literal masks (`0xFF and 0x0F` as an
+  operand) rejected by types; policy question.
 
 ## Method notes
 

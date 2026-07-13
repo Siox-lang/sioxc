@@ -989,7 +989,7 @@ impl<'a> Parser<'a> {
             TokenKind::StrLit => {
                 let t = self.bump();
                 let raw = self.text_of(t.span);
-                let text = raw.trim_matches('"').to_string();
+                let text = unescape(raw.trim_matches('"'));
                 Expr::StrLit { text, span: t.span }
             }
             TokenKind::LParen => {
@@ -1465,6 +1465,34 @@ fn is_sysattr(name: &str) -> bool {
             // (spec Stage 4). The rest of the analogue set is a Phase-2 concern.
             | "ddt"
     )
+}
+
+/// Process the standard escapes in a string literal body: `\\n`, `\\t`,
+/// `\\r`, `\\0`, `\\"`, `\\\\`. An unknown escape keeps the backslash
+/// verbatim (best-effort; the lexer already validated termination).
+fn unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut it = raw.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('0') => out.push('\0'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

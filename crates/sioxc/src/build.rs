@@ -217,6 +217,16 @@ struct Ctx<'a> {
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
 }
 
+/// Escape text for embedding inside a C string literal: backslash first,
+/// then quote, newline, tab, CR (a raw newline would split the literal).
+fn c_escape(t: &str) -> String {
+    t.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+}
+
 /// Wrap a C expression so it masks to `w` bits (wrap at 2^w).
 fn mask_c(e: &str, w: u32) -> String {
     if w > 0 && w < 64 {
@@ -538,7 +548,7 @@ impl Ctx<'_> {
                 let mut vals = args[1..].iter();
                 let mut rest = text.as_str();
                 while let Some(i) = rest.find("{}") {
-                    cfmt.push_str(&rest[..i].replace('%', "%%").replace('"', "\\\""));
+                    cfmt.push_str(&c_escape(&rest[..i]).replace('%', "%%"));
                     if let Some(a) = vals.next() {
                         let sig = expr_path(a)
                             .and_then(|p| self.map.get(&p))
@@ -555,7 +565,7 @@ impl Ctx<'_> {
                         if let Some(syms) = enum_syms {
                             let mut tern = String::from("\"?\"");
                             for (disc, sym) in syms {
-                                let esc = sym.replace('\\', "\\\\").replace('"', "\\\"");
+                                let esc = c_escape(sym);
                                 tern = format!("(_v=={disc}?\"{esc}\":{tern})");
                             }
                             cfmt.push_str("%s");
@@ -573,7 +583,7 @@ impl Ctx<'_> {
                     }
                     rest = &rest[i + 2..];
                 }
-                cfmt.push_str(&rest.replace('%', "%%").replace('"', "\\\""));
+                cfmt.push_str(&c_escape(rest).replace('%', "%%"));
                 let call_args = if cargs.is_empty() {
                     String::new()
                 } else {
@@ -596,7 +606,7 @@ impl Ctx<'_> {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
                 let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "assertion failed".into());
-                let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
+                let msg = c_escape(&msg);
                 // Record the failure message and fail this test; `main` prints
                 // the `test <name> ... FAILED` line and the message.
                 b.push_str(&format!("{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"));
@@ -606,7 +616,7 @@ impl Ctx<'_> {
                 let cond = args.first().ok_or("warn needs a condition")?;
                 let c = self.expr(cond)?;
                 let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "warning".into());
-                let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
+                let msg = c_escape(&msg);
                 b.push_str(&format!(
                     "{ind}if (!({c})) {{ fprintf(stderr, \"warning: {msg}\\n\"); g_warnings++; }}\n"
                 ));
