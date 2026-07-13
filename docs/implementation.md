@@ -156,7 +156,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   each argument by kind: reals as floats, `Char` as the character, and
   enum/`Logic` values as their variant symbol (`'X'`, `Idle`) via the design's
   `enum_syms` map — on all three engines.
-- **Status (todo):** `sioxc test <dir>` over a directory.
+- **Status (done, cont.):** `sioxc test <dir>` runs every `.siox` file in a
+  directory (sorted), each under its own header, then an aggregate line;
+  exit code is nonzero if any file failed. Files with no `#[test]` entity
+  report zero tests instead of failing an engine build.
 
 ### Stage 9 — Waveforms (`siox-wave`) — 🟢 partial
 - **Acceptance:** counter VCD shows `clk/rst/en/count`; FSM shows symbolic/

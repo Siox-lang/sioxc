@@ -11,6 +11,12 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Added
+- **`sioxc test <dir>`** runs every `.siox` file in a directory (sorted), each
+  under its own header, then prints an aggregate line; the exit code is nonzero
+  if any file failed. A file with no `#[test]` entity reports zero tests rather
+  than failing.
+
 ### Fixed
 - **File reads are now source-relative.** `read`/`read_to_string`/`exists`
   resolve a relative path against the `.siox` file's own directory (like

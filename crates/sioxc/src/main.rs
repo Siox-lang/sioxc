@@ -701,13 +701,85 @@ fn cmd_test(
     slot: &str,
     backend: &str,
 ) -> ExitCode {
+    if path.is_dir() {
+        return cmd_test_dir(path, std_root, filter, slot, backend);
+    }
+    if test_file(path, std_root, filter, slot, backend) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Run every `.siox` file in a directory (non-recursively, sorted) as its own
+/// test module, printing each file's report under a header, then an aggregate.
+fn cmd_test_dir(
+    dir: &Path,
+    std_root: &Path,
+    filter: Option<&str>,
+    slot: &str,
+    backend: &str,
+) -> ExitCode {
+    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "siox"))
+            .collect(),
+        Err(e) => {
+            eprintln!("error: cannot read directory {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    files.sort();
+    if files.is_empty() {
+        eprintln!("error: no .siox files in {}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    let (mut ran, mut failed) = (0usize, 0usize);
+    for f in &files {
+        eprintln!("\n===== {} =====", f.display());
+        ran += 1;
+        if !test_file(f, std_root, filter, slot, backend) {
+            failed += 1;
+        }
+    }
+    eprintln!(
+        "\n===== {ran} file{} tested; {} =====",
+        if ran == 1 { "" } else { "s" },
+        if failed == 0 { "all passed".to_string() } else { format!("{failed} failed") }
+    );
+    if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// Whether any elaborated root instantiates a `#[test]` entity.
+fn has_test_entity(modules: &[Module], hier: &siox_elab::Hierarchy) -> bool {
+    hier.roots.iter().any(|&r| {
+        let entity = &hier.instance(r).entity;
+        modules.iter().flat_map(|m| &m.items).any(|it| {
+            matches!(it, Item::Entity(e)
+                if &e.name.text == entity
+                    && e.attrs.iter().any(|a|
+                        a.name.segments.last().map(|s| s.text.as_str()) == Some("test")))
+        })
+    })
+}
+
+/// Compile and run one file's `#[test]` entities. Returns `true` when the file
+/// compiled and every test passed.
+fn test_file(
+    path: &Path,
+    std_root: &Path,
+    filter: Option<&str>,
+    slot: &str,
+    backend: &str,
+) -> bool {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
-        Err(code) => return code,
+        Err(_) => return false,
     };
     if sem.fe.sink.has_errors() {
         render_diagnostics(&sem.fe.sources, &sem.fe.sink);
-        return ExitCode::FAILURE;
+        return false;
     }
 
     let modules = sem.fe.modules.as_slice();
@@ -715,7 +787,15 @@ fn cmd_test(
     let design = siox_ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
-        return ExitCode::FAILURE;
+        return false;
+    }
+
+    // A file with no `#[test]` entity has nothing to run — report zero tests
+    // rather than trying (and failing) to build an engine for a bare library
+    // module (which may be parametric, so not lowerable on its own).
+    if !has_test_entity(modules, &hier) {
+        println!("\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed");
+        return true;
     }
 
     // `--slot` only matters to the interpreter.
@@ -732,7 +812,7 @@ fn cmd_test(
         #[cfg(not(feature = "interp"))]
         {
             eprintln!("backend `interp` is not in this build (rebuild with `--features interp`)");
-            return ExitCode::FAILURE;
+            return false;
         }
     } else {
         match run_tests_llvm(modules, &hier, &design, filter) {
@@ -754,7 +834,7 @@ fn cmd_test(
                          design ({e}); rebuild with `--features interp` for the interpreter \
                          fallback"
                     );
-                    return ExitCode::FAILURE;
+                    return false;
                 }
             }
         }
@@ -802,11 +882,7 @@ fn cmd_test(
         String::new()
     };
     println!("\ntest result: {verdict}. {passed} passed; {failed} failed{warn_tail}");
-    if failed > 0 {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    failed == 0
 }
 
 /// Trace the first `#[test]` for waveform export — via the JIT when available,
