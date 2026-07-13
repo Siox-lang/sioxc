@@ -74,6 +74,16 @@ oracle; JIT and native must both agree).
 | 5.4 | Native testbench gaps (now loudly reported): struct literals (`{ .re = 10 }`), string literals in expressions, enum-variant references, module consts (`LOW`), runtime `read`/`read_to_string`. | **Open, by design for now** — the native path declares what it can't translate; `sioxc test` (JIT) covers those programs. |
 | 5.5 | `test --no-run` on a file with no `#[test]` errors, while the JIT path reports "0 tests, ok". | Accepted asymmetry: asking for a test binary with no tests is an error. |
 
+## Round 6 — testbench control flow (this round)
+
+Probes: `match` and `else if` in `#[test]` bodies, all three engines.
+
+| # | Finding | Verdict |
+|---|---------|---------|
+| 6.1 | A `match` in a testbench body was **silently skipped** by the runner (no `Stmt::Match` arm — locals kept their old values, no diagnostic). | **Fixed**: the runner executes the first hitting arm (enum variant / bit pattern via `siox_ir::bit_pattern_mask` / wildcard). |
+| 6.2 | `else if` chains in a testbench were **silently skipped** too (the runner's If handler had "else-if: skip for now"). | **Fixed**: recursive `exec_if`. |
+| 6.3 | The native emitter had both holes as well — it *built* the binary and the match body never ran. | **Fixed**: `match` translates to a C if/else-if chain over the scrutinee; else-if recurses (`c_if`). |
+
 ## Still open (task list)
 
 - **#20** — testbench eval doesn't dispatch operator impls (signed int ops on

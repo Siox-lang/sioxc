@@ -420,22 +420,78 @@ impl Ctx<'_> {
                 }
                 b.push_str(&format!("{ind}if (_c{k} == _hi{k}) break;\n{ind}}} }}\n"));
             }
-            ast::Stmt::If(iff) => {
-                let c = self.expr(&iff.cond)?;
-                b.push_str(&format!("{ind}if ({c}) {{\n"));
-                for s in &iff.then.stmts {
-                    self.stmt(s, b, depth + 1)?;
-                }
-                b.push_str(&format!("{ind}}}\n"));
-                if let Some(ast::ElseBranch::Block(block)) = iff.else_.as_deref() {
-                    b.push_str(&format!("{ind}else {{\n"));
-                    for s in &block.stmts {
+            ast::Stmt::If(iff) => self.c_if(iff, b, depth)?,
+            // A testbench-level match: first arm whose pattern hits, as a C
+            // if/else-if chain over the evaluated scrutinee.
+            ast::Stmt::Match(m) => {
+                let scrut = self.expr(&m.scrutinee)?;
+                let k = self.tmp.get();
+                self.tmp.set(k + 1);
+                b.push_str(&format!("{ind}{{ uint64_t _m{k} = {scrut};\n"));
+                let mut first = true;
+                for arm in &m.arms {
+                    let cond = match &arm.pattern {
+                        ast::Pattern::Wildcard => None,
+                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                            let d = self
+                                .enums
+                                .get(&p.segments[0].text)
+                                .and_then(|vars| vars.get(&p.segments[1].text))
+                                .copied()
+                                .unwrap_or(0);
+                            Some(format!("_m{k} == {d}ULL"))
+                        }
+                        ast::Pattern::BitPattern { text, .. } => {
+                            let (mask, value) = siox_ir::bit_pattern_mask(text)
+                                .ok_or_else(|| format!("bad bit pattern `{text}`"))?;
+                            Some(format!("(_m{k} & {mask:#x}ULL) == {value:#x}ULL"))
+                        }
+                        _ => Some("0".to_string()),
+                    };
+                    let kw = if first { "if" } else { "else if" };
+                    match cond {
+                        Some(c) => b.push_str(&format!("{ind}{kw} ({c}) {{\n")),
+                        None => b.push_str(&format!(
+                            "{ind}{} {{\n",
+                            if first { "if (1)" } else { "else" }
+                        )),
+                    }
+                    for s in &arm.body.stmts {
                         self.stmt(s, b, depth + 1)?;
                     }
                     b.push_str(&format!("{ind}}}\n"));
+                    first = false;
                 }
+                b.push_str(&format!("{ind}}}\n"));
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// `if`/`else if`/`else` chains, recursing through the else branch.
+    fn c_if(&self, iff: &ast::IfStmt, b: &mut String, depth: usize) -> Result<(), String> {
+        let ind = "    ".repeat(depth);
+        let c = self.expr(&iff.cond)?;
+        b.push_str(&format!("{ind}if ({c}) {{\n"));
+        for s in &iff.then.stmts {
+            self.stmt(s, b, depth + 1)?;
+        }
+        b.push_str(&format!("{ind}}}\n"));
+        match iff.else_.as_deref() {
+            Some(ast::ElseBranch::Block(block)) => {
+                b.push_str(&format!("{ind}else {{\n"));
+                for s in &block.stmts {
+                    self.stmt(s, b, depth + 1)?;
+                }
+                b.push_str(&format!("{ind}}}\n"));
+            }
+            Some(ast::ElseBranch::If(inner)) => {
+                b.push_str(&format!("{ind}else {{\n"));
+                self.c_if(inner, b, depth + 1)?;
+                b.push_str(&format!("{ind}}}\n"));
+            }
+            None => {}
         }
         Ok(())
     }

@@ -758,6 +758,31 @@ impl Testbench<'_> {
         }
     }
 
+    /// `if`/`else if`/`else` chains, recursing through the else branch.
+    fn exec_if(&mut self, iff: &ast::IfStmt) {
+        if !self.eval(&iff.cond).is_zero() {
+            for s in &iff.then.stmts {
+                self.exec(s);
+                if self.failure.is_some() || self.halted {
+                    return;
+                }
+            }
+            return;
+        }
+        match iff.else_.as_deref() {
+            Some(ast::ElseBranch::Block(b)) => {
+                for s in &b.stmts {
+                    self.exec(s);
+                    if self.failure.is_some() || self.halted {
+                        return;
+                    }
+                }
+            }
+            Some(ast::ElseBranch::If(inner)) => self.exec_if(inner),
+            None => {}
+        }
+    }
+
     fn exec(&mut self, s: &ast::Stmt) {
         match s {
             ast::Stmt::Assign { target, value, after, .. } => {
@@ -842,22 +867,37 @@ impl Testbench<'_> {
                     None => self.locals.remove(&var.text),
                 };
             }
-            ast::Stmt::If(iff) => {
-                let branch = if !self.eval(&iff.cond).is_zero() {
-                    Some(&iff.then.stmts)
-                } else {
-                    match iff.else_.as_deref() {
-                        Some(ast::ElseBranch::Block(b)) => Some(&b.stmts),
-                        Some(ast::ElseBranch::If(_)) => None, // else-if: skip for now
-                        None => None,
-                    }
-                };
-                if let Some(stmts) = branch {
-                    for s in stmts {
-                        self.exec(s);
-                        if self.failure.is_some() || self.halted {
-                            return;
+            ast::Stmt::If(iff) => self.exec_if(iff),
+            // A testbench-level match: evaluate the scrutinee, run the first
+            // arm that hits (enum variant, bit pattern, or wildcard).
+            ast::Stmt::Match(m) => {
+                let scrut = self.eval(&m.scrutinee).to_u64();
+                for arm in &m.arms {
+                    let hit = match &arm.pattern {
+                        ast::Pattern::Wildcard => true,
+                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                            let d = self
+                                .enums
+                                .get(&p.segments[0].text)
+                                .and_then(|vars| vars.get(&p.segments[1].text))
+                                .copied()
+                                .unwrap_or(0);
+                            scrut == d
                         }
+                        ast::Pattern::BitPattern { text, .. } => {
+                            siox_ir::bit_pattern_mask(text)
+                                .is_some_and(|(mask, value)| scrut & mask == value)
+                        }
+                        _ => false,
+                    };
+                    if hit {
+                        for s in &arm.body.stmts {
+                            self.exec(s);
+                            if self.failure.is_some() || self.halted {
+                                return;
+                            }
+                        }
+                        break;
                     }
                 }
             }
