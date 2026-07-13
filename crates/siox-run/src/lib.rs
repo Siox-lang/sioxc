@@ -189,7 +189,7 @@ pub fn run_tests_with_engine<'e>(
     mut make_engine: impl FnMut() -> Box<dyn Engine + 'e>,
 ) -> Vec<TestResult> {
     let (entities, impls) = collect_defs(modules);
-    let enums = enum_discriminants(modules);
+    let enums = siox_ir::enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
     let consts = collect_consts(modules, &enums, &fns);
@@ -219,7 +219,7 @@ pub fn run_test_traced_with_engine<'e>(
     mut make_engine: impl FnMut() -> Box<dyn Engine + 'e>,
 ) -> Option<(TestResult, Vec<Sample>)> {
     let (entities, impls) = collect_defs(modules);
-    let enums = enum_discriminants(modules);
+    let enums = siox_ir::enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
     let consts = collect_consts(modules, &enums, &fns);
@@ -239,28 +239,6 @@ pub fn run_test_traced_with_engine<'e>(
 
 /// Run the first `#[test]` entity (optionally name-filtered), recording a signal
 /// sample at every simulation step for waveform export (spec Stage 9).
-fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
-    let mut out = HashMap::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Enum(e) = item {
-                let mut vars = HashMap::new();
-                let mut next = 0u64;
-                for v in &e.variants {
-                    let disc = match &v.value {
-                        Some(ast::Expr::Int { text, .. }) => parse_u64(text),
-                        _ => next,
-                    };
-                    vars.insert(v.name.text.clone(), disc);
-                    next = disc + 1;
-                }
-                out.insert(e.name.text.clone(), vars);
-            }
-        }
-    }
-    out
-}
-
 /// The literal path of a `read`/`read_to_string` call, when `e` is one.
 fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
     let ast::Expr::Call { callee, args, .. } = e else { return None };

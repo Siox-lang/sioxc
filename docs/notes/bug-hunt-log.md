@@ -160,10 +160,15 @@ Working the polish/completeness backlog; one item exposed a real bug.
 | 11.3 | **Combinational-loop lint `W-P010`** — a comb signal that reaches itself through comb→comb edges is flagged statically (the loopback case; the Inc→Dbl chain is not). |
 | 11.4 | **Module consts were unresolved in testbench expressions — a real correctness bug.** The runner returned 0 for any bare name not a local/signal, so `HIGH` (`'1'`) evaluated to **0**; std_test only passed because it used HIGH symmetrically. `eval_const_fns` didn't even handle `LogicLit`. Fixed: a fixpoint const collector (literals, logic chars, enum variants, other consts, const-fn arithmetic) threaded into the runner and the native emitter; bare names resolve to their const value on all three engines. |
 
-Still open: derived-enum *inherited* variants in the native emitter (`Extended::A`
-where `A` is inherited from `Base`) — derive_chain_test doesn't build native;
-struct/string literal testbench exprs in the native emitter (loud errors, JIT
-covers them); instance arrays (redundant with generate loops unless indexable).
+Round 11 continued: **instance arrays + sub-instance port access** (`let stage:
+Sub[N]`, `stage[i].port`, and `s.y` for any named instance — an output may be
+left open and read directly). **Native emitter** — derived-enum *inherited*
+variants now resolve (`enum_discriminants` unified across ir/run/build.rs, so
+derive_chain_test builds native), and **struct/string-literal writes**
+(`p = { .x = .. }`, `s = "hi"`) are emitted for connected composite signals.
+Still native-blocked: `real`/`Char` testbenches (complex_test's `Complex` fields,
+string_test's `Char` + whole-string equality) — a large deferred feature; JIT
+covers them.
 
 ## Still open (task list)
 - **Round 5 item 5.4** — native-emitter expression coverage (struct/string

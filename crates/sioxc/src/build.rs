@@ -40,7 +40,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     if tests.is_empty() {
         return Err("no #[test] entity to build a test binary from".into());
     }
-    let enums = enum_discriminants(modules);
+    let enums = siox_ir::enum_discriminants(modules);
     let families = siox_ir::vector_families(modules);
     let mut op_impls: HashMap<(String, String), &ast::FnDecl> = HashMap::new();
     for m in modules {
@@ -315,6 +315,42 @@ fn mask_c(e: &str, w: u32) -> String {
 }
 
 impl Ctx<'_> {
+    /// Emit writes for a composite value assigned to a connected name — a
+    /// string literal (`s = "hi"` -> one `Char` element per index) or a struct
+    /// literal (`a = { .re = 3 }` -> one field signal each). Returns `true`
+    /// when it handled `value`, `false` to fall through to scalar assignment.
+    fn write_composite(
+        &self,
+        name: &str,
+        value: &ast::Expr,
+        b: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        match value {
+            ast::Expr::StrLit { text, .. } => {
+                for (i, ch) in text.chars().enumerate() {
+                    if let Some(&id) = self.map.get(&format!("{name}[{i}]")) {
+                        b.push_str(&format!("{ind}sx_set({}, {}ULL);\n", id.0, ch as u32));
+                    }
+                }
+                Ok(true)
+            }
+            ast::Expr::Construct { args, .. } => {
+                for arg in args {
+                    let field = format!("{name}.{}", arg.field.text);
+                    let Some(&id) = self.map.get(&field) else { continue };
+                    let e = match &arg.value {
+                        Some(v) => self.value_for(id, v)?,
+                        None => "0".to_string(),
+                    };
+                    b.push_str(&format!("{ind}sx_set({}, {e});\n", id.0));
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// The declared `(family, width)` of a vector-family type (`int[8]` ->
     /// ("int", 8)). Mirrors the runner's rule.
     fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
@@ -481,6 +517,13 @@ impl Ctx<'_> {
                         {
                             self.local_families.borrow_mut().insert(l.name.text.clone(), fam);
                         }
+                        // A string/struct-literal initializer on a connected
+                        // name writes each element/field.
+                        if let Some(v) = value {
+                            if self.write_composite(&l.name.text, v, &mut b, "    ")? {
+                                continue;
+                            }
+                        }
                         if let Some(&id) = self.map.get(&l.name.text) {
                             if let Some(v) = value {
                                 let e = self.value_for(id, v)?;
@@ -551,6 +594,12 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 let name = expr_path(target).ok_or("unsupported assignment target")?;
+                // A string or struct literal writes several element/field
+                // signals (`s = "hi"`, `a = { .re = 3 }`).
+                if self.write_composite(&name, value, b, &ind)? {
+                    b.push_str(&format!("{ind}sx_settle();\n"));
+                    return Ok(());
+                }
                 if self.locals.borrow().contains(&name) {
                     let e = self.expr(value)?;
                     let e = match self.local_widths.borrow().get(&name) {
@@ -1311,28 +1360,6 @@ fn test_items<'a>(modules: &'a [Module], entity: &str) -> Vec<&'a ast::ImplItem>
         }
     }
     items
-}
-
-fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
-    let mut out = HashMap::new();
-    for m in modules {
-        for it in &m.items {
-            if let ast::Item::Enum(e) = it {
-                let mut vars = HashMap::new();
-                let mut next = 0u64;
-                for v in &e.variants {
-                    let d = match &v.value {
-                        Some(ast::Expr::Int { text, .. }) => parse_u64(text),
-                        _ => next,
-                    };
-                    vars.insert(v.name.text.clone(), d);
-                    next = d + 1;
-                }
-                out.insert(e.name.text.clone(), vars);
-            }
-        }
-    }
-    out
 }
 
 fn type_head_name(t: &ast::Type) -> Option<&str> {

@@ -3518,7 +3518,11 @@ fn effective_variants(
     out
 }
 
-fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
+/// Every enum's `variant -> discriminant` map, *including inherited variants*
+/// from a derivation base (`enum Extended : Base` gets Base's variants too).
+/// Consumers (runner, native emitter) share this so derived-enum variant
+/// references resolve identically.
+pub fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
     let enums = enum_index(modules);
     let mut out = HashMap::new();
     for name in enums.keys() {
