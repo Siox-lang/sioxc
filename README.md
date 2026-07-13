@@ -1,22 +1,34 @@
 # siox
 
-**siox** ("silicon oxide") is a digital hardware description language and an
-event-driven simulator for it, written as a Rust workspace. You write hardware
-in a modern, Rust-flavoured syntax; `sioxc` type-checks it, elaborates the
-instance hierarchy, lowers it to a digital IR, and simulates it — with a test
-runner, assertions, and VCD waveform output.
+**siox** ("silicon oxide") lets you describe digital hardware in a modern,
+Rust-flavoured language and simulate it right away — write a circuit, drive it
+with a testbench, and watch it run, with assertions and waveforms.
 
-It is **Phase 1: simulation-first**. There is no analogue, schematic, or
-synthesis layer yet (those are Phases 2–3 — see [docs/roadmap.md](docs/roadmap.md)).
+It's early but real: the compiler and simulator work end to end. There's no
+synthesis or analogue layer yet — this is the simulation-first phase, so expect
+some sharp edges.
 
-> **Status: early but real.** The full pipeline works — lexer, parser, name
-> resolution, type/kind checking, elaboration, digital IR, and a delta-cycle
-> simulator with `#[test]` discovery, `await`/clock timing, assertions, and VCD
-> export. Two engines run every design: an LLVM JIT/AOT backend (default) and a
-> delta-cycle interpreter that doubles as a differential oracle. The language
-> surface is still moving; expect sharp edges.
+## Get the compiler
 
-## A first look
+Build `sioxc` from source (needs [Rust](https://rustup.rs) 1.90 or newer):
+
+```bash
+git clone https://github.com/Siox-lang/sioxc
+cd sioxc
+cargo build --release --no-default-features --features interp
+```
+
+That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
+call it by path. This build uses the interpreter and needs no external tools.
+
+> **Faster backend (optional).** A plain `cargo build --release` turns on the
+> LLVM JIT/AOT engine, which needs a matching local LLVM install. The
+> interpreter above runs every design correctly and is all you need to start.
+
+## Write your first circuit
+
+Save this as `counter.siox` — an 8-bit counter that ticks up on each clock edge,
+plus a testbench that drives it:
 
 ```siox
 module counter;
@@ -24,22 +36,21 @@ module counter;
 using std::logic::{Logic, Clock};
 using std::bits::uint;
 
-entity Counter<W: integer> {
+entity Counter {
     in clk: Clock;
     in rst: Logic;
-    in en: Logic;
-    out count: uint[W];
+    out count: uint[8];
 }
 
-impl Counter<W: integer> {
-    let value: uint[W] = 0;
+impl Counter {
+    let value: uint[8] = 0;
 
-    if clk::rising {              // sequential: updates on the rising edge
+    if clk::rising {                 // runs only on a rising clock edge
         if rst == '1' { value = 0; }
-        else if en == '1' { value = value + 1; }
+        else { value = value + 1; }
     }
 
-    count = value;               // combinational: continuous assignment
+    count = value;                   // a wire: always equal to `value`
 }
 
 #[test]
@@ -48,20 +59,25 @@ entity CounterTest {}
 impl CounterTest {
     let clk: Logic = '0';
     let rst: Logic = '1';
-    let en: Logic = '1';
     let count: uint[8];
-    let dut = Counter<W = 8> { .clk, .rst, .en, .count };
+    let dut = Counter { .clk, .rst, .count };
 
-    clk = not clk after 5ns;     // free-running clock, 10ns period
+    clk = not clk after 5ns;         // free-running clock, 10 ns period
 
-    await 10ns;
+    await 10ns;                      // hold reset for one edge
     rst = '0';
-    for i in 0..9 {              // inclusive range: ten rising edges
-        await clk::rising;
-    }
+    for i in 0..9 { await clk::rising; }   // let ten more edges pass
     assert!(count == 10, "counter should reach 10");
 }
 ```
+
+Two kinds of logic sit side by side: a **wire** (`count = value;` is always
+equal to `value`) and a **clocked register** (`if clk::rising { … }` only
+updates on the edge).
+
+## Run it
+
+The `#[test]` entity is a testbench. Run every testbench in a file with:
 
 ```console
 $ sioxc test counter.siox
@@ -72,77 +88,55 @@ test CounterTest ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-## Building
+It works like `cargo test`: `sioxc test` finds each `#[test]`, simulates it, and
+reports pass/fail. Pass a name to run a subset — `sioxc test Counter`.
 
-Requires Rust (edition 2021, `rust-version = 1.90`).
+## See the waveforms
 
-The default backend is the **LLVM JIT/AOT** engine, which needs a matching local
-LLVM toolchain (the `inkwell` version feature in `crates/siox-llvm/Cargo.toml`
-pins the LLVM major version). If you don't have that LLVM installed, build the
-**interpreter-only** path instead — it needs no external toolchain and is the
-same engine used as the correctness oracle:
+To watch signals change over time, dump a VCD and open it in a waveform viewer
+([GTKWave](https://gtkwave.sourceforge.net/), [Surfer](https://surfer-project.org/), …):
 
 ```bash
-# Interpreter only (no LLVM toolchain needed):
-cargo build --no-default-features --features interp
-cargo test  --no-default-features --features interp
-
-# Full build (needs a matching local LLVM):
-cargo build
-cargo test
+sioxc sim counter.siox --wave counter.vcd
 ```
 
-CI runs the interpreter path, so it works on any machine; the LLVM backend is
-validated locally.
+## The commands you'll use
 
-## Using the compiler
+| Command | What it does |
+| --- | --- |
+| `sioxc check file.siox` | type-check and validate — no simulation |
+| `sioxc test file.siox [name]` | run the `#[test]` testbenches |
+| `sioxc sim file.siox --wave out.vcd` | simulate and record a waveform |
+| `sioxc test file.siox --no-run -o bench` | build a standalone native test binary |
+| `sioxc file.siox` | compile a `#[top]` design to a native object |
+
+The standard library loads from `./std` by default; add `--std <dir>` if it
+lives elsewhere. Peeking under the hood? `sioxc ast|ir|tree file.siox` print the
+parse tree, lowered IR, and instance hierarchy.
+
+## Editor support
+
+`siox-lsp` is a language server — live diagnostics, go-to-definition, hover,
+completion, rename, and more. Build it and point your editor at it:
 
 ```bash
-sioxc <file.siox>            # compile to a native object (AOT)
-sioxc check  <file.siox>     # parse, resolve, type-check, elaborate, lower
-sioxc test   [filter]        # run #[test] entities (libtest-style output)
-sioxc test   --no-run -o bin # link a native test binary
-sioxc sim    <file> --wave out.vcd   # simulate and dump a waveform
-
-# Debug views:
-sioxc ast  <file>            # parse tree
-sioxc ir   <file>            # lowered simulation IR
-sioxc tree <file>            # elaborated instance hierarchy
+cargo build -p siox-lsp
+target/debug/siox-lsp --stdio --std ./std
 ```
 
-By default the standard library is loaded from `./std`; pass `--std <dir>` to
-point elsewhere. The runnable `.siox` corpus — counters, FSMs, a FIFO, SPI,
-RISC-V ALU/decoder fragments, tristate buses, generate loops, and more — lives
-in a sibling repo, [**Siox-lang/siox-tests**](https://github.com/Siox-lang/siox-tests),
-which this project's CI runs on every change.
+Full capability list and setup notes: [docs/editor.md](docs/editor.md).
 
-## What the language has
+## Learn more
 
-- **Entities and impls** with parameters (`Counter<W>`), an instance hierarchy,
-  and port connections — including struct/bus bundles and `inout` tristate nets.
-- **Combinational vs. sequential** logic kept distinct: continuous assignments
-  vs. `if clk::rising { … }` event blocks with `::event`/`::old` edge queries.
-- **A four-value logic type** (`Logic`: `'0'/'1'/'Z'/'X'`) with std_logic truth
-  tables and parallel-driver resolution, plus a two-value `Bit`, `Clock`, and a
-  library `uint[N]`/`int[N]` with operator-trait-driven signedness.
-- **Generics, trait bounds, `where`**, Rust-style operator traits, derived
-  nominal types, and `#[…]` attributes.
-- **A test/stimulus layer**: `#[test]` entities, `await` (time / edge /
-  condition), background `clock`s, `assert!`/`warn!`/`print!`, `extern "C"`,
-  file IO, and VCD waveforms.
-- **Diagnostics** with stable codes, plus lints (possible latch, unused import,
-  unresolved multiple drivers, non-exhaustive/unreachable match).
-
-## Documentation
-
-The [`docs/`](docs/) folder is the source of truth — start at
-[docs/README.md](docs/README.md):
-
-- [docs/spec.md](docs/spec.md) — the language specification.
-- [docs/architecture.md](docs/architecture.md) — the compiler pipeline and crate layout.
-- [docs/implementation.md](docs/implementation.md) — stage-by-stage status.
-- [docs/std.md](docs/std.md) — the standard-library reference.
-- [CHANGELOG.md](CHANGELOG.md) — what has changed.
+- **[Examples](https://github.com/Siox-lang/siox-tests)** — a repo of runnable
+  `.siox` programs: counters, FSMs, a FIFO, SPI, RISC-V fragments, tristate
+  buses, and more.
+- **[The language at a glance](docs/language-features.md)** — what siox can
+  express, in one page.
+- **[Language specification](docs/spec.md)** — the full syntax and semantics.
+- **[docs/](docs/README.md)** — compiler architecture, build status, and the
+  standard-library reference.
+- **[CHANGELOG](CHANGELOG.md)** — what's changed.
 
 ## License
 
