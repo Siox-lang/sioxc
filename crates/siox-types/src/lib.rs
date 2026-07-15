@@ -763,15 +763,17 @@ impl<'a> Checker<'a> {
         let lhs = self.ast_ty(t);
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
-            self.error(
-                codes::TYPE_MISMATCH,
-                expr_span(value),
-                format!(
-                    "cannot initialize {} with {} without an explicit conversion",
-                    ty_name(&lhs),
-                    ty_name(&rhs)
-                ),
-            );
+            let mut diag = Diagnostic::error(format!(
+                "cannot initialize {} with {} without an explicit conversion",
+                ty_name(&lhs),
+                ty_name(&rhs)
+            ))
+            .with_code(codes::TYPE_MISMATCH)
+            .at(expr_span(value));
+            if let Some(h) = strlit_help(&lhs, value) {
+                diag = diag.help(h);
+            }
+            self.sink.emit(diag);
         }
     }
 
@@ -781,6 +783,9 @@ impl<'a> Checker<'a> {
         let lhs = self.type_of(target, sym);
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
+            let help = strlit_help(&lhs, value).unwrap_or_else(|| {
+                format!("wrap it in a conversion, e.g. `{}(...)`", ty_name(&lhs))
+            });
             self.sink.emit(
                 Diagnostic::error(format!(
                     "cannot assign {} to {} without an explicit conversion",
@@ -789,7 +794,7 @@ impl<'a> Checker<'a> {
                 ))
                 .with_code(codes::TYPE_MISMATCH)
                 .at(expr_span(value))
-                .help(format!("wrap it in a conversion, e.g. `{}(...)`", ty_name(&lhs))),
+                .help(help),
             );
         }
     }
@@ -1438,6 +1443,31 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
     }
 }
 
+/// When a string literal (`"c"`) is used where a character, logic scalar, or
+/// bit vector is expected, explain that `"..."` is a *string* (a `Char` array)
+/// and point at the right form: `'c'` for a single value, `b"..."` for a bit
+/// vector. Assigning a string to a `Char` array is fine, so no hint there.
+fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
+    let Expr::StrLit { text, .. } = value else { return None };
+    match lhs {
+        // A string *is* a Char array — that assignment is correct.
+        Ty::Array { elem, .. } if matches!(**elem, Ty::Char) => None,
+        Ty::Bit | Ty::Logic | Ty::Char | Ty::Bool | Ty::Named(_) => Some(if text.chars().count() == 1 {
+            format!("`\"{text}\"` is a string; for a single {} value use a character literal `'{text}'`", ty_name(lhs))
+        } else {
+            format!("`\"{text}\"` is a string (a `Char` array); a {} is one character, written `'c'`", ty_name(lhs))
+        }),
+        Ty::Vector { .. } => Some(format!(
+            "`\"{text}\"` is a string; for a bit vector use a bit-string literal `b\"{text}\"` (binary) or `x\"...\"` (hex)"
+        )),
+        // A logic/bit array: strings don't build one.
+        Ty::Array { .. } => Some(format!(
+            "`\"{text}\"` is a string (a `Char` array); build the array from element values, e.g. `{{'0', '1', ...}}`, or use a bit vector `b\"{text}\"`"
+        )),
+        _ => None,
+    }
+}
+
 fn ty_name(t: &Ty) -> String {
     match t {
         Ty::Bit => "Bit".to_string(),
@@ -1502,6 +1532,21 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    #[test]
+    fn string_literal_gets_a_targeted_hint() {
+        let sp = siox_diag::Span::new(FileId(0), 0..1);
+        let s = |t: &str| Expr::StrLit { text: t.to_string(), span: sp };
+        // A scalar Logic/Bit/Char points at the character literal.
+        let h = strlit_help(&Ty::Logic, &s("0")).unwrap();
+        assert!(h.contains("'0'"), "{h}");
+        // A bit vector points at the bit-string literal.
+        let h = strlit_help(&Ty::Vector { width: 4 }, &s("0101")).unwrap();
+        assert!(h.contains("b\"0101\""), "{h}");
+        // Assigning a string to a Char array is correct — no hint.
+        let str_ty = Ty::Array { elem: Box::new(Ty::Char), len: 2 };
+        assert!(strlit_help(&str_ty, &s("hi")).is_none());
     }
 
     /// The number of warnings with a given code emitted while checking `src`.
