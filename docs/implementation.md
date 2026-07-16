@@ -286,9 +286,9 @@ The project is Phase-1 complete when it can:
 - [x] Resolve modules, names, attributes, and paths
 - [~] Type-check entities, structs, enums, traits, impls *(core checks done)*
 - [~] Elaborate parameterized entities into a concrete hierarchy *(in progress)*
-- [ ] Lower designs into digital simulation IR
-- [ ] Simulate combinational and sequential behavior
-- [ ] Support `::event` and `::old` on all digital/discrete values
+- [x] Lower designs into digital simulation IR
+- [x] Simulate combinational and sequential behavior
+- [x] Support `::event` and `::old` on all digital/discrete values
 - [x] Run `#[test]` entities
 - [x] Evaluate assertions
 - [x] Export waveforms
