@@ -41,6 +41,9 @@ standard library is catalogued in [std.md](std.md).
 - Generics with trait bounds and `where` clauses.
 - **Rust-style operator traits** — `impl Add for T`, one `impl Ord`
   (`cmp -> Ordering`) deriving all six comparisons.
+- **Methods** — `recv.method(args)` on a value's inherent or trait impl
+  (`impl T { fn m(self, ..) }`); value-returning methods inline into the
+  hardware.
 - **Derived nominal types** — `enum B : A` / `struct B : A`, with total
   derivation conversions synthesised automatically.
 - `#[…]` attributes, including type-targeted ones.

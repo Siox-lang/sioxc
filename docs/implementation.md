@@ -66,9 +66,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   and value (`E-P007`), write-to-input-port (`E-P004`), assignment and
   initializer compatibility / no-implicit-conversion (`E-P003`, literal- and
   enum-aware), and the `::ddt` Phase-2 guard (`E-P010`).
+- **Status (done, cont.):** **method-call typing** — `recv.method(args)` types
+  as the impl method's declared return type (inherent and trait impls), so the
+  result flows into downstream checks (a `Logic`-returning method used as a bare
+  condition is rejected).
 - **Status (deferred):** concrete-width mismatch (`uint[8]`→`uint[16]`) needs
-  elaboration-time widths fed back in; method-call resolution needs the method
-  tables. Both become tractable now that elaboration substitutes widths.
+  elaboration-time widths fed back in — tractable now that elaboration
+  substitutes widths.
 
 ### Stage 5 — Elaboration (`siox-elab`) — 🟢 partial
 - **Acceptance:** all params known post-elab; all required ports connected;
@@ -123,7 +127,15 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   across instances** (each leaf wires: `.s = link` -> `s.valid`<->`link.valid`);
   **`inout` bidirectional ports** (alias the shared net so parallel drivers fold
   through `Resolve` — Verilog's model).
-- **Status (todo):** method-call lowering; composite (struct) `inout` ports
+- **Status (done, cont.):** **method-call lowering** — `recv.method(args)`
+  inlines the impl method's body during lowering (`self` bound to the receiver,
+  params to arguments, the receiver type propagated for operator dispatch),
+  reusing the operator-impl inlining machinery, so all three engines get the
+  same primitive tree. Covers inherent and trait, value-returning methods
+  (`a.cmp(b)`, `p.sum()`, branching on `self`).
+- **Status (todo):** statement methods that drive signals (`s.send(v)` mutating
+  the receiver's fields) and method calls in *testbench* expressions (the runner
+  evaluates those directly, not via the IR); composite (struct) `inout` ports
   (scalar/vector inout works).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
