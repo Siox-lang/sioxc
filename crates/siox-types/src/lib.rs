@@ -141,6 +141,10 @@ struct Checker<'a> {
     suffix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
+    /// (type head, method name) -> the method's declared return type, for
+    /// typing method calls `recv.method(args)` (spec 3.20). Covers both
+    /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
+    methods: HashMap<(String, String), Option<Type>>,
 }
 
 impl<'a> Checker<'a> {
@@ -192,6 +196,7 @@ impl<'a> Checker<'a> {
             generic_fns: HashMap::new(),
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
+            methods: HashMap::new(),
         }
     }
 
@@ -242,6 +247,16 @@ impl<'a> Checker<'a> {
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
             }
             Item::Impl(im) => {
+                // Record every impl method by (type head, name) with its
+                // declared return type, so `recv.method(args)` types (spec 3.20).
+                if let Some(ty) = type_head_name(&im.target) {
+                    for it in &im.items {
+                        if let ImplItem::Fn(f) = it {
+                            self.methods
+                                .insert((ty.to_string(), f.name.text.clone()), f.ret.clone());
+                        }
+                    }
+                }
                 // Record `impl Trait for Type` so trait-driven checks (e.g.
                 // conditions) can ask "does T implement Trait?".
                 if let Some(tr) = &im.trait_ {
@@ -1283,12 +1298,42 @@ impl<'a> Checker<'a> {
                     }
                     _ => Ty::Error,
                 },
+                // A method call `recv.method(args)` types as the method's
+                // declared return type (spec 3.20); the receiver's type head
+                // selects the impl. An unknown method or a `self`-only method
+                // (no return) is opaque (`Error` suppresses further checks).
+                Expr::Field { base, field, .. } => {
+                    let recv = self.type_of(base, sym);
+                    match self
+                        .ty_head(&recv)
+                        .and_then(|h| self.methods.get(&(h, field.text.clone())))
+                    {
+                        Some(Some(ret)) => self.ast_ty(&ret.clone()),
+                        _ => Ty::Error,
+                    }
+                }
                 _ => Ty::Error,
             },
             Expr::Field { .. } | Expr::Index { .. } | Expr::Range { .. } => {
                 Ty::Error
             }
         }
+    }
+
+    /// The type-head name used to key impl methods: a named type's def name,
+    /// a base type's spelling, or `uint` for a bit vector.
+    fn ty_head(&self, t: &Ty) -> Option<String> {
+        Some(match t {
+            Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
+            Ty::Bit => "Bit".to_string(),
+            Ty::Logic => "Logic".to_string(),
+            Ty::Bool => "Bool".to_string(),
+            Ty::Char => "Char".to_string(),
+            Ty::Real => "real".to_string(),
+            Ty::Integer => "integer".to_string(),
+            Ty::Vector { .. } => "uint".to_string(),
+            _ => return None,
+        })
     }
 
     /// The declared name of an operand's type when it is a user struct/enum
@@ -1532,6 +1577,26 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    #[test]
+    fn method_return_type_propagates() {
+        // A method returning `Logic` used directly as a condition must error
+        // (Logic isn't Boolean), proving the return type flows into checks.
+        let bad = "module m;\n\
+            struct S { v: Logic, }\n\
+            impl S { fn ready(self) -> Logic { return self.v; } }\n\
+            entity E { out o: Logic; }\n\
+            impl E { let s: S; if s.ready() { o = '1'; } }\n";
+        assert_eq!(check_src(bad), 1, "Logic-returning method as a condition should error");
+
+        // A `Bool`-returning method is a valid condition — no error.
+        let good = "module m;\n\
+            struct S { v: Logic, }\n\
+            impl S { fn ready(self) -> Bool { return true; } }\n\
+            entity E { out o: Logic; }\n\
+            impl E { let s: S; if s.ready() { o = '1'; } }\n";
+        assert_eq!(check_src(good), 0, "Bool-returning method as a condition should pass");
     }
 
     #[test]

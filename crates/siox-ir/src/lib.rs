@@ -1798,6 +1798,10 @@ impl<'a> Lowering<'a> {
             ast::Expr::Call { callee, args, .. } => self
                 .lower_conversion(callee, args, &HashMap::new())
                 .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
+                .or_else(|| match self.lower_method_call(callee, args, &HashMap::new()) {
+                    Some(Val::Scalar(v)) => Some(v),
+                    _ => None,
+                })
                 .or_else(|| match self.lower_from(callee, args, &HashMap::new()) {
                     Some(Val::Scalar(v)) => Some(v),
                     _ => None,
@@ -2531,6 +2535,85 @@ impl<'a> Lowering<'a> {
         out
     }
 
+    /// Find a method `name` on type `ty`: an inherent-impl method
+    /// (`impl T { fn name(self, ..) }`) or a trait-impl method
+    /// (`impl Tr for T { fn name(self, ..) }`, held in `op_impls` keyed by
+    /// trait+type). Inherent impls win; first match otherwise.
+    fn find_method(&self, ty: &str, name: &str) -> Option<&'a ast::FnDecl> {
+        if let Some(impls) = self.impls.get(ty) {
+            for im in impls {
+                for it in &im.items {
+                    if let ast::ImplItem::Fn(f) = it {
+                        if f.name.text == name {
+                            return Some(f);
+                        }
+                    }
+                }
+            }
+        }
+        self.op_impls
+            .iter()
+            .filter(|((_, t), _)| t == ty)
+            .flat_map(|(_, fns)| fns.iter())
+            .find(|(f, _)| f.name.text == name)
+            .map(|(f, _)| *f)
+    }
+
+    /// Lower a method call `recv.method(args)` (spec 3.20) by inlining the
+    /// impl method's body: `self` binds to the receiver, each named parameter
+    /// to its argument (mirroring [`Self::lower_free_call`]), and the receiver
+    /// type is stashed under `param_types["self"]` so operators inside the body
+    /// dispatch on the concrete type. Value-returning methods (`a.cmp(b)`,
+    /// `s.can_send()`) inline to a [`Val`]; a body the inliner cannot express
+    /// as a value (a statement method that drives signals) yields `None`.
+    fn lower_method_call(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let ast::Expr::Field { base, field, .. } = callee else { return None };
+        let ty = self.operand_type_name(base)?;
+        let f = self.find_method(&ty, &field.text)?;
+        let body = f.body.as_ref()?;
+        if self.inline_depth.get() > 16 {
+            return None;
+        }
+        self.inline_depth.set(self.inline_depth.get() + 1);
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        fenv.insert("self".to_string(), self.lower_val_env(base, env));
+        fenv.insert(
+            "self::width".to_string(),
+            Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
+        );
+        // Family bindings to restore after the inline (nesting-safe).
+        let mut saved: Vec<(String, Option<String>)> = Vec::new();
+        let self_prev = self.param_types.borrow_mut().insert("self".to_string(), ty.clone());
+        saved.push(("self".to_string(), self_prev));
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                fenv.insert(n.text.clone(), self.lower_val_env(a, env));
+                fenv.insert(
+                    format!("{}::width", n.text),
+                    Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
+                );
+                if let Some(fam) = self.operand_type_name(a) {
+                    let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
+                    saved.push((n.text.clone(), prev));
+                }
+            }
+        }
+        let out = self.inline_block(&body.stmts, &fenv);
+        for (name, prev) in saved.into_iter().rev() {
+            match prev {
+                Some(v) => self.param_types.borrow_mut().insert(name, v),
+                None => self.param_types.borrow_mut().remove(&name),
+            };
+        }
+        self.inline_depth.set(self.inline_depth.get() - 1);
+        out
+    }
+
     /// Lower a conversion expression (spec 3.17): `uint[16](x)` resizes,
     /// `int[8](x)` truncates, `integer(x)` crosses to the kernel word, and
     /// `resize(x, n)` is the family-preserving spelling (n const-evaluable —
@@ -2683,7 +2766,10 @@ impl<'a> Lowering<'a> {
                     .or_else(|| self.lower_free_call(callee, args, env))
                 {
                     Some(v) => Val::Scalar(v),
-                    None => match self.lower_from(callee, args, env) {
+                    None => match self
+                        .lower_method_call(callee, args, env)
+                        .or_else(|| self.lower_from(callee, args, env))
+                    {
                         Some(v) => v,
                         None => Val::Scalar(self.lower_expr(e)),
                     },

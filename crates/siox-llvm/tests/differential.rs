@@ -575,3 +575,39 @@ fn instance_array_agrees() {
         assert_agree(&d, &[("T.a", a)]);
     }
 }
+
+#[test]
+fn method_call_agrees() {
+    // Method calls (`recv.method(args)`, spec 3.20) inline during IR lowering,
+    // so both engines see the same primitive tree. Covers a nullary
+    // value-returning method (`p.sum()`), one taking an argument and branching
+    // (`p.bigger(lim)`), and operator dispatch inside the body (`self.x + ..`).
+    let d = lower(
+        "module m;\n\
+         struct Pt { x: uint[8], y: uint[8], }\n\
+         impl Pt {\n\
+           fn sum(self) -> uint[8] { return self.x + self.y; }\n\
+           fn bigger(self, lim: uint[8]) -> uint[8] {\n\
+             if self.x > lim { return self.x; }\n\
+             return lim;\n\
+           }\n\
+         }\n\
+         entity D { in px: uint[8]; in py: uint[8]; in lim: uint[8]; out s: uint[8]; out bg: uint[8]; }\n\
+         impl D {\n\
+           let p: Pt;\n\
+           p.x = px;\n\
+           p.y = py;\n\
+           s = p.sum();\n\
+           bg = p.bigger(lim);\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let px: uint[8]; let py: uint[8]; let lim: uint[8]; let s: uint[8]; let bg: uint[8];\n\
+           let dut = D { .px, .py, .lim, .s, .bg };\n\
+         }\n",
+    );
+    for (px, py, lim) in [(10u64, 20u64, 15u64), (200, 100, 50), (5, 5, 250), (0, 0, 0)] {
+        assert_agree(&d, &[("T.px", px), ("T.py", py), ("T.lim", lim)]);
+    }
+}
