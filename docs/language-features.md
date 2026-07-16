@@ -24,6 +24,11 @@ standard library is catalogued in [std.md](std.md).
 - **Four-value logic.** `Logic` carries `'0'/'1'/'Z'/'X'` with the std_logic
   truth tables and parallel-driver resolution; `Bit` is the two-value scalar,
   `Clock` a bit with clock intent.
+- **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
+  an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
+  double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one
+  scalar — so an enum array is written `{'a', 'b'}`, not `"ab"`. Bit vectors use
+  the bit-string literal `b"0101"` / `x"AB"`.
 - **Numeric vectors.** `uint[N]` / `int[N]` are library types built on `Logic`
   vectors; signedness lives in the operator impls (int's arithmetic shift,
   signed division and comparison), not in a type flag.
@@ -57,8 +62,12 @@ standard library is catalogued in [std.md](std.md).
 ## Diagnostics
 
 Every diagnostic has a stable code. Beyond errors, the compiler lints for
-possible latches, unused imports, unresolved multiple drivers, and
-non-exhaustive / unreachable match arms.
+possible latches, unused imports, unresolved multiple drivers, combinational
+loops (a signal that feeds itself with no register in the path), and
+non-exhaustive / unreachable match arms. Type errors carry targeted fix-it
+help — e.g. a string literal used where a single value is wanted (`Logic = "0"`)
+points at the character literal `'0'`, and one used where a vector is wanted
+points at the bit-string literal `b"…"`.
 
 ## Not yet (by design, this phase)
 

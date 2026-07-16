@@ -2162,6 +2162,13 @@ The language kernel provides exactly three base types:
   does not compile; convert through a table instead. Any Unicode symbol is
   a valid literal (`'€'`).
 
+  A **string literal `"c"` is not a character**: double quotes always mean
+  `string` (`Char[N]`), so `"c"` is a one-element array, never a single
+  `Char`/`Logic`/enum value. It cannot stand in for a scalar (`s: Logic =
+  "0"`) nor build an enum/logic array (`{'a', 'b'}`, not `"ab"`); the type
+  error points at the character literal or, for a vector target, the
+  bit-string literal `b"…"`.
+
 Plus the type machinery: enums (including character-literal variants —
 symbol domains themselves), structs, arrays, ranges, value-range
 constraints (3.26), and events. Every other type is declared in `std/` as

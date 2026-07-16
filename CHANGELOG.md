@@ -12,6 +12,13 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Fix-it help when a string literal is used as a value.** A double-quoted
+  `"…"` is a `string` (a `Char` array), so using it where a single value is
+  expected (`let s: Logic = "0"`) or to build a logic/enum array (`"01"`) is a
+  type error. The message now carries targeted guidance: a scalar target points
+  at the character literal (`'0'`, an enum variant), a vector target at the
+  bit-string literal (`b"…"`), and an array target at element values
+  (`{'0', '1', …}`). Assigning a string to a `Char` array stays correct.
 - **Instance arrays and sub-instance port access.** An instance's ports are now
   readable as `<inst>.<port>` (`b = s.y`), so an output may be left open at
   construction and read directly — only `in` ports must be wired. Building on
