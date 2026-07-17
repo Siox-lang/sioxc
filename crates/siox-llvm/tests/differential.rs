@@ -601,6 +601,29 @@ fn derived_vector_width_agrees() {
 }
 
 #[test]
+fn transitive_vector_family_width_agrees() {
+    // A type deriving from *another* vector family (`struct Byte : uint[8]`)
+    // is itself a vector, inheriting width 8 (transitive recognition). `uint`
+    // is appended by the `lower` harness.
+    let d = lower(
+        "module m;\n\
+         struct Byte : uint[8];\n\
+         entity A { in a: Byte; in b: Byte; out s: Byte; }\n\
+         impl A { s = a + b; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: Byte; let b: Byte; let s: Byte;\n\
+           let dut = A { .a, .b, .s };\n\
+         }\n",
+    );
+    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Byte : uint[8] must be width 8");
+    for (a, b) in [(200u64, 100u64), (255, 1)] {
+        assert_agree(&d, &[("T.a", a), ("T.b", b)]);
+    }
+}
+
+#[test]
 fn method_call_agrees() {
     // Method calls (`recv.method(args)`, spec 3.20) inline during IR lowering,
     // so both engines see the same primitive tree. Covers a nullary

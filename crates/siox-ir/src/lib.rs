@@ -3739,32 +3739,49 @@ pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
 
 pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
     // The set of bit-vector families by shape. No signedness — that lives in
-    // each type's operator impls.
+    // each type's operator impls. Computed to a fixpoint so a type deriving
+    // from *another* vector family (`struct Byte : uint[8]`) is recognized too.
+    let structs: Vec<&ast::StructDecl> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|it| match it {
+            ast::Item::Struct(st) => Some(st),
+            _ => None,
+        })
+        .collect();
     let mut out = std::collections::HashSet::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Struct(st) = item {
-                if is_bit_vector_struct(st) {
-                    out.insert(st.name.text.clone());
-                }
+    loop {
+        let mut changed = false;
+        for st in &structs {
+            if !out.contains(&st.name.text) && is_bit_vector_struct(st, &out) {
+                out.insert(st.name.text.clone());
+                changed = true;
             }
+        }
+        if !changed {
+            break;
         }
     }
     out
 }
 
-/// A bodyless struct deriving from an array of bit scalars — a packed bit
-/// vector (`struct F : Logic[]` / `: Bit[]`). This is what makes uint/int and
-/// user vectors; the shape is the definition, not an attribute.
-fn is_bit_vector_struct(st: &ast::StructDecl) -> bool {
+/// A bodyless struct deriving from an array whose element is a bit scalar
+/// (`struct F : Logic[]` / `: Bit[]`) or an already-known vector family
+/// (`struct Byte : uint[8]`) — a packed bit vector. This is what makes uint/int
+/// and user vectors; the shape (and its base) is the definition, not an
+/// attribute.
+fn is_bit_vector_struct(st: &ast::StructDecl, families: &std::collections::HashSet<String>) -> bool {
     if !st.fields.is_empty() {
         return false;
     }
     let elem = match &st.base {
         Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
+        // A bare derived base (`struct Byte : uint`) reuses the base family.
+        Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
         _ => None,
     };
     matches!(elem, Some("Logic" | "Bit" | "ULogic" | "Clock"))
+        || elem.is_some_and(|h| families.contains(h))
 }
 
 fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {

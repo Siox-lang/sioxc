@@ -213,6 +213,10 @@ impl<'a> Checker<'a> {
                 self.collect_decl(item);
             }
         }
+        // A field-less struct deriving from another vector family is itself one
+        // (`struct Byte : uint[8]`); resolve that transitively before typing
+        // ports, so such a type is treated as a numeric vector.
+        self.resolve_transitive_vector_families();
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
@@ -404,6 +408,39 @@ impl<'a> Checker<'a> {
     /// family's operator impls.
     fn is_vector_family(&self, name: &str) -> bool {
         self.vector_families.contains(name)
+    }
+
+    /// Fixpoint: a field-less struct whose base array element is a bit scalar
+    /// or an already-known vector family is itself a vector family, so
+    /// `struct Byte : uint[8]` inherits uint's numeric nature.
+    fn resolve_transitive_vector_families(&mut self) {
+        loop {
+            let mut changed = false;
+            let names: Vec<String> = self.structs.keys().cloned().collect();
+            for name in names {
+                if self.vector_families.contains(&name) {
+                    continue;
+                }
+                let Some((base, fields)) = self.structs.get(&name) else { continue };
+                if !fields.is_empty() {
+                    continue;
+                }
+                let elem: Option<String> = match base {
+                    Some(Type::Indexed { base, .. }) => type_head_name(base).map(str::to_string),
+                    Some(Type::Path(p)) => p.segments.last().map(|s| s.text.clone()),
+                    _ => None,
+                };
+                let is_vec = matches!(elem.as_deref(), Some("Logic" | "Bit" | "ULogic" | "Clock"))
+                    || elem.as_deref().is_some_and(|h| self.vector_families.contains(h));
+                if is_vec {
+                    self.vector_families.insert(name);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     /// Whether a base type resolves (through aliases) to an array shape.
