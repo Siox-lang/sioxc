@@ -128,15 +128,17 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   **`inout` bidirectional ports** (alias the shared net so parallel drivers fold
   through `Resolve` — Verilog's model).
 - **Status (done, cont.):** **method-call lowering** — `recv.method(args)`
-  inlines the impl method's body during lowering (`self` bound to the receiver,
-  params to arguments, the receiver type propagated for operator dispatch),
-  reusing the operator-impl inlining machinery, so all three engines get the
-  same primitive tree. Covers inherent and trait, value-returning methods
-  (`a.cmp(b)`, `p.sum()`, branching on `self`).
-- **Status (todo):** statement methods that drive signals (`s.send(v)` mutating
-  the receiver's fields) and method calls in *testbench* expressions (the runner
-  evaluates those directly, not via the IR); composite (struct) `inout` ports
-  (scalar/vector inout works).
+  inlines the impl method's body during lowering, reusing the operator-impl
+  inlining machinery, so all three engines get the same primitive tree. Two
+  forms: **value-returning methods** in expressions (`a.cmp(b)`, `p.sum()`,
+  branching on `self`) inline to a value, and **statement methods** (`s.send(v)`
+  whose body drives `self.valid`/`self.data`) inline as drivers on the
+  receiver's flattened fields — via a general `self`->receiver, param->argument
+  substitution over the body. Covers inherent and trait impls.
+- **Status (todo):** method calls in *testbench* expressions (the runner
+  evaluates those directly, not via the IR — the struct-receiver case needs
+  struct-field metadata it does not yet expose); composite (struct) `inout`
+  ports (scalar/vector inout works).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid

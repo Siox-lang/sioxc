@@ -17,10 +17,12 @@ assertions, and VCD export — predates this changelog. See
   parameters to the arguments, and the receiver type propagates so operators in
   the body dispatch on the concrete type — so the interpreter, JIT, and native
   engines all see the same primitive tree. Resolves inherent (`impl T`) and
-  trait (`impl Tr for T`) value-returning methods (`a.cmp(b)`, `p.sum()`,
-  branching on `self`); the type checker types a call as the method's declared
-  return type. Statement methods that drive the receiver's signals, and method
-  calls inside testbench stimulus, are the remaining follow-ups.
+  trait (`impl Tr for T`) methods in two forms: value-returning methods
+  (`a.cmp(b)`, `p.sum()`, branching on `self`) inline to a value and are typed
+  as the method's declared return type, and statement methods (`s.send(v)`
+  whose body drives `self.valid`/`self.data`) inline as drivers on the
+  receiver's fields. Method calls inside testbench stimulus are the remaining
+  follow-up.
 - **Fix-it help when a string literal is used as a value.** A double-quoted
   `"…"` is a `string` (a `Char` array), so using it where a single value is
   expected (`let s: Logic = "0"`) or to build a logic/enum array (`"01"`) is a
