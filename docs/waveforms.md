@@ -26,7 +26,7 @@ Any VCD viewer works. Two good open-source ones:
 ## How siox values appear
 
 - **Buses** (`uint[8]`, `int[16]`) are binary vectors.
-- **Four-value logic** (`Logic`, `Bit`, `Clock`) dumps as native VCD scalar
+- **Four-value logic** (`Logic`, `Bit`) dumps as native VCD scalar
   states, so high-impedance shows as `z` and unknown as `x`, not as a number.
 - **Named enums** — an FSM `State`, `Bool` — dump as VCD `string` variables, so
   the viewer shows `Idle`/`Run`/`Done`/`true`/`false` instead of a raw

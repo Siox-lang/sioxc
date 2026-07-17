@@ -68,7 +68,7 @@ Entity bodies are interface-only.
 
 ```siox
 entity Counter<W: integer> {
-    in clk: Clock;
+    in clk: Bit;
     in rst: Logic;
     in en: Bit;
 
@@ -178,7 +178,7 @@ The scheduler can infer that this block is event-controlled because the conditio
 
 ```siox
 entity Counter<W: integer> {
-    in clk: Clock;
+    in clk: Bit;
     in rst: Logic;
     in en: Bit;
 
@@ -481,7 +481,7 @@ Example sampled comparator:
 
 ```siox
 entity SampledComparator {
-    in clk: Clock;
+    in clk: Bit;
 
     p: Electrical<Time>;
     n: Electrical<Time>;
@@ -647,7 +647,7 @@ design SensorFrontend {
     #[pos = {x = 360, y = 120}, label = "GND"]
     node gnd: Electrical<A>;
 
-    signal clk: Clock;
+    signal clk: Bit;
     signal code: uint[12];
 
     #[pos = {x = 100, y = 40}, symbol = "thermal_to_voltage"]

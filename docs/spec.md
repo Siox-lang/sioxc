@@ -118,7 +118,7 @@ Valid:
 
 ```siox
 entity Counter<W: integer> {
-    in clk: Logic;
+    in clk: Bit;
     in rst: Logic;
     in en: Bit;
 
@@ -133,7 +133,7 @@ entity Counter {
     const W: integer;      // invalid in entity body
     let value: uint[8];  // invalid in entity body
 
-    in clk: Logic;
+    in clk: Bit;
     out count: uint[W];
 }
 ```
@@ -266,7 +266,7 @@ Usage:
 ```siox
 #[top]
 entity Top {
-    in clk: Logic;
+    in clk: Bit;
 }
 ```
 
@@ -896,7 +896,7 @@ Example struct:
 
 ```siox
 struct Stream<T> {
-    clk: Logic,
+    clk: Bit,
     rst: Logic,
     valid: Bit,
     ready: Bit,
@@ -1985,7 +1985,7 @@ entity CounterTest {
 }
 
 impl CounterTest {
-    let clk: Logic = '0';
+    let clk: Bit = '0';
     let rst: Logic = '1';
     let en: Bit = '1';
     let count: uint[8];
