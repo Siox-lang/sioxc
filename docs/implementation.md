@@ -100,6 +100,11 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   a struct (`bus: out Stream::Source`) flattens to per-field leaf signals, each
   tagged with its direction from the mode impl (`out valid; in ready;`), so
   valid/data flow Source→Sink and ready flows Sink→Source over the shared net.
+- **Status (done, cont.):** **type-parameter generics** — a struct (`Pair<T>`),
+  entity (`Reg<T>`), or bus (`Stream<T>::Source`) parameterized by a type
+  specializes to its type argument; the type parameter is bound in the impl
+  body, treated as opaque by the checker, and substituted into signal types at
+  lowering. Writing to an `in` bus leaf is a clear `E-P004`.
 - **Status (todo):** full direction analysis (reading an undriven `out`, etc.).
   Concrete parameter widths already propagate into instance signal types
   (an internal `uint[W]` wraps at the substituted width).

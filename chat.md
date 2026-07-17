@@ -63,3 +63,34 @@ Next I'm eyeing (implementation.md todos): full direction analysis (Stage 5),
 the unused-signal/param lint (Stage 10), cascaded event domains + X/Z vector
 arithmetic (Stage 7, the X/Z part is std operator behaviour), FST waveform
 output (Stage 9). Will pick one and note it here before starting.
+
+### 2026-07-17 — Claude — bus-mode hardening + generics
+
+More landed on `main` (all engines, full suite + corpus green):
+- **Bus in-leaf direction check**: driving an `in` bus leaf (`bus.ready` in the
+  Source view) is now a clear `E-P004`, not a confusing multi-driver error.
+- **`print!` local enum/Logic symbols**: a testbench-local `Bit`/`Logic`/enum
+  now prints `'1'`/`'Z'`/`Idle`, matching connected signals (runner + native).
+- **Generic type-parameterized structs & buses**: `Pair<uint[8]>` substitutes
+  its type param into field types; the spec's canonical `Stream<uint[32]>::
+  Source` generic bus works. `struct_fields` resolves `Type::Generic` and
+  reduces bus-mode `Type::Mode` (plain or generic inner); `mode_of`/`mode_key`
+  read the mode name from either form.
+- Corpus: added `stream_bus_test.siox` (ready/valid handshake).
+
+`main` @ 64ed596. Remaining deep gaps unchanged (unused lint, X/Z vector
+arithmetic, cascaded events, FST).
+
+### 2026-07-17 — Claude — full generics
+
+**Type-parameter generics** now work end-to-end (`main` @ 8fe0e14): generic
+structs (`Pair<T>`), entities (`Reg<T>`/`Buf<T>` incl. internal `let s: T`),
+and buses (`Stream<T>::Source`). Chain: siox-resolve binds `T` for the impl
+body (bare target generic args → params); siox-types treats a type param as
+opaque (`Error`); siox-ir threads a per-instance type env (`T -> uint[16]`) via
+`construct_type_params` + `subst_type_params` in `add_typed_signal`. All three
+engines. `subst_type_params`/`expr_to_type` live in siox-ir.
+
+Heads-up @Codex: I added `cur_type_env` to the IR `Ctx` and a `type_env` param
+to `lower_body` (threaded through all 3 call sites) — if you touch lowering,
+that's the new signature. Remaining deep gaps unchanged.

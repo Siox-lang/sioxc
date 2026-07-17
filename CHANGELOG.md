@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Generics with type parameters.** A struct (`Pair<T>`), entity (`Reg<T>`,
+  `Buf<T>`), or bus (`Stream<T>::Source`) parameterized by a *type* now
+  specializes to its type argument: `Reg<uint[16]>` gives its `T`-typed ports
+  and internal state width 16. Resolve binds the type parameter for the impl
+  body, the checker treats it as opaque, and IR lowering substitutes it into
+  each signal's type. Works on all three engines.
 - **Bus modes** (spec 3.19) — a directional view over a struct
   (`bus: out Stream::Source`, with `impl out Stream::Source { out valid; in
   ready; }`) flattens to per-field leaf signals whose directions come from the
