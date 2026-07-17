@@ -1359,7 +1359,7 @@ impl<'a> Lowering<'a> {
     /// the enclosing combinational conditions.
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         match stmt {
-            ast::Stmt::Assign { target, value, after, .. } => {
+            ast::Stmt::Assign { target, value, after, span } => {
                 // `after` delays are testbench stimulus, not synthesizable
                 // hardware (Phase 1): reject rather than silently drop.
                 if after.is_some() {
@@ -1370,6 +1370,30 @@ impl<'a> Lowering<'a> {
                         )
                         .with_code(siox_diag::codes::TYPE_MISMATCH),
                     );
+                }
+                // Strict assignment width: a scalar signal target and a direct
+                // signal-reference value must have equal, both-known widths
+                // (spec 3.17 — no implicit resize). Arithmetic and conversions
+                // are exempt (see `ref_width`); array/struct targets aren't in
+                // `locals` so they fall through untouched.
+                if let Some(tpath) = expr_path(target) {
+                    if let Some(&tid) = self.locals.get(&tpath) {
+                        let tw = self.out.signals[tid.0 as usize].width;
+                        if let Some(sw) = self.ref_width(value) {
+                            if tw > 0 && sw > 0 && tw != sw {
+                                self.sink.emit(
+                                    siox_diag::Diagnostic::error(format!(
+                                        "width mismatch: `{tpath}` is {tw} bits but the \
+                                         assigned value is {sw} bits"
+                                    ))
+                                    .with_code(siox_diag::codes::TYPE_MISMATCH)
+                                    .at(*span)
+                                    .help("widths must match; use a conversion \
+                                           (`uint[N](x)` / `resize(x, N)`) to change width"),
+                                );
+                            }
+                        }
+                    }
                 }
                 // A struct-typed target takes one driver per flattened field
                 // (struct copy, struct literal, or an inlined operator impl).
@@ -2036,6 +2060,35 @@ impl<'a> Lowering<'a> {
     /// The bit width of a source expression, for sizing concatenations. A nested
     /// concat sums its parts; a slice is its span; a signal/field/element is its
     /// declared width; a literal is its minimal width.
+    /// The width of a *direct width-bearing reference* on the RHS of an
+    /// assignment — a signal name, struct field, constant array element, bit
+    /// slice, or concatenation — for the strict assignment-width check. Returns
+    /// `None` for everything else (arithmetic, literals, conversions, muxes,
+    /// calls): those are exempt because operator results are not auto-widened
+    /// (overflow wraps at the operand width; a different width is an explicit
+    /// `resize`), so only signal-to-signal width equality is enforced.
+    fn ref_width(&self, e: &ast::Expr) -> Option<u32> {
+        match e {
+            ast::Expr::Path(_) | ast::Expr::Field { .. } => {
+                let p = expr_path(e)?;
+                self.locals.get(&p).map(|&id| self.out.signals[id.0 as usize].width)
+            }
+            ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
+                let (a, b) = self.slice_bounds(index)?;
+                Some((a.max(b) - a.min(b) + 1) as u32)
+            }
+            ast::Expr::Index { .. } => {
+                // A constant element index (`v[2]`) reads its element signal.
+                let p = expr_path(e)?;
+                self.locals.get(&p).map(|&id| self.out.signals[id.0 as usize].width)
+            }
+            ast::Expr::Concat { parts, .. } => {
+                Some(parts.iter().map(|p| self.ast_width(p)).sum())
+            }
+            _ => None,
+        }
+    }
+
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         match e {
             ast::Expr::IfExpr { then, .. } => self.ast_width(then),
@@ -4149,6 +4202,38 @@ mod tests {
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn strict_assignment_width_mismatch() {
+        // A parameterized width (`uint[W]`) the type checker can't see resolves
+        // at elaboration; assigning a 16-bit signal to an 8-bit target is then a
+        // width mismatch surfaced by IR lowering.
+        let bad = lower_diags(
+            "module m;\n\
+             entity E { in b: uint[W]; out y: uint[8]; }\n\
+             impl E { y = b; }\n\
+             #[test] entity Tb {}\n\
+             impl Tb {\n\
+               let b: uint[16]; let y: uint[8];\n\
+               let dut = E<W=16> { .b, .y };\n\
+             }\n",
+        );
+        assert!(bad.iter().any(|d| d.contains("width mismatch")), "{bad:?}");
+
+        // A matching-width slice of the same signal is fine — the value width
+        // (8) equals the target (8).
+        let ok = lower_diags(
+            "module m;\n\
+             entity E { in b: uint[W]; out y: uint[8]; }\n\
+             impl E { y = b[7..0]; }\n\
+             #[test] entity Tb {}\n\
+             impl Tb {\n\
+               let b: uint[16]; let y: uint[8];\n\
+               let dut = E<W=16> { .b, .y };\n\
+             }\n",
+        );
+        assert!(!ok.iter().any(|d| d.contains("width mismatch")), "{ok:?}");
     }
 
     #[test]
