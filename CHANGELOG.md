@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Strict assignment widths.** Assigning a signal to a target of a different
+  width is now an error (`E-P003`) — including widths that only become concrete
+  after elaboration substitutes a parameter (`uint[W]`), which the type checker
+  can't see. Only direct references (name/field/element/slice/concat) are
+  checked; arithmetic is exempt (results are not auto-widened — overflow wraps,
+  and a different width is an explicit `resize`), so `sum = a + b` still works.
 - **Composite `inout` ports.** A struct- or array-typed `inout` port aliases
   each flattened leaf (`bus.hi`, `pin[0]`) onto the matching leaf of the shared
   net, so every leaf's parallel drivers fold through `Resolve` independently —

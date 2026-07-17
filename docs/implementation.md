@@ -70,9 +70,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   as the impl method's declared return type (inherent and trait impls), so the
   result flows into downstream checks (a `Logic`-returning method used as a bare
   condition is rejected).
-- **Status (deferred):** concrete-width mismatch (`uint[8]`→`uint[16]`) needs
-  elaboration-time widths fed back in — tractable now that elaboration
-  substitutes widths.
+- **Status (done, cont.):** **strict assignment width** — the checker rejects a
+  literally-annotated mismatch (`y: uint[8] = b: uint[16]`, `E-P003`); widths
+  that come from parameters (`uint[W]`) are only concrete after elaboration, so
+  IR lowering additionally checks a scalar target against a direct
+  signal-reference value (name/field/element/slice/concat) once widths are
+  resolved. Arithmetic is exempt — results are not auto-widened (overflow wraps;
+  a different width is an explicit `resize`), so `sum = a + b` is untouched.
 
 ### Stage 5 — Elaboration (`siox-elab`) — 🟢 partial
 - **Acceptance:** all params known post-elab; all required ports connected;
