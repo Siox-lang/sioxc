@@ -32,11 +32,12 @@ assertions, and VCD export — predates this changelog. See
   (`a.cmp(b)`, `p.sum()`, branching on `self`) inline to a value and are typed
   as the method's declared return type, and statement methods (`s.send(v)`
   whose body drives `self.valid`/`self.data`) inline as drivers on the
-  receiver's fields. Method calls also work in **testbench stimulus** on the
-  interpreter and JIT — the runner inlines the body, resolving the receiver
-  type from the local's declaration — so a struct-typed testbench local can
-  drive a DUT through a method result (the native `--no-run` emitter does not
-  yet support struct-typed testbench locals; that is the remaining follow-up).
+  receiver's fields. Method calls also work in **testbench stimulus** on all
+  three engines — the evaluator inlines the body, resolving the receiver type
+  from the local's declaration — so a struct-typed testbench local can drive a
+  DUT through a method result. The native `--no-run` binary materializes an
+  unconnected struct-typed testbench local as one C local per field, at parity
+  with the interpreter and JIT.
 - **Fix-it help when a string literal is used as a value.** A double-quoted
   `"…"` is a `string` (a `Char` array), so using it where a single value is
   expected (`let s: Logic = "0"`) or to build a logic/enum array (`"01"`) is a
