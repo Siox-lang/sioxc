@@ -815,6 +815,13 @@ impl Ctx<'_> {
                             };
                             b.push_str(&format!("    uint64_t {} = {e};\n", l.name.text));
                             self.locals.borrow_mut().insert(l.name.text.clone());
+                            // Record an enum/Logic local's type so `print!`
+                            // renders its symbol, not the raw discriminant.
+                            if let Some(h) = l.ty.as_ref().and_then(|t| type_head_name(t)) {
+                                if self.enums.contains_key(h) {
+                                    self.local_types.borrow_mut().insert(l.name.text.clone(), h.to_string());
+                                }
+                            }
                         }
                     }
                 },
@@ -1073,9 +1080,12 @@ impl Ctx<'_> {
                         // An enum-typed signal prints its variant symbol via a
                         // ternary over the value (a clang statement-expression
                         // evaluates the operand once).
-                        let enum_syms = sig
-                            .and_then(|s| s.enum_type.as_ref())
-                            .and_then(|ety| self.design.enum_syms.get(ety));
+                        // A signal's enum type, or an enum/Logic testbench
+                        // local's declared type, selects symbol rendering.
+                        let ety: Option<String> = sig
+                            .and_then(|s| s.enum_type.clone())
+                            .or_else(|| expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned()));
+                        let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
                         if let Some(syms) = enum_syms {
                             let mut tern = String::from("\"?\"");
                             for (disc, sym) in syms {

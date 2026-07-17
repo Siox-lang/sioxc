@@ -1352,6 +1352,15 @@ impl Testbench<'_> {
                     }
                 }
             }
+            // A testbench *local* of an enum/Logic type renders its symbol too
+            // (`'Z'`, `Idle`), not the raw discriminant — via its declared type.
+            if let Some(ety) = self.local_types.get(&p) {
+                if let Some(sym) =
+                    self.engine.design().enum_syms.get(ety).and_then(|m| m.get(&v.to_u64()))
+                {
+                    return sym.clone();
+                }
+            }
         }
         // A real literal keeps its float face.
         if let ast::Expr::Int { text, .. } = a {
