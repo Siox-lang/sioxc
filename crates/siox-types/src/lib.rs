@@ -101,6 +101,8 @@ struct PortInfo {
     name: String,
     ty: Ty,
     dir: Option<Direction>,
+    /// `(struct, mode)` when this is a bus-mode port (`out Stream::Source`).
+    mode: Option<(String, String)>,
 }
 
 /// The value type an attribute declaration expects (spec 3.5).
@@ -150,6 +152,10 @@ struct Checker<'a> {
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
+    /// Bus-mode per-field directions `(struct, mode) -> {field -> dir}` from
+    /// `impl <dir> Struct::Mode { in a; out b; }` (spec 3.19), so a write to an
+    /// `in` bus leaf can be rejected.
+    mode_dirs: HashMap<(String, String), HashMap<String, Direction>>,
 }
 
 impl<'a> Checker<'a> {
@@ -210,6 +216,7 @@ impl<'a> Checker<'a> {
             suffix_types: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
+            mode_dirs: HashMap::new(),
         }
     }
 
@@ -240,6 +247,7 @@ impl<'a> Checker<'a> {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
+                            mode: mode_key(&p.ty),
                         })
                         .collect();
                     self.entities.insert(e.name.text.clone(), ports);
@@ -265,6 +273,23 @@ impl<'a> Checker<'a> {
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
             }
             Item::Impl(im) => {
+                // A bus-mode impl (`impl out Stream::Source { in a; out b; }`,
+                // spec 3.19) records each field's direction.
+                if im.mode_dir.is_some() {
+                    if let Type::Mode { inner, .. } = &im.target {
+                        if let Type::Path(p) = inner.as_ref() {
+                            if p.segments.len() >= 2 {
+                                let key = (p.segments[0].text.clone(), p.segments[1].text.clone());
+                                let map = self.mode_dirs.entry(key).or_default();
+                                for it in &im.items {
+                                    if let ImplItem::ModeField { dir, name, .. } = it {
+                                        map.insert(name.text.clone(), *dir);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
                 if let Some(ty) = type_head_name(&im.target) {
@@ -694,6 +719,15 @@ impl<'a> Checker<'a> {
                     if p.dir == Some(Direction::In) {
                         in_ports.insert(p.name.clone());
                     }
+                    // A bus-mode port contributes each `in` leaf (`bus.ready`),
+                    // so driving it inside the entity is rejected (spec 3.19).
+                    if let Some(dirs) = p.mode.clone().and_then(|k| self.mode_dirs.get(&k)) {
+                        for (field, dir) in dirs {
+                            if *dir == Direction::In {
+                                in_ports.insert(format!("{}.{field}", p.name));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -881,16 +915,19 @@ impl<'a> Checker<'a> {
     /// Spec 3.18: flag `port = ...` where `port` is a bare `in` port. Field /
     /// index writes (`bus.ready = ...`) are left for fuller direction analysis.
     fn check_write_target(&mut self, target: &Expr, in_ports: &HashSet<String>) {
-        if let Expr::Path(p) = target {
-            if p.segments.len() == 1 && in_ports.contains(&p.segments[0].text) {
+        // A bare `in` port (`a`) or an `in` bus-mode leaf (`bus.ready`).
+        let name = match target {
+            Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+            Expr::Field { .. } => path_string(target),
+            _ => None,
+        };
+        if let Some(name) = name {
+            if in_ports.contains(&name) {
                 self.sink.emit(
-                    Diagnostic::error(format!(
-                        "cannot assign to input port `{}`",
-                        p.segments[0].text
-                    ))
-                    .with_code(codes::WRITE_TO_INPUT_PORT)
-                    .at(p.span)
-                    .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
+                    Diagnostic::error(format!("cannot assign to input port `{name}`"))
+                        .with_code(codes::WRITE_TO_INPUT_PORT)
+                        .at(expr_span(target))
+                        .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
                 );
             }
         }
@@ -1704,6 +1741,29 @@ fn type_head_name(ty: &Type) -> Option<&str> {
     }
 }
 
+/// A dotted path string for a write target: `Expr::Path` or a `Field` chain
+/// (`bus.ready` -> "bus.ready").
+fn path_string(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        Expr::Field { base, field, .. } => Some(format!("{}.{}", path_string(base)?, field.text)),
+        _ => None,
+    }
+}
+
+/// The `(struct, mode)` of a bus-mode type (`out Stream::Source` ->
+/// `("Stream", "Source")`), for looking up per-leaf directions.
+fn mode_key(ty: &Type) -> Option<(String, String)> {
+    if let Type::Mode { inner, .. } = ty {
+        if let Type::Path(p) = inner.as_ref() {
+            if p.segments.len() >= 2 {
+                return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));
+            }
+        }
+    }
+    None
+}
+
 /// Width of a bracketed type index when it is a literal (`uint[8]` -> 8);
 /// otherwise `0`, meaning "parametric / not yet known".
 fn width_of(index: &Expr) -> u32 {
@@ -1830,6 +1890,30 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    #[test]
+    fn rejects_write_to_input_bus_leaf() {
+        // Driving an `in` leaf of a bus-mode port (`bus.ready` in the Source
+        // view) is a write to an input (spec 3.19) — a clear E-P004.
+        let bad = check_src(
+            "module m;\n\
+             struct S { valid: Bit, ready: Bit, }\n\
+             impl out S::Source { out valid; in ready; }\n\
+             entity P { bus: out S::Source; }\n\
+             impl P { bus.valid = '1'; bus.ready = '1'; }\n",
+        );
+        assert_eq!(bad, 1, "driving the `in` leaf bus.ready must error");
+
+        // Driving only the `out` leaves is fine.
+        let ok = check_src(
+            "module m;\n\
+             struct S { valid: Bit, ready: Bit, }\n\
+             impl out S::Source { out valid; in ready; }\n\
+             entity P { bus: out S::Source; out r: Bit; }\n\
+             impl P { bus.valid = '1'; r = bus.ready; }\n",
+        );
+        assert_eq!(ok, 0, "driving out leaves + reading in leaves is fine");
     }
 
     #[test]
