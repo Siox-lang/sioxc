@@ -286,6 +286,9 @@ struct Lowering<'a> {
     /// The active entity's width environment (consts + instance params),
     /// for const-evaluating slice bounds during expression lowering.
     cur_env: HashMap<String, i64>,
+    /// The active entity's type-parameter bindings (`T -> uint[8]` for a
+    /// generic entity `Buf<uint[8]>`), substituted into port/signal types.
+    cur_type_env: HashMap<String, ast::Type>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -370,6 +373,7 @@ impl<'a> Lowering<'a> {
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
             cur_env: HashMap::new(),
+            cur_type_env: HashMap::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -513,7 +517,7 @@ impl<'a> Lowering<'a> {
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        self.lower_body(name, name, &env, &HashMap::new());
+        self.lower_body(name, name, &env, &HashMap::new(), &HashMap::new());
     }
 
     /// Lower each `let inst = Sub { .. }` DUT of a testbench into its own
@@ -535,8 +539,9 @@ impl<'a> Lowering<'a> {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
                             sub_env.extend(self.construct_params(cty, env));
+                            let sub_tenv = self.construct_type_params(cty, sub);
                             let sub_ports =
-                                self.lower_body(sub, &sub_path, &sub_env, &HashMap::new());
+                                self.lower_body(sub, &sub_path, &sub_env, &sub_tenv, &HashMap::new());
                             for c in args {
                                 // `.p` shorthand means the testbench name `p`.
                                 let tbname = match &c.value {
@@ -597,6 +602,7 @@ impl<'a> Lowering<'a> {
         ename: &str,
         path: &str,
         env: &HashMap<String, i64>,
+        type_env: &HashMap<String, ast::Type>,
         aliases: &HashMap<String, SignalId>,
     ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
         let Some(edecl) = self.entities.get(ename).copied() else {
@@ -611,6 +617,7 @@ impl<'a> Lowering<'a> {
         let saved_array = std::mem::take(&mut self.local_array);
         let saved_numeric = std::mem::take(&mut self.local_numeric);
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
+        let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
 
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
         // An `inout` port aliased to a parent net reuses that net's signal
@@ -794,6 +801,7 @@ impl<'a> Lowering<'a> {
             let sub_path = format!("{path}.{inst}");
             let mut sub_env = self.consts.clone();
             sub_env.extend(self.construct_params(cty, env));
+            let sub_type_env = self.construct_type_params(cty, sub_ename);
 
             // Resolve `inout` connections to the parent net they share *before*
             // lowering the child, so its port aliases to that net. A scalar
@@ -839,7 +847,7 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &aliases);
+            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &sub_type_env, &aliases);
             // Expose the sub-instance's ports in this scope so `inst.port`
             // (and `stage[i].port`) reads resolve to the child's signal —
             // an output need not be wired to a local to be read.
@@ -931,6 +939,7 @@ impl<'a> Lowering<'a> {
         self.local_array = saved_array;
         self.local_numeric = saved_numeric;
         self.cur_env = saved_env;
+        self.cur_type_env = saved_type_env;
         ports
     }
 
@@ -942,6 +951,37 @@ impl<'a> Lowering<'a> {
                 if let ast::GenericArg::Named { name, value } = a {
                     if let Some(v) = eval_const(value, env) {
                         out.insert(name.text.clone(), v);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Type-parameter bindings for a generic entity instance (`Buf<uint[8]>` ->
+    /// `T -> uint[8]`): the entity's bare type params (bound `None`), matched to
+    /// the construct's generic args positionally or by name.
+    fn construct_type_params(&self, ty: &ast::Type, ename: &str) -> HashMap<String, ast::Type> {
+        let mut out = HashMap::new();
+        let (Some(decl), ast::Type::Generic { args, .. }) = (self.entities.get(ename), ty) else {
+            return out;
+        };
+        let type_params: Vec<&ast::Param> =
+            decl.params.params.iter().filter(|p| p.bound.is_none()).collect();
+        for (i, a) in args.iter().enumerate() {
+            match a {
+                ast::GenericArg::Named { name, value } => {
+                    if type_params.iter().any(|p| p.name.text == name.text) {
+                        if let Some(t) = expr_to_type(value) {
+                            out.insert(name.text.clone(), t);
+                        }
+                    }
+                }
+                ast::GenericArg::Positional(e) => {
+                    if let (Some(p), Some(t)) = (decl.params.params.get(i), expr_to_type(e)) {
+                        if p.bound.is_none() {
+                            out.insert(p.name.text.clone(), t);
+                        }
                     }
                 }
             }
@@ -1205,6 +1245,15 @@ impl<'a> Lowering<'a> {
     /// element (`a[0]`). Nested composites recurse. An integer vector
     /// (`uint[8]`) stays a single scalar signal.
     fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
+        // A generic entity's type parameters (`T -> uint[8]`) substitute first,
+        // so a port/signal typed `T` becomes its concrete type here.
+        let subst_ty;
+        let ty = if self.cur_type_env.is_empty() {
+            ty
+        } else {
+            subst_ty = subst_type_params(ty, &self.cur_type_env);
+            &subst_ty
+        };
         // Substitute `using X = T;` aliases; an index applied to an alias of
         // an unconstrained array fills its hole (`string[5]` = `Char[5]`).
         let resolved;

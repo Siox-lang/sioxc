@@ -577,6 +577,32 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn generic_entity_agrees() {
+    // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
+    // state to the type argument (`Buf<uint[8]>`), so signals get the concrete
+    // width. Both engines must agree.
+    let d = lower(
+        "module m;\n\
+         entity Buf<T> { in a: T; in b: T; out y: T; }\n\
+         impl Buf<T> {\n\
+           let s: T;\n\
+           s = a + b;\n\
+           y = s;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let dut = Buf<uint[8]> { .a, .b, .y };\n\
+         }\n",
+    );
+    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Buf<uint[8]>.s is 8-bit");
+    for (a, b) in [(10u64, 20u64), (200, 100), (255, 1)] {
+        assert_agree(&d, &[("T.a", a), ("T.b", b)]);
+    }
+}
+
+#[test]
 fn generic_struct_agrees() {
     // A generic struct (`Pair<uint[8]>`) substitutes its type parameter into
     // the field types, so `p.a`/`p.b` are 8-bit signals and arithmetic wraps.

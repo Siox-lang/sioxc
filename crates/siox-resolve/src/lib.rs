@@ -485,6 +485,20 @@ impl<'a> Resolver<'a> {
     fn resolve_impl(&mut self, im: &ImplDecl) {
         self.enter();
         self.bind_params(&im.params);
+        // `impl Reg<T>` declares the type parameter `T` for the body (like
+        // Rust's `impl<T> Reg<T>`): a bare single-name generic argument on the
+        // target that isn't already a known type is a type parameter.
+        if let Type::Generic { args, .. } = &im.target {
+            for a in args {
+                if let GenericArg::Positional(Expr::Path(p)) = a {
+                    if p.segments.len() == 1 && self.lookup(&p.segments[0].text).is_none() {
+                        let name = p.segments[0].text.clone();
+                        let id = self.add_def(name.clone(), DefKind::Param, false, Some(p.segments[0].span), None);
+                        self.bind(&name, id);
+                    }
+                }
+            }
+        }
         // `Self` refers to the impl target type inside the body.
         self.bind_local("Self");
         // Impl-level names are visible to the whole body regardless of order.

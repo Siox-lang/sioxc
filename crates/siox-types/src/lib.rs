@@ -1432,7 +1432,7 @@ impl<'a> Checker<'a> {
                         Some(d) if d.kind == DefKind::EnumVariant => {
                             d.parent.map(Ty::Named).unwrap_or(Ty::Error)
                         }
-                        _ => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
+                        _ => self.named_ty(p.span),
                     }
                 }
             }
@@ -1699,6 +1699,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A resolved type-name span as a `Ty`. A **type parameter** (`T` in a
+    /// generic entity/struct/impl) is opaque, so it types as `Error` — it
+    /// suppresses the assignment/type checks that can't be meaningful until the
+    /// parameter is bound at elaboration.
+    fn named_ty(&self, span: Span) -> Ty {
+        match self.resolved.resolved(span) {
+            Some(id) if self.resolved.def(id).map(|d| d.kind) == Some(DefKind::Param) => Ty::Error,
+            Some(id) => Ty::Named(id),
+            None => Ty::Error,
+        }
+    }
+
     fn path_ty(&self, p: &Path) -> Ty {
         if p.segments.len() == 1 {
             match p.segments[0].text.as_str() {
@@ -1719,11 +1731,11 @@ impl<'a> Checker<'a> {
                     // A bit-vector family (`struct F : Logic[]`): width applies
                     // via `F[N]` (ast_ty's Indexed).
                     None if self.is_vector_family(name) => Ty::Vector { width: 0 },
-                    None => self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error),
+                    None => self.named_ty(p.span),
                 },
             }
         } else {
-            self.resolved.resolved(p.span).map(Ty::Named).unwrap_or(Ty::Error)
+            self.named_ty(p.span)
         }
     }
 
