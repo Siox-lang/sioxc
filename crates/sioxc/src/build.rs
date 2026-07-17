@@ -91,6 +91,12 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         }
     }
 
+    // Struct field layouts (base-first, inheritance flattened) so a struct-typed
+    // testbench local can be materialized as one C local per leaf field. Every
+    // impl method by (type head, name), for `recv.method(args)` in stimulus.
+    let structs = collect_structs(modules);
+    let methods = collect_methods(modules);
+
     // Header, one `int test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
     prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
@@ -173,7 +179,10 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             locals: Default::default(),
             local_widths: Default::default(),
             local_families: Default::default(),
+            local_types: Default::default(),
             op_impls: &op_impls,
+            methods: &methods,
+            structs: &structs,
             consts: &consts,
             aliases: &aliases,
             tmp: Default::default(),
@@ -258,6 +267,14 @@ struct Ctx<'a> {
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Impl methods `(type head, method) -> fn`, for `recv.method(args)`.
+    methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Struct layouts (name -> base-first field list) so a struct-typed
+    /// testbench local materializes as one C local per leaf field.
+    structs: &'a HashMap<String, Vec<(String, ast::Type)>>,
+    /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
+    /// resolving a method call's receiver type.
+    local_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level `const` values, for bare-name references.
     consts: &'a HashMap<String, u128>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
@@ -268,6 +285,77 @@ struct Ctx<'a> {
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
+}
+
+/// Struct layouts keyed by name, each a base-first flattened field list
+/// (`struct B : A` prepends A's fields), so a struct-typed testbench local can
+/// be materialized as one C local per field.
+fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type)>> {
+    let mut raw: HashMap<String, (Option<String>, Vec<(String, ast::Type)>)> = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Struct(s) = item {
+                let base = s.base.as_ref().and_then(type_head_name).map(str::to_string);
+                let own = s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())).collect();
+                raw.insert(s.name.text.clone(), (base, own));
+            }
+        }
+    }
+    fn flat(
+        name: &str,
+        raw: &HashMap<String, (Option<String>, Vec<(String, ast::Type)>)>,
+        depth: usize,
+    ) -> Vec<(String, ast::Type)> {
+        if depth > 32 {
+            return Vec::new();
+        }
+        let Some((base, own)) = raw.get(name) else { return Vec::new() };
+        let mut out = match base {
+            Some(b) => flat(b, raw, depth + 1),
+            None => Vec::new(),
+        };
+        out.extend(own.iter().cloned());
+        out
+    }
+    raw.keys().map(|k| (k.clone(), flat(k, &raw, 0))).collect()
+}
+
+/// Every impl method by `(type head, method name)`, inherent and trait impls,
+/// mirroring the runner's `collect_methods`.
+fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                if let Some(ty) = type_head_name(&im.target) {
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            out.entry((ty.to_string(), f.name.text.clone())).or_insert(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A valid C identifier for a testbench local. Bare names (the common case)
+/// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
+/// is mangled to a flat identifier (`sxl_p_a`, `sxl_v_2`).
+fn c_local_ident(name: &str) -> String {
+    if name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return name.to_string();
+    }
+    let mut s = String::from("sxl_");
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else {
+            s.push('_');
+        }
+    }
+    s
 }
 
 /// Escape text for embedding inside a C string literal: backslash first,
@@ -319,6 +407,83 @@ impl Ctx<'_> {
     /// string literal (`s = "hi"` -> one `Char` element per index) or a struct
     /// literal (`a = { .re = 3 }` -> one field signal each). Returns `true`
     /// when it handled `value`, `false` to fall through to scalar assignment.
+    /// Materialize an *unconnected* struct-typed testbench local as one C local
+    /// per field (`let p: Pkt;` -> `uint64_t sxl_p_a = 0, sxl_p_b = 0;`),
+    /// recording each field's width/family and the receiver type. A struct
+    /// literal initializer (`let p = Pkt { .a = 1 };`) writes the fields. A
+    /// *connected* struct port (fields in the signal map) returns `false` so the
+    /// existing signal path handles it. Returns `true` when handled.
+    fn try_declare_struct_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
+        let Some(head) = l.ty.as_ref().and_then(|t| type_head_name(t)) else { return Ok(false) };
+        // A vector family (`uint`/`int`, declared `struct uint : Logic[]`) is a
+        // scalar leaf, not an aggregate struct — leave it to the scalar path.
+        if self.families.contains(head) {
+            return Ok(false);
+        }
+        let Some(fields) = self.structs.get(head) else { return Ok(false) };
+        let connected = self.map.contains_key(&l.name.text)
+            || fields
+                .iter()
+                .any(|(f, _)| self.map.contains_key(&format!("{}.{}", l.name.text, f)));
+        if connected {
+            return Ok(false);
+        }
+        self.local_types.borrow_mut().insert(l.name.text.clone(), head.to_string());
+        let init: HashMap<&str, &ast::Expr> = match &l.value {
+            Some(ast::Expr::Construct { args, .. }) => args
+                .iter()
+                .filter_map(|a| a.value.as_ref().map(|v| (a.field.text.as_str(), v)))
+                .collect(),
+            _ => HashMap::new(),
+        };
+        self.declare_struct_fields(&l.name.text, fields, &init, b)?;
+        Ok(true)
+    }
+
+    /// Emit `uint64_t` locals for each field of a struct local, recursing into
+    /// nested struct fields (`p.inner.x`). `init` supplies literal field values.
+    fn declare_struct_fields(
+        &self,
+        prefix: &str,
+        fields: &[(String, ast::Type)],
+        init: &HashMap<&str, &ast::Expr>,
+        b: &mut String,
+    ) -> Result<(), String> {
+        for (fname, fty) in fields {
+            let key = format!("{prefix}.{fname}");
+            // A nested struct field expands to its own leaves — but a
+            // vector-family field (`uint`/`int`) is a scalar leaf, not a struct.
+            let fhead = type_head_name(fty);
+            if let Some(sub) = fhead
+                .filter(|h| !self.families.contains(*h))
+                .and_then(|h| self.structs.get(h))
+            {
+                self.local_types.borrow_mut().insert(key.clone(), fhead.unwrap().to_string());
+                self.declare_struct_fields(&key, sub, &HashMap::new(), b)?;
+                continue;
+            }
+            if let Some((fam, w)) = self.declared_family(fty) {
+                self.local_families.borrow_mut().insert(key.clone(), fam);
+                self.local_widths.borrow_mut().insert(key.clone(), w);
+            } else if let Some(w) = self.declared_width(fty) {
+                self.local_widths.borrow_mut().insert(key.clone(), w);
+            }
+            let init_e = match init.get(fname.as_str()) {
+                Some(v) => {
+                    let e = self.expr(v)?;
+                    match self.local_widths.borrow().get(&key) {
+                        Some(&w) => mask_c(&e, w),
+                        None => e,
+                    }
+                }
+                None => "0".to_string(),
+            };
+            b.push_str(&format!("    uint64_t {} = {init_e};\n", c_local_ident(&key)));
+            self.locals.borrow_mut().insert(key);
+        }
+        Ok(())
+    }
+
     fn write_composite(
         &self,
         name: &str,
@@ -507,6 +672,7 @@ impl Ctx<'_> {
         let mut started = false;
         for item in items {
             match item {
+                ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
                     value => {
@@ -606,7 +772,7 @@ impl Ctx<'_> {
                         Some(&w) => mask_c(&e, w),
                         None => e,
                     };
-                    b.push_str(&format!("{ind}{name} = {e};\n"));
+                    b.push_str(&format!("{ind}{} = {e};\n", c_local_ident(&name)));
                     return Ok(());
                 }
                 let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
@@ -954,6 +1120,46 @@ impl Ctx<'_> {
         self.expr(a)
     }
 
+    /// The declared type head of a method-call receiver (`p` in `p.sum()`): a
+    /// struct/enum local, or a numeric family (`n.cmp(m)`).
+    fn receiver_type(&self, recv: &ast::Expr) -> Option<String> {
+        let p = expr_path(recv)?;
+        if let Some(t) = self.local_types.borrow().get(&p) {
+            return Some(t.clone());
+        }
+        self.local_families.borrow().get(&p).cloned()
+    }
+
+    /// A method call `recv.method(args)` as a C expression: substitute `self`
+    /// with the receiver and each parameter with its argument into the body,
+    /// then flatten it (like a module fn). `self.a` becomes `<recv>.a`, which
+    /// reads the receiver's struct-local field.
+    fn c_method_call(
+        &self,
+        recv: &ast::Expr,
+        method: &str,
+        args: &[ast::Expr],
+    ) -> Result<String, String> {
+        let ty = self
+            .receiver_type(recv)
+            .ok_or_else(|| format!("cannot resolve the receiver type of `.{method}()`"))?;
+        let f = self
+            .methods
+            .get(&(ty.clone(), method.to_string()))
+            .ok_or_else(|| format!("unknown method `{ty}::{method}`"))?;
+        let body = f.body.as_ref().ok_or("method has no body")?;
+        let mut map: HashMap<String, ast::Expr> = HashMap::new();
+        map.insert("self".to_string(), recv.clone());
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                map.insert(n.text.clone(), a.clone());
+            }
+        }
+        let stmts: Vec<ast::Stmt> =
+            body.stmts.iter().map(|s| siox_ir::subst_stmt_paths(s, &map)).collect();
+        self.c_fn_stmts(&stmts)
+    }
+
     /// A module-fn call as a C expression: bind the arguments, then flatten
     /// the `return`/`if` body into nested conditionals.
     fn c_fn_call(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Result<String, String> {
@@ -1062,6 +1268,16 @@ impl Ctx<'_> {
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
             // Conversions mask to the target width (testbench side).
+            // A method call `recv.method(args)` (possibly nullary) inlines the
+            // impl body as a C expression, before the conversion logic below.
+            ast::Expr::Call { callee, args, .. }
+                if matches!(callee.as_ref(), ast::Expr::Field { .. }) =>
+            {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    return self.c_method_call(base, &field.text, args);
+                }
+                unreachable!()
+            }
             ast::Expr::Call { callee, args, .. } => {
                 let arg = args.first().ok_or("conversion needs an argument")?;
                 let v = self.expr(arg)?;
@@ -1143,7 +1359,7 @@ impl Ctx<'_> {
             ast::Expr::Path(p)
                 if p.segments.len() == 1 && self.locals.borrow().contains(&p.segments[0].text) =>
             {
-                p.segments[0].text.clone()
+                c_local_ident(&p.segments[0].text)
             }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 if let Some(&id) = self.map.get(&p.segments[0].text) {
@@ -1165,9 +1381,15 @@ impl Ctx<'_> {
             }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 let path = expr_path(e).ok_or("unsupported field/index")?;
-                let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
-                self.check_scalar(*id)?;
-                format!("sx_read({})", id.0)
+                // A struct-field / array-element of a testbench local reads its
+                // mangled C local; otherwise it's a connected signal.
+                if self.locals.borrow().contains(&path) {
+                    c_local_ident(&path)
+                } else {
+                    let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
+                    self.check_scalar(*id)?;
+                    format!("sx_read({})", id.0)
+                }
             }
             ast::Expr::Unary { op, rhs, .. } => {
                 let r = self.expr(rhs)?;
