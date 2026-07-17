@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Composite `inout` ports.** A struct- or array-typed `inout` port aliases
+  each flattened leaf (`bus.hi`, `pin[0]`) onto the matching leaf of the shared
+  net, so every leaf's parallel drivers fold through `Resolve` independently —
+  the bidirectional model that already worked for scalar/vector inout, now
+  per-leaf for composites.
 - **Method calls.** `recv.method(args)` (spec 3.20) now works in hardware: the
   impl method's body inlines during IR lowering — `self` binds to the receiver,
   parameters to the arguments, and the receiver type propagates so operators in

@@ -135,10 +135,14 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   whose body drives `self.valid`/`self.data`) inline as drivers on the
   receiver's flattened fields — via a general `self`->receiver, param->argument
   substitution over the body. Covers inherent and trait impls.
+- **Status (done, cont.):** **composite (struct/array) `inout` ports** — a
+  struct- or array-typed `inout` port aliases each flattened leaf (`bus.hi`,
+  `pin[0]`) onto the matching leaf of the shared net, so every leaf's parallel
+  drivers fold through `Resolve` independently (scalar/vector inout already
+  worked).
 - **Status (todo):** method calls in *testbench* expressions (the runner
   evaluates those directly, not via the IR — the struct-receiver case needs
-  struct-field metadata it does not yet expose); composite (struct) `inout`
-  ports (scalar/vector inout works).
+  struct-field metadata it does not yet expose).
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
