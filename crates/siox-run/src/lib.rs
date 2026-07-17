@@ -26,9 +26,8 @@ pub trait Slot: Copy + PartialEq + PartialOrd + core::fmt::Debug + Default {
     fn checked_div(self, o: Self) -> Option<Self>;
     fn wrapping_shl(self, n: u32) -> Self;
     fn wrapping_shr(self, n: u32) -> Self;
-    fn bitand(self, o: Self) -> Self;
-    fn bitor(self, o: Self) -> Self;
-    fn bitxor(self, o: Self) -> Self;
+    fn and(self, o: Self) -> Self;
+    fn or(self, o: Self) -> Self;
     fn bitnot(self) -> Self;
     fn is_zero(self) -> bool;
     fn one() -> Self;
@@ -69,14 +68,11 @@ macro_rules! impl_slot {
             fn wrapping_shr(self, n: u32) -> Self {
                 <$t>::wrapping_shr(self, n)
             }
-            fn bitand(self, o: Self) -> Self {
+            fn and(self, o: Self) -> Self {
                 self & o
             }
-            fn bitor(self, o: Self) -> Self {
+            fn or(self, o: Self) -> Self {
                 self | o
-            }
-            fn bitxor(self, o: Self) -> Self {
-                self ^ o
             }
             fn bitnot(self) -> Self {
                 !self
@@ -128,12 +124,8 @@ pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
         BinOp::Div => a.checked_div(b).unwrap_or_else(|| S::from_u64(0)),
         BinOp::Shl => a.wrapping_shl(b.to_u64() as u32),
         BinOp::Shr => a.wrapping_shr(b.to_u64() as u32),
-        BinOp::And => a.bitand(b),
-        BinOp::Nand => a.bitand(b).bitnot(),
-        BinOp::Or => a.bitor(b),
-        BinOp::Nor => a.bitor(b).bitnot(),
-        BinOp::Xor => a.bitxor(b),
-        BinOp::Xnor => a.bitxor(b).bitnot(),
+        BinOp::And => a.and(b),
+        BinOp::Or => a.or(b),
         BinOp::Eq => bool_s(a == b),
         BinOp::Ne => bool_s(a != b),
         // Float arithmetic on f64-bit values (`real` operands, low 64 bits).
@@ -260,17 +252,48 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
 /// Operator-trait impls, `(trait, target type) -> first fn` (`impl Div for
 /// int` -> `div`). The testbench evaluator dispatches typed binary operators
 /// through these, mirroring the IR's hardware inlining.
-fn collect_op_impls(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
-    let mut out = HashMap::new();
+fn collect_op_impls(
+    modules: &[Module],
+) -> HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> {
+    let mut out: HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> =
+        HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
                 let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                 let target = type_head_name(&im.target);
                 if let (Some(tr), Some(ty)) = (tr, target) {
+                    let operator = if tr.text == "custom" {
+                        im.trait_args.first().and_then(|a| match a {
+                            ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
+                                Some(text.clone())
+                            }
+                            _ => None,
+                        })
+                    } else {
+                        Some(tr.text.clone())
+                    };
+                    let Some(operator) = operator else { continue };
+                    let input_index = usize::from(tr.text == "custom");
+                    let input = im.trait_args.get(input_index).and_then(|a| match a {
+                        ast::GenericArg::Positional(ast::Expr::Path(p)) => {
+                            p.segments.last().map(|s| s.text.clone())
+                        }
+                        _ => None,
+                    });
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
-                            out.entry((tr.text.clone(), ty.to_string())).or_insert(f);
+                            let input = input.clone().or_else(|| {
+                                f.params
+                                    .iter()
+                                    .find(|p| !p.is_self)
+                                    .and_then(|p| p.ty.as_ref())
+                                    .and_then(type_head_name)
+                                    .map(str::to_string)
+                            });
+                            out.entry((operator.clone(), ty.to_string()))
+                                .or_default()
+                                .push((f, input));
                         }
                     }
                 }
@@ -411,7 +434,7 @@ fn run_one<'a>(
     body: &[&ast::ImplDecl],
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
-    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    op_impls: &'a HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
     derived_widths: &'a HashMap<String, u32>,
     consts: &'a HashMap<String, u128>,
@@ -572,7 +595,7 @@ struct Testbench<'a> {
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Operator-trait impls `(trait, type) -> fn`, for typed operator dispatch.
-    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    op_impls: &'a HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
     /// Impl methods `(type head, method) -> fn`, for `recv.method(args)` calls.
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Derived-type inherited widths (`struct Byte : Logic[8]` -> 8).
@@ -1534,7 +1557,7 @@ impl Testbench<'_> {
                     {
                         return v;
                     }
-                    // An enum-derivation conversion (`Clock(b)`, `Logic(u)`):
+                    // An enum-derivation conversion (`Logic(u)`, `ULogic(x)`):
                     // representation-identity along the chain — pass through.
                     ast::Expr::Path(p)
                         if p.segments.len() == 1
@@ -1613,6 +1636,11 @@ impl Testbench<'_> {
                 }
             }
             ast::Expr::Unary { op, rhs, .. } => {
+                if *op == ast::UnOp::Not {
+                    if let Some(v) = self.dispatch_not(rhs, fenv) {
+                        return v;
+                    }
+                }
                 let a = self.eval_env(rhs, fenv);
                 match op {
                     ast::UnOp::Not => u128::from_u64(a.is_zero() as u64),
@@ -1622,9 +1650,9 @@ impl Testbench<'_> {
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // Whole-string equality: `s == "hello"` compares element-wise
                 // (a string is a Char array).
-                if matches!(lower_ast_binop(*op), BinOp::Eq | BinOp::Ne) {
+                if matches!(lower_ast_binop(op), Some(BinOp::Eq | BinOp::Ne)) {
                     if let Some(eq) = self.string_eq(lhs, rhs) {
-                        let v = if matches!(lower_ast_binop(*op), BinOp::Eq) { eq } else { !eq };
+                        let v = if matches!(lower_ast_binop(op), Some(BinOp::Eq)) { eq } else { !eq };
                         return u128::from_u64(v as u64);
                     }
                 }
@@ -1633,33 +1661,36 @@ impl Testbench<'_> {
                 if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
                     let a = self.eval_char(lhs);
                     let b = self.eval_char(rhs);
-                    return apply_binop(lower_ast_binop(*op), a, b);
+                    return lower_ast_binop(op).map(|op| apply_binop(op, a, b)).unwrap_or_default();
                 }
                 // A real operand switches to float semantics: integer literal
                 // counterparts coerce, so `z.re == 10` compares 10.0.
                 if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
                     let a = self.eval_real(lhs);
                     let b = self.eval_real(rhs);
-                    return match lower_ast_binop(*op) {
-                        BinOp::Add => u128::from_u64((a + b).to_bits()),
-                        BinOp::Sub => u128::from_u64((a - b).to_bits()),
-                        BinOp::Mul => u128::from_u64((a * b).to_bits()),
-                        BinOp::Div => u128::from_u64((a / b).to_bits()),
-                        BinOp::Eq => u128::from_u64((a == b) as u64),
-                        BinOp::Ne => u128::from_u64((a != b) as u64),
-                        BinOp::Lt => u128::from_u64((a < b) as u64),
-                        BinOp::Le => u128::from_u64((a <= b) as u64),
-                        BinOp::Gt => u128::from_u64((a > b) as u64),
-                        BinOp::Ge => u128::from_u64((a >= b) as u64),
-                        other => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
+                    return match lower_ast_binop(op) {
+                        Some(BinOp::Add) => u128::from_u64((a + b).to_bits()),
+                        Some(BinOp::Sub) => u128::from_u64((a - b).to_bits()),
+                        Some(BinOp::Mul) => u128::from_u64((a * b).to_bits()),
+                        Some(BinOp::Div) => u128::from_u64((a / b).to_bits()),
+                        Some(BinOp::Eq) => u128::from_u64((a == b) as u64),
+                        Some(BinOp::Ne) => u128::from_u64((a != b) as u64),
+                        Some(BinOp::Lt) => u128::from_u64((a < b) as u64),
+                        Some(BinOp::Le) => u128::from_u64((a <= b) as u64),
+                        Some(BinOp::Gt) => u128::from_u64((a > b) as u64),
+                        Some(BinOp::Ge) => u128::from_u64((a >= b) as u64),
+                        Some(other) => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
+                        None => u128::default(),
                     };
                 }
                 // A typed operand dispatches to its family's operator impl
                 // (int's signed Div/Ord), exactly like hardware inlining.
-                if let Some(v) = self.dispatch_binop(*op, lhs, rhs, fenv) {
+                if let Some(v) = self.dispatch_binop(op, lhs, rhs, fenv) {
                     return v;
                 }
-                apply_binop(lower_ast_binop(*op), self.eval_env(lhs, fenv), self.eval_env(rhs, fenv))
+                lower_ast_binop(op)
+                    .map(|op| apply_binop(op, self.eval_env(lhs, fenv), self.eval_env(rhs, fenv)))
+                    .unwrap_or_default()
             }
             _ => u128::from_u64(0),
         }
@@ -1671,7 +1702,11 @@ impl Testbench<'_> {
         if let ast::Expr::Path(p) = e {
             if p.segments.len() == 1 {
                 let name = &p.segments[0].text;
-                return self.local_families.get(name).map(|f| (f.clone(), name.clone()));
+                return self
+                    .local_families
+                    .get(name)
+                    .or_else(|| self.local_types.get(name))
+                    .map(|f| (f.clone(), name.clone()));
             }
         }
         None
@@ -1695,7 +1730,7 @@ impl Testbench<'_> {
     /// operators stay raw — no recursive dispatch.
     fn dispatch_binop(
         &self,
-        op: ast::BinOp,
+        op: &ast::BinOp,
         lhs: &ast::Expr,
         rhs: &ast::Expr,
         fenv: &HashMap<String, u128>,
@@ -1727,9 +1762,22 @@ impl Testbench<'_> {
         };
         let tr = match cmp {
             Some(_) => "Ord",
-            None => siox_syntax::ast::op_trait_name(op_str)?,
+            None => siox_syntax::ast::op_trait_name(op_str).unwrap_or(op_str),
         };
-        let f = self.op_impls.get(&(tr.to_string(), fam))?;
+        let candidates = self.op_impls.get(&(tr.to_string(), fam.clone()))?;
+        let rhs_type = self
+            .operand_family(rhs)
+            .map(|(family, _)| family)
+            .or_else(|| matches!(rhs, ast::Expr::Int { .. }).then(|| "integer".to_string()));
+        let (f, _) = rhs_type
+            .as_deref()
+            .and_then(|rhs| {
+                candidates.iter().find(|(_, input)| {
+                    input.as_deref() == Some(rhs)
+                        || (input.as_deref() == Some("Self") && rhs == fam)
+                })
+            })
+            .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))?;
         let body = f.body.as_ref()?;
 
         let w = self.name_width(lname).unwrap_or(0);
@@ -1755,6 +1803,26 @@ impl Testbench<'_> {
             }
             None if w > 0 && (w as usize) < 128 => Some(r & ((1u128 << w) - 1)),
             None => Some(r),
+        }
+    }
+
+    fn dispatch_not(
+        &self,
+        rhs: &ast::Expr,
+        fenv: &HashMap<String, u128>,
+    ) -> Option<u128> {
+        let (family, name) = self.operand_family(rhs)?;
+        let (f, _) = self.op_impls.get(&("Not".to_string(), family))?.first()?;
+        let body = f.body.as_ref()?;
+        let width = self.name_width(&name).unwrap_or(0);
+        let mut env = HashMap::new();
+        env.insert("self".to_string(), self.eval_env(rhs, fenv));
+        env.insert("self::width".to_string(), u128::from_u64(width as u64));
+        let value = self.eval_fn_stmts(&body.stmts, &env)?;
+        if width > 0 && (width as usize) < 128 {
+            Some(value & ((1u128 << width) - 1))
+        } else {
+            Some(value)
         }
     }
 
@@ -1910,19 +1978,16 @@ fn parse_u64(text: &str) -> u64 {
     }
 }
 
-fn lower_ast_binop(op: ast::BinOp) -> BinOp {
+fn lower_ast_binop(op: &ast::BinOp) -> Option<BinOp> {
     use ast::BinOp as A;
-    match op {
+    Some(match op {
         A::Add => BinOp::Add,
         A::Sub => BinOp::Sub,
         A::Mul => BinOp::Mul,
         A::Div => BinOp::Div,
         A::And => BinOp::And,
-        A::Nand => BinOp::Nand,
         A::Or => BinOp::Or,
-        A::Nor => BinOp::Nor,
-        A::Xor => BinOp::Xor,
-        A::Xnor => BinOp::Xnor,
+        A::Custom { .. } => return None,
         A::Shl => BinOp::Shl,
         A::Shr => BinOp::Shr,
         A::Eq => BinOp::Eq,
@@ -1931,7 +1996,7 @@ fn lower_ast_binop(op: ast::BinOp) -> BinOp {
         A::Le => BinOp::Le,
         A::Gt => BinOp::Gt,
         A::Ge => BinOp::Ge,
-    }
+    })
 }
 
 // These exercises run designs on the interpreter, so they need its feature.

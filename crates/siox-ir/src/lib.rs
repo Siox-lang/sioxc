@@ -143,11 +143,7 @@ pub enum BinOp {
     Mul,
     Div,
     And,
-    Nand,
     Or,
-    Nor,
-    Xor,
-    Xnor,
     Shl,
     Shr,
     Eq,
@@ -447,16 +443,28 @@ impl<'a> Lowering<'a> {
                             } else {
                                 // `impl Add<integer> for T`: the trait's type
                                 // argument names the rhs operand type.
-                                let rhs_arg = im.trait_args.first().and_then(|a| match a {
+                                let custom_symbol = (tr.text == "custom")
+                                    .then(|| im.trait_args.first())
+                                    .flatten()
+                                    .and_then(|a| match a {
+                                        ast::GenericArg::Positional(ast::Expr::StrLit {
+                                            text,
+                                            ..
+                                        }) => Some(text.clone()),
+                                        _ => None,
+                                    });
+                                let input_index = usize::from(custom_symbol.is_some());
+                                let rhs_arg = im.trait_args.get(input_index).and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::Path(p)) => {
                                         p.segments.last().map(|s| s.text.clone())
                                     }
                                     _ => None,
                                 });
+                                let operator = custom_symbol.unwrap_or_else(|| tr.text.clone());
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
-                                            .entry((tr.text.clone(), ty.to_string()))
+                                            .entry((operator.clone(), ty.to_string()))
                                             .or_default()
                                             .push((f, rhs_arg.clone()));
                                     }
@@ -2049,9 +2057,9 @@ impl<'a> Lowering<'a> {
                             let mask =
                                 if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
                             return Expr::Binary {
-                                op: BinOp::Xor,
-                                lhs: Box::new(self.lower_expr(rhs)),
-                                rhs: Box::new(Expr::Const(mask)),
+                                op: BinOp::Sub,
+                                lhs: Box::new(Expr::Const(mask)),
+                                rhs: Box::new(self.lower_expr(rhs)),
                             };
                         }
                     }
@@ -2062,7 +2070,7 @@ impl<'a> Lowering<'a> {
                 // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
                 // built-in discriminant comparison unless `<=>` derives them.
-                let op_str = siox_syntax::pretty::bin_op(*op);
+                let op_str = siox_syntax::pretty::bin_op(op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =
                         self.inline_op(op_str, lhs, rhs, &HashMap::new())
@@ -2086,7 +2094,7 @@ impl<'a> Lowering<'a> {
                         r = v;
                     }
                 }
-                self.make_binary(*op, l, r)
+                self.make_binary(op.clone(), l, r)
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
@@ -2389,11 +2397,17 @@ impl<'a> Lowering<'a> {
                 ast::BinOp::Sub => BinOp::FSub,
                 ast::BinOp::Mul => BinOp::FMul,
                 ast::BinOp::Div => BinOp::FDiv,
-                other => lower_binop(other),
+                other => match lower_binop(other) {
+                    Some(op) => op,
+                    None => return Expr::Unknown,
+                },
             };
             return Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
         }
-        Expr::Binary { op: lower_binop(op), lhs: Box::new(lhs), rhs: Box::new(rhs) }
+        match lower_binop(op) {
+            Some(op) => Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+            None => Expr::Unknown,
+        }
     }
 
     /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
@@ -2435,6 +2449,10 @@ impl<'a> Lowering<'a> {
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), self.lower_val_env(rhs, &HashMap::new()));
+        env.insert(
+            "self::width".to_string(),
+            Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
+        );
         self.inline_block(&body.stmts, &env)
     }
 
@@ -2991,7 +3009,7 @@ impl<'a> Lowering<'a> {
                     .collect(),
             ),
             ast::Expr::Binary { op, lhs, rhs, .. } => {
-                let op_str = siox_syntax::pretty::bin_op(*op);
+                let op_str = siox_syntax::pretty::bin_op(op);
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
                         return v;
@@ -3001,7 +3019,7 @@ impl<'a> Lowering<'a> {
                     return Val::Scalar(derived);
                 }
                 let (l, r) = (self.lower_scalar_env(lhs, env), self.lower_scalar_env(rhs, env));
-                Val::Scalar(self.make_binary(*op, l, r))
+                Val::Scalar(self.make_binary(op.clone(), l, r))
             }
             ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
                 op: lower_unop(*op),
@@ -3463,11 +3481,7 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::And => "and",
-        BinOp::Nand => "nand",
         BinOp::Or => "or",
-        BinOp::Nor => "nor",
-        BinOp::Xor => "xor",
-        BinOp::Xnor => "xnor",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
         BinOp::Eq => "==",
@@ -3507,18 +3521,15 @@ fn lower_unop(op: AstUnOp) -> UnOp {
     }
 }
 
-fn lower_binop(op: AstBinOp) -> BinOp {
-    match op {
+fn lower_binop(op: AstBinOp) -> Option<BinOp> {
+    Some(match op {
         AstBinOp::Add => BinOp::Add,
         AstBinOp::Sub => BinOp::Sub,
         AstBinOp::Mul => BinOp::Mul,
         AstBinOp::Div => BinOp::Div,
         AstBinOp::And => BinOp::And,
-        AstBinOp::Nand => BinOp::Nand,
         AstBinOp::Or => BinOp::Or,
-        AstBinOp::Nor => BinOp::Nor,
-        AstBinOp::Xor => BinOp::Xor,
-        AstBinOp::Xnor => BinOp::Xnor,
+        AstBinOp::Custom { .. } => return None,
         AstBinOp::Shl => BinOp::Shl,
         AstBinOp::Shr => BinOp::Shr,
         AstBinOp::Eq => BinOp::Eq,
@@ -3527,7 +3538,7 @@ fn lower_binop(op: AstBinOp) -> BinOp {
         AstBinOp::Le => BinOp::Le,
         AstBinOp::Gt => BinOp::Gt,
         AstBinOp::Ge => BinOp::Ge,
-    }
+    })
 }
 
 fn parse_int(text: &str) -> Option<u64> {
@@ -3551,7 +3562,7 @@ fn type_width(
 ) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
-            Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
+            Some("Bit") | Some("Logic") | Some("Bool") => 1,
             Some("real") => 64, // f64 bits
             Some("Char") => 32, // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
@@ -3780,7 +3791,7 @@ fn is_bit_vector_struct(st: &ast::StructDecl, families: &std::collections::HashS
         Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
         _ => None,
     };
-    matches!(elem, Some("Logic" | "Bit" | "ULogic" | "Clock"))
+    matches!(elem, Some("Logic" | "Bit" | "ULogic"))
         || elem.is_some_and(|h| families.contains(h))
 }
 
@@ -4001,7 +4012,7 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
         Expr::Range { lo, hi, span } => Expr::Range { lo: sub(lo), hi: sub(hi), span: *span },
         Expr::Unary { op, rhs, span } => Expr::Unary { op: *op, rhs: sub(rhs), span: *span },
         Expr::Binary { op, lhs, rhs, span } => {
-            Expr::Binary { op: *op, lhs: sub(lhs), rhs: sub(rhs), span: *span }
+            Expr::Binary { op: op.clone(), lhs: sub(lhs), rhs: sub(rhs), span: *span }
         }
         Expr::IfExpr { cond, then, els, span } => {
             Expr::IfExpr { cond: sub(cond), then: sub(then), els: sub(els), span: *span }
@@ -4087,7 +4098,7 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
             fold_const(n, *span)
         }
         Expr::Binary { op, lhs, rhs, span } => {
-            let n = Expr::Binary { op: *op, lhs: sub(lhs), rhs: sub(rhs), span: *span };
+            let n = Expr::Binary { op: op.clone(), lhs: sub(lhs), rhs: sub(rhs), span: *span };
             fold_const(n, *span)
         }
         Expr::IfExpr { cond, then, els, span } => Expr::IfExpr {
@@ -4443,7 +4454,7 @@ mod tests {
 
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Clock;\n\
+          in clk: Logic;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\

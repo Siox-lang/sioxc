@@ -78,6 +78,7 @@ pub enum TokenKind {
     BangEq,    // !=
     LtEq,      // <=
     GtEq,      // >=
+    CustomOp,  // user-defined punctuation operator, e.g. %% or ^^
     Pound,     // # (attribute application `#[...]`, spec 3.5/3.6)
 
     // Trivia / control

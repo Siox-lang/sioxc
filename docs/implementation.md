@@ -204,8 +204,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   ~100 ns, count reaching 10).
 - **Status (done, cont.):** struct fields and array elements appear as separate
   trace paths (`p.valid`, `a[2]`) since composite signals are flattened in the IR.
-- **Status (done, cont.):** **symbolic values** — a logic scalar (`Bit`/`Logic`/
-  `Clock`) dumps a 1-bit `0/1/z/x`; a named enum (an FSM `State`, `Bool`) dumps a
+- **Status (done, cont.):** **symbolic values** — a logic scalar (`Bit`/`Logic`) dumps a 1-bit `0/1/z/x`; a named enum (an FSM `State`, `Bool`) dumps a
   VCD `string` var (`$var string 1 …`, `sIdle …`), so viewers show `Idle`/`Run`
   instead of a discriminant. Backed by `Design::enum_syms`.
 - **Status (todo):** FST output for large designs.
@@ -234,17 +233,16 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   against the loaded modules' `pub` declarations; an import that matches
   nothing is a hard error (`E-P011`, with a "did you mean?" suggestion).
   Shipped modules: `std::logic` (canonical `enum` declarations of
-  Bit/Logic/Bool/Clock + LOW/HIGH), `std::bits` (uint/int as derived Logic
+  Bit/Logic/Bool + LOW/HIGH), `std::bits` (uint/int as derived Logic
   vectors, docs), `std::ops` (the `Boolean` condition trait, `as_bool ->
   integer`, 1 = true — no longer seeded), `std::attrs` (the five system
   attributes), `std::assert` (`Severity`), `std::sim` (`Time`/`Freq` with
   literal-suffix impls — `10ns`, `100MHz` — plus FS..MS integer constants),
   `std::math` (`Complex` over `real` — f64 in simulation — with `"+"`/`"-"`
   impls incl. mixed-operand `10 + 5i` and the `i` suffix; exercised by
-  `complex_test`; the operator/Suffix/Prefix mechanisms are
-  compiler built-ins, not std declarations).
+  `complex_test`; core operator/Suffix/Prefix hooks are compiler bootstraps).
   `std::logic` now carries the **four-value truth tables** for
-  `and or xor nand nor xnor` on `Logic` as ordinary operator impls
+  core `and or not` and custom `xor nand nor xnor` on `Logic` as ordinary operator impls
   (X/Z propagation, `logic_test`) — std_logic_1164's core as
   library source. Full reference: docs/std.md.
   The kernel's base types are only `integer` and `real` (spec "type kernel");

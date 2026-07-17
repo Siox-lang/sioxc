@@ -44,7 +44,6 @@ pub enum EType {
     Bit,
     Logic,
     Bool,
-    Clock,
     /// A packed bit vector — every `struct F : Logic[]` family (uint/int and
     /// user types). No signedness; that lives in the operator impls.
     Vector { width: Option<u32> },
@@ -55,7 +54,7 @@ pub enum EType {
 
 impl EType {
     /// The bit width when it is meaningful and known (integers, vectors).
-    /// `Bit`/`Logic`/`Bool`/`Clock` return `None` so the width check only
+    /// `Bit`/`Logic`/`Bool` return `None` so the width check only
     /// compares actual bit-vector widths, not single-bit kinds.
     pub fn width(&self) -> Option<u32> {
         match self {
@@ -72,7 +71,6 @@ impl fmt::Display for EType {
             EType::Bit => write!(f, "Bit"),
             EType::Logic => write!(f, "Logic"),
             EType::Bool => write!(f, "Bool"),
-            EType::Clock => write!(f, "Clock"),
             EType::Vector { width: None } => write!(f, "uint"),
             EType::Vector { width: Some(w) } => write!(f, "uint[{w}]"),
             EType::Named(n) => write!(f, "{n}"),
@@ -235,7 +233,7 @@ impl<'a> Elaborator<'a> {
                                     Type::Indexed { base, .. } => type_head_name(base),
                                     _ => None,
                                 }),
-                                Some("Logic" | "Bit" | "ULogic" | "Clock")
+                                Some("Logic" | "Bit" | "ULogic")
                             );
                         if is_vec {
                             self.families.insert(st.name.text.clone());
@@ -640,7 +638,6 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
             Some("Bit") => EType::Bit,
             Some("Logic") => EType::Logic,
             Some("Bool") => EType::Bool,
-            Some("Clock") => EType::Clock,
             // The kernel word is an unbounded unsigned vector.
             Some("integer") => EType::Vector { width: None },
             // A bit-vector family (`struct F : Logic[]`); else a name.
@@ -812,7 +809,7 @@ mod tests {
 
     const HARNESS: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Clock;\n\
+          in clk: Logic;\n\
           in rst: Logic;\n\
           out count: uint[W];\n\
         }\n\
@@ -863,7 +860,7 @@ mod tests {
         let tree = hier.to_tree_string();
         assert!(tree.contains("Harness"));
         assert!(tree.contains("dut: Counter<W=8>"));
-        assert!(tree.contains(".clk: Clock <- clk"));
+        assert!(tree.contains(".clk: Logic <- clk"));
     }
 
     #[test]
@@ -913,7 +910,7 @@ mod tests {
     fn missing_connection_is_reported() {
         // `rst` is left unconnected.
         let src = "module m;\n\
-            entity Counter<W: integer> { in clk: Clock; in rst: Logic; out count: uint[W]; }\n\
+            entity Counter<W: integer> { in clk: Logic; in rst: Logic; out count: uint[W]; }\n\
             impl Counter<W: integer> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\

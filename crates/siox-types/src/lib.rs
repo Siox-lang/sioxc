@@ -108,6 +108,7 @@ struct PortInfo {
 enum AttrValueTy {
     Bool,
     Str,
+    Integer,
     Other,
 }
 
@@ -122,6 +123,10 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<String, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// (operator trait, implementing type) -> (input type, output type).
+    /// Multiple entries are overloads selected by the right operand.
+    operator_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
+    operator_precedence: HashMap<String, (u8, Span)>,
     /// Enum name -> its EFFECTIVE variant names (inherited + own).
     enum_variants: HashMap<String, Vec<String>>,
     /// Enum name -> only its own declared variants (pre-inheritance).
@@ -158,6 +163,7 @@ impl<'a> Checker<'a> {
             ("keep", &["let", "port"]),
             ("library", &["entity"]),
             ("name", &["entity"]),
+            ("precedence", &["impl"]),
         ] {
             attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
         }
@@ -168,6 +174,7 @@ impl<'a> Checker<'a> {
             ("keep", AttrValueTy::Bool),
             ("library", AttrValueTy::Str),
             ("name", AttrValueTy::Str),
+            ("precedence", AttrValueTy::Integer),
         ] {
             attr_value_kinds.insert(name.to_string(), ty);
         }
@@ -181,6 +188,10 @@ impl<'a> Checker<'a> {
             "Boolean".to_string(),
             ["Bit", "Bool"].iter().map(|s| s.to_string()).collect(),
         );
+        trait_impls.insert(
+            "Not".to_string(),
+            ["Bit", "Bool", "Logic"].iter().map(|s| s.to_string()).collect(),
+        );
         Checker {
             sink,
             resolved,
@@ -188,6 +199,8 @@ impl<'a> Checker<'a> {
             attr_targets,
             attr_value_kinds,
             trait_impls,
+            operator_sigs: HashMap::new(),
+            operator_precedence: HashMap::new(),
             enum_variants: HashMap::new(),
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
@@ -246,6 +259,7 @@ impl<'a> Checker<'a> {
                 let kind = match type_head_name(&a.ty) {
                     Some("Bool") => AttrValueTy::Bool,
                     Some("string") | Some("str") => AttrValueTy::Str,
+                    Some("integer") => AttrValueTy::Integer,
                     _ => AttrValueTy::Other,
                 };
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
@@ -266,7 +280,59 @@ impl<'a> Checker<'a> {
                 if let Some(tr) = &im.trait_ {
                     let trait_name = tr.segments.last().map(|s| s.text.clone());
                     let target = type_head_name(&im.target).map(|s| s.to_string());
-                    if let (Some(t), Some(ty)) = (trait_name, target) {
+                    if let (Some(mut t), Some(ty)) = (trait_name, target) {
+                        let custom = if t == "custom" {
+                            im.trait_args.first().and_then(|a| match a {
+                                GenericArg::Positional(Expr::StrLit { text, .. }) => {
+                                    Some(text.clone())
+                                }
+                                _ => None,
+                            })
+                        } else {
+                            None
+                        };
+                        if let Some(symbol) = &custom {
+                            t = symbol.clone();
+                            let precedence = im.attrs.iter().find_map(|a| {
+                                (a.name.segments.last().is_some_and(|n| n.text == "precedence"))
+                                    .then_some(a)
+                                    .and_then(|a| a.value.as_ref())
+                                    .and_then(|v| match v {
+                                        Expr::Int { text, span } => {
+                                            text.parse::<u8>().ok().map(|p| (p, *span))
+                                        }
+                                        _ => None,
+                                    })
+                            });
+                            match precedence {
+                                Some((value, span)) => {
+                                    if let Some((previous, previous_span)) =
+                                        self.operator_precedence.get(symbol).copied()
+                                    {
+                                        if previous != value {
+                                            self.sink.emit(
+                                                Diagnostic::error(format!(
+                                                    "custom operator `{symbol}` has precedence {value}, but another implementation uses {previous}"
+                                                ))
+                                                .with_code(codes::TYPE_MISMATCH)
+                                                .at(span)
+                                                .label(previous_span, "previous precedence declared here"),
+                                            );
+                                        }
+                                    } else {
+                                        self.operator_precedence
+                                            .insert(symbol.clone(), (value, span));
+                                    }
+                                }
+                                None => self.error(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    format!(
+                                        "custom operator `{symbol}` requires `#[precedence = N]`"
+                                    ),
+                                ),
+                            }
+                        }
                         // `impl Suffix for T`: each fn's name is a literal
                         // suffix producing a T (spec 3.24).
                         if t == "Suffix" {
@@ -278,6 +344,46 @@ impl<'a> Checker<'a> {
                                         .push(ty.clone());
                                 }
                             }
+                        }
+                        if siox_resolve::OPERATORS.contains(&t.as_str()) || custom.is_some() {
+                            let offset = usize::from(custom.is_some());
+                            let arg_name = |index: usize| {
+                                im.trait_args.get(index + offset).and_then(|a| match a {
+                                    GenericArg::Positional(Expr::Path(p)) => {
+                                        p.segments.last().map(|s| s.text.clone())
+                                    }
+                                    _ => None,
+                                })
+                            };
+                            let input = (t != "Not").then(|| arg_name(0)).flatten().or_else(|| {
+                                if t == "Not" {
+                                    return None;
+                                }
+                                im.items.iter().find_map(|item| match item {
+                                    ImplItem::Fn(f) => f
+                                        .params
+                                        .iter()
+                                        .find(|p| !p.is_self)
+                                        .and_then(|p| p.ty.as_ref())
+                                        .and_then(type_head_name)
+                                        .map(str::to_string),
+                                    _ => None,
+                                })
+                            });
+                            let output = (if t == "Not" { arg_name(0) } else { arg_name(1) }).or_else(|| {
+                                im.items.iter().find_map(|item| match item {
+                                    ImplItem::Fn(f) => f
+                                        .ret
+                                        .as_ref()
+                                        .and_then(type_head_name)
+                                        .map(str::to_string),
+                                    _ => None,
+                                })
+                            });
+                            self.operator_sigs
+                                .entry((t.clone(), ty.clone()))
+                                .or_default()
+                                .push((input, output));
                         }
                         self.trait_impls.entry(t).or_default().insert(ty);
                     }
@@ -316,7 +422,7 @@ impl<'a> Checker<'a> {
                             Type::Indexed { base, .. } => type_head_name(base),
                             _ => None,
                         }),
-                        Some("Logic" | "Bit" | "ULogic" | "Clock")
+                        Some("Logic" | "Bit" | "ULogic")
                     );
                 if is_vec {
                     self.vector_families.insert(st.name.text.clone());
@@ -430,7 +536,7 @@ impl<'a> Checker<'a> {
                     Some(Type::Path(p)) => p.segments.last().map(|s| s.text.clone()),
                     _ => None,
                 };
-                let is_vec = matches!(elem.as_deref(), Some("Logic" | "Bit" | "ULogic" | "Clock"))
+                let is_vec = matches!(elem.as_deref(), Some("Logic" | "Bit" | "ULogic"))
                     || elem.as_deref().is_some_and(|h| self.vector_families.contains(h));
                 if is_vec {
                     self.vector_families.insert(name);
@@ -526,6 +632,13 @@ impl<'a> Checker<'a> {
 
     fn check_impl(&mut self, im: &ImplDecl) {
         let (in_ports, sym) = self.impl_env(im);
+        for a in &im.attrs {
+            self.check_attr_target(a, "impl", type_head_name(&im.target));
+            self.check_attr_value(a);
+            if let Some(v) = &a.value {
+                self.check_expr(v, &sym);
+            }
+        }
         for item in &im.items {
             match item {
                 ImplItem::Const(c) => self.check_expr(&c.value, &sym),
@@ -791,6 +904,7 @@ impl<'a> Checker<'a> {
         let ok = match expected {
             Some(AttrValueTy::Bool) => matches!(value, Expr::Bool { .. }),
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
+            Some(AttrValueTy::Integer) => matches!(value, Expr::Int { .. }),
             // Unknown attribute (reported by resolve) or an `Other`-typed one.
             _ => true,
         };
@@ -798,6 +912,7 @@ impl<'a> Checker<'a> {
             let want = match expected {
                 Some(AttrValueTy::Bool) => "a Bool",
                 Some(AttrValueTy::Str) => "a string",
+                Some(AttrValueTy::Integer) => "an integer",
                 _ => "a different",
             };
             self.error(
@@ -1033,6 +1148,21 @@ impl<'a> Checker<'a> {
                             format!("`not` is a per-bit operator; `{}` is not a bit-derived type", ty_name(&t)),
                         );
                     }
+                    if let Some(owner) = self.ty_head(&t) {
+                        let intrinsic_vector = matches!(t, Ty::Vector { .. });
+                        if !intrinsic_vector
+                            && !self
+                                .trait_impls
+                                .get("Not")
+                                .is_some_and(|types| types.contains(&owner))
+                        {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!("`not` needs an `impl Not<Output> for {owner}`"),
+                            );
+                        }
+                    }
                 }
             }
             Expr::IfExpr { cond, then, els, .. } => {
@@ -1063,13 +1193,39 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
-                let op_str = siox_syntax::pretty::bin_op(*op);
-                // The boolean operators (`and`/`or`/`xor`/...) are "boolean,
+                let op_str = siox_syntax::pretty::bin_op(op);
+                if let BinOp::Custom { symbol, .. } = op {
+                    let lhs_ty = self.type_of(lhs, sym);
+                    let rhs_ty = self.type_of(rhs, sym);
+                    let matching = self
+                        .ty_head(&lhs_ty)
+                        .zip(self.ty_head(&rhs_ty))
+                        .is_some_and(|(owner, input)| {
+                            self.operator_sigs
+                                .get(&(symbol.clone(), owner))
+                                .is_some_and(|sigs| {
+                                    sigs.iter().any(|(declared, _)| {
+                                        declared.as_deref() == Some(input.as_str())
+                                            || declared.as_deref() == Some("Self")
+                                    })
+                                })
+                        });
+                    if !matching {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!(
+                                "custom operator `{symbol}` has no implementation for these operand types"
+                            ),
+                        );
+                    }
+                }
+                // The core boolean operators (`and`/`or`) are "boolean,
                 // per bit": on a bit array they act element-wise and return
                 // the same array, on `Bool` they are plain boolean. They are
                 // only meaningful on Boolean and bit-derived types — never on
                 // `real` or `Char`.
-                if matches!(op_str, "and" | "or" | "xor" | "nand" | "nor" | "xnor") {
+                if matches!(op_str, "and" | "or") {
                     for operand in [lhs, rhs] {
                         let t = self.type_of(operand, sym);
                         // A literal is a bit-mask that coerces to the other
@@ -1223,7 +1379,7 @@ impl<'a> Checker<'a> {
                 Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 } }
             }
             // A char literal defaults to `Char`; an annotation/target
-            // overrides it (Bit/Logic/Clock/enum) via `assignable`.
+            // overrides it (Bit/Logic/enum) via `assignable`.
             Expr::LogicLit { .. } => Ty::Char,
             Expr::Bool { .. } => Ty::Bool,
             // A string literal is `string` = `Char[N]`.
@@ -1250,10 +1406,38 @@ impl<'a> Checker<'a> {
                 _ => Ty::Error,
             },
             Expr::Binary { op, lhs, rhs, .. } => {
-                if is_comparison(*op) {
+                if is_comparison(op) {
                     return Ty::Bool;
                 }
                 let lhs_ty = self.type_of(lhs, sym);
+                let rhs_ty = self.type_of(rhs, sym);
+                let op_str = siox_syntax::pretty::bin_op(op);
+                let tr = siox_syntax::ast::op_trait_name(op_str).unwrap_or(op_str);
+                if let (Some(owner), Some(input)) =
+                    (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty))
+                {
+                    if let Some((_, Some(output))) = self
+                        .operator_sigs
+                        .get(&(tr.to_string(), owner.clone()))
+                        .and_then(|sigs| {
+                            sigs.iter().find(|(declared, _)| {
+                                declared.as_deref() == Some(input.as_str())
+                                    || declared.as_deref() == Some("Self")
+                            })
+                        })
+                    {
+                        if output == "Self" || output == &owner {
+                            return lhs_ty;
+                        }
+                        if output == &input {
+                            return rhs_ty;
+                        }
+                        return self.ty_from_head(output);
+                    }
+                }
+                if matches!(op, BinOp::Custom { .. }) {
+                    return Ty::Error;
+                }
                 // An integer literal joins the other operand's numeric type
                 // (`100 / r` with r: int[8] is an int[8], via the std
                 // `impl Div<int> for integer`).
@@ -1271,7 +1455,7 @@ impl<'a> Checker<'a> {
                             .def(id)
                             .map(|d| &d.name)
                             .is_some_and(|name| {
-                                let op_str = siox_syntax::pretty::bin_op(*op);
+                                let op_str = siox_syntax::pretty::bin_op(op);
                                 let tr = siox_syntax::ast::op_trait_name(op_str)
                                     .unwrap_or(op_str);
                                 self.trait_impls
@@ -1284,6 +1468,22 @@ impl<'a> Checker<'a> {
                     }
                 }
                 lhs_ty
+            }
+            Expr::Unary { op: UnOp::Not, rhs, .. } => {
+                let rhs_ty = self.type_of(rhs, sym);
+                if let Some(owner) = self.ty_head(&rhs_ty) {
+                    if let Some((_, Some(output))) = self
+                        .operator_sigs
+                        .get(&("Not".to_string(), owner.clone()))
+                        .and_then(|sigs| sigs.first())
+                    {
+                        if output == "Self" || output == &owner {
+                            return rhs_ty;
+                        }
+                        return self.ty_from_head(output);
+                    }
+                }
+                rhs_ty
             }
             Expr::Unary { rhs, .. } => self.type_of(rhs, sym),
             // A name-less struct literal (`ty: None`) takes its type from the
@@ -1373,6 +1573,25 @@ impl<'a> Checker<'a> {
         })
     }
 
+    fn ty_from_head(&self, name: &str) -> Ty {
+        match name {
+            "Bit" => Ty::Bit,
+            "Logic" => Ty::Logic,
+            "Bool" => Ty::Bool,
+            "Char" => Ty::Char,
+            "integer" => Ty::Integer,
+            "real" => Ty::Real,
+            name if self.is_vector_family(name) => Ty::Vector { width: 0 },
+            name => self
+                .resolved
+                .defs()
+                .iter()
+                .position(|d| d.name == name)
+                .map(|i| Ty::Named(siox_resolve::DefId(i as u32)))
+                .unwrap_or(Ty::Error),
+        }
+    }
+
     /// The declared name of an operand's type when it is a user struct/enum
     /// (the types operator-trait impls target). `None` for intrinsics and
     /// unknowns, which keep built-in operator semantics.
@@ -1449,9 +1668,6 @@ impl<'a> Checker<'a> {
                 "Bit" => Ty::Bit,
                 "Logic" => Ty::Logic,
                 "Bool" => Ty::Bool,
-                // A clock is a single-bit signal; treat it as Bit for checking
-                // (clock-as-condition correctness is a separate, later concern).
-                "Clock" => Ty::Bit,
                 // `integer` is the kernel word; `uint`/`int` are no longer
                 // names here — they resolve as array-derived Logic families
                 // (`struct uint : Logic[]` in std::bits) via the arm below.
@@ -1497,7 +1713,7 @@ fn width_of(index: &Expr) -> u32 {
     }
 }
 
-fn is_comparison(op: BinOp) -> bool {
+fn is_comparison(op: &BinOp) -> bool {
     matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
 }
 
@@ -1735,7 +1951,7 @@ mod tests {
     #[test]
     fn accepts_digital_sysattrs() {
         let errors = check_src(
-            "module m;\nentity E { in clk: Clock; out q: Bit; }\nimpl E {\n  if clk::rising {\n    q = clk::old;\n  }\n}\n",
+            "module m;\nentity E { in clk: Logic; out q: Logic; }\nimpl E {\n  if clk::rising {\n    q = clk::old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -1982,6 +2198,56 @@ mod tests {
             0,
             "boolean ops on comparison results are fine"
         );
+    }
+
+    #[test]
+    fn logical_operator_template_controls_output_type() {
+        let src = "module m;\n\
+            enum Left { L }\n\
+            enum Right { R }\n\
+            enum Result { Yes }\n\
+            impl And<Right, Result> for Left {\n\
+              fn and(self, rhs: Right) -> Result { return Result::Yes; }\n\
+            }\n\
+            entity E { in a: Left; in b: Right; out y: Result; }\n\
+            impl E { y = a and b; }\n";
+        assert_eq!(check_src(src), 0, "And's Output parameter types the expression");
+    }
+
+    #[test]
+    fn custom_operator_selects_input_and_output_templates() {
+        let ok = "module m;\n\
+            attr precedence: integer for impl;\n\
+            trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
+            enum Left { L } enum Right { R } enum Result { Yes }\n\
+            #[precedence = 45]\n\
+            impl custom<\"merge\", Right, Result> for Left {\n\
+              fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
+            }\n\
+            entity E { in a: Left; in b: Right; out y: Result; }\n\
+            impl E { y = a merge b; }\n";
+        assert_eq!(check_src(ok), 0);
+
+        let bad = ok.replace("in b: Right", "in b: Left");
+        assert_eq!(check_src(&bad), 1, "the Input template participates in overload selection");
+    }
+
+    #[test]
+    fn custom_operator_precedence_is_required_and_consistent() {
+        let header = "module m;\nattr precedence: integer for impl;\n\
+            trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
+            enum A { A0 } enum B { B0 }\n";
+        let missing = format!(
+            "{header}impl custom<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+        );
+        assert_eq!(check_src(&missing), 1);
+
+        let conflict = format!(
+            "{header}\
+             #[precedence = 40] impl custom<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
+             #[precedence = 30] impl custom<\"join\", B, B> for B {{ fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
+        );
+        assert_eq!(check_src(&conflict), 1);
     }
 
     #[test]

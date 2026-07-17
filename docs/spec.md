@@ -118,7 +118,7 @@ Valid:
 
 ```siox
 entity Counter<W: integer> {
-    in clk: Clock;
+    in clk: Logic;
     in rst: Logic;
     in en: Bit;
 
@@ -133,7 +133,7 @@ entity Counter {
     const W: integer;      // invalid in entity body
     let value: uint[8];  // invalid in entity body
 
-    in clk: Clock;
+    in clk: Logic;
     out count: uint[W];
 }
 ```
@@ -231,7 +231,7 @@ Reason: entity fields are externally connected ports/interface terminals, not hi
 Valid:
 
 ```siox
-using std::logic::{Bit, Logic, Clock};
+using std::logic::{Bit, Logic};
 using Word = uint[32];
 ```
 
@@ -266,7 +266,7 @@ Usage:
 ```siox
 #[top]
 entity Top {
-    in clk: Clock;
+    in clk: Logic;
 }
 ```
 
@@ -485,7 +485,7 @@ annotation, a port, an assignment target, a comparison counterpart — overrides
 | ------- | ------- | ------------------------- |
 | `42`      | `integer` | `uint[N]` / `int[N]` |
 | `3.14`    | `real`    | — |
-| `'0'`     | `Char`    | `Bit` / `Logic` / `Clock` / any enum with that char variant |
+| `'0'`     | `Char`    | `Bit` / `Logic` / any enum with that char variant |
 | `"abc"`   | `string` (`Char[3]`) | — |
 | `true`    | `Bool`    | — |
 
@@ -494,7 +494,7 @@ So `let i = '0';` is a `Char`, but `let i: Logic = '0';` is a `Logic` and
 `let n: uint[8] = 42;` is a `uint[8]`. The context reaches through an
 if-expression too: `b = if c { '1' } else { '0' };` with `b: Bit` types the
 branches as `Bit`. Char literals are ambiguous by nature because
-`Bit`/`Logic`/`Clock` are enums whose variants are *written* as char
+`Bit`/`Logic` are enums whose variants are *written* as char
 literals — context is what resolves `'0'`.
 
 Bits are concatenated with a brace list of positional values, most-significant
@@ -896,7 +896,7 @@ Example struct:
 
 ```siox
 struct Stream<T> {
-    clk: Clock,
+    clk: Logic,
     rst: Logic,
     valid: Bit,
     ready: Bit,
@@ -1188,20 +1188,20 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ### 3.25 Operator traits (Rust-style)
 
-Operator overloading follows Rust's `std::ops` model: each operator maps to
-a **named trait** with a method named after it, and a type opts into an
-operator by implementing that trait. The trait names are **compiler
-built-ins** — no declaration or import:
+Operator overloading follows Rust's `std::ops` model. Core operators map to
+named traits, while other infix operators use `std::ops::custom`. Public
+contracts live in std; the compiler only bootstraps core names so parsing and
+diagnostics can proceed before std resolution completes:
 
 | operator | trait | method |    | operator | trait | method |
 |---|---|---|---|---|---|---|
-| `+` | `Add` | `add` |    | `and` | `BitAnd` | `bitand` |
-| `-` | `Sub` | `sub` |    | `or` | `BitOr` | `bitor` |
-| `*` | `Mul` | `mul` |    | `xor` | `BitXor` | `bitxor` |
-| `/` | `Div` | `div` |    | `nand` | `Nand` | `nand` |
-| `<<` | `Shl` | `shl` |    | `nor` | `Nor` | `nor` |
-| `>>` | `Shr` | `shr` |    | `xnor` | `Xnor` | `xnor` |
-| `not` (unary) | `Not` | `not` |    | `< <= > >=` | `Ord` | `cmp` |
+| `+` | `Add` | `add` |    | `and` | `And<Input, Output>` | `and` |
+| `-` | `Sub` | `sub` |    | `or` | `Or<Input, Output>` | `or` |
+| `*` | `Mul` | `mul` |    | `xor` | `custom<"xor", Input, Output>` | `apply` |
+| `/` | `Div` | `div` |    | `nand` | `custom<"nand", Input, Output>` | `apply` |
+| `<<` | `Shl` | `shl` |    | `nor` | `custom<"nor", Input, Output>` | `apply` |
+| `>>` | `Shr` | `shr` |    | `xnor` | `custom<"xnor", Input, Output>` | `apply` |
+| `not` (unary) | `Not<Output>` | `not` |    | `< <= > >=` | `Ord` | `cmp` |
 
 ```siox
 impl Add for Complex {
@@ -1211,11 +1211,13 @@ impl Add for Complex {
 }
 ```
 
-Using an operator on a user struct/enum without a matching impl is an error
+Only `and`, `or`, and unary `not` are core logical operators. Other textual
+operators are ordinary `custom<"symbol", Input, Output>` implementations on
+their left operand type. Their `#[precedence = N]` metadata supplies binding
+power. Using an operator on a user struct/enum
+without a matching impl is an error
 (`==`/`!=` stay built-in on enums as discriminant comparison). `Self` in an
-impl refers to the implementing type. User-invented operator *symbols* are
-out of scope for Phase 1; the planned escape hatch keeps the named set
-closed: `impl ops::custom<"sym", Rhs> for T`.
+impl refers to the implementing type.
 
 **Comparisons (`Ord`).** One `cmp` impl returning `std::ops::Ordering`
 (`Less`/`Equal`/`Greater`) derives all six comparisons — like Rust's `Ord`
@@ -1523,7 +1525,7 @@ Implement:
 `using` imports names:
 
 ```siox
-using std::logic::{Bit, Logic, Clock};
+using std::logic::{Bit, Logic};
 ```
 
 Aliases create local names:
@@ -2205,15 +2207,10 @@ pub enum Bool {
     false,
     true,
 }
-
-pub enum Clock {
-    '0',
-    '1',
-}
 ```
 
-`Clock` is a `Bit` carrying clock intent; edge detection stays built-in syntax
-(`clk::rising`, per 3.10).
+There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
+detection is applied to it (`clk::rising`, per 3.10).
 
 ### `std::bits`
 

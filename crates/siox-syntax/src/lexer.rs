@@ -261,6 +261,15 @@ impl<'a> Lexer<'a> {
             b'/' => TokenKind::Slash,
             b'!' => TokenKind::Bang,
             b'#' => TokenKind::Pound,
+            b'%' | b'^' | b'~' | b'?' | b'$' | b'`' => {
+                while self
+                    .peek()
+                    .is_some_and(|c| matches!(c, b'%' | b'^' | b'~' | b'?' | b'$' | b'`'))
+                {
+                    self.bump();
+                }
+                TokenKind::CustomOp
+            }
             _ => {
                 sink.emit(
                     Diagnostic::error(format!("unexpected character `{}`", one as char))
@@ -457,8 +466,8 @@ mod tests {
         assert_eq!(errors, 1);
         assert_eq!(ks.last(), Some(&Eof));
 
-        // Stray backtick is unknown but does not stop lexing.
-        let (ks, errors) = lex("a ` b");
+        // Stray non-operator punctuation is unknown but does not stop lexing.
+        let (ks, errors) = lex("a @ b");
         assert_eq!(errors, 1);
         assert_eq!(ks, vec![Ident, Unknown, Ident, Eof]);
     }

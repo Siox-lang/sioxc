@@ -42,15 +42,45 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     }
     let enums = siox_ir::enum_discriminants(modules);
     let families = siox_ir::vector_families(modules);
-    let mut op_impls: HashMap<(String, String), &ast::FnDecl> = HashMap::new();
+    let mut op_impls: HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> =
+        HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
                 let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                 if let (Some(tr), Some(ty)) = (tr, type_head_name(&im.target)) {
+                    let operator = if tr.text == "custom" {
+                        im.trait_args.first().and_then(|a| match a {
+                            ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
+                                Some(text.clone())
+                            }
+                            _ => None,
+                        })
+                    } else {
+                        Some(tr.text.clone())
+                    };
+                    let Some(operator) = operator else { continue };
+                    let input_index = usize::from(tr.text == "custom");
+                    let input = im.trait_args.get(input_index).and_then(|a| match a {
+                        ast::GenericArg::Positional(ast::Expr::Path(p)) => {
+                            p.segments.last().map(|s| s.text.clone())
+                        }
+                        _ => None,
+                    });
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
-                            op_impls.entry((tr.text.clone(), ty.to_string())).or_insert(f);
+                            let input = input.clone().or_else(|| {
+                                f.params
+                                    .iter()
+                                    .find(|p| !p.is_self)
+                                    .and_then(|p| p.ty.as_ref())
+                                    .and_then(type_head_name)
+                                    .map(str::to_string)
+                            });
+                            op_impls
+                                .entry((operator.clone(), ty.to_string()))
+                                .or_default()
+                                .push((f, input));
                         }
                     }
                 }
@@ -268,7 +298,7 @@ struct Ctx<'a> {
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
-    op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    op_impls: &'a HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
     /// Impl methods `(type head, method) -> fn`, for `recv.method(args)`.
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Struct layouts (name -> base-first field list) so a struct-typed
@@ -556,15 +586,21 @@ impl Ctx<'_> {
     /// runner's `dispatch_binop`. Comparisons derive from `Ord::cmp`.
     fn c_dispatch_binop(
         &self,
-        op: ast::BinOp,
+        op: &ast::BinOp,
         lhs: &ast::Expr,
         rhs: &ast::Expr,
     ) -> Result<Option<String>, String> {
         let (fam, lname) = match lhs {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = p.segments[0].text.clone();
-                match self.local_families.borrow().get(&name) {
-                    Some(f) => (f.clone(), name),
+                let family = self
+                    .local_families
+                    .borrow()
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| self.local_types.borrow().get(&name).cloned());
+                match family {
+                    Some(f) => (f, name),
                     None => return Ok(None),
                 }
             }
@@ -593,14 +629,31 @@ impl Ctx<'_> {
         };
         let tr = match cmp {
             Some(_) => "Ord",
-            None => match siox_syntax::ast::op_trait_name(op_str) {
-                Some(t) => t,
-                None => return Ok(None),
-            },
+            None => siox_syntax::ast::op_trait_name(op_str).unwrap_or(op_str),
         };
-        let Some(f) = self.op_impls.get(&(tr.to_string(), fam)) else {
+        let Some(candidates) = self.op_impls.get(&(tr.to_string(), fam.clone())) else {
             return Ok(None);
         };
+        let rhs_type = match rhs {
+            ast::Expr::Path(p) if p.segments.len() == 1 => self
+                .local_families
+                .borrow()
+                .get(&p.segments[0].text)
+                .cloned()
+                .or_else(|| self.local_types.borrow().get(&p.segments[0].text).cloned()),
+            ast::Expr::Int { .. } => Some("integer".to_string()),
+            _ => None,
+        };
+        let selected = rhs_type
+            .as_deref()
+            .and_then(|rhs| {
+                candidates.iter().find(|(_, input)| {
+                    input.as_deref() == Some(rhs)
+                        || (input.as_deref() == Some("Self") && rhs == fam)
+                })
+            })
+            .or_else(|| (candidates.len() == 1).then(|| &candidates[0]));
+        let Some((f, _)) = selected else { return Ok(None) };
         let Some(body) = f.body.as_ref() else { return Ok(None) };
 
         let w = self.name_width(&lname).unwrap_or(0);
@@ -629,6 +682,38 @@ impl Ctx<'_> {
             }
             None => mask_c(&r, w),
         }))
+    }
+
+    fn c_dispatch_not(&self, rhs: &ast::Expr) -> Result<Option<String>, String> {
+        let ast::Expr::Path(p) = rhs else { return Ok(None) };
+        if p.segments.len() != 1 {
+            return Ok(None);
+        }
+        let name = p.segments[0].text.clone();
+        let family = self
+            .local_families
+            .borrow()
+            .get(&name)
+            .cloned()
+            .or_else(|| self.local_types.borrow().get(&name).cloned());
+        let Some(family) = family else { return Ok(None) };
+        let Some((f, _)) = self
+            .op_impls
+            .get(&("Not".to_string(), family))
+            .and_then(|candidates| candidates.first())
+        else {
+            return Ok(None);
+        };
+        let Some(body) = f.body.as_ref() else { return Ok(None) };
+        let width = self.name_width(&name).unwrap_or(0);
+        let mut env = HashMap::new();
+        env.insert("self".to_string(), format!("({})", self.expr(rhs)?));
+        env.insert("self::width".to_string(), format!("{width}ULL"));
+        self.fn_env.borrow_mut().push(env);
+        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_env.borrow_mut().pop();
+        let value = out?;
+        Ok(Some(if width > 0 { mask_c(&value, width) } else { value }))
     }
 
     /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
@@ -696,6 +781,11 @@ impl Ctx<'_> {
                             l.ty.as_ref().and_then(|t| self.declared_family(t))
                         {
                             self.local_families.borrow_mut().insert(l.name.text.clone(), fam);
+                        }
+                        if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+                            self.local_types
+                                .borrow_mut()
+                                .insert(l.name.text.clone(), head.to_string());
                         }
                         // A string/struct-literal initializer on a connected
                         // name writes each element/field.
@@ -1329,7 +1419,7 @@ impl Ctx<'_> {
                     {
                         return Ok(format!("({v})"));
                     }
-                    // An enum-derivation conversion (`Clock(b)`, `Logic(u)`):
+                    // An enum-derivation conversion (`Logic(u)`, `ULogic(x)`):
                     // representation-identity along the chain — pass through.
                     ast::Expr::Path(p)
                         if p.segments.len() == 1
@@ -1406,6 +1496,11 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::Unary { op, rhs, .. } => {
+                if *op == ast::UnOp::Not {
+                    if let Some(value) = self.c_dispatch_not(rhs)? {
+                        return Ok(value);
+                    }
+                }
                 let r = self.expr(rhs)?;
                 match op {
                     ast::UnOp::Not => format!("(!({r}))"),
@@ -1415,10 +1510,10 @@ impl Ctx<'_> {
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // A typed operand inlines its family's operator impl (int's
                 // signed Div/Ord), matching the runner.
-                if let Some(v) = self.c_dispatch_binop(*op, lhs, rhs)? {
+                if let Some(v) = self.c_dispatch_binop(op, lhs, rhs)? {
                     return Ok(v);
                 }
-                let (a, o, c) = (self.expr(lhs)?, c_binop(*op)?, self.expr(rhs)?);
+                let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
                 format!("({a} {o} {c})")
             }
             other => {
@@ -1452,7 +1547,7 @@ fn unsup(name: &str) -> String {
 
 /// Map a siox binary operator to its C spelling. Word-logical ops become
 /// boolean C operators (matching the interpreter's semantics).
-fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
+fn c_binop(op: &ast::BinOp) -> Result<&'static str, String> {
     use ast::BinOp::*;
     Ok(match op {
         Add => "+",
@@ -1469,8 +1564,12 @@ fn c_binop(op: ast::BinOp) -> Result<&'static str, String> {
         Ge => ">=",
         And => "&",
         Or => "|",
-        Xor => "^",
-        _ => return Err("unsupported operator in testbench expression".into()),
+        _ => {
+            return Err(format!(
+                "unsupported operator `{}` in testbench expression",
+                siox_syntax::pretty::bin_op(op)
+            ))
+        }
     })
 }
 

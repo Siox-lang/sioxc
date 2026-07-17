@@ -233,26 +233,35 @@ fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, E
         eprintln!("== lex ({}) ==", path.display());
     }
     let tokens = Lexer::new(file, &src).tokenize(&mut sink);
+    let mut custom_operators = discover_std_operators(std_root);
+    custom_operators.extend(parser::discover_custom_operators(&src, &tokens));
     if trace {
         let trivia = tokens.iter().filter(|t| t.kind == TokenKind::Comment).count();
         eprintln!("   {} tokens ({} comment trivia)", tokens.len(), trivia);
         dump_tokens(&src, &tokens);
         eprintln!("\n== parse ==");
     }
-    let module = parser::Parser::new(&src, tokens, &mut sink).parse_module();
+    let module = parser::Parser::new(&src, tokens, &mut sink)
+        .with_custom_operators(&custom_operators)
+        .parse_module();
     if trace {
         dump_items(&module);
     }
 
     let mut fe = FrontendOut { sources, modules: vec![module], sink };
-    load_std_deps(&mut fe, std_root, trace);
+    load_std_deps(&mut fe, std_root, trace, &custom_operators);
     Ok(fe)
 }
 
 /// Transitively parse the `std::` modules imported by the already-loaded
 /// modules, mapping `std::a::b` to `<std_root>/a/b.siox`. A missing file is left
 /// unresolved so name resolution reports it against the `using`.
-fn load_std_deps(fe: &mut FrontendOut, std_root: &Path, trace: bool) {
+fn load_std_deps(
+    fe: &mut FrontendOut,
+    std_root: &Path,
+    trace: bool,
+    custom_operators: &std::collections::HashMap<String, u8>,
+) {
     let mut loaded: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut queue: Vec<AstPath> = using_bases(fe.entry());
     // The prelude is implicitly imported by every file (like VHDL's
@@ -280,10 +289,35 @@ fn load_std_deps(fe: &mut FrontendOut, std_root: &Path, trace: bool) {
         }
         let fid = fe.sources.add(file.display().to_string(), src.clone());
         let tokens = Lexer::new(fid, &src).tokenize(&mut fe.sink);
-        let module = parser::Parser::new(&src, tokens, &mut fe.sink).parse_module();
+        let module = parser::Parser::new(&src, tokens, &mut fe.sink)
+            .with_custom_operators(custom_operators)
+            .parse_module();
         queue.extend(using_bases(&module));
         fe.modules.push(module);
     }
+}
+
+/// Pre-scan std declarations so custom operator precedence is available before
+/// parsing the entry module. This pass is intentionally syntax-light and does
+/// not report diagnostics; the full parse remains authoritative.
+fn discover_std_operators(std_root: &Path) -> std::collections::HashMap<String, u8> {
+    fn visit(dir: &Path, out: &mut std::collections::HashMap<String, u8>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "siox") {
+                let Ok(src) = std::fs::read_to_string(&path) else { continue };
+                let mut sink = DiagnosticSink::new();
+                let tokens = Lexer::new(siox_diag::FileId(0), &src).tokenize(&mut sink);
+                out.extend(parser::discover_custom_operators(&src, &tokens));
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    visit(std_root, &mut out);
+    out
 }
 
 /// The `base` path of every `using base::{...}` import in a module.

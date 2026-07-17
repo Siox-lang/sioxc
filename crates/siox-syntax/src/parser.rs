@@ -17,12 +17,74 @@
 use crate::ast::*;
 use crate::token::{Token, TokenKind};
 use siox_diag::{Diagnostic, DiagnosticSink, Span};
+use std::collections::HashMap;
+
+/// Lightweight declaration pass used before the full Pratt parse. It finds
+/// attributed `impl custom<"symbol", ...>` blocks without parsing their
+/// bodies, producing the operator table needed to group expressions.
+pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String, u8> {
+    let text = |t: &Token| &src[t.span.start as usize..t.span.end as usize];
+    let mut out = HashMap::new();
+    let mut i = 0;
+    let mut pending_precedence = None;
+    while i < tokens.len() {
+        if tokens[i].kind == TokenKind::Comment {
+            i += 1;
+            continue;
+        }
+        if tokens[i].kind == TokenKind::Pound {
+            let mut j = i + 1;
+            while j < tokens.len() && tokens[j].kind != TokenKind::RBracket {
+                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "precedence" {
+                    let mut k = j + 1;
+                    while k < tokens.len() && tokens[k].kind != TokenKind::RBracket {
+                        if tokens[k].kind == TokenKind::Int {
+                            pending_precedence = text(&tokens[k]).parse::<u8>().ok();
+                            break;
+                        }
+                        k += 1;
+                    }
+                }
+                j += 1;
+            }
+            i = j.saturating_add(1);
+            continue;
+        }
+        if tokens[i].kind == TokenKind::Pub && pending_precedence.is_some() {
+            i += 1;
+            continue;
+        }
+        let Some(precedence) = pending_precedence.take() else {
+            i += 1;
+            continue;
+        };
+        if tokens[i].kind == TokenKind::Impl {
+            let limit = (i + 20).min(tokens.len());
+            let mut j = i + 1;
+            while j < limit {
+                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "custom" {
+                    while j < limit && tokens[j].kind != TokenKind::StrLit {
+                        j += 1;
+                    }
+                    if j < limit {
+                        out.insert(text(&tokens[j]).trim_matches('"').to_string(), precedence);
+                    }
+                    break;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    out
+}
 
 pub struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
     pos: usize,
     sink: &'a mut DiagnosticSink,
+    custom_operators: HashMap<String, u8>,
 }
 
 impl<'a> Parser<'a> {
@@ -31,7 +93,14 @@ impl<'a> Parser<'a> {
         // is always kept.
         let tokens: Vec<Token> =
             tokens.into_iter().filter(|t| t.kind != TokenKind::Comment).collect();
-        Parser { src, tokens, pos: 0, sink }
+        Parser { src, tokens, pos: 0, sink, custom_operators: HashMap::new() }
+    }
+
+    /// Supply custom textual operators discovered before full expression
+    /// parsing. Values use the parser's binding-power scale.
+    pub fn with_custom_operators(mut self, operators: &HashMap<String, u8>) -> Self {
+        self.custom_operators.clone_from(operators);
+        self
     }
 
     // --- top level ----------------------------------------------------------
@@ -94,8 +163,8 @@ impl<'a> Parser<'a> {
             return Some(Item::ExternBlock { abi, fns, span: start.to(self.prev_span()) });
         }
 
-        if !attrs.is_empty() && !self.at(TokenKind::Entity) {
-            self.error_here("attributes are only allowed on entities");
+        if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Impl) {
+            self.error_here("attributes are only allowed on entities and implementations");
         }
 
         let item = match self.kind() {
@@ -110,7 +179,7 @@ impl<'a> Parser<'a> {
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
-            TokenKind::Impl => Item::Impl(self.parse_impl()),
+            TokenKind::Impl => Item::Impl(self.parse_impl(attrs)),
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
             TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
             _ => {
@@ -317,7 +386,7 @@ impl<'a> Parser<'a> {
 
     fn parse_port(&mut self) -> Port {
         let start = self.span();
-        // A leading direction keyword is the port direction (`in clk: Clock`).
+        // A leading direction keyword is the port direction (`in clk: Logic`).
         // Otherwise direction comes from the type's bus mode (`bus: in Packet`).
         let dir = self.eat_direction();
         let name = self.parse_ident();
@@ -329,7 +398,7 @@ impl<'a> Parser<'a> {
 
     // --- impl ---------------------------------------------------------------
 
-    fn parse_impl(&mut self) -> ImplDecl {
+    fn parse_impl(&mut self, attrs: Vec<Attr>) -> ImplDecl {
         let start = self.span();
         self.bump(); // `impl`
 
@@ -366,6 +435,7 @@ impl<'a> Parser<'a> {
             let target = self.parse_type_after_optional_dir(mode_dir);
             let items = self.parse_impl_body();
             return ImplDecl {
+                attrs,
                 params,
                 trait_,
                 trait_args: head_args.unwrap_or_default(),
@@ -394,6 +464,7 @@ impl<'a> Parser<'a> {
         }
         let items = self.parse_impl_body();
         ImplDecl {
+            attrs,
             params,
             trait_: None,
             trait_args: Vec::new(),
@@ -803,36 +874,39 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let mut lhs = self.parse_unary(no_struct);
         loop {
-            let (op, lbp, rbp) = match self.kind() {
-                TokenKind::Star => (BinOp::Mul, 90, 91),
-                TokenKind::Slash => (BinOp::Div, 90, 91),
-                TokenKind::Plus => (BinOp::Add, 80, 81),
-                TokenKind::Minus => (BinOp::Sub, 80, 81),
-                TokenKind::Shl => (BinOp::Shl, 70, 71),
-                TokenKind::Shr => (BinOp::Shr, 70, 71),
-                TokenKind::Lt => (BinOp::Lt, 60, 61),
-                TokenKind::Gt => (BinOp::Gt, 60, 61),
-                TokenKind::LtEq => (BinOp::Le, 60, 61),
-                TokenKind::GtEq => (BinOp::Ge, 60, 61),
-                TokenKind::EqEq => (BinOp::Eq, 50, 51),
-                TokenKind::BangEq => (BinOp::Ne, 50, 51),
-                // Textual logical operators (`and`/`or`/...). They lex as plain
-                // identifiers and are recognised here in operator position.
+            let (op, lbp, rbp, consumed) = match self.kind() {
+                TokenKind::Star => (BinOp::Mul, 90, 91, 1),
+                TokenKind::Slash => (BinOp::Div, 90, 91, 1),
+                TokenKind::Plus => (BinOp::Add, 80, 81, 1),
+                TokenKind::Minus => (BinOp::Sub, 80, 81, 1),
+                TokenKind::Shl => (BinOp::Shl, 70, 71, 1),
+                TokenKind::Shr => (BinOp::Shr, 70, 71, 1),
+                TokenKind::Lt => (BinOp::Lt, 60, 61, 1),
+                TokenKind::Gt => (BinOp::Gt, 60, 61, 1),
+                TokenKind::LtEq => (BinOp::Le, 60, 61, 1),
+                TokenKind::GtEq => (BinOp::Ge, 60, 61, 1),
+                TokenKind::EqEq => (BinOp::Eq, 50, 51, 1),
+                TokenKind::BangEq => (BinOp::Ne, 50, 51, 1),
+                // Core and declared custom textual operators lex as identifiers.
                 TokenKind::Ident => match self.cur_text() {
-                    "and" => (BinOp::And, 40, 41),
-                    "nand" => (BinOp::Nand, 40, 41),
-                    "xor" => (BinOp::Xor, 35, 36),
-                    "xnor" => (BinOp::Xnor, 35, 36),
-                    "or" => (BinOp::Or, 30, 31),
-                    "nor" => (BinOp::Nor, 30, 31),
-                    _ => break,
+                    "and" => (BinOp::And, 40, 41, 1),
+                    "or" => (BinOp::Or, 30, 31, 1),
+                    _ => match self.custom_operator_at() {
+                        Some(found) => found,
+                        None => break,
+                    },
                 },
-                _ => break,
+                _ => match self.custom_operator_at() {
+                    Some(found) => found,
+                    None => break,
+                },
             };
             if lbp < min_bp {
                 break;
             }
-            self.bump();
+            for _ in 0..consumed {
+                self.bump();
+            }
             let rhs = self.parse_bin(rbp, no_struct);
             lhs = Expr::Binary {
                 op,
@@ -842,6 +916,37 @@ impl<'a> Parser<'a> {
             };
         }
         lhs
+    }
+
+    /// Longest declared custom operator beginning at the current token. This
+    /// supports both word operators and punctuation split across lexer tokens.
+    fn custom_operator_at(&self) -> Option<(BinOp, u8, u8, usize)> {
+        let start = self.span().start as usize;
+        let tail = self.src.get(start..)?;
+        let (symbol, &precedence) = self
+            .custom_operators
+            .iter()
+            .filter(|(symbol, _)| tail.starts_with(symbol.as_str()))
+            .max_by_key(|(symbol, _)| symbol.len())?;
+        let wanted_end = start + symbol.len();
+        let mut consumed = 0;
+        let mut end = start;
+        while self.pos + consumed < self.tokens.len() && end < wanted_end {
+            let span = self.tokens[self.pos + consumed].span;
+            if span.start as usize != end {
+                return None;
+            }
+            end = span.end as usize;
+            consumed += 1;
+        }
+        (end == wanted_end).then(|| {
+            (
+                BinOp::Custom { symbol: symbol.clone(), precedence },
+                precedence,
+                precedence.saturating_add(1),
+                consumed,
+            )
+        })
     }
 
     fn parse_unary(&mut self, no_struct: bool) -> Expr {
@@ -1514,7 +1619,7 @@ mod tests {
 
     #[test]
     fn module_header_and_imports() {
-        let m = parse_ok("module std::logic;\nusing std::logic::{Bit, Logic, Clock};\nusing Word = uint[32];\n");
+        let m = parse_ok("module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = uint[32];\n");
         assert_eq!(m.path.segments.len(), 2);
         assert_eq!(m.path.segments[1].text, "logic");
         assert_eq!(m.items.len(), 2);
@@ -1524,7 +1629,7 @@ mod tests {
     #[test]
     fn entity_with_params_and_ports() {
         let m = parse_ok(
-            "module m;\nentity Counter<W: integer> {\n  in clk: Clock;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
+            "module m;\nentity Counter<W: integer> {\n  in clk: Logic;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
         );
         let Item::Entity(e) = &m.items[0] else { panic!("expected entity") };
         assert_eq!(e.name.text, "Counter");
@@ -1569,7 +1674,7 @@ mod tests {
         let ImplItem::Stmt(Stmt::If(iff)) = &i.items[0] else { panic!("expected if") };
         // LHS of `==` is `state::old` (SysAttr); RHS is `State::Idle` (Path).
         let Expr::Binary { lhs, rhs, op, .. } = &iff.cond else { panic!("expected binary") };
-        assert_eq!(*op, BinOp::Eq);
+        assert_eq!(op, &BinOp::Eq);
         assert!(matches!(**lhs, Expr::SysAttr { .. }));
         let Expr::Path(p) = &**rhs else { panic!("expected path") };
         assert_eq!(p.segments.len(), 2);
@@ -1591,7 +1696,7 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Clock, valid: Bit, ready: Bit, data: T }\nimpl out Stream<T>::Source {\n  in clk;\n  out valid;\n  in ready;\n}\nentity Producer {\n  bus: out Stream<uint[32]>::Source;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Logic, valid: Bit, ready: Bit, data: T }\nimpl out Stream<T>::Source {\n  in clk;\n  out valid;\n  in ready;\n}\nentity Producer {\n  bus: out Stream<uint[32]>::Source;\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
         assert!(matches!(i.mode_dir, Some(Direction::Out)));
@@ -1623,7 +1728,7 @@ mod tests {
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else { panic!() };
         let Expr::Binary { op, lhs, .. } = value else { panic!("expected binary") };
-        assert_eq!(*op, BinOp::Or); // top-level is `or`
+        assert_eq!(op, &BinOp::Or); // top-level is `or`
         assert!(matches!(**lhs, Expr::Binary { op: BinOp::And, .. }));
     }
 

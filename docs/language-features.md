@@ -22,8 +22,9 @@ standard library is catalogued in [std.md](std.md).
   only on the edge. Edge and history queries — `clk::rising`, `x::event`,
   `x::old` — are first-class.
 - **Four-value logic.** `Logic` carries `'0'/'1'/'Z'/'X'` with the std_logic
-  truth tables and parallel-driver resolution; `Bit` is the two-value scalar,
-  `Clock` a bit with clock intent.
+  truth tables and parallel-driver resolution; `Bit` is the two-value scalar.
+  There is no dedicated clock type — any `Logic`/`Bit` signal is a clock when
+  edge detection (`clk::rising`/`clk::falling`) is applied to it.
 - **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
   an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
   double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one

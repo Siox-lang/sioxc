@@ -130,7 +130,7 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-/// `entity Counter<W: integer> { in clk: Clock; out count: uint[W]; }`.
+/// `entity Counter<W: integer> { in clk: Logic; out count: uint[W]; }`.
 ///
 /// Entity bodies are interface-only (spec 3.1): ports and bus/interface
 /// fields, never state or behavior.
@@ -166,6 +166,8 @@ pub enum Direction {
 /// directional bus mode `impl out Stream<T>::Source { ... }` (spec 3.19).
 #[derive(Clone, Debug)]
 pub struct ImplDecl {
+    /// Metadata on an implementation. Custom operators use `precedence` here.
+    pub attrs: Vec<Attr>,
     pub params: Params,
     /// `Some(trait_path)` for `impl Trait for Target`.
     pub trait_: Option<Path>,
@@ -372,20 +374,18 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
     Mul,
     Div,
-    // Textual logical/bitwise operators (`a and b`). `nand`/`nor`/`xnor` are the
-    // negated forms; `xor` is between `and` and `or` in precedence.
+    // The only core textual binary operators.
     And,
-    Nand,
-    Xor,
-    Xnor,
     Or,
-    Nor,
+    /// A library/user-defined textual infix operator. Its binding power comes
+    /// from the implementation's `#[precedence = N]` metadata.
+    Custom { symbol: String, precedence: u8 },
     Shl,
     Shr,
     Eq,
@@ -399,7 +399,7 @@ pub enum BinOp {
 /// Type syntax: names, parameterized types, widths and ranges.
 #[derive(Clone, Debug)]
 pub enum Type {
-    /// `Bit`, `Logic`, `Clock`, `State`, or a path like `std::logic::Bit`.
+    /// `Bit`, `Logic`, `State`, or a path like `std::logic::Bit`.
     Path(Path),
     /// `uint[W]`, `int[8]` — a parameterized builtin width type.
     /// Also covers array/slice types `Logic[31..0]` (spec 3.23); the bracket
@@ -427,8 +427,9 @@ pub enum GenericArg {
 // Complex types) when literal-suffix overloading lands.
 /// Rust-style operator-trait names (spec 3.25): `a + b` dispatches to an
 /// `impl Add for <type of a>` with a method selected by the rhs type. Names
-/// follow Rust's `std::ops` where Rust has the operator; siox's extra logic
-/// words get matching names. `==`/`!=` stay built-in (or derive from `Ord`).
+/// follow Rust's `std::ops` where that matches the language. Siox uses one
+/// type-directed `And` contract for both scalar boolean and per-bit `and`;
+/// `==`/`!=` stay built-in (or derive from `Ord`).
 pub fn op_trait_name(op: &str) -> Option<&'static str> {
     Some(match op {
         "+" => "Add",
@@ -437,12 +438,8 @@ pub fn op_trait_name(op: &str) -> Option<&'static str> {
         "/" => "Div",
         "<<" => "Shl",
         ">>" => "Shr",
-        "and" => "BitAnd",
-        "or" => "BitOr",
-        "xor" => "BitXor",
-        "nand" => "Nand",
-        "nor" => "Nor",
-        "xnor" => "Xnor",
+        "and" => "And",
+        "or" => "Or",
         "not" => "Not",
         "<=>" => "Ord",
         _ => return None,

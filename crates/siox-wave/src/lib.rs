@@ -15,7 +15,7 @@ use siox_run::Sample;
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {
     let ids: Vec<String> = (0..design.signals.len()).map(|i| format!("v{i}")).collect();
 
-    // A logic-scalar enum (Bit/ULogic/Logic/Clock: every variant a quoted
+    // A logic-scalar enum (Bit/ULogic/Logic: every variant a quoted
     // logic character) dumps as a 1-bit VCD scalar with native 0/1/z/x states
     // instead of its raw discriminant — what waveform viewers expect.
     let logic_tables: Vec<Option<Vec<char>>> = design

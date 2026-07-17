@@ -22,5 +22,21 @@ pub fn parse_module(
     sink: &mut siox_diag::DiagnosticSink,
 ) -> Module {
     let tokens = lexer::Lexer::new(file, src).tokenize(sink);
-    parser::Parser::new(src, tokens, sink).parse_module()
+    let operators = parser::discover_custom_operators(src, &tokens);
+    parser::Parser::new(src, tokens, sink)
+        .with_custom_operators(&operators)
+        .parse_module()
+}
+
+/// Parse with a precomputed custom textual-operator table.
+pub fn parse_module_with_operators(
+    file: siox_diag::FileId,
+    src: &str,
+    operators: &std::collections::HashMap<String, u8>,
+    sink: &mut siox_diag::DiagnosticSink,
+) -> Module {
+    let tokens = lexer::Lexer::new(file, src).tokenize(sink);
+    parser::Parser::new(src, tokens, sink)
+        .with_custom_operators(operators)
+        .parse_module()
 }

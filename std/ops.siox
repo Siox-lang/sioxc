@@ -6,12 +6,131 @@ using std::logic::{Bit, Bool};
 //
 // Operator overloading is Rust-style (spec 3.25): `a + b` dispatches to
 // `impl Add for <type of a>` (method `add`, overloads select by the rhs
-// type), `and` to `BitAnd`, unary `not` to `Not`, and one `impl Ord`
+// type), `and` to `And<Input, Output>`, unary `not` to `Not`, and one `impl Ord`
 // (`fn cmp(self, rhs) -> Ordering`) derives all six comparisons. The trait
-// names are compiler builtins — like literal suffixes (`impl Suffix for T`,
-// spec 3.24) they need no declaration here. Future user-defined operators
-// are planned as `impl ops::custom<"sym", Rhs> for T`, keeping the named
-// set closed.
+// Core operator traits are declared here so their contracts are visible to
+// users. Non-core operators use `custom<"symbol", Input, Output>` impls.
+
+// `and` has one type-directed meaning. For Bool-like inputs it is scalar
+// boolean conjunction; for bit-derived inputs it is applied per bit. Input
+// and output are explicit parameters so implementations may preserve their
+// operand type or deliberately produce another type.
+pub trait And<Input, Output> {
+    fn and(self, rhs: Input) -> Output;
+}
+
+// Custom infix operators are implementations on their left operand type:
+// `impl custom<"symbol", Input, Output> for Left`. The implementation carries
+// `#[precedence = N]`; the method body supplies its semantics.
+pub trait custom<Symbol, Input, Output> {
+    fn apply(self, rhs: Input) -> Output;
+}
+
+pub trait Or<Input, Output> {
+    fn or(self, rhs: Input) -> Output;
+}
+
+pub trait Not<Output> {
+    fn not(self) -> Output;
+}
+
+impl And<Bool, Bool> for Bool {
+    fn and(self, rhs: Bool) -> Bool {
+        if self {
+            return rhs;
+        }
+        return false;
+    }
+}
+
+impl And<Bit, Bit> for Bit {
+    fn and(self, rhs: Bit) -> Bit {
+        if self == '1' {
+            return rhs;
+        }
+        return '0';
+    }
+}
+
+impl Or<Bool, Bool> for Bool {
+    fn or(self, rhs: Bool) -> Bool {
+        if self { return true; }
+        return rhs;
+    }
+}
+
+#[precedence = 35]
+impl custom<"xor", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
+        if self { return not rhs; }
+        return rhs;
+    }
+}
+
+#[precedence = 40]
+impl custom<"nand", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
+}
+
+#[precedence = 30]
+impl custom<"nor", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
+}
+
+#[precedence = 35]
+impl custom<"xnor", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
+        if self == rhs { return true; }
+        return false;
+    }
+}
+
+impl Or<Bit, Bit> for Bit {
+    fn or(self, rhs: Bit) -> Bit {
+        if self == '1' { return '1'; }
+        return rhs;
+    }
+}
+
+impl Not<Bool> for Bool {
+    fn not(self) -> Bool {
+        if self { return false; }
+        return true;
+    }
+}
+
+impl Not<Bit> for Bit {
+    fn not(self) -> Bit {
+        if self == '1' { return '0'; }
+        return '1';
+    }
+}
+
+#[precedence = 35]
+impl custom<"xor", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == rhs { return '0'; }
+        return '1';
+    }
+}
+
+#[precedence = 40]
+impl custom<"nand", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
+}
+
+#[precedence = 30]
+impl custom<"nor", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
+}
+
+#[precedence = 35]
+impl custom<"xnor", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == rhs { return '1'; }
+        return '0';
+    }
+}
 //
 // `Boolean` gives a type a truth representation so it can be used directly
 // as a condition (in `if`, and later `while`/assertions). Truth is the

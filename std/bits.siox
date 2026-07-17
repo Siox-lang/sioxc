@@ -54,10 +54,84 @@ impl Shr for uint {
     fn shr(self, rhs: uint) -> uint { return self >> rhs; }
 }
 
-// Bitwise `and`/`or`/`xor`/`not` are INTRINSIC to bit-derived types (they are
-// "boolean, per bit"), so uint/int/any #[vector] family gets them from the
-// kernel — no per-type impl, the way VHDL defines them once for logic vectors.
-// Only Logic overrides them (below), for its 4-value 'X'/'Z' truth table.
+// Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
+// words are ordinary custom operators declared here for numeric vectors.
+
+impl And<uint, uint> for uint {
+    fn and(self, rhs: uint) -> uint { return self and rhs; }
+}
+
+impl Or<uint, uint> for uint {
+    fn or(self, rhs: uint) -> uint { return self or rhs; }
+}
+
+impl Not<uint> for uint {
+    fn not(self) -> uint { return ((1 << self::width) - 1) - self; }
+}
+
+impl And<int, int> for int {
+    fn and(self, rhs: int) -> int { return self and rhs; }
+}
+
+impl Or<int, int> for int {
+    fn or(self, rhs: int) -> int { return self or rhs; }
+}
+
+impl Not<int> for int {
+    fn not(self) -> int { return ((1 << self::width) - 1) - self; }
+}
+
+#[precedence = 35]
+impl custom<"xor", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return (self or rhs) - (self and rhs); }
+}
+
+#[precedence = 40]
+impl custom<"nand", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint {
+        return ((1 << self::width) - 1) - (self and rhs);
+    }
+}
+
+#[precedence = 30]
+impl custom<"nor", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint {
+        return ((1 << self::width) - 1) - (self or rhs);
+    }
+}
+
+#[precedence = 35]
+impl custom<"xnor", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint {
+        return ((1 << self::width) - 1) - ((self or rhs) - (self and rhs));
+    }
+}
+
+#[precedence = 35]
+impl custom<"xor", int, int> for int {
+    fn apply(self, rhs: int) -> int { return (self or rhs) - (self and rhs); }
+}
+
+#[precedence = 40]
+impl custom<"nand", int, int> for int {
+    fn apply(self, rhs: int) -> int {
+        return ((1 << self::width) - 1) - (self and rhs);
+    }
+}
+
+#[precedence = 30]
+impl custom<"nor", int, int> for int {
+    fn apply(self, rhs: int) -> int {
+        return ((1 << self::width) - 1) - (self or rhs);
+    }
+}
+
+#[precedence = 35]
+impl custom<"xnor", int, int> for int {
+    fn apply(self, rhs: int) -> int {
+        return ((1 << self::width) - 1) - ((self or rhs) - (self and rhs));
+    }
+}
 
 // --- int[N]: two's-complement signed --------------------------------------
 

@@ -11,5 +11,7 @@ pub attr test: Bool for entity;     // discovered by `siox test`
 pub attr keep: Bool for let, port;  // keep through optimization
 pub attr library: string for entity;
 pub attr name: string for entity;
+// Binding power for a custom infix operator implementation.
+pub attr precedence: integer for impl;
 
 // (uint/int are bit vectors by shape; signedness is their operator impls.)

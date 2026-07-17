@@ -30,12 +30,12 @@ use siox_syntax::ast::*;
 use siox_syntax::Module;
 
 /// The Rust-style operator traits (spec 3.25): `a + b` dispatches to `Add`,
-/// `and` to `BitAnd`, unary `not` to `Not`, and one `Ord` (`cmp -> Ordering`)
+/// `and` to `And`, unary `not` to `Not`, and one `Ord` (`cmp -> Ordering`)
 /// impl derives all six comparisons. Seeded as builtins so `impl Add for T`
-/// needs no import; user-defined operator *symbols* are out of scope.
+/// needs no import. Non-core infix operators dispatch through std's `custom`
+/// trait and are keyed by the symbol in its first template argument.
 pub const OPERATORS: &[&str] = &[
-    "Add", "Sub", "Mul", "Div", "Shl", "Shr", "BitAnd", "BitOr", "BitXor", "Nand", "Nor",
-    "Xnor", "Not", "Ord",
+    "Add", "Sub", "Mul", "Div", "Shl", "Shr", "And", "Or", "Not", "Ord",
 ];
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
@@ -182,13 +182,13 @@ impl<'a> Resolver<'a> {
     fn seed_builtins(&mut self) {
         // The kernel's base types are `integer` and `real` (unconstrained,
         // VHDL-style); everything else is designed to live in `std/`:
-        // Bit/Logic/Bool/Clock are enums in std/logic.siox, `Boolean` a trait
+        // Bit/Logic/Bool are enums in std/logic.siox, `Boolean` a trait
         // in std/ops.siox, and uint[N]/int[N] are derived Logic vectors that
         // accept `integer` on assignment. The rest of this list is the shim:
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
         for name in [
-            "integer", "real", "Char", "Bit", "Logic", "Bool", "Clock", "string",
+            "integer", "real", "Char", "Bit", "Logic", "Bool", "string",
             "range",
         ]
         {
@@ -203,7 +203,7 @@ impl<'a> Resolver<'a> {
             self.globals.insert(name.to_string(), id);
         }
         // std::attrs metadata attributes (spec 3.5).
-        for name in ["top", "test", "keep", "library", "name"] {
+        for name in ["top", "test", "keep", "library", "name", "precedence"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.attrs.insert(name.to_string(), id);
         }
@@ -498,8 +498,18 @@ impl<'a> Resolver<'a> {
             }
         }
         self.resolve_type(&im.target);
+        for attr in &im.attrs {
+            self.resolve_attr(attr);
+        }
         if let Some(tr) = &im.trait_ {
             self.resolve_type_path(tr);
+        }
+        for arg in &im.trait_args {
+            match arg {
+                GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
+                    self.resolve_expr(value);
+                }
+            }
         }
         for it in &im.items {
             self.resolve_impl_item(it);
@@ -904,7 +914,7 @@ mod tests {
 
     #[test]
     fn operator_traits_resolve_and_reject_unknown_operators() {
-        // A fixed-set operator trait and its impl resolve cleanly.
+        // A core operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
             "module m;\nstruct V { a: Bit }\nimpl Add for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
@@ -944,11 +954,11 @@ mod tests {
     fn counter_resolves_clean() {
         let (_, errors) = resolve_src(
             "module m;\n\
-             using std::logic::{Bit, Logic, Clock};\n\
+             using std::logic::{Bit, Logic};\n\
              struct uint : Logic[];\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Clock;\n\
+               in clk: Logic;\n\
                in rst: Logic;\n\
                out count: uint[W];\n\
              }\n\

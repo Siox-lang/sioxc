@@ -296,7 +296,7 @@ fn mask<S: Slot>(value: S, width: u32) -> S {
     if width == 0 || width >= S::BITS {
         value
     } else {
-        value.bitand(S::one().wrapping_shl(width).wrapping_sub(S::one()))
+        value.and(S::one().wrapping_shl(width).wrapping_sub(S::one()))
     }
 }
 
@@ -414,7 +414,7 @@ mod tests {
 
     const COUNTER_TEST: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Clock; in rst: Logic; in en: Bit; out count: uint[W];\n\
+          in clk: Logic; in rst: Logic; in en: Bit; out count: uint[W];\n\
         }\n\
         impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
@@ -444,7 +444,7 @@ mod tests {
         // `rst = '0' after 12ns` releases reset mid-run (VHDL semantics).
         let results = run(
             "module m;\n\
-             entity Ctr { in clk: Clock; in rst: Logic; out n: uint[8]; }\n\
+             entity Ctr { in clk: Logic; in rst: Logic; out n: uint[8]; }\n\
              impl Ctr {\n\
                let v: uint[8] = 0;\n\
                if clk::rising { if rst == '1' { v = 0; } else { v = v + 1; } }\n\
@@ -505,7 +505,7 @@ mod tests {
         assert_test_passes(
             "module m;\n\
              enum State: uint[2] { Idle = 0, Run = 1, Done = 2 }\n\
-             entity Fsm { in clk: Clock; in start: Bit; out st: State; }\n\
+             entity Fsm { in clk: Logic; in start: Bit; out st: State; }\n\
              impl Fsm {\n\
                let s: State = State::Idle;\n\
                if clk::rising {\n\
@@ -654,7 +654,7 @@ mod tests {
         // edge (exercises a compound condition in an event block).
         assert_test_passes(
             "module m;\n\
-             entity Fifo1 { in clk: Clock; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
+             entity Fifo1 { in clk: Logic; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
              impl Fifo1 {\n\
                let buf: uint[8] = 0;\n\
                if clk::rising { if valid and ready { buf = d; } }\n\
@@ -705,7 +705,7 @@ mod tests {
         // q captures d on the rising edge and holds between edges.
         assert_test_passes(
             "module m;\n\
-             entity Reg<W: integer> { in clk: Clock; in d: uint[W]; out q: uint[W]; }\n\
+             entity Reg<W: integer> { in clk: Logic; in d: uint[W]; out q: uint[W]; }\n\
              impl Reg<W: integer> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
              #[test] entity T {}\n\
              impl T {\n\
@@ -751,7 +751,7 @@ mod tests {
 
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Clock;\n\
+          in clk: Logic;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\

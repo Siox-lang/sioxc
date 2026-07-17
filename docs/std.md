@@ -8,10 +8,10 @@ transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
-Compiler *mechanisms* are never declared in std: operator overloading
-(`impl Add for T`), literal suffixes/prefixes (`impl Suffix for T`), and the
-operator set itself are built in (spec 3.24/3.25) — std and user code just
-write the impls, no trait declaration or import needed.
+The compiler bootstraps only core operator mechanics. Their public contracts
+live in `std::ops`; non-core infix operators are
+`custom<"symbol", Input, Output>` implementations with an attributed
+precedence discovered before expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
 three base types — `integer`, `real`, and `Char` (a non-numeric character
@@ -27,8 +27,8 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`/`Clock`, `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
-| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool`, `Clock` enums; `LOW`/`HIGH`; Logic truth tables |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
+| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as trait impls (incl. `int`'s signed `Ord`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
@@ -44,7 +44,6 @@ is a documented shim, and the declaration here is canonical.
 pub enum Bit   { '0', '1' }
 pub enum Logic { '0', '1', 'Z', 'X' }
 pub enum Bool  { false, true }
-pub enum Clock { '0', '1' }
 
 pub const LOW: Bit = '0';
 pub const HIGH: Bit = '1';
@@ -53,14 +52,16 @@ pub const HIGH: Bit = '1';
 - `Bit` — two-valued scalar (VHDL `bit`). Keeps the built-in two-value
   operators; a valid condition via `Boolean`.
 - `Logic` — four-valued scalar (VHDL `std_ulogic`, reduced): `'Z'`
-  high-impedance, `'X'` unknown. **The word operators `and or xor nand nor
-  xnor` are implemented here as truth tables** with unknown propagation: a
+  high-impedance, `'X'` unknown. Core `and`/`or`/`not` and custom
+  `xor`/`nand`/`nor`/`xnor` are implemented here as truth tables with unknown propagation: a
   dominant operand decides (`'0' and 'X' = '0'`, `'1' or 'X' = '1'`),
   otherwise the result is `'X'`. Not a condition — compare explicitly
   (`if rst == '1'`), because `'X'`/`'Z'` truth is ambiguous.
 - `Bool` — condition results (VHDL `boolean`), an ordinary enum.
-- `Clock` — a Bit carrying clock intent. Edge detection is built-in syntax:
-  `clk::rising` / `clk::falling` (the `rising_edge(clk)` analogue).
+
+There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
+detection is applied to it — `clk::rising` / `clk::falling` (the
+`rising_edge(clk)` analogue), built-in syntax over `::event`/`::old`.
 
 ## `std::bits`
 
@@ -93,9 +94,9 @@ one impl derives all of `< <= > >= == !=` (spec 3.25).
 the kernel truth type `integer` (1 true, 0 false), applied only in condition
 position. `Bit`/`Bool` opt in; `Logic` deliberately does not.
 
-The overloading *mechanisms* — operator strings
-(`+ - * / << >> == != < <= > >= and or xor nand nor xnor not`), `Suffix`,
-`Prefix` — are compiler built-ins, not std declarations. Impls are inlined
+Core operator hooks, `Suffix`, and `Prefix` are compiler bootstraps. Custom
+operator identity, precedence, input, and output are std/user declarations.
+Impls are inlined
 at lowering as pure expression trees; mixed operand types overload by the
 rhs parameter type, and `impl Add for integer` catches literal left operands
 (`10 + 5i`). Each fn of an `impl Suffix for T` defines the literal suffix of

@@ -505,23 +505,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             }
             BinOp::Shl => self.builder.build_left_shift(a, b, "shl").unwrap(),
             BinOp::Shr => self.builder.build_right_shift(a, b, false, "shr").unwrap(),
-            // Bitwise (the BitAnd/BitOr/BitXor traits) — for boolean 0/1
+            // Core logical operators; for boolean 0/1 operands these match
+            // their scalar reading, and vectors apply them per bit.
             // operands this matches the logical reading.
             BinOp::And => self.builder.build_and(a, b, "and").unwrap(),
             BinOp::Or => self.builder.build_or(a, b, "or").unwrap(),
-            BinOp::Xor => self.builder.build_xor(a, b, "xor").unwrap(),
-            BinOp::Nand => {
-                let v = self.builder.build_and(a, b, "nand0").unwrap();
-                self.builder.build_not(v, "nand").unwrap()
-            }
-            BinOp::Nor => {
-                let v = self.builder.build_or(a, b, "nor0").unwrap();
-                self.builder.build_not(v, "nor").unwrap()
-            }
-            BinOp::Xnor => {
-                let v = self.builder.build_xor(a, b, "xnor0").unwrap();
-                self.builder.build_not(v, "xnor").unwrap()
-            }
             BinOp::Eq => cmp(IntPredicate::EQ, "eq"),
             BinOp::Ne => cmp(IntPredicate::NE, "ne"),
             BinOp::Lt => cmp(IntPredicate::ULT, "lt"),

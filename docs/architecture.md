@@ -99,7 +99,7 @@ name-use site to the declaration it resolves to.
 ## The type kernel and the std shim
 
 The kernel's base types are **`integer` and `real`** only — and only they have
-built-in operators. `Bit`, `Logic`, `Bool`, `Clock` are canonical `enum`
+built-in operators. `Bit`, `Logic`, `Bool` are canonical `enum`
 declarations in `std/logic.siox`; **`uint`/`int` are ordinary `struct
 uint : Logic[]` / `struct int : Logic[]` declarations in `std/bits.siox`** —
 no longer seeded compiler names. The compiler recognizes any array-derived

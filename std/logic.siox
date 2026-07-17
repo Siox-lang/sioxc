@@ -47,10 +47,9 @@ pub enum Bool {
     true,
 }
 
-// A Bit carrying clock intent — the same two values, a distinct nominal type
-// (edge detection is built-in syntax: `clk::rising` / `clk::falling`, the
-// analogue of VHDL's `rising_edge`). `Clock(b)` / `Bit(clk)` convert freely.
-pub enum Clock : Bit;
+// There is no dedicated clock type: any `Logic` (or `Bit`) signal is a clock
+// when edge detection is applied to it (`clk::rising` / `clk::falling`, the
+// analogue of VHDL's `rising_edge` — built-in syntax over `::event`/`::old`).
 
 // Named levels, for readability at connection sites.
 pub const LOW: Bit = '0';
@@ -62,8 +61,8 @@ pub const HIGH: Bit = '1';
 // A dominant operand still decides ('0' and X = '0'; '1' or X = '1'),
 // otherwise the result is 'X'. `Bit` keeps the built-in two-value operators.
 
-impl BitAnd for Logic {
-    fn bitand(self, rhs: Logic) -> Logic {
+impl And<Logic, Logic> for Logic {
+    fn and(self, rhs: Logic) -> Logic {
         if self == '0' or rhs == '0' {
             return '0';
         }
@@ -74,8 +73,8 @@ impl BitAnd for Logic {
     }
 }
 
-impl BitOr for Logic {
-    fn bitor(self, rhs: Logic) -> Logic {
+impl Or<Logic, Logic> for Logic {
+    fn or(self, rhs: Logic) -> Logic {
         if self == '1' or rhs == '1' {
             return '1';
         }
@@ -86,8 +85,9 @@ impl BitOr for Logic {
     }
 }
 
-impl BitXor for Logic {
-    fn bitxor(self, rhs: Logic) -> Logic {
+#[precedence = 35]
+impl custom<"xor", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         if self == '0' and rhs == '0' {
             return '0';
         }
@@ -104,7 +104,7 @@ impl BitXor for Logic {
     }
 }
 
-impl Not for Logic {
+impl Not<Logic> for Logic {
     fn not(self) -> Logic {
         if self == '0' {
             return '1';
@@ -116,8 +116,9 @@ impl Not for Logic {
     }
 }
 
-impl Nand for Logic {
-    fn nand(self, rhs: Logic) -> Logic {
+#[precedence = 40]
+impl custom<"nand", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         if self == '0' or rhs == '0' {
             return '1';
         }
@@ -128,8 +129,9 @@ impl Nand for Logic {
     }
 }
 
-impl Nor for Logic {
-    fn nor(self, rhs: Logic) -> Logic {
+#[precedence = 30]
+impl custom<"nor", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         if self == '1' or rhs == '1' {
             return '0';
         }
@@ -140,8 +142,9 @@ impl Nor for Logic {
     }
 }
 
-impl Xnor for Logic {
-    fn xnor(self, rhs: Logic) -> Logic {
+#[precedence = 35]
+impl custom<"xnor", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         if self == '0' and rhs == '0' {
             return '1';
         }

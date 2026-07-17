@@ -162,6 +162,14 @@ impl Printer {
     }
 
     fn impl_decl(&mut self, i: &ImplDecl) {
+        for a in &i.attrs {
+            let value = a
+                .value
+                .as_ref()
+                .map(|v| format!(" = {}", expr(v)))
+                .unwrap_or_default();
+            self.line(&format!("#[{}{value}]", path(&a.name)));
+        }
         let target = type_str(&i.target);
         let head = match &i.trait_ {
             Some(tr) => {
@@ -431,18 +439,15 @@ fn un_op(op: UnOp) -> &'static str {
 }
 
 /// The source string of a binary operator (also the operator-trait name).
-pub fn bin_op(op: BinOp) -> &'static str {
+pub fn bin_op(op: &BinOp) -> &str {
     match op {
         BinOp::Add => "+",
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::And => "and",
-        BinOp::Nand => "nand",
-        BinOp::Xor => "xor",
-        BinOp::Xnor => "xnor",
         BinOp::Or => "or",
-        BinOp::Nor => "nor",
+        BinOp::Custom { symbol, .. } => symbol,
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
         BinOp::Eq => "==",
@@ -456,16 +461,16 @@ pub fn bin_op(op: BinOp) -> &'static str {
 
 /// Binding power mirroring the parser, used to decide where parentheses are
 /// required. Higher binds tighter; atoms/postfix are effectively infinite.
-fn bin_prec(op: BinOp) -> u8 {
+fn bin_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Mul | BinOp::Div => 9,
-        BinOp::Add | BinOp::Sub => 8,
-        BinOp::Shl | BinOp::Shr => 7,
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 6,
-        BinOp::Eq | BinOp::Ne => 5,
-        BinOp::And | BinOp::Nand => 4,
-        BinOp::Xor | BinOp::Xnor => 3,
-        BinOp::Or | BinOp::Nor => 2,
+        BinOp::Mul | BinOp::Div => 90,
+        BinOp::Add | BinOp::Sub => 80,
+        BinOp::Shl | BinOp::Shr => 70,
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 60,
+        BinOp::Eq | BinOp::Ne => 50,
+        BinOp::And => 40,
+        BinOp::Or => 30,
+        BinOp::Custom { precedence, .. } => *precedence,
     }
 }
 
@@ -527,9 +532,9 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             (format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)), UNARY_PREC)
         }
         Expr::Binary { op, lhs, rhs, .. } => {
-            let p = bin_prec(*op);
+            let p = bin_prec(op);
             (
-                format!("{} {} {}", expr_prec(lhs, p), bin_op(*op), expr_prec(rhs, p + 1)),
+                format!("{} {} {}", expr_prec(lhs, p), bin_op(op), expr_prec(rhs, p + 1)),
                 p,
             )
         }
@@ -701,14 +706,14 @@ mod tests {
     fn roundtrips_a_full_program() {
         roundtrip(
             "module demo::counter;\n\
-             using std::logic::{Bit, Logic, Clock};\n\
+             using std::logic::{Bit, Logic};\n\
              using Word = uint[32];\n\
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
              enum State: uint[2] { Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Clock;\n\
+               in clk: Logic;\n\
                bus: out Stream<uint[32]>::Source;\n\
                out count: uint[W];\n\
              }\n\
@@ -754,9 +759,14 @@ mod tests {
 
     #[test]
     fn textual_logical_operators_roundtrip() {
-        // and > xor > or, and `not` is prefix. Mixed precedence must round-trip.
+        // Custom precedence composes with core and/or; `not` is prefix.
         roundtrip(
-            "module m;\nimpl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
+            "module m;\n\
+             trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
+             #[precedence = 35] impl custom<\"xor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             #[precedence = 40] impl custom<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             #[precedence = 30] impl custom<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }
 }

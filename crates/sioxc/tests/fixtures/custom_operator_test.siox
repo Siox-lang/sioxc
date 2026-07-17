@@ -1,0 +1,96 @@
+module custom_operator_test;
+
+using std::ops::{custom};
+
+pub enum Flag {
+    Off,
+    On,
+}
+
+pub enum Other {
+    No,
+    Yes,
+}
+
+#[precedence = 45]
+impl custom<"unless", Flag, Bool> for Flag {
+    fn apply(self, rhs: Flag) -> Bool {
+        if self == Flag::On and rhs == Flag::Off {
+            return true;
+        }
+        return false;
+    }
+}
+
+#[precedence = 45]
+impl custom<"unless", Other, Bool> for Flag {
+    fn apply(self, rhs: Other) -> Bool {
+        return rhs == Other::Yes;
+    }
+}
+
+#[precedence = 44]
+impl custom<"^^", Flag, Bool> for Flag {
+    fn apply(self, rhs: Flag) -> Bool {
+        return self == rhs;
+    }
+}
+
+entity OperatorDut {
+    in a: uint[4];
+    in b: uint[4];
+    out xor_y: uint[4];
+    out nand_y: uint[4];
+    out nor_y: uint[4];
+    out xnor_y: uint[4];
+    out not_y: uint[4];
+}
+
+impl OperatorDut {
+    xor_y = a xor b;
+    nand_y = a nand b;
+    nor_y = a nor b;
+    xnor_y = a xnor b;
+    not_y = not a;
+}
+
+#[test]
+entity CustomOperatorTest {
+}
+
+impl CustomOperatorTest {
+    let left: Flag = Flag::On;
+    let right: Flag = Flag::Off;
+    let result: Bool;
+    let same: Bool;
+    let other: Other = Other::Yes;
+    let mixed: Bool;
+
+    // `unless` (45) binds tighter than core `and` (40), proving precedence is
+    // loaded from the implementation attribute before this expression parses.
+    result = left unless right and true;
+    same = left ^^ left;
+    mixed = left unless other;
+    assert!(result == true, "custom operator should dispatch through its impl");
+    assert!(same == true, "punctuation custom operator should dispatch");
+    assert!(mixed == true, "custom operator input template should select overload");
+
+    let a: uint[4] = 10;
+    let b: uint[4] = 12;
+    let xor_y: uint[4];
+    let nand_y: uint[4];
+    let nor_y: uint[4];
+    let xnor_y: uint[4];
+    let not_y: uint[4];
+    let local_not: uint[4];
+    let dut = OperatorDut { .a, .b, .xor_y, .nand_y, .nor_y, .xnor_y, .not_y };
+    a = 10;
+    b = 12;
+    local_not = not a;
+    assert!(xor_y == 6, "std xor");
+    assert!(nand_y == 7, "std nand");
+    assert!(nor_y == 1, "std nor");
+    assert!(xnor_y == 9, "std xnor");
+    assert!(not_y == 5, "templated core not");
+    assert!(local_not == 5, "templated core not in testbench");
+}
