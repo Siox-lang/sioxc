@@ -61,6 +61,10 @@ assertions, and VCD export — predates this changelog. See
   than failing.
 
 ### Fixed
+- **Possible-latch lint no longer flags an if/else mux.** A combinational
+  signal assigned in both the `if` and the `else` branch is fully covered and
+  is no longer reported as an inferred latch (`W-P002`); a signal assigned only
+  under an `if` with no covering `else` still is.
 - **Module `const`s now resolve in testbench expressions.** A bare `const`
   reference (`HIGH`, a user const) evaluated to `0` in the testbench evaluator —
   correct only for consts that happened to be zero (`LOW`). Now collected to a
