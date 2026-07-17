@@ -1372,21 +1372,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The `(field name, field type)` list if `ty` names a known struct.
+    /// The `(field name, field type)` list if `ty` names a known struct —
+    /// resolving generic applications (`Pair<uint[8]>`) and bus-mode views
+    /// (`Stream::Source`, `Stream<uint[8]>::Source`, spec 3.19).
     fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
-        // The underlying struct name: a plain `Struct`, or a bus-mode view
-        // `Struct::Mode` (spec 3.19) whose leaves are the struct's fields.
-        let struct_name: &str = match ty {
-            ast::Type::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+        match ty {
+            // A generic application: substitute the type parameters into the
+            // base struct's field types.
+            ast::Type::Generic { base, args, .. } => {
+                let sname = type_head_name(base)?;
+                let s = self.structs.get(sname)?;
+                let mut subst: HashMap<String, ast::Type> = HashMap::new();
+                for (param, arg) in s.params.params.iter().zip(args) {
+                    if let ast::GenericArg::Positional(e) = arg {
+                        if let Some(t) = expr_to_type(e) {
+                            subst.insert(param.name.text.clone(), t);
+                        }
+                    }
+                }
+                let fields = self.raw_struct_fields(sname)?;
+                Some(
+                    fields
+                        .into_iter()
+                        .map(|(n, ft)| (n, subst_type_params(&ft, &subst)))
+                        .collect(),
+                )
+            }
+            // A bus-mode view reduces to its inner struct's fields — the inner
+            // is a generic application (`Stream<uint[8]>::Source`) or a plain
+            // `Struct::Mode` path.
             ast::Type::Mode { inner, .. } => match inner.as_ref() {
-                ast::Type::Path(p) => p.segments.first()?.text.as_str(),
-                _ => return None,
+                ast::Type::Generic { .. } => self.struct_fields(inner),
+                ast::Type::Path(p) => self.raw_struct_fields(p.segments.first()?.text.as_str()),
+                _ => None,
             },
-            _ => return None,
-        };
-        let s = self.structs.get(struct_name)?;
-        // Derived struct: inherited base fields come first, then the struct's
-        // own (spec: nominal derivation).
+            ast::Type::Path(p) if p.segments.len() == 1 => {
+                self.raw_struct_fields(&p.segments[0].text)
+            }
+            _ => None,
+        }
+    }
+
+    /// The base-first field list of a struct named directly (no generics/mode).
+    fn raw_struct_fields(&self, name: &str) -> Option<Vec<(String, ast::Type)>> {
+        let s = self.structs.get(name)?;
+        // Derived struct: inherited base fields come first (spec: derivation).
         let mut fields = match &s.base {
             Some(b) => self.struct_fields(b).unwrap_or_default(),
             None => Vec::new(),
@@ -1398,7 +1428,13 @@ impl<'a> Lowering<'a> {
     /// The `(struct, mode)` names of a bus-mode type (`out Stream::Source` ->
     /// `("Stream", "Source")`), for looking up per-leaf directions.
     fn mode_of(ty: &ast::Type) -> Option<(String, String)> {
-        if let ast::Type::Mode { inner, .. } = ty {
+        if let ast::Type::Mode { inner, mode, .. } = ty {
+            // Generic form `Stream<..>::Source`: the mode is the `Mode.mode`
+            // ident and the struct is the inner's head.
+            if let Some(m) = mode {
+                return Some((type_head_name(inner)?.to_string(), m.text.clone()));
+            }
+            // Plain form `Stream::Source`: a two-segment inner path.
             if let ast::Type::Path(p) = inner.as_ref() {
                 if p.segments.len() >= 2 {
                     return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));
@@ -3963,6 +3999,48 @@ fn gather_generate(
 
 /// Substitute a bound integer for a single-segment path variable throughout a
 /// statement (used to unroll generate loops).
+/// Read a generic argument expression as a type: `uint[8]` (parsed as an index
+/// expression) becomes the type `uint[8]`, a bare name becomes a path type.
+/// Used to substitute a struct's type parameters (`Pair<uint[8]>`).
+fn expr_to_type(e: &ast::Expr) -> Option<ast::Type> {
+    match e {
+        ast::Expr::Path(p) => Some(ast::Type::Path(p.clone())),
+        ast::Expr::Index { base, index, span } => Some(ast::Type::Indexed {
+            base: Box::new(expr_to_type(base)?),
+            index: Some(index.clone()),
+            span: *span,
+        }),
+        _ => None,
+    }
+}
+
+/// Substitute type parameters (`T -> uint[8]`) in a type, recursing through
+/// array/generic/mode wrappers.
+fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
+    match ty {
+        ast::Type::Path(p) if p.segments.len() == 1 => {
+            subst.get(&p.segments[0].text).cloned().unwrap_or_else(|| ty.clone())
+        }
+        ast::Type::Indexed { base, index, span } => ast::Type::Indexed {
+            base: Box::new(subst_type_params(base, subst)),
+            index: index.clone(),
+            span: *span,
+        },
+        ast::Type::Generic { base, args, span } => ast::Type::Generic {
+            base: Box::new(subst_type_params(base, subst)),
+            args: args.clone(),
+            span: *span,
+        },
+        ast::Type::Mode { dir, inner, mode, span } => ast::Type::Mode {
+            dir: *dir,
+            inner: Box::new(subst_type_params(inner, subst)),
+            mode: mode.clone(),
+            span: *span,
+        },
+        _ => ty.clone(),
+    }
+}
+
 /// Deep-clone a statement, replacing every bare single-segment path named in
 /// `map` with its expression. Used to inline a method body: `self` maps to the
 /// receiver and each parameter to its argument, so `self.valid = '1'` in a

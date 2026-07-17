@@ -1754,7 +1754,12 @@ fn path_string(e: &Expr) -> Option<String> {
 /// The `(struct, mode)` of a bus-mode type (`out Stream::Source` ->
 /// `("Stream", "Source")`), for looking up per-leaf directions.
 fn mode_key(ty: &Type) -> Option<(String, String)> {
-    if let Type::Mode { inner, .. } = ty {
+    if let Type::Mode { inner, mode, .. } = ty {
+        // Generic form `Stream<..>::Source`.
+        if let Some(m) = mode {
+            return Some((type_head_name(inner)?.to_string(), m.text.clone()));
+        }
+        // Plain form `Stream::Source` (two-segment inner path).
         if let Type::Path(p) = inner.as_ref() {
             if p.segments.len() >= 2 {
                 return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));

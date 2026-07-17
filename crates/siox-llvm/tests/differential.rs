@@ -577,6 +577,29 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn generic_struct_agrees() {
+    // A generic struct (`Pair<uint[8]>`) substitutes its type parameter into
+    // the field types, so `p.a`/`p.b` are 8-bit signals and arithmetic wraps.
+    let d = lower(
+        "module m;\n\
+         struct Pair<T> { a: T, b: T, }\n\
+         entity E { in x: uint[8]; out sum: uint[8]; }\n\
+         impl E {\n\
+           let p: Pair<uint[8]>;\n\
+           p.a = x; p.b = x;\n\
+           sum = p.a + p.b;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let x: uint[8]; let sum: uint[8]; let dut = E { .x, .sum }; }\n",
+    );
+    for x in [10u64, 100, 200, 255] {
+        assert_agree(&d, &[("T.x", x)]);
+    }
+    assert_eq!(d.signals[id(&d, "T.dut.p.a").0 as usize].width, 8, "Pair<uint[8]>.a is 8-bit");
+}
+
+#[test]
 fn bus_mode_agrees() {
     // A directional bus view (spec 3.19): `impl out Stream::Source` /
     // `impl in Stream::Sink` give each leaf a per-field direction, so
