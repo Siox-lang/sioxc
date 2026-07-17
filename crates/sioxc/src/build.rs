@@ -96,6 +96,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     // impl method by (type head, name), for `recv.method(args)` in stimulus.
     let structs = collect_structs(modules);
     let methods = collect_methods(modules);
+    let derived_widths = siox_ir::derived_widths(modules);
 
     // Header, one `int test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
@@ -183,6 +184,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             op_impls: &op_impls,
             methods: &methods,
             structs: &structs,
+            derived_widths: &derived_widths,
             consts: &consts,
             aliases: &aliases,
             tmp: Default::default(),
@@ -272,6 +274,9 @@ struct Ctx<'a> {
     /// Struct layouts (name -> base-first field list) so a struct-typed
     /// testbench local materializes as one C local per leaf field.
     structs: &'a HashMap<String, Vec<(String, ast::Type)>>,
+    /// Derived-type inherited widths (`struct Byte : Logic[8]` -> 8), so a bare
+    /// derived-vector local masks to the right width.
+    derived_widths: &'a HashMap<String, u32>,
     /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
     /// resolving a method call's receiver type.
     local_types: std::cell::RefCell<HashMap<String, String>>,
@@ -629,6 +634,15 @@ impl Ctx<'_> {
     /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
     /// element width of an array of one). Mirrors the runner's rule.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
+        // A bare derived-vector type (`struct Byte : Logic[8]`) inherits its
+        // base array's width.
+        if let ast::Type::Path(p) = ty {
+            if let Some(seg) = p.segments.last() {
+                if let Some(&w) = self.derived_widths.get(&seg.text) {
+                    return Some(w);
+                }
+            }
+        }
         if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_width(base);

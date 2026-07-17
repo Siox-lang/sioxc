@@ -577,6 +577,30 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn derived_vector_width_agrees() {
+    // `struct Byte : Logic[8]` inherits width 8 from its base array, so a signal
+    // of type `Byte` masks arithmetic at 2^8 — both engines must agree (a bug
+    // would leave it width 0 = unmasked).
+    let d = lower(
+        "module m;\n\
+         struct Byte : Logic[8];\n\
+         entity A { in a: Byte; in b: Byte; out s: Byte; }\n\
+         impl A { s = a + b; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let a: Byte; let b: Byte; let s: Byte;\n\
+           let dut = A { .a, .b, .s };\n\
+         }\n",
+    );
+    // s is 8-bit: 200+100 = 300 -> 44, 255+1 -> 0.
+    for (a, b) in [(200u64, 100u64), (255, 1), (10, 20), (128, 128)] {
+        assert_agree(&d, &[("T.a", a), ("T.b", b)]);
+    }
+    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Byte signal must be width 8");
+}
+
+#[test]
 fn method_call_agrees() {
     // Method calls (`recv.method(args)`, spec 3.20) inline during IR lowering,
     // so both engines see the same primitive tree. Covers a nullary

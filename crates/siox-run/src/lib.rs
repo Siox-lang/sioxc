@@ -193,6 +193,7 @@ pub fn run_tests_with_engine<'e>(
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
     let methods = collect_methods(modules);
+    let derived_widths = siox_ir::derived_widths(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     let mut results = Vec::new();
@@ -203,7 +204,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &consts, &families, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, false).0);
         }
     }
     results
@@ -224,6 +225,7 @@ pub fn run_test_traced_with_engine<'e>(
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
     let methods = collect_methods(modules);
+    let derived_widths = siox_ir::derived_widths(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     for &root in &hier.roots {
@@ -233,7 +235,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &consts, &families, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, true));
         }
     }
     None
@@ -411,6 +413,7 @@ fn run_one<'a>(
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    derived_widths: &'a HashMap<String, u32>,
     consts: &'a HashMap<String, u128>,
     families: &'a std::collections::HashSet<String>,
     record: bool,
@@ -463,6 +466,7 @@ fn run_one<'a>(
         fns,
         op_impls,
         methods,
+        derived_widths,
         local_types: HashMap::new(),
         consts,
         families,
@@ -571,6 +575,8 @@ struct Testbench<'a> {
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Impl methods `(type head, method) -> fn`, for `recv.method(args)` calls.
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Derived-type inherited widths (`struct Byte : Logic[8]` -> 8).
+    derived_widths: &'a HashMap<String, u32>,
     /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
     /// resolving a method call's receiver type.
     local_types: HashMap<String, String>,
@@ -614,6 +620,15 @@ impl Testbench<'_> {
     /// element width of an array of one (`uint[8][4]` -> 8). Anything else
     /// (enums, integer, real, structs) has no maskable width here.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
+        // A bare derived-vector type (`struct Byte : Logic[8]`) inherits its
+        // base array's width.
+        if let ast::Type::Path(p) = ty {
+            if let Some(seg) = p.segments.last() {
+                if let Some(&w) = self.derived_widths.get(&seg.text) {
+                    return Some(w);
+                }
+            }
+        }
         if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
             // `F[w][n]`: an array of vectors — the element width governs.
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {

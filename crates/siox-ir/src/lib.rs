@@ -1214,7 +1214,10 @@ impl<'a> Lowering<'a> {
             );
             return;
         }
-        if let Some(fields) = self.struct_fields(ty) {
+        // A genuine field-aggregate flattens to per-field signals; a struct
+        // with no fields (a derived vector like `struct Byte : Logic[8]`) is a
+        // scalar leaf and takes its inherited width below.
+        if let Some(fields) = self.struct_fields(ty).filter(|f| !f.is_empty()) {
             if let ast::Type::Path(p) = ty {
                 self.local_struct.insert(name.to_string(), p.segments[0].text.clone());
             }
@@ -1251,7 +1254,7 @@ impl<'a> Lowering<'a> {
                 self.out.signals[id.0 as usize].range = range;
             }
         } else {
-            self.add_signal(entity, name, type_width(ty, env, &self.free_fns));
+            self.add_signal(entity, name, type_width(ty, env, &self.free_fns, &self.structs));
             // A Logic-vector family `F[N]` dispatches its operators to
             // `impl _ for F` (spec 3.25). uint/int are recognized the same way
             // as any user `struct F : Logic[]`.
@@ -3540,13 +3543,26 @@ fn parse_int(text: &str) -> Option<u64> {
 
 /// Bit width from a type annotation, substituting parameters from `env` (so
 /// `uint[W]` with `W=8` is width 8). `0` means parametric / not yet known.
-fn type_width(t: &ast::Type, env: &HashMap<String, i64>, fns: &HashMap<String, &ast::FnDecl>) -> u32 {
+fn type_width(
+    t: &ast::Type,
+    env: &HashMap<String, i64>,
+    fns: &HashMap<String, &ast::FnDecl>,
+    structs: &HashMap<String, &ast::StructDecl>,
+) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Clock") | Some("Bool") => 1,
             Some("real") => 64, // f64 bits
             Some("Char") => 32, // symbol storage (implementation detail)
-            _ => 0,
+            // A derived type inherits its base array's size/range: `struct Byte
+            // : Logic[8]` is 8 bits, `struct Word : uint[16]` is 16 (spec:
+            // nominal derivation reuses the base representation).
+            Some(name) => structs
+                .get(name)
+                .and_then(|s| s.base.as_ref())
+                .map(|b| type_width(b, env, fns, structs))
+                .unwrap_or(0),
+            None => 0,
         },
         // For `uint[8]` the index is the width; for `Logic[31..0]` it is the
         // span; unconstrained `T[]` stays width 0 ("set at use").
@@ -3561,7 +3577,7 @@ fn type_width(t: &ast::Type, env: &HashMap<String, i64>, fns: &HashMap<String, &
             e => eval_const_fns(e, env, fns, 0).map(|v| v.max(0) as u32).unwrap_or(0),
         },
         ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => {
-            type_width(base, env, fns)
+            type_width(base, env, fns, structs)
         }
     }
 }
@@ -3694,6 +3710,33 @@ pub fn eval_const_stmts(
 /// -> signedness. A bodyless struct whose base is an array of a bit scalar
 /// (`struct uint : Logic[]`) IS a bit vector — no annotation needed, the shape
 /// says so. Signedness is the `Signed` capability. uint/int are just members.
+/// Every derived type's inherited width: `struct Byte : Logic[8]` -> 8,
+/// `struct Word : Byte` -> 8 (following the base chain). A derived type reuses
+/// its base array's size/range (spec: nominal derivation). Testbench evaluators
+/// consult this so a local of a derived vector type masks to the right width.
+pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
+    let mut structs: HashMap<String, &ast::StructDecl> = HashMap::new();
+    for m in modules {
+        for it in &m.items {
+            if let ast::Item::Struct(s) = it {
+                structs.insert(s.name.text.clone(), s);
+            }
+        }
+    }
+    let (empty_env, empty_fns) = (HashMap::new(), HashMap::new());
+    structs
+        .iter()
+        .filter_map(|(name, s)| {
+            let w = s
+                .base
+                .as_ref()
+                .map(|b| type_width(b, &empty_env, &empty_fns, &structs))
+                .unwrap_or(0);
+            (w > 0).then_some((name.clone(), w))
+        })
+        .collect()
+}
+
 pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
     // The set of bit-vector families by shape. No signedness — that lives in
     // each type's operator impls.
@@ -4185,7 +4228,7 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
         // A numeric `: repr` sets the width explicitly; otherwise the width
         // covers the effective variant count (inherited + declared).
         let w = if e.repr.is_some() && enum_base_name(e, &enums).is_none() {
-            type_width(e.repr.as_ref().unwrap(), &empty, &HashMap::new())
+            type_width(e.repr.as_ref().unwrap(), &empty, &HashMap::new(), &HashMap::new())
         } else {
             let n = effective_variants(name, &enums, &mut Vec::new()).len().max(1) as u32;
             if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }
