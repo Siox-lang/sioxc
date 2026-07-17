@@ -577,6 +577,34 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn bus_mode_agrees() {
+    // A directional bus view (spec 3.19): `impl out Stream::Source` /
+    // `impl in Stream::Sink` give each leaf a per-field direction, so
+    // valid/data flow Source->Sink and ready flows Sink->Source across the
+    // shared net. Both engines must agree.
+    let d = lower(
+        "module m;\n\
+         struct Stream { valid: Bit, ready: Bit, data: uint[8], }\n\
+         impl out Stream::Source { out valid; out data; in ready; }\n\
+         impl in Stream::Sink { in valid; in data; out ready; }\n\
+         entity Producer { bus: out Stream::Source; in d: uint[8]; out canpush: Bit; }\n\
+         impl Producer { bus.valid = '1'; bus.data = d; canpush = bus.ready; }\n\
+         entity Consumer { bus: in Stream::Sink; in accept: Bit; out got: uint[8]; }\n\
+         impl Consumer { bus.ready = accept; got = bus.data; }\n\
+         #[top]\n\
+         entity T { in d: uint[8]; in accept: Bit; out got: uint[8]; out canpush: Bit; }\n\
+         impl T {\n\
+           let link: Stream;\n\
+           let p = Producer { .bus = link, .d, .canpush };\n\
+           let c = Consumer { .bus = link, .accept, .got };\n\
+         }\n",
+    );
+    for (dv, acc) in [(77u64, 1u64), (200, 0), (0, 1), (255, 0)] {
+        assert_agree(&d, &[("T.d", dv), ("T.accept", acc)]);
+    }
+}
+
+#[test]
 fn derived_vector_width_agrees() {
     // `struct Byte : Logic[8]` inherits width 8 from its base array, so a signal
     // of type `Byte` masks arithmetic at 2^8 — both engines must agree (a bug

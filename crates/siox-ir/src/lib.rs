@@ -252,6 +252,9 @@ struct Lowering<'a> {
     enum_variants: HashMap<String, HashMap<String, u64>>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
+    /// Bus-mode per-leaf directions: `(struct, mode) -> {field -> dir}` from
+    /// `impl <dir> Struct::Mode { in a; out b; }` (spec 3.19).
+    mode_dirs: HashMap<(String, String), HashMap<String, ast::Direction>>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
     /// Enum name -> base enum name (derivation chain, enums only).
@@ -354,6 +357,7 @@ impl<'a> Lowering<'a> {
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
             structs: HashMap::new(),
+            mode_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
             op_impls: HashMap::new(),
@@ -421,7 +425,19 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
-                        if let Some(name) = type_head_name(&im.target) {
+                        // A bus-mode impl (`impl out Stream::Source { in a;
+                        // out b; }`, spec 3.19) records its fields' directions;
+                        // a plain inherent impl holds methods.
+                        if im.mode_dir.is_some() {
+                            if let Some(key) = Self::mode_of(&im.target) {
+                                let map = self.mode_dirs.entry(key).or_default();
+                                for it in &im.items {
+                                    if let ast::ImplItem::ModeField { dir, name, .. } = it {
+                                        map.insert(name.text.clone(), *dir);
+                                    }
+                                }
+                            }
+                        } else if let Some(name) = type_head_name(&im.target) {
                             self.impls.entry(name.to_string()).or_default().push(im);
                         }
                     }
@@ -623,9 +639,20 @@ impl<'a> Lowering<'a> {
         for p in &edecl.ports {
             let dot = format!("{}.", p.name.text);
             let idx = format!("{}[", p.name.text);
+            // A bus-mode port (`bus: out Stream::Source`) gives each leaf its own
+            // direction from the mode impl (`out valid; in ready;`); a plain port
+            // applies its single direction to every leaf.
+            let mode = Self::mode_of(&p.ty).and_then(|k| self.mode_dirs.get(&k));
             for (k, &id) in &self.locals {
                 if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
-                    ports.insert(k.clone(), (id, p.dir));
+                    let dir = match mode {
+                        Some(m) => k
+                            .strip_prefix(&dot)
+                            .and_then(|field| m.get(field).copied())
+                            .or(p.dir),
+                        None => p.dir,
+                    };
+                    ports.insert(k.clone(), (id, dir));
                 }
             }
         }
@@ -1347,19 +1374,34 @@ impl<'a> Lowering<'a> {
 
     /// The `(field name, field type)` list if `ty` names a known struct.
     fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
-        if let ast::Type::Path(p) = ty {
-            if p.segments.len() == 1 {
-                if let Some(s) = self.structs.get(&p.segments[0].text) {
-                    // Derived struct: inherited base fields come first, then
-                    // the struct's own (spec: nominal derivation).
-                    let mut fields = match &s.base {
-                        Some(b) => self.struct_fields(b).unwrap_or_default(),
-                        None => Vec::new(),
-                    };
-                    fields.extend(
-                        s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())),
-                    );
-                    return Some(fields);
+        // The underlying struct name: a plain `Struct`, or a bus-mode view
+        // `Struct::Mode` (spec 3.19) whose leaves are the struct's fields.
+        let struct_name: &str = match ty {
+            ast::Type::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            ast::Type::Mode { inner, .. } => match inner.as_ref() {
+                ast::Type::Path(p) => p.segments.first()?.text.as_str(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let s = self.structs.get(struct_name)?;
+        // Derived struct: inherited base fields come first, then the struct's
+        // own (spec: nominal derivation).
+        let mut fields = match &s.base {
+            Some(b) => self.struct_fields(b).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        fields.extend(s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())));
+        Some(fields)
+    }
+
+    /// The `(struct, mode)` names of a bus-mode type (`out Stream::Source` ->
+    /// `("Stream", "Source")`), for looking up per-leaf directions.
+    fn mode_of(ty: &ast::Type) -> Option<(String, String)> {
+        if let ast::Type::Mode { inner, .. } = ty {
+            if let ast::Type::Path(p) = inner.as_ref() {
+                if p.segments.len() >= 2 {
+                    return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));
                 }
             }
         }
