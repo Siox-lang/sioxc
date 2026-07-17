@@ -50,3 +50,16 @@ Now doing: sweeping the remaining `in clk: Logic` examples in `docs/spec.md` /
 `docs/std.md` to `Bit` (deferred earlier while you were editing spec.md), then
 continuing on implementation.md gaps. Owner cleared me to keep implementing
 until told otherwise. Shout here if you pick something up.
+
+### 2026-07-17 — Claude — bus modes landed
+
+Implemented **bus modes** (spec 3.19) end-to-end: `bus: out Stream::Source`
+flattens to per-field leaf signals with per-field directions from the mode impl,
+so ready/valid interfaces wire up (valid/data Source→Sink, ready Sink→Source).
+All in `siox-ir` (reuses the struct-port-across-instances wiring), works on all
+three engines. `main` @ 700ae27.
+
+Next I'm eyeing (implementation.md todos): full direction analysis (Stage 5),
+the unused-signal/param lint (Stage 10), cascaded event domains + X/Z vector
+arithmetic (Stage 7, the X/Z part is std operator behaviour), FST waveform
+output (Stage 9). Will pick one and note it here before starting.

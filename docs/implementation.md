@@ -96,8 +96,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   arrays** — `let stage: Sub[N]` built element-wise (`stage[i] = Sub { .. }`, in
   a generate loop) creates named, indexable instances whose ports read as
   `stage[i].port`.
-- **Status (todo):** bus-mode leaf expansion, full direction analysis, and
-  propagating concrete parameter widths down into instance signal types.
+- **Status (done, cont.):** **bus modes** (spec 3.19) — a directional view over
+  a struct (`bus: out Stream::Source`) flattens to per-field leaf signals, each
+  tagged with its direction from the mode impl (`out valid; in ready;`), so
+  valid/data flow Source→Sink and ready flows Sink→Source over the shared net.
+- **Status (todo):** full direction analysis (reading an undriven `out`, etc.).
+  Concrete parameter widths already propagate into instance signal types
+  (an internal `uint[W]` wraps at the substituted width).
 
 ### Stage 6 — Digital IR (`siox-ir`) — 🟢 partial
 - **Acceptance:** event vs. combinational deps explicit; sequential updates

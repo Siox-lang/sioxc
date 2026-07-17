@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Bus modes** (spec 3.19) — a directional view over a struct
+  (`bus: out Stream::Source`, with `impl out Stream::Source { out valid; in
+  ready; }`) flattens to per-field leaf signals whose directions come from the
+  mode, so a ready/valid interface wires up with valid/data flowing Source→Sink
+  and ready flowing Sink→Source. Works on all three engines.
 - **Custom operators.** `impl custom<"sym", Rhs, Ret> for T` with
   `#[precedence = N]` declares a user-defined operator in library source; the
   four-value `Logic` truth tables (`xor`/`nand`/`nor`/`xnor`) and examples like
