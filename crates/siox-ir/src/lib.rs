@@ -1550,6 +1550,14 @@ impl<'a> Lowering<'a> {
                     }
                     self.out.event_blocks.push(EventBlock { condition, updates });
                 } else {
+                    // A signal assigned on every path through this if/else (a
+                    // terminal `else` supplies the complement) is fully covered
+                    // — not a latch — even though each driver is conditional.
+                    // Mark it like a wildcard match arm so the possible-latch
+                    // lint skips it.
+                    for id in self.if_covered_targets(iff) {
+                        self.lint_defaulted.insert(id);
+                    }
                     // Combinational conditional: assignments become conditional
                     // drivers; the `else` adds the negated condition.
                     let c = self.lower_expr(&iff.cond);
@@ -1850,6 +1858,43 @@ impl<'a> Lowering<'a> {
 
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
         expr_path(target).and_then(|p| self.locals.get(&p).copied())
+    }
+
+    /// Signals assigned on *every* path through an if/else — a terminal `else`
+    /// supplies the complement, so these are fully covered and are not latches
+    /// even though each driver is conditional. Without a terminal `else` the
+    /// fall-through path assigns nothing, so nothing is covered. An
+    /// event-controlled branch is sequential (not a combinational latch).
+    fn if_covered_targets(&self, iff: &ast::IfStmt) -> std::collections::BTreeSet<u32> {
+        use std::collections::BTreeSet;
+        if expr_is_event(&iff.cond) {
+            return BTreeSet::new();
+        }
+        let then = self.block_covered_targets(&iff.then);
+        let els = match iff.else_.as_deref() {
+            Some(ast::ElseBranch::Block(b)) => self.block_covered_targets(b),
+            Some(ast::ElseBranch::If(inner)) => self.if_covered_targets(inner),
+            None => return BTreeSet::new(),
+        };
+        then.intersection(&els).copied().collect()
+    }
+
+    /// Signals a block assigns on every path: its direct assignment targets,
+    /// plus any target fully covered by a nested if/else.
+    fn block_covered_targets(&self, b: &ast::Block) -> std::collections::BTreeSet<u32> {
+        let mut out = std::collections::BTreeSet::new();
+        for s in &b.stmts {
+            match s {
+                ast::Stmt::Assign { target, .. } => {
+                    if let Some(id) = self.target_signal(target) {
+                        out.insert(id.0);
+                    }
+                }
+                ast::Stmt::If(inner) => out.extend(self.if_covered_targets(inner)),
+                _ => {}
+            }
+        }
+        out
     }
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
@@ -4202,6 +4247,41 @@ mod tests {
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn if_else_mux_is_not_a_latch() {
+        // A signal assigned in both the `if` and the `else` is fully covered —
+        // no possible-latch warning — but one assigned only in the `if` is.
+        let covered = lower_diags(
+            "module m;\n\
+             entity M { in c: Bit; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+             impl M { if c { y = a; } else { y = b; } }\n\
+             #[test] entity Tb {}\n\
+             impl Tb {\n\
+               let c: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+               let dut = M { .c, .a, .b, .y };\n\
+             }\n",
+        );
+        assert!(
+            !covered.iter().any(|d| d.contains("inferred latch")),
+            "if/else mux wrongly flagged: {covered:?}"
+        );
+
+        let latch = lower_diags(
+            "module m;\n\
+             entity M { in c: Bit; in a: uint[8]; out y: uint[8]; }\n\
+             impl M { if c { y = a; } }\n\
+             #[test] entity Tb {}\n\
+             impl Tb {\n\
+               let c: Bit; let a: uint[8]; let y: uint[8];\n\
+               let dut = M { .c, .a, .y };\n\
+             }\n",
+        );
+        assert!(
+            latch.iter().any(|d| d.contains("inferred latch")),
+            "true latch (no else) should warn: {latch:?}"
+        );
     }
 
     #[test]
