@@ -192,6 +192,7 @@ pub fn run_tests_with_engine<'e>(
     let enums = siox_ir::enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
+    let methods = collect_methods(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     let mut results = Vec::new();
@@ -202,7 +203,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &consts, &families, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &consts, &families, false).0);
         }
     }
     results
@@ -222,6 +223,7 @@ pub fn run_test_traced_with_engine<'e>(
     let enums = siox_ir::enum_discriminants(modules);
     let fns = collect_fns(modules);
     let op_impls = collect_op_impls(modules);
+    let methods = collect_methods(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
     for &root in &hier.roots {
@@ -231,7 +233,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &consts, &families, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &consts, &families, true));
         }
     }
     None
@@ -267,6 +269,27 @@ fn collect_op_impls(modules: &[Module]) -> HashMap<(String, String), &ast::FnDec
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
                             out.entry((tr.text.clone(), ty.to_string())).or_insert(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every impl method keyed by `(type head, method name)`, covering both
+/// inherent (`impl T`) and trait (`impl Tr for T`) impls, so testbench
+/// expressions can inline a `recv.method(args)` call (spec 3.20).
+fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
+    let mut out = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Impl(im) = item {
+                if let Some(ty) = type_head_name(&im.target) {
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            out.entry((ty.to_string(), f.name.text.clone())).or_insert(f);
                         }
                     }
                 }
@@ -387,6 +410,7 @@ fn run_one<'a>(
     enums: &'a HashMap<String, HashMap<String, u64>>,
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
     consts: &'a HashMap<String, u128>,
     families: &'a std::collections::HashSet<String>,
     record: bool,
@@ -438,6 +462,8 @@ fn run_one<'a>(
         local_families: HashMap::new(),
         fns,
         op_impls,
+        methods,
+        local_types: HashMap::new(),
         consts,
         families,
         halted: false,
@@ -543,6 +569,11 @@ struct Testbench<'a> {
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Operator-trait impls `(trait, type) -> fn`, for typed operator dispatch.
     op_impls: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Impl methods `(type head, method) -> fn`, for `recv.method(args)` calls.
+    methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
+    /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
+    /// resolving a method call's receiver type.
+    local_types: HashMap<String, String>,
     /// Module-level `const` values, for bare-name references in expressions.
     consts: &'a HashMap<String, u128>,
     /// Bit-vector families (name -> signed), for testbench conversions.
@@ -660,6 +691,11 @@ impl Testbench<'_> {
         // ports too): operators on it dispatch to the family's impls.
         if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t)) {
             self.local_families.insert(l.name.text.clone(), fam);
+        }
+        // The declared type head, for resolving a method call's receiver
+        // (`let p: Pkt; ... p.sum()`).
+        if let Some(ty) = l.ty.as_ref().and_then(|t| type_head_name(t)) {
+            self.local_types.insert(l.name.text.clone(), ty.to_string());
         }
         match &l.value {
             // A named construct is an instance; elaboration handled it.
@@ -780,7 +816,12 @@ impl Testbench<'_> {
             for id in self.alias_ids(name) {
                 self.set_signal(id, value);
             }
+            return;
         }
+        // A field/element of a struct or array testbench local (`p.a`, `v[2]`)
+        // that was never pre-registered: store it as a local so later reads see
+        // it, rather than silently dropping the write.
+        self.locals.insert(name.to_string(), masked);
     }
 
     /// Write a string literal to a Char-array local, one code point per
@@ -1301,6 +1342,12 @@ impl Testbench<'_> {
         args: &[ast::Expr],
         fenv: &HashMap<String, u128>,
     ) -> u128 {
+        // A method call `recv.method(args)`: inline the impl method's body,
+        // substituting `self` -> receiver and parameters -> arguments, then
+        // evaluate it in the caller's environment (spec 3.20).
+        if let ast::Expr::Field { base, field, .. } = callee {
+            return self.eval_method_call(base, &field.text, args, fenv);
+        }
         let name = match callee {
             ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return 0,
@@ -1357,6 +1404,42 @@ impl Testbench<'_> {
         self.eval_fn_stmts(&body.stmts, &env).unwrap_or(0)
     }
 
+    /// The declared type head of a method-call receiver (`p` in `p.sum()`): a
+    /// struct/enum local, or a numeric family (so `n.cmp(m)` resolves too).
+    fn receiver_type(&self, recv: &ast::Expr) -> Option<String> {
+        let p = expr_path(recv)?;
+        self.local_types
+            .get(&p)
+            .or_else(|| self.local_families.get(&p))
+            .cloned()
+    }
+
+    /// Evaluate a value-returning method call by inlining its body: `self` binds
+    /// to the receiver and each parameter to its argument (both substituted into
+    /// the body), then the body evaluates in the caller's environment — so
+    /// `self.a` reads the receiver's `a` field and arguments read caller locals.
+    fn eval_method_call(
+        &self,
+        recv: &ast::Expr,
+        method: &str,
+        args: &[ast::Expr],
+        fenv: &HashMap<String, u128>,
+    ) -> u128 {
+        let Some(ty) = self.receiver_type(recv) else { return 0 };
+        let Some(f) = self.methods.get(&(ty, method.to_string())) else { return 0 };
+        let Some(body) = &f.body else { return 0 };
+        let mut map: HashMap<String, ast::Expr> = HashMap::new();
+        map.insert("self".to_string(), recv.clone());
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                map.insert(n.text.clone(), a.clone());
+            }
+        }
+        let stmts: Vec<ast::Stmt> =
+            body.stmts.iter().map(|s| siox_ir::subst_stmt_paths(s, &map)).collect();
+        self.eval_fn_stmts(&stmts, fenv).unwrap_or(0)
+    }
+
     fn eval_fn_stmts(&self, stmts: &[ast::Stmt], env: &HashMap<String, u128>) -> Option<u128> {
         for st in stmts {
             match st {
@@ -1409,6 +1492,12 @@ impl Testbench<'_> {
             // target width (`integer(x)` passes through); source
             // sign-extension is a hardware-lowering concern.
             ast::Expr::Call { callee, args, .. } => {
+                // A method call `recv.method(args)` (possibly nullary) — inline
+                // its body before the conversion logic below, which assumes a
+                // first argument to convert.
+                if matches!(callee.as_ref(), ast::Expr::Field { .. }) {
+                    return self.eval_free_call(callee, args, fenv);
+                }
                 let Some(arg) = args.first() else { return 0 };
                 let v = self.eval_env(arg, fenv);
                 let w = match callee.as_ref() {

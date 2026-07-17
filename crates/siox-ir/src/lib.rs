@@ -3853,8 +3853,10 @@ fn gather_generate(
 /// Deep-clone a statement, replacing every bare single-segment path named in
 /// `map` with its expression. Used to inline a method body: `self` maps to the
 /// receiver and each parameter to its argument, so `self.valid = '1'` in a
-/// method becomes `<recv>.valid = '1'` at the call site (spec 3.20).
-fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast::Stmt {
+/// method becomes `<recv>.valid = '1'` at the call site (spec 3.20). Public so
+/// the testbench evaluators (siox-run, the native emitter) inline method calls
+/// the same way hardware lowering does.
+pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast::Stmt {
     use ast::Stmt;
     match s {
         Stmt::Assign { target, value, after, span } => Stmt::Assign {
@@ -3920,7 +3922,7 @@ fn subst_if_paths(iff: &ast::IfStmt, map: &HashMap<String, ast::Expr>) -> ast::I
 /// Deep-clone an expression, replacing every bare single-segment path named in
 /// `map` with its mapped expression (the value-side counterpart of
 /// [`subst_stmt_paths`]).
-fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast::Expr {
+pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast::Expr {
     use ast::Expr;
     let sub = |x: &Expr| Box::new(subst_expr_paths(x, map));
     match e {

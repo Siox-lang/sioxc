@@ -1,0 +1,35 @@
+module examples::method_test;
+
+// Regression fixture: a method call in testbench stimulus, on a struct-typed
+// testbench local. Exercises struct-field local writes (`p.a = ..`) and the
+// value-returning method inline (`p.sum()`), driving a DUT input.
+
+using std::bits::uint;
+
+struct Pkt { a: uint[8], b: uint[8], }
+impl Pkt {
+    fn sum(self) -> uint[8] { return self.a + self.b; }
+}
+
+entity D { in x: uint[8]; out y: uint[8]; }
+impl D { y = x; }
+
+#[test]
+entity MethodTest {}
+impl MethodTest {
+    let x: uint[8]; let y: uint[8];
+    let dut = D { .x, .y };
+
+    let p: Pkt;
+    p.a = 10;
+    p.b = 20;
+
+    // Copy through a scalar (a method call result driving stimulus).
+    let s: uint[8];
+    s = p.sum();
+    assert!(s == 30, "method result read back");
+
+    x = p.sum();
+    await 1ns;
+    assert!(y == 30, "method result drives the DUT input");
+}
