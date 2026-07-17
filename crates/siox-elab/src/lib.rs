@@ -809,7 +809,7 @@ mod tests {
 
     const HARNESS: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Logic;\n\
+          in clk: Bit;\n\
           in rst: Logic;\n\
           out count: uint[W];\n\
         }\n\
@@ -820,7 +820,7 @@ mod tests {
         #[top]\n\
         entity Harness {}\n\
         impl Harness {\n\
-          let clk: Logic = '0';\n\
+          let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let count: uint[8];\n\
           let dut = Counter<W = 8> {\n\
@@ -860,7 +860,7 @@ mod tests {
         let tree = hier.to_tree_string();
         assert!(tree.contains("Harness"));
         assert!(tree.contains("dut: Counter<W=8>"));
-        assert!(tree.contains(".clk: Logic <- clk"));
+        assert!(tree.contains(".clk: Bit <- clk"));
     }
 
     #[test]
@@ -910,12 +910,12 @@ mod tests {
     fn missing_connection_is_reported() {
         // `rst` is left unconnected.
         let src = "module m;\n\
-            entity Counter<W: integer> { in clk: Logic; in rst: Logic; out count: uint[W]; }\n\
+            entity Counter<W: integer> { in clk: Bit; in rst: Logic; out count: uint[W]; }\n\
             impl Counter<W: integer> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
-              let clk: Logic = '0';\n\
+              let clk: Bit = '0';\n\
               let count: uint[8];\n\
               let dut = Counter<W = 8> { .clk, .count };\n\
             }\n";

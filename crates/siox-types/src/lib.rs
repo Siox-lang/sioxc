@@ -1951,7 +1951,7 @@ mod tests {
     #[test]
     fn accepts_digital_sysattrs() {
         let errors = check_src(
-            "module m;\nentity E { in clk: Logic; out q: Logic; }\nimpl E {\n  if clk::rising {\n    q = clk::old;\n  }\n}\n",
+            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk::rising {\n    q = clk::old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -2015,7 +2015,7 @@ mod tests {
     fn integer_and_logic_literals_are_polymorphic() {
         // int literal -> any uint; '1' -> Bit or Logic. No conversions needed.
         let errors = check_src(
-            "module m;\nentity E { out count: uint[8]; out q: Bit; out clk: Logic; }\nimpl E {\n  let value: uint[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
+            "module m;\nentity E { out count: uint[8]; out q: Bit; out clk: Bit; }\nimpl E {\n  let value: uint[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
         );
         assert_eq!(errors, 0);
     }

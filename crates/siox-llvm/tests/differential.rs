@@ -94,7 +94,7 @@ fn assert_agree_seq(design: &Design, steps: &[Step]) {
 fn counter_agrees_across_clock_edges() {
     let d = lower(
         "module m;\n\
-         entity Counter { in clk: Logic; in rst: Logic; in en: Bit; out count: uint[8]; }\n\
+         entity Counter { in clk: Bit; in rst: Logic; in en: Bit; out count: uint[8]; }\n\
          impl Counter {\n\
            let value: uint[8] = 0;\n\
            if clk::rising {\n\
@@ -105,7 +105,7 @@ fn counter_agrees_across_clock_edges() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let clk: Logic; let rst: Logic; let en: Bit; let count: uint[8];\n\
+           let clk: Bit; let rst: Logic; let en: Bit; let count: uint[8];\n\
            let dut = Counter { .clk, .rst, .en, .count };\n\
          }\n",
     );
@@ -130,7 +130,7 @@ fn register_agrees_across_clock_edges() {
     // A plain D flip-flop: unconditional next-state on the rising edge.
     let d = lower(
         "module m;\n\
-         entity Reg { in clk: Logic; in d: uint[8]; out q: uint[8]; }\n\
+         entity Reg { in clk: Bit; in d: uint[8]; out q: uint[8]; }\n\
          impl Reg {\n\
            let s: uint[8] = 0;\n\
            if clk::rising { s = d; }\n\
@@ -139,7 +139,7 @@ fn register_agrees_across_clock_edges() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let clk: Logic; let d: uint[8]; let q: uint[8];\n\
+           let clk: Bit; let d: uint[8]; let q: uint[8];\n\
            let dut = Reg { .clk, .d, .q };\n\
          }\n",
     );
@@ -161,7 +161,7 @@ fn fsm_agrees_across_clock_edges() {
     let d = lower(
         "module m;\n\
          enum State { Idle, Run, Done }\n\
-         entity Fsm { in clk: Logic; in go: Bit; in fin: Bit; out active: Bool; }\n\
+         entity Fsm { in clk: Bit; in go: Bit; in fin: Bit; out active: Bool; }\n\
          impl Fsm {\n\
            let state: State = State::Idle;\n\
            if clk::rising {\n\
@@ -176,7 +176,7 @@ fn fsm_agrees_across_clock_edges() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let clk: Logic; let go: Bit; let fin: Bit; let active: Bool;\n\
+           let clk: Bit; let go: Bit; let fin: Bit; let active: Bool;\n\
            let dut = Fsm { .clk, .go, .fin, .active };\n\
          }\n",
     );

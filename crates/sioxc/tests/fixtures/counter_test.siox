@@ -4,7 +4,7 @@ using std::logic::{Bit, Logic};
 using std::bits::uint;
 
 entity Counter<W: integer> {
-    in clk: Logic;
+    in clk: Bit;
     in rst: Logic;
     in en: Bit;
     out count: uint[W];
@@ -29,7 +29,7 @@ impl Counter<W: integer> {
 entity CounterTest {}
 
 impl CounterTest {
-    let clk: Logic = '0';
+    let clk: Bit = '0';
     let rst: Logic = '1';
     let en: Bit = '1';
     let count: uint[8];

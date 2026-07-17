@@ -958,7 +958,7 @@ mod tests {
              struct uint : Logic[];\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Logic;\n\
+               in clk: Bit;\n\
                in rst: Logic;\n\
                out count: uint[W];\n\
              }\n\

@@ -386,7 +386,7 @@ impl<'a> Parser<'a> {
 
     fn parse_port(&mut self) -> Port {
         let start = self.span();
-        // A leading direction keyword is the port direction (`in clk: Logic`).
+        // A leading direction keyword is the port direction (`in clk: Bit`).
         // Otherwise direction comes from the type's bus mode (`bus: in Packet`).
         let dir = self.eat_direction();
         let name = self.parse_ident();
@@ -1629,7 +1629,7 @@ mod tests {
     #[test]
     fn entity_with_params_and_ports() {
         let m = parse_ok(
-            "module m;\nentity Counter<W: integer> {\n  in clk: Logic;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
+            "module m;\nentity Counter<W: integer> {\n  in clk: Bit;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
         );
         let Item::Entity(e) = &m.items[0] else { panic!("expected entity") };
         assert_eq!(e.name.text, "Counter");
@@ -1696,7 +1696,7 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Logic, valid: Bit, ready: Bit, data: T }\nimpl out Stream<T>::Source {\n  in clk;\n  out valid;\n  in ready;\n}\nentity Producer {\n  bus: out Stream<uint[32]>::Source;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nimpl out Stream<T>::Source {\n  in clk;\n  out valid;\n  in ready;\n}\nentity Producer {\n  bus: out Stream<uint[32]>::Source;\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
         assert!(matches!(i.mode_dir, Some(Direction::Out)));
@@ -1764,7 +1764,7 @@ mod tests {
     #[test]
     fn test_entity_with_stimulus() {
         let m = parse_ok(
-            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Logic = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk::rising;\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
+            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk::rising;\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
         // clk, dut, await, rst=, for, assert.

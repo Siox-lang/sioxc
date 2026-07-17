@@ -4454,7 +4454,7 @@ mod tests {
 
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Logic;\n\
+          in clk: Bit;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\
@@ -4473,7 +4473,7 @@ mod tests {
         #[test]\n\
         entity H {}\n\
         impl H {\n\
-          let clk: Logic = '0';\n\
+          let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let en: Bit = '1';\n\
           let count: uint[8];\n\

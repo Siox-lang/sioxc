@@ -130,7 +130,7 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-/// `entity Counter<W: integer> { in clk: Logic; out count: uint[W]; }`.
+/// `entity Counter<W: integer> { in clk: Bit; out count: uint[W]; }`.
 ///
 /// Entity bodies are interface-only (spec 3.1): ports and bus/interface
 /// fields, never state or behavior.

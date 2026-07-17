@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn assignment_line_lexes_cleanly() {
-        let (ks, errors) = lex("let clk: Logic = '0';");
+        let (ks, errors) = lex("let clk: Bit = '0';");
         assert_eq!(errors, 0);
         assert_eq!(ks, vec![Let, Ident, Colon, Ident, Eq, LogicLit, Semi, Eof]);
     }

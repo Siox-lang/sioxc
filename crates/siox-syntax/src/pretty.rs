@@ -713,7 +713,7 @@ mod tests {
              enum State: uint[2] { Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Logic;\n\
+               in clk: Bit;\n\
                bus: out Stream<uint[32]>::Source;\n\
                out count: uint[W];\n\
              }\n\

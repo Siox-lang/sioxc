@@ -414,7 +414,7 @@ mod tests {
 
     const COUNTER_TEST: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Logic; in rst: Logic; in en: Bit; out count: uint[W];\n\
+          in clk: Bit; in rst: Logic; in en: Bit; out count: uint[W];\n\
         }\n\
         impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
@@ -426,7 +426,7 @@ mod tests {
         #[test]\n\
         entity CounterTest {}\n\
         impl CounterTest {\n\
-          let clk: Logic = '0';\n\
+          let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let en: Bit = '1';\n\
           let count: uint[8];\n\
@@ -444,7 +444,7 @@ mod tests {
         // `rst = '0' after 12ns` releases reset mid-run (VHDL semantics).
         let results = run(
             "module m;\n\
-             entity Ctr { in clk: Logic; in rst: Logic; out n: uint[8]; }\n\
+             entity Ctr { in clk: Bit; in rst: Logic; out n: uint[8]; }\n\
              impl Ctr {\n\
                let v: uint[8] = 0;\n\
                if clk::rising { if rst == '1' { v = 0; } else { v = v + 1; } }\n\
@@ -453,7 +453,7 @@ mod tests {
              #[test]\n\
              entity T {}\n\
              impl T {\n\
-               let clk: Logic = '0';\n\
+               let clk: Bit = '0';\n\
                let rst: Logic = '1';\n\
                let n: uint[8];\n\
                let dut = Ctr { .clk, .rst, .n };\n\
@@ -505,7 +505,7 @@ mod tests {
         assert_test_passes(
             "module m;\n\
              enum State: uint[2] { Idle = 0, Run = 1, Done = 2 }\n\
-             entity Fsm { in clk: Logic; in start: Bit; out st: State; }\n\
+             entity Fsm { in clk: Bit; in start: Bit; out st: State; }\n\
              impl Fsm {\n\
                let s: State = State::Idle;\n\
                if clk::rising {\n\
@@ -519,7 +519,7 @@ mod tests {
              }\n\
              #[test] entity T {}\n\
              impl T {\n\
-               let clk: Logic = '0'; let start: Bit = '0'; let st: State;\n\
+               let clk: Bit = '0'; let start: Bit = '0'; let st: State;\n\
                let dut = Fsm { .clk, .start, .st };\n\
                clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Idle, \"stays idle\");\n\
@@ -654,7 +654,7 @@ mod tests {
         // edge (exercises a compound condition in an event block).
         assert_test_passes(
             "module m;\n\
-             entity Fifo1 { in clk: Logic; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
+             entity Fifo1 { in clk: Bit; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
              impl Fifo1 {\n\
                let buf: uint[8] = 0;\n\
                if clk::rising { if valid and ready { buf = d; } }\n\
@@ -662,7 +662,7 @@ mod tests {
              }\n\
              #[test] entity T {}\n\
              impl T {\n\
-               let clk: Logic = '0'; let valid: Bit = '0'; let ready: Bit = '0';\n\
+               let clk: Bit = '0'; let valid: Bit = '0'; let ready: Bit = '0';\n\
                let d: uint[8] = 0; let q: uint[8];\n\
                let dut = Fifo1 { .clk, .valid, .ready, .d, .q };\n\
                d = 99; valid = '1';\n\
@@ -705,11 +705,11 @@ mod tests {
         // q captures d on the rising edge and holds between edges.
         assert_test_passes(
             "module m;\n\
-             entity Reg<W: integer> { in clk: Logic; in d: uint[W]; out q: uint[W]; }\n\
+             entity Reg<W: integer> { in clk: Bit; in d: uint[W]; out q: uint[W]; }\n\
              impl Reg<W: integer> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
              #[test] entity T {}\n\
              impl T {\n\
-               let clk: Logic = '0'; let d: uint[8] = 0; let q: uint[8];\n\
+               let clk: Bit = '0'; let d: uint[8] = 0; let q: uint[8];\n\
                let dut = Reg<W = 8> { .clk, .d, .q };\n\
                assert!(q == 0, \"starts at 0\");\n\
                d = 42;\n\
@@ -751,7 +751,7 @@ mod tests {
 
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Logic;\n\
+          in clk: Bit;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
           out count: uint[W];\n\
@@ -770,7 +770,7 @@ mod tests {
         #[top]\n\
         entity H {}\n\
         impl H {\n\
-          let clk: Logic = '0';\n\
+          let clk: Bit = '0';\n\
           let rst: Logic;\n\
           let en: Bit;\n\
           let count: uint[8];\n\
