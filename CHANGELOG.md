@@ -12,6 +12,13 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Derived types inherit their base array's size/range.** A nominal derivation
+  reuses the base representation, so `struct Byte : Logic[8]` is 8 bits and
+  `struct Word : Logic[31..0]` is 32 — the width now flows to signals and
+  testbench locals on all three engines (previously such a type was width 0,
+  unmasked). Recognition is **transitive**: a field-less struct deriving from
+  another vector family (`struct Byte : uint[8]`) is itself a numeric vector,
+  inheriting the base's width and operators.
 - **Strict assignment widths.** Assigning a signal to a target of a different
   width is now an error (`E-P003`) — including widths that only become concrete
   after elaboration substitutes a parameter (`uint[W]`), which the type checker
