@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Custom operators.** `impl custom<"sym", Rhs, Ret> for T` with
+  `#[precedence = N]` declares a user-defined operator in library source; the
+  four-value `Logic` truth tables (`xor`/`nand`/`nor`/`xnor`) and examples like
+  `unless`/`^^` are defined this way, and the scalar hierarchy is a clean
+  `Bit → ULogic → Logic` derivation chain.
 - **Derived types inherit their base array's size/range.** A nominal derivation
   reuses the base representation, so `struct Byte : Logic[8]` is 8 bits and
   `struct Word : Logic[31..0]` is 32 — the width now flows to signals and
@@ -93,6 +98,11 @@ assertions, and VCD export — predates this changelog. See
   native binary's `exists`.
 
 ### Changed
+- **No dedicated `Clock` type.** A clock isn't a distinct type — any `Logic`
+  (or `Bit`) signal is a clock when edge detection (`clk::rising`/`clk::falling`)
+  is applied to it. `pub enum Clock : Bit` is gone from `std::logic`, the
+  compiler no longer special-cases the name, and `in clk: Clock` ports become
+  `Logic`.
 - The runnable `.siox` example/conformance corpus moved out of `examples/` into
   a sibling repo, [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests).
   CI checks it out and runs it against the freshly-built compiler, so a
