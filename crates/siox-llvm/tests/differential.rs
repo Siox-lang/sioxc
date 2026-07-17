@@ -611,3 +611,34 @@ fn method_call_agrees() {
         assert_agree(&d, &[("T.px", px), ("T.py", py), ("T.lim", lim)]);
     }
 }
+
+#[test]
+fn statement_method_agrees() {
+    // A method used as a statement (`s.send(v)`) inlines its body as drivers on
+    // the receiver's flattened fields, substituting `self` -> receiver and the
+    // parameter -> argument. The two branches cover both cases (no latch).
+    let d = lower(
+        "module m;\n\
+         struct Stream { valid: Logic, data: uint[8], }\n\
+         impl Stream {\n\
+           fn send(self, v: uint[8]) { self.valid = '1'; self.data = v; }\n\
+           fn clear(self) { self.valid = '0'; self.data = 0; }\n\
+         }\n\
+         entity D { in go: Bit; in x: uint[8]; out ov: Logic; out od: uint[8]; }\n\
+         impl D {\n\
+           let s: Stream;\n\
+           if go { s.send(x); } else { s.clear(); }\n\
+           ov = s.valid;\n\
+           od = s.data;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let go: Bit; let x: uint[8]; let ov: Logic; let od: uint[8];\n\
+           let dut = D { .go, .x, .ov, .od };\n\
+         }\n",
+    );
+    for (go, x) in [(1u64, 42u64), (0, 42), (1, 255), (0, 0), (1, 0)] {
+        assert_agree(&d, &[("T.go", go), ("T.x", x)]);
+    }
+}

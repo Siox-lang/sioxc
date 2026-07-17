@@ -1545,6 +1545,15 @@ impl<'a> Lowering<'a> {
                     };
                 }
             }
+            // A method call used as a statement (`s.send(v)`): inline the
+            // method body as drivers on the receiver's signals (spec 3.20).
+            ast::Stmt::Expr(ast::Expr::Call { callee, args, .. })
+                if matches!(callee.as_ref(), ast::Expr::Field { .. }) =>
+            {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    self.lower_method_stmt(base, &field.text, args, cond);
+                }
+            }
             // Other statement forms (for, let, expr, return) are not lowered yet.
             _ => {}
         }
@@ -2612,6 +2621,39 @@ impl<'a> Lowering<'a> {
         }
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
+    }
+
+    /// Lower a method call used as a *statement* (`s.send(v)`): inline the
+    /// method's body as drivers, substituting `self` -> receiver and each
+    /// parameter -> its argument, so a body of `self.valid = '1'; self.data =
+    /// value;` drives the receiver's flattened field signals. Returns `false`
+    /// when the receiver's type or the method can't be resolved (the caller
+    /// then leaves the statement to the existing fall-through).
+    fn lower_method_stmt(
+        &mut self,
+        recv: &ast::Expr,
+        method: &str,
+        args: &[ast::Expr],
+        cond: Option<Expr>,
+    ) -> bool {
+        let Some(ty) = self.operand_type_name(recv) else { return false };
+        // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
+        // lowering calls below.
+        let Some(f) = self.find_method(&ty, method) else { return false };
+        let Some(body) = f.body.as_ref() else { return false };
+        let mut map: HashMap<String, ast::Expr> = HashMap::new();
+        map.insert("self".to_string(), recv.clone());
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                map.insert(n.text.clone(), a.clone());
+            }
+        }
+        let stmts: Vec<ast::Stmt> =
+            body.stmts.iter().map(|s| subst_stmt_paths(s, &map)).collect();
+        for s in &stmts {
+            self.lower_stmt(s, cond.clone());
+        }
+        true
     }
 
     /// Lower a conversion expression (spec 3.17): `uint[16](x)` resizes,
@@ -3684,6 +3726,126 @@ fn gather_generate(
 
 /// Substitute a bound integer for a single-segment path variable throughout a
 /// statement (used to unroll generate loops).
+/// Deep-clone a statement, replacing every bare single-segment path named in
+/// `map` with its expression. Used to inline a method body: `self` maps to the
+/// receiver and each parameter to its argument, so `self.valid = '1'` in a
+/// method becomes `<recv>.valid = '1'` at the call site (spec 3.20).
+fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast::Stmt {
+    use ast::Stmt;
+    match s {
+        Stmt::Assign { target, value, after, span } => Stmt::Assign {
+            target: subst_expr_paths(target, map),
+            value: subst_expr_paths(value, map),
+            after: after.as_ref().map(|a| subst_expr_paths(a, map)),
+            span: *span,
+        },
+        Stmt::If(iff) => Stmt::If(subst_if_paths(iff, map)),
+        Stmt::Match(m) => Stmt::Match(ast::MatchStmt {
+            scrutinee: subst_expr_paths(&m.scrutinee, map),
+            arms: m
+                .arms
+                .iter()
+                .map(|a| ast::MatchArm {
+                    pattern: a.pattern.clone(),
+                    body: subst_block_paths(&a.body, map),
+                    span: a.span,
+                })
+                .collect(),
+            span: m.span,
+        }),
+        Stmt::For { var, range, body, span } => Stmt::For {
+            var: var.clone(),
+            range: subst_expr_paths(range, map),
+            body: subst_block_paths(body, map),
+            span: *span,
+        },
+        Stmt::Let(l) => {
+            let mut l = l.clone();
+            l.value = l.value.as_ref().map(|v| subst_expr_paths(v, map));
+            Stmt::Let(l)
+        }
+        Stmt::Expr(e) => Stmt::Expr(subst_expr_paths(e, map)),
+        Stmt::Return { value, span } => Stmt::Return {
+            value: value.as_ref().map(|v| subst_expr_paths(v, map)),
+            span: *span,
+        },
+    }
+}
+
+fn subst_block_paths(b: &ast::Block, map: &HashMap<String, ast::Expr>) -> ast::Block {
+    ast::Block {
+        stmts: b.stmts.iter().map(|s| subst_stmt_paths(s, map)).collect(),
+        span: b.span,
+    }
+}
+
+fn subst_if_paths(iff: &ast::IfStmt, map: &HashMap<String, ast::Expr>) -> ast::IfStmt {
+    ast::IfStmt {
+        cond: subst_expr_paths(&iff.cond, map),
+        then: subst_block_paths(&iff.then, map),
+        else_: iff.else_.as_ref().map(|e| {
+            Box::new(match e.as_ref() {
+                ast::ElseBranch::Block(b) => ast::ElseBranch::Block(subst_block_paths(b, map)),
+                ast::ElseBranch::If(i) => ast::ElseBranch::If(subst_if_paths(i, map)),
+            })
+        }),
+        span: iff.span,
+    }
+}
+
+/// Deep-clone an expression, replacing every bare single-segment path named in
+/// `map` with its mapped expression (the value-side counterpart of
+/// [`subst_stmt_paths`]).
+fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast::Expr {
+    use ast::Expr;
+    let sub = |x: &Expr| Box::new(subst_expr_paths(x, map));
+    match e {
+        Expr::Path(p) if p.segments.len() == 1 => {
+            map.get(&p.segments[0].text).cloned().unwrap_or_else(|| e.clone())
+        }
+        Expr::Field { base, field, span } => {
+            Expr::Field { base: sub(base), field: field.clone(), span: *span }
+        }
+        Expr::SysAttr { base, attr, span } => {
+            Expr::SysAttr { base: sub(base), attr: attr.clone(), span: *span }
+        }
+        Expr::Index { base, index, span } => {
+            Expr::Index { base: sub(base), index: sub(index), span: *span }
+        }
+        Expr::Range { lo, hi, span } => Expr::Range { lo: sub(lo), hi: sub(hi), span: *span },
+        Expr::Unary { op, rhs, span } => Expr::Unary { op: *op, rhs: sub(rhs), span: *span },
+        Expr::Binary { op, lhs, rhs, span } => {
+            Expr::Binary { op: *op, lhs: sub(lhs), rhs: sub(rhs), span: *span }
+        }
+        Expr::IfExpr { cond, then, els, span } => {
+            Expr::IfExpr { cond: sub(cond), then: sub(then), els: sub(els), span: *span }
+        }
+        Expr::Call { callee, args, bang, span } => Expr::Call {
+            callee: sub(callee),
+            args: args.iter().map(|a| subst_expr_paths(a, map)).collect(),
+            bang: *bang,
+            span: *span,
+        },
+        Expr::Concat { parts, span } => Expr::Concat {
+            parts: parts.iter().map(|p| subst_expr_paths(p, map)).collect(),
+            span: *span,
+        },
+        Expr::Construct { ty, args, span } => Expr::Construct {
+            ty: ty.clone(),
+            args: args
+                .iter()
+                .map(|a| ast::ConnectArg {
+                    field: a.field.clone(),
+                    value: a.value.as_ref().map(|v| subst_expr_paths(v, map)),
+                    span: a.span,
+                })
+                .collect(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
 fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
     match s {
         ast::Stmt::Let(l) => {
