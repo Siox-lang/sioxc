@@ -415,12 +415,14 @@ impl Ctx<'_> {
     /// existing signal path handles it. Returns `true` when handled.
     fn try_declare_struct_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(head) = l.ty.as_ref().and_then(|t| type_head_name(t)) else { return Ok(false) };
-        // A vector family (`uint`/`int`, declared `struct uint : Logic[]`) is a
-        // scalar leaf, not an aggregate struct — leave it to the scalar path.
-        if self.families.contains(head) {
+        // Only a genuine field-aggregate is expanded into per-field locals. A
+        // type that *inherits from an array* — `uint`/`int` (`struct uint :
+        // Logic[]`) or a user enum vector (`: SomeEnum[]`) — carries no named
+        // fields, so it is a scalar/vector leaf and flows through the scalar
+        // path (check the base: an array parent means "vector", not "struct").
+        let Some(fields) = self.structs.get(head).filter(|f| !f.is_empty()) else {
             return Ok(false);
-        }
-        let Some(fields) = self.structs.get(head) else { return Ok(false) };
+        };
         let connected = self.map.contains_key(&l.name.text)
             || fields
                 .iter()
@@ -451,13 +453,11 @@ impl Ctx<'_> {
     ) -> Result<(), String> {
         for (fname, fty) in fields {
             let key = format!("{prefix}.{fname}");
-            // A nested struct field expands to its own leaves — but a
-            // vector-family field (`uint`/`int`) is a scalar leaf, not a struct.
+            // A nested *field-aggregate* field expands to its own leaves; a
+            // field that inherits from an array (a `uint`/`int`/enum vector,
+            // which has no fields) is a scalar leaf.
             let fhead = type_head_name(fty);
-            if let Some(sub) = fhead
-                .filter(|h| !self.families.contains(*h))
-                .and_then(|h| self.structs.get(h))
-            {
+            if let Some(sub) = fhead.and_then(|h| self.structs.get(h)).filter(|f| !f.is_empty()) {
                 self.local_types.borrow_mut().insert(key.clone(), fhead.unwrap().to_string());
                 self.declare_struct_fields(&key, sub, &HashMap::new(), b)?;
                 continue;
