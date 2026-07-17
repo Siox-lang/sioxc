@@ -595,12 +595,15 @@ impl<'a> Lowering<'a> {
         // resolved value — Verilog's bidirectional-port model.
         for p in &edecl.ports {
             self.add_typed_signal(path, &p.name.text, &p.ty, env);
-            // An aliased `inout` port repoints its name at the shared parent net
-            // (keeping the type metadata just registered), so the body drives and
-            // reads that net directly. The port's own allocated signal is left
-            // unused.
-            if let Some(&net) = aliases.get(&p.name.text) {
-                self.locals.insert(p.name.text.clone(), net);
+        }
+        // An aliased `inout` port repoints its (leaf) name at the shared parent
+        // net (keeping the type metadata just registered), so the body drives and
+        // reads that net directly. The port's own allocated signal is left
+        // unused. A scalar port aliases one name (`s`); a struct/array `inout`
+        // port aliases each flattened leaf (`s.valid`, `s.data`).
+        for (name, &net) in aliases {
+            if self.locals.contains_key(name) {
+                self.locals.insert(name.clone(), net);
             }
         }
         // The port map. A scalar port is one entry (`s`); a struct/array port
@@ -778,8 +781,25 @@ impl<'a> Lowering<'a> {
                                 })
                             })
                         });
-                    if let Some(net) = value.and_then(|v| self.target_signal(&v)) {
+                    let Some(value) = value else { continue };
+                    // Scalar inout: the whole port shares the parent net.
+                    if let Some(net) = self.target_signal(&value) {
                         aliases.insert(p.name.text.clone(), net);
+                    }
+                    // Struct/array inout: alias each leaf of the connected net
+                    // (`link.valid`, `bus[0]`) onto the matching port leaf
+                    // (`s.valid`, `pin[0]`), so every leaf resolves across the
+                    // instances through the shared net.
+                    if let Some(net_path) = expr_path(&value) {
+                        let dot = format!("{net_path}.");
+                        let idx = format!("{net_path}[");
+                        for (k, &id) in &self.locals {
+                            if let Some(rest) = k.strip_prefix(&dot) {
+                                aliases.insert(format!("{}.{}", p.name.text, rest), id);
+                            } else if let Some(rest) = k.strip_prefix(&idx) {
+                                aliases.insert(format!("{}[{}", p.name.text, rest), id);
+                            }
+                        }
                     }
                 }
             }
@@ -841,6 +861,12 @@ impl<'a> Lowering<'a> {
                     let Some(&parent_id) = self.locals.get(&format!("{base}{suffix}")) else {
                         continue;
                     };
+                    // An `inout` leaf is already aliased to this parent net (same
+                    // signal), so its drivers fold through `Resolve` directly —
+                    // wiring it again would make a self-driver.
+                    if parent_id == child_id {
+                        continue;
+                    }
                     let ctx = self.next_ctx();
                     if dir == Some(ast::Direction::Out) {
                         self.out.drivers.push(Driver { target: parent_id, cond: None, expr: Expr::Current(child_id), ctx });
