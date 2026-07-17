@@ -144,9 +144,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   `pin[0]`) onto the matching leaf of the shared net, so every leaf's parallel
   drivers fold through `Resolve` independently (scalar/vector inout already
   worked).
-- **Status (todo):** method calls in *testbench* expressions (the runner
-  evaluates those directly, not via the IR — the struct-receiver case needs
-  struct-field metadata it does not yet expose).
+- **Status (done, cont.):** **method calls in testbench stimulus** — the runner
+  (interpreter + JIT) inlines a `recv.method(args)` call, resolving the receiver
+  type from the local's declaration and substituting `self`/parameters into the
+  body, so a struct-typed testbench local can drive a DUT through a method
+  result. The native `--no-run` emitter does not yet support struct-typed
+  testbench locals (it errors loudly, "unknown signal"), so method-call
+  testbenches there are the remaining follow-up.
 
 ### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid

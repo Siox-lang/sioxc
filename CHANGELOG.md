@@ -32,8 +32,11 @@ assertions, and VCD export — predates this changelog. See
   (`a.cmp(b)`, `p.sum()`, branching on `self`) inline to a value and are typed
   as the method's declared return type, and statement methods (`s.send(v)`
   whose body drives `self.valid`/`self.data`) inline as drivers on the
-  receiver's fields. Method calls inside testbench stimulus are the remaining
-  follow-up.
+  receiver's fields. Method calls also work in **testbench stimulus** on the
+  interpreter and JIT — the runner inlines the body, resolving the receiver
+  type from the local's declaration — so a struct-typed testbench local can
+  drive a DUT through a method result (the native `--no-run` emitter does not
+  yet support struct-typed testbench locals; that is the remaining follow-up).
 - **Fix-it help when a string literal is used as a value.** A double-quoted
   `"…"` is a `string` (a `Char` array), so using it where a single value is
   expected (`let s: Logic = "0"`) or to build a logic/enum array (`"01"`) is a
@@ -61,6 +64,10 @@ assertions, and VCD export — predates this changelog. See
   than failing.
 
 ### Fixed
+- **Struct/array testbench-local writes are no longer silently dropped.** A
+  field write on a struct-typed testbench local (`let p: Pkt; p.a = 10;`) fell
+  through the testbench store and vanished; the field now persists and reads
+  back. (This also unblocks testbench method calls on such locals.)
 - **Possible-latch lint no longer flags an if/else mux.** A combinational
   signal assigned in both the `if` and the `else` branch is fully covered and
   is no longer reported as an inferred latch (`W-P002`); a signal assigned only
