@@ -961,24 +961,7 @@ impl Ctx<'_> {
                 b.push_str(&format!("{ind}{{ uint64_t _m{k} = {scrut};\n"));
                 let mut first = true;
                 for arm in &m.arms {
-                    let cond = match &arm.pattern {
-                        ast::Pattern::Wildcard => None,
-                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                            let d = self
-                                .enums
-                                .get(&p.segments[0].text)
-                                .and_then(|vars| vars.get(&p.segments[1].text))
-                                .copied()
-                                .unwrap_or(0);
-                            Some(format!("_m{k} == {d}ULL"))
-                        }
-                        ast::Pattern::BitPattern { text, .. } => {
-                            let (mask, value) = siox_ir::bit_pattern_mask(text)
-                                .ok_or_else(|| format!("bad bit pattern `{text}`"))?;
-                            Some(format!("(_m{k} & {mask:#x}ULL) == {value:#x}ULL"))
-                        }
-                        _ => Some("0".to_string()),
-                    };
+                    let cond = self.pattern_cond(&arm.pattern, &format!("_m{k}"))?;
                     let kw = if first { "if" } else { "else if" };
                     match cond {
                         Some(c) => b.push_str(&format!("{ind}{kw} ({c}) {{\n")),
@@ -1372,6 +1355,40 @@ impl Ctx<'_> {
     }
 
     /// Translate a testbench expression to a C expression string.
+    /// The C condition for a match pattern over `scrut` (a C expression), or
+    /// `None` for a wildcard/always-match (spec 3.22). Or-patterns `||` their
+    /// alternatives' conditions.
+    fn pattern_cond(&self, pattern: &ast::Pattern, scrut: &str) -> Result<Option<String>, String> {
+        Ok(match pattern {
+            ast::Pattern::Wildcard => None,
+            ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                let d = self
+                    .enums
+                    .get(&p.segments[0].text)
+                    .and_then(|m| m.get(&p.segments[1].text))
+                    .copied()
+                    .ok_or_else(|| format!("unknown variant `{}`", p.segments[1].text))?;
+                Some(format!("(({scrut}) == {d}ULL)"))
+            }
+            ast::Pattern::BitPattern { text, .. } => {
+                let (mask, value) =
+                    siox_ir::bit_pattern_mask(text).ok_or_else(|| format!("bad bit pattern `{text}`"))?;
+                Some(format!("((({scrut}) & {mask}ULL) == {value}ULL)"))
+            }
+            ast::Pattern::Or { alts, .. } => {
+                let mut parts = Vec::new();
+                for a in alts {
+                    match self.pattern_cond(a, scrut)? {
+                        None => return Ok(None),
+                        Some(c) => parts.push(c),
+                    }
+                }
+                Some(format!("({})", parts.join(" || ")))
+            }
+            _ => Some("0".to_string()),
+        })
+    }
+
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
         Ok(match e {
             ast::Expr::IfExpr { cond, then, els, .. } => {
@@ -1387,28 +1404,10 @@ impl Ctx<'_> {
                         Some(v) => self.expr(v)?,
                         None => "0".to_string(),
                     };
-                    let cond = match &arm.pattern {
-                        ast::Pattern::Wildcard => {
-                            out = format!("({val})");
-                            continue;
-                        }
-                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                            let d = self
-                                .enums
-                                .get(&p.segments[0].text)
-                                .and_then(|m| m.get(&p.segments[1].text))
-                                .copied()
-                                .ok_or_else(|| format!("unknown variant `{}`", p.segments[1].text))?;
-                            format!("(({scrut}) == {d}ULL)")
-                        }
-                        ast::Pattern::BitPattern { text, .. } => {
-                            let (mask, value) = siox_ir::bit_pattern_mask(text)
-                                .ok_or("bad bit pattern in match")?;
-                            format!("((({scrut}) & {mask}ULL) == {value}ULL)")
-                        }
-                        _ => return Err("unsupported match pattern".into()),
-                    };
-                    out = format!("({cond} ? ({val}) : {out})");
+                    match self.pattern_cond(&arm.pattern, &scrut)? {
+                        None => out = format!("({val})"), // wildcard: the default
+                        Some(cond) => out = format!("({cond} ? ({val}) : {out})"),
+                    }
                 }
                 out
             }

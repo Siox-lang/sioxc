@@ -608,9 +608,7 @@ impl<'a> Resolver<'a> {
             Stmt::Match(m) => {
                 self.resolve_expr(&m.scrutinee);
                 for arm in &m.arms {
-                    if let Pattern::Path(p) = &arm.pattern {
-                        self.resolve_value_path(p);
-                    }
+                    self.resolve_pattern(&arm.pattern);
                     self.resolve_block(&arm.body);
                 }
             }
@@ -732,9 +730,7 @@ impl<'a> Resolver<'a> {
             Expr::Match { scrutinee, arms, .. } => {
                 self.resolve_expr(scrutinee);
                 for arm in arms {
-                    if let Pattern::Path(p) = &arm.pattern {
-                        self.resolve_value_path(p);
-                    }
+                    self.resolve_pattern(&arm.pattern);
                     self.resolve_block(&arm.body);
                 }
             }
@@ -780,6 +776,20 @@ impl<'a> Resolver<'a> {
     /// Resolve a value-position path. `Enum::Variant` is checked strictly;
     /// a plain identifier is recorded if known but never errors if not (signal
     /// / port / field scoping is completed by the type checker).
+    /// Resolve a match pattern's names — an enum-variant path, or each
+    /// alternative of an or-pattern (`A | B`).
+    fn resolve_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Path(p) => self.resolve_value_path(p),
+            Pattern::Or { alts, .. } => {
+                for a in alts {
+                    self.resolve_pattern(a);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn resolve_value_path(&mut self, p: &Path) {
         if p.segments.len() >= 2 {
             let head = p.segments[0].text.clone();

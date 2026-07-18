@@ -328,6 +328,8 @@ pub enum Pattern {
     Wildcard,
     Path(Path),
     BitPattern { text: String, span: Span },
+    /// `A | B | C` — matches if any alternative matches (spec 3.22).
+    Or { alts: Vec<Pattern>, span: Span },
 }
 
 #[derive(Clone, Debug)]

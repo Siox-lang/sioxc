@@ -1062,23 +1062,7 @@ impl Testbench<'_> {
             ast::Stmt::Match(m) => {
                 let scrut = self.eval(&m.scrutinee).to_u64();
                 for arm in &m.arms {
-                    let hit = match &arm.pattern {
-                        ast::Pattern::Wildcard => true,
-                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                            let d = self
-                                .enums
-                                .get(&p.segments[0].text)
-                                .and_then(|vars| vars.get(&p.segments[1].text))
-                                .copied()
-                                .unwrap_or(0);
-                            scrut == d
-                        }
-                        ast::Pattern::BitPattern { text, .. } => {
-                            siox_ir::bit_pattern_mask(text)
-                                .is_some_and(|(mask, value)| scrut & mask == value)
-                        }
-                        _ => false,
-                    };
+                    let hit = self.pattern_hit(&arm.pattern, scrut);
                     if hit {
                         for s in &arm.body.stmts {
                             self.exec(s);
@@ -1516,6 +1500,28 @@ impl Testbench<'_> {
 
     /// [`Self::eval`] with a function-parameter overlay (module-fn calls in
     /// testbench expressions bind their arguments here).
+    /// Whether a match pattern matches the scrutinee value (spec 3.22):
+    /// wildcard always, an enum path by discriminant, a bit pattern by
+    /// masked equality, an or-pattern if any alternative matches.
+    fn pattern_hit(&self, pattern: &ast::Pattern, scrut: u64) -> bool {
+        match pattern {
+            ast::Pattern::Wildcard => true,
+            ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                self.enums
+                    .get(&p.segments[0].text)
+                    .and_then(|v| v.get(&p.segments[1].text))
+                    .copied()
+                    .unwrap_or(0)
+                    == scrut
+            }
+            ast::Pattern::BitPattern { text, .. } => {
+                siox_ir::bit_pattern_mask(text).is_some_and(|(m, v)| scrut & m == v)
+            }
+            ast::Pattern::Or { alts, .. } => alts.iter().any(|a| self.pattern_hit(a, scrut)),
+            _ => false,
+        }
+    }
+
     fn eval_env(&self, e: &ast::Expr, fenv: &HashMap<String, u128>) -> u128 {
         match e {
             ast::Expr::IfExpr { cond, then, els, .. } => {
@@ -1529,21 +1535,7 @@ impl Testbench<'_> {
             ast::Expr::Match { scrutinee, arms, .. } => {
                 let scrut = self.eval_env(scrutinee, fenv).to_u64();
                 for arm in arms {
-                    let hit = match &arm.pattern {
-                        ast::Pattern::Wildcard => true,
-                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                            self.enums
-                                .get(&p.segments[0].text)
-                                .and_then(|v| v.get(&p.segments[1].text))
-                                .copied()
-                                .unwrap_or(0)
-                                == scrut
-                        }
-                        ast::Pattern::BitPattern { text, .. } => siox_ir::bit_pattern_mask(text)
-                            .is_some_and(|(m, v)| scrut & m == v),
-                        _ => false,
-                    };
-                    if hit {
+                    if self.pattern_hit(&arm.pattern, scrut) {
                         return arm
                             .value_expr()
                             .map(|v| self.eval_env(v, fenv))

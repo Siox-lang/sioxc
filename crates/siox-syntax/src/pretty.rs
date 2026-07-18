@@ -398,6 +398,9 @@ fn pattern(p: &Pattern) -> String {
         Pattern::Wildcard => "_".to_string(),
         Pattern::Path(p) => path(p),
         Pattern::BitPattern { text, .. } => text.clone(),
+        Pattern::Or { alts, .. } => {
+            alts.iter().map(pattern).collect::<Vec<_>>().join(" | ")
+        }
     }
 }
 

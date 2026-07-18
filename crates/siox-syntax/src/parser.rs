@@ -830,6 +830,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern(&mut self) -> Pattern {
+        let start = self.span();
+        let first = self.parse_pattern_atom();
+        if !self.at(TokenKind::Pipe) {
+            return first;
+        }
+        // `A | B | C`: an or-pattern.
+        let mut alts = vec![first];
+        while self.eat(TokenKind::Pipe) {
+            alts.push(self.parse_pattern_atom());
+        }
+        Pattern::Or { alts, span: start.to(self.prev_span()) }
+    }
+
+    fn parse_pattern_atom(&mut self) -> Pattern {
         match self.kind() {
             TokenKind::Ident if self.cur_text() == "_" => {
                 self.bump();

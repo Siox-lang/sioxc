@@ -577,6 +577,24 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn or_pattern_agrees() {
+    // `A | B => ..` matches if any alternative matches (spec 3.22): its
+    // condition is the OR of the alternatives'. Both engines must agree.
+    let d = lower(
+        "module m;\n\
+         enum S { A, B, C, D }\n\
+         entity E { in s: S; out y: uint[8]; }\n\
+         impl E { y = match s { S::A | S::B => 10, S::C => 20, _ => 30 }; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let s: S; let y: uint[8]; let dut = E { .s, .y }; }\n",
+    );
+    for s in [0u64, 1, 2, 3] {
+        assert_agree(&d, &[("T.s", s)]);
+    }
+}
+
+#[test]
 fn match_expression_agrees() {
     // `match` in value position lowers to a first-match Select chain; both
     // engines must agree across every arm and the wildcard default.

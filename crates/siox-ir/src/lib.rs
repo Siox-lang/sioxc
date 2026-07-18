@@ -1803,6 +1803,27 @@ impl<'a> Lowering<'a> {
                     Expr::Const(value),
                 ))
             }
+            // `A | B`: matches if any alternative matches (their conditions
+            // OR-ed; a wildcard alternative makes the whole arm unconditional).
+            ast::Pattern::Or { alts, .. } => {
+                let mut acc: Option<Expr> = None;
+                for a in alts {
+                    match self.arm_match_cond(a, scrut) {
+                        None => return None,
+                        Some(c) => {
+                            acc = Some(match acc {
+                                Some(prev) => Expr::Binary {
+                                    op: BinOp::Or,
+                                    lhs: Box::new(prev),
+                                    rhs: Box::new(c),
+                                },
+                                None => c,
+                            })
+                        }
+                    }
+                }
+                acc
+            }
             // A wildcard matches anything.
             _ => None,
         }

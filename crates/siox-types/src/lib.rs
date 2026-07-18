@@ -836,17 +836,16 @@ impl<'a> Checker<'a> {
         let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else { return };
         let Some(variants) = self.enum_variants.get(&enum_name).cloned() else { return };
 
-        if m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard)) {
-            return;
+        // Collect the covered variant names, flattening or-patterns; a wildcard
+        // (bare or inside an `|`) makes the match exhaustive.
+        let mut covered: HashSet<String> = HashSet::new();
+        for a in &m.arms {
+            let (vars, wild) = pattern_covers(&a.pattern);
+            if wild {
+                return;
+            }
+            covered.extend(vars);
         }
-        let covered: HashSet<&str> = m
-            .arms
-            .iter()
-            .filter_map(|a| match &a.pattern {
-                Pattern::Path(p) if p.segments.len() >= 2 => Some(p.segments[1].text.as_str()),
-                _ => None,
-            })
-            .collect();
         let missing: Vec<String> =
             variants.into_iter().filter(|v| !covered.contains(v.as_str())).collect();
         if !missing.is_empty() {
@@ -1759,6 +1758,26 @@ impl<'a> Checker<'a> {
 }
 
 /// The base name of a type (`Counter<W>` -> `Counter`, `out S::Source` -> `S`).
+/// A pattern's covered enum-variant names and whether it contains a wildcard,
+/// flattening or-patterns (`A | B` covers both; `A | _` is a wildcard).
+fn pattern_covers(p: &Pattern) -> (Vec<String>, bool) {
+    match p {
+        Pattern::Wildcard => (Vec::new(), true),
+        Pattern::Path(pp) if pp.segments.len() >= 2 => (vec![pp.segments[1].text.clone()], false),
+        Pattern::Or { alts, .. } => {
+            let mut vars = Vec::new();
+            let mut wild = false;
+            for a in alts {
+                let (v, w) = pattern_covers(a);
+                vars.extend(v);
+                wild |= w;
+            }
+            (vars, wild)
+        }
+        _ => (Vec::new(), false),
+    }
+}
+
 fn type_head_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
