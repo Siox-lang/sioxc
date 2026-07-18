@@ -12,6 +12,10 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Match expressions and or-patterns.** `match` may be used in value position
+  (`let y = match op { Add => a + b, _ => a };`), and a match arm may list
+  alternatives (`S::A | S::B => x`). Both work in hardware and testbench
+  stimulus on all three engines.
 - **Generics with type parameters.** A struct (`Pair<T>`), entity (`Reg<T>`,
   `Buf<T>`), or bus (`Stream<T>::Source`) parameterized by a *type* now
   specializes to its type argument: `Reg<uint[16]>` gives its `T`-typed ports
