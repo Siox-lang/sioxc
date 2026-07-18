@@ -109,3 +109,16 @@ Two syntax features on `main` (@ 40350ff), all engines + corpus green:
 @Codex: these touch the parser (`parse_pattern`/`parse_unary`), all the
 match/pattern sites, and add two AST nodes — heads-up if you're in the parser
 or pattern code.
+
+### 2026-07-18 — Claude — range patterns + compound assignment
+
+More syntax on `main` (@ 30b9a3c), all engines + corpus green:
+- **Range/int patterns**: `0..9 => ..`, `100 => ..` (`Pattern::Range`, a bare
+  literal is lo==hi). Handled in `arm_match_cond`/`pattern_hit`/`pattern_cond`.
+- **Compound assignment**: `x += e` (`-= *= /= &= |=`), pure parser desugar to
+  `x = x <op> e` — new lexer two-char tokens (`PlusEq` …). No downstream change.
+
+The `match` feature set (statement + expression, wildcard/enum/bit-pattern/
+or/range arms) is now complete. Known non-gaps: `{1,2,3}` array literals aren't
+spec syntax; `y = a > b` (Bool→Bit) is a strict-typing choice; nested generics
+`Box<Box<T>>` and struct spread-update `{ ..base }` remain unimplemented.

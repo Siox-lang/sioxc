@@ -12,10 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
-- **Match expressions and or-patterns.** `match` may be used in value position
-  (`let y = match op { Add => a + b, _ => a };`), and a match arm may list
-  alternatives (`S::A | S::B => x`). Both work in hardware and testbench
-  stimulus on all three engines.
+- **Richer `match` + compound assignment.** `match` may be used in value
+  position (`let y = match op { Add => a + b, _ => a };`); arms may list
+  alternatives (`S::A | S::B => x`) and match integer literals / inclusive
+  ranges (`0..9 => ..`, `100 => ..`). Compound assignments (`x += e`, `-=`,
+  `*=`, `/=`, `&=`, `|=`) desugar to `x = x <op> e` — handy for clocked
+  accumulators. All work in hardware and testbench stimulus on every engine.
 - **Generics with type parameters.** A struct (`Pair<T>`), entity (`Reg<T>`,
   `Buf<T>`), or bus (`Stream<T>::Source`) parameterized by a *type* now
   specializes to its type argument: `Reg<uint[16]>` gives its `T`-typed ports
