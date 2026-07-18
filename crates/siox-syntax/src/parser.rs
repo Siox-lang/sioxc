@@ -744,12 +744,37 @@ impl<'a> Parser<'a> {
             };
             self.expect(TokenKind::Semi, "after an assignment");
             Stmt::Assign { target: lhs, value, after, span: start.to(self.prev_span()) }
+        } else if let Some(op) = Self::compound_binop_impl(self.kind()) {
+            // `x += e` desugars to `x = x + e` (spec 3.12).
+            self.bump();
+            let rhs = self.parse_expr(false);
+            self.expect(TokenKind::Semi, "after a compound assignment");
+            let span = start.to(self.prev_span());
+            let value = Expr::Binary {
+                op,
+                lhs: Box::new(lhs.clone()),
+                rhs: Box::new(rhs),
+                span,
+            };
+            Stmt::Assign { target: lhs, value, after: None, span }
         } else {
             // No implicit tail-expression returns: every expression statement is
             // terminated by `;`. A function returns a value via `return`.
             self.expect(TokenKind::Semi, "after an expression statement");
             Stmt::Expr(lhs)
         }
+    }
+
+    fn compound_binop_impl(k: &TokenKind) -> Option<BinOp> {
+        Some(match k {
+            TokenKind::PlusEq => BinOp::Add,
+            TokenKind::MinusEq => BinOp::Sub,
+            TokenKind::StarEq => BinOp::Mul,
+            TokenKind::SlashEq => BinOp::Div,
+            TokenKind::AmpEq => BinOp::And,
+            TokenKind::PipeEq => BinOp::Or,
+            _ => return None,
+        })
     }
 
     fn parse_if(&mut self) -> IfStmt {

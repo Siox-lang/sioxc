@@ -72,6 +72,12 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    AmpEq,     // &=
+    PipeEq,    // |=
     Shl,       // <<
     Shr,       // >>
     Bang,      // ! (assert!)

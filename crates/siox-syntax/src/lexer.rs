@@ -231,6 +231,13 @@ impl<'a> Lexer<'a> {
             (Some(b'-'), Some(b'>')) => Some(TokenKind::Arrow),
             (Some(b'<'), Some(b'<')) => Some(TokenKind::Shl),
             (Some(b'>'), Some(b'>')) => Some(TokenKind::Shr),
+            // Compound assignments (`x += e` etc.), desugared in the parser.
+            (Some(b'+'), Some(b'=')) => Some(TokenKind::PlusEq),
+            (Some(b'-'), Some(b'=')) => Some(TokenKind::MinusEq),
+            (Some(b'*'), Some(b'=')) => Some(TokenKind::StarEq),
+            (Some(b'/'), Some(b'=')) => Some(TokenKind::SlashEq),
+            (Some(b'&'), Some(b'=')) => Some(TokenKind::AmpEq),
+            (Some(b'|'), Some(b'=')) => Some(TokenKind::PipeEq),
             _ => None,
         };
         if let Some(kind) = two_char {
