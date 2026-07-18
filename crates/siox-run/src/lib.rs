@@ -1525,6 +1525,33 @@ impl Testbench<'_> {
                     self.eval_env(els, fenv)
                 }
             }
+            // A match-expression: evaluate the first matching arm's value.
+            ast::Expr::Match { scrutinee, arms, .. } => {
+                let scrut = self.eval_env(scrutinee, fenv).to_u64();
+                for arm in arms {
+                    let hit = match &arm.pattern {
+                        ast::Pattern::Wildcard => true,
+                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                            self.enums
+                                .get(&p.segments[0].text)
+                                .and_then(|v| v.get(&p.segments[1].text))
+                                .copied()
+                                .unwrap_or(0)
+                                == scrut
+                        }
+                        ast::Pattern::BitPattern { text, .. } => siox_ir::bit_pattern_mask(text)
+                            .is_some_and(|(m, v)| scrut & m == v),
+                        _ => false,
+                    };
+                    if hit {
+                        return arm
+                            .value_expr()
+                            .map(|v| self.eval_env(v, fenv))
+                            .unwrap_or_else(|| u128::from_u64(0));
+                    }
+                }
+                u128::from_u64(0)
+            }
             ast::Expr::Int { text, .. } => u128::from_u64(parse_u64(text)),
             ast::Expr::SuffixLit { text, suffix, .. } => u128::from_u64(
                 parse_u64(text).saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),

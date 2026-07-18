@@ -1377,6 +1377,41 @@ impl Ctx<'_> {
             ast::Expr::IfExpr { cond, then, els, .. } => {
                 format!("(({}) ? ({}) : ({}))", self.expr(cond)?, self.expr(then)?, self.expr(els)?)
             }
+            // A match-expression: a first-match C ternary chain over the arms.
+            ast::Expr::Match { scrutinee, arms, .. } => {
+                let scrut = self.expr(scrutinee)?;
+                // Build from the last arm backward.
+                let mut out = String::from("0");
+                for arm in arms.iter().rev() {
+                    let val = match arm.value_expr() {
+                        Some(v) => self.expr(v)?,
+                        None => "0".to_string(),
+                    };
+                    let cond = match &arm.pattern {
+                        ast::Pattern::Wildcard => {
+                            out = format!("({val})");
+                            continue;
+                        }
+                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                            let d = self
+                                .enums
+                                .get(&p.segments[0].text)
+                                .and_then(|m| m.get(&p.segments[1].text))
+                                .copied()
+                                .ok_or_else(|| format!("unknown variant `{}`", p.segments[1].text))?;
+                            format!("(({scrut}) == {d}ULL)")
+                        }
+                        ast::Pattern::BitPattern { text, .. } => {
+                            let (mask, value) = siox_ir::bit_pattern_mask(text)
+                                .ok_or("bad bit pattern in match")?;
+                            format!("((({scrut}) & {mask}ULL) == {value}ULL)")
+                        }
+                        _ => return Err("unsupported match pattern".into()),
+                    };
+                    out = format!("({cond} ? ({val}) : {out})");
+                }
+                out
+            }
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),

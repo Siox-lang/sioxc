@@ -729,6 +729,15 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(then);
                 self.resolve_expr(els);
             }
+            Expr::Match { scrutinee, arms, .. } => {
+                self.resolve_expr(scrutinee);
+                for arm in arms {
+                    if let Pattern::Path(p) = &arm.pattern {
+                        self.resolve_value_path(p);
+                    }
+                    self.resolve_block(&arm.body);
+                }
+            }
             Expr::Field { base, .. } => self.resolve_expr(base),
             Expr::SysAttr { base, .. } => self.resolve_expr(base),
             Expr::Index { base, index, .. } => {

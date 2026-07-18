@@ -955,6 +955,15 @@ impl<'a> Parser<'a> {
         if self.at(TokenKind::If) {
             return self.parse_if_expr();
         }
+        // Match-expression: `match s { A => e1, _ => e2 }` in value position.
+        if self.at(TokenKind::Match) {
+            let m = self.parse_match();
+            return Expr::Match {
+                scrutinee: Box::new(m.scrutinee),
+                arms: m.arms,
+                span: m.span,
+            };
+        }
         let op = match self.kind() {
             TokenKind::Minus => Some(UnOp::Neg),
             // `not` is the textual logical-negation prefix operator.

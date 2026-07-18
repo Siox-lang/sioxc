@@ -1164,6 +1164,14 @@ impl<'a> Checker<'a> {
                 }
                 self.check_expr(base, sym);
             }
+            Expr::Match { scrutinee, arms, .. } => {
+                self.check_expr(scrutinee, sym);
+                for arm in arms {
+                    if let Some(v) = arm.value_expr() {
+                        self.check_expr(v, sym);
+                    }
+                }
+            }
             Expr::Field { base, .. } => self.check_expr(base, sym),
             Expr::Index { base, index, .. } => {
                 self.check_expr(base, sym);
@@ -1395,6 +1403,12 @@ impl<'a> Checker<'a> {
             // `if c { a } else { b }` takes its branches' type (the then arm;
             // branch-mismatch diagnostics ride on assignment compatibility).
             Expr::IfExpr { then, .. } => self.type_of(then, sym),
+            // A match-expression takes its arms' common type (the first arm).
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .find_map(|a| a.value_expr())
+                .map(|v| self.type_of(v, sym))
+                .unwrap_or(Ty::Error),
             // A suffix defined by `impl Suffix for T` types the literal as T;
             // the fixed fs/Hz table backs bare files as integer.
             Expr::SuffixLit { suffix, .. } => {
@@ -1879,6 +1893,7 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::Field { span, .. }
         | Expr::SysAttr { span, .. }
         | Expr::IfExpr { span, .. }
+        | Expr::Match { span, .. }
         | Expr::Index { span, .. }
         | Expr::Range { span, .. }
         | Expr::Unary { span, .. }

@@ -528,6 +528,21 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             };
             (format!("if {} {{ {} }} {}", expr(cond), expr(then), e), 0)
         }
+        Expr::Match { scrutinee, arms, .. } => {
+            let arms_str = arms
+                .iter()
+                .map(|a| {
+                    let val = match a.body.stmts.as_slice() {
+                        [Stmt::Expr(e)] => expr(e),
+                        [Stmt::Return { value: Some(e), .. }] => expr(e),
+                        _ => "{ .. }".to_string(),
+                    };
+                    format!("{} => {}", pattern(&a.pattern), val)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            (format!("match {} {{ {} }}", expr(scrutinee), arms_str), 0)
+        }
         Expr::Unary { op, rhs, .. } => {
             (format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)), UNARY_PREC)
         }

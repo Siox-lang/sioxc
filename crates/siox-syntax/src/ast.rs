@@ -310,6 +310,18 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+impl MatchArm {
+    /// The arm's value in a match *expression*: its body is a single expression
+    /// (`A => a + b`) or a bare `return`. `None` for a statement arm.
+    pub fn value_expr(&self) -> Option<&Expr> {
+        match self.body.stmts.as_slice() {
+            [Stmt::Expr(e)] => Some(e),
+            [Stmt::Return { value: Some(e), .. }] => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Patterns: enum paths, bit patterns `b"01??"`, and `_` (spec 3.22).
 #[derive(Clone, Debug)]
 pub enum Pattern {
@@ -344,6 +356,9 @@ pub enum Expr {
     /// Rust-style `if c { a } else { b }` as a value (else required; branches
     /// are single expressions). `else if` chains nest in `els`.
     IfExpr { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr>, span: Span },
+    /// `match s { A => e1, _ => e2 }` in value position — each arm's body is a
+    /// single expression (spec 3.22).
+    Match { scrutinee: Box<Expr>, arms: Vec<MatchArm>, span: Span },
     /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
     Call { callee: Box<Expr>, args: Vec<Expr>, bang: bool, span: Span },
     /// Instance/struct construction `Counter<W = 8> { .clk, .count = c }`

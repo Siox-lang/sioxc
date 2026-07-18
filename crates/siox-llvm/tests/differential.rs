@@ -577,6 +577,27 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn match_expression_agrees() {
+    // `match` in value position lowers to a first-match Select chain; both
+    // engines must agree across every arm and the wildcard default.
+    let d = lower(
+        "module m;\n\
+         enum Op { Add, Sub, Pass }\n\
+         entity E { in op: Op; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         impl E { y = match op { Op::Add => a + b, Op::Sub => a - b, _ => a }; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T {\n\
+           let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let dut = E { .op, .a, .b, .y };\n\
+         }\n",
+    );
+    for op in [0u64, 1, 2] {
+        assert_agree(&d, &[("T.op", op), ("T.a", 30), ("T.b", 12)]);
+    }
+}
+
+#[test]
 fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
     // state to the type argument (`Buf<uint[8]>`), so signals get the concrete

@@ -1758,6 +1758,29 @@ impl<'a> Lowering<'a> {
     /// The condition under which a match arm fires: `scrut == <variant value>`
     /// for an enum path, `(scrut & mask) == value` for a bit pattern with `?`
     /// don't-cares (spec 3.22), or always (`None`) for a wildcard.
+    /// Lower a match-*expression* to a first-match `Select` chain: the wildcard
+    /// arm's value is the base `els`, and each earlier arm wraps it under its
+    /// `scrutinee == pattern` guard.
+    fn lower_match_expr(&self, scrutinee: &ast::Expr, arms: &[ast::MatchArm]) -> Expr {
+        let scrut = self.lower_expr(scrutinee);
+        let mut result: Option<Expr> = None;
+        for arm in arms.iter().rev() {
+            let val = arm.value_expr().map(|v| self.lower_expr(v)).unwrap_or(Expr::Unknown);
+            match self.arm_match_cond(&arm.pattern, &scrut) {
+                None => result = Some(val), // wildcard: the default branch
+                Some(cond) => {
+                    let els = result.take().unwrap_or(Expr::Unknown);
+                    result = Some(Expr::Select {
+                        cond: Box::new(cond),
+                        then: Box::new(val),
+                        els: Box::new(els),
+                    });
+                }
+            }
+        }
+        result.unwrap_or(Expr::Unknown)
+    }
+
     fn arm_match_cond(&self, pattern: &ast::Pattern, scrut: &Expr) -> Option<Expr> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
@@ -2055,6 +2078,8 @@ impl<'a> Lowering<'a> {
                 then: Box::new(self.lower_expr(then)),
                 els: Box::new(self.lower_expr(els)),
             },
+            // A match-expression is a first-match `Select` chain over the arms.
+            ast::Expr::Match { scrutinee, arms, .. } => self.lower_match_expr(scrutinee, arms),
             // A decimal point makes it a `real` literal (`1.5`).
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 Expr::Real(text.parse().unwrap_or(0.0))
