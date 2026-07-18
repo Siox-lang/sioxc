@@ -1385,6 +1385,13 @@ impl Ctx<'_> {
                 }
                 Some(format!("({})", parts.join(" || ")))
             }
+            ast::Pattern::Range { lo, hi, .. } if lo == hi => {
+                Some(format!("(({scrut}) == {}ULL)", *lo as u64))
+            }
+            ast::Pattern::Range { lo, hi, .. } => Some(format!(
+                "((({scrut}) >= {}ULL) && (({scrut}) <= {}ULL))",
+                *lo as u64, *hi as u64
+            )),
             _ => Some("0".to_string()),
         })
     }

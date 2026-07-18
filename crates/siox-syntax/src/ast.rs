@@ -330,6 +330,9 @@ pub enum Pattern {
     BitPattern { text: String, span: Span },
     /// `A | B | C` — matches if any alternative matches (spec 3.22).
     Or { alts: Vec<Pattern>, span: Span },
+    /// An integer literal (`5`) or inclusive range (`0..9`) pattern for a
+    /// numeric scrutinee; a bare literal is `lo == hi`.
+    Range { lo: i64, hi: i64, span: Span },
 }
 
 #[derive(Clone, Debug)]

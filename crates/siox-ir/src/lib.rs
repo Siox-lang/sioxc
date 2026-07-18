@@ -1824,6 +1824,25 @@ impl<'a> Lowering<'a> {
                 }
                 acc
             }
+            // An integer literal or inclusive range: `scrut == lo`, or
+            // `lo <= scrut <= hi`.
+            ast::Pattern::Range { lo, hi, .. } => {
+                if lo == hi {
+                    Some(eq(scrut.clone(), Expr::Const(*lo as u64)))
+                } else {
+                    let ge = Expr::Binary {
+                        op: BinOp::Ge,
+                        lhs: Box::new(scrut.clone()),
+                        rhs: Box::new(Expr::Const(*lo as u64)),
+                    };
+                    let le = Expr::Binary {
+                        op: BinOp::Le,
+                        lhs: Box::new(scrut.clone()),
+                        rhs: Box::new(Expr::Const(*hi as u64)),
+                    };
+                    Some(and(Some(ge), le))
+                }
+            }
             // A wildcard matches anything.
             _ => None,
         }

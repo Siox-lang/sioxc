@@ -866,7 +866,37 @@ impl<'a> Parser<'a> {
                     span: p.span.to(t.span),
                 }
             }
+            // An integer literal (`5`) or inclusive range (`0..9`, `-1..1`).
+            TokenKind::Int | TokenKind::Minus => {
+                let start = self.span();
+                let lo = self.parse_pattern_int();
+                let hi = if self.eat(TokenKind::DotDot) {
+                    self.parse_pattern_int()
+                } else {
+                    lo
+                };
+                Pattern::Range { lo, hi, span: start.to(self.prev_span()) }
+            }
             _ => Pattern::Path(self.parse_path()),
+        }
+    }
+
+    /// A (possibly negative, hex/binary/decimal) integer literal in a pattern.
+    fn parse_pattern_int(&mut self) -> i64 {
+        let neg = self.eat(TokenKind::Minus);
+        let t = self.bump();
+        let txt = self.text_of(t.span).replace('_', "");
+        let v = if let Some(h) = txt.strip_prefix("0x").or_else(|| txt.strip_prefix("0X")) {
+            i64::from_str_radix(h, 16).unwrap_or(0)
+        } else if let Some(b) = txt.strip_prefix("0b").or_else(|| txt.strip_prefix("0B")) {
+            i64::from_str_radix(b, 2).unwrap_or(0)
+        } else {
+            txt.parse().unwrap_or(0)
+        };
+        if neg {
+            -v
+        } else {
+            v
         }
     }
 

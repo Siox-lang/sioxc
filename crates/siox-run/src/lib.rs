@@ -1518,6 +1518,9 @@ impl Testbench<'_> {
                 siox_ir::bit_pattern_mask(text).is_some_and(|(m, v)| scrut & m == v)
             }
             ast::Pattern::Or { alts, .. } => alts.iter().any(|a| self.pattern_hit(a, scrut)),
+            ast::Pattern::Range { lo, hi, .. } => {
+                (*lo as u64) <= scrut && scrut <= (*hi as u64)
+            }
             _ => false,
         }
     }

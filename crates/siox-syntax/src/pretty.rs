@@ -401,6 +401,8 @@ fn pattern(p: &Pattern) -> String {
         Pattern::Or { alts, .. } => {
             alts.iter().map(pattern).collect::<Vec<_>>().join(" | ")
         }
+        Pattern::Range { lo, hi, .. } if lo == hi => lo.to_string(),
+        Pattern::Range { lo, hi, .. } => format!("{lo}..{hi}"),
     }
 }
 

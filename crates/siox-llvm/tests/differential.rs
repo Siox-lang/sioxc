@@ -577,6 +577,23 @@ fn instance_array_agrees() {
 }
 
 #[test]
+fn range_pattern_agrees() {
+    // Integer-literal and inclusive-range match arms (`0..9`, `100`) over a
+    // numeric scrutinee; both engines must agree across the boundaries.
+    let d = lower(
+        "module m;\n\
+         entity E { in a: uint[8]; out y: uint[8]; }\n\
+         impl E { y = match a { 0..9 => 1, 10..99 => 2, 100 => 3, _ => 4 }; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let a: uint[8]; let y: uint[8]; let dut = E { .a, .y }; }\n",
+    );
+    for a in [0u64, 9, 10, 99, 100, 101, 200] {
+        assert_agree(&d, &[("T.a", a)]);
+    }
+}
+
+#[test]
 fn or_pattern_agrees() {
     // `A | B => ..` matches if any alternative matches (spec 3.22): its
     // condition is the OR of the alternatives'. Both engines must agree.
