@@ -581,6 +581,10 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             let p = parts.iter().map(expr).collect::<Vec<_>>().join(", ");
             (format!("{{ {p} }}"), POSTFIX_PREC)
         }
+        Expr::Array { elems, .. } => {
+            let p = elems.iter().map(expr).collect::<Vec<_>>().join(", ");
+            (format!("[{p}]"), POSTFIX_PREC)
+        }
     }
 }
 

@@ -1562,6 +1562,29 @@ impl<'a> Lowering<'a> {
                                 }
                                 return;
                             }
+                            // `a = [e0, e1, ...];` drives one element per value.
+                            ast::Expr::Array { elems, .. } => {
+                                if elems.len() != indices.len() {
+                                    self.sink.emit(siox_diag::Diagnostic::error(format!(
+                                        "array literal length {} does not match `{tpath}` length {}",
+                                        elems.len(),
+                                        indices.len()
+                                    )));
+                                    return;
+                                }
+                                for (e, i) in elems.iter().zip(&indices) {
+                                    if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
+                                        let expr = self.coerce_to_target(sig, self.lower_expr(e));
+                                        self.out.drivers.push(Driver {
+                                            target: sig,
+                                            cond: cond.clone(),
+                                            expr,
+                                            ctx: self.cur_ctx,
+                                        });
+                                    }
+                                }
+                                return;
+                            }
                             v => {
                                 if let Some(vpath) = expr_path(v) {
                                     if let Some(vidx) = self.local_array.get(&vpath).cloned() {
@@ -4261,6 +4284,10 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
             parts: parts.iter().map(|p| subst_expr_paths(p, map)).collect(),
             span: *span,
         },
+        Expr::Array { elems, span } => Expr::Array {
+            elems: elems.iter().map(|e| subst_expr_paths(e, map)).collect(),
+            span: *span,
+        },
         Expr::Construct { ty, args, span } => Expr::Construct {
             ty: ty.clone(),
             args: args
@@ -4349,6 +4376,10 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
         },
         Expr::Concat { parts, span } => Expr::Concat {
             parts: parts.iter().map(|p| subst_expr(p, var, val)).collect(),
+            span: *span,
+        },
+        Expr::Array { elems, span } => Expr::Array {
+            elems: elems.iter().map(|e| subst_expr(e, var, val)).collect(),
             span: *span,
         },
         Expr::Construct { ty, args, span } => Expr::Construct {

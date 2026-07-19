@@ -633,6 +633,27 @@ fn match_expression_agrees() {
 }
 
 #[test]
+fn array_literal_agrees() {
+    // `[a, b, c, d]` fills an array signal one element per value; a runtime
+    // index reads back a lookup table. Both engines must agree per element.
+    let d = lower(
+        "module m;\n\
+         entity E { in sel: uint[8]; out y: uint[8]; }\n\
+         impl E {\n\
+           let table: uint[8][4];\n\
+           table = [10, 20, 30, 40];\n\
+           y = table[sel];\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let sel: uint[8]; let y: uint[8]; let dut = E { .sel, .y }; }\n",
+    );
+    for sel in [0u64, 1, 2, 3] {
+        assert_agree(&d, &[("T.sel", sel)]);
+    }
+}
+
+#[test]
 fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
     // state to the type argument (`Buf<uint[8]>`), so signals get the concrete

@@ -1145,6 +1145,16 @@ impl<'a> Checker<'a> {
             Expr::IfExpr { then, els, .. } => {
                 self.assignable(lhs, then, sym) && self.assignable(lhs, els, sym)
             }
+            // `[a, b, c]` fills an array target: length must match and every
+            // element must be assignable to the element type (element literals
+            // read through it, as in an initialiser).
+            Expr::Array { elems, .. } => match lhs {
+                Ty::Array { elem, len } => {
+                    elems.len() as u32 == *len && elems.iter().all(|e| self.assignable(elem, e, sym))
+                }
+                Ty::Error => true,
+                _ => false,
+            },
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }
@@ -1340,6 +1350,11 @@ impl<'a> Checker<'a> {
             Expr::Concat { parts, .. } => {
                 for p in parts {
                     self.check_expr(p, sym);
+                }
+            }
+            Expr::Array { elems, .. } => {
+                for e in elems {
+                    self.check_expr(e, sym);
                 }
             }
             Expr::SuffixLit { suffix, span, .. } => {
@@ -1541,6 +1556,12 @@ impl<'a> Checker<'a> {
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
             Expr::Concat { .. } => Ty::Vector { width: 0 },
+            // An array literal: element type from the first element, length
+            // from the count.
+            Expr::Array { elems, .. } => {
+                let elem = elems.first().map(|e| self.type_of(e, sym)).unwrap_or(Ty::Error);
+                Ty::Array { elem: Box::new(elem), len: elems.len() as u32 }
+            }
             // Conversion expressions type as their target (spec 3.17):
             // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call { callee, args, .. } => match callee.as_ref() {
@@ -1703,7 +1724,11 @@ impl<'a> Checker<'a> {
                 // Unconstrained (`Char[]`): width 0 = "set at use".
                 let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
-                    Ty::Vector { .. } => Ty::Vector { width },
+                    // The *first* index on a vector family sets its width
+                    // (`uint[8]`). A *second* index makes an array of those
+                    // vectors (`uint[8][4]` = 4 elements, each 8 wide).
+                    Ty::Vector { width: 0 } => Ty::Vector { width },
+                    v @ Ty::Vector { .. } => Ty::Array { elem: Box::new(v), len: width },
                     other => Ty::Array { elem: Box::new(other), len: width },
                 }
             }
@@ -1919,7 +1944,8 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::Binary { span, .. }
         | Expr::Call { span, .. }
         | Expr::Construct { span, .. }
-        | Expr::Concat { span, .. } => *span,
+        | Expr::Concat { span, .. }
+        | Expr::Array { span, .. } => *span,
         Expr::Path(p) => p.span,
     }
 }

@@ -36,6 +36,8 @@ standard library is catalogued in [std.md](std.md).
 - **Bit operations.** Slices (`a[7..4]`, direction-aware), concatenation
   (`{hi, lo}`, also as an assignment target), and bit-pattern `match`
   (`b"01??"` with `?` don't-cares).
+- **Array literals.** `[a, b, c]` builds an array value one element at a time
+  (`table = [10, 20, 30, 40]`), distinct from `{..}` concatenation.
 
 ## Types and generics
 

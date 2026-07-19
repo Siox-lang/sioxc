@@ -377,6 +377,8 @@ pub enum Expr {
     },
     /// Bit concatenation `{a, b, c}` — the first element is the most significant.
     Concat { parts: Vec<Expr>, span: Span },
+    /// `[a, b, c]` — an array literal (spec 3.23), one value per element.
+    Array { elems: Vec<Expr>, span: Span },
 }
 
 /// A field connection inside an instance/struct literal. `value: None` is the

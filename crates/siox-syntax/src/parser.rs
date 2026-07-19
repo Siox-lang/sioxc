@@ -1206,6 +1206,20 @@ impl<'a> Parser<'a> {
                 self.parse_construct(start, None)
             }
             TokenKind::LBrace => self.parse_concat(start),
+            // `[a, b, c]` is an array literal (spec 3.23), distinct from `{..}`
+            // concatenation and from `t[i]` indexing.
+            TokenKind::LBracket => {
+                self.bump();
+                let mut elems = Vec::new();
+                while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                    elems.push(self.parse_expr(false));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket, "to close an array literal");
+                Expr::Array { elems, span: start.to(self.prev_span()) }
+            }
             _ => {
                 self.error_here("expected an expression");
                 // Synthesize a placeholder so callers can keep going.

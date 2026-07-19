@@ -770,6 +770,11 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(p);
                 }
             }
+            Expr::Array { elems, .. } => {
+                for e in elems {
+                    self.resolve_expr(e);
+                }
+            }
         }
     }
 

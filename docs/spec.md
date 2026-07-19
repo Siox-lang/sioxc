@@ -1089,6 +1089,20 @@ point per element, and whole-string equality (`s == "hello"`) compares
 element by element. Whole-array assignment of the same element type and
 length copies (`o = s`).
 
+**Array literals.** Square brackets build an array value, one expression per
+element, most-significant/first element leftmost:
+
+```siox
+let table: uint[8][4];
+table = [10, 20, 30, 40];   // four 8-bit elements
+y = table[sel];             // runtime index reads the lookup table
+```
+
+The literal's length must match the target array's length, and each element
+reads through the element type (so bare integer/char literals are polymorphic,
+as in an initialiser). Array literals use `[..]` — distinct from `{..}` bit
+concatenation, which packs its parts into one wider vector.
+
 **Named ranges.** A `range` constant names a range, preserving direction,
 usable in both type and slice position:
 

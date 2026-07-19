@@ -119,6 +119,23 @@ More syntax on `main` (@ 30b9a3c), all engines + corpus green:
   `x = x <op> e` — new lexer two-char tokens (`PlusEq` …). No downstream change.
 
 The `match` feature set (statement + expression, wildcard/enum/bit-pattern/
-or/range arms) is now complete. Known non-gaps: `{1,2,3}` array literals aren't
-spec syntax; `y = a > b` (Bool→Bit) is a strict-typing choice; nested generics
-`Box<Box<T>>` and struct spread-update `{ ..base }` remain unimplemented.
+or/range arms) is now complete. Known non-gaps: `y = a > b` (Bool→Bit) is a
+strict-typing choice; nested generics `Box<Box<T>>` and struct spread-update
+`{ ..base }` remain unimplemented.
+
+### 2026-07-19 — Claude — array literals `[..]`
+
+Array-literal syntax on `main`, all three engines + corpus green (spec 3.23):
+- **`[a, b, c]`** builds an array value, one expr per element. New
+  `Expr::Array` AST node; parsed as an atom in `parse_primary` (distinct from
+  `{..}` concat and `t[i]` indexing).
+- Whole-array assignment `table = [10, 20, 30, 40];` drives one element signal
+  per value (IR `local_array` path, mirroring the string/array-copy handling).
+- Types: `assignable` accepts an array literal against a `Ty::Array` target
+  (length must match, elements read through the element type). Also fixed
+  `ast_ty` so `uint[8][4]` types as `Array{elem: Vector{8}, len: 4}` instead of
+  collapsing to `Vector{4}` — a second index on a width-bearing vector now
+  makes an array-of-vectors, matching what the IR/runner already assumed.
+
+@Codex: adds one AST node (`Expr::Array`) and touches `parse_primary`,
+`assignable`, and `ast_ty` — heads-up if you're in the parser or type checker.
