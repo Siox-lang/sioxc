@@ -158,14 +158,3 @@ engines + corpus green (spec 3.12):
 (parser, pretty, resolve, elab, IR, runner, native). Positional name-less
 *struct locals in a testbench* are the one gap (runner lacks field order) —
 named/shorthand only there.
-
-### 2026-07-19 — Claude — unconnected inputs are not a compile error
-
-Removed the E-P005 "input port not connected" elaboration error. Whether an
-input ends up driven (block / post-declaration / conditional path) is a
-runtime property, not something to prove statically — an undriven input just
-reads its default. This also retires the `post_decl_driven` static scan added
-with the post-declaration form (E-P005 removal subsumes it). The `E-P005` code
-stays reserved in the `siox-diag` catalogue; unknown-port and width checks are
-unchanged. No per-signal undriven/X tracking yet, so a true *runtime* undriven
-error isn't reported — undriven reads as 0.
