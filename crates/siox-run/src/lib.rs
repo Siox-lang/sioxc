@@ -6,7 +6,7 @@
 //! design is evaluated. A backend supplies an [`Engine`]: the JIT (`siox-llvm`)
 //! does, and the `siox-sim` interpreter does too (for differential verification).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use siox_diag::Span;
 use siox_elab::Hierarchy;
@@ -484,10 +484,21 @@ fn run_one<'a>(
         }
     }
 
+    // Names elaboration turned into DUT instances (any `let dut = Sub {..}` /
+    // `let dut: Sub [= {..}]`): their connections are already wired, so
+    // `apply_let` must not also materialize them as struct/signal locals.
+    let instance_names: HashSet<String> = hier
+        .instance(root)
+        .children
+        .iter()
+        .map(|&c| hier.instance(c).name.clone())
+        .collect();
+
     let mut tb = Testbench {
         engine,
         map,
         aliases,
+        instance_names,
         enums,
         failure: None,
         record,
@@ -576,6 +587,9 @@ struct Testbench<'a> {
     /// Test-local signal name -> EVERY connected port's signal id: a write
     /// drives them all (`.x` shared by two DUTs, one clock into many).
     aliases: HashMap<String, Vec<SignalId>>,
+    /// Names elaboration turned into DUT instances — `apply_let` skips them
+    /// (their connections are already wired).
+    instance_names: HashSet<String>,
     /// Enum name -> variant -> discriminant, for evaluating `Enum::Variant`.
     enums: &'a HashMap<String, HashMap<String, u64>>,
     failure: Option<(String, Span)>,
@@ -730,6 +744,11 @@ impl Testbench<'_> {
     /// Apply a `let` in statement order: DUT-connected names write signals;
     /// an unconnected scalar becomes a testbench local.
     fn apply_let(&mut self, l: &ast::LetDecl) {
+        // A DUT instance (`let dut = Sub {..}` / `let dut: Sub [= {..}]`) is
+        // wired by elaboration; the testbench let itself does nothing here.
+        if self.instance_names.contains(&l.name.text) {
+            return;
+        }
         // Record the declared width first, so this let's own initializer and
         // every later assignment mask consistently.
         if !self.map.contains_key(&l.name.text) {

@@ -534,15 +534,15 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
-                        if let Some(sub) = type_head_name(cty) {
+                    if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
+                        if let Some(sub) = type_head_name(&cty) {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
-                            sub_env.extend(self.construct_params(cty, env));
-                            let sub_tenv = self.construct_type_params(cty, sub);
+                            sub_env.extend(self.construct_params(&cty, env));
+                            let sub_tenv = self.construct_type_params(&cty, sub);
                             let sub_ports =
                                 self.lower_body(sub, &sub_path, &sub_env, &sub_tenv, &HashMap::new());
-                            for (port, value) in self.norm_conns(args, sub) {
+                            for (port, value) in self.norm_conns(&args, sub) {
                                 // The testbench name the port binds to; a
                                 // literal/expression connection has no name.
                                 let Some(tbname) = expr_path(&value) else { continue };
@@ -669,16 +669,17 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Stmt(s) = item {
-                    gather_generate(s, env, &[], &mut subinsts);
+                    gather_generate(s, env, &[], &self.entities, &mut subinsts);
                 }
             }
         }
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    // `let s = Sub { .. }`: a sub-instance, not a signal.
-                    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
-                        subinsts.push((l.name.text.clone(), cty.clone(), args.clone()));
+                    // `let s = Sub { .. }` / `let s: Sub [= { .. }]`: a
+                    // sub-instance, not a signal.
+                    if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
+                        subinsts.push((l.name.text.clone(), cty, args));
                         continue;
                     }
                     // `let s: string = "hello";`: the literal sets the range.
@@ -4117,15 +4118,44 @@ pub fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String,
 /// arguments, and connection expressions. Plain `let` instances inside the loop
 /// body are handled too; nested loops recurse. Non-instance statements are
 /// left for the behavioural pass.
+/// The instance type + connections a `let` declares, in either form:
+/// - `let x = Entity { .. }` (type on the construct),
+/// - `let x: Entity = { .. }` (type from the annotation, name-less construct),
+/// - `let x: Entity;` (type from the annotation, no connections).
+/// `entities` decides whether an annotation names an entity.
+fn instance_let_parts(
+    l: &ast::LetDecl,
+    entities: &HashMap<String, &ast::EntityDecl>,
+) -> Option<(ast::Type, Vec<ast::ConnectArg>)> {
+    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
+        return Some((cty.clone(), args.clone()));
+    }
+    let ann = l.ty.as_ref()?;
+    // An entity *array* (`let stage: Inc[N]`) is built element-wise, not a
+    // single instance.
+    if matches!(ann, ast::Type::Indexed { .. }) {
+        return None;
+    }
+    if !type_head_name(ann).is_some_and(|n| entities.contains_key(n)) {
+        return None;
+    }
+    match &l.value {
+        Some(ast::Expr::Construct { ty: None, args, .. }) => Some((ann.clone(), args.clone())),
+        None => Some((ann.clone(), Vec::new())),
+        _ => None,
+    }
+}
+
 fn gather_generate(
     s: &ast::Stmt,
     env: &HashMap<String, i64>,
     loop_idx: &[i64],
+    entities: &HashMap<String, &ast::EntityDecl>,
     out: &mut Vec<(String, ast::Type, Vec<ast::ConnectArg>)>,
 ) {
     match s {
         ast::Stmt::Let(l) => {
-            if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
+            if let Some((cty, args)) = instance_let_parts(l, entities) {
                 // A generated instance (inside a loop) gets the enclosing loop
                 // indices appended for a unique name, matching the elaborator's
                 // `<name>_<i>` convention.
@@ -4135,7 +4165,7 @@ fn gather_generate(
                     let idx: Vec<String> = loop_idx.iter().map(|v| v.to_string()).collect();
                     format!("{}_{}", l.name.text, idx.join("_"))
                 };
-                out.push((name, cty.clone(), args.clone()));
+                out.push((name, cty, args));
             }
         }
         // Instance-array element: `stage[i] = Sub { .. }` (index already
@@ -4158,7 +4188,7 @@ fn gather_generate(
                         // `Sub<W=i>` and `wires[i]` become concrete before the
                         // instance is recorded.
                         let st = subst_stmt(st, &var.text, i);
-                        gather_generate(&st, &e, &idx, out);
+                        gather_generate(&st, &e, &idx, entities, out);
                     }
                 }
             }

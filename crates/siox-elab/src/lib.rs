@@ -360,10 +360,41 @@ impl<'a> Elaborator<'a> {
         specs
     }
 
-    /// One `let x = Entity { .. }` -> an instance spec (with the current loop
-    /// bindings for its connection rendering).
-    fn gather_let(&self, l: &'a LetDecl, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+    /// An instance `let`, in either form, as `(instance type, connections,
+    /// site span)`:
+    /// - `let x = Entity { .. }` — the type is on the construct.
+    /// - `let x: Entity = { .. }` — the type is the annotation; the value is a
+    ///   name-less construct supplying the connections.
+    /// - `let x: Entity;` — the type is the annotation; no connections (ports
+    ///   wired post-declaration).
+    fn instance_let(&self, l: &'a LetDecl) -> Option<(&'a Type, &'a [ConnectArg], Span)> {
+        // Old form: `= Entity { .. }`.
         if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
+            return Some((ty, args, *span));
+        }
+        // New forms need a bare entity-typed annotation. An *array* of an
+        // entity (`let stage: Inc[N]`) is an instance array, built element-wise
+        // by `stage[i] = Inc { .. }` assignments — not a single instance here.
+        let ann = l.ty.as_ref()?;
+        if matches!(ann, Type::Indexed { .. }) {
+            return None;
+        }
+        if !type_head_name(ann).is_some_and(|n| self.entities.contains_key(n)) {
+            return None;
+        }
+        match &l.value {
+            // `let x: Entity = { .. }` — name-less construct connections.
+            Some(Expr::Construct { ty: None, args, .. }) => Some((ann, args, l.span)),
+            // `let x: Entity;` — no connections.
+            None => Some((ann, &[], l.span)),
+            _ => None,
+        }
+    }
+
+    /// One instance `let` -> an instance spec (with the current loop bindings
+    /// for its connection rendering).
+    fn gather_let(&self, l: &'a LetDecl, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+        if let Some((ty, args, span)) = self.instance_let(l) {
             // A generated instance gets the loop index appended for a unique
             // name; a plain one keeps its declared name.
             let name = if env.is_empty() {
@@ -377,7 +408,7 @@ impl<'a> Elaborator<'a> {
                 ty,
                 args,
                 attrs: &l.attrs,
-                site: *span,
+                site: span,
                 loop_env: env.clone(),
             });
         }
