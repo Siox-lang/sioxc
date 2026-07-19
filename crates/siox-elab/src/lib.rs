@@ -433,8 +433,28 @@ impl<'a> Elaborator<'a> {
         let mut conns = Vec::new();
         let mut connected: HashSet<String> = HashSet::new();
 
-        for arg in args {
-            let port = arg.field.text.clone();
+        for (i, arg) in args.iter().enumerate() {
+            // Positional args (`Inv { a, b }`) bind by declaration order; named
+            // args (`.clk` / `.clk = sig`) bind by name.
+            let port = match &arg.field {
+                Some(f) => f.text.clone(),
+                None => match edecl.ports.get(i) {
+                    Some(p) => p.name.text.clone(),
+                    None => {
+                        self.error(
+                            codes::UNKNOWN_NAME,
+                            arg.span,
+                            format!(
+                                "`{}` has {} port(s); positional connection {} is out of range",
+                                edecl.name.text,
+                                edecl.ports.len(),
+                                i + 1
+                            ),
+                        );
+                        continue;
+                    }
+                },
+            };
             let Some(port_ty) = ports.get(port.as_str()) else {
                 self.error(
                     codes::UNKNOWN_NAME,
@@ -443,10 +463,11 @@ impl<'a> Elaborator<'a> {
                 );
                 continue;
             };
-            let signal = match &arg.value {
+            let signal = match (&arg.field, &arg.value) {
                 // `.clk` shorthand means `.clk = clk`.
-                None => arg.field.text.clone(),
-                Some(e) => render_signal(e, render_env),
+                (Some(f), None) => f.text.clone(),
+                (_, Some(e)) => render_signal(e, render_env),
+                (None, None) => continue,
             };
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());

@@ -566,9 +566,14 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Construct { ty, args, .. } => {
             let a = args
                 .iter()
-                .map(|c| match &c.value {
-                    Some(v) => format!(".{} = {}", c.field.text, expr(v)),
-                    None => format!(".{}", c.field.text),
+                .map(|c| match (&c.field, &c.value) {
+                    // Explicit `.field = value`.
+                    (Some(f), Some(v)) => format!(".{} = {}", f.text, expr(v)),
+                    // Name shorthand `.field`.
+                    (Some(f), None) => format!(".{}", f.text),
+                    // Positional `value`.
+                    (None, Some(v)) => expr(v),
+                    (None, None) => String::new(),
                 })
                 .collect::<Vec<_>>()
                 .join(", ");

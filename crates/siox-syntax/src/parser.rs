@@ -1275,11 +1275,29 @@ impl<'a> Parser<'a> {
     fn parse_construct(&mut self, start: Span, ty: Option<Type>) -> Expr {
         self.expect(TokenKind::LBrace, "to open a construction");
         let mut args = Vec::new();
+        // A block is either all-named (`.a = x` / shorthand `.a`) or all
+        // positional (`x, y` — bound by declaration order). Mixing the two is
+        // rejected once we know which shape the first argument set.
+        let mut positional: Option<bool> = None;
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let cstart = self.span();
-            self.expect(TokenKind::Dot, "before a connection field");
-            let field = self.parse_ident();
-            let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
+            let is_pos = !self.at(TokenKind::Dot);
+            match positional {
+                None => positional = Some(is_pos),
+                Some(prev) if prev != is_pos => {
+                    self.error_here("cannot mix positional and `.field` connections");
+                }
+                _ => {}
+            }
+            let (field, value) = if is_pos {
+                // Positional: a bare expression, bound by ordinal position.
+                (None, Some(self.parse_expr(false)))
+            } else {
+                self.expect(TokenKind::Dot, "before a connection field");
+                let field = Some(self.parse_ident());
+                let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
+                (field, value)
+            };
             args.push(ConnectArg { field, value, span: cstart.to(self.prev_span()) });
             if !self.eat(TokenKind::Comma) {
                 break;

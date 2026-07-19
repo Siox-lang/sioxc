@@ -542,16 +542,11 @@ impl<'a> Lowering<'a> {
                             let sub_tenv = self.construct_type_params(cty, sub);
                             let sub_ports =
                                 self.lower_body(sub, &sub_path, &sub_env, &sub_tenv, &HashMap::new());
-                            for c in args {
-                                // `.p` shorthand means the testbench name `p`.
-                                let tbname = match &c.value {
-                                    None => c.field.text.clone(),
-                                    Some(v) => match expr_path(v) {
-                                        Some(p) => p,
-                                        None => continue, // literal/expression
-                                    },
-                                };
-                                if let Some(&(sig, dir)) = sub_ports.get(&c.field.text) {
+                            for (port, value) in self.norm_conns(args, sub) {
+                                // The testbench name the port binds to; a
+                                // literal/expression connection has no name.
+                                let Some(tbname) = expr_path(&value) else { continue };
+                                if let Some(&(sig, dir)) = sub_ports.get(&port) {
                                     bindings.entry(tbname).or_default().push((sig, dir));
                                 }
                             }
@@ -807,23 +802,19 @@ impl<'a> Lowering<'a> {
             // lowering the child, so its port aliases to that net. A scalar
             // inout whose parent side isn't a plain signal is left un-aliased
             // (falls back to the in/out wiring below).
+            // Normalized `(port, value)` connections (positional/shorthand
+            // resolved), used both for inout aliasing and the wiring below.
+            let norm = self.norm_conns(conns, sub_ename);
             let mut aliases: HashMap<String, SignalId> = HashMap::new();
             if let Some(decl) = self.entities.get(sub_ename).copied() {
                 for p in &decl.ports {
                     if p.dir != Some(ast::Direction::Inout) {
                         continue;
                     }
-                    let value = conns
+                    let value = norm
                         .iter()
-                        .find(|c| c.field.text == p.name.text)
-                        .map(|c| {
-                            c.value.clone().unwrap_or_else(|| {
-                                ast::Expr::Path(ast::Path {
-                                    segments: vec![c.field.clone()],
-                                    span: c.field.span,
-                                })
-                            })
-                        });
+                        .find(|(port, _)| *port == p.name.text)
+                        .map(|(_, v)| v.clone());
                     let Some(value) = value else { continue };
                     // Scalar inout: the whole port shares the parent net.
                     if let Some(net) = self.target_signal(&value) {
@@ -854,12 +845,8 @@ impl<'a> Lowering<'a> {
             for (port, &(sig, _)) in &sub_ports {
                 self.locals.entry(format!("{inst}.{port}")).or_insert(sig);
             }
-            for c in conns {
-                let field = &c.field.text;
-                // `.p` shorthand means the parent signal `p`.
-                let value = c.value.clone().unwrap_or_else(|| {
-                    ast::Expr::Path(ast::Path { segments: vec![c.field.clone()], span: c.field.span })
-                });
+            for (field, value) in &norm {
+                let field = field.as_str();
                 // The child port's leaves: the port itself (`s`) plus any
                 // flattened struct/array members (`s.valid`, `bus[0]`).
                 let dot = format!("{field}.");
@@ -882,12 +869,12 @@ impl<'a> Lowering<'a> {
                         continue;
                     }
                     if dir == Some(ast::Direction::Out) {
-                        if let Some(target) = self.target_signal(&value) {
+                        if let Some(target) = self.target_signal(value) {
                             let ctx = self.next_ctx();
                             self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id), ctx });
                         }
                     } else {
-                        let expr = self.lower_expr(&value);
+                        let expr = self.lower_expr(value);
                         let ctx = self.next_ctx();
                         self.out.drivers.push(Driver { target: child_id, cond: None, expr, ctx });
                     }
@@ -897,7 +884,7 @@ impl<'a> Lowering<'a> {
                 // A composite (struct/array) port: wire each leaf to the matching
                 // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
                 // The parent side must be a signal path.
-                let Some(base) = expr_path(&value) else { continue };
+                let Some(base) = expr_path(value) else { continue };
                 leaves.sort_by(|a, b| a.0.cmp(&b.0));
                 for (k, child_id, dir) in leaves {
                     let suffix = &k[field.len()..]; // ".valid", "[0]"
@@ -1424,6 +1411,36 @@ impl<'a> Lowering<'a> {
     /// The `(field name, field type)` list if `ty` names a known struct —
     /// resolving generic applications (`Pair<uint[8]>`) and bus-mode views
     /// (`Stream::Source`, `Stream<uint[8]>::Source`, spec 3.19).
+    /// Normalize an instance's connection args into `(port, value)` pairs:
+    /// positional args (`Inv { a, b }`) bind by the sub-entity's port order,
+    /// name shorthand (`.clk`) expands to `.clk = clk`, and explicit args pass
+    /// through. The value is always concrete so downstream sites don't special-
+    /// case shorthand/positional.
+    fn norm_conns(&self, conns: &[ast::ConnectArg], ename: &str) -> Vec<(String, ast::Expr)> {
+        let order: Vec<String> = self
+            .entities
+            .get(ename)
+            .map(|d| d.ports.iter().map(|p| p.name.text.clone()).collect())
+            .unwrap_or_default();
+        conns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let port = match &c.field {
+                    Some(f) => f.text.clone(),
+                    None => order.get(i).cloned()?,
+                };
+                let value = c.value.clone().unwrap_or_else(|| {
+                    ast::Expr::Path(ast::Path {
+                        segments: vec![ast::Ident { text: port.clone(), span: c.span }],
+                        span: c.span,
+                    })
+                });
+                Some((port, value))
+            })
+            .collect()
+    }
+
     fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
         match ty {
             // A generic application: substitute the type parameters into the
@@ -3204,25 +3221,41 @@ impl<'a> Lowering<'a> {
                 Val::Scalar(self.lower_expr(e))
             }
             // A struct literal (named or name-less): one value per field.
-            // `.re` shorthand means `.re = re`.
-            ast::Expr::Construct { args, .. } => Val::Fields(
-                args.iter()
-                    .map(|a| {
-                        let v = match &a.value {
-                            Some(v) => self.lower_scalar_env(v, env),
-                            None => match env.get(&a.field.text) {
-                                Some(Val::Scalar(e)) => e.clone(),
-                                _ => self
-                                    .locals
-                                    .get(&a.field.text)
-                                    .map(|&id| Expr::Current(id))
-                                    .unwrap_or(Expr::Unknown),
-                            },
-                        };
-                        (a.field.text.clone(), v)
-                    })
-                    .collect(),
-            ),
+            // `.re` shorthand means `.re = re`; a positional arg binds to the
+            // struct's field at that position (needs a named struct type).
+            ast::Expr::Construct { ty, args, .. } => {
+                let field_order: Option<Vec<String>> = ty
+                    .as_ref()
+                    .and_then(type_head_name)
+                    .and_then(|n| self.raw_struct_fields(n))
+                    .map(|fs| fs.into_iter().map(|(n, _)| n).collect());
+                Val::Fields(
+                    args.iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let fname = match &a.field {
+                                Some(f) => f.text.clone(),
+                                None => field_order
+                                    .as_ref()
+                                    .and_then(|o| o.get(i).cloned())
+                                    .unwrap_or_default(),
+                            };
+                            let v = match &a.value {
+                                Some(v) => self.lower_scalar_env(v, env),
+                                None => match env.get(&fname) {
+                                    Some(Val::Scalar(e)) => e.clone(),
+                                    _ => self
+                                        .locals
+                                        .get(&fname)
+                                        .map(|&id| Expr::Current(id))
+                                        .unwrap_or(Expr::Unknown),
+                                },
+                            };
+                            (fname, v)
+                        })
+                        .collect(),
+                )
+            }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 let op_str = siox_syntax::pretty::bin_op(op);
                 if !matches!(op_str, "==" | "!=") {

@@ -741,8 +741,10 @@ impl Testbench<'_> {
             // A name-less struct literal initialises each field signal.
             Some(ast::Expr::Construct { args, .. }) => {
                 for c in args {
-                    if let Some(v) = &c.value {
-                        let field = format!("{}.{}", l.name.text, c.field.text);
+                    // Positional name-less struct locals need struct field
+                    // order the runner doesn't track; named/explicit only here.
+                    if let (Some(f), Some(v)) = (&c.field, &c.value) {
+                        let field = format!("{}.{}", l.name.text, f.text);
                         let val = self.eval_for(&field, v);
                         self.set_name(&field, val);
                     }
@@ -991,7 +993,10 @@ impl Testbench<'_> {
                     // struct local (`a = { .re = 3, .im = 4 };`).
                     if let ast::Expr::Construct { args, .. } = value {
                         for arg in args {
-                            let field = format!("{path}.{}", arg.field.text);
+                            // Named/shorthand only (positional needs struct
+                            // field order the runner doesn't track).
+                            let Some(f) = &arg.field else { continue };
+                            let field = format!("{path}.{}", f.text);
                             let v = arg
                                 .value
                                 .as_ref()

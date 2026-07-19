@@ -381,11 +381,16 @@ pub enum Expr {
     Array { elems: Vec<Expr>, span: Span },
 }
 
-/// A field connection inside an instance/struct literal. `value: None` is the
-/// shorthand `.clk` meaning `.clk = clk` (spec 3.12).
+/// A field connection inside an instance/struct literal (spec 3.12). Three
+/// shapes:
+/// - **explicit** `.clk = sig` — `field: Some`, `value: Some`.
+/// - **name shorthand** `.clk` (means `.clk = clk`) — `field: Some`,
+///   `value: None`.
+/// - **positional** `sig` — `field: None`, `value: Some`; bound to the port /
+///   struct field at this argument's ordinal position.
 #[derive(Clone, Debug)]
 pub struct ConnectArg {
-    pub field: Ident,
+    pub field: Option<Ident>,
     pub value: Option<Expr>,
     pub span: Span,
 }

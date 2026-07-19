@@ -469,7 +469,16 @@ impl Ctx<'_> {
         let init: HashMap<&str, &ast::Expr> = match &l.value {
             Some(ast::Expr::Construct { args, .. }) => args
                 .iter()
-                .filter_map(|a| a.value.as_ref().map(|v| (a.field.text.as_str(), v)))
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    let v = a.value.as_ref()?;
+                    // Positional args bind to the struct's field at position i.
+                    let name = match &a.field {
+                        Some(f) => f.text.as_str(),
+                        None => fields.get(i).map(|(n, _)| n.as_str())?,
+                    };
+                    Some((name, v))
+                })
                 .collect(),
             _ => HashMap::new(),
         };
@@ -537,7 +546,10 @@ impl Ctx<'_> {
             }
             ast::Expr::Construct { args, .. } => {
                 for arg in args {
-                    let field = format!("{name}.{}", arg.field.text);
+                    // Named/shorthand only; positional needs struct field order
+                    // (parity with the interpreter's testbench path).
+                    let Some(f) = &arg.field else { continue };
+                    let field = format!("{name}.{}", f.text);
                     let Some(&id) = self.map.get(&field) else { continue };
                     let e = match &arg.value {
                         Some(v) => self.value_for(id, v)?,
