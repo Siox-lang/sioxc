@@ -654,6 +654,50 @@ fn array_literal_agrees() {
 }
 
 #[test]
+fn positional_connection_agrees() {
+    // Positional instance connection `Add { a, b }` binds by port order; both
+    // engines must agree with the named form's behavior.
+    let d = lower(
+        "module m;\n\
+         entity Add { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         impl Add { y = a + b; }\n\
+         entity E { in p: uint[8]; in q: uint[8]; out y: uint[8]; }\n\
+         impl E { let s = Add { p, q, y }; }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let p: uint[8]; let q: uint[8]; let y: uint[8]; let dut = E { .p, .q, .y }; }\n",
+    );
+    for (p, q) in [(3u64, 4), (10, 20), (200, 55)] {
+        assert_agree(&d, &[("T.p", p), ("T.q", q)]);
+    }
+}
+
+#[test]
+fn post_decl_connection_agrees() {
+    // Post-declaration wiring `s1.a = x; s2.a = s1.y;` chains two instances
+    // through instance-qualified port assignments; both engines must agree.
+    let d = lower(
+        "module m;\n\
+         entity Inc { in a: uint[8]; out y: uint[8]; }\n\
+         impl Inc { y = a + 1; }\n\
+         entity E { in x: uint[8]; out z: uint[8]; }\n\
+         impl E {\n\
+           let s1 = Inc {};\n\
+           let s2 = Inc {};\n\
+           s1.a = x;\n\
+           s2.a = s1.y;\n\
+           z = s2.y;\n\
+         }\n\
+         #[top]\n\
+         entity T {}\n\
+         impl T { let x: uint[8]; let z: uint[8]; let dut = E { .x, .z }; }\n",
+    );
+    for x in [0u64, 5, 100, 254] {
+        assert_agree(&d, &[("T.x", x)]);
+    }
+}
+
+#[test]
 fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
     // state to the type argument (`Buf<uint[8]>`), so signals get the concrete

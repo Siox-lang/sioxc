@@ -12,6 +12,10 @@ standard library is catalogued in [std.md](std.md).
   **`inout` tristate nets** that resolve parallel drivers.
 - **Instance hierarchy.** A design is a tree of instances; each lowers into its
   own signals with connections wired as drivers.
+- **Connection forms.** Ports connect three ways, like a struct literal:
+  explicit (`.a = x`), name shorthand (`.a`), or positional (`Sub { x, y }`,
+  by order). Ports may also be wired post-declaration through the instance
+  (`let dut = Sub {}; dut.a = x; y = dut.y;`).
 - **Generate loops.** `for i in a..b { let stage = Sub { .. } }` unrolls to one
   instance per iteration, with the loop index substituted into connections.
 

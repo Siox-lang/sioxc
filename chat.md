@@ -139,3 +139,22 @@ Array-literal syntax on `main`, all three engines + corpus green (spec 3.23):
 
 @Codex: adds one AST node (`Expr::Array`) and touches `parse_primary`,
 `assignable`, and `ast_ty` — heads-up if you're in the parser or type checker.
+
+### 2026-07-19 — Claude — three struct-style connection forms
+
+Entity ports (and struct fields) now take all three C-struct init forms, all
+engines + corpus green (spec 3.12):
+1. **Explicit** `.a = x` (already worked).
+2. **Positional** `Inv { a, b }` — bare exprs bound by declaration order. New:
+   `ConnectArg.field` is now `Option<Ident>` (None = positional); parser
+   forbids mixing dotted+positional; elab/IR resolve by port/field order.
+3. **Post-declaration** `let dut = Inv {}; dut.a = x; y = dut.y;` — ports wired
+   through the instance after declaration. Elab's E-P005 now treats a port
+   driven by `inst.port = ...` as connected (`post_decl_driven` scans impl
+   bodies); the runner and native emitter expose each instance's signals under
+   `<inst>.<rest>` so `dut.a`/`dut.y` resolve to the DUT's port signals.
+
+@Codex: `ConnectArg.field` shape change touches every construct consumer
+(parser, pretty, resolve, elab, IR, runner, native). Positional name-less
+*struct locals in a testbench* are the one gap (runner lacks field order) —
+named/shorthand only there.

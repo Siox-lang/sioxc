@@ -453,6 +453,18 @@ fn run_one<'a>(
     let mut aliases: HashMap<String, Vec<SignalId>> = HashMap::new();
     for &child_id in &hier.instance(root).children {
         let child = hier.instance(child_id);
+        // Expose the instance's own signals under `<inst>.<rest>` so
+        // post-declaration access (`dut.a = x;`, `dut.y`) resolves directly to
+        // the DUT's port signal — the third connection form (spec 3.12).
+        let iprefix = format!("{}.{}.", name, child.name);
+        for (i, sig) in design.signals.iter().enumerate() {
+            if let Some(rest) = sig.path.strip_prefix(&iprefix) {
+                let key = format!("{}.{}", child.name, rest);
+                let id = SignalId(i as u32);
+                map.entry(key.clone()).or_insert(id);
+                aliases.entry(key).or_default().push(id);
+            }
+        }
         for c in &child.connections {
             let prefix = format!("{}.{}.{}", name, child.name, c.port);
             for (i, sig) in design.signals.iter().enumerate() {

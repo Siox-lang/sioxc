@@ -298,12 +298,16 @@ impl<'a> Elaborator<'a> {
                 // the child's resolved params.
                 let cparams = eval_params(sub_decl, spec.ty, &env);
                 let child_env = param_env(&cparams);
+                // Ports this instance drives post-declaration (`inst.p = x;`)
+                // count as connected for the missing-connection check.
+                let driven = self.post_decl_driven(entity_name, &spec.name);
                 let cconns = self.resolve_connections(
                     sub_decl,
                     spec.args,
                     spec.site,
                     &child_env,
                     &spec.loop_env,
+                    &driven,
                 );
                 self.check_widths(&parent_signals, &cconns, spec.site);
                 let child_attrs = spec
@@ -420,6 +424,23 @@ impl<'a> Elaborator<'a> {
 
     /// Resolve `{ .clk, .count = c }` against the sub-entity's ports, reporting
     /// unknown ports and missing required connections.
+    /// The ports of instance `inst` (inside entity `entity_name`'s impls) that
+    /// are driven post-declaration by `inst.port = ...` statements — the third
+    /// struct-style connection form (`let dut = E {}; dut.a = a;`).
+    fn post_decl_driven(&self, entity_name: &str, inst: &str) -> HashSet<String> {
+        let mut out = HashSet::new();
+        if let Some(impls) = self.impls.get(entity_name) {
+            for im in impls {
+                for item in &im.items {
+                    if let ImplItem::Stmt(s) = item {
+                        collect_field_assign_ports(s, inst, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn resolve_connections(
         &mut self,
         edecl: &EntityDecl,
@@ -427,6 +448,7 @@ impl<'a> Elaborator<'a> {
         site: Span,
         env: &HashMap<String, i64>,
         render_env: &HashMap<String, i64>,
+        driven: &HashSet<String>,
     ) -> Vec<Connection> {
         let ports: HashMap<&str, &Type> =
             edecl.ports.iter().map(|p| (p.name.text.as_str(), &p.ty)).collect();
@@ -476,8 +498,12 @@ impl<'a> Elaborator<'a> {
 
         for p in &edecl.ports {
             // An `in` port must be driven; an `out`/`inout` port may be left
-            // open — its value is still readable as `<instance>.<port>`.
-            if !connected.contains(&p.name.text) && p.dir == Some(Direction::In) {
+            // open — its value is still readable as `<instance>.<port>`. A port
+            // driven post-declaration (`dut.p = x;`) counts as connected.
+            if !connected.contains(&p.name.text)
+                && !driven.contains(&p.name.text)
+                && p.dir == Some(Direction::In)
+            {
                 self.sink.emit(
                     Diagnostic::error(format!(
                         "input port `{}` of `{}` is not connected",
@@ -764,6 +790,58 @@ fn parse_int(text: &str) -> Option<i64> {
 
 /// Render the local signal a port connects to. Bare paths render as their name;
 /// other expressions render to a placeholder for the tree view.
+/// Collect ports of instance `inst` assigned as `inst.port = ...` anywhere in
+/// a statement (walking `if`/`for`/`match` bodies). Used to treat those ports
+/// as connected for the missing-connection check (spec 3.12, form 3).
+fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
+    match s {
+        Stmt::Assign { target, .. } => {
+            if let Expr::Field { base, field, .. } = target {
+                if let Expr::Path(p) = base.as_ref() {
+                    if p.segments.len() == 1 && p.segments[0].text == inst {
+                        out.insert(field.text.clone());
+                    }
+                }
+            }
+        }
+        Stmt::If(iff) => {
+            for st in &iff.then.stmts {
+                collect_field_assign_ports(st, inst, out);
+            }
+            let mut br = iff.else_.as_deref();
+            while let Some(b) = br {
+                match b {
+                    ElseBranch::Block(blk) => {
+                        for st in &blk.stmts {
+                            collect_field_assign_ports(st, inst, out);
+                        }
+                        br = None;
+                    }
+                    ElseBranch::If(inner) => {
+                        for st in &inner.then.stmts {
+                            collect_field_assign_ports(st, inst, out);
+                        }
+                        br = inner.else_.as_deref();
+                    }
+                }
+            }
+        }
+        Stmt::For { body, .. } => {
+            for st in &body.stmts {
+                collect_field_assign_ports(st, inst, out);
+            }
+        }
+        Stmt::Match(m) => {
+            for arm in &m.arms {
+                for st in &arm.body.stmts {
+                    collect_field_assign_ports(st, inst, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
         Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),

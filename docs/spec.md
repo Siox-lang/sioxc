@@ -654,6 +654,37 @@ let c = Counter<W = 8> {
 };
 ```
 
+**Three connection forms** (the same three a struct literal accepts):
+
+1. **Explicit** — `.port = signal`, as above.
+2. **Name shorthand** — `.port`, meaning `.port = port` (a same-named signal
+   in scope).
+3. **Positional** — a bare expression bound by declaration order:
+
+   ```siox
+   let c = Counter<W = 8> { clk, rst, count };   // by port order
+   ```
+
+A block is either all-named (forms 1–2) or all-positional (form 3); the two
+cannot be mixed.
+
+**Post-declaration connection.** Instead of a connection block, an instance's
+ports may be wired after it is declared, addressing each port through the
+instance (the struct-field form). An input port is driven by assigning to it;
+an output port is read by naming it:
+
+```siox
+let dut = Counter<W = 8> {};
+dut.clk = clk;          // drive an input port
+dut.rst = rst;
+count = dut.count;      // read an output port
+```
+
+A port driven this way counts as connected (no missing-connection error), and
+`inst.port = producer.other` between two instances is a wire, exactly like a
+block connection. The forms may be combined: connect some ports in the block
+and the rest post-declaration.
+
 ---
 
 ### 3.13 Sequential assignments use next-state semantics
