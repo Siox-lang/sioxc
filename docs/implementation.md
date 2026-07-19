@@ -84,8 +84,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   entities are black boxes; `siox tree` prints the tree.
 - **Status (done):** instance hierarchy from `#[top]`/`#[test]` roots, parameter
   const-evaluation and substitution into concrete port types (`uint[W]` →
-  `uint[8]`), `.clk`-shorthand connection resolution, missing-port (`E-P005`) and
-  unknown-port checks, **port-connection width checking** (a port's width must
+  `uint[8]`), the three connection forms (explicit `.a = x`, shorthand `.a`,
+  positional `{ a, b }`) plus post-declaration wiring (`dut.a = x`), unknown-
+  port checks (unconnected inputs are a runtime concern, not a static error),
+  **port-connection width checking** (a port's width must
   match the signal it connects to, `E-P003`), **generate loops** (`for i in
   lo..hi { let inst = Sub { .. } }` unrolled over an inclusive, directional
   static range, the loop index substituted into names and indexed connections),

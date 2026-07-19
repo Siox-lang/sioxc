@@ -680,10 +680,15 @@ dut.rst = rst;
 count = dut.count;      // read an output port
 ```
 
-A port driven this way counts as connected (no missing-connection error), and
 `inst.port = producer.other` between two instances is a wire, exactly like a
 block connection. The forms may be combined: connect some ports in the block
 and the rest post-declaration.
+
+**Unconnected inputs are not a compile-time error.** Whether an input port ends
+up driven — by the block, a post-declaration assignment, or a conditional path
+— is a property of the running design, so elaboration does not require every
+input to be connected. An input left undriven reads its default value at
+runtime; any resulting problem surfaces there, not as a static error.
 
 ---
 
