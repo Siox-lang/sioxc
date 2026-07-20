@@ -138,6 +138,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("static const char *g_msg;\n");
     prog.push_str("static int g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
+    prog.push_str("static uint64_t sx_b64(double d) { uint64_t b; memcpy(&b, &d, 8); return b; }\n");
     // xorshift64* with the runner's constants: identical random sequences.
     prog.push_str(
         "static uint64_t g_rand = 0x9E3779B97F4A7C15ULL;\n\
@@ -1186,6 +1187,29 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether an operand reads a `real` signal.
+    fn is_real_operand(&self, e: &ast::Expr) -> bool {
+        expr_path(e)
+            .and_then(|p| self.map.get(&p))
+            .map(|&id| self.design.signals[id.0 as usize].real)
+            .unwrap_or(false)
+    }
+
+    /// An operand in a `real` comparison, as a C `double`: a real signal reads
+    /// its bits, an integer/decimal literal is a float constant, anything else
+    /// is cast.
+    fn c_real_operand(&self, e: &ast::Expr) -> Result<String, String> {
+        match e {
+            ast::Expr::Int { text, .. } => Ok(format!("((double){text})")),
+            _ if self.is_real_operand(e) => {
+                let path = expr_path(e).ok_or("real operand must be a signal")?;
+                let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
+                Ok(format!("sx_f64(sx_read({}))", id.0))
+            }
+            _ => Ok(format!("((double)({}))", self.expr(e)?)),
+        }
+    }
+
     /// The per-element C read-expressions of a `Char` array (a string) operand:
     /// a connected string reads each element signal, a local reads its C
     /// element locals. `None` if `e` isn't an array-shaped name.
@@ -1670,6 +1694,25 @@ impl Ctx<'_> {
                     let a = self.c_char_operand(lhs)?;
                     let b = self.c_char_operand(rhs)?;
                     return Ok(format!("({a} {} {b})", c_binop(op)?));
+                }
+                // A `real` operand switches to double semantics: reals read
+                // their bits as `double`, integer literals coerce (`z.re == 10`
+                // compares 10.0). A comparison yields an int; arithmetic yields
+                // the double's bit pattern (matching the runner).
+                if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
+                    let a = self.c_real_operand(lhs)?;
+                    let b = self.c_real_operand(rhs)?;
+                    let e = format!("({a} {} {b})", c_binop(op)?);
+                    let is_cmp = matches!(
+                        op,
+                        ast::BinOp::Eq
+                            | ast::BinOp::Ne
+                            | ast::BinOp::Lt
+                            | ast::BinOp::Le
+                            | ast::BinOp::Gt
+                            | ast::BinOp::Ge
+                    );
+                    return Ok(if is_cmp { e } else { format!("sx_b64((double){e})") });
                 }
                 // A typed operand inlines its family's operator impl (int's
                 // signed Div/Ord), matching the runner.

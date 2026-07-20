@@ -38,16 +38,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Engines
 
-- 🟡 **Native emitter — `real` testbenches** — `siox test --no-run` rejects a
-  testbench that reads a `real` DUT signal (`complex_test`); it runs on
-  `siox test` (JIT/interp). Native stimulus is integer-word only; `real` needs
-  `double` locals + float ops in the C emitter. (Whole-**string** equality
-  `o == "hello"` and scalar **`Char`** reads / comparisons like
-  `unicode(s[0])`, `c == 'H'` now work on native.)
 - 🟡 **Native emitter — runtime file I/O** — a runtime `std::fs`
   `read_to_string("path")` / `exists(..)` in a testbench (`fs_test`) isn't
   emitted to C yet (needs `fopen`/`fread`). The *compile-time* `read(..)`
-  initializer already bakes the file into the design.
+  initializer already bakes the file into the design. This is the last corpus
+  file that runs on JIT/interp but not the native binary. (Native `real`,
+  whole-string, and scalar `Char` testbenches now all work.)
 - 🟡 **Interpreter — FFI** — `extern "C"` calls need a linked C symbol, which the
   pure interpreter build has no way to resolve (`ffi_test` passes on JIT/native
   only).
