@@ -1168,6 +1168,60 @@ impl Ctx<'_> {
         (n > 0).then_some(n)
     }
 
+    /// The per-element C read-expressions of a `Char` array (a string) operand:
+    /// a connected string reads each element signal, a local reads its C
+    /// element locals. `None` if `e` isn't an array-shaped name.
+    fn c_string_elems(&self, e: &ast::Expr) -> Option<Vec<String>> {
+        let path = expr_path(e)?;
+        // A connected string: element signals `path[i]` in the map.
+        if let Some(n) = self.array_len(&path) {
+            return Some(
+                (0..n)
+                    .map(|i| format!("sx_read({})", self.map[&format!("{path}[{i}]")].0))
+                    .collect(),
+            );
+        }
+        // A testbench-local string: one C local per element (`sxl_path_i`).
+        let mut elems = Vec::new();
+        while self.locals.borrow().contains(&format!("{path}[{}]", elems.len())) {
+            elems.push(c_local_ident(&format!("{path}[{}]", elems.len())));
+        }
+        (!elems.is_empty()).then_some(elems)
+    }
+
+    /// Whole-string `==` / `!=` as a C boolean, when one operand is a string
+    /// literal (a string is a `Char` array). `None` if neither side is a string
+    /// literal (fall through to scalar handling).
+    fn c_string_cmp(
+        &self,
+        op: &ast::BinOp,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+    ) -> Result<Option<String>, String> {
+        let lit = |e: &ast::Expr| match e {
+            ast::Expr::StrLit { text, .. } => Some(text.chars().collect::<Vec<char>>()),
+            _ => None,
+        };
+        let (elems, chars) = match (lit(lhs), lit(rhs)) {
+            (Some(_), Some(_)) | (None, None) => return Ok(None), // two literals / no literal
+            (None, Some(c)) => (self.c_string_elems(lhs), c),
+            (Some(c), None) => (self.c_string_elems(rhs), c),
+        };
+        let Some(elems) = elems else { return Ok(None) };
+        let eq = matches!(op, ast::BinOp::Eq);
+        // A length mismatch is unequal — a constant either way.
+        if elems.len() != chars.len() {
+            return Ok(Some(if eq { "0".into() } else { "1".into() }));
+        }
+        let terms: Vec<String> = elems
+            .iter()
+            .zip(&chars)
+            .map(|(e, &c)| format!("({e} == {}ULL)", c as u32))
+            .collect();
+        let all = if terms.is_empty() { "1".to_string() } else { terms.join(" && ") };
+        Ok(Some(if eq { format!("({all})") } else { format!("(!({all}))") }))
+    }
+
     /// `await <duration> | <edge> | <condition>` in the native harness, on the
     /// generated event wheel: a duration runs the clocks up to `now + dur`; an
     /// edge or condition steps clock edges until it fires (bounded, mirroring
@@ -1585,6 +1639,13 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // Whole-string equality (`o == "hello"`): a string is a `Char`
+                // array, so compare element by element (matches the runner).
+                if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
+                    if let Some(v) = self.c_string_cmp(op, lhs, rhs)? {
+                        return Ok(v);
+                    }
+                }
                 // A typed operand inlines its family's operator impl (int's
                 // signed Div/Ord), matching the runner.
                 if let Some(v) = self.c_dispatch_binop(op, lhs, rhs)? {
