@@ -1514,7 +1514,42 @@ impl<'a> Lowering<'a> {
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
     /// the enclosing combinational conditions.
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        // An instance-array element (`stage[i] = Sub { .. }`, Sub an entity) is
+        // lowered structurally by `gather_generate`, not as a behavioral driver
+        // — skip it so unrolling a `for` doesn't mistake it for an assignment. A
+        // struct-construct assignment (`y = Point { .. }`) is real data and
+        // flows through normally.
+        if let ast::Stmt::Assign { value: ast::Expr::Construct { ty: Some(t), .. }, .. } = stmt {
+            if type_head_name(t).is_some_and(|n| self.entities.contains_key(n)) {
+                return;
+            }
+        }
         match stmt {
+            // `for i in lo..hi { .. }`: a generate loop — unroll over the static
+            // range, substituting the index, so per-iteration drivers (and
+            // nested generate-`if`s) are lowered concretely.
+            ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
+                if let (Some(a), Some(b)) =
+                    (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
+                {
+                    let saved = self.cur_env.get(&var.text).copied();
+                    for i in loop_range(a, b) {
+                        self.cur_env.insert(var.text.clone(), i);
+                        for s in &body.stmts {
+                            let s = subst_stmt(s, &var.text, i);
+                            self.lower_stmt(&s, cond.clone());
+                        }
+                    }
+                    match saved {
+                        Some(v) => {
+                            self.cur_env.insert(var.text.clone(), v);
+                        }
+                        None => {
+                            self.cur_env.remove(&var.text);
+                        }
+                    }
+                }
+            }
             ast::Stmt::Assign { target, value, after, span } => {
                 // `after` delays are testbench stimulus, not synthesizable
                 // hardware (Phase 1): reject rather than silently drop.
@@ -1728,6 +1763,29 @@ impl<'a> Lowering<'a> {
                         self.lower_event_else(eb, neg, &mut updates);
                     }
                     self.out.event_blocks.push(EventBlock { condition, updates });
+                } else if let Some(k) = eval_const(&iff.cond, &self.cur_env) {
+                    // A generate-if: the condition is a compile-time constant
+                    // (a parameter/const), so only the taken branch is lowered.
+                    // Its instances were gathered structurally; lowering the
+                    // untaken branch too would add a spurious driver that
+                    // collides with a conditionally-instantiated block.
+                    if k != 0 {
+                        for s in &iff.then.stmts {
+                            self.lower_stmt(s, cond.clone());
+                        }
+                    } else {
+                        match iff.else_.as_deref() {
+                            Some(ast::ElseBranch::Block(b)) => {
+                                for s in &b.stmts {
+                                    self.lower_stmt(s, cond.clone());
+                                }
+                            }
+                            Some(ast::ElseBranch::If(inner)) => {
+                                self.lower_stmt(&ast::Stmt::If(inner.clone()), cond.clone());
+                            }
+                            None => {}
+                        }
+                    }
                 } else {
                     // A signal assigned on every path through this if/else (a
                     // terminal `else` supplies the complement) is fully covered
@@ -2099,7 +2157,32 @@ impl<'a> Lowering<'a> {
     }
 
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
+        // Prefer a constant-folded element path (`w[i+1]` with `i` bound in a
+        // generate loop -> `w[3]`), so an unrolled constant index resolves to a
+        // static element rather than falling through to a dynamic array write.
+        if let Some(p) = self.folded_elem_path(target) {
+            if let Some(&id) = self.locals.get(&p) {
+                return Some(id);
+            }
+        }
         expr_path(target).and_then(|p| self.locals.get(&p).copied())
+    }
+
+    /// Render an element/field path with every index constant-folded through
+    /// the current generate-loop environment (`w[i+1]` -> `w[3]`). `None` if any
+    /// index is not a compile-time constant.
+    fn folded_elem_path(&self, e: &ast::Expr) -> Option<String> {
+        match e {
+            ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+            ast::Expr::Field { base, field, .. } => {
+                Some(format!("{}.{}", self.folded_elem_path(base)?, field.text))
+            }
+            ast::Expr::Index { base, index, .. } => {
+                let i = eval_const(index, &self.cur_env)?;
+                Some(format!("{}[{}]", self.folded_elem_path(base)?, i))
+            }
+            _ => None,
+        }
     }
 
     /// Signals assigned on *every* path through an if/else — a terminal `else`
@@ -4203,6 +4286,30 @@ fn gather_generate(
                 }
             }
         }
+        // `if <const> { .. } else { .. }`: a generate-if — the condition is
+        // constant-folded and only the taken branch's instances are gathered.
+        // A non-constant condition is behavioral, not a generate-if.
+        ast::Stmt::If(iff) => {
+            if let Some(c) = eval_const(&iff.cond, env) {
+                if c != 0 {
+                    for st in &iff.then.stmts {
+                        gather_generate(st, env, loop_idx, entities, out);
+                    }
+                } else {
+                    match iff.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(b)) => {
+                            for st in &b.stmts {
+                                gather_generate(st, env, loop_idx, entities, out);
+                            }
+                        }
+                        Some(ast::ElseBranch::If(inner)) => {
+                            gather_generate(&ast::Stmt::If(inner.clone()), env, loop_idx, entities, out);
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -4402,8 +4509,36 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
             after: after.as_ref().map(|a| subst_expr(a, var, val)),
             span: *span,
         },
+        // Recurse into `if`/`match` so a generate loop's index is substituted
+        // inside their branches too (`for i { if i<N { .. w[i] .. } }`).
+        ast::Stmt::If(iff) => ast::Stmt::If(subst_if(iff, var, val)),
+        ast::Stmt::Match(m) => {
+            let mut m = m.clone();
+            m.scrutinee = subst_expr(&m.scrutinee, var, val);
+            for arm in &mut m.arms {
+                arm.body.stmts = arm.body.stmts.iter().map(|s| subst_stmt(s, var, val)).collect();
+            }
+            ast::Stmt::Match(m)
+        }
         other => other.clone(),
     }
+}
+
+fn subst_if(iff: &ast::IfStmt, var: &str, val: i64) -> ast::IfStmt {
+    let mut n = iff.clone();
+    n.cond = subst_expr(&iff.cond, var, val);
+    n.then.stmts = iff.then.stmts.iter().map(|s| subst_stmt(s, var, val)).collect();
+    n.else_ = iff.else_.as_ref().map(|eb| {
+        Box::new(match eb.as_ref() {
+            ast::ElseBranch::Block(b) => {
+                let mut b = b.clone();
+                b.stmts = b.stmts.iter().map(|s| subst_stmt(s, var, val)).collect();
+                ast::ElseBranch::Block(b)
+            }
+            ast::ElseBranch::If(inner) => ast::ElseBranch::If(subst_if(inner, var, val)),
+        })
+    });
+    n
 }
 
 /// Deep-clone an expression, replacing every bare `var` reference with the

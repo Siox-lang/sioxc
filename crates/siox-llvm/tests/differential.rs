@@ -698,6 +698,61 @@ fn post_decl_connection_agrees() {
 }
 
 #[test]
+fn generate_if_agrees() {
+    // A generate-`if` on a parameter conditionally instantiates a sub-entity:
+    // `EN > 0` inserts an `Inc`, else the input passes through. Both engines
+    // must agree at each specialization.
+    for en in [1u64, 0] {
+        let d = lower(&format!(
+            "module m;\n\
+             entity Inc {{ in a: uint[8]; out y: uint[8]; }}\n\
+             impl Inc {{ y = a + 1; }}\n\
+             entity Top<EN: integer> {{ in a: uint[8]; out y: uint[8]; }}\n\
+             impl Top<EN: integer> {{\n\
+               if EN > 0 {{ let s: Inc = {{ .a = a, .y = y }}; }} else {{ y = a; }}\n\
+             }}\n\
+             #[top]\n\
+             entity T {{}}\n\
+             impl T {{ let a: uint[8]; let y: uint[8]; let dut: Top<EN = {en}> = {{ .a, .y }}; }}\n"
+        ));
+        for a in [0u64, 5, 200] {
+            assert_agree(&d, &[("T.a", a)]);
+        }
+    }
+}
+
+#[test]
+fn generate_for_if_chain_agrees() {
+    // A generate-`for` with a nested generate-`if` builds a chain of `N` `Inc`
+    // stages (out of 3), the rest passing through — instance-array elements
+    // created conditionally. Both engines must agree for each N.
+    for n in [0u64, 1, 2, 3] {
+        let d = lower(&format!(
+            "module m;\n\
+             entity Inc {{ in a: uint[8]; out y: uint[8]; }}\n\
+             impl Inc {{ y = a + 1; }}\n\
+             entity Chain<N: integer> {{ in a: uint[8]; out y: uint[8]; }}\n\
+             impl Chain<N: integer> {{\n\
+               let w: uint[8][4];\n\
+               let stage: Inc[3];\n\
+               w[0] = a;\n\
+               for i in 0..2 {{\n\
+                 if i < N {{ stage[i] = Inc {{ .a = w[i], .y = w[i+1] }}; }}\n\
+                 else {{ w[i+1] = w[i]; }}\n\
+               }}\n\
+               y = w[3];\n\
+             }}\n\
+             #[top]\n\
+             entity T {{}}\n\
+             impl T {{ let a: uint[8]; let y: uint[8]; let dut: Chain<N = {n}> = {{ .a, .y }}; }}\n"
+        ));
+        for a in [0u64, 10, 250] {
+            assert_agree(&d, &[("T.a", a)]);
+        }
+    }
+}
+
+#[test]
 fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
     // state to the type argument (`Buf<uint[8]>`), so signals get the concrete

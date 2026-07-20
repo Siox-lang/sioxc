@@ -460,7 +460,32 @@ impl<'a> Elaborator<'a> {
                     }
                 }
             }
+            // `if <const> { .. } else { .. }`: a generate-if. The condition is
+            // constant-folded; only the taken branch's instances are gathered.
+            // A non-constant condition is a behavioral `if`, not a generate-if.
+            Stmt::If(iff) => self.gather_if(iff, env, out),
             _ => {}
+        }
+    }
+
+    fn gather_if(&self, iff: &'a IfStmt, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+        match eval(&iff.cond, env) {
+            ParamValue::Int(0) => match iff.else_.as_deref() {
+                Some(ElseBranch::Block(b)) => {
+                    for st in &b.stmts {
+                        self.gather_stmt(st, env, out);
+                    }
+                }
+                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, out),
+                None => {}
+            },
+            ParamValue::Int(_) => {
+                for st in &iff.then.stmts {
+                    self.gather_stmt(st, env, out);
+                }
+            }
+            // Non-constant condition: behavioral, no instances gathered here.
+            ParamValue::Unknown => {}
         }
     }
 
@@ -712,6 +737,13 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
                 BinOp::Shr => Int(a >> b),
                 BinOp::And => Int(a & b),
                 BinOp::Or => Int(a | b),
+                // Comparisons yield 1/0, for `if`-generate conditions.
+                BinOp::Eq => Int((a == b) as i64),
+                BinOp::Ne => Int((a != b) as i64),
+                BinOp::Lt => Int((a < b) as i64),
+                BinOp::Le => Int((a <= b) as i64),
+                BinOp::Gt => Int((a > b) as i64),
+                BinOp::Ge => Int((a >= b) as i64),
                 _ => Unknown,
             },
             _ => Unknown,

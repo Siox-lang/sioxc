@@ -88,10 +88,13 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   const-evaluation and substitution into concrete port types (`uint[W]` →
   `uint[8]`), `.clk`-shorthand connection resolution, missing-port (`E-P005`) and
   unknown-port checks, **port-connection width checking** (a port's width must
-  match the signal it connects to, `E-P003`), **generate loops** (`for i in
-  lo..hi { let inst = Sub { .. } }` unrolled over an inclusive, directional
-  static range, the loop index substituted into names and indexed connections),
-  extern black boxes, cycle detection, and `siox tree`.
+  match the signal it connects to, `E-P003`), **generate constructs** — a
+  `for i in lo..hi { .. }` loop unrolled over an inclusive, directional static
+  range (the loop index substituted into names and indexed connections), and a
+  generate-`if`/`else` whose compile-time-constant condition selects which
+  branch's instances and drivers are built; the two nest freely. Non-constant
+  conditions stay behavioral. Also extern black boxes, cycle detection, and
+  `siox tree`.
 - **Status (done, cont.):** **sub-instance port access** — an instance's ports
   are readable as `<inst>.<port>`, so an output may be left unconnected at
   construction and read directly (only `in` ports must be wired). **Instance

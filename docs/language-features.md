@@ -19,8 +19,11 @@ standard library is catalogued in [std.md](std.md).
   explicit (`.a = x`), name shorthand (`.a`), or positional (`{ x, y }`, by
   order). Ports may also be wired post-declaration through the instance
   (`let dut: Sub; dut.a = x; y = dut.y;`).
-- **Generate loops.** `for i in a..b { stage[i] = Sub { .. } }` unrolls to one
-  instance per iteration, with the loop index substituted into connections.
+- **Generate constructs.** A `for i in a..b { .. }` loop unrolls over a static
+  range (instances *and* per-iteration drivers), and a generate-`if`/`else`
+  with a compile-time-constant condition selects which branch is built. The two
+  nest, so hardware structure can be parameterized: `for i { if i < N { stage[i]
+  = Sub { .. } } }`. A non-constant condition stays a behavioral `if`.
 
 ## Logic
 

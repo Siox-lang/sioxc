@@ -184,3 +184,21 @@ kept instead: an entity is a hardware instance, not a compile-time value, so
 `const x: Entity = ..` is an error (**E-P013**, `check_const_not_entity` in
 types; resolves the head's `DefKind`, skipping shadowing generic params). The
 corpus/tests/docs `inst` migration was reverted with it.
+
+### 2026-07-20 — Claude — generate-`if` + behavioral generate-`for`
+
+Generate constructs are now complete. Generate-`if`: a compile-time-constant
+`if`/`else` selects which branch's instances/drivers are built (gather arms in
+elab `gather_if` + IR `gather_generate`; `lower_stmt` const-folds a constant
+`if` so the untaken branch adds no driver). Behavioral generate-`for`:
+`lower_stmt` now unrolls `Stmt::For` (it previously only gathered *instances*
+from loops, not drivers). The two nest.
+
+Fixes along the way: `subst_stmt` now recurses into `if`/`match` bodies (it
+silently `clone()`d them before, so a loop index inside a branch wasn't
+substituted → dynamic array reads/writes + false combinational loops);
+`target_signal` const-folds a constant element index (`w[i+1]` → `w[3]`); the
+`for`-unroll skips entity-construct assigns (`stage[i] = Sub{..}`, structural)
+but NOT struct-construct assigns (`y = Point{..}`, real data). Extended elab
+`eval` with comparisons. Tests: `generate_if_agrees`,
+`generate_for_if_chain_agrees`, corpus `generate_if_test`.
