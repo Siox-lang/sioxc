@@ -12,7 +12,7 @@
 //! the hierarchy can be printed as a tree (`siox tree`).
 //!
 //! Phase-1 scope of this pass: roots are `#[top]`/`#[test]` entities; instances
-//! are top-level `let x = Entity<args> { ... }` constructs in an impl body.
+//! are top-level `let x: Entity<args> = { ... }` constructs in an impl body.
 //! Generated instances (loops/arrays), bus-mode leaf expansion, and full
 //! direction analysis are noted as follow-ups.
 
@@ -97,7 +97,7 @@ pub struct Instance {
     /// Instance name (the `let` binding; equals the entity name for a root).
     pub name: String,
     /// Metadata attributes from the instance `let` (`#[external_clock = true]
-    /// let p = Pll { .. };`) — (name, pretty-printed value). Preserved for
+    /// let p: Pll = { .. };`) — (name, pretty-printed value). Preserved for
     /// external tools (netlist/constraint emission, spec 3.5).
     pub attrs: Vec<(String, Option<String>)>,
     /// Entity type being instantiated.
@@ -362,7 +362,7 @@ impl<'a> Elaborator<'a> {
 
     /// An instance `let`, in either form, as `(instance type, connections,
     /// site span)`:
-    /// - `let x = Entity { .. }` — the type is on the construct.
+    /// - `let x: Entity = { .. }` — the type is on the construct.
     /// - `let x: Entity = { .. }` — the type is the annotation; the value is a
     ///   name-less construct (`{ .a = a }`, dotted) or, since a positional/empty
     ///   `{ .. }` lexes as a concatenation, a concat whose parts are positional
@@ -468,7 +468,7 @@ impl<'a> Elaborator<'a> {
     /// unknown ports and missing required connections.
     /// The ports of instance `inst` (inside entity `entity_name`'s impls) that
     /// are driven post-declaration by `inst.port = ...` statements — the third
-    /// struct-style connection form (`let dut = E {}; dut.a = a;`).
+    /// struct-style connection form (`let dut: E; dut.a = a;`).
     fn post_decl_driven(&self, entity_name: &str, inst: &str) -> HashSet<String> {
         let mut out = HashSet::new();
         if let Some(impls) = self.impls.get(entity_name) {
@@ -964,7 +964,7 @@ mod tests {
           let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let count: uint[8];\n\
-          let dut = Counter<W = 8> {\n\
+          let dut: Counter<W = 8> = {\n\
             .clk,\n\
             .rst,\n\
             .count = count,\n\
@@ -1025,7 +1025,7 @@ mod tests {
             impl Top {\n\
               let a: uint[4];\n\
               let b: uint[8];\n\
-              let dut = Sub<W = 8> { .a = a, .b = b };\n\
+              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1041,7 +1041,7 @@ mod tests {
             impl Top {\n\
               let a: uint[8];\n\
               let b: uint[8];\n\
-              let dut = Sub<W = 8> { .a = a, .b = b };\n\
+              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
@@ -1058,7 +1058,7 @@ mod tests {
             impl H {\n\
               let clk: Bit = '0';\n\
               let count: uint[8];\n\
-              let dut = Counter<W = 8> { .clk, .count };\n\
+              let dut: Counter<W = 8> = { .clk, .count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1073,7 +1073,7 @@ mod tests {
             entity H {}\n\
             impl H {\n\
               let count: uint[8];\n\
-              let dut = Counter { .count, .nope = count };\n\
+              let dut: Counter = { .count, .nope = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1088,7 +1088,7 @@ mod tests {
             impl H {\n\
               let addr: uint[4];\n\
               let data: uint[8];\n\
-              let mem = Ram<W = 4> { .addr, .data };\n\
+              let mem: Ram<W = 4> = { .addr, .data };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0);

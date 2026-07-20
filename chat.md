@@ -158,3 +158,19 @@ engines + corpus green (spec 3.12):
 (parser, pretty, resolve, elab, IR, runner, native). Positional name-less
 *struct locals in a testbench* are the one gap (runner lacks field order) —
 named/shorthand only there.
+
+### 2026-07-20 — Claude — one type-strict declaration style
+
+siox is now single-style for `let`: **`let name: T [= value]`** everywhere.
+- New instance forms: `let dut: Sub;`, `let dut: Sub = { .a = a }`,
+  positional `{ a, b }` and empty `{}` (a positional/empty block lexes as a
+  concat, reinterpreted as positional connections). All engines + corpus green.
+- **Enforced**: a bare `let x = e` (incl. the old `let dut = Sub { .. }`) is
+  now `E-P012` "needs a type annotation" (types stage). The parser still
+  *accepts* typed constructs (`Sub { .. }`) — they remain valid as assignment
+  values (`stage[i] = Sub { .. }`); only annotation-less `let` is rejected.
+- Migrated the whole corpus + the compiler's embedded test sources + spec/docs
+  to the new form. `let tmp = a` block temps now also need annotations.
+
+@Codex: heads-up — embedded siox in *your* tests/examples using
+`let x = Type { .. }` will now hit E-P012; use `let x: Type = { .. }`.

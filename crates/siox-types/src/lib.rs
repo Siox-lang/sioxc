@@ -668,6 +668,7 @@ impl<'a> Checker<'a> {
             match item {
                 ImplItem::Const(c) => self.check_expr(&c.value, &sym),
                 ImplItem::Let(l) => {
+                    self.require_let_annotation(l);
                     // Per-instance attributes: valid for `let` targets or when
                     // a named target matches the declaration's type (the
                     // instance's entity, or the annotated type head).
@@ -756,6 +757,7 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, s: &Stmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
         match s {
             Stmt::Let(l) => {
+                self.require_let_annotation(l);
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v, sym);
@@ -957,6 +959,31 @@ impl<'a> Checker<'a> {
                 format!("attribute `{name}` expects {want} value"),
             );
         }
+    }
+
+    /// Phase 1 is type-strict: every `let` binding declares its type
+    /// (`let x: T [= e]`), never inferring it from the value. A bare
+    /// `let x = e` is rejected — including the old instance form
+    /// `let dut = Sub { .. }`, which is now `let dut: Sub = { .. }`.
+    fn require_let_annotation(&mut self, l: &LetDecl) {
+        if l.ty.is_some() {
+            return;
+        }
+        let mut diag = Diagnostic::error(format!(
+            "`let {}` needs a type annotation",
+            l.name.text
+        ))
+        .with_code(codes::MISSING_TYPE_ANNOTATION)
+        .at(l.span);
+        // Point at the clean form for the common instance case.
+        if let Some(Expr::Construct { ty: Some(t), .. }) = &l.value {
+            if let Some(head) = type_head_name(t) {
+                diag = diag.help(format!("write `let {}: {} = {{ .. }};`", l.name.text, head));
+            }
+        } else {
+            diag = diag.help(format!("write `let {}: <type> = ...;`", l.name.text));
+        }
+        self.sink.emit(diag);
     }
 
     /// Spec 3.17: a `let name: T = e` initializer must be assignable to `T`.

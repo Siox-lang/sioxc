@@ -484,7 +484,7 @@ fn run_one<'a>(
         }
     }
 
-    // Names elaboration turned into DUT instances (any `let dut = Sub {..}` /
+    // Names elaboration turned into DUT instances (any `let dut: Sub = {..}` /
     // `let dut: Sub [= {..}]`): their connections are already wired, so
     // `apply_let` must not also materialize them as struct/signal locals.
     let instance_names: HashSet<String> = hier
@@ -744,7 +744,7 @@ impl Testbench<'_> {
     /// Apply a `let` in statement order: DUT-connected names write signals;
     /// an unconnected scalar becomes a testbench local.
     fn apply_let(&mut self, l: &ast::LetDecl) {
-        // A DUT instance (`let dut = Sub {..}` / `let dut: Sub [= {..}]`) is
+        // A DUT instance (`let dut: Sub = {..}` / `let dut: Sub [= {..}]`) is
         // wired by elaboration; the testbench let itself does nothing here.
         if self.instance_names.contains(&l.name.text) {
             return;

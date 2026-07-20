@@ -87,6 +87,19 @@ attr
 
 The language should avoid extra syntax where context is enough.
 
+**Bindings are type-strict.** Every `let` declares its type — `let name: T`,
+optionally with a value `let name: T = value`. The type is never inferred from
+the value: a bare `let x = e` is an error (`E-P012`). This is the single
+declaration form for signals, locals, and instances alike; an instance's
+connections are a name-less block that takes its type from the annotation:
+
+```siox
+let count: uint[8];                    // signal
+let value: uint[8] = 0;                // signal with reset value
+let dut: Counter<W = 8> = { .clk, .rst, .count };   // instance
+let dut: Counter<W = 8>;               // instance, ports wired after
+```
+
 ---
 
 ## 3. Phase 1 hard rules
@@ -159,7 +172,7 @@ entity Counter<W: integer> {
 Instantiation:
 
 ```siox
-let c = Counter<W = 8> {
+let c: Counter<W = 8> = {
     .count = count8,
 };
 ```
@@ -167,7 +180,7 @@ let c = Counter<W = 8> {
 or positional:
 
 ```siox
-let c = Counter<8> {
+let c: Counter<8> = {
     .count = count8,
 };
 ```
@@ -319,7 +332,7 @@ of it — vendor metadata, like Vivado's `ASYNC_REG`/`DONT_TOUCH`:
 pub attr external_clock: Bool for Pll;
 
 #[external_clock = true]
-let p = Pll { .clk, .locked };
+let p: Pll = { .clk, .locked };
 ```
 
 Applying it to anything else is `E-P006`. Instance attributes are preserved
@@ -627,7 +640,7 @@ if clk::rising {
 Instance connection:
 
 ```siox
-let c = Counter<W = 8> {
+let c: Counter<W = 8> = {
     .clk = clk,
     .rst = rst,
     .count = count,
@@ -637,7 +650,7 @@ let c = Counter<W = 8> {
 Shorthand connection:
 
 ```siox
-let c = Counter<W = 8> {
+let c: Counter<W = 8> = {
     .clk,
     .rst,
     .count,
@@ -647,7 +660,7 @@ let c = Counter<W = 8> {
 means:
 
 ```siox
-let c = Counter<W = 8> {
+let c: Counter<W = 8> = {
     .clk = clk,
     .rst = rst,
     .count = count,
@@ -662,7 +675,7 @@ let c = Counter<W = 8> {
 3. **Positional** — a bare expression bound by declaration order:
 
    ```siox
-   let c = Counter<W = 8> { clk, rst, count };   // by port order
+   let c: Counter<W = 8> = { clk, rst, count };   // by port order
    ```
 
 A block is either all-named (forms 1–2) or all-positional (form 3); the two
@@ -674,7 +687,7 @@ instance (the struct-field form). An input port is driven by assigning to it;
 an output port is read by naming it:
 
 ```siox
-let dut = Counter<W = 8> {};
+let dut: Counter<W = 8> = {};
 dut.clk = clk;          // drive an input port
 dut.rst = rst;
 count = dut.count;      // read an output port
@@ -713,7 +726,7 @@ Local variables update immediately:
 
 ```siox
 if clk::rising {
-    let tmp = a;
+    let tmp: uint[8] = a;
     a = b;
     b = tmp;
 }
@@ -859,9 +872,9 @@ Avoid hidden conversions between unrelated digital types.
 Use constructors/casts:
 
 ```siox
-let b = Bit(x);
-let l = Logic(b);
-let u = uint[8](value);
+let b: Bit = Bit(x);
+let l: Logic = Logic(b);
+let u: uint[8] = uint[8](value);
 ```
 
 This is especially important for `Logic` to `Bit` because unknown/high-impedance states may need explicit handling.
@@ -1692,7 +1705,7 @@ Implement:
 Source:
 
 ```siox
-let c = Counter<W = 8> {
+let c: Counter<W = 8> = {
     .clk,
     .rst,
     .en,
@@ -2035,7 +2048,7 @@ impl CounterTest {
     let en: Bit = '1';
     let count: uint[8];
 
-    let dut = Counter<W = 8> {
+    let dut: Counter<W = 8> = {
         .clk,
         .rst,
         .en,

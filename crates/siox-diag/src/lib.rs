@@ -199,6 +199,9 @@ pub mod codes {
     pub const INVALID_PATTERN: &str = "E-P009";
     pub const PHASE2_SYNTAX: &str = "E-P010";
     pub const UNRESOLVED_IMPORT: &str = "E-P011";
+    /// A `let` binding without a type annotation (`let x = ...`): Phase 1 is
+    /// type-strict — every binding declares its type (`let x: T [= ...]`).
+    pub const MISSING_TYPE_ANNOTATION: &str = "E-P012";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

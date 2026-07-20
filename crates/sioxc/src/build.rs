@@ -327,7 +327,7 @@ struct Ctx<'a> {
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
-    /// Names elaboration turned into DUT instances (`let dut = Sub {..}` /
+    /// Names elaboration turned into DUT instances (`let dut: Sub = {..}` /
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
     instance_names: std::collections::HashSet<String>,
@@ -456,7 +456,7 @@ impl Ctx<'_> {
     /// Materialize an *unconnected* struct-typed testbench local as one C local
     /// per field (`let p: Pkt;` -> `uint64_t sxl_p_a = 0, sxl_p_b = 0;`),
     /// recording each field's width/family and the receiver type. A struct
-    /// literal initializer (`let p = Pkt { .a = 1 };`) writes the fields. A
+    /// literal initializer (`let p: Pkt = { .a = 1 };`) writes the fields. A
     /// *connected* struct port (fields in the signal map) returns `false` so the
     /// existing signal path handles it. Returns `true` when handled.
     fn try_declare_struct_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {

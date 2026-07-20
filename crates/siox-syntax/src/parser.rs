@@ -492,7 +492,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_impl_item(&mut self) -> Option<ImplItem> {
-        // `#[external_clock] let p = Pll { .. };` — per-instance attributes.
+        // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
         if !attrs.is_empty() && !self.at(TokenKind::Let) {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
