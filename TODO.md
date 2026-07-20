@@ -42,8 +42,8 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   testbench that reads a `real` DUT signal (`complex_test`); it runs on
   `siox test` (JIT/interp). Native stimulus is integer-word only; `real` needs
   `double` locals + float ops in the C emitter. (Whole-**string** equality
-  `o == "hello"` now works on native; scalar `Char` reads like `unicode(s[0])`
-  still don't.)
+  `o == "hello"` and scalar **`Char`** reads / comparisons like
+  `unicode(s[0])`, `c == 'H'` now work on native.)
 - 🟡 **Native emitter — runtime file I/O** — a runtime `std::fs`
   `read_to_string("path")` / `exists(..)` in a testbench (`fs_test`) isn't
   emitted to C yet (needs `fopen`/`fread`). The *compile-time* `read(..)`

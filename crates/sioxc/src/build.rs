@@ -1168,6 +1168,24 @@ impl Ctx<'_> {
         (n > 0).then_some(n)
     }
 
+    /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
+    /// is a code point, not a logic code).
+    fn is_char_operand(&self, e: &ast::Expr) -> bool {
+        expr_path(e)
+            .and_then(|p| self.map.get(&p))
+            .map(|&id| self.design.signals[id.0 as usize].char)
+            .unwrap_or(false)
+    }
+
+    /// An operand in a `Char` comparison: a `'x'` literal is its Unicode code
+    /// point; anything else translates normally.
+    fn c_char_operand(&self, e: &ast::Expr) -> Result<String, String> {
+        match e {
+            ast::Expr::LogicLit { ch, .. } => Ok(format!("{}ULL", *ch as u32)),
+            _ => self.expr(e),
+        }
+    }
+
     /// The per-element C read-expressions of a `Char` array (a string) operand:
     /// a connected string reads each element signal, a local reads its C
     /// element locals. `None` if `e` isn't an array-shaped name.
@@ -1646,6 +1664,13 @@ impl Ctx<'_> {
                         return Ok(v);
                     }
                 }
+                // A `Char` operand reads a code point, so a `'x'` literal
+                // counterpart is its Unicode value (not a logic code).
+                if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
+                    let a = self.c_char_operand(lhs)?;
+                    let b = self.c_char_operand(rhs)?;
+                    return Ok(format!("({a} {} {b})", c_binop(op)?));
+                }
                 // A typed operand inlines its family's operator impl (int's
                 // signed Div/Ord), matching the runner.
                 if let Some(v) = self.c_dispatch_binop(op, lhs, rhs)? {
@@ -1664,15 +1689,16 @@ impl Ctx<'_> {
         })
     }
 
-    /// Reject real/char signals in expressions — the first cut is integer only.
+    /// Reject `real` signals in scalar expressions — native stimulus is
+    /// integer-word only for now. A `Char` reads as its code point (a plain
+    /// integer), so it is allowed.
     fn check_scalar(&self, id: SignalId) -> Result<(), String> {
         let s = &self.design.signals[id.0 as usize];
-        if s.real || s.char {
+        if s.real {
             return Err(format!(
-                "signal `{}` is {}; siox build does not support real/char/string \
-                 testbenches yet (use `siox test`)",
-                s.path,
-                if s.real { "real" } else { "Char" }
+                "signal `{}` is real; siox build does not support real testbenches \
+                 yet (use `siox test`)",
+                s.path
             ));
         }
         Ok(())
