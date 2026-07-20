@@ -964,6 +964,14 @@ impl<'a> Checker<'a> {
         let Some(t) = decl_ty else { return };
         self.check_value_range(t, value);
         let lhs = self.ast_ty(t);
+        // `let x: Named = { .. }` is a construction (instance/struct literal),
+        // not a data assignment: a positional/empty block lexes as a concat,
+        // and a dotted one as a name-less construct. Either way it is checked
+        // structurally by elaboration, not by initializer compatibility.
+        if matches!(lhs, Ty::Named(_)) && matches!(value, Expr::Construct { .. } | Expr::Concat { .. })
+        {
+            return;
+        }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(

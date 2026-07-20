@@ -303,7 +303,7 @@ impl<'a> Elaborator<'a> {
                 let driven = self.post_decl_driven(entity_name, &spec.name);
                 let cconns = self.resolve_connections(
                     sub_decl,
-                    spec.args,
+                    &spec.args,
                     spec.site,
                     &child_env,
                     &spec.loop_env,
@@ -364,13 +364,15 @@ impl<'a> Elaborator<'a> {
     /// site span)`:
     /// - `let x = Entity { .. }` — the type is on the construct.
     /// - `let x: Entity = { .. }` — the type is the annotation; the value is a
-    ///   name-less construct supplying the connections.
+    ///   name-less construct (`{ .a = a }`, dotted) or, since a positional/empty
+    ///   `{ .. }` lexes as a concatenation, a concat whose parts are positional
+    ///   connections.
     /// - `let x: Entity;` — the type is the annotation; no connections (ports
     ///   wired post-declaration).
-    fn instance_let(&self, l: &'a LetDecl) -> Option<(&'a Type, &'a [ConnectArg], Span)> {
+    fn instance_let(&self, l: &'a LetDecl) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
         // Old form: `= Entity { .. }`.
         if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
-            return Some((ty, args, *span));
+            return Some((ty, args.clone(), *span));
         }
         // New forms need a bare entity-typed annotation. An *array* of an
         // entity (`let stage: Inc[N]`) is an instance array, built element-wise
@@ -383,10 +385,19 @@ impl<'a> Elaborator<'a> {
             return None;
         }
         match &l.value {
-            // `let x: Entity = { .. }` — name-less construct connections.
-            Some(Expr::Construct { ty: None, args, .. }) => Some((ann, args, l.span)),
+            // `let x: Entity = { .a = a }` — dotted name-less construct.
+            Some(Expr::Construct { ty: None, args, .. }) => Some((ann, args.clone(), l.span)),
+            // `let x: Entity = { a, b }` / `= {}` — a positional/empty block
+            // lexes as a concat; its parts are positional connections.
+            Some(Expr::Concat { parts, .. }) => {
+                let args = parts
+                    .iter()
+                    .map(|p| ConnectArg { field: None, value: Some(p.clone()), span: l.span })
+                    .collect();
+                Some((ann, args, l.span))
+            }
             // `let x: Entity;` — no connections.
-            None => Some((ann, &[], l.span)),
+            None => Some((ann, Vec::new(), l.span)),
             _ => None,
         }
     }
@@ -426,7 +437,7 @@ impl<'a> Elaborator<'a> {
                 out.push(InstanceSpec {
                     name: render_signal(target, env),
                     ty,
-                    args,
+                    args: args.clone(),
                     attrs: &[],
                     site: *span,
                     loop_env: env.clone(),
@@ -614,7 +625,7 @@ impl<'a> Elaborator<'a> {
 struct InstanceSpec<'a> {
     name: String,
     ty: &'a Type,
-    args: &'a [ConnectArg],
+    args: Vec<ConnectArg>,
     attrs: &'a [Attr],
     site: Span,
     /// Loop-variable bindings for a generated instance (`for i in 0..N`),

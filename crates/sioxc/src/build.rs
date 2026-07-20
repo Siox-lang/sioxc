@@ -200,6 +200,12 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, &name);
         let clocks = scan_clocks(&items, &aliases);
+        let instance_names: std::collections::HashSet<String> = hier
+            .instance(root)
+            .children
+            .iter()
+            .map(|&c| hier.instance(c).name.clone())
+            .collect();
         let ctx = Ctx {
             design,
             map: &map,
@@ -220,6 +226,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             tmp: Default::default(),
             fns: &fns,
             fn_env: Default::default(),
+            instance_names,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
         names.push(name);
@@ -320,6 +327,10 @@ struct Ctx<'a> {
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
+    /// Names elaboration turned into DUT instances (`let dut = Sub {..}` /
+    /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
+    /// emit no testbench code.
+    instance_names: std::collections::HashSet<String>,
 }
 
 /// Struct layouts keyed by name, each a base-first flattened field list
@@ -783,6 +794,9 @@ impl Ctx<'_> {
         let mut started = false;
         for item in items {
             match item {
+                // A DUT instance (any declaration form) is wired by
+                // elaboration; the testbench let emits nothing.
+                ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {}
                 ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance

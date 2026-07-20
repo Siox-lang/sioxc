@@ -4140,7 +4140,17 @@ fn instance_let_parts(
         return None;
     }
     match &l.value {
+        // Dotted name-less construct `{ .a = a }`.
         Some(ast::Expr::Construct { ty: None, args, .. }) => Some((ann.clone(), args.clone())),
+        // Positional/empty `{ a, b }` / `{}` lexes as a concat; its parts are
+        // positional connections.
+        Some(ast::Expr::Concat { parts, span }) => {
+            let args = parts
+                .iter()
+                .map(|p| ast::ConnectArg { field: None, value: Some(p.clone()), span: *span })
+                .collect();
+            Some((ann.clone(), args))
+        }
         None => Some((ann.clone(), Vec::new())),
         _ => None,
     }
