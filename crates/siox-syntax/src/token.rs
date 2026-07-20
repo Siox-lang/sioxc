@@ -35,7 +35,6 @@ pub enum TokenKind {
     Attr,
     Const,
     Let,        // signal / state / local binding: `let x: T = e;`
-    Inst,       // entity instance declaration: `inst u: Sub = { .a };`
     Fn,         // function / method declaration: `fn name(self) { ... }`
     In,
     Out,

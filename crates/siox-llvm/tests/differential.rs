@@ -106,7 +106,7 @@ fn counter_agrees_across_clock_edges() {
          entity T {}\n\
          impl T {\n\
            let clk: Bit; let rst: Logic; let en: Bit; let count: uint[8];\n\
-           inst dut: Counter = { .clk, .rst, .en, .count };\n\
+           let dut: Counter = { .clk, .rst, .en, .count };\n\
          }\n",
     );
     // Reset high for one edge, then count several enabled cycles, then hold.
@@ -140,7 +140,7 @@ fn register_agrees_across_clock_edges() {
          entity T {}\n\
          impl T {\n\
            let clk: Bit; let d: uint[8]; let q: uint[8];\n\
-           inst dut: Reg = { .clk, .d, .q };\n\
+           let dut: Reg = { .clk, .d, .q };\n\
          }\n",
     );
     let steps: Vec<Vec<(&str, u64)>> = vec![
@@ -177,7 +177,7 @@ fn fsm_agrees_across_clock_edges() {
          entity T {}\n\
          impl T {\n\
            let clk: Bit; let go: Bit; let fin: Bit; let active: Bool;\n\
-           inst dut: Fsm = { .clk, .go, .fin, .active };\n\
+           let dut: Fsm = { .clk, .go, .fin, .active };\n\
          }\n",
     );
     let steps: Vec<Vec<(&str, u64)>> = vec![
@@ -208,7 +208,7 @@ fn mux_agrees() {
          entity T {}\n\
          impl T {\n\
            let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-           inst dut: Mux = { .sel, .a, .b, .y };\n\
+           let dut: Mux = { .sel, .a, .b, .y };\n\
          }\n",
     );
     assert_agree(&d, &[("T.sel", 0), ("T.a", 111), ("T.b", 222)]);
@@ -228,7 +228,7 @@ fn arithmetic_and_slice_agree() {
          entity T {}\n\
          impl T {\n\
            let a: uint[8]; let b: uint[8]; let sum: uint[8]; let hi: uint[4];\n\
-           inst dut: Alu = { .a, .b, .sum, .hi };\n\
+           let dut: Alu = { .a, .b, .sum, .hi };\n\
          }\n",
     );
     for (a, b) in [(10u64, 20u64), (200, 100), (0xA5, 0x0F), (255, 1)] {
@@ -247,7 +247,7 @@ fn concat_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: uint[4]; let b: uint[4]; let y: uint[8];\n\
-           inst dut: C = { .a, .b, .y };\n\
+           let dut: C = { .a, .b, .y };\n\
          }\n",
     );
     for (a, b) in [(0xA, 0x5), (0xF, 0x0), (0x0, 0xF), (0x3, 0xC)] {
@@ -273,7 +273,7 @@ fn enum_match_agrees() {
          entity T {}\n\
          impl T {\n\
            let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-           inst dut: Alu = { .op, .a, .b, .y };\n\
+           let dut: Alu = { .op, .a, .b, .y };\n\
          }\n",
     );
     for op in 0..3u64 {
@@ -293,7 +293,7 @@ fn struct_field_agrees() {
          entity T {}\n\
          impl T {\n\
            let p: P; let y: uint[8];\n\
-           inst dut: S = { .p, .y };\n\
+           let dut: S = { .p, .y };\n\
          }\n",
     );
     assert_agree(&d, &[("T.p.lo", 0x5), ("T.p.hi", 0xA)]);
@@ -311,7 +311,7 @@ fn array_element_agrees() {
          entity T {}\n\
          impl T {\n\
            let v: uint[4][2]; let y: uint[8];\n\
-           inst dut: A = { .v, .y };\n\
+           let dut: A = { .v, .y };\n\
          }\n",
     );
     assert_agree(&d, &[("T.v[0]", 0x3), ("T.v[1]", 0xC)]);
@@ -329,7 +329,7 @@ fn char_compare_agrees() {
          entity T {}\n\
          impl T {\n\
            let c: Char; let is_a: Bool;\n\
-           inst dut: Ch = { .c, .is_a };\n\
+           let dut: Ch = { .c, .is_a };\n\
          }\n",
     );
     assert_agree(&d, &[("T.c", 'A' as u64)]);
@@ -353,7 +353,7 @@ fn combinational_chain_agrees() {
          entity T {}\n\
          impl T {\n\
            let i: uint[8]; let o: uint[8];\n\
-           inst dut: Chain = { .i, .o };\n\
+           let dut: Chain = { .i, .o };\n\
          }\n",
     );
     for v in [0u64, 10, 100, 254] {
@@ -375,7 +375,7 @@ fn generate_loop_chain_agrees() {
            let wires: uint[8][4];\n\
            wires[0] = a;\n\
            for i in 0..2 {\n\
-             inst inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
+             let inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
            }\n\
            b = wires[3];\n\
          }\n\
@@ -383,7 +383,7 @@ fn generate_loop_chain_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: uint[8]; let b: uint[8];\n\
-           inst dut: Chain = { .a, .b };\n\
+           let dut: Chain = { .a, .b };\n\
          }\n",
     );
     for v in [0u64, 10, 42, 252] {
@@ -406,7 +406,7 @@ fn generate_loop_descending_agrees() {
            let wires: uint[8][4];\n\
            wires[0] = a;\n\
            for i in 2..0 {\n\
-             inst inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
+             let inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
            }\n\
            b = wires[3];\n\
          }\n\
@@ -414,7 +414,7 @@ fn generate_loop_descending_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: uint[8]; let b: uint[8];\n\
-           inst dut: Chain = { .a, .b };\n\
+           let dut: Chain = { .a, .b };\n\
          }\n",
     );
     for v in [0u64, 10, 42, 252] {
@@ -445,14 +445,14 @@ fn inout_tristate_bus_agrees() {
          entity Bus { in da: Logic; in ea: Logic; in db: Logic; in eb: Logic; out sa: Logic; out sb: Logic; }\n\
          impl Bus {\n\
            let wire: Logic;\n\
-           inst a: Pad = { .drive = da, .en = ea, .pin = wire, .sensed = sa };\n\
-           inst b: Pad = { .drive = db, .en = eb, .pin = wire, .sensed = sb };\n\
+           let a: Pad = { .drive = da, .en = ea, .pin = wire, .sensed = sa };\n\
+           let b: Pad = { .drive = db, .en = eb, .pin = wire, .sensed = sb };\n\
          }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
            let da: Logic; let ea: Logic; let db: Logic; let eb: Logic; let sa: Logic; let sb: Logic;\n\
-           inst dut: Bus = { .da, .ea, .db, .eb, .sa, .sb };\n\
+           let dut: Bus = { .da, .ea, .db, .eb, .sa, .sb };\n\
          }\n",
     );
     // Logic codes: '0'=0 '1'=1 'Z'=2 'X'=3.
@@ -483,14 +483,14 @@ fn struct_port_across_instances_agrees() {
          entity Link { in vin: Logic; in din: uint[8]; out got: uint[8]; }\n\
          impl Link {\n\
            let wire: Stream;\n\
-           inst p: Producer = { .vin, .din, .s = wire };\n\
-           inst c: Consumer = { .s = wire, .got };\n\
+           let p: Producer = { .vin, .din, .s = wire };\n\
+           let c: Consumer = { .s = wire, .got };\n\
          }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
            let vin: Logic; let din: uint[8]; let got: uint[8];\n\
-           inst dut: Link = { .vin, .din, .got };\n\
+           let dut: Link = { .vin, .din, .got };\n\
          }\n",
     );
     for (vin, din) in [(1u64, 42u64), (0, 42), (1, 200), (0, 7)] {
@@ -518,7 +518,7 @@ fn bit_pattern_match_agrees() {
          entity T {}\n\
          impl T {\n\
            let op: uint[4]; let kind: uint[2];\n\
-           inst dut: Dec = { .op, .kind };\n\
+           let dut: Dec = { .op, .kind };\n\
          }\n",
     );
     for op in 0u64..16 {
@@ -538,7 +538,7 @@ fn concat_assignment_target_agrees() {
          entity T {}\n\
          impl T {\n\
            let w: uint[8]; let hi: uint[4]; let lo: uint[4];\n\
-           inst dut: Split = { .w, .hi, .lo };\n\
+           let dut: Split = { .w, .hi, .lo };\n\
          }\n",
     );
     for w in [0u64, 0xA3, 0xFF, 0x0F, 0xF0] {
@@ -548,7 +548,7 @@ fn concat_assignment_target_agrees() {
 
 #[test]
 fn instance_array_agrees() {
-    // An array of instances (`inst stage: Inc[3]`) built element-wise in a
+    // An array of instances (`let stage: Inc[3]`) built element-wise in a
     // generate loop, wired head-to-tail, with an element's output read from
     // outside the loop (`stage[1].y`). Both engines must match.
     let d = lower(
@@ -559,7 +559,7 @@ fn instance_array_agrees() {
          impl Chain {\n\
            let w: uint[8][4];\n\
            w[0] = a;\n\
-           inst stage: Inc[3];\n\
+           let stage: Inc[3];\n\
            for i in 0..2 { stage[i] = Inc { .x = w[i], .y = w[i+1] }; }\n\
            b = w[3];\n\
            mid = stage[1].y;\n\
@@ -568,7 +568,7 @@ fn instance_array_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: uint[8]; let b: uint[8]; let mid: uint[8];\n\
-           inst dut: Chain = { .a, .b, .mid };\n\
+           let dut: Chain = { .a, .b, .mid };\n\
          }\n",
     );
     for a in [0u64, 10, 40, 250] {
@@ -586,7 +586,7 @@ fn range_pattern_agrees() {
          impl E { y = match a { 0..9 => 1, 10..99 => 2, 100 => 3, _ => 4 }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let a: uint[8]; let y: uint[8]; inst dut: E = { .a, .y }; }\n",
+         impl T { let a: uint[8]; let y: uint[8]; let dut: E = { .a, .y }; }\n",
     );
     for a in [0u64, 9, 10, 99, 100, 101, 200] {
         assert_agree(&d, &[("T.a", a)]);
@@ -604,7 +604,7 @@ fn or_pattern_agrees() {
          impl E { y = match s { S::A | S::B => 10, S::C => 20, _ => 30 }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let s: S; let y: uint[8]; inst dut: E = { .s, .y }; }\n",
+         impl T { let s: S; let y: uint[8]; let dut: E = { .s, .y }; }\n",
     );
     for s in [0u64, 1, 2, 3] {
         assert_agree(&d, &[("T.s", s)]);
@@ -624,7 +624,7 @@ fn match_expression_agrees() {
          entity T {}\n\
          impl T {\n\
            let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-           inst dut: E = { .op, .a, .b, .y };\n\
+           let dut: E = { .op, .a, .b, .y };\n\
          }\n",
     );
     for op in [0u64, 1, 2] {
@@ -646,7 +646,7 @@ fn array_literal_agrees() {
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let sel: uint[8]; let y: uint[8]; inst dut: E = { .sel, .y }; }\n",
+         impl T { let sel: uint[8]; let y: uint[8]; let dut: E = { .sel, .y }; }\n",
     );
     for sel in [0u64, 1, 2, 3] {
         assert_agree(&d, &[("T.sel", sel)]);
@@ -662,10 +662,10 @@ fn positional_connection_agrees() {
          entity Add { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
          impl Add { y = a + b; }\n\
          entity E { in p: uint[8]; in q: uint[8]; out y: uint[8]; }\n\
-         impl E { inst s: Add = { p, q, y }; }\n\
+         impl E { let s: Add = { p, q, y }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let p: uint[8]; let q: uint[8]; let y: uint[8]; inst dut: E = { .p, .q, .y }; }\n",
+         impl T { let p: uint[8]; let q: uint[8]; let y: uint[8]; let dut: E = { .p, .q, .y }; }\n",
     );
     for (p, q) in [(3u64, 4), (10, 20), (200, 55)] {
         assert_agree(&d, &[("T.p", p), ("T.q", q)]);
@@ -682,15 +682,15 @@ fn post_decl_connection_agrees() {
          impl Inc { y = a + 1; }\n\
          entity E { in x: uint[8]; out z: uint[8]; }\n\
          impl E {\n\
-           inst s1: Inc = {};\n\
-           inst s2: Inc = {};\n\
+           let s1: Inc = {};\n\
+           let s2: Inc = {};\n\
            s1.a = x;\n\
            s2.a = s1.y;\n\
            z = s2.y;\n\
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let x: uint[8]; let z: uint[8]; inst dut: E = { .x, .z }; }\n",
+         impl T { let x: uint[8]; let z: uint[8]; let dut: E = { .x, .z }; }\n",
     );
     for x in [0u64, 5, 100, 254] {
         assert_agree(&d, &[("T.x", x)]);
@@ -714,7 +714,7 @@ fn generic_entity_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-           inst dut: Buf<uint[8]> = { .a, .b, .y };\n\
+           let dut: Buf<uint[8]> = { .a, .b, .y };\n\
          }\n",
     );
     assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Buf<uint[8]>.s is 8-bit");
@@ -738,7 +738,7 @@ fn generic_struct_agrees() {
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let x: uint[8]; let sum: uint[8]; inst dut: E = { .x, .sum }; }\n",
+         impl T { let x: uint[8]; let sum: uint[8]; let dut: E = { .x, .sum }; }\n",
     );
     for x in [10u64, 100, 200, 255] {
         assert_agree(&d, &[("T.x", x)]);
@@ -765,8 +765,8 @@ fn bus_mode_agrees() {
          entity T { in d: uint[8]; in accept: Bit; out got: uint[8]; out canpush: Bit; }\n\
          impl T {\n\
            let link: Stream;\n\
-           inst p: Producer = { .bus = link, .d, .canpush };\n\
-           inst c: Consumer = { .bus = link, .accept, .got };\n\
+           let p: Producer = { .bus = link, .d, .canpush };\n\
+           let c: Consumer = { .bus = link, .accept, .got };\n\
          }\n",
     );
     for (dv, acc) in [(77u64, 1u64), (200, 0), (0, 1), (255, 0)] {
@@ -788,7 +788,7 @@ fn derived_vector_width_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: Byte; let b: Byte; let s: Byte;\n\
-           inst dut: A = { .a, .b, .s };\n\
+           let dut: A = { .a, .b, .s };\n\
          }\n",
     );
     // s is 8-bit: 200+100 = 300 -> 44, 255+1 -> 0.
@@ -812,7 +812,7 @@ fn transitive_vector_family_width_agrees() {
          entity T {}\n\
          impl T {\n\
            let a: Byte; let b: Byte; let s: Byte;\n\
-           inst dut: A = { .a, .b, .s };\n\
+           let dut: A = { .a, .b, .s };\n\
          }\n",
     );
     assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Byte : uint[8] must be width 8");
@@ -849,7 +849,7 @@ fn method_call_agrees() {
          entity T {}\n\
          impl T {\n\
            let px: uint[8]; let py: uint[8]; let lim: uint[8]; let s: uint[8]; let bg: uint[8];\n\
-           inst dut: D = { .px, .py, .lim, .s, .bg };\n\
+           let dut: D = { .px, .py, .lim, .s, .bg };\n\
          }\n",
     );
     for (px, py, lim) in [(10u64, 20u64, 15u64), (200, 100, 50), (5, 5, 250), (0, 0, 0)] {
@@ -880,7 +880,7 @@ fn statement_method_agrees() {
          entity T {}\n\
          impl T {\n\
            let go: Bit; let x: uint[8]; let ov: Logic; let od: uint[8];\n\
-           inst dut: D = { .go, .x, .ov, .od };\n\
+           let dut: D = { .go, .x, .ov, .od };\n\
          }\n",
     );
     for (go, x) in [(1u64, 42u64), (0, 42), (1, 255), (0, 0), (1, 0)] {
@@ -918,15 +918,15 @@ fn struct_inout_bus_agrees() {
                         out ha: Logic; out la: Logic; out hb: Logic; out lb: Logic; }\n\
          impl Wired {\n\
            let wire: Bus;\n\
-           inst a: Pad = { .drive = da, .en = ea, .bus = wire, .shi = ha, .slo = la };\n\
-           inst b: Pad = { .drive = db, .en = eb, .bus = wire, .shi = hb, .slo = lb };\n\
+           let a: Pad = { .drive = da, .en = ea, .bus = wire, .shi = ha, .slo = la };\n\
+           let b: Pad = { .drive = db, .en = eb, .bus = wire, .shi = hb, .slo = lb };\n\
          }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
            let da: Logic; let ea: Logic; let db: Logic; let eb: Logic;\n\
            let ha: Logic; let la: Logic; let hb: Logic; let lb: Logic;\n\
-           inst dut: Wired = { .da, .ea, .db, .eb, .ha, .la, .hb, .lb };\n\
+           let dut: Wired = { .da, .ea, .db, .eb, .ha, .la, .hb, .lb };\n\
          }\n",
     );
     // Logic codes: '0'=0 '1'=1 'Z'=2 'X'=3.

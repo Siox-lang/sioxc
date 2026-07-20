@@ -374,15 +374,14 @@ impl<'a> Elaborator<'a> {
         if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
             return Some((ty, args.clone(), *span));
         }
-        // A single instance is declared `inst x: Entity [= { .. }]`. An *array*
-        // (`inst stage: Inc[N]`) is built element-wise by `stage[i] = Inc { .. }`
-        // assignments — not a single instance here. (During the migration to
-        // the `inst` keyword, a `let` whose type is an entity is still accepted.)
+        // New forms need a bare entity-typed annotation. An *array* of an
+        // entity (`let stage: Inc[N]`) is an instance array, built element-wise
+        // by `stage[i] = Inc { .. }` assignments — not a single instance here.
         let ann = l.ty.as_ref()?;
         if matches!(ann, Type::Indexed { .. }) {
             return None;
         }
-        if !l.is_instance {
+        if !type_head_name(ann).is_some_and(|n| self.entities.contains_key(n)) {
             return None;
         }
         match &l.value {
@@ -965,7 +964,7 @@ mod tests {
           let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let count: uint[8];\n\
-          inst dut: Counter<W = 8> = {\n\
+          let dut: Counter<W = 8> = {\n\
             .clk,\n\
             .rst,\n\
             .count = count,\n\
@@ -1026,7 +1025,7 @@ mod tests {
             impl Top {\n\
               let a: uint[4];\n\
               let b: uint[8];\n\
-              inst dut: Sub<W = 8> = { .a = a, .b = b };\n\
+              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1042,7 +1041,7 @@ mod tests {
             impl Top {\n\
               let a: uint[8];\n\
               let b: uint[8];\n\
-              inst dut: Sub<W = 8> = { .a = a, .b = b };\n\
+              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
@@ -1059,7 +1058,7 @@ mod tests {
             impl H {\n\
               let clk: Bit = '0';\n\
               let count: uint[8];\n\
-              inst dut: Counter<W = 8> = { .clk, .count };\n\
+              let dut: Counter<W = 8> = { .clk, .count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1074,7 +1073,7 @@ mod tests {
             entity H {}\n\
             impl H {\n\
               let count: uint[8];\n\
-              inst dut: Counter = { .count, .nope = count };\n\
+              let dut: Counter = { .count, .nope = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1089,7 +1088,7 @@ mod tests {
             impl H {\n\
               let addr: uint[4];\n\
               let data: uint[8];\n\
-              inst mem: Ram<W = 4> = { .addr, .data };\n\
+              let mem: Ram<W = 4> = { .addr, .data };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0);

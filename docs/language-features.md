@@ -12,11 +12,9 @@ standard library is catalogued in [std.md](std.md).
   **`inout` tristate nets** that resolve parallel drivers.
 - **Instance hierarchy.** A design is a tree of instances; each lowers into its
   own signals with connections wired as drivers.
-- **Type-strict declarations.** Every binding declares its type —
-  `name: T [= value]`; a bare `let x = e` is rejected (`E-P012`). Two keywords
-  share the form: `let` for data (signals / variables / struct values), `inst`
-  for an entity instance (`inst dut: Sub = { .a = a };`). The wrong keyword —
-  `let` on an entity, `inst` on a non-entity — is `E-P013`.
+- **Type-strict declarations.** Every `let` declares its type —
+  `let name: T [= value]`; a bare `let x = e` is rejected (`E-P012`). One form
+  for signals, locals, and instances (`let dut: Sub = { .a = a };`).
 - **Connection forms.** Ports connect three ways, like a struct literal:
   explicit (`.a = x`), name shorthand (`.a`), or positional (`{ x, y }`, by
   order). Ports may also be wired post-declaration through the instance

@@ -18,7 +18,7 @@ impl D { y = x; }
 entity MethodTest {}
 impl MethodTest {
     let x: uint[8]; let y: uint[8];
-    inst dut: D = { .x, .y };
+    let dut: D = { .x, .y };
 
     let p: Pkt;
     p.a = 10;

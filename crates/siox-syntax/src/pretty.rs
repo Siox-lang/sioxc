@@ -376,7 +376,7 @@ fn let_decl(l: &LetDecl) -> String {
         s.push_str(&attr(a));
         s.push(' ');
     }
-    s.push_str(&format!("{} {}", if l.is_instance { "inst" } else { "let" }, l.name.text));
+    s.push_str(&format!("let {}", l.name.text));
     if let Some(t) = &l.ty {
         s.push_str(&format!(": {}", type_str(t)));
     }
@@ -772,7 +772,7 @@ mod tests {
                }\n\
              }\n\
              impl M {\n\
-               inst dut: Counter<W = 8> = { .clk, .count = c };\n\
+               let dut: Counter<W = 8> = { .clk, .count = c };\n\
                match opcode {\n\
                  State::Idle => { next = State::Start; }\n\
                  _ => op = Op::Nop,\n\

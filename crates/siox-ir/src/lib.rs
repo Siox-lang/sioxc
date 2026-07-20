@@ -65,7 +65,7 @@ pub struct Signal {
     /// simulation checks every settled value against it — a dynamic range
     /// assert. Plain `uint[N]`/`int[N]` wrap instead (documented semantics).
     pub range: Option<(i64, i64)>,
-    /// The declared initial value's bit pattern (`inst v: T = 1;`): engines
+    /// The declared initial value's bit pattern (`let v: T = 1;`): engines
     /// reset signals to it (VHDL-style initial values), not to zero.
     pub init: u64,
     /// The enum type name, when this signal holds an enum value (`Logic`,
@@ -4131,14 +4131,12 @@ fn instance_let_parts(
         return Some((cty.clone(), args.clone()));
     }
     let ann = l.ty.as_ref()?;
-    // An entity *array* (`inst stage: Inc[N]`) is built element-wise, not a
+    // An entity *array* (`let stage: Inc[N]`) is built element-wise, not a
     // single instance.
     if matches!(ann, ast::Type::Indexed { .. }) {
         return None;
     }
-    // `inst x: Entity [= { .. }]`.
-    let _ = entities;
-    if !l.is_instance {
+    if !type_head_name(ann).is_some_and(|n| entities.contains_key(n)) {
         return None;
     }
     match &l.value {
@@ -4673,7 +4671,7 @@ mod tests {
              #[test] entity Tb {}\n\
              impl Tb {\n\
                let c: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-               inst dut: M = { .c, .a, .b, .y };\n\
+               let dut: M = { .c, .a, .b, .y };\n\
              }\n",
         );
         assert!(
@@ -4688,7 +4686,7 @@ mod tests {
              #[test] entity Tb {}\n\
              impl Tb {\n\
                let c: Bit; let a: uint[8]; let y: uint[8];\n\
-               inst dut: M = { .c, .a, .y };\n\
+               let dut: M = { .c, .a, .y };\n\
              }\n",
         );
         assert!(
@@ -4709,7 +4707,7 @@ mod tests {
              #[test] entity Tb {}\n\
              impl Tb {\n\
                let b: uint[16]; let y: uint[8];\n\
-               inst dut: E<W=16> = { .b, .y };\n\
+               let dut: E<W=16> = { .b, .y };\n\
              }\n",
         );
         assert!(bad.iter().any(|d| d.contains("width mismatch")), "{bad:?}");
@@ -4723,7 +4721,7 @@ mod tests {
              #[test] entity Tb {}\n\
              impl Tb {\n\
                let b: uint[16]; let y: uint[8];\n\
-               inst dut: E<W=16> = { .b, .y };\n\
+               let dut: E<W=16> = { .b, .y };\n\
              }\n",
         );
         assert!(!ok.iter().any(|d| d.contains("width mismatch")), "{ok:?}");
@@ -4738,7 +4736,7 @@ mod tests {
              entity L { in a: uint[8]; out y: uint[8]; }\n\
              impl L { let t: uint[8]; t = t + a; y = t; }\n\
              #[top] entity Top {}\n\
-             impl Top { let a: uint[8]; let y: uint[8]; inst d: L = { .a, .y }; }\n",
+             impl Top { let a: uint[8]; let y: uint[8]; let d: L = { .a, .y }; }\n",
         );
         let loops: Vec<&String> = diags.iter().filter(|d| d.contains("W-P010")).collect();
         assert!(!loops.is_empty(), "self-cycle flagged: {diags:?}");
@@ -4749,7 +4747,7 @@ mod tests {
              entity C { in x: uint[8]; out y: uint[8]; }\n\
              impl C { y = x + 1; }\n\
              #[top] entity Top {}\n\
-             impl Top { let x: uint[8]; let y: uint[8]; inst d: C = { .x, .y }; }\n",
+             impl Top { let x: uint[8]; let y: uint[8]; let d: C = { .x, .y }; }\n",
         );
         assert!(!ok.iter().any(|d| d.contains("W-P010")), "no false positive: {ok:?}");
     }
@@ -4764,7 +4762,7 @@ mod tests {
              impl L { if c == '1' { y = a; } z = a; }\n\
              #[top] entity Top {}\n\
              impl Top { let c: Logic; let a: uint[8]; let y: uint[8]; let z: uint[8];\n\
-               inst d: L = { .c, .a, .y, .z }; }\n",
+               let d: L = { .c, .a, .y, .z }; }\n",
         );
         let latch: Vec<&String> = diags.iter().filter(|d| d.contains("W-P002")).collect();
         assert_eq!(latch.len(), 1, "exactly one latch warning: {diags:?}");
@@ -4783,7 +4781,7 @@ mod tests {
              entity E { in a: Logic; out s: State; }\n\
              impl E { s = State::Idle; }\n\
              #[top] entity Top {}\n\
-             impl Top { let a: Logic; let s: State; inst e: E = { .a, .s }; }\n",
+             impl Top { let a: Logic; let s: State; let e: E = { .a, .s }; }\n",
         );
         let sig = |p: &str| d.signals.iter().find(|s| s.path == p).unwrap();
         assert_eq!(sig("Top.e.a").enum_type.as_deref(), Some("Logic"));
@@ -4817,7 +4815,7 @@ mod tests {
           let rst: Logic = '1';\n\
           let en: Bit = '1';\n\
           let count: uint[8];\n\
-          inst dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
+          let dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
         }\n";
 
     #[test]
@@ -4845,14 +4843,14 @@ mod tests {
             entity Add2 { in a: uint[8]; out y: uint[8]; }\n\
             impl Add2 {\n\
               let mid: uint[8];\n\
-              inst s1: Add1 = { .a = a, .y = mid };\n\
-              inst s2: Add1 = { .a = mid, .y = y };\n\
+              let s1: Add1 = { .a = a, .y = mid };\n\
+              let s2: Add1 = { .a = mid, .y = y };\n\
             }\n\
             #[test] entity T {}\n\
             impl T {\n\
               let a: uint[8] = 10;\n\
               let y: uint[8];\n\
-              inst dut: Add2 = { .a, .y };\n\
+              let dut: Add2 = { .a, .y };\n\
             }\n";
         let d = lower_src(src);
         let id = |path: &str| d.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32));
@@ -4881,7 +4879,7 @@ mod tests {
              impl Mux { y = if sel { a } else { b }; }\n\
              #[test] entity T {}\n\
              impl T { let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-               inst dut: Mux = { .sel, .a, .b, .y }; }\n",
+               let dut: Mux = { .sel, .a, .b, .y }; }\n",
         );
         let y = d.signals.iter().position(|s| s.path == "T.dut.y").map(|i| SignalId(i as u32)).unwrap();
         let dr = d.drivers.iter().find(|dr| dr.target == y).unwrap();
@@ -4950,7 +4948,7 @@ mod tests {
              entity E { in p: P; in a: Bit[3]; out s: S; }\n\
              impl E {}\n\
              #[top] entity H {}\n\
-             impl H { let p: P; let a: Bit[3]; let s: S; inst dut: E = { .p, .a, .s }; }\n",
+             impl H { let p: P; let a: Bit[3]; let s: S; let dut: E = { .p, .a, .s }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
         assert_eq!(width("H.dut.p.flag"), Some(1)); // struct field
@@ -4968,7 +4966,7 @@ mod tests {
              entity E { in a: uint[4]; out y: uint[8]; }\n\
              impl E { y = 0; y[3..0] = a; }\n\
              #[top] entity H {}\n\
-             impl H { let a: uint[4]; let y: uint[8]; inst dut: E = { .a, .y }; }\n",
+             impl H { let a: uint[4]; let y: uint[8]; let dut: E = { .a, .y }; }\n",
         );
         // The y driver should be a read-modify-write (an Or of a masked base
         // and a shifted value), not a bare assignment.
@@ -4986,7 +4984,7 @@ mod tests {
              entity E { out x: Ext; }\n\
              impl E { x = Ext::A; }\n\
              #[top] entity H {}\n\
-             impl H { let x: Ext; inst dut: E = { .x }; }\n",
+             impl H { let x: Ext; let dut: E = { .x }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
         assert_eq!(sig.width, 2, "inherited variants widen the enum");
@@ -5002,7 +5000,7 @@ mod tests {
              entity E { out p: Packet; }\n\
              impl E {}\n\
              #[top] entity H {}\n\
-             impl H { let p: Packet; inst dut: E = { .p }; }\n",
+             impl H { let p: Packet; let dut: E = { .p }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
         assert_eq!(width("H.dut.p.valid"), Some(1), "inherited field");
@@ -5020,7 +5018,7 @@ mod tests {
              entity E { out x: Alias; }\n\
              impl E { x = Alias::B; }\n\
              #[top] entity H {}\n\
-             impl H { let x: Alias; inst dut: E = { .x }; }\n",
+             impl H { let x: Alias; let dut: E = { .x }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
         assert_eq!(sig.width, 2, "3 variants -> 2 bits, same as base");
