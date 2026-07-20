@@ -186,6 +186,12 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   and the std_logic truth tables (`and`/`or`/`xor`/`not`) inline correctly
   (`'X' and '1' == 'X'`, `'0' and 'X' == '0'`); parallel drivers fold through
   `impl Resolve for Logic`; verified interpreter == JIT == native.
+- **Status (done, cont.):** **array literals** (`table = [10, 20, 30, 40]`,
+  one driver per element), the three **connection forms** (explicit `.a = x`,
+  shorthand `.a`, positional `{ a, b }`) plus post-declaration wiring
+  (`dut.a = x`), and **generate constructs** — `for` loops unroll instances
+  *and* per-iteration drivers, and a compile-time-constant `if`/`else` selects
+  which branch is built (`lower_stmt` const-folds it; the two nest).
 - **Status (todo):** cascaded event domains; X/Z propagation through vector
   arithmetic (scalar Logic is exact).
 

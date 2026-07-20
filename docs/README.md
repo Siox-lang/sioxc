@@ -19,6 +19,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
 | [implementation.md](implementation.md) | The **stage-by-stage plan and live build status** — what each crate must do, the acceptance criteria, and how far along it is. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
+| [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area (language features, analysis, engines, lints, tooling). |
 
 If you are new: skim this page, then read [spec.md](spec.md) for the language
 and [architecture.md](architecture.md) for the compiler.
