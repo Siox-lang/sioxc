@@ -2315,13 +2315,13 @@ mod tests {
         // Known unit suffixes and valid bit-strings pass.
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t = 10ns;\n  let f = 100MHz;\n  y = x\"AB\";\n}\n"
+                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
             ),
             0
         );
         // An unknown suffix is an error.
         assert_eq!(
-            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c = 5i;\n  y = '0';\n}\n"),
+            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c: integer = 5i;\n  y = '0';\n}\n"),
             1
         );
         // Bad digits for the base are an error.
