@@ -494,18 +494,19 @@ impl<'a> Parser<'a> {
     fn parse_impl_item(&mut self) -> Option<ImplItem> {
         // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
-        if !attrs.is_empty() && !self.at(TokenKind::Let) {
-            self.error_here("attributes on impl items are only allowed on `let` declarations");
+        if !attrs.is_empty() && !self.at(TokenKind::Let) && !self.at(TokenKind::Inst) {
+            self.error_here("attributes on impl items are only allowed on `let`/`inst` declarations");
         }
         match self.kind() {
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
-            // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
-            // is a method.
-            TokenKind::Let => {
+            // `let value: T = e;` is state/signal; `inst u: Sub = { .. };` is an
+            // entity instance; `fn send(self, ...) { ... }` is a method.
+            TokenKind::Let | TokenKind::Inst => {
+                let is_instance = self.at(TokenKind::Inst);
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Some(ImplItem::Let(self.parse_let_rest(attrs, start, name)))
+                Some(ImplItem::Let(self.parse_let_rest(attrs, start, name, is_instance)))
             }
             TokenKind::Fn => {
                 let start = self.span();
@@ -525,15 +526,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_let_after_name(&mut self, start: Span, name: Ident) -> LetDecl {
-        self.parse_let_rest(Vec::new(), start, name)
+    fn parse_let_after_name(&mut self, start: Span, name: Ident, is_instance: bool) -> LetDecl {
+        self.parse_let_rest(Vec::new(), start, name, is_instance)
     }
 
-    fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
+    fn parse_let_rest(
+        &mut self,
+        attrs: Vec<Attr>,
+        start: Span,
+        name: Ident,
+        is_instance: bool,
+    ) -> LetDecl {
         let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
         let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
         self.expect(TokenKind::Semi, "after a `let`");
-        LetDecl { attrs, name, ty, value, span: start.to(self.prev_span()) }
+        LetDecl { attrs, name, ty, value, is_instance, span: start.to(self.prev_span()) }
     }
 
     fn parse_fn_after_name(&mut self, start: Span, name: Ident) -> FnDecl {
@@ -692,11 +699,12 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Stmt {
         match self.kind() {
-            TokenKind::Let => {
+            TokenKind::Let | TokenKind::Inst => {
+                let is_instance = self.at(TokenKind::Inst);
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Stmt::Let(self.parse_let_after_name(start, name))
+                Stmt::Let(self.parse_let_after_name(start, name, is_instance))
             }
             TokenKind::If => Stmt::If(self.parse_if()),
             TokenKind::Match => Stmt::Match(self.parse_match()),
@@ -1483,6 +1491,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Attr
                 | TokenKind::Const
                 | TokenKind::Let
+                | TokenKind::Inst
                 | TokenKind::Fn
                 | TokenKind::In
                 | TokenKind::Out

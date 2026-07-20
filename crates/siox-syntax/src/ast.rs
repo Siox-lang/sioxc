@@ -249,12 +249,16 @@ pub struct FnParam {
 
 #[derive(Clone, Debug)]
 pub struct LetDecl {
-    /// Metadata attributes on the declaration (`#[external_clock] let p =
-    /// Pll { .. };`) — per-instance values for type-targeted attrs (spec 3.5).
+    /// Metadata attributes on the declaration (`#[external_clock] inst p:
+    /// Pll = { .. };`) — per-instance values for type-targeted attrs (spec 3.5).
     pub attrs: Vec<Attr>,
     pub name: Ident,
     pub ty: Option<Type>,
     pub value: Option<Expr>,
+    /// Declared with `inst` (an entity sub-instance) rather than `let` (a
+    /// signal / variable / struct value). Structure vs data is explicit in the
+    /// keyword; the two otherwise share the same grammar.
+    pub is_instance: bool,
     pub span: Span,
 }
 

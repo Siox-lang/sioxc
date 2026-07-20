@@ -4131,12 +4131,15 @@ fn instance_let_parts(
         return Some((cty.clone(), args.clone()));
     }
     let ann = l.ty.as_ref()?;
-    // An entity *array* (`let stage: Inc[N]`) is built element-wise, not a
+    // An entity *array* (`inst stage: Inc[N]`) is built element-wise, not a
     // single instance.
     if matches!(ann, ast::Type::Indexed { .. }) {
         return None;
     }
-    if !type_head_name(ann).is_some_and(|n| entities.contains_key(n)) {
+    // `inst x: Entity [= { .. }]`. (During migration, a `let` with an entity
+    // type is still accepted.)
+    let is_inst = l.is_instance || type_head_name(ann).is_some_and(|n| entities.contains_key(n));
+    if !is_inst {
         return None;
     }
     match &l.value {

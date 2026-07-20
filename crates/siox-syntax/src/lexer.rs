@@ -349,6 +349,7 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "attr" => TokenKind::Attr,
         "const" => TokenKind::Const,
         "let" => TokenKind::Let,
+        "inst" => TokenKind::Inst,
         "fn" => TokenKind::Fn,
         "in" => TokenKind::In,
         "out" => TokenKind::Out,

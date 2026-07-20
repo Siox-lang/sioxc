@@ -374,14 +374,17 @@ impl<'a> Elaborator<'a> {
         if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
             return Some((ty, args.clone(), *span));
         }
-        // New forms need a bare entity-typed annotation. An *array* of an
-        // entity (`let stage: Inc[N]`) is an instance array, built element-wise
-        // by `stage[i] = Inc { .. }` assignments — not a single instance here.
+        // A single instance is declared `inst x: Entity [= { .. }]`. An *array*
+        // (`inst stage: Inc[N]`) is built element-wise by `stage[i] = Inc { .. }`
+        // assignments — not a single instance here. (During the migration to
+        // the `inst` keyword, a `let` whose type is an entity is still accepted.)
         let ann = l.ty.as_ref()?;
         if matches!(ann, Type::Indexed { .. }) {
             return None;
         }
-        if !type_head_name(ann).is_some_and(|n| self.entities.contains_key(n)) {
+        let is_inst = l.is_instance
+            || type_head_name(ann).is_some_and(|n| self.entities.contains_key(n));
+        if !is_inst {
             return None;
         }
         match &l.value {
