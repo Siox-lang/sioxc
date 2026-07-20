@@ -430,7 +430,7 @@ mod tests {
           let rst: Logic = '1';\n\
           let en: Bit = '1';\n\
           let count: uint[8];\n\
-          let dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
+          inst dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
           await 10ns;\n\
           rst = '0';\n\
           clk = not clk after 5ns;\n\
@@ -456,7 +456,7 @@ mod tests {
                let clk: Bit = '0';\n\
                let rst: Logic = '1';\n\
                let n: uint[8];\n\
-               let dut: Ctr = { .clk, .rst, .n };\n\
+               inst dut: Ctr = { .clk, .rst, .n };\n\
                clk = not clk after 5ns;\n\
                rst = '0' after 12ns;\n\
                await 52ns;\n\
@@ -491,7 +491,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let sel: Bit = '0'; let a: Bit = '1'; let b: Bit = '0'; let y: Bit;\n\
-               let dut: Mux = { .sel, .a, .b, .y };\n\
+               inst dut: Mux = { .sel, .a, .b, .y };\n\
                assert!(y == '0', \"sel=0 -> b\");\n\
                sel = '1';\n\
                assert!(y == '1', \"sel=1 -> a\");\n\
@@ -520,7 +520,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let clk: Bit = '0'; let start: Bit = '0'; let st: State;\n\
-               let dut: Fsm = { .clk, .start, .st };\n\
+               inst dut: Fsm = { .clk, .start, .st };\n\
                clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(st == State::Idle, \"stays idle\");\n\
                start = '1';\n\
@@ -544,7 +544,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let hi: uint[4] = 0; let lo: uint[4] = 0; let y: uint[8];\n\
-               let dut: Join = { .hi, .lo, .y };\n\
+               inst dut: Join = { .hi, .lo, .y };\n\
                hi = 10; lo = 11;\n\
                assert!(y == 171, \"0xA:0xB == 0xAB\");\n\
              }\n",
@@ -562,7 +562,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let a: uint[4] = 0; let b: uint[2] = 0; let c: uint[2] = 0; let y: uint[8];\n\
-               let dut: J = { .a, .b, .c, .y };\n\
+               inst dut: J = { .a, .b, .c, .y };\n\
                a = 1; b = 2; c = 3;\n\
                assert!(y == 27, \"nested concat packs correctly\");\n\
              }\n",
@@ -579,7 +579,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let data: uint[8] = 0; let hi: uint[4]; let lo: uint[4];\n\
-               let dut: Split = { .data, .hi, .lo };\n\
+               inst dut: Split = { .data, .hi, .lo };\n\
                data = 171;\n\
                assert!(hi == 10, \"high nibble of 0xAB\");\n\
                assert!(lo == 11, \"low nibble of 0xAB\");\n\
@@ -598,7 +598,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let a: Bit[4]; let y: Bit;\n\
-               let dut: Bank = { .a, .y };\n\
+               inst dut: Bank = { .a, .y };\n\
                a[2] = '1';\n\
                assert!(y == '1', \"reads a[2]\");\n\
                a[2] = '0';\n\
@@ -620,7 +620,7 @@ mod tests {
              impl T {\n\
                let p: Packet = { .valid = '1', .data = 5 };\n\
                let got: uint[8];\n\
-               let dut: Sink = { .p, .got };\n\
+               inst dut: Sink = { .p, .got };\n\
                assert!(got == 5, \"initialised p.data\");\n\
              }\n",
         );
@@ -638,7 +638,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let p: Packet; let got: uint[8];\n\
-               let dut: Sink = { .p, .got };\n\
+               inst dut: Sink = { .p, .got };\n\
                p.data = 55;\n\
                p.valid = '1';\n\
                assert!(got == 55, \"reads p.data\");\n\
@@ -664,7 +664,7 @@ mod tests {
              impl T {\n\
                let clk: Bit = '0'; let valid: Bit = '0'; let ready: Bit = '0';\n\
                let d: uint[8] = 0; let q: uint[8];\n\
-               let dut: Fifo1 = { .clk, .valid, .ready, .d, .q };\n\
+               inst dut: Fifo1 = { .clk, .valid, .ready, .d, .q };\n\
                d = 99; valid = '1';\n\
                clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
                assert!(q == 0, \"no capture without ready\");\n\
@@ -690,7 +690,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let state: State = State::Idle; let started: Bit;\n\
-               let dut: Mon = { .state, .started };\n\
+               inst dut: Mon = { .state, .started };\n\
                assert!(started == '0', \"no transition yet\");\n\
                state = State::Run;\n\
                assert!(started == '1', \"idle -> run detected\");\n\
@@ -710,7 +710,7 @@ mod tests {
              #[test] entity T {}\n\
              impl T {\n\
                let clk: Bit = '0'; let d: uint[8] = 0; let q: uint[8];\n\
-               let dut: Reg<W = 8> = { .clk, .d, .q };\n\
+               inst dut: Reg<W = 8> = { .clk, .d, .q };\n\
                assert!(q == 0, \"starts at 0\");\n\
                d = 42;\n\
                clk = '1'; await 5ns; clk = '0'; await 5ns;\n\
@@ -774,7 +774,7 @@ mod tests {
           let rst: Logic;\n\
           let en: Bit;\n\
           let count: uint[8];\n\
-          let dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
+          inst dut: Counter<W = 8> = { .clk, .rst, .en, .count };\n\
         }\n";
 
     /// Toggle the clock through a full cycle (rising then falling).
@@ -862,7 +862,7 @@ mod tests {
                let a: Complex = { .re = 1, .im = 2 };\n\
                let lit: Complex;\n\
                let bumped: Complex;\n\
-               let dut: Src = { .a, .lit, .bumped };\n\
+               inst dut: Src = { .a, .lit, .bumped };\n\
                await 1ns;\n\
                assert!(lit.re == 10, \"10 + 5i re\");\n\
                assert!(lit.im == 5, \"10 + 5i im\");\n\
@@ -920,7 +920,7 @@ mod tests {
                let b: Version = { .major = 2, .minor = 0 };\n\
                let lt: Bool; let le: Bool; let gt: Bool;\n\
                let ge: Bool; let eq: Bool; let ne: Bool;\n\
-               let dut: Cmp = { .a, .b, .lt, .le, .gt, .ge, .eq, .ne };\n\
+               inst dut: Cmp = { .a, .b, .lt, .le, .gt, .ge, .eq, .ne };\n\
                await 1ns;\n\
                assert!(lt, \"1.9 < 2.0\");\n\
                assert!(le, \"1.9 <= 2.0\");\n\
@@ -962,7 +962,7 @@ mod tests {
              impl ChainTest {\n\
                let i: uint[8] = 10;\n\
                let o: uint[8];\n\
-               let dut: Chain = { .i, .o };\n\
+               inst dut: Chain = { .i, .o };\n\
                await 1ns;\n\
                assert!(o == 13, \"10 +1 +1 +1 propagates through the chain\");\n\
                i = 20;\n\
@@ -987,7 +987,7 @@ mod tests {
              impl StrTest {\n\
                let s: string = \"hello\";\n\
                let o: string[5];\n\
-               let dut: Echo = { .s, .o };\n\
+               inst dut: Echo = { .s, .o };\n\
                await 1ns;\n\
                assert!(o == \"hello\", \"echoed string matches\");\n\
                assert!(o != \"world\", \"and differs from another\");\n\
@@ -1016,7 +1016,7 @@ mod tests {
                let c: Char = 'A';\n\
                let is_a: Bool;\n\
                let echo: Char;\n\
-               let dut: P = { .c, .is_a, .echo };\n\
+               inst dut: P = { .c, .is_a, .echo };\n\
                await 1ns;\n\
                assert!(is_a, \"'A' == 'A' (symbol equality)\");\n\
                assert!(echo == 'A', \"symbol round-trips\");\n\
@@ -1050,7 +1050,7 @@ mod tests {
                let b: Byte = 255;\n\
                let oc: Char;\n\
                let ob: Byte;\n\
-               let dut: P = { .c, .b, .oc, .ob };\n\
+               inst dut: P = { .c, .b, .oc, .ob };\n\
                await 1ns;\n\
                assert!(oc == 128512, \"21-bit code point survives (width > 16)\");\n\
                assert!(ob == 0, \"byte arithmetic wraps at 8 bits\");\n\
@@ -1085,7 +1085,7 @@ mod tests {
                let hi_dn: uint[4];\n\
                let lo_up: uint[4];\n\
                let named: uint[4];\n\
-               let dut: S = { .w, .hi_dn, .lo_up, .named };\n\
+               inst dut: S = { .w, .hi_dn, .lo_up, .named };\n\
                await 1ns;\n\
                assert!(hi_dn == 10, \"w[7..4] descending is MSB-first\");\n\
                assert!(lo_up == 5, \"w[4..7] ascending reverses bit order\");\n\
@@ -1109,7 +1109,7 @@ mod tests {
              impl WideTest {\n\
                let a: uint[8] = 5;\n\
                let y: uint[128];\n\
-               let dut: Shifter = { .a, .y };\n\
+               inst dut: Shifter = { .a, .y };\n\
                await 1ns;\n\
                assert!(y != 0, \"bits above 63 survive in wide slots\");\n\
                assert!(y >> 100 == 5, \"shifted value round-trips\");\n\
@@ -1148,7 +1148,7 @@ mod tests {
              impl SuffixTest {\n\
                let t: Time;\n\
                let z: Complex;\n\
-               let dut: Src = { .t, .z };\n\
+               inst dut: Src = { .t, .z };\n\
                await 1ns;\n\
                assert!(t.fs == 10000000, \"10ns is 10^7 fs\");\n\
                assert!(z.re == 0, \"5i has no real part\");\n\
@@ -1179,7 +1179,7 @@ mod tests {
                let a: Complex = { .re = 10, .im = 0 };\n\
                let b: Complex = { .re = 0, .im = 5 };\n\
                let z: Complex;\n\
-               let dut: Adder = { .a, .b, .z };\n\
+               inst dut: Adder = { .a, .b, .z };\n\
                await 1ns;\n\
                assert!(z.re == 10, \"10 + 5i has re 10\");\n\
                assert!(z.im == 5, \"10 + 5i has im 5\");\n\
@@ -1218,7 +1218,7 @@ mod tests {
                let a: Volt = Volt::Low;\n\
                let b: Volt = Volt::Low;\n\
                let y: Volt;\n\
-               let dut: Mix = { .a, .b, .y };\n\
+               inst dut: Mix = { .a, .b, .y };\n\
                await 1ns;\n\
                assert!(y == Volt::Low, \"Low + Low = Low\");\n\
                b = Volt::High;\n\
@@ -1245,7 +1245,7 @@ mod tests {
              impl LitTest {\n\
                let a: uint[8] = x\"AB\";\n\
                let y: uint[8];\n\
-               let dut: Buf = { .a, .y };\n\
+               inst dut: Buf = { .a, .y };\n\
                await 1ns;\n\
                assert!(y == x\"AB\", \"hex literal drives through\");\n\
                assert!(y == 171, \"and equals its decimal value\");\n\

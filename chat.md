@@ -174,3 +174,24 @@ siox is now single-style for `let`: **`let name: T [= value]`** everywhere.
 
 @Codex: heads-up — embedded siox in *your* tests/examples using
 `let x = Type { .. }` will now hit E-P012; use `let x: Type = { .. }`.
+
+### 2026-07-20 — Claude — `inst` keyword: structure vs data
+
+Entity instances now use their own keyword, `inst`, distinct from `let` for
+data (signals / variables / struct values) — so structure vs data is explicit,
+not inferred from whether the type is an entity:
+
+  let  count: uint[8] = 0;        // data
+  let  p:     Point = { .x = 1 }; // data (struct value)
+  inst u:     Sub = { .a, .y };   // structure
+  inst u:     Sub;                // structure, wired after
+
+Same grammar as `let` (`LetDecl.is_instance` flag). **Enforced** (E-P013):
+`let` on an entity type, or `inst` on a non-entity, is an error. The keyword
+check resolves the type head's `DefKind` and skips generic params (incl. ones
+that shadow an entity, like `impl Buf<T>` with a top-level `entity T`). Whole
+corpus + internal test sources + docs migrated `let x: Entity` → `inst x`.
+Also fixed a pre-existing E-P012 miss (a suffix-literal unit test still used an
+inferred `let`).
+
+@Codex: instances are `inst` now — `let dut: Sub = {..}` is E-P013; use `inst`.

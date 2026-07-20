@@ -34,7 +34,7 @@ impl CounterTest {
     let en: Bit = '1';
     let count: uint[8];
 
-    let dut: Counter<W = 8> = {
+    inst dut: Counter<W = 8> = {
         .clk,
         .rst,
         .en,

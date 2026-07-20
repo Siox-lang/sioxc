@@ -83,7 +83,7 @@ impl CustomOperatorTest {
     let xnor_y: uint[4];
     let not_y: uint[4];
     let local_not: uint[4];
-    let dut: OperatorDut = { .a, .b, .xor_y, .nand_y, .nor_y, .xnor_y, .not_y };
+    inst dut: OperatorDut = { .a, .b, .xor_y, .nand_y, .nor_y, .xnor_y, .not_y };
     a = 10;
     b = 12;
     local_not = not a;

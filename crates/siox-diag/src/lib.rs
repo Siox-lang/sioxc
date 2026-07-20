@@ -202,6 +202,9 @@ pub mod codes {
     /// A `let` binding without a type annotation (`let x = ...`): Phase 1 is
     /// type-strict — every binding declares its type (`let x: T [= ...]`).
     pub const MISSING_TYPE_ANNOTATION: &str = "E-P012";
+    /// Wrong declaration keyword: `let` on an entity type, or `inst` on a
+    /// non-entity. `inst` declares an entity instance; `let` declares data.
+    pub const WRONG_DECL_KEYWORD: &str = "E-P013";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

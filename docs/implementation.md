@@ -65,8 +65,10 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   types opt in via `impl Boolean for T`) (`E-P003`), attribute target (`E-P006`)
   and value (`E-P007`), write-to-input-port (`E-P004`), assignment and
   initializer compatibility / no-implicit-conversion (`E-P003`, literal- and
-  enum-aware), the type-strict `let` rule (every binding declares its type;
-  `let x = e` is `E-P012`), and the `::ddt` Phase-2 guard (`E-P010`).
+  enum-aware), the type-strict binding rule (every `let`/`inst` declares its
+  type; `let x = e` is `E-P012`) and the structure/data keyword split (`inst`
+  for entity instances, `let` for data; the wrong keyword is `E-P013`), and the
+  `::ddt` Phase-2 guard (`E-P010`).
 - **Status (done, cont.):** **method-call typing** — `recv.method(args)` types
   as the impl method's declared return type (inherent and trait impls), so the
   result flows into downstream checks (a `Logic`-returning method used as a bare

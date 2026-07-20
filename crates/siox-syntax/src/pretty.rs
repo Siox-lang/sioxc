@@ -772,7 +772,7 @@ mod tests {
                }\n\
              }\n\
              impl M {\n\
-               let dut: Counter<W = 8> = { .clk, .count = c };\n\
+               inst dut: Counter<W = 8> = { .clk, .count = c };\n\
                match opcode {\n\
                  State::Idle => { next = State::Start; }\n\
                  _ => op = Op::Nop,\n\

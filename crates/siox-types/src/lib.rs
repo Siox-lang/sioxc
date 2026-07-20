@@ -657,6 +657,20 @@ impl<'a> Checker<'a> {
 
     fn check_impl(&mut self, im: &ImplDecl) {
         let (in_ports, sym) = self.impl_env(im);
+        // Generic parameters in scope: `impl Foo<T>` writes `<T>` either as a
+        // param list (`im.params`) or as the target's generic args
+        // (`impl Buf<T>` where `T` binds on the target). Collect both.
+        let mut type_params: HashSet<String> =
+            im.params.params.iter().map(|p| p.name.text.clone()).collect();
+        if let Type::Generic { args, .. } = &im.target {
+            for a in args {
+                if let GenericArg::Positional(Expr::Path(p)) = a {
+                    if let [seg] = p.segments.as_slice() {
+                        type_params.insert(seg.text.clone());
+                    }
+                }
+            }
+        }
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
             self.check_attr_value(a);
@@ -669,6 +683,7 @@ impl<'a> Checker<'a> {
                 ImplItem::Const(c) => self.check_expr(&c.value, &sym),
                 ImplItem::Let(l) => {
                     self.require_let_annotation(l);
+                    self.check_decl_keyword(l, &type_params);
                     // Per-instance attributes: valid for `let` targets or when
                     // a named target matches the declaration's type (the
                     // instance's entity, or the annotated type head).
@@ -758,6 +773,7 @@ impl<'a> Checker<'a> {
         match s {
             Stmt::Let(l) => {
                 self.require_let_annotation(l);
+                self.check_decl_keyword(l, &HashSet::new());
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v, sym);
@@ -984,6 +1000,40 @@ impl<'a> Checker<'a> {
             diag = diag.help(format!("write `let {}: <type> = ...;`", l.name.text));
         }
         self.sink.emit(diag);
+    }
+
+    /// Structure vs data: `inst` declares an entity instance, `let` declares a
+    /// signal / variable / struct value. Using the wrong keyword is `E-P013`.
+    fn check_decl_keyword(&mut self, l: &LetDecl, type_params: &HashSet<String>) {
+        let Some(ty) = &l.ty else { return };
+        let Some(head) = type_head_name(ty) else { return };
+        // A generic type parameter is opaque (and may even shadow an `entity`
+        // of the same name), so never judge its keyword.
+        if type_params.contains(head) {
+            return;
+        }
+        // Resolve the type head to its definition to tell structure from data.
+        let kind = type_head_span(ty)
+            .and_then(|s| self.resolved.resolved(s))
+            .and_then(|id| self.resolved.def(id))
+            .map(|d| d.kind);
+        match kind {
+            // A type parameter is opaque, and an unresolved head (kernel
+            // builtin, alias) can't be judged — leave both alone.
+            Some(DefKind::Param) | None => {}
+            Some(DefKind::Entity) if !l.is_instance => self.error(
+                codes::WRONG_DECL_KEYWORD,
+                l.span,
+                format!("`{head}` is an entity — declare an instance with `inst`, not `let`"),
+            ),
+            // Any other definition (struct, enum, …) is data.
+            Some(k) if l.is_instance && k != DefKind::Entity => self.error(
+                codes::WRONG_DECL_KEYWORD,
+                l.span,
+                format!("`inst` declares an entity instance, but `{head}` is not an entity — use `let`"),
+            ),
+            _ => {}
+        }
     }
 
     /// Spec 3.17: a `let name: T = e` initializer must be assignable to `T`.
@@ -1846,6 +1896,15 @@ fn type_head_name(ty: &Type) -> Option<&str> {
     }
 }
 
+/// The span of a type's head name segment (for resolving its definition).
+fn type_head_span(ty: &Type) -> Option<Span> {
+    match ty {
+        Type::Path(p) => p.segments.first().map(|s| s.span),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_span(base),
+        Type::Mode { inner, .. } => type_head_span(inner),
+    }
+}
+
 /// A dotted path string for a write target: `Expr::Path` or a `Field` chain
 /// (`bus.ready` -> "bus.ready").
 fn path_string(e: &Expr) -> Option<String> {
@@ -2280,13 +2339,13 @@ mod tests {
         // Known unit suffixes and valid bit-strings pass.
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t = 10ns;\n  let f = 100MHz;\n  y = x\"AB\";\n}\n"
+                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
             ),
             0
         );
         // An unknown suffix is an error.
         assert_eq!(
-            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c = 5i;\n  y = '0';\n}\n"),
+            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c: integer = 5i;\n  y = '0';\n}\n"),
             1
         );
         // Bad digits for the base are an error.

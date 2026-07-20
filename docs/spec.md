@@ -87,17 +87,20 @@ attr
 
 The language should avoid extra syntax where context is enough.
 
-**Bindings are type-strict.** Every `let` declares its type — `let name: T`,
-optionally with a value `let name: T = value`. The type is never inferred from
-the value: a bare `let x = e` is an error (`E-P012`). This is the single
-declaration form for signals, locals, and instances alike; an instance's
-connections are a name-less block that takes its type from the annotation:
+**Bindings are type-strict.** Every binding declares its type — `name: T`,
+optionally with a value `name: T = value`. The type is never inferred from the
+value: a bare `let x = e` is an error (`E-P012`). Two keywords share this one
+form, splitting **data** from **structure**: `let` declares a signal / variable
+/ struct value; `inst` declares an entity sub-instance (its `{ .. }` block is a
+name-less construct taking its type from the annotation). Using `let` for an
+entity, or `inst` for a non-entity, is an error (`E-P013`).
 
 ```siox
 let count: uint[8];                    // signal
 let value: uint[8] = 0;                // signal with reset value
-let dut: Counter<W = 8> = { .clk, .rst, .count };   // instance
-let dut: Counter<W = 8>;               // instance, ports wired after
+let p:     Point = { .x = 1 };         // struct value
+inst dut:  Counter<W = 8> = { .clk, .rst, .count };   // instance
+inst dut:  Counter<W = 8>;             // instance, ports wired after
 ```
 
 ---
@@ -172,7 +175,7 @@ entity Counter<W: integer> {
 Instantiation:
 
 ```siox
-let c: Counter<W = 8> = {
+inst c: Counter<W = 8> = {
     .count = count8,
 };
 ```
@@ -180,7 +183,7 @@ let c: Counter<W = 8> = {
 or positional:
 
 ```siox
-let c: Counter<8> = {
+inst c: Counter<8> = {
     .count = count8,
 };
 ```
@@ -640,7 +643,7 @@ if clk::rising {
 Instance connection:
 
 ```siox
-let c: Counter<W = 8> = {
+inst c: Counter<W = 8> = {
     .clk = clk,
     .rst = rst,
     .count = count,
@@ -650,7 +653,7 @@ let c: Counter<W = 8> = {
 Shorthand connection:
 
 ```siox
-let c: Counter<W = 8> = {
+inst c: Counter<W = 8> = {
     .clk,
     .rst,
     .count,
@@ -660,7 +663,7 @@ let c: Counter<W = 8> = {
 means:
 
 ```siox
-let c: Counter<W = 8> = {
+inst c: Counter<W = 8> = {
     .clk = clk,
     .rst = rst,
     .count = count,
@@ -675,7 +678,7 @@ let c: Counter<W = 8> = {
 3. **Positional** — a bare expression bound by declaration order:
 
    ```siox
-   let c: Counter<W = 8> = { clk, rst, count };   // by port order
+   inst c: Counter<W = 8> = { clk, rst, count };   // by port order
    ```
 
 A block is either all-named (forms 1–2) or all-positional (form 3); the two
@@ -687,7 +690,7 @@ instance (the struct-field form). An input port is driven by assigning to it;
 an output port is read by naming it:
 
 ```siox
-let dut: Counter<W = 8> = {};
+inst dut: Counter<W = 8> = {};
 dut.clk = clk;          // drive an input port
 dut.rst = rst;
 count = dut.count;      // read an output port
@@ -1705,7 +1708,7 @@ Implement:
 Source:
 
 ```siox
-let c: Counter<W = 8> = {
+inst c: Counter<W = 8> = {
     .clk,
     .rst,
     .en,
@@ -2048,7 +2051,7 @@ impl CounterTest {
     let en: Bit = '1';
     let count: uint[8];
 
-    let dut: Counter<W = 8> = {
+    inst dut: Counter<W = 8> = {
         .clk,
         .rst,
         .en,

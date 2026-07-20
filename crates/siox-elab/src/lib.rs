@@ -382,9 +382,7 @@ impl<'a> Elaborator<'a> {
         if matches!(ann, Type::Indexed { .. }) {
             return None;
         }
-        let is_inst = l.is_instance
-            || type_head_name(ann).is_some_and(|n| self.entities.contains_key(n));
-        if !is_inst {
+        if !l.is_instance {
             return None;
         }
         match &l.value {
@@ -967,7 +965,7 @@ mod tests {
           let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let count: uint[8];\n\
-          let dut: Counter<W = 8> = {\n\
+          inst dut: Counter<W = 8> = {\n\
             .clk,\n\
             .rst,\n\
             .count = count,\n\
@@ -1028,7 +1026,7 @@ mod tests {
             impl Top {\n\
               let a: uint[4];\n\
               let b: uint[8];\n\
-              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
+              inst dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1044,7 +1042,7 @@ mod tests {
             impl Top {\n\
               let a: uint[8];\n\
               let b: uint[8];\n\
-              let dut: Sub<W = 8> = { .a = a, .b = b };\n\
+              inst dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
@@ -1061,7 +1059,7 @@ mod tests {
             impl H {\n\
               let clk: Bit = '0';\n\
               let count: uint[8];\n\
-              let dut: Counter<W = 8> = { .clk, .count };\n\
+              inst dut: Counter<W = 8> = { .clk, .count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1076,7 +1074,7 @@ mod tests {
             entity H {}\n\
             impl H {\n\
               let count: uint[8];\n\
-              let dut: Counter = { .count, .nope = count };\n\
+              inst dut: Counter = { .count, .nope = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1091,7 +1089,7 @@ mod tests {
             impl H {\n\
               let addr: uint[4];\n\
               let data: uint[8];\n\
-              let mem: Ram<W = 4> = { .addr, .data };\n\
+              inst mem: Ram<W = 4> = { .addr, .data };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
