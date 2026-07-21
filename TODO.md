@@ -1,8 +1,8 @@
 # TODO
 
 Outstanding work for siox Phase 1. The pipeline runs end to end (parse →
-resolve → type-check → elaborate → lower → simulate on interpreter / LLVM JIT /
-native, with assertions and VCD waveforms); what remains is filling gaps and
+resolve → type-check → elaborate → lower → run on the LLVM JIT or the native
+AOT binary, with assertions and VCD waveforms); what remains is filling gaps and
 deepening coverage. See [`docs/implementation.md`](docs/implementation.md) for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
@@ -25,8 +25,8 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 - 🟡 **Undriven signals** — a never-driven signal reads `0` rather than raising
   a runtime error or going `'X'`. Real undriven detection needs per-signal
-  driven-flag / X-value tracking across all three engines. (Structurally
-  unconnected input *ports* are still caught statically, `E-P005`.)
+  driven-flag / X-value tracking in the engine. (Structurally unconnected input
+  *ports* are still caught statically, `E-P005`.)
 - 🟡 **Full direction analysis** (elab) — reading an undriven `out`, driving an
   `in`, etc. beyond the current write-to-input-port check.
 - 🟡 **Cross-module visibility** (resolve) — private items aren't yet enforced
@@ -38,13 +38,10 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Engines
 
-The whole corpus now runs on the **native** binary as well as the LLVM JIT and
-the interpreter — `real` / `Char` / `string` testbenches and `std::fs` reads
-are all emitted. Remaining engine-specific notes:
+The whole corpus runs on both the LLVM JIT and the **native** AOT binary —
+`real` / `Char` / `string` testbenches and `std::fs` reads are all emitted.
+Remaining engine-specific notes:
 
-- 🟡 **Interpreter — FFI** — `extern "C"` calls need a linked C symbol, which the
-  pure interpreter build has no way to resolve (`ffi_test` passes on JIT/native
-  only). Inherent to a symbol-free interpreter.
 - 🔴 **Native emitter — true runtime file read** — `read_to_string` is read at
   *build* time (fine for the stable fixtures) and baked in. A genuine runtime
   `fopen`/`fread`, for a file that changes between build and run, is a possible

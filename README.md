@@ -15,15 +15,18 @@ Build `sioxc` from source (needs [Rust](https://rustup.rs) 1.90 or newer):
 ```bash
 git clone https://github.com/Siox-lang/sioxc
 cd sioxc
-cargo build --release --no-default-features --features interp
+cargo build --release
 ```
 
 That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
-call it by path. This build uses the interpreter and needs no external tools.
+call it by path. siox compiles designs through LLVM, so this build needs a
+matching local LLVM install (see `crates/siox-llvm/Cargo.toml` for the pinned
+version).
 
-> **Faster backend (optional).** A plain `cargo build --release` turns on the
-> LLVM JIT/AOT engine, which needs a matching local LLVM install. The
-> interpreter above runs every design correctly and is all you need to start.
+> **Frontend only (no LLVM).** `cargo build --release --no-default-features`
+> builds just the parser/checker/elaborator — useful for working on the
+> compiler front end without an LLVM toolchain — but it has no engine, so it
+> can't *run* a design.
 
 ## Write your first circuit
 

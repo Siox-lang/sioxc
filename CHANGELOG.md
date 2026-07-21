@@ -11,6 +11,28 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Removed
+- **The interpreter (`siox-sim`) is gone — the LLVM JIT is the only engine.**
+  The delta-cycle interpreter had been the differential oracle and a >64-bit
+  fallback; both are retired. Dropped the crate, the `interp` feature, the
+  `--backend`/`--slot` CLI flags, and the interpreter fallback in `siox test`.
+  The frontend still builds without an LLVM toolchain (`--no-default-features`),
+  but then `siox test` has no engine to run. The old JIT-vs-interpreter
+  differential harness became `siox-llvm/tests/jit.rs` — LLVM-only behaviour
+  tests asserting golden values (captured from the interpreter before removal,
+  so coverage is unchanged). CI now installs LLVM 22 and runs the real backend.
+
+### Changed
+- **Bit-vector types name their real family in diagnostics.** A width mismatch
+  on `int[8]` now says `int[8]` instead of a hardcoded `uint[8]` (both `EType`
+  in elaboration and `Ty` in the checker carry the family for display).
+
+### Fixed
+- **Generic type parameter shadowing an entity name no longer loops forever.**
+  `let s: T` in `impl Buf<T>` is data (the bound type), not an instance of a
+  same-named entity `T`; elaboration and IR lowering both stopped treating it as
+  a recursive instance (with a defensive cycle guard in lowering).
+
 ### Added
 - **Richer `match` + compound assignment.** `match` may be used in value
   position (`let y = match op { Add => a + b, _ => a };`); arms may list

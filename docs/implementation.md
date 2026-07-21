@@ -22,9 +22,8 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking, the three connection forms + post-declaration wiring, generate `for`/`if` |
 | `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; **hierarchical lowering** (per-instance signals + connection drivers); process decomposition + validator for codegen; `sioxc ir` |
 | `siox-run`     | 7, 8 | 🟢 partial | the engine-agnostic **kernel/test runner**: `Engine` trait, `#[test]` runner, `await`/`clock` timing + event wheel (**owns simulation time**), `assert!`, waveform sample recording. Drives whatever `Engine` it is given |
-| `siox-sim`     | 7    | 🟢 partial | the delta-cycle **interpreter** — one `Engine`, kept as the differential oracle + >64-bit fallback (not in the default build; `--features interp`) |
 | `siox-wave`    | 9    | 🟢 partial | VCD waveform export from a traced run (real timestamps, JIT-traced); `sioxc sim --wave` |
-| `siox-llvm`    | B    | 🟢 partial | **default execution engine** (inkwell, `llvm` feature on by default): emit `.ll`, JIT-run (`sioxc test`), AOT native object (`sioxc <file>`), native test binary (`test --no-run`); differentially verified vs. the interpreter oracle |
+| `siox-llvm`    | B    | 🟢 partial | **the execution engine** (inkwell, `llvm` feature on by default): emit `.ll`, JIT-run (`sioxc test`), AOT native object (`sioxc <file>`), native test binary (`test --no-run`); JIT behaviour tests in `tests/jit.rs` |
 | `sioxc`        | 12   | 🟢 working | rustc-shaped: bare `sioxc <file>` compiles; `check`/`test` (libtest output, `--no-run`)/`sim --wave`/`ir`/`ast`/`tree`/`tokens`/`emit-llvm` |
 
 ## Stage-by-stage
@@ -148,7 +147,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   through `Resolve` — Verilog's model).
 - **Status (done, cont.):** **method-call lowering** — `recv.method(args)`
   inlines the impl method's body during lowering, reusing the operator-impl
-  inlining machinery, so all three engines get the same primitive tree. Two
+  inlining machinery, so both engines (JIT and native) get the same primitive tree. Two
   forms: **value-returning methods** in expressions (`a.cmp(b)`, `p.sum()`,
   branching on `self`) inline to a value, and **statement methods** (`s.send(v)`
   whose body drives `self.valid`/`self.data`) inline as drivers on the
@@ -159,19 +158,23 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   `pin[0]`) onto the matching leaf of the shared net, so every leaf's parallel
   drivers fold through `Resolve` independently (scalar/vector inout already
   worked).
-- **Status (done, cont.):** **method calls in testbench stimulus** — all three
-  engines inline a `recv.method(args)` call, resolving the receiver type from
+- **Status (done, cont.):** **method calls in testbench stimulus** — both engines
+  inline a `recv.method(args)` call, resolving the receiver type from
   the local's declaration and substituting `self`/parameters into the body, so
   a struct-typed testbench local can drive a DUT through a method result. The
   native `--no-run` emitter materializes an unconnected struct-typed testbench
   local as one C local per field (nested structs recursed, vector families kept
   as scalar leaves) and inlines the method body as a C expression, reaching
-  parity with the interpreter and JIT.
+  parity across the JIT and the native emitter.
 
-### Stage 7 — Simulator core (`siox-sim`) — 🟢 partial
+### Stage 7 — Delta-cycle semantics (`siox-ir` + `siox-llvm`) — 🟢 partial
+- These semantics were first implemented by a standalone delta-cycle
+  interpreter (`siox-sim`) that doubled as the differential oracle; that crate
+  has since been removed and the same semantics are realized directly in the IR
+  and the LLVM engine (`siox-llvm/src/emit.rs` mirrors this delta cycle).
 - **Acceptance:** correctly simulates mux, register, counter, FSM, ready/valid
   handshake, enum monitor (`::old`), struct/array element events.
-- **Status (done):** the delta-cycle `Simulator` over the IR `Design`:
+- **Status (done):** the delta cycle over the IR `Design`:
   current/old/event state, IR-expression evaluation (`Event`/`Old`/`Current`,
   logical/comparison/arithmetic ops), combinational fixpoint, event blocks fired
   once per edge with next-state semantics, value masking to the signal width
@@ -185,7 +188,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** four-value logic — a `Logic` scalar carries `'0'/'1'/'Z'/'X'`
   and the std_logic truth tables (`and`/`or`/`xor`/`not`) inline correctly
   (`'X' and '1' == 'X'`, `'0' and 'X' == '0'`); parallel drivers fold through
-  `impl Resolve for Logic`; verified interpreter == JIT == native.
+  `impl Resolve for Logic`; verified JIT == native.
 - **Status (done, cont.):** **array literals** (`table = [10, 20, 30, 40]`,
   one driver per element), the three **connection forms** (explicit `.a = x`,
   shorthand `.a`, positional `{ a, b }`) plus post-declaration wiring
@@ -209,7 +212,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   failure, and `--no-run` links a native multi-test binary. **`print!`** renders
   each argument by kind: reals as floats, `Char` as the character, and
   enum/`Logic` values as their variant symbol (`'X'`, `Idle`) via the design's
-  `enum_syms` map — on all three engines.
+  `enum_syms` map — on both engines (JIT and native).
 - **Status (done, cont.):** `sioxc test <dir>` runs every `.siox` file in a
   directory (sorted), each under its own header, then an aggregate line;
   exit code is nonzero if any file failed. Files with no `#[test]` entity
@@ -277,8 +280,9 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status:** rustc-shaped. A bare `sioxc <file>` compiles the `#[top]` design to
   a native object; `check`/`sim --wave` (JIT-traced)/`test` (JIT, libtest output,
   `--no-run` native binary)/`ir`/`ast`/`tree`/`tokens`/`emit-llvm` all work. LLVM
-  is the default backend; `--features interp` adds the interpreter and
-  `--backend interp`. (The cargo-like project layer is future `pcb`/`circuit`.)
+  is the only backend; `--no-default-features` builds the frontend without a
+  toolchain (no engine to run). (The cargo-like project layer is future
+  `pcb`/`circuit`.)
 
 ## Recommended order
 
@@ -314,18 +318,19 @@ feature **on by default**) is the execution engine, designed in
 - **B2 emitter** ✅ — combinational + sequential codegen (full delta cycle);
   `Expr`→builder 1:1; `module.verify()`-clean.
 - **B3 JIT** ✅ — `sioxc test` runs the compiled design in-process (default).
-- **B4 differential harness** ✅ — JIT matches the interpreter oracle
-  signal-for-signal across the expression surface (`--features interp`).
+- **B4 JIT behaviour tests** ✅ — `tests/jit.rs` drives the JIT across the whole
+  expression surface and asserts golden signal values. These golden values were
+  captured from the delta-cycle interpreter that used to be the differential
+  oracle, before that crate was removed.
 - **B5 AOT** ✅ — `emit_object` writes a native `.o`; `sioxc <file>` compiles a
   top; `sioxc test --no-run` links a standalone native test binary. The C
   testbench harness covers the full stimulus surface — including `real`
   (`double`), `Char`/`string` reads and comparisons, and `std::fs` reads
-  (build-time-sized) — so the **whole corpus runs on all three engines**
-  (interpreter, JIT, native); only `ffi_test` on the pure interpreter is
-  inherently engine-specific.
+  (build-time-sized) — so the **whole corpus runs on both engines** (JIT and
+  native).
 
-The default `cargo build` stays LLVM-free (feature-gated); the interpreter
-is the differential oracle. Type-level optimization of `uint[]`/`int[]`
+The frontend still builds LLVM-free (`--no-default-features`), but the JIT is
+the only engine that runs designs. Type-level optimization of `uint[]`/`int[]`
 (exact-width `iN`) is deliberately later — those types are slated to be
 softcoded by std.
 

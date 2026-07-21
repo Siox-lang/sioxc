@@ -13,9 +13,7 @@ flowchart LR
     end
     IR --> LL[siox-llvm]
     LL -. Engine .-> RUN[siox-run]
-    SI[siox-sim] -. Engine .-> RUN
     RUN --> WA[siox-wave]
-    IR -. "--features interp" .-> SI
     DIAG[siox-diag] -. used by all .-> pipeline
     CLI[sioxc] == drives ==> pipeline
 ```
@@ -25,8 +23,8 @@ stimulus + `await`/`clock` scheduler, owns simulation time, and records
 waveforms — driving whatever `Engine` it's handed. `siox-llvm` (the `llvm`
 feature, on by default) is that `Engine` — it emits LLVM, JIT-runs, or
 AOT-compiles the `Design` to native code (`sioxc test` JIT-runs, `sim --wave`
-JIT-traces). The `siox-sim` interpreter (feature `interp`, off by default) is a
-second `Engine`, kept only as the differential oracle and the >64-bit fallback.
+JIT-traces). It is the only engine; the frontend still builds without an LLVM
+toolchain (`--no-default-features`), but then `siox test` has nothing to run.
 
 **Layering rule:** a crate may depend only on the crates above it in this list
 (plus `siox-diag`). Do not introduce upward or sideways dependencies.
@@ -41,10 +39,9 @@ second `Engine`, kept only as the differential oracle and the >64-bit fallback.
 | `siox-types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
 | `siox-elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
 | `siox-ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
-| `siox-run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT, or the interpreter) is driven by this. |
-| `siox-sim`     | 7    | The delta-cycle **interpreter** — one `Engine`. Kept as the **differential oracle** verifying the compiled backend, and the >64-bit fallback. Not in the default build; pulled in via `--features interp`. |
+| `siox-run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
 | `siox-wave`    | 9    | `Trace` recording + VCD export (FST later). |
-| `siox-llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; driven by `siox-run`, verified vs. the `siox-sim` interpreter. |
+| `siox-llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; driven by `siox-run`. |
 | `sioxc`     | 12   | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
 
 Each crate's `lib.rs` opens with a doc-comment summarising its responsibility
@@ -90,7 +87,7 @@ name-use site to the declaration it resolves to.
 - **The IR distinction is central.** Combinational `Driver(target, cond, expr)`
   and sequential `OnEvent(cond): next(target) = expr` are kept separate; e.g.
   `clk.rising()` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
-  Preserve this split when working in `siox-ir`/`siox-sim`.
+  Preserve this split when working in `siox-ir`/`siox-llvm`.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
   `across`/`through`, `::ddt`, layout attrs) must produce errors
@@ -121,18 +118,16 @@ name. Residual name-recognition survives in a few structural spots
 the family set later; it is harmless (the compiler knowing its stdlib's
 vector shapes).
 
-## Backend slot widths
+## Signal widths
 
-Simulation values live in fixed-width **slots**. The simulator is generic
-over a `Slot` type: `u64` (default, fastest) or `u128`, which is
-register-pair native on 64-bit CPUs — no software emulation. `--slot auto`
-(the default) picks 128-bit slots only when the design declares signals
-wider than 64 bits, trading speed for range; `--slot 64|128` forces a width.
+The JIT engine represents each signal value in a 64-bit word, so a design is
+JIT-able only when every signal is ≤ 64 bits wide; a wider signal is a clean
+error rather than a silent truncation (`siox test` reports it and runs nothing).
+Widening the engine past 64 bits is future work.
 
-Floats are f64 bits in the low 64 of a slot regardless of width: no
-mainstream CPU has scalar f128/f256 hardware (AVX widths are SIMD lanes,
-not precision), so wider floats would mean software emulation — deferred
-until something needs precision beyond f64.
+Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
+SIMD lanes, not precision), so wider floats would mean software emulation —
+deferred until something needs precision beyond f64.
 
 ## The CLI as the pipeline driver
 

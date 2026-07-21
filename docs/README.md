@@ -38,16 +38,13 @@ flowchart TD
     IR -->|siox-llvm| ENG["JIT / native object<br/>(execution engine)"]
     ENG -->|test runner| OUT["#[test] results"]
     ENG -->|"test runner + siox-wave"| VCD[VCD waveforms]
-    IR -.->|"siox-sim (--features interp)"| ORACLE["interpreter<br/>differential oracle"]
 ```
 
 `siox-diag` (spans, diagnostics, source map) underpins every stage, and `sioxc`
 is the binary that wires them together per subcommand. **`siox-llvm` (on by
 default) is the execution engine** — it JIT-runs or AOT-compiles the `Design` to
 native code; the engine-generic test runner drives it to produce `#[test]`
-results and traced waveforms. The `siox-sim` **interpreter** (dashed; behind
-`--features interp`) is kept only as the differential oracle that verifies the
-compiler.
+results and traced waveforms.
 
 ## Current status (summary)
 
@@ -62,10 +59,7 @@ engine: `sioxc test` JIT-runs designs, `sioxc <file>` compiles the `#[top]`
 design to a native object, and `sioxc test --no-run` links a standalone native
 test binary. Simulation time is owned by the runner/kernel, so waveforms carry
 real timestamps and multiple clocks interleave on one event wheel. The
-delta-cycle **interpreter** is kept behind the `interp` feature (off by default)
-as the differential oracle and the >64-bit fallback. The conformance corpus
-runs on **all three engines** (interpreter, JIT, native); the only
-engine-specific case is `extern "C"` FFI on the pure interpreter.
+conformance corpus runs through the compiled backend.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
 operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
@@ -77,16 +71,17 @@ per stage, [../TODO.md](../TODO.md) for what's left, and the
 
 ```bash
 cargo build                       # build the workspace (LLVM backend, default)
-cargo test                        # run all tests
-cargo test --features interp      # also run the interpreter + differential harness
+cargo test                        # run all tests (needs an LLVM toolchain)
+cargo build --no-default-features # frontend only, no LLVM toolchain required
 
 cargo run -p sioxc -- <file>              # compile the #[top] design
 cargo run -p sioxc -- test <file>         # build + run #[test] entities (JIT)
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
-`rustc foo.rs`). LLVM is the default backend; add `--features interp` for the
-interpreter engine and `--backend interp`.
+`rustc foo.rs`). LLVM is the only backend; `--no-default-features` builds just
+the frontend (parse/resolve/typecheck/elaborate/lower), where `siox test` has
+no engine to run.
 
 | Command | Does |
 | ------- | ---- |

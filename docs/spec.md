@@ -1401,9 +1401,8 @@ extern "C" {
 Type mapping: `real` is `double`; `integer` and the word-sized numeric types
 are 64-bit words. Calls are usable in hardware expressions and testbenches.
 The JIT resolves symbols from the process; the native binary resolves them at
-link time (the math library is linked by default); the interpreter — the
-differential oracle — evaluates the libm set natively and does not call
-arbitrary foreign code. Only the `"C"` ABI is supported.
+link time (the math library is linked by default). Only the `"C"` ABI is
+supported.
 
 
 ## 4. Phase 1 implementation stages
@@ -2042,9 +2041,9 @@ await count == 7;           // wait until a condition holds
 `await`'s three forms are: a **duration** (advance time), an **edge**
 (`clk.rising()`/`clk.falling()`/`::event`), and a **condition** (any boolean). Edge
 and condition forms are driven by the background clocks — the scheduler steps
-the clocks until the trigger fires. `await` runs identically on the
-interpreter, the JIT, and the native `--no-run` binary. (`wait`/`tick` remain
-for straight-line, self-clocked stimulus.)
+the clocks until the trigger fires. `await` runs identically on the JIT and the
+native `--no-run` binary. (`wait`/`tick` remain for straight-line, self-clocked
+stimulus.)
 
 Example:
 
