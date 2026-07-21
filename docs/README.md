@@ -63,12 +63,15 @@ design to a native object, and `sioxc test --no-run` links a standalone native
 test binary. Simulation time is owned by the runner/kernel, so waveforms carry
 real timestamps and multiple clocks interleave on one event wheel. The
 delta-cycle **interpreter** is kept behind the `interp` feature (off by default)
-as the differential oracle and the >64-bit fallback.
+as the differential oracle and the >64-bit fallback. The conformance corpus
+runs on **all three engines** (interpreter, JIT, native); the only
+engine-specific case is `extern "C"` FFI on the pure interpreter.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
 operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
 truth tables defined as library code. See [implementation.md](implementation.md)
-per stage and the [CHANGELOG](../CHANGELOG.md) for what has landed.
+per stage, [../TODO.md](../TODO.md) for what's left, and the
+[CHANGELOG](../CHANGELOG.md) for what has landed.
 
 ## Build and run
 

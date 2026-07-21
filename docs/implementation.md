@@ -19,7 +19,7 @@ Legend: 🔴 stub (signature only) · 🟡 skeleton (types defined, logic TODO) 
 | `siox-syntax`  | 1, 2 | 🟢 working | lexer, parser, AST, round-tripping pretty-printer |
 | `siox-resolve` | 3    | 🟢 working | defs/DefIds, imports, paths, enum variants, attributes |
 | `siox-types`   | 4    | 🟢 partial | type-inference core; trait-driven (`Boolean`) conditions, attr target/value, input-write, assignment/init compatibility, `::ddt` |
-| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking |
+| `siox-elab`    | 5    | 🟢 partial | instance hierarchy, param const-eval + substitution, connection width checking, the three connection forms + post-declaration wiring, generate `for`/`if` |
 | `siox-ir`      | 6    | 🟢 partial | language-neutral IR; drivers + event blocks; **hierarchical lowering** (per-instance signals + connection drivers); process decomposition + validator for codegen; `sioxc ir` |
 | `siox-run`     | 7, 8 | 🟢 partial | the engine-agnostic **kernel/test runner**: `Engine` trait, `#[test]` runner, `await`/`clock` timing + event wheel (**owns simulation time**), `assert!`, waveform sample recording. Drives whatever `Engine` it is given |
 | `siox-sim`     | 7    | 🟢 partial | the delta-cycle **interpreter** — one `Engine`, kept as the differential oracle + >64-bit fallback (not in the default build; `--features interp`) |
@@ -317,12 +317,19 @@ feature **on by default**) is the execution engine, designed in
 - **B4 differential harness** ✅ — JIT matches the interpreter oracle
   signal-for-signal across the expression surface (`--features interp`).
 - **B5 AOT** ✅ — `emit_object` writes a native `.o`; `sioxc <file>` compiles a
-  top; `sioxc test --no-run` links a standalone native test binary.
+  top; `sioxc test --no-run` links a standalone native test binary. The C
+  testbench harness covers the full stimulus surface — including `real`
+  (`double`), `Char`/`string` reads and comparisons, and `std::fs` reads
+  (build-time-sized) — so the **whole corpus runs on all three engines**
+  (interpreter, JIT, native); only `ffi_test` on the pure interpreter is
+  inherently engine-specific.
 
 The default `cargo build` stays LLVM-free (feature-gated); the interpreter
 is the differential oracle. Type-level optimization of `uint[]`/`int[]`
 (exact-width `iN`) is deliberately later — those types are slated to be
 softcoded by std.
+
+Remaining gaps across all stages are tracked in [../TODO.md](../TODO.md).
 
 ## Phase 1 "done" checklist (spec §6)
 
