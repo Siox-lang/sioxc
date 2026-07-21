@@ -96,7 +96,7 @@ connections are a name-less block that takes its type from the annotation:
 ```siox
 let count: uint[8];                    // signal
 let value: uint[8] = 0;                // signal with reset value
-let dut: Counter<W = 8> = { .clk, .rst, .count };   // instance
+let dut: Counter<W = 8> = { clk, rst, count };      // instance
 let dut: Counter<W = 8>;               // instance, ports wired after
 ```
 
@@ -337,7 +337,7 @@ of it — vendor metadata, like Vivado's `ASYNC_REG`/`DONT_TOUCH`:
 pub attr external_clock: Bool for Pll;
 
 #[external_clock = true]
-let p: Pll = { .clk, .locked };
+let p: Pll = { clk, locked };
 ```
 
 Applying it to anything else is `E-P006`. Instance attributes are preserved

@@ -36,11 +36,10 @@ plus a testbench that drives it:
 ```siox
 module counter;
 
-using std::logic::{Logic, Clock};
 using std::bits::uint;
 
 entity Counter {
-    in clk: Clock;
+    in clk: Bit;
     in rst: Logic;
     out count: uint[8];
 }
@@ -48,7 +47,7 @@ entity Counter {
 impl Counter {
     let value: uint[8] = 0;
 
-    if clk::rising {                 // runs only on a rising clock edge
+    if clk.rising() {                // runs only on a rising clock edge
         if rst == '1' { value = 0; }
         else { value = value + 1; }
     }
@@ -60,22 +59,22 @@ impl Counter {
 entity CounterTest {}
 
 impl CounterTest {
-    let clk: Logic = '0';
+    let clk: Bit = '0';
     let rst: Logic = '1';
     let count: uint[8];
-    let dut = Counter { .clk, .rst, .count };
+    let dut: Counter = { clk, rst, count };   // ports wired positionally
 
     clk = not clk after 5ns;         // free-running clock, 10 ns period
 
     await 10ns;                      // hold reset for one edge
     rst = '0';
-    for i in 0..9 { await clk::rising; }   // let ten more edges pass
+    for i in 0..9 { await clk.rising(); }   // let ten more edges pass
     assert!(count == 10, "counter should reach 10");
 }
 ```
 
 Two kinds of logic sit side by side: a **wire** (`count = value;` is always
-equal to `value`) and a **clocked register** (`if clk::rising { … }` only
+equal to `value`) and a **clocked register** (`if clk.rising() { … }` only
 updates on the edge).
 
 ## Run it
