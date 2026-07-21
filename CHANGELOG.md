@@ -11,6 +11,13 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Changed
+- **Connection/struct blocks have two forms, not three.** The bare `.field`
+  name-shorthand (`{ .clk, .rst }`, meaning `.clk = clk`) is removed. A `.field`
+  now always takes a value — **explicit** `{ .clk = clk, .rst = rst }` — or drop
+  the dots for **positional** `{ clk, rst }` (bound by declaration order). This
+  applies to both instance connections and struct literals.
+
 ### Removed
 - **The interpreter (`siox-sim`) is gone — the LLVM JIT is the only engine.**
   The delta-cycle interpreter had been the differential oracle and a >64-bit

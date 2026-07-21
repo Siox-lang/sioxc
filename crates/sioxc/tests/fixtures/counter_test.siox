@@ -35,10 +35,10 @@ impl CounterTest {
     let count: uint[8];
 
     let dut: Counter<W = 8> = {
-        .clk,
-        .rst,
-        .en,
-        .count,
+        .clk = clk,
+        .rst = rst,
+        .en = en,
+        .count = count,
     };
 
     clk = not clk after 5ns;   // background clock, 10ns period

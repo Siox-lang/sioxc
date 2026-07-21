@@ -658,38 +658,17 @@ let c: Counter<W = 8> = {
 };
 ```
 
-Shorthand connection:
+**Two connection forms** (the same two a struct literal accepts):
 
-```siox
-let c: Counter<W = 8> = {
-    .clk,
-    .rst,
-    .count,
-};
-```
-
-means:
-
-```siox
-let c: Counter<W = 8> = {
-    .clk = clk,
-    .rst = rst,
-    .count = count,
-};
-```
-
-**Three connection forms** (the same three a struct literal accepts):
-
-1. **Explicit** — `.port = signal`, as above.
-2. **Name shorthand** — `.port`, meaning `.port = port` (a same-named signal
-   in scope).
-3. **Positional** — a bare expression bound by declaration order:
+1. **Explicit** — `.port = signal`, as above. Every `.port` takes a value;
+   there is no bare `.port` name-shorthand.
+2. **Positional** — a bare expression bound by declaration order:
 
    ```siox
    let c: Counter<W = 8> = { clk, rst, count };   // by port order
    ```
 
-A block is either all-named (forms 1–2) or all-positional (form 3); the two
+A block is either all-explicit (form 1) or all-positional (form 2); the two
 cannot be mixed.
 
 **Post-declaration connection.** Instead of a connection block, an instance's

@@ -2,9 +2,9 @@
 //!
 //! Turns parameterized entities and instances into a concrete elaborated
 //! hierarchy: parameter substitution, instance creation, port connection
-//! resolution (including `.clk` shorthand), nested hierarchy, external entity
-//! stubs, direction checking, and constant-expression evaluation for
-//! parameters.
+//! resolution (explicit `.port = signal` and positional forms), nested
+//! hierarchy, external entity stubs, direction checking, and
+//! constant-expression evaluation for parameters.
 //!
 //! Acceptance (spec Stage 5): all entity parameters known after elaboration;
 //! all required ports connected or defaulted; direction violations reported;
@@ -525,7 +525,7 @@ impl<'a> Elaborator<'a> {
         }
     }
 
-    /// Resolve `{ .clk, .count = c }` against the sub-entity's ports, reporting
+    /// Resolve `{ .clk = clk, .count = c }` against the sub-entity's ports, reporting
     /// unknown ports and missing required connections.
     /// The ports of instance `inst` (inside entity `entity_name`'s impls) that
     /// are driven post-declaration by `inst.port = ...` statements — the third
@@ -1040,8 +1040,8 @@ mod tests {
           let rst: Logic = '1';\n\
           let count: uint[8];\n\
           let dut: Counter<W = 8> = {\n\
-            .clk,\n\
-            .rst,\n\
+            .clk = clk,\n\
+            .rst = rst,\n\
             .count = count,\n\
           };\n\
         }\n";
@@ -1088,7 +1088,7 @@ mod tests {
             entity T {}\n\
             impl T {\n\
               let a: uint[8]; let y: uint[8];\n\
-              let dut: Buf<uint[8]> = { .a, .y };\n\
+              let dut: Buf<uint[8]> = { .a = a, .y = y };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0, "no cyclic-instantiation error");
@@ -1166,7 +1166,7 @@ mod tests {
             impl H {\n\
               let clk: Bit = '0';\n\
               let count: uint[8];\n\
-              let dut: Counter<W = 8> = { .clk, .count };\n\
+              let dut: Counter<W = 8> = { .clk = clk, .count = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1181,7 +1181,7 @@ mod tests {
             entity H {}\n\
             impl H {\n\
               let count: uint[8];\n\
-              let dut: Counter = { .count, .nope = count };\n\
+              let dut: Counter = { .count = count, .nope = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
@@ -1196,7 +1196,7 @@ mod tests {
             impl H {\n\
               let addr: uint[4];\n\
               let data: uint[8];\n\
-              let mem: Ram<W = 4> = { .addr, .data };\n\
+              let mem: Ram<W = 4> = { .addr = addr, .data = data };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0);

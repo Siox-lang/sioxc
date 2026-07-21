@@ -366,7 +366,7 @@ pub enum Expr {
     Match { scrutinee: Box<Expr>, arms: Vec<MatchArm>, span: Span },
     /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
     Call { callee: Box<Expr>, args: Vec<Expr>, bang: bool, span: Span },
-    /// Instance/struct construction `Counter<W = 8> { .clk, .count = c }`
+    /// Instance/struct construction `Counter<W = 8> { .clk = clk, .count = c }`
     /// (spec 3.2/3.12). `ty` is `None` for a name-less struct literal
     /// `{ .valid = '1', .data = 5 }`, whose type comes from the assignment
     /// target's declaration.

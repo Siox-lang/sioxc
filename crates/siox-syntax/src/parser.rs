@@ -1275,9 +1275,10 @@ impl<'a> Parser<'a> {
     fn parse_construct(&mut self, start: Span, ty: Option<Type>) -> Expr {
         self.expect(TokenKind::LBrace, "to open a construction");
         let mut args = Vec::new();
-        // A block is either all-named (`.a = x` / shorthand `.a`) or all
-        // positional (`x, y` — bound by declaration order). Mixing the two is
-        // rejected once we know which shape the first argument set.
+        // A block is either all-named explicit (`.a = x`) or all positional
+        // (`x, y` — bound by declaration order). Mixing the two is rejected once
+        // we know which shape the first argument set. There is no bare `.a`
+        // name-shorthand: a `.field` always takes a value.
         let mut positional: Option<bool> = None;
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let cstart = self.span();
@@ -1295,7 +1296,15 @@ impl<'a> Parser<'a> {
             } else {
                 self.expect(TokenKind::Dot, "before a connection field");
                 let field = Some(self.parse_ident());
-                let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
+                let value = if self.eat(TokenKind::Eq) {
+                    Some(self.parse_expr(false))
+                } else {
+                    self.error_here(
+                        "a `.field` connection needs a value: `.field = signal` \
+                         (or drop the dot for positional `{ signal }`)",
+                    );
+                    None
+                };
                 (field, value)
             };
             args.push(ConnectArg { field, value, span: cstart.to(self.prev_span()) });
@@ -1821,17 +1830,30 @@ mod tests {
     }
 
     #[test]
-    fn instance_construction_with_generics_and_shorthand() {
+    fn instance_construction_explicit_and_positional() {
+        // Explicit form: every `.field` carries a value.
         let m = parse_ok(
-            "module m;\nimpl Test {\n  let c = Counter<W = 8> {\n    .clk,\n    .rst = rst,\n    .count = count8,\n  };\n}\n",
+            "module m;\nimpl Test {\n  let c: Counter<W = 8> = {\n    .clk = clk,\n    .rst = rst,\n    .count = count8,\n  };\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Let(l) = &i.items[0] else { panic!("expected let") };
-        let Some(Expr::Construct { args, ty, .. }) = &l.value else { panic!("expected construct") };
-        assert!(matches!(ty, Some(Type::Generic { .. })));
+        let Some(Expr::Construct { args, .. }) = &l.value else { panic!("expected construct") };
         assert_eq!(args.len(), 3);
-        assert!(args[0].value.is_none()); // `.clk` shorthand
-        assert!(args[1].value.is_some());
+        assert!(args.iter().all(|a| a.field.is_some() && a.value.is_some()));
+
+        // Positional form: bare expressions, no dots — lexes as a brace concat
+        // whose parts elaboration binds to ports by order.
+        let m = parse_ok("module m;\nimpl Test {\n  let c: Counter = { clk, rst, count8 };\n}\n");
+        let Item::Impl(i) = &m.items[0] else { panic!() };
+        let ImplItem::Let(l) = &i.items[0] else { panic!("expected let") };
+        assert!(matches!(&l.value, Some(Expr::Concat { parts, .. }) if parts.len() == 3));
+    }
+
+    #[test]
+    fn bare_field_shorthand_is_rejected() {
+        // The old name-shorthand `.clk` (dot, no value) is no longer a form.
+        let (_, errors) = parse("module m;\nimpl Test {\n  let c: Counter = { .clk, .rst = rst };\n}\n");
+        assert!(errors > 0, "`.clk` without a value should be a parse error");
     }
 
     #[test]
@@ -1877,7 +1899,7 @@ mod tests {
     #[test]
     fn test_entity_with_stimulus() {
         let m = parse_ok(
-            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk.rising();\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
+            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk = clk,\n    .count = count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk.rising();\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
         // clk, dut, await, rst=, for, assert.
