@@ -619,8 +619,8 @@ impl Ctx<'_> {
             }
             ast::Expr::Construct { args, .. } => {
                 for arg in args {
-                    // Named/shorthand only; positional needs struct field order
-                    // (parity with the interpreter's testbench path).
+                    // Named `.field = v` only; positional needs struct field
+                    // order (a follow-up). A value-less arg is parser recovery.
                     let Some(f) = &arg.field else { continue };
                     let field = format!("{name}.{}", f.text);
                     let Some(&id) = self.map.get(&field) else { continue };

@@ -829,8 +829,8 @@ impl<'a> Lowering<'a> {
             // lowering the child, so its port aliases to that net. A scalar
             // inout whose parent side isn't a plain signal is left un-aliased
             // (falls back to the in/out wiring below).
-            // Normalized `(port, value)` connections (positional/shorthand
-            // resolved), used both for inout aliasing and the wiring below.
+            // Normalized `(port, value)` connections (positional bound to port
+            // order), used both for inout aliasing and the wiring below.
             let norm = self.norm_conns(conns, sub_ename);
             let mut aliases: HashMap<String, SignalId> = HashMap::new();
             if let Some(decl) = self.entities.get(sub_ename).copied() {
@@ -1441,9 +1441,8 @@ impl<'a> Lowering<'a> {
     /// (`Stream::Source`, `Stream<uint[8]>::Source`, spec 3.19).
     /// Normalize an instance's connection args into `(port, value)` pairs:
     /// positional args (`Inv { a, b }`) bind by the sub-entity's port order,
-    /// name shorthand (`.clk`) expands to `.clk = clk`, and explicit args pass
-    /// through. The value is always concrete so downstream sites don't special-
-    /// case shorthand/positional.
+    /// explicit args (`.clk = clk`) bind by name. Every arg carries a value, so
+    /// downstream sites don't special-case the connection shape.
     fn norm_conns(&self, conns: &[ast::ConnectArg], ename: &str) -> Vec<(String, ast::Expr)> {
         let order: Vec<String> = self
             .entities
@@ -1458,13 +1457,7 @@ impl<'a> Lowering<'a> {
                     Some(f) => f.text.clone(),
                     None => order.get(i).cloned()?,
                 };
-                let value = c.value.clone().unwrap_or_else(|| {
-                    ast::Expr::Path(ast::Path {
-                        segments: vec![ast::Ident { text: port.clone(), span: c.span }],
-                        span: c.span,
-                    })
-                });
-                Some((port, value))
+                Some((port, c.value.clone()?))
             })
             .collect()
     }
@@ -3336,7 +3329,7 @@ impl<'a> Lowering<'a> {
                 Val::Scalar(self.lower_expr(e))
             }
             // A struct literal (named or name-less): one value per field.
-            // `.re` shorthand means `.re = re`; a positional arg binds to the
+            // Explicit `.re = v` binds by name; a positional arg binds to the
             // struct's field at that position (needs a named struct type).
             ast::Expr::Construct { ty, args, .. } => {
                 let field_order: Option<Vec<String>> = ty
@@ -3355,16 +3348,11 @@ impl<'a> Lowering<'a> {
                                     .and_then(|o| o.get(i).cloned())
                                     .unwrap_or_default(),
                             };
+                            // Every field carries a value; a value-less arg only
+                            // reaches here on parser recovery (already diagnosed).
                             let v = match &a.value {
                                 Some(v) => self.lower_scalar_env(v, env),
-                                None => match env.get(&fname) {
-                                    Some(Val::Scalar(e)) => e.clone(),
-                                    _ => self
-                                        .locals
-                                        .get(&fname)
-                                        .map(|&id| Expr::Current(id))
-                                        .unwrap_or(Expr::Unknown),
-                                },
+                                None => Expr::Unknown,
                             };
                             (fname, v)
                         })

@@ -588,12 +588,11 @@ impl<'a> Elaborator<'a> {
                 );
                 continue;
             };
-            let signal = match (&arg.field, &arg.value) {
-                // `.clk` shorthand means `.clk = clk`.
-                (Some(f), None) => f.text.clone(),
-                (_, Some(e)) => render_signal(e, render_env),
-                (None, None) => continue,
-            };
+            // Every arg carries a value — `.port = signal` or positional
+            // `signal`. A value-less arg only reaches here on parser recovery
+            // (already diagnosed), so skip it.
+            let Some(e) = &arg.value else { continue };
+            let signal = render_signal(e, render_env);
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
             conns.push(Connection { port, signal, ty });
@@ -1059,7 +1058,7 @@ mod tests {
         assert_eq!(dut.name, "dut");
         assert_eq!(dut.entity, "Counter");
         assert_eq!(dut.params, vec![("W".to_string(), ParamValue::Int(8))]);
-        // `.clk` shorthand resolves to signal `clk`; `.count = count` explicit.
+        // Explicit `.clk = clk` / `.count = count` connections resolve by name.
         assert!(dut
             .connections
             .iter()

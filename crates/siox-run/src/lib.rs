@@ -1024,7 +1024,7 @@ impl Testbench<'_> {
                     // struct local (`a = { .re = 3, .im = 4 };`).
                     if let ast::Expr::Construct { args, .. } = value {
                         for arg in args {
-                            // Named/shorthand only (positional needs struct
+                            // Named `.field = v` only (positional needs struct
                             // field order the runner doesn't track).
                             let Some(f) = &arg.field else { continue };
                             let field = format!("{path}.{}", f.text);
