@@ -348,7 +348,7 @@ impl<'a> Parser<'a> {
             // Logic-literal variant names (`enum Bit { '0', '1' }`, spec Stage
             // 11) keep their quotes in the name text, matching use-site
             // literals.
-            let vname = if self.at(TokenKind::LogicLit) {
+            let vname = if self.at(TokenKind::CharacterLit) {
                 let t = self.bump();
                 Ident { text: self.text_of(t.span).to_string(), span: t.span }
             } else {
@@ -1163,7 +1163,7 @@ impl<'a> Parser<'a> {
                 }
                 Expr::Int { text, span: t.span }
             }
-            TokenKind::LogicLit => {
+            TokenKind::CharacterLit => {
                 let t = self.bump();
                 let text = self.text_of(t.span);
                 let ch = text.chars().nth(1).unwrap_or('?');

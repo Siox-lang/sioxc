@@ -174,7 +174,7 @@ impl<'a> Lexer<'a> {
         if self.peek() == Some(b'\'') {
             self.bump(); // closing `'`
             if chars == 1 {
-                return TokenKind::LogicLit;
+                return TokenKind::CharacterLit;
             }
             sink.emit(
                 Diagnostic::error("logic literal must contain exactly one character")
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn logic_and_string_literals() {
-        assert_eq!(kinds("'0' '1' 'Z' 'X'"), vec![LogicLit, LogicLit, LogicLit, LogicLit, Eof]);
+        assert_eq!(kinds("'0' '1' 'Z' 'X'"), vec![CharacterLit, CharacterLit, CharacterLit, CharacterLit, Eof]);
         assert_eq!(kinds("\"work\""), vec![StrLit, Eof]);
         // Prefixed strings are not special tokens: an ident glued to a string.
         // The prefix becomes a string overload later. `?` lives inside the
@@ -463,7 +463,7 @@ mod tests {
     fn assignment_line_lexes_cleanly() {
         let (ks, errors) = lex("let clk: Bit = '0';");
         assert_eq!(errors, 0);
-        assert_eq!(ks, vec![Let, Ident, Colon, Ident, Eq, LogicLit, Semi, Eof]);
+        assert_eq!(ks, vec![Let, Ident, Colon, Ident, Eq, CharacterLit, Semi, Eof]);
     }
 
     #[test]
