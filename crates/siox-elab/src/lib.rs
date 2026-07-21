@@ -41,21 +41,20 @@ pub enum ParamValue {
 /// that don't carry a simple width are kept as a rendered `Other`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EType {
-    Bit,
-    Logic,
-    Bool,
     /// A packed bit vector — every `struct F : Logic[]` family (uint/int and
     /// user types). No signedness; that lives in the operator impls.
     Vector { width: Option<u32> },
+    /// Any named type, including the std scalar enums (`Bit`, `Logic`, `Bool`):
+    /// they carry no bit-vector width, so the width check simply skips them.
     Named(String),
     Array { elem: Box<EType>, len: Option<u32> },
     Other(String),
 }
 
 impl EType {
-    /// The bit width when it is meaningful and known (integers, vectors).
-    /// `Bit`/`Logic`/`Bool` return `None` so the width check only
-    /// compares actual bit-vector widths, not single-bit kinds.
+    /// The bit width when it is meaningful and known (integers, vectors). A
+    /// named scalar (`Bit`/`Logic`/`Bool`/any enum) has no vector width, so the
+    /// width check compares only actual bit-vector widths.
     pub fn width(&self) -> Option<u32> {
         match self {
             EType::Vector { width, .. } => *width,
@@ -68,9 +67,6 @@ impl EType {
 impl fmt::Display for EType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EType::Bit => write!(f, "Bit"),
-            EType::Logic => write!(f, "Logic"),
-            EType::Bool => write!(f, "Bool"),
             EType::Vector { width: None } => write!(f, "uint"),
             EType::Vector { width: Some(w) } => write!(f, "uint[{w}]"),
             EType::Named(n) => write!(f, "{n}"),
@@ -756,12 +752,10 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>) -> EType {
     match t {
         Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
-            Some("Bit") => EType::Bit,
-            Some("Logic") => EType::Logic,
-            Some("Bool") => EType::Bool,
             // The kernel word is an unbounded unsigned vector.
             Some("integer") => EType::Vector { width: None },
-            // A bit-vector family (`struct F : Logic[]`); else a name.
+            // A bit-vector family (`struct F : Logic[]`); else a name — the
+            // std scalars `Bit`/`Logic`/`Bool` are just named types here.
             Some(name) if families.contains(name) => EType::Vector { width: None },
             Some(other) => EType::Named(other.to_string()),
             None => EType::Other(String::new()),
