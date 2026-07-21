@@ -38,9 +38,16 @@ pub enum Ty {
     Char,
     /// A packed bit vector — every `#[vector]` family (uint/int and user
     /// types). Width `0` means "not yet known" (parametric `F[W]`) or the
-    /// unbounded kernel `integer`. The compiler has NO notion of `uint`/`int`
-    /// by name; those are std names for the unsigned/signed cases.
-    Vector { width: u32 },
+    /// unbounded kernel `integer`. `family` is the declared family name when
+    /// one is known (`uint`, `int`, a user `struct Byte : uint[8]`), carried
+    /// purely so diagnostics name the real type; it is `None` for anonymous
+    /// vectors (bit-string literals, concatenations) that have no family.
+    ///
+    /// The compiler still has NO *semantic* notion of `uint`/`int`: every
+    /// family shares one operator surface (keyed `uint` in [`Self::ty_head`]),
+    /// and width comparison ignores `family` — `family` never gates a check,
+    /// it only labels.
+    Vector { family: Option<String>, width: u32 },
     /// Named struct / enum / entity, keyed by its definition.
     Named(siox_resolve::DefId),
     /// `T[range]` array/vector of a digital element type.
@@ -1512,7 +1519,10 @@ impl<'a> Checker<'a> {
                 if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
-                Ty::Vector { width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 } }
+                Ty::Vector {
+                    family: None,
+                    width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 },
+                }
             }
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.
@@ -1627,7 +1637,7 @@ impl<'a> Checker<'a> {
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
-            Expr::Concat { .. } => Ty::Vector { width: 0 },
+            Expr::Concat { .. } => Ty::Vector { family: None, width: 0 },
             // An array literal: element type from the first element, length
             // from the count.
             Expr::Array { elems, .. } => {
@@ -1644,7 +1654,7 @@ impl<'a> Checker<'a> {
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
                     match self.vector_families.get(head) {
-                        Some(_) => Ty::Vector { width: w },
+                        Some(_) => Ty::Vector { family: Some(head.to_string()), width: w },
                         None => Ty::Error,
                     }
                 }
@@ -1671,10 +1681,11 @@ impl<'a> Checker<'a> {
                     // resize keeps the argument's family at the new width.
                     "resize" => {
                         let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
-                        match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Vector { .. }) => Ty::Vector { width: w },
-                            _ => Ty::Vector { width: w },
-                        }
+                        let family = match args.first().map(|a| self.type_of(a, sym)) {
+                            Some(Ty::Vector { family, .. }) => family,
+                            _ => None,
+                        };
+                        Ty::Vector { family, width: w }
                     }
                     _ => Ty::Error,
                 },
@@ -1724,7 +1735,9 @@ impl<'a> Checker<'a> {
             "Char" => Ty::Char,
             "integer" => Ty::Integer,
             "real" => Ty::Real,
-            name if self.is_vector_family(name) => Ty::Vector { width: 0 },
+            name if self.is_vector_family(name) => {
+                Ty::Vector { family: Some(name.to_string()), width: 0 }
+            }
             name => self
                 .resolved
                 .defs()
@@ -1799,7 +1812,7 @@ impl<'a> Checker<'a> {
                     // The *first* index on a vector family sets its width
                     // (`uint[8]`). A *second* index makes an array of those
                     // vectors (`uint[8][4]` = 4 elements, each 8 wide).
-                    Ty::Vector { width: 0 } => Ty::Vector { width },
+                    Ty::Vector { family, width: 0 } => Ty::Vector { family, width },
                     v @ Ty::Vector { .. } => Ty::Array { elem: Box::new(v), len: width },
                     other => Ty::Array { elem: Box::new(other), len: width },
                 }
@@ -1840,7 +1853,9 @@ impl<'a> Checker<'a> {
                     Some(t) => self.ast_ty(&t.clone()),
                     // A bit-vector family (`struct F : Logic[]`): width applies
                     // via `F[N]` (ast_ty's Indexed).
-                    None if self.is_vector_family(name) => Ty::Vector { width: 0 },
+                    None if self.is_vector_family(name) => {
+                        Ty::Vector { family: Some(name.to_string()), width: 0 }
+                    }
                     None => self.named_ty(p.span),
                 },
             }
@@ -1947,7 +1962,9 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         // (a uint[8] accepts `42`, and a vector's value is an integer).
         (Integer, Integer) => true,
         (Integer, Vector { .. }) | (Vector { .. }, Integer) => true,
-        (Vector { width: a }, Vector { width: b }) => *a == 0 || *b == 0 || a == b,
+        // Width-only: `family` never gates compatibility (`uint[8]` and
+        // `int[8]` are interchangeable — signedness lives in operator impls).
+        (Vector { width: a, .. }, Vector { width: b, .. }) => *a == 0 || *b == 0 || a == b,
         (Named(a), Named(b)) => a == b,
         // Whole-array copy: same element type, matching length (0 = unset).
         (Array { elem: ea, len: la }, Array { elem: eb, len: lb }) => {
@@ -1990,8 +2007,12 @@ fn ty_name(t: &Ty) -> String {
         Ty::Real => "real".to_string(),
         Ty::Char => "Char".to_string(),
         Ty::Integer => "integer".to_string(),
-        Ty::Vector { width: 0 } => "uint".to_string(),
-        Ty::Vector { width: w } => format!("uint[{w}]"),
+        // Name the real family when one is known (`int[8]`, `Byte`), falling
+        // back to `uint` for anonymous vectors (bit-string literals, concats).
+        Ty::Vector { family, width: 0 } => family.clone().unwrap_or_else(|| "uint".to_string()),
+        Ty::Vector { family, width: w } => {
+            format!("{}[{w}]", family.as_deref().unwrap_or("uint"))
+        }
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array { .. } => "an array".to_string(),
         Ty::Error => "<unknown>".to_string(),
@@ -2102,11 +2123,24 @@ mod tests {
         let h = strlit_help(&Ty::Logic, &s("0")).unwrap();
         assert!(h.contains("'0'"), "{h}");
         // A bit vector points at the bit-string literal.
-        let h = strlit_help(&Ty::Vector { width: 4 }, &s("0101")).unwrap();
+        let h = strlit_help(&Ty::Vector { family: None, width: 4 }, &s("0101")).unwrap();
         assert!(h.contains("b\"0101\""), "{h}");
         // Assigning a string to a Char array is correct — no hint.
         let str_ty = Ty::Array { elem: Box::new(Ty::Char), len: 2 };
         assert!(strlit_help(&str_ty, &s("hi")).is_none());
+    }
+
+    #[test]
+    fn vector_names_its_real_family() {
+        // A known family displays by name; anonymous vectors fall back to uint.
+        let int8 = Ty::Vector { family: Some("int".to_string()), width: 8 };
+        assert_eq!(ty_name(&int8), "int[8]");
+        let byte = Ty::Vector { family: Some("Byte".to_string()), width: 0 };
+        assert_eq!(ty_name(&byte), "Byte");
+        let anon = Ty::Vector { family: None, width: 4 };
+        assert_eq!(ty_name(&anon), "uint[4]");
+        // Width still ignores the family: uint[8] and int[8] stay compatible.
+        assert!(compatible(&int8, &Ty::Vector { family: None, width: 8 }));
     }
 
     /// The number of warnings with a given code emitted while checking `src`.
