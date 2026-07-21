@@ -38,15 +38,17 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Engines
 
-- 🟡 **Native emitter — runtime file I/O** — a runtime `std::fs`
-  `read_to_string("path")` / `exists(..)` in a testbench (`fs_test`) isn't
-  emitted to C yet (needs `fopen`/`fread`). The *compile-time* `read(..)`
-  initializer already bakes the file into the design. This is the last corpus
-  file that runs on JIT/interp but not the native binary. (Native `real`,
-  whole-string, and scalar `Char` testbenches now all work.)
+The whole corpus now runs on the **native** binary as well as the LLVM JIT and
+the interpreter — `real` / `Char` / `string` testbenches and `std::fs` reads
+are all emitted. Remaining engine-specific notes:
+
 - 🟡 **Interpreter — FFI** — `extern "C"` calls need a linked C symbol, which the
   pure interpreter build has no way to resolve (`ffi_test` passes on JIT/native
-  only).
+  only). Inherent to a symbol-free interpreter.
+- 🔴 **Native emitter — true runtime file read** — `read_to_string` is read at
+  *build* time (fine for the stable fixtures) and baked in. A genuine runtime
+  `fopen`/`fread`, for a file that changes between build and run, is a possible
+  follow-up; it needs a dynamic-length string local in C.
 
 ## Diagnostics & lints (Stage 10)
 

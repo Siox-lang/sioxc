@@ -389,6 +389,19 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
 
 /// A valid C identifier for a testbench local. Bare names (the common case)
 /// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
+/// The literal path of a `read`/`read_to_string` call, if `e` is one.
+fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
+    let ast::Expr::Call { callee, args, .. } = e else { return None };
+    let ast::Expr::Path(p) = callee.as_ref() else { return None };
+    if p.segments.len() != 1 || p.segments[0].text != which {
+        return None;
+    }
+    match args.first() {
+        Some(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
+        _ => None,
+    }
+}
+
 /// is mangled to a flat identifier (`sxl_p_a`, `sxl_v_2`).
 fn c_local_ident(name: &str) -> String {
     if name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
@@ -450,6 +463,54 @@ fn mask_c(e: &str, w: u32) -> String {
 }
 
 impl Ctx<'_> {
+    /// A testbench local initialized from a `std::fs` file read
+    /// (`let s: string = read_to_string("path")`, `let m: uint[8][N] = read(..)`).
+    /// The file is read at **build time** (matching the corpus's stable fixtures)
+    /// to size and fill the local: one `Char`/byte element per index. Returns
+    /// `true` when handled. `read`/`read_to_string` in *initializer* position of
+    /// a DUT signal is baked by the IR; this covers the testbench-local case.
+    fn try_declare_fs_read_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
+        let Some(value) = &l.value else { return Ok(false) };
+        let (path, bytes) = match (
+            fs_read_path(value, "read_to_string"),
+            fs_read_path(value, "read"),
+        ) {
+            (Some(p), _) => (p, false),
+            (_, Some(p)) => (p, true),
+            _ => return Ok(false),
+        };
+        let full = self.design.base_dir.join(&path);
+        let codes: Vec<u64> = if bytes {
+            std::fs::read(&full)
+                .map_err(|e| format!("read(\"{path}\"): {e}"))?
+                .iter()
+                .map(|&x| x as u64)
+                .collect()
+        } else {
+            std::fs::read_to_string(&full)
+                .map_err(|e| format!("read_to_string(\"{path}\"): {e}"))?
+                .chars()
+                .map(|c| c as u32 as u64)
+                .collect()
+        };
+        let name = &l.name.text;
+        if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+            self.local_types.borrow_mut().insert(name.clone(), head.to_string());
+        }
+        for (i, &code) in codes.iter().enumerate() {
+            let key = format!("{name}[{i}]");
+            // A connected element writes its signal; an unconnected local gets
+            // its own C variable, registered so `name[i]` reads resolve to it.
+            if let Some(&id) = self.map.get(&key) {
+                b.push_str(&format!("    sx_set({}, {code}ULL);\n", id.0));
+            } else {
+                b.push_str(&format!("    uint64_t {} = {code}ULL;\n", c_local_ident(&key)));
+                self.locals.borrow_mut().insert(key);
+            }
+        }
+        Ok(true)
+    }
+
     /// Emit writes for a composite value assigned to a connected name — a
     /// string literal (`s = "hi"` -> one `Char` element per index) or a struct
     /// literal (`a = { .re = 3 }` -> one field signal each). Returns `true`
@@ -798,6 +859,7 @@ impl Ctx<'_> {
                 // A DUT instance (any declaration form) is wired by
                 // elaboration; the testbench let emits nothing.
                 ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {}
+                ast::ImplItem::Let(l) if self.try_declare_fs_read_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
@@ -1554,6 +1616,18 @@ impl Ctx<'_> {
                     return self.c_method_call(base, &field.text, args);
                 }
                 unreachable!()
+            }
+            // A free-function call — a user fn or a runtime one (`exists`,
+            // `rand`) — rather than a type conversion.
+            ast::Expr::Call { callee, args, .. }
+                if matches!(callee.as_ref(), ast::Expr::Path(p)
+                    if p.segments.len() == 1 && {
+                        let n = p.segments[0].text.as_str();
+                        self.fns.contains_key(n)
+                            || matches!(n, "exists" | "rand" | "randint" | "read" | "read_to_string")
+                    }) =>
+            {
+                return self.c_fn_call(callee, args);
             }
             ast::Expr::Call { callee, args, .. } => {
                 let arg = args.first().ok_or("conversion needs an argument")?;
