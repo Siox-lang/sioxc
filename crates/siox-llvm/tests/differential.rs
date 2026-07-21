@@ -764,6 +764,11 @@ fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
     // state to the type argument (`Buf<uint[8]>`), so signals get the concrete
     // width. Both engines must agree.
+    //
+    // The top entity is deliberately named `T` — the same spelling as `Buf`'s
+    // type parameter. `let s: T` must resolve to the *parameter* (`uint[8]`, a
+    // signal), not the entity `T` (which would make `s` a recursive instance
+    // and loop forever). Keep the name collision: it guards that regression.
     let d = lower(
         "module m;\n\
          entity Buf<T> { in a: T; in b: T; out y: T; }\n\

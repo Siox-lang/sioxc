@@ -340,12 +340,27 @@ impl<'a> Elaborator<'a> {
         if is_extern {
             return specs;
         }
+        // This entity's bare type parameters (`Buf<T>`): a `let s: T` names data
+        // whose type is the bound argument (`uint[8]`), never an instance — even
+        // when an entity happens to be named `T`.
+        let tparams: HashSet<String> = self
+            .entities
+            .get(entity_name)
+            .map(|e| {
+                e.params
+                    .params
+                    .iter()
+                    .filter(|p| p.bound.is_none())
+                    .map(|p| p.name.text.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(impls) = self.impls.get(entity_name) {
             for im in impls {
                 for item in &im.items {
                     match item {
-                        ImplItem::Let(l) => self.gather_let(l, env, &mut specs),
-                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &mut specs),
+                        ImplItem::Let(l) => self.gather_let(l, env, &tparams, &mut specs),
+                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &tparams, &mut specs),
                         _ => {}
                     }
                 }
@@ -363,7 +378,11 @@ impl<'a> Elaborator<'a> {
     ///   connections.
     /// - `let x: Entity;` — the type is the annotation; no connections (ports
     ///   wired post-declaration).
-    fn instance_let(&self, l: &'a LetDecl) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
+    fn instance_let(
+        &self,
+        l: &'a LetDecl,
+        tparams: &HashSet<String>,
+    ) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
         // Old form: `= Entity { .. }`.
         if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
             return Some((ty, args.clone(), *span));
@@ -373,6 +392,11 @@ impl<'a> Elaborator<'a> {
         // by `stage[i] = Inc { .. }` assignments — not a single instance here.
         let ann = l.ty.as_ref()?;
         if matches!(ann, Type::Indexed { .. }) {
+            return None;
+        }
+        // A bare type parameter (`let s: T` in `impl Buf<T>`) is data, not an
+        // instance, even when an entity is named `T`.
+        if type_head_name(ann).is_some_and(|n| tparams.contains(n)) {
             return None;
         }
         if !type_head_name(ann).is_some_and(|n| self.entities.contains_key(n)) {
@@ -398,8 +422,14 @@ impl<'a> Elaborator<'a> {
 
     /// One instance `let` -> an instance spec (with the current loop bindings
     /// for its connection rendering).
-    fn gather_let(&self, l: &'a LetDecl, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
-        if let Some((ty, args, span)) = self.instance_let(l) {
+    fn gather_let(
+        &self,
+        l: &'a LetDecl,
+        env: &HashMap<String, i64>,
+        tparams: &HashSet<String>,
+        out: &mut Vec<InstanceSpec<'a>>,
+    ) {
+        if let Some((ty, args, span)) = self.instance_let(l, tparams) {
             // A generated instance gets the loop index appended for a unique
             // name; a plain one keeps its declared name.
             let name = if env.is_empty() {
@@ -421,9 +451,15 @@ impl<'a> Elaborator<'a> {
 
     /// A statement inside an impl body / loop: `let` instances and `for` loops
     /// (unrolled over a static range, binding the loop variable).
-    fn gather_stmt(&self, s: &'a Stmt, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+    fn gather_stmt(
+        &self,
+        s: &'a Stmt,
+        env: &HashMap<String, i64>,
+        tparams: &HashSet<String>,
+        out: &mut Vec<InstanceSpec<'a>>,
+    ) {
         match s {
-            Stmt::Let(l) => self.gather_let(l, env, out),
+            Stmt::Let(l) => self.gather_let(l, env, tparams, out),
             // Instance-array element construction: `stage[i] = Sub { .. }`. The
             // target renders to the element name (`stage[1]`) with the loop
             // index evaluated, so `stage[i].port` reads resolve to it.
@@ -448,7 +484,7 @@ impl<'a> Elaborator<'a> {
                             let mut e = env.clone();
                             e.insert(var.text.clone(), i);
                             for st in &body.stmts {
-                                self.gather_stmt(st, &e, out);
+                                self.gather_stmt(st, &e, tparams, out);
                             }
                         }
                     }
@@ -457,25 +493,31 @@ impl<'a> Elaborator<'a> {
             // `if <const> { .. } else { .. }`: a generate-if. The condition is
             // constant-folded; only the taken branch's instances are gathered.
             // A non-constant condition is a behavioral `if`, not a generate-if.
-            Stmt::If(iff) => self.gather_if(iff, env, out),
+            Stmt::If(iff) => self.gather_if(iff, env, tparams, out),
             _ => {}
         }
     }
 
-    fn gather_if(&self, iff: &'a IfStmt, env: &HashMap<String, i64>, out: &mut Vec<InstanceSpec<'a>>) {
+    fn gather_if(
+        &self,
+        iff: &'a IfStmt,
+        env: &HashMap<String, i64>,
+        tparams: &HashSet<String>,
+        out: &mut Vec<InstanceSpec<'a>>,
+    ) {
         match eval(&iff.cond, env) {
             ParamValue::Int(0) => match iff.else_.as_deref() {
                 Some(ElseBranch::Block(b)) => {
                     for st in &b.stmts {
-                        self.gather_stmt(st, env, out);
+                        self.gather_stmt(st, env, tparams, out);
                     }
                 }
-                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, out),
+                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, tparams, out),
                 None => {}
             },
             ParamValue::Int(_) => {
                 for st in &iff.then.stmts {
-                    self.gather_stmt(st, env, out);
+                    self.gather_stmt(st, env, tparams, out);
                 }
             }
             // Non-constant condition: behavioral, no instances gathered here.
@@ -1026,6 +1068,37 @@ mod tests {
             .connections
             .iter()
             .any(|c| c.port == "count" && c.signal == "count"));
+    }
+
+    #[test]
+    fn type_param_named_like_an_entity_is_not_an_instance() {
+        // `Buf<T>`'s `let s: T` is data (the bound type `uint[8]`), even though
+        // the top entity is *also* named `T`. Previously the elaborator treated
+        // `s` as an instance of entity `T`, reporting a spurious cyclic
+        // instantiation (and IR lowering then recursed forever). `s` must be a
+        // signal: `Buf` has no child instances.
+        let src = "module m;\n\
+            entity Buf<T> { in a: T; out y: T; }\n\
+            impl Buf<T> {\n\
+              let s: T;\n\
+              s = a;\n\
+              y = s;\n\
+            }\n\
+            #[top]\n\
+            entity T {}\n\
+            impl T {\n\
+              let a: uint[8]; let y: uint[8];\n\
+              let dut: Buf<uint[8]> = { .a, .y };\n\
+            }\n";
+        let (hier, errors) = elaborate_src(src);
+        assert_eq!(errors, 0, "no cyclic-instantiation error");
+        let root = hier.instance(hier.roots[0]);
+        assert_eq!(root.entity, "T");
+        // The one child is `dut: Buf`; `Buf` itself instantiates nothing.
+        assert_eq!(root.children.len(), 1);
+        let dut = hier.instance(root.children[0]);
+        assert_eq!(dut.entity, "Buf");
+        assert!(dut.children.is_empty(), "`let s: T` must be a signal, not an instance");
     }
 
     #[test]

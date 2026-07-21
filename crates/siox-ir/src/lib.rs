@@ -293,6 +293,12 @@ struct Lowering<'a> {
     /// The active entity's type-parameter bindings (`T -> uint[8]` for a
     /// generic entity `Buf<uint[8]>`), substituted into port/signal types.
     cur_type_env: HashMap<String, ast::Type>,
+    /// The stack of entity names currently being lowered (`lower_body`), so a
+    /// sub-instance that would re-enter an entity already on the stack is
+    /// skipped instead of recursing forever. The elaborator has already
+    /// emitted the `cyclic instantiation` diagnostic; this just keeps lowering
+    /// from overflowing on the same cycle (best-effort, spec cross-cutting).
+    lower_stack: Vec<String>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -379,6 +385,7 @@ impl<'a> Lowering<'a> {
             aliases: HashMap::new(),
             cur_env: HashMap::new(),
             cur_type_env: HashMap::new(),
+            lower_stack: Vec::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -618,6 +625,7 @@ impl<'a> Lowering<'a> {
         let saved_numeric = std::mem::take(&mut self.local_numeric);
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
         let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
+        self.lower_stack.push(ename.to_string());
 
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
         // An `inout` port aliased to a parent net reuses that net's signal
@@ -682,10 +690,18 @@ impl<'a> Lowering<'a> {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
                     // `let s: Sub = { .. }` / `let s: Sub [= { .. }]`: a
-                    // sub-instance, not a signal.
+                    // sub-instance, not a signal. A `let s: T` whose `T` is
+                    // *this* entity's type parameter (bound to a concrete type,
+                    // e.g. `uint[8]`) is a signal even when some entity is also
+                    // named `T` — let it fall through to the signal path, where
+                    // `add_typed_signal` substitutes `T` via `cur_type_env`.
                     if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
-                        subinsts.push((l.name.text.clone(), cty, args));
-                        continue;
+                        let is_type_param =
+                            type_head_name(&cty).is_some_and(|h| self.cur_type_env.contains_key(h));
+                        if !is_type_param {
+                            subinsts.push((l.name.text.clone(), cty, args));
+                            continue;
+                        }
                     }
                     // `let s: string = "hello";`: the literal sets the range.
                     let unconstrained = match &l.ty {
@@ -799,6 +815,11 @@ impl<'a> Lowering<'a> {
         // parent's names resolve again here.
         for (inst, cty, conns) in &subinsts {
             let Some(sub_ename) = type_head_name(cty) else { continue };
+            // Cyclic instantiation (already diagnosed by the elaborator): don't
+            // recurse back into an entity that is still being lowered.
+            if self.lower_stack.iter().any(|e| e == sub_ename) {
+                continue;
+            }
             let sub_path = format!("{path}.{inst}");
             let mut sub_env = self.consts.clone();
             sub_env.extend(self.construct_params(cty, env));
@@ -925,6 +946,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Restore the caller's scope.
+        self.lower_stack.pop();
         self.locals = saved_locals;
         self.local_enum = saved_enum;
         self.local_struct = saved_struct;
