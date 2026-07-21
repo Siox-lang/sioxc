@@ -270,6 +270,10 @@ struct Lowering<'a> {
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
+    /// The receiver signal bound to `self` while inlining a method body, so a
+    /// `self::event`/`self::old` sysattr in the body resolves to the receiver's
+    /// signal (the `ClockLike` edge methods are defined this way in std).
+    self_signal: std::cell::Cell<Option<SignalId>>,
     /// Type-family of each generic-fn parameter during inlining (param name ->
     /// the concrete argument's family), so operator dispatch in the body uses
     /// the caller's type (e.g. int's signed `Ord`, not the kernel compare).
@@ -367,6 +371,7 @@ impl<'a> Lowering<'a> {
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
+            self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
             consts_real: HashMap::new(),
@@ -3050,6 +3055,9 @@ impl<'a> Lowering<'a> {
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
+        // Bind `self` to the receiver's signal so a `self::event`/`self::old`
+        // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
+        let saved_self = self.self_signal.replace(self.base_signal(base));
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(base, env));
         fenv.insert(
@@ -3080,6 +3088,7 @@ impl<'a> Lowering<'a> {
                 None => self.param_types.borrow_mut().remove(&name),
             };
         }
+        self.self_signal.set(saved_self);
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
     }
@@ -3453,6 +3462,12 @@ impl<'a> Lowering<'a> {
     fn base_signal(&self, base: &ast::Expr) -> Option<SignalId> {
         if let ast::Expr::Path(p) = base {
             if p.segments.len() == 1 {
+                // `self` inside an inlined method body binds to the receiver.
+                if p.segments[0].text == "self" {
+                    if let Some(sig) = self.self_signal.get() {
+                        return Some(sig);
+                    }
+                }
                 return self.locals.get(&p.segments[0].text).copied();
             }
         }
@@ -3836,9 +3851,20 @@ fn bin_sym(op: BinOp) -> &'static str {
 fn expr_is_event(e: &ast::Expr) -> bool {
     match e {
         ast::Expr::SysAttr { base, attr, .. } => {
+            // `::event`/`::old` are the primitives; the derived edge helpers are
+            // now the `ClockLike` trait methods (below), but `::rising` etc.
+            // remain recognized for the sysattr spelling.
             matches!(attr.text.as_str(), "event" | "rising" | "falling" | "edge")
                 || expr_is_event(base)
         }
+        // A `ClockLike` edge method (`clk.rising()`, `clk.falling()`,
+        // `clk.edge()`) depends on `::event`, so it makes an `if` sequential.
+        ast::Expr::Call { callee, .. } => match callee.as_ref() {
+            ast::Expr::Field { field, .. } => {
+                matches!(field.text.as_str(), "rising" | "falling" | "edge")
+            }
+            _ => false,
+        },
         ast::Expr::Unary { rhs, .. } => expr_is_event(rhs),
         ast::Expr::Binary { lhs, rhs, .. } => expr_is_event(lhs) || expr_is_event(rhs),
         ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => expr_is_event(base),

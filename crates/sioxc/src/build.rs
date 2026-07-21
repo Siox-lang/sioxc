@@ -1330,6 +1330,32 @@ impl Ctx<'_> {
     /// generated event wheel: a duration runs the clocks up to `now + dur`; an
     /// edge or condition steps clock edges until it fires (bounded, mirroring
     /// the runner's scheduler).
+    /// Emit the edge-wait loop for `await <clk>::<kind>` / `await clk.kind()`.
+    fn emit_await_edge(
+        &self,
+        base: &ast::Expr,
+        kind: &str,
+        ind: &str,
+        b: &mut String,
+    ) -> Result<(), String> {
+        let id = expr_path(base)
+            .and_then(|p| self.map.get(&p))
+            .ok_or("await: unknown edge signal")?
+            .0;
+        let hit = match kind {
+            "rising" => "!_p && _c",
+            "falling" => "_p && !_c",
+            _ => "_p != _c",
+        };
+        b.push_str(&format!(
+            "{ind}{{ uint64_t _p = sx_read({id}); \
+             for (int _g = 0; _g < 1000000; _g++) {{ \
+             if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; \
+             uint64_t _c = sx_read({id}); if ({hit}) break; _p = _c; }} }}\n"
+        ));
+        Ok(())
+    }
+
     fn emit_await(&self, args: &[ast::Expr], b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match args.first() {
@@ -1343,21 +1369,17 @@ impl Ctx<'_> {
                 ));
             }
             Some(ast::Expr::SysAttr { base, attr, .. }) => {
-                let id = expr_path(base)
-                    .and_then(|p| self.map.get(&p))
-                    .ok_or("await: unknown edge signal")?
-                    .0;
-                let hit = match attr.text.as_str() {
-                    "rising" => "!_p && _c",
-                    "falling" => "_p && !_c",
-                    _ => "_p != _c",
-                };
-                b.push_str(&format!(
-                    "{ind}{{ uint64_t _p = sx_read({id}); \
-                     for (int _g = 0; _g < 1000000; _g++) {{ \
-                     if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; \
-                     uint64_t _c = sx_read({id}); if ({hit}) break; _p = _c; }} }}\n"
-                ));
+                self.emit_await_edge(base, &attr.text, &ind, b)?;
+            }
+            // `await clk.rising()` — a `ClockLike` edge method waits on the same
+            // edge machinery as the `::rising` sysattr.
+            Some(ast::Expr::Call { callee, .. })
+                if matches!(callee.as_ref(), ast::Expr::Field { field, .. }
+                    if matches!(field.text.as_str(), "rising" | "falling" | "edge")) =>
+            {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    self.emit_await_edge(base, &field.text, &ind, b)?;
+                }
             }
             Some(cond) => {
                 let c = self.expr(cond)?;

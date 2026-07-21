@@ -48,8 +48,40 @@ pub enum Bool {
 }
 
 // There is no dedicated clock type: any `Logic` (or `Bit`) signal is a clock
-// when edge detection is applied to it (`clk::rising` / `clk::falling`, the
-// analogue of VHDL's `rising_edge` — built-in syntax over `::event`/`::old`).
+// when edge detection is applied to it. `rising`/`falling`/`edge` are ordinary
+// trait methods (`clk.rising()`), the analogue of VHDL's `rising_edge`, built
+// from the `::event`/`::old` primitives the engine provides. Unlike an
+// attribute (`::event`), they are library behaviour — a user type can be a
+// clock by implementing `ClockLike`.
+pub trait ClockLike {
+    fn rising(self) -> Bool;
+    fn falling(self) -> Bool;
+    fn edge(self) -> Bool;
+}
+
+impl ClockLike for Logic {
+    fn rising(self) -> Bool {
+        return self::event and self::old == '0' and self == '1';
+    }
+    fn falling(self) -> Bool {
+        return self::event and self::old == '1' and self == '0';
+    }
+    fn edge(self) -> Bool {
+        return self::event;
+    }
+}
+
+impl ClockLike for Bit {
+    fn rising(self) -> Bool {
+        return self::event and self::old == '0' and self == '1';
+    }
+    fn falling(self) -> Bool {
+        return self::event and self::old == '1' and self == '0';
+    }
+    fn edge(self) -> Bool {
+        return self::event;
+    }
+}
 
 // Named levels, for readability at connection sites.
 pub const LOW: Bit = '0';

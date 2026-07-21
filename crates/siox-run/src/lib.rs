@@ -1216,6 +1216,17 @@ impl Testbench<'_> {
                 let id = self.signal_of(base);
                 self.await_edge(id, attr.text.as_str());
             }
+            // `await clk.rising()` — a `ClockLike` edge method waits on the
+            // same edge machinery as the `::rising` sysattr.
+            Some(ast::Expr::Call { callee, .. })
+                if matches!(callee.as_ref(), ast::Expr::Field { field, .. }
+                    if matches!(field.text.as_str(), "rising" | "falling" | "edge")) =>
+            {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    let id = self.signal_of(base);
+                    self.await_edge(id, &field.text);
+                }
+            }
             Some(cond) => {
                 let cond = cond.clone();
                 self.await_cond(&cond);
