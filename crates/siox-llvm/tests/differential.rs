@@ -13,7 +13,14 @@ fn lower(src: &str) -> Design {
     // uint/int are library types now (not seeded); the differential sources
     // are self-contained, so declare the vector families locally.
     let src = format!(
-        "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n"
+        "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n\
+         enum Bit {{ '0', '1' }}\n\
+         trait ClockLike {{ fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }}\n\
+         impl ClockLike for Bit {{\n\
+           fn rising(self) -> Bool {{ return self::event and self::old == '0' and self == '1'; }}\n\
+           fn falling(self) -> Bool {{ return self::event and self::old == '1' and self == '0'; }}\n\
+           fn edge(self) -> Bool {{ return self::event; }}\n\
+         }}\n"
     );
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
@@ -97,7 +104,7 @@ fn counter_agrees_across_clock_edges() {
          entity Counter { in clk: Bit; in rst: Logic; in en: Bit; out count: uint[8]; }\n\
          impl Counter {\n\
            let value: uint[8] = 0;\n\
-           if clk::rising {\n\
+           if clk.rising() {\n\
              if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
            }\n\
            count = value;\n\
@@ -133,7 +140,7 @@ fn register_agrees_across_clock_edges() {
          entity Reg { in clk: Bit; in d: uint[8]; out q: uint[8]; }\n\
          impl Reg {\n\
            let s: uint[8] = 0;\n\
-           if clk::rising { s = d; }\n\
+           if clk.rising() { s = d; }\n\
            q = s;\n\
          }\n\
          #[top]\n\
@@ -164,7 +171,7 @@ fn fsm_agrees_across_clock_edges() {
          entity Fsm { in clk: Bit; in go: Bit; in fin: Bit; out active: Bool; }\n\
          impl Fsm {\n\
            let state: State = State::Idle;\n\
-           if clk::rising {\n\
+           if clk.rising() {\n\
              match state {\n\
                State::Idle => { if go { state = State::Run; } }\n\
                State::Run => { if fin { state = State::Done; } }\n\

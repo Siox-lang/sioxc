@@ -749,7 +749,7 @@ mod tests {
              impl Counter<W: integer> {\n\
                const MAX: uint[W] = (1 << W) - 1;\n\
                let value: uint[W] = 0;\n\
-               if clk::rising {\n\
+               if clk.rising() {\n\
                  if rst == '1' {\n\
                    value = 0;\n\
                  } else {\n\

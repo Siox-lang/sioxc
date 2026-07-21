@@ -571,7 +571,7 @@ fn run_one<'a>(
 
 /// Interprets a testbench's stimulus statements against a running simulator.
 /// A free-running background clock started by `clock(clk, period)`; the
-/// scheduler toggles it every half period so `await clk::rising` has an edge
+/// scheduler toggles it every half period so `await clk.rising()` has an edge
 /// to wait for.
 struct ClockGen {
     id: SignalId,
@@ -1199,7 +1199,7 @@ impl Testbench<'_> {
     }
 
     /// `await <expr>`: dispatch on the argument shape — a duration advances
-    /// time; `clk::rising` waits for an edge; anything else is a condition.
+    /// time; `clk.rising()` waits for an edge; anything else is a condition.
     fn do_await(&mut self, args: &[ast::Expr]) {
         match args.first() {
             Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {

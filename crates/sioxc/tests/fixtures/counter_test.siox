@@ -13,7 +13,7 @@ entity Counter<W: integer> {
 impl Counter<W: integer> {
     let value: uint[W] = 0;
 
-    if clk::rising {
+    if clk.rising() {
         if rst == '1' {
             value = 0;
         } else if en {
@@ -47,7 +47,7 @@ impl CounterTest {
     rst = '0';
 
     for i in 0..9 {
-        await clk::rising;
+        await clk.rising();
     }
 
     assert!(count == 10, "counter should reach 10 after 10 rising edges");

@@ -2182,7 +2182,7 @@ mod tests {
     #[test]
     fn accepts_digital_sysattrs() {
         let errors = check_src(
-            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk::rising {\n    q = clk::old;\n  }\n}\n",
+            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk.rising() {\n    q = clk::old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }

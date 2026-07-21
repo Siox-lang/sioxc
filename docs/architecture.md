@@ -89,7 +89,7 @@ name-use site to the declaration it resolves to.
 
 - **The IR distinction is central.** Combinational `Driver(target, cond, expr)`
   and sequential `OnEvent(cond): next(target) = expr` are kept separate; e.g.
-  `clk::rising` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
+  `clk.rising()` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
   Preserve this split when working in `siox-ir`/`siox-sim`.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,

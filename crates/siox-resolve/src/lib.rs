@@ -1002,7 +1002,7 @@ mod tests {
              }\n\
              impl Counter<W: integer> {\n\
                let value: uint[W] = 0;\n\
-               if clk::rising {\n\
+               if clk.rising() {\n\
                  value = value + 1;\n\
                }\n\
                count = value;\n\

@@ -60,7 +60,7 @@ pub const HIGH: Bit = '1';
 - `Bool` — condition results (VHDL `boolean`), an ordinary enum.
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
-detection is applied to it — `clk::rising` / `clk::falling` (the
+detection is applied to it — `clk.rising()` / `clk.falling()` (the
 `rising_edge(clk)` analogue), built-in syntax over `::event`/`::old`.
 
 ## `std::bits`

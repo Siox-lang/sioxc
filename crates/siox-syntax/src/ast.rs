@@ -350,7 +350,7 @@ pub enum Expr {
     Path(Path),
     /// `x.field` (spec `.` member access).
     Field { base: Box<Expr>, field: Ident, span: Span },
-    /// `x::event`, `x::old`, `clk::rising`, `data::width` (spec 3.9/3.10/3.23).
+    /// `x::event`, `x::old`, `clk.rising()`, `data::width` (spec 3.9/3.10/3.23).
     SysAttr { base: Box<Expr>, attr: Ident, span: Span },
     /// `data[7..0]` slice or `data[0]` index (spec 3.23).
     Index { base: Box<Expr>, index: Box<Expr>, span: Span },

@@ -122,7 +122,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   imports — see the convergence-layer goal). `lower` walks each non-extern
   entity's behaviour into signals, combinational `Driver`s, and `EventBlock`s;
   detects event-controlled blocks (`::event`/`::rising`) and expands
-  `clk::rising` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
+  `clk.rising()` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
   `if`/`else` priority accumulates into next-state conditions. `match` lowers to
   first-match `scrutinee == variant` guards with enum discriminants (`Idle=0`,
   ...). Signal widths are made concrete by substituting the entity's instance
@@ -203,7 +203,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
   initials, assignments, `tick(clk)`, `wait`, `for`, `if`, `assert!(cond,
   "msg")`) against any backend via the `Engine` trait. **Timing:** `clock(clk,
   period)` starts a background clock and `await` waits on time / an edge
-  (`clk::rising`) / a condition — driven by the runner-owned event wheel, so
+  (`clk.rising()`) / a condition — driven by the runner-owned event wheel, so
   multiple clocks interleave. `sioxc test [name]` runs all or a filtered subset
   in libtest style (`test … ok`/`FAILED`, `file:line:col`), exits nonzero on
   failure, and `--no-run` links a native multi-test binary. **`print!`** renders

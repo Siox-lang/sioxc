@@ -418,7 +418,7 @@ mod tests {
         }\n\
         impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
-          if clk::rising {\n\
+          if clk.rising() {\n\
             if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
           }\n\
           count = value;\n\
@@ -434,7 +434,7 @@ mod tests {
           await 10ns;\n\
           rst = '0';\n\
           clk = not clk after 5ns;\n\
-          for i in 0..9 { await clk::rising; }\n\
+          for i in 0..9 { await clk.rising(); }\n\
           PLACEHOLDER\n\
         }\n";
 
@@ -447,7 +447,7 @@ mod tests {
              entity Ctr { in clk: Bit; in rst: Logic; out n: uint[8]; }\n\
              impl Ctr {\n\
                let v: uint[8] = 0;\n\
-               if clk::rising { if rst == '1' { v = 0; } else { v = v + 1; } }\n\
+               if clk.rising() { if rst == '1' { v = 0; } else { v = v + 1; } }\n\
                n = v;\n\
              }\n\
              #[test]\n\
@@ -508,7 +508,7 @@ mod tests {
              entity Fsm { in clk: Bit; in start: Bit; out st: State; }\n\
              impl Fsm {\n\
                let s: State = State::Idle;\n\
-               if clk::rising {\n\
+               if clk.rising() {\n\
                  match s {\n\
                    State::Idle => { if start { s = State::Run; } }\n\
                    State::Run => { s = State::Done; }\n\
@@ -657,7 +657,7 @@ mod tests {
              entity Fifo1 { in clk: Bit; in valid: Bit; in ready: Bit; in d: uint[8]; out q: uint[8]; }\n\
              impl Fifo1 {\n\
                let buf: uint[8] = 0;\n\
-               if clk::rising { if valid and ready { buf = d; } }\n\
+               if clk.rising() { if valid and ready { buf = d; } }\n\
                q = buf;\n\
              }\n\
              #[test] entity T {}\n\
@@ -706,7 +706,7 @@ mod tests {
         assert_test_passes(
             "module m;\n\
              entity Reg<W: integer> { in clk: Bit; in d: uint[W]; out q: uint[W]; }\n\
-             impl Reg<W: integer> { let s: uint[W] = 0; if clk::rising { s = d; } q = s; }\n\
+             impl Reg<W: integer> { let s: uint[W] = 0; if clk.rising() { s = d; } q = s; }\n\
              #[test] entity T {}\n\
              impl T {\n\
                let clk: Bit = '0'; let d: uint[8] = 0; let q: uint[8];\n\
@@ -758,7 +758,7 @@ mod tests {
         }\n\
         impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
-          if clk::rising {\n\
+          if clk.rising() {\n\
             if rst == '1' {\n\
               value = 0;\n\
             } else if en {\n\

@@ -103,7 +103,7 @@ pub struct NextUpdate {
 }
 
 /// IR expression. `::event`/`::old` are first-class so the scheduler can read
-/// them directly; `clk::rising` lowers into `Event`/`Old`/`Current`.
+/// them directly; `clk.rising()` lowers into `Event`/`Old`/`Current`.
 #[derive(Clone, Debug)]
 pub enum Expr {
     Const(u64),
@@ -3420,7 +3420,7 @@ impl<'a> Lowering<'a> {
         ))
     }
 
-    /// Lower a system attribute. `clk::rising`/`falling`/`edge` expand into
+    /// Lower a system attribute. `clk.rising()`/`falling`/`edge` expand into
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
     fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
         // `xs::len` is elaboration-time metadata: the array's element count.
@@ -4784,10 +4784,14 @@ mod tests {
     use super::*;
     use siox_diag::FileId;
 
+    /// A minimal `ClockLike` impl so self-contained test sources can use the
+    /// `clk.rising()` edge methods (std provides these for real designs).
+    const CLK_PRELUDE: &str = "\nenum Bit { '0', '1' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
+
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
         let src = format!(
-            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n"
+            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
@@ -4801,7 +4805,7 @@ mod tests {
     }
 
     fn lower_diags(src: &str) -> Vec<String> {
-        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n");
+        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
         let mut sink = DiagnosticSink::new();
         let module = siox_syntax::parse_module(FileId(0), &src, &mut sink);
         let modules = std::slice::from_ref(&module);
@@ -4960,7 +4964,7 @@ mod tests {
         }\n\
         impl Counter<W: integer> {\n\
           let value: uint[W] = 0;\n\
-          if clk::rising {\n\
+          if clk.rising() {\n\
             if rst == '1' {\n\
               value = 0;\n\
             } else if en {\n\
@@ -4989,7 +4993,7 @@ mod tests {
         assert!(d.signals.iter().any(|s| s.path == "H.dut.value"));
         // One combinational driver: count = value.
         assert_eq!(d.drivers.len(), 1);
-        // One event block (clk::rising) with two next-state updates.
+        // One event block (clk.rising()) with two next-state updates.
         assert_eq!(d.event_blocks.len(), 1);
         assert_eq!(d.event_blocks[0].updates.len(), 2);
     }
@@ -5189,7 +5193,7 @@ mod tests {
     fn rising_lowers_to_event_old_current() {
         let d = lower_src(COUNTER);
         let rendered = d.to_ir_string();
-        // clk::rising expands into the explicit Event/Old/Current form.
+        // clk.rising() expands into the explicit Event/Old/Current form.
         assert!(rendered.contains("Event(H.dut.clk)"));
         assert!(rendered.contains("Old(H.dut.clk) == '0'"));
         assert!(rendered.contains("H.dut.clk == '1'"));

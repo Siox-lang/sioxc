@@ -709,7 +709,7 @@ impl<'a> Parser<'a> {
                 Stmt::Return { value, span: start.to(self.prev_span()) }
             }
             // `wait <expr>;` / `await <expr>;` timing primitives (no parens):
-            // modeled as a call. `await 10ns` advances time; `await clk::rising`
+            // modeled as a call. `await 10ns` advances time; `await clk.rising()`
             // waits for an edge; `await cond` waits until a condition holds.
             TokenKind::Ident if self.cur_text() == "wait" || self.cur_text() == "await" => {
                 let start = self.span();
@@ -1655,7 +1655,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The fixed set of system attributes (`x::event`, `clk::rising`, `d::width`).
+/// The fixed set of system attributes (`x::event`, `clk.rising()`, `d::width`).
 /// A `::`-suffix matching one of these reads as a [`Expr::SysAttr`] rather than
 /// extending a path. Spec 3.9 / 3.10 / 3.23.
 fn is_sysattr(name: &str) -> bool {
@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn impl_with_state_and_sequential_block() {
         let m = parse_ok(
-            "module m;\nimpl Counter<W: integer> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk::rising {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl Counter<W: integer> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!("expected impl") };
         assert_eq!(i.params.params.len(), 1);
@@ -1874,7 +1874,7 @@ mod tests {
     #[test]
     fn test_entity_with_stimulus() {
         let m = parse_ok(
-            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk::rising;\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
+            "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk,\n    .count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk.rising();\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
         );
         let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
         // clk, dut, await, rst=, for, assert.

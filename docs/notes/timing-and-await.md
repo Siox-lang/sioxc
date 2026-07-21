@@ -21,12 +21,12 @@ mirrors cocotb's async triggers. Three forms:
 
 ```siox
 await 10ns;          // advance simulation time      (cocotb Timer)
-await clk::rising;   // wait for an edge             (cocotb RisingEdge)
+await clk.rising();   // wait for an edge             (cocotb RisingEdge)
 await clk == '1';    // wait until a condition holds (cocotb value/edge)
 ```
 
 Note the condition form uses `==` (equality), not `=` (assignment).
-`tick(clk)` becomes sugar — `clk = '1'; await clk::rising; clk = '0';` — or is
+`tick(clk)` becomes sugar — `clk = '1'; await clk.rising(); clk = '0';` — or is
 kept as shorthand.
 
 Each `await` **yields the testbench to the scheduler** until its trigger
@@ -34,7 +34,7 @@ fires. So the testbench is a coroutine, not straight-line code. This
 generalizes past testbenches to imperative processes:
 
 ```siox
-loop { await clk::rising; count = count + 1; }
+loop { await clk.rising(); count = count + 1; }
 ```
 
 which is how SystemVerilog/VHDL processes and cocotb coroutines already read.
@@ -43,7 +43,7 @@ which is how SystemVerilog/VHDL processes and cocotb coroutines already read.
 
 - A simulation clock (fs internally, `ns`/`ps`/… surface units).
 - An event wheel: schedule a wakeup at `now + Δ` (`await 10ns`), and
-  value-change callbacks on signals (`await clk::rising`, `await cond`).
+  value-change callbacks on signals (`await clk.rising()`, `await cond`).
 - Exposed in the **compiled runtime C ABI**, not just the interpreter, since
   the native binary needs it too.
 - **Coroutine execution of the testbench.** Straight-line testbench→C stops

@@ -167,12 +167,12 @@ impl ClockLike for Logic {
 Usage:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     q = d;
 }
 ```
 
-The scheduler can infer that this block is event-controlled because the condition depends on `clk::event` through `clk::rising`.
+The scheduler can infer that this block is event-controlled because the condition depends on `clk::event` through `clk.rising()`.
 
 ### Example: Counter
 
@@ -188,7 +188,7 @@ entity Counter<W: integer> {
 impl Counter<W: integer> {
     let value: uint[W] = 0;
 
-    if clk::rising {
+    if clk.rising() {
         if rst == '1' {
             value = 0;
         } else if en {
@@ -492,7 +492,7 @@ entity SampledComparator {
 impl SampledComparator {
     let input = p -> n;
 
-    if clk::rising {
+    if clk.rising() {
         if sample(input.v) > 0.0 {
             y = '1';
         } else {

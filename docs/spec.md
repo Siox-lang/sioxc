@@ -569,12 +569,12 @@ impl ClockLike for Logic {
 Usage:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     q = d;
 }
 ```
 
-The compiler recognizes that `clk::rising` depends on `clk::event`, so the block is event-controlled.
+The compiler recognizes that `clk.rising()` depends on `clk::event`, so the block is event-controlled.
 
 ---
 
@@ -585,7 +585,7 @@ No VHDL-style explicit sensitivity list is needed.
 This:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     q = d;
 }
 ```
@@ -605,7 +605,7 @@ is not event-controlled by itself. It is ordinary conditional logic.
 Inside an event-controlled block:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     if en {
         q = d;
     }
@@ -637,7 +637,7 @@ y = a and b;
 Sequential/event-controlled update:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     q = d;
 }
 ```
@@ -712,7 +712,7 @@ In an event-controlled block, assignments to persistent state update at the end 
 Example:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     a = b;
     b = a;
 }
@@ -730,7 +730,7 @@ This swaps `a` and `b`.
 Local variables update immediately:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     let tmp: uint[8] = a;
     a = b;
     b = tmp;
@@ -790,7 +790,7 @@ Reset is not a magic built-in concept.
 Synchronous reset:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     if rst == '1' {
         q = 0;
     } else {
@@ -804,7 +804,7 @@ Asynchronous reset pattern:
 ```siox
 if rst == '1' {
     q = 0;
-} else if clk::rising {
+} else if clk.rising() {
     q = d;
 }
 ```
@@ -1114,7 +1114,7 @@ status[7] = err;      // set one bit
 It is a read-modify-write. Combinational partial writes merge with the
 signal's prior driver in the same context (`y = base; y[hi..lo] = v;`); in a
 clocked block a partial write holds the untouched bits from the register's
-current value (`if clk::rising { reg[3..0] = x; }` writes the low nibble and
+current value (`if clk.rising() { reg[3..0] = x; }` writes the low nibble and
 keeps the top).
 
 **Direction.** A width-only index is ascending: `Bit[4]` declares elements
@@ -1783,7 +1783,7 @@ OnEvent(event_condition): next(signal) = expression
 Example:
 
 ```siox
-if clk::rising {
+if clk.rising() {
     q = d;
 }
 ```
@@ -2029,12 +2029,12 @@ on the scheduler those clocks run on:
 
 ```siox
 await 10ns;                 // advance simulation time
-await clk::rising;          // wait for the next rising edge (::falling/::event)
+await clk.rising();          // wait for the next rising edge (::falling/::event)
 await count == 7;           // wait until a condition holds
 ```
 
 `await`'s three forms are: a **duration** (advance time), an **edge**
-(`clk::rising`/`::falling`/`::event`), and a **condition** (any boolean). Edge
+(`clk.rising()`/`::falling`/`::event`), and a **condition** (any boolean). Edge
 and condition forms are driven by the background clocks — the scheduler steps
 the clocks until the trigger fires. `await` runs identically on the
 interpreter, the JIT, and the native `--no-run` binary. (`wait`/`tick` remain
@@ -2066,7 +2066,7 @@ impl CounterTest {
     rst = '0';
 
     for i in 0..9 {            // inclusive: 0,1,...,9 — ten rising edges
-        await clk::rising;
+        await clk.rising();
     }
 
     assert!(count == 10, "counter should increment 10 times");
@@ -2273,7 +2273,7 @@ pub enum Bool {
 ```
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
-detection is applied to it (`clk::rising`, per 3.10).
+detection is applied to it (`clk.rising()`, per 3.10).
 
 ### `std::bits`
 
