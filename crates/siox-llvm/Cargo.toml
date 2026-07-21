@@ -17,16 +17,12 @@ inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1",
 # LLVM is on by default; `--no-default-features` yields an empty crate.
 default = ["llvm"]
 llvm = ["dep:inkwell"]
-# Gate for the differential harness (interpreter oracle vs JIT).
-interp = []
 
 [dev-dependencies]
-# Frontend + interpreter, to build real Designs and differential-test the
-# JIT against the interpreter oracle (the seed of stage B4).
+# Frontend, to build real Designs and run the JIT behaviour tests (tests/jit.rs).
 siox-diag.workspace = true
 siox-syntax.workspace = true
 siox-resolve.workspace = true
 siox-types.workspace = true
 siox-elab.workspace = true
 siox-run.workspace = true
-siox-sim.workspace = true

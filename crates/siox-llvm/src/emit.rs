@@ -194,7 +194,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- sx_settle: combinational processes in dependency order -----------
 
-    /// Emit the whole delta cycle, mirroring `siox_sim::Simulator::settle`:
+    /// Emit the whole delta cycle:
     /// 1. event flags from stimulus (`cur != old`); 2. combinational settle;
     /// 3+4. event blocks compute next-state from pre-commit values, then
     /// commit; 5. re-settle combinational; 6. roll `old <- cur`, clear event.

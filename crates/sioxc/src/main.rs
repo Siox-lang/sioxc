@@ -50,17 +50,6 @@ struct Cli {
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]
     std: PathBuf,
-    /// Backend slot width: `auto` uses 128-bit slots only when the design has
-    /// signals wider than 64 bits (u128 is register-pair native on 64-bit
-    /// CPUs); `64`/`128` force a width. Wider slots trade speed for range.
-    #[arg(long, global = true, default_value = "auto")]
-    slot: String,
-    /// Execution engine for `siox test`: `llvm` (JIT-compiled, the default) or
-    /// `interp` (the interpreter/reference oracle). `llvm` auto-falls back to
-    /// the interpreter for designs it can't compile yet (e.g. >64-bit signals)
-    /// or a build without the LLVM toolchain.
-    #[arg(long, global = true, default_value = "llvm")]
-    backend: String,
     #[command(subcommand)]
     cmd: Option<Command>,
 }
@@ -120,8 +109,6 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let std_root = cli.std;
-    let slot = cli.slot;
-    let backend = cli.backend;
 
     // Bare `sioxc foo.siox` compiles the file (like `rustc foo.rs`).
     #[cfg(feature = "llvm")]
@@ -167,20 +154,18 @@ fn main() -> ExitCode {
         Command::Check { file, verbose } => cmd_check(&file, &std_root, verbose),
         Command::Sim { file, wave } => match wave {
             Some(out) => cmd_wave(&file, &std_root, &out),
-            None => cmd_test(&file, &std_root, None, &slot, &backend),
+            None => cmd_test(&file, &std_root, None),
         },
         #[cfg(feature = "llvm")]
         Command::Test { path, filter, no_run, out } => {
             if no_run {
                 cmd_test_no_run(&path, &std_root, out.as_deref())
             } else {
-                cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend)
+                cmd_test(&path, &std_root, filter.as_deref())
             }
         }
         #[cfg(not(feature = "llvm"))]
-        Command::Test { path, filter } => {
-            cmd_test(&path, &std_root, filter.as_deref(), &slot, &backend)
-        }
+        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref()),
         Command::Ir { file } => cmd_ir(&file, &std_root),
         #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
@@ -648,8 +633,8 @@ fn run_tests_llvm(
     design: &siox_ir::Design,
     filter: Option<&str>,
 ) -> Result<Vec<siox_run::TestResult>, String> {
-    // The JIT is 64-bit-word only; reject wide designs (the interpreter
-    // handles them) and any IR the backend can't compile.
+    // The JIT is 64-bit-word only; reject wide designs and any IR the backend
+    // can't compile.
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
         return Err(format!("signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width));
     }
@@ -700,45 +685,11 @@ fn run_tests_llvm(
     Err("this build has no llvm backend (rebuild with `--features llvm`)".to_string())
 }
 
-/// Run the `#[test]` entities on the interpreter (the reference oracle).
-#[cfg(feature = "interp")]
-fn run_interp(
-    modules: &[Module],
-    hier: &siox_elab::Hierarchy,
-    design: &siox_ir::Design,
-    filter: Option<&str>,
-    slot: &str,
-) -> Vec<siox_run::TestResult> {
-    let width = slot_width(slot);
-    if width == siox_sim::SlotWidth::W128
-        || (width == siox_sim::SlotWidth::Auto && siox_sim::needs_wide(design))
-    {
-        eprintln!("slot: 128-bit (native u128 on this target)");
-    }
-    siox_sim::run_tests_with(modules, hier, design, filter, width)
-}
-
-/// Parse the `--slot` flag into a sim slot width.
-#[cfg(feature = "interp")]
-fn slot_width(s: &str) -> siox_sim::SlotWidth {
-    match s {
-        "64" => siox_sim::SlotWidth::W64,
-        "128" => siox_sim::SlotWidth::W128,
-        _ => siox_sim::SlotWidth::Auto,
-    }
-}
-
-fn cmd_test(
-    path: &Path,
-    std_root: &Path,
-    filter: Option<&str>,
-    slot: &str,
-    backend: &str,
-) -> ExitCode {
+fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
     if path.is_dir() {
-        return cmd_test_dir(path, std_root, filter, slot, backend);
+        return cmd_test_dir(path, std_root, filter);
     }
-    if test_file(path, std_root, filter, slot, backend) {
+    if test_file(path, std_root, filter) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -747,13 +698,7 @@ fn cmd_test(
 
 /// Run every `.siox` file in a directory (non-recursively, sorted) as its own
 /// test module, printing each file's report under a header, then an aggregate.
-fn cmd_test_dir(
-    dir: &Path,
-    std_root: &Path,
-    filter: Option<&str>,
-    slot: &str,
-    backend: &str,
-) -> ExitCode {
+fn cmd_test_dir(dir: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
     let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -773,7 +718,7 @@ fn cmd_test_dir(
     for f in &files {
         eprintln!("\n===== {} =====", f.display());
         ran += 1;
-        if !test_file(f, std_root, filter, slot, backend) {
+        if !test_file(f, std_root, filter) {
             failed += 1;
         }
     }
@@ -800,13 +745,7 @@ fn has_test_entity(modules: &[Module], hier: &siox_elab::Hierarchy) -> bool {
 
 /// Compile and run one file's `#[test]` entities. Returns `true` when the file
 /// compiled and every test passed.
-fn test_file(
-    path: &Path,
-    std_root: &Path,
-    filter: Option<&str>,
-    slot: &str,
-    backend: &str,
-) -> bool {
+fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(_) => return false,
@@ -832,45 +771,16 @@ fn test_file(
         return true;
     }
 
-    // `--slot` only matters to the interpreter.
-    #[cfg(not(feature = "interp"))]
-    let _ = slot;
-
-    // LLVM is the default engine. With the `interp` feature it falls back to the
-    // interpreter (oracle / >64-bit); without it, an un-JIT-able design errors.
-    let results = if backend == "interp" {
-        #[cfg(feature = "interp")]
-        {
-            run_interp(modules, &hier, &design, filter, slot)
-        }
-        #[cfg(not(feature = "interp"))]
-        {
-            eprintln!("backend `interp` is not in this build (rebuild with `--features interp`)");
+    // The LLVM JIT is the only engine.
+    let results = match run_tests_llvm(modules, &hier, &design, filter) {
+        Ok(r) => r,
+        Err(e) => {
+            // No engine can run this design: report it as a proper failed run,
+            // not just a stderr note — CI and humans both look for the
+            // `test result:` line.
+            eprintln!("backend: llvm unavailable: {e}");
+            println!("\nrunning 0 tests\n\ntest result: FAILED. no engine can run this design ({e})");
             return false;
-        }
-    } else {
-        match run_tests_llvm(modules, &hier, &design, filter) {
-            Ok(r) => r,
-            Err(e) => {
-                #[cfg(feature = "interp")]
-                {
-                    eprintln!("backend: interp (llvm unavailable: {e})");
-                    run_interp(modules, &hier, &design, filter, slot)
-                }
-                #[cfg(not(feature = "interp"))]
-                {
-                    // No engine can run this design: report it as a proper
-                    // failed run, not just a stderr note — CI and humans both
-                    // look for the `test result:` line.
-                    eprintln!("backend: llvm unavailable: {e}");
-                    println!(
-                        "\nrunning 0 tests\n\ntest result: FAILED. no engine can run this \
-                         design ({e}); rebuild with `--features interp` for the interpreter \
-                         fallback"
-                    );
-                    return false;
-                }
-            }
         }
     };
     // libtest-style report (the rustc parallel).
@@ -919,8 +829,7 @@ fn test_file(
     failed == 0
 }
 
-/// Trace the first `#[test]` for waveform export — via the JIT when available,
-/// else the interpreter.
+/// Trace the first `#[test]` for waveform export via the JIT.
 fn trace_first_test(
     modules: &[Module],
     hier: &siox_elab::Hierarchy,
@@ -937,10 +846,6 @@ fn trace_first_test(
                 })
             });
         }
-    }
-    #[cfg(feature = "interp")]
-    {
-        return siox_sim::run_test_traced(modules, hier, design, None);
     }
     #[allow(unreachable_code)]
     None

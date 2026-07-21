@@ -8,19 +8,26 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # inkwell/llvm-sys locate the toolchain here (LLVM 22, the pinned version).
+  LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
 
 jobs:
-  # The portable, toolchain-only path: the interpreter engine (which is the
-  # reference oracle) plus the whole frontend. The default `llvm` backend needs
-  # a matching local LLVM (see the README) and is validated locally, not here.
   test:
-    name: build + test (interpreter path)
+    name: build + test (LLVM backend)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM 22
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y llvm-22-dev libpolly-22-dev
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -32,11 +39,16 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build (LLVM-free, interpreter)
-        run: cargo build --workspace --no-default-features --features interp
+      # The frontend must still build without an LLVM toolchain (contributors
+      # who only touch the parser/checker), so verify that too.
+      - name: Build (frontend only, no LLVM)
+        run: cargo build --workspace --no-default-features
 
-      - name: Test (LLVM-free, interpreter)
-        run: cargo test --workspace --no-default-features --features interp
+      - name: Build (LLVM backend)
+        run: cargo build --workspace
+
+      - name: Test (LLVM backend)
+        run: cargo test --workspace
 
       # The runnable `.siox` corpus lives in a sibling repo; check it out and
       # run every program through the freshly-built compiler, so a regression
@@ -54,7 +66,7 @@ jobs:
           fail=0
           for f in siox-tests/*.siox; do
             echo "== $f =="
-            if ! cargo run -q --no-default-features --features interp -p sioxc -- check "$f" --std std; then
+            if ! cargo run -q -p sioxc -- check "$f" --std std; then
               echo "::error file=$f::check failed"
               fail=1
             fi

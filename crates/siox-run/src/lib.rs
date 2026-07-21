@@ -4,7 +4,7 @@
 //! `await`/`clock` scheduler and event wheel, waveform sample recording, and
 //! simulation time — everything that *drives* a design, independent of how the
 //! design is evaluated. A backend supplies an [`Engine`]: the JIT (`siox-llvm`)
-//! does, and the `siox-sim` interpreter does too (for differential verification).
+//! is the one that does.
 
 use std::collections::{HashMap, HashSet};
 

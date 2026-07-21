@@ -18,7 +18,6 @@ siox-types.workspace = true
 siox-elab.workspace = true
 siox-ir.workspace = true
 siox-run.workspace = true
-siox-sim = { workspace = true, optional = true }
 siox-wave.workspace = true
 # default-features off at the workspace level (no inkwell); sioxc's `llvm`
 # feature (below) enables `siox-llvm/llvm` when an LLVM toolchain is present.
@@ -26,13 +25,10 @@ siox-llvm.workspace = true
 clap.workspace = true
 
 [features]
-# LLVM is the default backend (the language is compiled-first). Build
-# without a toolchain via `--no-default-features` (interpreter-only; the
-# CLI falls back to the interpreter automatically).
+# LLVM is the only backend (the language is compiled-first). Build the frontend
+# without a toolchain via `--no-default-features`; `siox test` then has no engine
+# and reports that it cannot run a design.
 default = ["llvm"]
 # Enable the LLVM backend commands (`siox emit-llvm`). Requires a matching
 # LLVM toolchain; the default `siox` binary builds without it.
 llvm = ["siox-llvm/llvm"]
-# Opt back into the interpreter: the reference oracle and >64-bit fallback,
-# plus `--backend interp`. Off by default — the compiled backend is the engine.
-interp = ["dep:siox-sim", "siox-llvm/interp"]

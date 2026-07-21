@@ -265,7 +265,6 @@ dependencies = [
  "siox-ir",
  "siox-resolve",
  "siox-run",
- "siox-sim",
  "siox-syntax",
  "siox-types",
 ]
@@ -286,19 +285,6 @@ dependencies = [
  "siox-elab",
  "siox-ir",
  "siox-syntax",
-]
-
-[[package]]
-name = "siox-sim"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-elab",
- "siox-ir",
- "siox-resolve",
- "siox-run",
- "siox-syntax",
- "siox-types",
 ]
 
 [[package]]
@@ -336,7 +322,6 @@ dependencies = [
  "siox-llvm",
  "siox-resolve",
  "siox-run",
- "siox-sim",
  "siox-syntax",
  "siox-types",
  "siox-wave",

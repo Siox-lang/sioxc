@@ -9,7 +9,6 @@ members = [
     "crates/siox-ir",
     "crates/siox-run",
     "crates/siox-llvm",
-    "crates/siox-sim",
     "crates/siox-wave",
     "crates/sioxc",
 ]
@@ -34,7 +33,6 @@ siox-run = { path = "crates/siox-run" }
 # default-features off (no inkwell/llvm-sys) so the interpreter-only build works
 # without an LLVM toolchain; sioxc's `llvm` feature turns the backend on.
 siox-llvm = { path = "crates/siox-llvm", default-features = false }
-siox-sim = { path = "crates/siox-sim" }
 siox-wave = { path = "crates/siox-wave" }
 
 # Third-party (kept minimal on purpose; add as stages need them).
