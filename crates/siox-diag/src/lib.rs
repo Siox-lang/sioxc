@@ -4,7 +4,7 @@
 //! elaborator and simulator all attach [`Span`]s to their data and emit
 //! [`Diagnostic`]s through a common [`DiagnosticSink`].
 //!
-//! Spec: see `docs/spec.md` Stage 10 (Diagnostics and lint
+//! Spec: see `docs/language.md` Stage 10 (Diagnostics and lint
 //! rules) for the required error/warning catalogue and the rendered format.
 
 use std::ops::Range;

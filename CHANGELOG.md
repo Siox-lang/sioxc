@@ -7,7 +7,7 @@ format loosely follows [Keep a Changelog](https://keepachangelog.com).
 The core pipeline — lexer, parser, name resolution, type/kind checking,
 elaboration, digital IR, and a delta-cycle simulator with `#[test]` discovery,
 assertions, and VCD export — predates this changelog. See
-[`docs/implementation.md`](docs/implementation.md) for per-stage status.
+[`docs/architecture.md`](docs/architecture.md) for the compiler pipeline.
 
 ## [Unreleased]
 

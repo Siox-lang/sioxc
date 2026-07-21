@@ -11,18 +11,18 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 
 | Document | What it is |
 | -------- | ---------- |
-| [language-features.md](language-features.md) | **The language at a glance** — a one-page tour of what siox can express, above the full spec. |
-| [editor.md](editor.md) | **Editor support** — setting up the `siox-lsp` language server and what it provides. |
-| [waveforms.md](waveforms.md) | **Waveforms** — producing a VCD and viewing it in Surfer or GTKWave, and how siox values render. |
-| [spec.md](spec.md) | The **Phase 1 language specification** — the authority for syntax and semantics. Kept current as the language evolves. |
-| [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
+| [language.md](language.md) | The **Phase 1 language specification** — an at-a-glance tour up front, then the authority for syntax and semantics. Kept current as the language evolves. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
-| [implementation.md](implementation.md) | The **stage-by-stage plan and live build status** — what each crate must do, the acceptance criteria, and how far along it is. |
+| [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, the JIT / native engines, simulation time and `await`, and VCD waveforms. |
+| [testing.md](testing.md) | **Testing** — `#[test]` testbenches, running them (`sioxc test`, `--no-run`), assertions, and how the compiler itself is tested. |
+| [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
+| [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
-| [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area (language features, analysis, engines, lints, tooling). |
+| [proposals/](proposals/) | Design notes and proposals not yet implemented (container sizing, cocotb ABI, backend/std build-out, the bug-hunt log). |
+| [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area. |
 
-If you are new: skim this page, then read [spec.md](spec.md) for the language
-and [architecture.md](architecture.md) for the compiler.
+If you are new: skim this page, then read [language.md](language.md) for the
+language and [architecture.md](architecture.md) for the compiler.
 
 ## The compiler pipeline
 
@@ -63,9 +63,8 @@ conformance corpus runs through the compiled backend.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
 operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
-truth tables defined as library code. See [implementation.md](implementation.md)
-per stage, [../TODO.md](../TODO.md) for what's left, and the
-[CHANGELOG](../CHANGELOG.md) for what has landed.
+truth tables defined as library code. See [../TODO.md](../TODO.md) for what's
+left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 
 ## Build and run
 

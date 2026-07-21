@@ -1,8 +1,90 @@
-# siox Phase 1 — Digital Language Specification and Implementation Plan
+# siox Phase 1 — Digital Language Specification
 
-This document defines Phase 1 of siox: the digital HDL layer. Phase 1 should produce a usable digital language, a parser, a type checker, an elaborator, an event-driven simulator, a test runner, and waveform output. Analogue domains and schematic/design syntax are intentionally left for later phases.
+This document defines Phase 1 of siox: the digital HDL layer — a usable digital
+language with a parser, type checker, elaborator, event-driven simulator, test
+runner, and waveform output. Analogue domains and schematic/design syntax are
+left for later phases ([roadmap.md](roadmap.md)). It is the authority for exact
+syntax and semantics; for how the pipeline is built see
+[architecture.md](architecture.md), and for the library [std.md](std.md).
 
-The goal is not to finish the full language. The goal is to freeze and implement a coherent digital subset that is strong enough to write counters, FSMs, buses, ready/valid interfaces, small datapaths, test entities, assertions, and simulation traces.
+---
+
+## At a glance
+
+A quick tour of what siox can express today; the rest of this document is the
+precise reference.
+
+### Structure
+
+- **Entities and impls.** An `entity` declares ports; an `impl` gives its
+  behaviour. Entities take parameters (`Counter<W: integer>`), instantiate
+  sub-entities, and connect ports — including **struct/bus bundles** and
+  **`inout` tristate nets** that resolve parallel drivers.
+- **Instance hierarchy.** A design is a tree of instances; each lowers into its
+  own signals with connections wired as drivers.
+- **Type-strict declarations.** Every `let` declares its type —
+  `let name: T [= value]`; a bare `let x = e` is rejected (`E-P012`). One form
+  for signals, locals, and instances (`let dut: Sub = { .a = a };`).
+- **Connection forms.** Ports connect two ways, like a struct literal: explicit
+  (`.a = x`, by name) or positional (`{ x, y }`, by declaration order). Ports
+  may also be wired post-declaration through the instance
+  (`let dut: Sub; dut.a = x; y = dut.y;`).
+- **Generate constructs.** A `for i in a..b { .. }` loop unrolls over a static
+  range (instances *and* per-iteration drivers), and a generate-`if`/`else`
+  with a compile-time-constant condition selects which branch is built. The two
+  nest, so hardware structure can be parameterized: `for i { if i < N { stage[i]
+  = Sub { .. } } }`. A non-constant condition stays a behavioral `if`.
+
+### Logic
+
+- **Combinational vs. sequential are kept distinct.** A continuous assignment
+  (`count = value;`) is a wire; an event block (`if clk.rising() { … }`) updates
+  only on the edge. Edge and history queries — `clk.rising()`, `x::event`,
+  `x::old` — are first-class.
+- **Four-value logic.** `Logic` carries `'0'/'1'/'Z'/'X'` with the std_logic
+  truth tables and parallel-driver resolution; `Bit` is the two-value scalar.
+  There is no dedicated clock type — any `Logic`/`Bit` signal is a clock when
+  edge detection (`clk.rising()`/`clk.falling()`) is applied to it.
+- **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
+  an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
+  double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one
+  scalar — so an enum array is written `{'a', 'b'}`, not `"ab"`. Bit vectors use
+  the bit-string literal `b"0101"` / `x"AB"`.
+- **Numeric vectors.** `uint[N]` / `int[N]` are library types built on `Logic`
+  vectors; signedness lives in the operator impls (int's arithmetic shift,
+  signed division and comparison), not in a type flag.
+- **Bit operations.** Slices (`a[7..4]`, direction-aware), concatenation
+  (`{hi, lo}`, also as an assignment target), and bit-pattern `match`
+  (`b"01??"` with `?` don't-cares).
+- **Array literals.** `[a, b, c]` builds an array value one element at a time
+  (`table = [10, 20, 30, 40]`), distinct from `{..}` concatenation.
+
+### Types and generics
+
+- Generics with trait bounds and `where` clauses.
+- **Rust-style operator traits** — `impl Add for T`, one `impl Ord`
+  (`cmp -> Ordering`) deriving all six comparisons.
+- **Methods** — `recv.method(args)` on a value's inherent or trait impl
+  (`impl T { fn m(self, ..) }`); value-returning methods inline into an
+  expression, statement methods (`s.send(v)`) inline as drivers on the
+  receiver's fields.
+- **Derived nominal types** — `enum B : A` / `struct B : A`, with total
+  derivation conversions synthesised automatically.
+- `#[…]` attributes, including type-targeted ones.
+- System attributes for metadata: `x::width`, `xs::len`.
+
+### Diagnostics
+
+Every diagnostic has a stable code. Beyond errors, the compiler lints for
+possible latches, unused imports, unresolved multiple drivers, combinational
+loops (a signal that feeds itself with no register in the path), and
+non-exhaustive / unreachable match arms. Type errors carry targeted fix-it
+help — e.g. a string literal used where a single value is wanted (`Logic = "0"`)
+points at the character literal `'0'`.
+
+Simulating and testing designs is covered in [simulation.md](simulation.md) and
+[testing.md](testing.md); `extern "C"`, editor, and cocotb integration in
+[interoperability.md](interoperability.md).
 
 ---
 

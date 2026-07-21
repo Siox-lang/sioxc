@@ -126,18 +126,18 @@ cargo build -p siox-lsp
 target/debug/siox-lsp --stdio --std ./std
 ```
 
-Full capability list and setup notes: [docs/editor.md](docs/editor.md).
+Full capability list and setup notes:
+[docs/interoperability.md](docs/interoperability.md).
 
 ## Learn more
 
 - **[Examples](https://github.com/Siox-lang/siox-tests)** — a repo of runnable
   `.siox` programs: counters, FSMs, a FIFO, SPI, RISC-V fragments, tristate
   buses, and more.
-- **[The language at a glance](docs/language-features.md)** — what siox can
-  express, in one page.
-- **[Language specification](docs/spec.md)** — the full syntax and semantics.
-- **[docs/](docs/README.md)** — compiler architecture, build status, and the
-  standard-library reference.
+- **[Language specification](docs/language.md)** — the full syntax and
+  semantics (with an at-a-glance tour up front).
+- **[docs/](docs/README.md)** — compiler architecture, simulation, testing, the
+  standard-library reference, and interoperability.
 - **[CHANGELOG](CHANGELOG.md)** — what's changed.
 
 ## License

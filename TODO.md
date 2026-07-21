@@ -3,7 +3,7 @@
 Outstanding work for siox Phase 1. The pipeline runs end to end (parse →
 resolve → type-check → elaborate → lower → run on the LLVM JIT or the native
 AOT binary, with assertions and VCD waveforms); what remains is filling gaps and
-deepening coverage. See [`docs/implementation.md`](docs/implementation.md) for
+deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
 Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known.

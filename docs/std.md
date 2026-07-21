@@ -1,6 +1,6 @@
 # The siox standard library
 
-> Target picture + build order: [notes/std-proposal.md](notes/std-proposal.md).
+> Target picture + build order: [proposals/std-buildout.md](proposals/std-buildout.md).
 
 
 The standard library lives in `std/` as ordinary siox source, loaded
