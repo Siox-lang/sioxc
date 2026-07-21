@@ -382,7 +382,14 @@ mod tests {
     use siox_diag::DiagnosticSink;
 
     /// Lower a source string through the full frontend into IR.
-    const VEC: &str = "\nstruct uint : Logic[];\nstruct int : Logic[];\n";
+    const VEC: &str = "\nstruct uint : Logic[];\nstruct int : Logic[];\n\
+        enum Bit { '0', '1' }\n\
+        trait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\n\
+        impl ClockLike for Bit {\n\
+          fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; }\n\
+          fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; }\n\
+          fn edge(self) -> Bool { return self::event; }\n\
+        }\n";
 
     fn lower(src: &str) -> Design {
         let src = format!("{src}{VEC}");
