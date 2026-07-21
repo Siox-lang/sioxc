@@ -41,23 +41,23 @@ pub enum ParamValue {
 /// that don't carry a simple width are kept as a rendered `Other`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EType {
-    /// A packed bit vector — every `struct F : Logic[]` family (uint/int and
-    /// user types). No signedness; that lives in the operator impls.
-    Vector { width: Option<u32> },
-    /// Any named type, including the std scalar enums (`Bit`, `Logic`, `Bool`):
-    /// they carry no bit-vector width, so the width check simply skips them.
+    /// Any named type: an enum scalar (`Bit`/`Logic`/`Bool`), a struct, or a
+    /// bare bit-vector family (`uint`). No bit-vector width, so the width check
+    /// skips it.
     Named(String),
+    /// A sized array. A bit vector is just an array of bits: `uint[8]` is
+    /// `Array { elem: Named("uint"), len: 8 }` (element names the family so it
+    /// renders as `uint[8]`), the same encoding as `Bit[8]` or `Point[4]`.
+    /// Signedness/behaviour lives in the family's operator impls, not here.
     Array { elem: Box<EType>, len: Option<u32> },
     Other(String),
 }
 
 impl EType {
-    /// The bit width when it is meaningful and known (integers, vectors). A
-    /// named scalar (`Bit`/`Logic`/`Bool`/any enum) has no vector width, so the
-    /// width check compares only actual bit-vector widths.
+    /// The width the connection check compares: an array's length (a bit
+    /// vector's bit count). A named scalar has none, so the check skips it.
     pub fn width(&self) -> Option<u32> {
         match self {
-            EType::Vector { width, .. } => *width,
             EType::Array { len, .. } => *len,
             _ => None,
         }
@@ -67,8 +67,6 @@ impl EType {
 impl fmt::Display for EType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EType::Vector { width: None } => write!(f, "uint"),
-            EType::Vector { width: Some(w) } => write!(f, "uint[{w}]"),
             EType::Named(n) => write!(f, "{n}"),
             EType::Array { elem, len: Some(l) } => write!(f, "{elem}[{l}]"),
             EType::Array { elem, len: None } => write!(f, "{elem}[]"),
@@ -751,21 +749,30 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
 fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>) -> EType {
     match t {
+        // A bare type name — `integer`, a bit-vector family (`uint`), a scalar
+        // enum (`Bit`), or a struct — is just its name here (no width; the
+        // width check skips it).
         Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
-            // The kernel word is an unbounded unsigned vector.
-            Some("integer") => EType::Vector { width: None },
-            // A bit-vector family (`struct F : Logic[]`); else a name — the
-            // std scalars `Bit`/`Logic`/`Bool` are just named types here.
-            Some(name) if families.contains(name) => EType::Vector { width: None },
-            Some(other) => EType::Named(other.to_string()),
+            Some(name) => EType::Named(name.to_string()),
             None => EType::Other(String::new()),
         },
         Type::Indexed { base, index, .. } => {
             let len = index.as_deref().and_then(|i| index_width(i, env));
-            match concrete_ty(base, env, families) {
-                EType::Vector { .. } => EType::Vector { width: len },
-                elem => EType::Array { elem: Box::new(elem), len },
+            // `uint[8]` — a bit-vector family indexed *directly* — is a packed
+            // array of that many bits, whose element names the family so it
+            // renders as `uint[8]`. Everything else (`Bit[8]`, `Point[4]`, or a
+            // nested `uint[8][4]`) is an array of its element type.
+            if let Type::Path(p) = base.as_ref() {
+                if let Some(name) = p.segments.last().map(|s| s.text.as_str()) {
+                    if families.contains(name) {
+                        return EType::Array {
+                            elem: Box::new(EType::Named(name.to_string())),
+                            len,
+                        };
+                    }
+                }
             }
+            EType::Array { elem: Box::new(concrete_ty(base, env, families)), len }
         }
         // Bus-mode and generic types don't carry a simple scalar width; keep a
         // rendered form for display and skip width checking on them.
@@ -1035,9 +1042,11 @@ mod tests {
         let (hier, _) = elaborate_src(HARNESS);
         let root = hier.instance(hier.roots[0]);
         let dut = hier.instance(root.children[0]);
-        // `count: uint[W]` with W=8 becomes `uint[8]`.
+        // `count: uint[W]` with W=8 becomes `uint[8]` — a bit array (element
+        // names the family, length is the bit count).
         let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
-        assert_eq!(count.ty, EType::Vector { width: Some(8) });
+        assert_eq!(count.ty.to_string(), "uint[8]");
+        assert_eq!(count.ty.width(), Some(8));
     }
 
     #[test]
