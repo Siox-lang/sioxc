@@ -1232,16 +1232,14 @@ impl<'a> Checker<'a> {
                         format!("`::{}` is Phase-2 analogue syntax, not available in Phase 1", attr.text),
                     );
                 }
-                // The edge helpers are `ClockLike` trait methods, not attributes.
+                // The edge helpers are ordinary trait methods now, so the
+                // compiler no longer treats them as attributes: an unknown
+                // system attribute is just that.
                 if matches!(attr.text.as_str(), "rising" | "falling" | "edge") {
                     self.error(
-                        codes::INVALID_METHOD_CALL,
+                        codes::UNKNOWN_NAME,
                         *span,
-                        format!(
-                            "`::{a}` is not a system attribute — the edge helpers are `ClockLike` methods; use `{}.{a}()`",
-                            siox_syntax::pretty::expr_string(base),
-                            a = attr.text
-                        ),
+                        format!("unknown system attribute `::{}`", attr.text),
                     );
                 }
                 self.check_expr(base, sym);

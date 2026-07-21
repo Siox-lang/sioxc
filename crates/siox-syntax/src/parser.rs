@@ -1661,10 +1661,10 @@ impl<'a> Parser<'a> {
 fn is_sysattr(name: &str) -> bool {
     matches!(
         name,
-        // Phase 1 digital + range attributes (spec 3.9 / 3.23). The edge
-        // helpers `rising`/`falling`/`edge` are still lexed as sysattrs so the
-        // type checker can give a clean "use `clk.rising()`" error — they are
-        // std `ClockLike` methods now, not attributes.
+        // Phase 1 digital + range attributes (spec 3.9 / 3.23). `rising`/
+        // `falling`/`edge` are still lexed as sysattrs only so the type checker
+        // reports them as unknown attributes rather than silently reading them
+        // as a path — they are std `ClockLike` methods now, not attributes.
         "event"
             | "old"
             | "rising"
