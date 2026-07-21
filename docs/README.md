@@ -18,7 +18,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
-| [proposals/](proposals/) | Design notes and proposals not yet implemented (container sizing, cocotb ABI, backend/std build-out, the bug-hunt log). |
+| [proposals/](proposals/) | Forward-looking proposals not yet implemented: signal container sizing, the cocotb ABI, and the std library build-out. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
