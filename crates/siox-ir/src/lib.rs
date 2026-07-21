@@ -3441,20 +3441,10 @@ impl<'a> Lowering<'a> {
         }
         let Some(sig) = self.base_signal(base) else { return Expr::Unknown };
         match attr {
-            "event" | "edge" => Expr::Event(sig),
+            // `::event`/`::old` are the primitives; the edge helpers are the
+            // std `ClockLike` methods, which inline to these plus a comparison.
+            "event" => Expr::Event(sig),
             "old" => Expr::Old(sig),
-            // rising: Event(clk) && Old(clk) == '0' && Current(clk) == '1'
-            "rising" => and3(
-                Expr::Event(sig),
-                eq(Expr::Old(sig), Expr::Logic('0')),
-                eq(Expr::Current(sig), Expr::Logic('1')),
-            ),
-            // falling: Event(clk) && Old(clk) == '1' && Current(clk) == '0'
-            "falling" => and3(
-                Expr::Event(sig),
-                eq(Expr::Old(sig), Expr::Logic('1')),
-                eq(Expr::Current(sig), Expr::Logic('0')),
-            ),
             _ => Expr::Unknown,
         }
     }
@@ -3851,11 +3841,9 @@ fn bin_sym(op: BinOp) -> &'static str {
 fn expr_is_event(e: &ast::Expr) -> bool {
     match e {
         ast::Expr::SysAttr { base, attr, .. } => {
-            // `::event`/`::old` are the primitives; the derived edge helpers are
-            // now the `ClockLike` trait methods (below), but `::rising` etc.
-            // remain recognized for the sysattr spelling.
-            matches!(attr.text.as_str(), "event" | "rising" | "falling" | "edge")
-                || expr_is_event(base)
+            // `::event` is the primitive that makes an `if` sequential; the edge
+            // helpers are the `ClockLike` methods (handled by the Call arm).
+            attr.text == "event" || expr_is_event(base)
         }
         // A `ClockLike` edge method (`clk.rising()`, `clk.falling()`,
         // `clk.edge()`) depends on `::event`, so it makes an `if` sequential.

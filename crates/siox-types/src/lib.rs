@@ -1232,6 +1232,18 @@ impl<'a> Checker<'a> {
                         format!("`::{}` is Phase-2 analogue syntax, not available in Phase 1", attr.text),
                     );
                 }
+                // The edge helpers are `ClockLike` trait methods, not attributes.
+                if matches!(attr.text.as_str(), "rising" | "falling" | "edge") {
+                    self.error(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        format!(
+                            "`::{a}` is not a system attribute — the edge helpers are `ClockLike` methods; use `{}.{a}()`",
+                            siox_syntax::pretty::expr_string(base),
+                            a = attr.text
+                        ),
+                    );
+                }
                 self.check_expr(base, sym);
             }
             Expr::Match { scrutinee, arms, .. } => {
@@ -1526,7 +1538,8 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
-                "event" | "rising" | "falling" | "edge" => Ty::Bool,
+                // `::event` is Bool; the edge helpers are `ClockLike` methods now.
+                "event" => Ty::Bool,
                 "old" => self.type_of(base, sym),
                 "width" | "high" | "low" | "left" | "right" => Ty::Integer,
                 _ => Ty::Error,

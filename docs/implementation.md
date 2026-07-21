@@ -121,7 +121,7 @@ Each stage lists its acceptance criteria (from the spec) and current status.
 - **Status (done):** a **language-neutral** IR (its own `BinOp`/`UnOp`, no AST
   imports — see the convergence-layer goal). `lower` walks each non-extern
   entity's behaviour into signals, combinational `Driver`s, and `EventBlock`s;
-  detects event-controlled blocks (`::event`/`::rising`) and expands
+  detects event-controlled blocks (`::event`, `clk.rising()`) and expands
   `clk.rising()` to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`; nested
   `if`/`else` priority accumulates into next-state conditions. `match` lowers to
   first-match `scrutinee == variant` guards with enum discriminants (`Idle=0`,

@@ -23,7 +23,7 @@ It should support:
 - Digital directions: `in`, `out`, `inout`.
 - Parameterized entities and structs.
 - Digital system attributes: `::event`, `::old`.
-- Derived event helpers such as `::rising`, `::falling`, `::edge`.
+- Derived clock helpers such as `clk.rising()`, `clk.falling()`, `clk.edge()`.
 - Digital simulation with delta cycles.
 - Combinational assignments.
 - Sequential/event-controlled assignments.
@@ -538,33 +538,39 @@ array::old   = previous full array value
 
 ---
 
-### 3.10 Clock helpers are derived from `::event` and `::old`
+### 3.10 Clock helpers are `ClockLike` methods over `::event` and `::old`
 
-`::rising`, `::falling`, and `::edge` are library-defined/system-recognized helpers for suitable clock-like types.
+`rising`, `falling`, and `edge` are **trait methods** — `clk.rising()` — not
+system attributes. `::event` and `::old` are the compiler primitives (the
+engine tracks the event/history); the edge helpers are ordinary library code
+built from them, in `std::logic`. A user type is a clock by implementing
+`ClockLike`; writing `clk::rising` is an error (use `clk.rising()`).
 
-Example definition:
+Definition (`std/logic.siox`):
 
 ```siox
 trait ClockLike {
-    fn rising(self);
-    fn falling(self);
-    fn edge(self);
+    fn rising(self) -> Bool;
+    fn falling(self) -> Bool;
+    fn edge(self) -> Bool;
 }
 
 impl ClockLike for Logic {
-    fn rising(self) {
+    fn rising(self) -> Bool {
         return self::event and self::old == '0' and self == '1';
     }
 
-    fn falling(self) {
+    fn falling(self) -> Bool {
         return self::event and self::old == '1' and self == '0';
     }
 
-    fn edge(self) {
+    fn edge(self) -> Bool {
         return self::event;
     }
 }
 ```
+
+(`impl ClockLike for Bit` is the same.)
 
 Usage:
 
@@ -2029,12 +2035,12 @@ on the scheduler those clocks run on:
 
 ```siox
 await 10ns;                 // advance simulation time
-await clk.rising();          // wait for the next rising edge (::falling/::event)
+await clk.rising();          // wait for the next rising edge (also clk.falling(), ::event)
 await count == 7;           // wait until a condition holds
 ```
 
 `await`'s three forms are: a **duration** (advance time), an **edge**
-(`clk.rising()`/`::falling`/`::event`), and a **condition** (any boolean). Edge
+(`clk.rising()`/`clk.falling()`/`::event`), and a **condition** (any boolean). Edge
 and condition forms are driven by the background clocks — the scheduler steps
 the clocks until the trigger fires. `await` runs identically on the
 interpreter, the JIT, and the native `--no-run` binary. (`wait`/`tick` remain
