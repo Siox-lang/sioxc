@@ -42,9 +42,8 @@ The simulation model is emitted once by `siox-ir`; the **LLVM backend**
 
 Both share the delta-cycle emitter, so JIT and native agree bit-for-bit. The
 engine works in 64-bit words: a signal wider than 64 bits is rejected rather
-than truncated. Building `--no-default-features` yields the frontend only (no
-LLVM toolchain, no engine) — useful for working on the parser/checker, but
-`sioxc test` then has nothing to run.
+than truncated. LLVM is the permanent backend, so building siox needs an LLVM
+toolchain.
 
 ## Simulation time and the event wheel
 

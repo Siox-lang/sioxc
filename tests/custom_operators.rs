@@ -1,6 +1,5 @@
 //! End-to-end coverage for attributed custom operators in the JIT and native
 //! test harness paths.
-#![cfg(feature = "llvm")]
 
 use std::process::Command;
 

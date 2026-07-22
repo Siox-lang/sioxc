@@ -77,6 +77,5 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
   [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) repo. CI checks
   out the corpus and compiles every program through the freshly built compiler,
   so a regression there fails the build.
-- **CI** installs an LLVM toolchain and runs the real `--features llvm` suite
-  plus the corpus, and separately builds `--no-default-features` to keep the
-  frontend-only path honest.
+- **CI** installs an LLVM toolchain, builds, and runs the full test suite plus
+  the corpus through the freshly-built compiler.

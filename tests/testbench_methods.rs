@@ -1,7 +1,6 @@
 //! `recv.method(args)` in testbench stimulus (spec 3.20): the runner inlines
 //! the impl method's body, so a struct-typed testbench local can drive a DUT
 //! through a method result. Runs the fixture on the JIT via the CLI.
-#![cfg(feature = "llvm")]
 
 use std::process::Command;
 

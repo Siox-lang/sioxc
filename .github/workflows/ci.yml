@@ -39,15 +39,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # The frontend must still build without an LLVM toolchain (contributors
-      # who only touch the parser/checker), so verify that too.
-      - name: Build (frontend only, no LLVM)
-        run: cargo build --workspace --no-default-features
-
-      - name: Build (LLVM backend)
+      - name: Build
         run: cargo build --workspace
 
-      - name: Test (LLVM backend)
+      - name: Test
         run: cargo test --workspace
 
       # The runnable `.siox` corpus lives in a sibling repo; check it out and

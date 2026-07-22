@@ -69,18 +69,16 @@ left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 ## Build and run
 
 ```bash
-cargo build                       # build the library + binaries (LLVM backend, default)
-cargo test                        # run all tests (needs an LLVM toolchain)
-cargo build --no-default-features # frontend only, no LLVM toolchain required
+cargo build                       # build the library + binaries (needs an LLVM toolchain)
+cargo test                        # run all tests
 
 cargo run --bin sioxc -- <file>           # compile the #[top] design
 cargo run --bin sioxc -- test <file>      # build + run #[test] entities (JIT)
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
-`rustc foo.rs`). LLVM is the only backend; `--no-default-features` builds just
-the frontend (parse/resolve/typecheck/elaborate/lower), where `siox test` has
-no engine to run.
+`rustc foo.rs`). LLVM is the permanent backend, so building siox needs a
+matching local LLVM install (see `Cargo.toml` for the pinned version).
 
 | Command | Does |
 | ------- | ---- |

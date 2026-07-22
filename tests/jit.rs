@@ -3,8 +3,7 @@
 //! signals, char literals, and sequential (clocked) designs — and assert the
 //! settled signal values. The golden values were captured from the delta-cycle
 //! interpreter that used to be the differential oracle (before it was removed);
-//! the JIT is now the only engine. Only built with `--features llvm`.
-#![cfg(feature = "llvm")]
+//! the JIT is now the only engine.
 
 use siox::diag::{DiagnosticSink, FileId};
 use siox::ir::{Design, SignalId};

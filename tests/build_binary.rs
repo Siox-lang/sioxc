@@ -1,6 +1,5 @@
 //! `siox build` produces a runnable native simulator binary (stage B5.1).
 //! Only meaningful with the `llvm` feature + a clang toolchain.
-#![cfg(feature = "llvm")]
 
 use std::process::Command;
 

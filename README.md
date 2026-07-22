@@ -19,14 +19,9 @@ cargo build --release
 ```
 
 That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
-call it by path. siox compiles designs through LLVM, so this build needs a
-matching local LLVM install (see `Cargo.toml` for the pinned
-version).
-
-> **Frontend only (no LLVM).** `cargo build --release --no-default-features`
-> builds just the parser/checker/elaborator — useful for working on the
-> compiler front end without an LLVM toolchain — but it has no engine, so it
-> can't *run* a design.
+call it by path. siox compiles designs through LLVM, which is the permanent
+backend, so building needs a matching local LLVM install (see `Cargo.toml` for
+the pinned version).
 
 ## Write your first circuit
 
@@ -122,7 +117,7 @@ parse tree, lowered IR, and instance hierarchy.
 completion, rename, and more. Build it and point your editor at it:
 
 ```bash
-cargo build --bin siox-lsp --no-default-features
+cargo build --bin siox-lsp
 target/debug/siox-lsp --stdio --std ./std
 ```
 

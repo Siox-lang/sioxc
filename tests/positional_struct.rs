@@ -1,6 +1,5 @@
 //! Positional name-less struct locals (`let p: Pkt = { 3, 4 }`) bind to fields
 //! by declaration order, on the JIT and the native test harness.
-#![cfg(feature = "llvm")]
 
 use std::process::Command;
 

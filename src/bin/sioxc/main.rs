@@ -22,7 +22,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-#[cfg(feature = "llvm")]
 mod build;
 
 use clap::{Parser, Subcommand};
@@ -37,14 +36,11 @@ use siox::syntax::{lexer::Lexer, parser, pretty};
 struct Cli {
     /// The `.siox` file to compile (builds its `#[top]` design). Bare
     /// `sioxc foo.siox` compiles the file, like `rustc foo.rs`.
-    #[cfg(feature = "llvm")]
     file: Option<PathBuf>,
     /// The top entity to build (default: the single `#[top]` entity).
-    #[cfg(feature = "llvm")]
     #[arg(long)]
     top: Option<String>,
     /// Output object path for a bare build (default: `<file>.o`).
-    #[cfg(feature = "llvm")]
     #[arg(short, long)]
     out: Option<PathBuf>,
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
@@ -81,11 +77,9 @@ enum Command {
         /// Run only test entities whose name contains this string.
         filter: Option<String>,
         /// Compile the test into a native binary but do not run it.
-        #[cfg(feature = "llvm")]
         #[arg(long)]
         no_run: bool,
         /// Output path for `--no-run` (default: `<file>.sim`).
-        #[cfg(feature = "llvm")]
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
@@ -98,7 +92,6 @@ enum Command {
     /// Debug: print the normalized digital IR.
     Ir { file: PathBuf },
     /// Debug: print the LLVM IR emitted by the compiled backend.
-    #[cfg(feature = "llvm")]
     EmitLlvm { file: PathBuf },
     /// Debug: print the elaborated instance hierarchy.
     Tree { file: PathBuf },
@@ -111,7 +104,6 @@ fn main() -> ExitCode {
     let std_root = cli.std;
 
     // Bare `sioxc foo.siox` compiles the file (like `rustc foo.rs`).
-    #[cfg(feature = "llvm")]
     let cmd = match cli.cmd {
         Some(c) => c,
         None => {
@@ -123,15 +115,6 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             };
-        }
-    };
-    #[cfg(not(feature = "llvm"))]
-    let cmd = match cli.cmd {
-        Some(c) => c,
-        None => {
-            use clap::CommandFactory;
-            Cli::command().print_help().ok();
-            return ExitCode::FAILURE;
         }
     };
 
@@ -156,7 +139,6 @@ fn main() -> ExitCode {
             Some(out) => cmd_wave(&file, &std_root, &out),
             None => cmd_test(&file, &std_root, None),
         },
-        #[cfg(feature = "llvm")]
         Command::Test { path, filter, no_run, out } => {
             if no_run {
                 cmd_test_no_run(&path, &std_root, out.as_deref())
@@ -164,10 +146,7 @@ fn main() -> ExitCode {
                 cmd_test(&path, &std_root, filter.as_deref())
             }
         }
-        #[cfg(not(feature = "llvm"))]
-        Command::Test { path, filter } => cmd_test(&path, &std_root, filter.as_deref()),
         Command::Ir { file } => cmd_ir(&file, &std_root),
-        #[cfg(feature = "llvm")]
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
     }
@@ -418,7 +397,6 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
 /// `sioxc build`: compile one top-level design to a native object (the DUT,
 /// `sx_*` ABI). The top is `--top <Entity>` or the single `#[top]` entity;
 /// only that top and its instantiated children are built (no testbenches).
-#[cfg(feature = "llvm")]
 fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
@@ -470,7 +448,6 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
 
 /// Pick the top entity to build: an explicit `--top`, else the single
 /// `#[top]`-attributed entity. Ambiguity or absence is an error.
-#[cfg(feature = "llvm")]
 fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, String> {
     if let Some(t) = explicit {
         return Ok(t.to_string());
@@ -498,7 +475,6 @@ fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Str
 
 /// `siox test --no-run`: compile the `#[test]` stimulus into a standalone
 /// native simulator binary, but do not run it. Like `cargo test --no-run`.
-#[cfg(feature = "llvm")]
 fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
@@ -526,7 +502,6 @@ fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode
 
 /// `siox emit-llvm`: run the pipeline through lowering and print the LLVM IR
 /// the compiled backend emits. IR to stdout; stage trace/diagnostics to stderr.
-#[cfg(feature = "llvm")]
 fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
@@ -626,7 +601,6 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
 /// (or the pipeline errored).
 /// Run the `#[test]` entities through the JIT-compiled backend, driving the
 /// same test runner with a JIT engine instead of the interpreter.
-#[cfg(feature = "llvm")]
 fn run_tests_llvm(
     modules: &[Module],
     hier: &siox::elab::Hierarchy,
@@ -652,13 +626,11 @@ fn run_tests_llvm(
 }
 
 /// Adapts a JIT-compiled design to the test runner's [`siox::run::Engine`].
-#[cfg(feature = "llvm")]
 struct JitEngine<'a, 'ctx> {
     jit: &'a siox::llvm::Jit<'ctx>,
     design: &'a siox::ir::Design,
 }
 
-#[cfg(feature = "llvm")]
 impl siox::run::Engine for JitEngine<'_, '_> {
     fn set(&mut self, sig: siox::ir::SignalId, value: u128) {
         self.jit.set(sig.0, value as u64);
@@ -672,17 +644,6 @@ impl siox::run::Engine for JitEngine<'_, '_> {
     fn design(&self) -> &siox::ir::Design {
         self.design
     }
-}
-
-/// Without the `llvm` feature there is no engine, so `siox test` cannot run.
-#[cfg(not(feature = "llvm"))]
-fn run_tests_llvm(
-    _modules: &[Module],
-    _hier: &siox::elab::Hierarchy,
-    _design: &siox::ir::Design,
-    _filter: Option<&str>,
-) -> Result<Vec<siox::run::TestResult>, String> {
-    Err("this build has no llvm backend (rebuild with `--features llvm`)".to_string())
 }
 
 fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
@@ -831,13 +792,11 @@ fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
 
 /// Trace the first `#[test]` for waveform export via the JIT.
 // Without the `llvm` feature the body is empty, so the inputs go unused.
-#[cfg_attr(not(feature = "llvm"), allow(unused_variables))]
 fn trace_first_test(
     modules: &[Module],
     hier: &siox::elab::Hierarchy,
     design: &siox::ir::Design,
 ) -> Option<(siox::run::TestResult, Vec<siox::run::Sample>)> {
-    #[cfg(feature = "llvm")]
     {
         let jittable = design.signals.iter().all(|s| s.width <= 64) && design.validate().is_empty();
         if jittable {

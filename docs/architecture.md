@@ -25,12 +25,12 @@ flowchart LR
 
 `run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
 stimulus + `await`/`clock` scheduler, owns simulation time, and records
-waveforms — driving whatever `Engine` it's handed. `llvm` (the `llvm`
-feature, on by default) is that `Engine` — it emits LLVM, JIT-runs, or
-AOT-compiles the `Design` to native code (`sioxc test` JIT-runs, `sim --wave`
-JIT-traces). It is the only engine; the frontend still builds without an LLVM
-toolchain (`--no-default-features`), but then `sioxc test` has nothing to run.
-`siox-lsp` is frontend-only, so it is built that way.
+waveforms — driving whatever `Engine` it's handed. `llvm` is that `Engine` —
+it emits LLVM, JIT-runs, or AOT-compiles the `Design` to native code (`sioxc
+test` JIT-runs, `sim --wave` JIT-traces). It is the permanent, only engine, so
+building siox needs an LLVM toolchain (see `Cargo.toml` for the pinned
+version). `siox-lsp` uses only the frontend at runtime but is built as part of
+the same crate.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The crate boundaries that once enforced this are gone — the
@@ -51,7 +51,7 @@ binaries live in `src/bin/sioxc/` and `src/bin/siox-lsp/`.
 | `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
 | `run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
 | `wave`    | 9    | `Trace` recording + VCD export (FST later). |
-| `llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `ir::Design`; driven by `run`. |
+| `llvm`    | B    | LLVM/inkwell backend (the permanent execution engine) — emit `.ll`, JIT-run, AOT native object. Consumes `ir::Design`; driven by `run`. |
 | `bin/sioxc`   | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the bin-local `build` module. |
 | `bin/siox-lsp`| — | The language server (skeleton). Frontend-only; reuses `syntax`…`types` for diagnostics. |
 

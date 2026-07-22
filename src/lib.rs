@@ -16,7 +16,7 @@
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
 //! | [`ir`]      | 6 | lowering to the digital simulation IR |
 //! | [`run`]     | 7–8 | simulation kernel / `#[test]` runner (engine-agnostic) |
-//! | [`llvm`]    | 7 | LLVM JIT + native AOT backend (behind the `llvm` feature) |
+//! | [`llvm`]    | 7 | LLVM JIT + native AOT backend (the permanent execution engine) |
 //! | [`wave`]    | 9 | `Trace` recording + VCD export |
 
 pub mod diag;
@@ -28,7 +28,6 @@ pub mod ir;
 pub mod run;
 pub mod wave;
 
-// The LLVM backend is optional: `--no-default-features` yields a frontend-only
-// library (no inkwell / LLVM toolchain), which `siox-lsp` builds against.
-#[cfg(feature = "llvm")]
+// LLVM is the permanent execution engine (JIT + native AOT); building siox
+// needs an LLVM toolchain.
 pub mod llvm;

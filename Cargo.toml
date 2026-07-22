@@ -25,17 +25,10 @@ path = "src/bin/siox-lsp/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-# inkwell is optional and behind the `llvm` feature: the frontend-only build
-# (`--no-default-features`) needs no LLVM toolchain. Pinned to the local LLVM
-# (22); bump the feature to match your `llvm-config`.
-inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"], optional = true }
-
-[features]
-# LLVM is the only backend (the language is compiled-first). Build the frontend
-# without a toolchain via `--no-default-features`; `sioxc test` then has no
-# engine, and `siox-lsp` (frontend-only) is best built this way.
-default = ["llvm"]
-llvm = ["dep:inkwell"]
+# LLVM (via inkwell) is the permanent backend — building siox needs an LLVM
+# toolchain. Pinned to the local LLVM (22); bump the features to match your
+# `llvm-config`.
+inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"] }
 
 [profile.release]
 lto = "thin"
