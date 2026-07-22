@@ -666,7 +666,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_impl(&mut self, im: &ImplDecl) {
-        let (in_ports, sym) = self.impl_env(im);
+        let (dirs, sym) = self.impl_env(im);
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
             self.check_attr_value(a);
@@ -716,29 +716,35 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ImplItem::ModeField { .. } => {}
-                ImplItem::Stmt(s) => self.check_stmt(s, &in_ports, &sym),
+                ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym),
             }
         }
     }
 
     /// Build the value environment for an impl body: the `in` ports (for the
     /// write check) and a name -> type table (ports + impl-level lets/consts).
-    fn impl_env(&self, im: &ImplDecl) -> (HashSet<String>, HashMap<String, Ty>) {
-        let mut in_ports = HashSet::new();
+    fn impl_env(&self, im: &ImplDecl) -> (PortDirs, HashMap<String, Ty>) {
+        let mut illegal = HashSet::new();
+        let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();
         if im.trait_.is_none() {
             if let Some(ports) = type_head_name(&im.target).and_then(|n| self.entities.get(n)) {
                 for p in ports {
                     sym.insert(p.name.clone(), p.ty.clone());
                     if p.dir == Some(Direction::In) {
-                        in_ports.insert(p.name.clone());
+                        illegal.insert(p.name.clone());
+                        // A *plain* (non-bus-mode) `in` port has no writable
+                        // parts: driving a field/index of it is illegal too.
+                        if p.mode.is_none() {
+                            plain_in_roots.insert(p.name.clone());
+                        }
                     }
                     // A bus-mode port contributes each `in` leaf (`bus.ready`),
                     // so driving it inside the entity is rejected (spec 3.19).
                     if let Some(dirs) = p.mode.clone().and_then(|k| self.mode_dirs.get(&k)) {
                         for (field, dir) in dirs {
                             if *dir == Direction::In {
-                                in_ports.insert(format!("{}.{field}", p.name));
+                                illegal.insert(format!("{}.{field}", p.name));
                             }
                         }
                     }
@@ -757,17 +763,17 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
-        (in_ports, sym)
+        (PortDirs { illegal, plain_in_roots }, sym)
     }
 
     fn check_block(&mut self, b: &Block) {
-        let (in_ports, sym) = (HashSet::new(), HashMap::new());
+        let (dirs, sym) = (PortDirs { illegal: HashSet::new(), plain_in_roots: HashSet::new() }, HashMap::new());
         for s in &b.stmts {
-            self.check_stmt(s, &in_ports, &sym);
+            self.check_stmt(s, &dirs, &sym);
         }
     }
 
-    fn check_stmt(&mut self, s: &Stmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
+    fn check_stmt(&mut self, s: &Stmt, dirs: &PortDirs, sym: &HashMap<String, Ty>) {
         match s {
             Stmt::Let(l) => {
                 self.require_let_annotation(l);
@@ -777,26 +783,26 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, value, .. } => {
-                self.check_write_target(target, in_ports);
+                self.check_write_target(target, dirs);
                 self.check_assignment(target, value, sym);
                 self.check_expr(target, sym);
                 self.check_expr(value, sym);
             }
-            Stmt::If(i) => self.check_if(i, in_ports, sym),
+            Stmt::If(i) => self.check_if(i, dirs, sym),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
                 self.check_unreachable_arms(m);
                 self.check_expr(&m.scrutinee, sym);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
-                        self.check_stmt(s, in_ports, sym);
+                        self.check_stmt(s, dirs, sym);
                     }
                 }
             }
             Stmt::For { range, body, .. } => {
                 self.check_expr(range, sym);
                 for s in &body.stmts {
-                    self.check_stmt(s, in_ports, sym);
+                    self.check_stmt(s, dirs, sym);
                 }
             }
             Stmt::Expr(e) => self.check_expr(e, sym),
@@ -808,19 +814,19 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_if(&mut self, i: &IfStmt, in_ports: &HashSet<String>, sym: &HashMap<String, Ty>) {
+    fn check_if(&mut self, i: &IfStmt, dirs: &PortDirs, sym: &HashMap<String, Ty>) {
         self.check_condition(&i.cond, sym);
         self.check_expr(&i.cond, sym);
         for s in &i.then.stmts {
-            self.check_stmt(s, in_ports, sym);
+            self.check_stmt(s, dirs, sym);
         }
         match i.else_.as_deref() {
             Some(ElseBranch::Block(b)) => {
                 for s in &b.stmts {
-                    self.check_stmt(s, in_ports, sym);
+                    self.check_stmt(s, dirs, sym);
                 }
             }
-            Some(ElseBranch::If(inner)) => self.check_if(inner, in_ports, sym),
+            Some(ElseBranch::If(inner)) => self.check_if(inner, dirs, sym),
             None => {}
         }
     }
@@ -926,24 +932,31 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Spec 3.18: flag `port = ...` where `port` is a bare `in` port. Field /
-    /// index writes (`bus.ready = ...`) are left for fuller direction analysis.
-    fn check_write_target(&mut self, target: &Expr, in_ports: &HashSet<String>) {
-        // A bare `in` port (`a`) or an `in` bus-mode leaf (`bus.ready`).
-        let name = match target {
+    /// Spec 3.18: flag a write to an `in` port. Three shapes are illegal: the
+    /// bare port (`a = ..`), an `in` bus-mode leaf (`bus.ready = ..`), and any
+    /// field/index of a plain (non-bus) `in` port (`a[3] = ..`, `p.f = ..`).
+    fn check_write_target(&mut self, target: &Expr, dirs: &PortDirs) {
+        // The exact name for the bare / bus-leaf case.
+        let exact = match target {
             Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
             Expr::Field { .. } => path_string(target),
             _ => None,
         };
-        if let Some(name) = name {
-            if in_ports.contains(&name) {
-                self.sink.emit(
-                    Diagnostic::error(format!("cannot assign to input port `{name}`"))
-                        .with_code(codes::WRITE_TO_INPUT_PORT)
-                        .at(expr_span(target))
-                        .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
-                );
-            }
+        // The root name for a field/index write into a plain `in` port.
+        let root = match target {
+            Expr::Field { .. } | Expr::Index { .. } => target_root_name(target),
+            _ => None,
+        };
+        let bad = exact.as_deref().filter(|n| dirs.illegal.contains(*n)).map(str::to_string).or_else(
+            || root.filter(|r| dirs.plain_in_roots.contains(r)),
+        );
+        if let Some(name) = bad {
+            self.sink.emit(
+                Diagnostic::error(format!("cannot assign to input port `{name}`"))
+                    .with_code(codes::WRITE_TO_INPUT_PORT)
+                    .at(expr_span(target))
+                    .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
+            );
         }
     }
 
@@ -1917,6 +1930,26 @@ fn path_string(e: &Expr) -> Option<String> {
     }
 }
 
+/// The leftmost identifier of a field/index access chain (`bus.ready` -> `bus`,
+/// `a[3]` -> `a`, `p.f.g` -> `p`), for the plain-input-port write check.
+fn target_root_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        Expr::Field { base, .. } | Expr::Index { base, .. } => target_root_name(base),
+        _ => None,
+    }
+}
+
+/// Port-direction facts for the write-to-input check within one impl.
+struct PortDirs {
+    /// Names whose write is illegal exactly: a bare `in` port, or an `in`
+    /// bus-mode leaf (`bus.ready`).
+    illegal: HashSet<String>,
+    /// Plain (non-bus-mode) `in` ports — writing *any* field/index of one is
+    /// illegal too (it has no writable parts).
+    plain_in_roots: HashSet<String>,
+}
+
 /// The `(struct, mode)` of a bus-mode type (`out Stream::Source` ->
 /// `("Stream", "Source")`), for looking up per-leaf directions.
 fn mode_key(ty: &Type) -> Option<(String, String)> {
@@ -2246,6 +2279,16 @@ mod tests {
             "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en;\n}\n",
         );
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn rejects_write_to_plain_input_field_or_index() {
+        // A field/index of a *plain* `in` port is read-only too.
+        let errors = check_src(
+            "module m;\nstruct P { x: Bit }\nentity E { in a: Bit; in p: P; out y: Bit; }\n\
+             impl E {\n  a = '1';\n  p.x = '1';\n  y = a;\n}\n",
+        );
+        assert_eq!(errors, 2, "bare `a` and field `p.x` are both rejected");
     }
 
     #[test]

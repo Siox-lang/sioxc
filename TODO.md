@@ -30,8 +30,11 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   a runtime error or going `'X'`. Real undriven detection needs per-signal
   driven-flag / X-value tracking in the engine. (Structurally unconnected input
   *ports* are still caught statically, `E-P005`.)
-- 🟡 **Full direction analysis** (elab) — reading an undriven `out`, driving an
-  `in`, etc. beyond the current write-to-input-port check.
+- 🟡 **Full direction analysis** — writing an `in` port is now caught in all
+  shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
+  `in` port `a[3] = ..`/`p.f = ..`, `E-P004`). Still open: **reading an undriven
+  `out`** (overlaps the undriven-signals item) and reading your own `out` port
+  from within the entity.
 - 🟡 **Cross-module visibility** (resolve) — private items aren't yet enforced
   across modules (single global namespace); value identifiers resolve
   best-effort.
