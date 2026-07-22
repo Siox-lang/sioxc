@@ -155,6 +155,7 @@ mod tests {
             drivers: vec![],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         }
     }
@@ -202,6 +203,7 @@ mod tests {
             drivers: vec![],
             event_blocks: vec![],
             enum_syms,
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         let samples = vec![

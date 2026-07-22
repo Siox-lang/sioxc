@@ -602,6 +602,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         let ll = emit_module_ir(&design);
@@ -628,6 +629,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         emit_module_ir(&design);
@@ -646,6 +648,7 @@ mod tests {
             ],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         let ll = emit_module_ir(&design);

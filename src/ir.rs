@@ -5520,6 +5520,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: HashMap::new(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         let issues = bad.validate();

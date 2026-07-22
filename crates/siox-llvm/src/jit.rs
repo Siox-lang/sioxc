@@ -90,6 +90,7 @@ mod tests {
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
+            new_defaults: Default::default(),
             base_dir: Default::default(),
         };
         with_jit(&design, |jit| {
