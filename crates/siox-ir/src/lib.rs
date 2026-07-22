@@ -234,6 +234,7 @@ pub fn lower_in(
     l.lint_possible_latches();
     l.resolve_driver_contexts();
     l.lint_combinational_loops();
+    l.lint_undriven_outputs();
     l.out
 }
 
@@ -299,6 +300,9 @@ struct Lowering<'a> {
     /// emitted the `cyclic instantiation` diagnostic; this just keeps lowering
     /// from overflowing on the same cycle (best-effort, spec cross-cutting).
     lower_stack: Vec<String>,
+    /// Plain (non-bus-mode, non-`inout`) `out` port signals, for the
+    /// undriven-output warning after all drivers are collected.
+    plain_out_ports: Vec<SignalId>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -386,6 +390,7 @@ impl<'a> Lowering<'a> {
             cur_env: HashMap::new(),
             cur_type_env: HashMap::new(),
             lower_stack: Vec::new(),
+            plain_out_ports: Vec::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -651,6 +656,7 @@ impl<'a> Lowering<'a> {
         // (Only port signals exist in `locals` at this point — `let` state
         // signals are added below — so the prefix scan can't catch a non-port.)
         let mut ports: HashMap<String, (SignalId, Option<ast::Direction>)> = HashMap::new();
+        let mut new_out_ports: Vec<SignalId> = Vec::new();
         for p in &edecl.ports {
             let dot = format!("{}.", p.name.text);
             let idx = format!("{}[", p.name.text);
@@ -667,10 +673,17 @@ impl<'a> Lowering<'a> {
                             .or(p.dir),
                         None => p.dir,
                     };
+                    // A plain (non-bus-mode) `out` port must be driven inside the
+                    // entity; record it for the undriven check. Bus-mode leaves
+                    // and `inout` are excluded (their drive model differs).
+                    if !edecl.is_extern && mode.is_none() && dir == Some(ast::Direction::Out) {
+                        new_out_ports.push(id);
+                    }
                     ports.insert(k.clone(), (id, dir));
                 }
             }
         }
+        self.plain_out_ports.extend(new_out_ports);
 
         // `let` items: instance bindings are collected for recursion; the rest
         // become state signals.
@@ -1063,6 +1076,34 @@ impl<'a> Lowering<'a> {
                 ))
                 .with_code(siox_diag::codes::COMBINATIONAL_LOOP)
                 .help("break the loop with a clocked register, or an unconditional default"),
+            );
+        }
+    }
+
+    /// Undriven-output lint (W-P011): a plain `out` port (non-bus, non-`inout`,
+    /// non-extern) with no combinational driver and no event-block update is
+    /// never driven inside its entity — its value is stuck at the reset default.
+    fn lint_undriven_outputs(&mut self) {
+        let mut driven: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for d in &self.out.drivers {
+            driven.insert(d.target.0);
+        }
+        for eb in &self.out.event_blocks {
+            for u in &eb.updates {
+                driven.insert(u.target.0);
+            }
+        }
+        let ports = std::mem::take(&mut self.plain_out_ports);
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for sig in ports {
+            if !seen.insert(sig.0) || driven.contains(&sig.0) {
+                continue;
+            }
+            let path = self.out.signals[sig.0 as usize].path.clone();
+            self.sink.emit(
+                siox_diag::Diagnostic::warning(format!("output port `{path}` is never driven"))
+                    .with_code(siox_diag::codes::UNDRIVEN_OUTPUT)
+                    .help("drive it inside the entity, or make it an `in`/`inout` port"),
             );
         }
     }
@@ -4842,6 +4883,23 @@ mod tests {
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn undriven_output_port_warns() {
+        // `forgotten` is never assigned; `driven` is. Only the former warns.
+        let diags = lower_diags(
+            "module m;\n\
+             entity E { in a: uint[8]; out driven: uint[8]; out forgotten: uint[8]; }\n\
+             impl E { driven = a + 1; }\n\
+             #[top]\n\
+             entity T {}\n\
+             impl T { let a: uint[8]; let d: uint[8]; let f: uint[8];\n\
+               let dut: E = { .a = a, .driven = d, .forgotten = f }; }\n",
+        );
+        let undriven: Vec<&String> = diags.iter().filter(|d| d.contains("W-P011")).collect();
+        assert_eq!(undriven.len(), 1, "one undriven-output warning: {undriven:?}");
+        assert!(undriven[0].contains("forgotten"), "flags forgotten: {undriven:?}");
     }
 
     #[test]

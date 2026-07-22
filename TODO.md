@@ -30,15 +30,17 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Semantics & analysis
 
-- 🟡 **Undriven signals** — a never-driven signal reads `0` rather than raising
-  a runtime error or going `'X'`. Real undriven detection needs per-signal
-  driven-flag / X-value tracking in the engine. (Structurally unconnected input
-  *ports* are still caught statically, `E-P005`.)
+- 🟡 **Undriven signals** — a never-driven **`out` port** now warns statically
+  (`W-P011`, plain non-bus/non-`inout` ports; 0 corpus false positives). Still
+  open for **internal signals**: a never-driven `let` reads `0` rather than going
+  `'X'`, which needs per-signal driven-flag / X-value tracking in the engine (and
+  the runner drives testbench signals invisibly to the IR). Structurally
+  unconnected input *ports* are still caught statically (`E-P005`).
 - 🟡 **Full direction analysis** — writing an `in` port is now caught in all
   shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
-  `in` port `a[3] = ..`/`p.f = ..`, `E-P004`). Still open: **reading an undriven
-  `out`** (overlaps the undriven-signals item) and reading your own `out` port
-  from within the entity.
+  `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
+  warns (`W-P011`). Still open: reading your own `out` port from within the
+  entity (allowed today; some HDLs flag it).
 - 🟡 **Cross-module visibility** (resolve) — private items aren't yet enforced
   across modules (single global namespace); value identifiers resolve
   best-effort.

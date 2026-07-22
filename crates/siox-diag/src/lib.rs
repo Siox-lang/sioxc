@@ -217,4 +217,6 @@ pub mod codes {
     pub const SUSPICIOUS_LOGIC_COMPARE: &str = "W-P008";
     pub const SUSPICIOUS_RESET: &str = "W-P009";
     pub const COMBINATIONAL_LOOP: &str = "W-P010";
+    /// An `out` port that is never driven inside its entity.
+    pub const UNDRIVEN_OUTPUT: &str = "W-P011";
 }
