@@ -25,6 +25,15 @@ assertions, and VCD export — predates this changelog. See
   coincident edges, and cross-domain sampling (already correct) are unaffected.
 
 ### Added
+- **`impl New for T` overrides the uninitialized default; `Logic` powers on to
+  `'U'`.** `new()` bodies that are constants now set a type's default (the
+  compiler folds `impl New for T` from `op_impls`, no trait resolution needed).
+  The std library uses this for the IEEE 1076-2019 defaults — `New for Bit` →
+  `'0'`, `New for Logic`/`ULogic` → `'U'` — so an **undriven `Logic` signal
+  reads `'U'`** (uninitialized) instead of a plausible `'0'`, on hardware
+  signals, JIT testbench locals, and native testbench locals alike. (Also fixes
+  a stale 4-value `LogicLit` map in `const_init_bits` missed by the 9-value
+  widening.)
 - **`Logic` is now the full 9-value IEEE 1076-2019 `std_ulogic`.** Widened from
   the 4-value reduction (`'0'/'1'/'Z'/'X'`) to `'U','X','0','1','Z','W','L','H','-'`,
   with the complete `std_logic_1164` `and`/`or`/`not`/`xor`/`nand`/`nor`/`xnor`

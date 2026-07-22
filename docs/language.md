@@ -1542,8 +1542,11 @@ let n = uint[8]();     // == 0
 
 This is one rule, not two: "`0` for numerics" *falls out* of "first value for
 enums", because a numeric's bits are `Logic` whose first value is `'0'`. A type
-may override the default with `impl New for T` (the nullary body must be a
-constant expression, foldable to the reset value).
+**overrides** the structural default with `impl New for T { fn new() -> T { … } }`
+(the body must be a constant). The std library uses this for the IEEE 1076-2019
+defaults: `impl New for Bit` → `'0'`, and `impl New for Logic`/`ULogic` → `'U'`
+(uninitialized), so an undriven `Logic` signal powers on to `'U'` rather than a
+plausible `'0'`. Applies to hardware signals and testbench locals alike.
 
 **Uninitialized is not undriven.** The default is what a signal *starts* at;
 whether anything ever drives over it is separate. A signal with no driver simply

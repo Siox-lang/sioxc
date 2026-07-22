@@ -196,6 +196,19 @@ impl Resolve for Logic {
     }
 }
 
+// Uninitialized defaults (IEEE 1076-2019 / std_logic_1164): a `Bit` powers on
+// forcing-low `'0'`; a `Logic` powers on uninitialized `'U'` — the `std_ulogic`
+// default, so an undriven Logic signal reads `'U'` rather than a plausible `'0'`.
+impl New for Bit {
+    fn new() -> Bit { return '0'; }
+}
+impl New for ULogic {
+    fn new() -> ULogic { return 'U'; }
+}
+impl New for Logic {
+    fn new() -> Logic { return 'U'; }
+}
+
 // The ULogic <-> Logic crossing needs no explicit impl: `Logic(u)` / `ULogic(l)`
 // are derivation-total conversions the compiler synthesizes from the
 // `Logic : ULogic` relation (same variants, representation-identity).

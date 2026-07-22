@@ -39,6 +39,9 @@ pub struct Design {
     /// (including `std`). Consumers render a `Signal::enum_type` value as its
     /// symbol (`'X'`, `Idle`) instead of a bare number.
     pub enum_syms: HashMap<String, HashMap<u64, String>>,
+    /// Type name -> its `impl New for T` uninitialized default value (`Logic` ->
+    /// `'U'`), so testbench-local seeding matches the hardware signal default.
+    pub new_defaults: HashMap<String, u64>,
     /// Directory that relative `read`/`read_to_string`/`exists` paths resolve
     /// against — the design's source directory. Empty means the current working
     /// directory (the default; a bare `Design` reads CWD-relative).
@@ -181,6 +184,8 @@ pub fn lower_in(
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
     l.enum_first_disc = enum_first_discriminants(modules);
+    l.new_defaults = l.compute_new_defaults();
+    l.out.new_defaults = l.new_defaults.clone();
     // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
     // consumers can render stored discriminants symbolically.
     l.out.enum_syms = l
@@ -256,6 +261,10 @@ struct Lowering<'a> {
     /// the derived `new()` default (VHDL `T'LEFT`): an uninitialized enum signal
     /// powers on holding this value, so it is always a valid member of the type.
     enum_first_disc: HashMap<String, u64>,
+    /// Type name -> its `impl New for T` default value (a constant `new()`
+    /// body), the uninitialized value a signal of that type powers on to. Beats
+    /// the structural first-variant default. (`New for Logic` -> `'U'`.)
+    new_defaults: HashMap<String, u64>,
     /// Signal/array name -> its declared index range `(left, right)` in written
     /// order (`Logic[7..0]` -> `(7, 0)`; width-only `Bit[4]` -> `(0, 3)`). Backs
     /// the VHDL range attributes `::left`/`::right`/`::high`/`::low`/`::ascending`.
@@ -386,6 +395,7 @@ impl<'a> Lowering<'a> {
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_first_disc: HashMap::new(),
+            new_defaults: HashMap::new(),
             local_range: HashMap::new(),
             structs: HashMap::new(),
             mode_dirs: HashMap::new(),
@@ -1320,9 +1330,15 @@ impl<'a> Lowering<'a> {
                 text.parse::<f64>().ok().map(f64::to_bits)
             }
             ast::Expr::LogicLit { ch, .. } => Some(match ch {
-                '1' | 'H' => 1,
+                '0' => 0,
+                '1' => 1,
                 'Z' => 2,
-                'X' | 'U' | 'W' => 3,
+                'X' => 3,
+                'U' => 4,
+                'W' => 5,
+                'L' => 6,
+                'H' => 7,
+                '-' => 8,
                 _ => 0,
             }),
             ast::Expr::Bool { value, .. } => Some(*value as u64),
@@ -1333,6 +1349,35 @@ impl<'a> Lowering<'a> {
                 .copied(),
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
+    }
+
+    /// Fold each `impl New for T { fn new() -> T { return <const>; } }` to the
+    /// type's uninitialized default value. Runs after `impls`/`enum_variants`
+    /// are collected.
+    fn compute_new_defaults(&self) -> HashMap<String, u64> {
+        let mut out = HashMap::new();
+        // Trait impls land in `op_impls` keyed by (trait, type); `impl New for T`
+        // has a `new()` whose constant body is `T`'s uninitialized default.
+        for ((tr, ty), fns) in &self.op_impls {
+            if tr != "New" {
+                continue;
+            }
+            for (f, _) in fns {
+                if f.name.text != "new" {
+                    continue;
+                }
+                if let Some(body) = &f.body {
+                    for st in &body.stmts {
+                        if let ast::Stmt::Return { value: Some(e), .. } = st {
+                            if let Some(v) = self.const_init_bits(e) {
+                                out.insert(ty.clone(), v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn next_ctx(&mut self) -> u32 {
@@ -1445,11 +1490,14 @@ impl<'a> Lowering<'a> {
                 self.sig_type.insert(id.0, p.segments[0].text.clone());
                 // Record the enum type so consumers render variants symbolically.
                 self.out.signals[id.0 as usize].enum_type = Some(p.segments[0].text.clone());
-                // Derived `new()` default: an uninitialized enum signal powers on
-                // holding its first variant (`T'LEFT`), always a valid member —
-                // not a bare `0`, which a non-zero-based first variant would make
-                // invalid. An explicit `let x = V` overwrites this below.
-                if let Some(&d) = self.enum_first_disc.get(&p.segments[0].text) {
+                // `new()` default: an uninitialized enum signal powers on to its
+                // `impl New for T` value if one exists (`Logic` -> `'U'`),
+                // otherwise its first variant (`T'LEFT`) — always a valid member,
+                // not a bare `0`. An explicit `let x = V` overwrites this below.
+                let name = &p.segments[0].text;
+                if let Some(&d) =
+                    self.new_defaults.get(name).or_else(|| self.enum_first_disc.get(name))
+                {
                     self.out.signals[id.0 as usize].init = d;
                 }
             }

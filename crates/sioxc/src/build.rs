@@ -912,7 +912,15 @@ impl Ctx<'_> {
                         } else {
                             let e = match value {
                                 Some(v) => self.expr(v)?,
-                                None => "0".to_string(),
+                                // Uninitialized: the type's `new()` default
+                                // (`Logic` -> `'U'`), matching JIT + hardware.
+                                None => l
+                                    .ty
+                                    .as_ref()
+                                    .and_then(type_head_name)
+                                    .and_then(|h| self.design.new_defaults.get(h))
+                                    .map(|v| format!("{v}ULL"))
+                                    .unwrap_or_else(|| "0".to_string()),
                             };
                             // A vector-family local wraps at its declared
                             // width, like the equivalent hardware signal.

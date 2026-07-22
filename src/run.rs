@@ -948,16 +948,24 @@ impl Testbench<'_> {
                 let elem_connected =
                     self.map.contains_key(&format!("{}[0]", l.name.text));
                 if !self.map.contains_key(&l.name.text) && !elem_connected {
+                    // Seed with the type's `new()` default (`Logic` -> `'U'`),
+                    // matching the hardware signal default; 0 otherwise.
+                    let seed: u128 = self
+                        .local_types
+                        .get(&l.name.text)
+                        .and_then(|ty| self.engine.design().new_defaults.get(ty).copied())
+                        .map(|v| v as u128)
+                        .unwrap_or(0);
                     // A local array gets one slot per element, so indexing and
                     // `::length` see it; scalars get a single slot.
                     match l.ty.as_ref().and_then(|t| self.declared_len(t)) {
                         Some(n) => {
                             for i in 0..n {
-                                self.locals.insert(format!("{}[{i}]", l.name.text), 0);
+                                self.locals.insert(format!("{}[{i}]", l.name.text), seed);
                             }
                         }
                         None => {
-                            self.locals.insert(l.name.text.clone(), 0);
+                            self.locals.insert(l.name.text.clone(), seed);
                         }
                     }
                 }

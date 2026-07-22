@@ -180,6 +180,14 @@ pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }
 
+// The default constructor (language.md 3.29): the value an uninitialized signal
+// of `T` powers on to, and the nullary member of the `T(...)` family. The body
+// must be a constant. Absent an impl, the compiler uses the type's first
+// variant / zero.
+pub trait New {
+    fn new() -> Self;
+}
+
 // Explicit conversion for named types (spec 3.17): `T(x)` on a struct/enum
 // dispatches to `impl From<Source> for T` (the trait argument names the
 // source, like `Add<Rhs>`). Conversions NEVER fire implicitly — only at a
