@@ -11,6 +11,19 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Fixed
+- **A register can now be clocked by a derived clock.** A clock divider or
+  ripple counter — `if clk.rising() { h = not h; }` then
+  `if h.rising() { c = c + 1; }` — used to leave `c` at 0, because `sx_settle`
+  ran a single delta and never saw an internally-generated edge. It is now a
+  bounded **delta-cycle loop**: combinational logic settles, edges are detected
+  (`cur != old`), event blocks run with next-state staging, then `old` advances
+  to this delta's snapshot so a change made in one delta becomes an edge in the
+  next — each edge firing exactly once. Comb settles before edge detection, so a
+  comb-driven clock (a port connection) updates first. Both the JIT and native
+  backends share `sx_settle`, so one fix covers both. Independent clocks,
+  coincident edges, and cross-domain sampling (already correct) are unaffected.
+
 ### Added
 - **Suspicious-comparison lint (`W-P008`).** Comparing an enum-valued operand
   (`Bit`/`Logic`/`Bool` or a user `enum`) to a bare integer literal — `b == 1`

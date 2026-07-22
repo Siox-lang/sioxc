@@ -82,22 +82,16 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   best-effort.
 - 🟡 **X/Z propagation through vector arithmetic** — scalar `Logic` is exact
   (std_logic tables + `impl Resolve`); vector ops don't propagate metavalues.
-- 🔴 **Cascaded event domains — a register can't be clocked by a derived
-  clock.** Root-caused 2026-07-22 by multiclock testing. Independent
-  testbench clocks (any frequency), coincident edges, and cross-domain value
-  sampling all work and are pre-edge correct (see `multiclock_test`,
-  `cdc_test`). But a **derived clock** — `if clk.rising() { h = not h; }` then
-  `if h.rising() { c = c + 1; }` — never fires the second block (`c` stays 0):
-  clock dividers, ripple counters, and gated clocks derived from sequential
-  logic are broken. Cause: `sx_settle` runs **one delta** — it stages every
-  event block's guard from the *pre-commit* state (needed so simultaneous
-  registers don't see each other), commits, then rolls `old <- cur`. So a
-  signal changed *by* an event block is never seen as an edge — not this delta
-  (staged pre-commit) nor later (old already rolled). Fix: **iterate the delta**
-  until stable, advancing `old` to each delta's pre-commit snapshot so edges
-  fire exactly once (VHDL delta cycles). Touches `sx_settle` in both
-  `siox-llvm` (emit.rs) and the native emitter (build.rs), plus the runner
-  loop; bounded by the existing oscillation cap.
+- 🟢 **Cascaded event domains — a register clocked by a derived clock.**
+  ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
+  each delta settles combinational logic, computes `event[i] = cur[i] != old[i]`
+  (and a `snap`), runs the event blocks with next-state staging, then advances
+  `old <- snap` so a change made *in* one delta becomes an edge in the *next* —
+  each edge firing exactly once. Comb settles *before* edge detection so a
+  comb-driven clock (a port connection `C.clk <- T.clk`) updates first. Derived
+  clocks, clock dividers, and ripple counters now simulate (`derived_clock_test`
+  in the corpus, JIT + native). One change in `siox-llvm/emit.rs` — both engines
+  call the same `sx_settle`. Bounded by a per-call delta cap.
 
 ## Engines
 

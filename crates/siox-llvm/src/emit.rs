@@ -74,7 +74,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     fn state_globals(&self) {
         let arr = self.i64t().array_type(self.n);
-        for name in ["cur", "old", "event"] {
+        // `snap` holds each delta's entry values, so `old` can advance to them
+        // and internally-generated edges fire in the next delta (cascaded
+        // event domains / derived clocks).
+        for name in ["cur", "old", "event", "snap"] {
             let g = self.module.add_global(arr, None, name);
             g.set_initializer(&arr.const_zero());
             g.set_linkage(Linkage::Internal);
@@ -193,30 +196,54 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- sx_settle: combinational processes in dependency order -----------
 
-    /// Emit the whole delta cycle:
-    /// 1. event flags from stimulus (`cur != old`); 2. combinational settle;
-    /// 3+4. event blocks compute next-state from pre-commit values, then
-    /// commit; 5. re-settle combinational; 6. roll `old <- cur`, clear event.
+    /// Emit `sx_settle` as a bounded **delta-cycle loop** so internally-generated
+    /// edges propagate (derived clocks, clock dividers, ripple counters).
+    ///
+    /// Each delta: (1) `event[i] = cur[i] != old[i]` — changes since the last
+    /// delta — and `snap[i] = cur[i]`; if nothing changed, we're stable and
+    /// return. (2) combinational settle; (3+4) event blocks compute next-state
+    /// from the *pre-commit* state (so simultaneous updates don't see each
+    /// other) and commit; (5) re-settle combinational; (6) advance `old <- snap`
+    /// so this delta's changes appear as edges in the *next* delta — and only
+    /// then, so each edge fires exactly once. A delta cap bounds the loop
+    /// against a zero-delay oscillation.
     fn settle(&self) {
         let void = self.ctx.void_type();
+        let i64 = self.i64t();
+        let i1 = self.ctx.bool_type();
         let f = self.module.add_function("sx_settle", void.fn_type(&[], false), None);
-        self.builder.position_at_end(self.ctx.append_basic_block(f, "e"));
+        let entry = self.ctx.append_basic_block(f, "entry");
+        let body = self.ctx.append_basic_block(f, "body");
+        let done = self.ctx.append_basic_block(f, "done");
 
-        // 1. event[i] = (cur[i] != old[i]).
+        // entry: a delta counter for the oscillation cap; run the body at least
+        // once (so combinational logic always settles even with no events).
+        self.builder.position_at_end(entry);
+        let dcount = self.builder.build_alloca(i64, "dcount").unwrap();
+        self.builder.build_store(dcount, i64.const_zero()).unwrap();
+        self.builder.build_unconditional_branch(body).unwrap();
+
+        // body — one delta cycle, looping while it keeps producing changes.
+        self.builder.position_at_end(body);
+        // 1. combinational settle first, so a comb-driven clock (a port
+        // connection, `C.clk <- T.clk`) has its new value in `cur` *before* we
+        // detect its edge below.
+        self.emit_comb_pass();
+        // 2. event[i] = (cur != old): changes since the previous delta. `snap`
+        // captures this delta's (post-comb) values for the `old` advance below.
+        let mut any = i1.const_zero();
         for i in 0..self.n {
             let id = SignalId(i);
+            let cur = self.load("cur", id);
             let ne = self.builder
-                .build_int_compare(IntPredicate::NE, self.load("cur", id), self.load("old", id), "ev")
+                .build_int_compare(IntPredicate::NE, cur, self.load("old", id), "ev")
                 .unwrap();
             self.store("event", id, self.zext(ne));
+            self.store("snap", id, cur);
+            any = self.builder.build_or(any, ne, "any").unwrap();
         }
-
-        // 2. combinational settle.
-        self.emit_comb_pass();
-
-        // 3+4. event blocks: next-state semantics (spec 3.13). Compute every
-        // update's guard and value from the *pre-commit* state first, then
-        // commit — so simultaneous updates don't see each other.
+        // 3+4. event blocks: stage guards/values from the pre-commit state (so
+        // simultaneous updates don't see each other), then commit.
         let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
         for eb in &self.design.event_blocks {
             let fired = self.as_i1(&eb.condition);
@@ -237,17 +264,30 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.store("cur", target, next);
             self.mark_event(target, prev, next);
         }
-
         // 5. re-settle combinational after commits.
         if committed {
             self.emit_comb_pass();
         }
-
-        // 6. roll old <- cur; clear event.
+        // 6. advance old <- snap, so changes made *in* this delta appear as
+        // edges in the next one — and only then, so each edge fires once.
         for i in 0..self.n {
             let id = SignalId(i);
-            self.store("old", id, self.load("cur", id));
-            self.store("event", id, self.c(0));
+            self.store("old", id, self.load("snap", id));
+        }
+        // Loop while this delta had events (there may be more to propagate) and
+        // the delta cap — comfortably past any real cascade depth — is not hit.
+        let cap = i64.const_int(self.n as u64 + 64, false);
+        let dc = self.builder.build_load(i64, dcount, "dc").unwrap().into_int_value();
+        let inc = self.builder.build_int_add(dc, i64.const_int(1, false), "inc").unwrap();
+        self.builder.build_store(dcount, inc).unwrap();
+        let under = self.builder.build_int_compare(IntPredicate::ULT, inc, cap, "under").unwrap();
+        let cont = self.builder.build_and(any, under, "cont").unwrap();
+        self.builder.build_conditional_branch(cont, body, done).unwrap();
+
+        // done: clear event flags and return.
+        self.builder.position_at_end(done);
+        for i in 0..self.n {
+            self.store("event", SignalId(i), self.c(0));
         }
         self.builder.build_return(None).unwrap();
     }
