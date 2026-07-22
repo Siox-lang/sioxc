@@ -384,7 +384,7 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
     ) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
         // Old form: `= Entity { .. }`.
-        if let Some(Expr::Construct { ty: Some(ty), args, span }) = &l.value {
+        if let Some(Expr::Construct { ty: Some(ty), args, span, .. }) = &l.value {
             return Some((ty, args.clone(), *span));
         }
         // New forms need a bare entity-typed annotation. An *array* of an
@@ -463,7 +463,7 @@ impl<'a> Elaborator<'a> {
             // Instance-array element construction: `stage[i] = Sub { .. }`. The
             // target renders to the element name (`stage[1]`) with the loop
             // index evaluated, so `stage[i].port` reads resolve to it.
-            Stmt::Assign { target, value: Expr::Construct { ty: Some(ty), args, span }, .. } => {
+            Stmt::Assign { target, value: Expr::Construct { ty: Some(ty), args, span, .. }, .. } => {
                 out.push(InstanceSpec {
                     name: render_signal(target, env),
                     ty,

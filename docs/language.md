@@ -28,7 +28,9 @@ precise reference.
 - **Connection forms.** Ports connect two ways, like a struct literal: explicit
   (`.a = x`, by name) or positional (`{ x, y }`, by declaration order). Ports
   may also be wired post-declaration through the instance
-  (`let dut: Sub; dut.a = x; y = dut.y;`).
+  (`let dut: Sub; dut.a = x; y = dut.y;`). A struct literal also supports
+  **spread-update** — `{ ..base, .x = v }` takes every field from `base` and
+  overrides the listed ones.
 - **Generate constructs.** A `for i in a..b { .. }` loop unrolls over a static
   range (instances *and* per-iteration drivers), and a generate-`if`/`else`
   with a compile-time-constant condition selects which branch is built. The two

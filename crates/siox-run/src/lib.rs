@@ -785,6 +785,23 @@ impl Testbench<'_> {
         self.struct_fields.get(name).filter(|f| !f.is_empty())
     }
 
+    /// Struct spread-update: copy every field of `base` into `local`'s flattened
+    /// fields, so `{ ..base, .x = v }` starts from `base` before the explicit
+    /// overrides. `base` must be a plain struct reference (a path).
+    fn spread_struct(&mut self, local: &str, order: &[String], base: &ast::Expr) {
+        let Some(bpath) = expr_path(base) else { return };
+        for f in order {
+            let src = format!("{bpath}.{f}");
+            let v = self
+                .locals
+                .get(&src)
+                .copied()
+                .or_else(|| self.map.get(&src).map(|&id| self.engine.read(id)))
+                .unwrap_or(0);
+            self.set_name(&format!("{local}.{f}"), v);
+        }
+    }
+
     /// Bind a struct literal's args to the local's flattened field signals:
     /// `.field = v` by name, a bare positional arg by `order[i]`.
     fn init_struct_fields(&mut self, local: &str, order: &[String], args: &[ast::ConnectArg]) {
@@ -829,14 +846,17 @@ impl Testbench<'_> {
             // A typed construct `S { .. }` is a struct literal when `S` is an
             // aggregate struct; otherwise it is an entity instance already wired
             // by elaboration (leave it).
-            Some(ast::Expr::Construct { ty: Some(t), args, .. }) => {
+            Some(ast::Expr::Construct { ty: Some(t), args, spread, .. }) => {
                 if let Some(order) = type_head_name(t).and_then(|n| self.struct_order(n)).cloned() {
+                    if let Some(base) = spread {
+                        self.spread_struct(&l.name.text, &order, base);
+                    }
                     self.init_struct_fields(&l.name.text, &order, args);
                 }
             }
-            // A name-less struct literal `{ .a = x }` (or `{ .a = x, b }`):
-            // fields bind by name, and a bare arg by the declared struct's order.
-            Some(ast::Expr::Construct { args, .. }) => {
+            // A name-less struct literal `{ .a = x }` (or `{ ..base, .a = x }`):
+            // fields bind by name, and a spread base fills the rest.
+            Some(ast::Expr::Construct { args, spread, .. }) => {
                 let order = l
                     .ty
                     .as_ref()
@@ -844,6 +864,9 @@ impl Testbench<'_> {
                     .and_then(|n| self.struct_order(n))
                     .cloned()
                     .unwrap_or_default();
+                if let Some(base) = spread {
+                    self.spread_struct(&l.name.text, &order, base);
+                }
                 self.init_struct_fields(&l.name.text, &order, args);
             }
             // A positional name-less struct literal `let p: Pkt = { 3, 4 }`

@@ -1,0 +1,33 @@
+// Struct spread-update `{ ..base, .x = v }` in a testbench local and in
+// hardware, on the JIT and the native harness.
+module struct_spread;
+
+using std::bits::uint;
+
+struct Pkt { a: uint[8], b: uint[8], c: uint[8] }
+
+entity Bump { in inp: Pkt; out outp: Pkt; }
+impl Bump {
+    outp = { ..inp, .b = 99 };   // a,c from inp; b forced to 99
+}
+
+#[test]
+entity StructSpreadTest {}
+
+impl StructSpreadTest {
+    // Testbench local spread.
+    let base: Pkt = { .a = 1, .b = 2, .c = 3 };
+    let upd: Pkt = { ..base, .b = 20 };
+    assert!(upd.a == 1, "upd.a from base");
+    assert!(upd.b == 20, "upd.b overridden");
+    assert!(upd.c == 3, "upd.c from base");
+
+    // Hardware spread through a DUT.
+    let i: Pkt; let o: Pkt;
+    let dut: Bump = { .inp = i, .outp = o };
+    i.a = 5; i.b = 7; i.c = 8;
+    await 1ns;
+    assert!(o.a == 5, "o.a from base");
+    assert!(o.b == 99, "o.b overridden");
+    assert!(o.c == 8, "o.c from base");
+}

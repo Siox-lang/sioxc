@@ -16,7 +16,6 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   is parsed as an expression (`parse_generic_atom`) with no representation for a
   nested generic type application — needs a `GenericArg::Type`/grammar extension
   and disambiguation of `<` (type vs. comparison, via `matched_angle_end`).
-- 🔴 **Struct spread-update** — `{ ..base, .x = v }`.
 - 🟡 **Partial instance arrays** — an instance array whose elements are only
   conditionally built (`let stage: Inc[3]` with a generate-`if` building a
   subset) works when the unbuilt elements aren't read. Reading an *unbuilt* slot

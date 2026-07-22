@@ -562,7 +562,12 @@ impl Ctx<'_> {
                 .collect(),
             _ => HashMap::new(),
         };
-        self.declare_struct_fields(&l.name.text, fields, &init, b)?;
+        // `{ ..base, .x = v }`: fields not overridden are copied from `base`.
+        let spread_base: Option<String> = match &l.value {
+            Some(ast::Expr::Construct { spread: Some(base), .. }) => expr_path(base),
+            _ => None,
+        };
+        self.declare_struct_fields(&l.name.text, fields, &init, spread_base.as_deref(), b)?;
         Ok(true)
     }
 
@@ -573,6 +578,7 @@ impl Ctx<'_> {
         prefix: &str,
         fields: &[(String, ast::Type)],
         init: &HashMap<&str, &ast::Expr>,
+        spread_base: Option<&str>,
         b: &mut String,
     ) -> Result<(), String> {
         for (fname, fty) in fields {
@@ -583,7 +589,8 @@ impl Ctx<'_> {
             let fhead = type_head_name(fty);
             if let Some(sub) = fhead.and_then(|h| self.structs.get(h)).filter(|f| !f.is_empty()) {
                 self.local_types.borrow_mut().insert(key.clone(), fhead.unwrap().to_string());
-                self.declare_struct_fields(&key, sub, &HashMap::new(), b)?;
+                let sub_base = spread_base.map(|s| format!("{s}.{fname}"));
+                self.declare_struct_fields(&key, sub, &HashMap::new(), sub_base.as_deref(), b)?;
                 continue;
             }
             if let Some((fam, w)) = self.declared_family(fty) {
@@ -600,7 +607,14 @@ impl Ctx<'_> {
                         None => e,
                     }
                 }
-                None => "0".to_string(),
+                // Not overridden: copy the spread base's field if it exists
+                // (a declared struct local), else default 0.
+                None => match spread_base {
+                    Some(bp) if self.locals.borrow().contains(&format!("{bp}.{fname}")) => {
+                        c_local_ident(&format!("{bp}.{fname}"))
+                    }
+                    _ => "0".to_string(),
+                },
             };
             b.push_str(&format!("    uint64_t {} = {init_e};\n", c_local_ident(&key)));
             self.locals.borrow_mut().insert(key);

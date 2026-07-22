@@ -3331,33 +3331,52 @@ impl<'a> Lowering<'a> {
             // A struct literal (named or name-less): one value per field.
             // Explicit `.re = v` binds by name; a positional arg binds to the
             // struct's field at that position (needs a named struct type).
-            ast::Expr::Construct { ty, args, .. } => {
-                let field_order: Option<Vec<String>> = ty
+            ast::Expr::Construct { ty, args, spread, span } => {
+                // Field order comes from the construct's type, or (for a
+                // name-less `{ ..base, .. }`) from the spread base's struct type.
+                let struct_name: Option<String> = ty
                     .as_ref()
                     .and_then(type_head_name)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        spread
+                            .as_ref()
+                            .and_then(|b| expr_path(b))
+                            .and_then(|p| self.local_struct.get(&p).cloned())
+                    });
+                let field_order: Option<Vec<String>> = struct_name
+                    .as_deref()
                     .and_then(|n| self.raw_struct_fields(n))
                     .map(|fs| fs.into_iter().map(|(n, _)| n).collect());
-                Val::Fields(
-                    args.iter()
-                        .enumerate()
-                        .map(|(i, a)| {
-                            let fname = match &a.field {
-                                Some(f) => f.text.clone(),
-                                None => field_order
-                                    .as_ref()
-                                    .and_then(|o| o.get(i).cloned())
-                                    .unwrap_or_default(),
-                            };
-                            // Every field carries a value; a value-less arg only
-                            // reaches here on parser recovery (already diagnosed).
-                            let v = match &a.value {
-                                Some(v) => self.lower_scalar_env(v, env),
-                                None => Expr::Unknown,
-                            };
-                            (fname, v)
-                        })
-                        .collect(),
-                )
+                let mut fields: Vec<(String, Expr)> = Vec::new();
+                // `{ ..base, .. }`: seed every field from `base` before overrides.
+                if let (Some(base), Some(order)) = (spread, &field_order) {
+                    for f in order {
+                        let fe = ast::Expr::Field {
+                            base: Box::new((**base).clone()),
+                            field: ast::Ident { text: f.clone(), span: *span },
+                            span: *span,
+                        };
+                        fields.push((f.clone(), self.lower_scalar_env(&fe, env)));
+                    }
+                }
+                for (i, a) in args.iter().enumerate() {
+                    let fname = match &a.field {
+                        Some(f) => f.text.clone(),
+                        None => field_order.as_ref().and_then(|o| o.get(i).cloned()).unwrap_or_default(),
+                    };
+                    // Every field carries a value; a value-less arg only reaches
+                    // here on parser recovery (already diagnosed).
+                    let v = match &a.value {
+                        Some(v) => self.lower_scalar_env(v, env),
+                        None => Expr::Unknown,
+                    };
+                    match fields.iter_mut().find(|(n, _)| *n == fname) {
+                        Some(slot) => slot.1 = v,
+                        None => fields.push((fname, v)),
+                    }
+                }
+                Val::Fields(fields)
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 let op_str = siox_syntax::pretty::bin_op(op);
@@ -4492,7 +4511,7 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
             elems: elems.iter().map(|e| subst_expr_paths(e, map)).collect(),
             span: *span,
         },
-        Expr::Construct { ty, args, span } => Expr::Construct {
+        Expr::Construct { ty, args, spread, span } => Expr::Construct {
             ty: ty.clone(),
             args: args
                 .iter()
@@ -4502,6 +4521,7 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
                     span: a.span,
                 })
                 .collect(),
+            spread: spread.as_ref().map(|b| Box::new(subst_expr_paths(b, map))),
             span: *span,
         },
         other => other.clone(),
@@ -4614,7 +4634,7 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
             elems: elems.iter().map(|e| subst_expr(e, var, val)).collect(),
             span: *span,
         },
-        Expr::Construct { ty, args, span } => Expr::Construct {
+        Expr::Construct { ty, args, spread, span } => Expr::Construct {
             ty: ty.as_ref().map(|t| subst_type(t, var, val)),
             args: args
                 .iter()
@@ -4624,6 +4644,7 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
                     span: a.span,
                 })
                 .collect(),
+            spread: spread.as_ref().map(|b| Box::new(subst_expr(b, var, val))),
             span: *span,
         },
         other => other.clone(),

@@ -1202,7 +1202,9 @@ impl<'a> Parser<'a> {
             TokenKind::Ident | TokenKind::SelfKw => self.parse_path_expr_or_construct(no_struct),
             // A leading `{`: `{ .field = ... }` is a name-less struct literal
             // (typed from context); `{ a, b }` is a bit concatenation.
-            TokenKind::LBrace if self.kind_at(self.pos + 1) == &TokenKind::Dot => {
+            TokenKind::LBrace
+                if matches!(self.kind_at(self.pos + 1), TokenKind::Dot | TokenKind::DotDot) =>
+            {
                 self.parse_construct(start, None)
             }
             TokenKind::LBrace => self.parse_concat(start),
@@ -1275,11 +1277,21 @@ impl<'a> Parser<'a> {
     fn parse_construct(&mut self, start: Span, ty: Option<Type>) -> Expr {
         self.expect(TokenKind::LBrace, "to open a construction");
         let mut args = Vec::new();
+        // A leading `..base` is a struct spread-update: take every field from
+        // `base`, then override with the explicit `.field = v` args that follow.
+        let spread = if self.eat(TokenKind::DotDot) {
+            let base = self.parse_expr(false);
+            self.eat(TokenKind::Comma);
+            Some(Box::new(base))
+        } else {
+            None
+        };
         // A block is either all-named explicit (`.a = x`) or all positional
         // (`x, y` — bound by declaration order). Mixing the two is rejected once
         // we know which shape the first argument set. There is no bare `.a`
-        // name-shorthand: a `.field` always takes a value.
-        let mut positional: Option<bool> = None;
+        // name-shorthand: a `.field` always takes a value. A spread forces the
+        // named form.
+        let mut positional: Option<bool> = spread.is_some().then_some(false);
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let cstart = self.span();
             let is_pos = !self.at(TokenKind::Dot);
@@ -1313,7 +1325,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a construction");
-        Expr::Construct { ty, args, span: start.to(self.prev_span()) }
+        Expr::Construct { ty, args, spread, span: start.to(self.prev_span()) }
     }
 
     // --- types --------------------------------------------------------------

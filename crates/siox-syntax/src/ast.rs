@@ -373,6 +373,10 @@ pub enum Expr {
     Construct {
         ty: Option<Type>,
         args: Vec<ConnectArg>,
+        /// Struct spread-update base: `{ ..base, .x = v }` takes every field
+        /// from `base` and overrides the ones in `args`. `None` for a plain
+        /// literal.
+        spread: Option<Box<Expr>>,
         span: Span,
     },
     /// Bit concatenation `{a, b, c}` — the first element is the most significant.

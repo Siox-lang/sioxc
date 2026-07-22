@@ -563,18 +563,18 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             let b = if *bang { "!" } else { "" };
             (format!("{}{b}({a})", expr_prec(callee, POSTFIX_PREC)), POSTFIX_PREC)
         }
-        Expr::Construct { ty, args, .. } => {
-            let a = args
-                .iter()
-                .map(|c| match (&c.field, &c.value) {
+        Expr::Construct { ty, args, spread, .. } => {
+            // A leading `..base` spread, then the explicit/positional args.
+            let spread_part = spread.iter().map(|b| format!("..{}", expr(b)));
+            let a = spread_part
+                .chain(args.iter().map(|c| match (&c.field, &c.value) {
                     // Explicit `.field = value`.
                     (Some(f), Some(v)) => format!(".{} = {}", f.text, expr(v)),
-                    // Name shorthand `.field`.
                     (Some(f), None) => format!(".{}", f.text),
                     // Positional `value`.
                     (None, Some(v)) => expr(v),
                     (None, None) => String::new(),
-                })
+                }))
                 .collect::<Vec<_>>()
                 .join(", ");
             match ty {
