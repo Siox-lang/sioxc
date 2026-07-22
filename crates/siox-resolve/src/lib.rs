@@ -132,6 +132,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         .map(|m| m.span.file)
         .collect();
     r.lint_unused_imports(&std_files);
+    r.lint_unused_params(&std_files);
     r.out
 }
 
@@ -162,6 +163,10 @@ struct Resolver<'a> {
     /// `using` import sites `(name span, imported DefId)`, for the unused-import
     /// lint after all references are resolved.
     import_sites: Vec<(Span, DefId)>,
+    /// Generic-parameter declaration sites (`<W>`, `<T>` on an entity/struct/
+    /// trait/fn), for the unused-parameter lint. Impl params are excluded — a
+    /// type parameter used only in the impl target reads as used.
+    param_sites: Vec<(Span, DefId)>,
 }
 
 impl<'a> Resolver<'a> {
@@ -176,6 +181,7 @@ impl<'a> Resolver<'a> {
             enum_derives: HashMap::new(),
             scopes: Vec::new(),
             import_sites: Vec::new(),
+            param_sites: Vec::new(),
         }
     }
 
@@ -340,6 +346,33 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Warn about a generic parameter that is never referenced. Only `fn`
+    /// generics are checked: an entity/struct/trait declares its type params
+    /// separately from its `impl`, so a param used only in the impl body would
+    /// read as unused here — that case needs decl↔impl unification first.
+    fn lint_unused_params(&mut self, std_files: &std::collections::HashSet<siox_diag::FileId>) {
+        let sites = std::mem::take(&mut self.param_sites);
+        for (span, id) in sites {
+            if std_files.contains(&span.file) {
+                continue;
+            }
+            let used = self
+                .out
+                .uses
+                .iter()
+                .any(|(s, d)| *d == id && s.file == span.file && *s != span);
+            if !used {
+                let name = self.out.def(id).map(|d| d.name.clone()).unwrap_or_default();
+                self.sink.emit(
+                    Diagnostic::warning(format!("unused type parameter: `{name}`"))
+                        .with_code(codes::UNUSED_PARAM)
+                        .at(span)
+                        .help("remove it or use it in the signature or body"),
+                );
+            }
+        }
+    }
+
     /// Bind each `using base::{names}` name to the declaration another loaded
     /// module (or a builtin) provides. Runs after all modules are collected;
     /// an import that matches nothing is a hard error.
@@ -422,7 +455,7 @@ impl<'a> Resolver<'a> {
                 // A generic fn's type params (`<T: Ord>`) scope over its
                 // signature, so `a: T` resolves.
                 self.enter();
-                self.bind_params(&f.generics);
+                self.bind_params(&f.generics, true);
                 for p in &f.params {
                     if let Some(t) = &p.ty {
                         self.resolve_type(t);
@@ -440,7 +473,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Struct(s) => {
                 self.enter();
-                self.bind_params(&s.params);
+                self.bind_params(&s.params, false);
                 for f in &s.fields {
                     self.resolve_type(&f.ty);
                 }
@@ -458,7 +491,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Entity(e) => {
                 self.enter();
-                self.bind_params(&e.params);
+                self.bind_params(&e.params, false);
                 for a in &e.attrs {
                     self.resolve_attr(a);
                 }
@@ -470,7 +503,7 @@ impl<'a> Resolver<'a> {
             Item::Impl(im) => self.resolve_impl(im),
             Item::Trait(t) => {
                 self.enter();
-                self.bind_params(&t.params);
+                self.bind_params(&t.params, false);
                 // `Self` refers to the implementing type inside a trait body.
                 self.bind_local("Self");
                 for f in &t.items {
@@ -484,7 +517,7 @@ impl<'a> Resolver<'a> {
 
     fn resolve_impl(&mut self, im: &ImplDecl) {
         self.enter();
-        self.bind_params(&im.params);
+        self.bind_params(&im.params, false);
         // `impl Reg<T>` declares the type parameter `T` for the body (like
         // Rust's `impl<T> Reg<T>`): a bare single-name generic argument on the
         // target that isn't already a known type is a type parameter.
@@ -832,11 +865,17 @@ impl<'a> Resolver<'a> {
         self.scopes.pop();
     }
 
-    fn bind_params(&mut self, params: &Params) {
+    /// `lint`: record each param for the unused-parameter lint (true for a
+    /// declaration's generics, false for an impl's — an impl type param used
+    /// only in the target would otherwise read as unused).
+    fn bind_params(&mut self, params: &Params, lint: bool) {
         for p in &params.params {
             let id =
                 self.add_def(p.name.text.clone(), DefKind::Param, false, Some(p.name.span), None);
             self.bind(&p.name.text, id);
+            if lint {
+                self.param_sites.push((p.name.span, id));
+            }
             if let Some(bound) = &p.bound {
                 self.resolve_type(bound);
             }
@@ -948,6 +987,25 @@ mod tests {
             .collect();
         assert_eq!(unused.len(), 1, "one unused-import warning: {unused:?}");
         assert!(unused[0].contains("Dead"), "flags Dead, not Used: {unused:?}");
+    }
+
+    #[test]
+    fn unused_fn_type_parameter_lint() {
+        // `dead`'s `<T>` is never referenced; `used`'s `<T>` is used in the
+        // signature. Only the dead one warns.
+        let sink = diagnostics(
+            "module m;\n\
+             fn used<T: Ord>(x: T) -> T { return x; }\n\
+             fn dead<T>() -> integer { return 0; }\n",
+        );
+        let unused: Vec<&str> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::UNUSED_PARAM))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(unused.len(), 1, "one unused-param warning: {unused:?}");
+        assert!(unused[0].contains("`T`"), "flags the dead T: {unused:?}");
     }
 
     #[test]

@@ -48,8 +48,12 @@ Remaining engine-specific notes:
 
 ## Diagnostics & lints (Stage 10)
 
-- 🟡 **Unused signal / parameter** warnings — needs use-tracking that spans the
-  runner (the IR can't see a testbench's reads).
+- 🟡 **Unused signal / parameter** warnings — **fn generic params** warn today
+  (`W-P004`). Still open: **unused signals** (needs use-tracking that spans the
+  runner — the IR can't see a testbench's reads) and **entity/struct/trait
+  generic params** (their decl and `impl` declare the param separately, so a
+  param used only in the impl body reads as unused; needs decl↔impl
+  unification).
 - 🔴 **Suspicious `Logic` compare / reset** lint.
 
 ## Waveforms (Stage 9)
