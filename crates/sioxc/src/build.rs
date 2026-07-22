@@ -553,6 +553,13 @@ impl Ctx<'_> {
                     Some((name, v))
                 })
                 .collect(),
+            // A positional name-less struct literal `{ 3, 4 }` lexes as a brace
+            // concat; parts bind to fields by declaration order.
+            Some(ast::Expr::Concat { parts, .. }) => parts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| Some((fields.get(i).map(|(n, _)| n.as_str())?, e)))
+                .collect(),
             _ => HashMap::new(),
         };
         self.declare_struct_fields(&l.name.text, fields, &init, b)?;

@@ -1,0 +1,24 @@
+// Positional name-less struct locals in a testbench, on the JIT and the
+// native harness. `{ 3, 4 }` binds to fields by declaration order; the
+// explicit and typed-positional forms must still agree.
+module positional_struct;
+
+using std::bits::uint;
+
+struct Pkt { a: uint[8], b: uint[8] }
+
+#[test]
+entity PositionalStructTest {}
+
+impl PositionalStructTest {
+    let p: Pkt = { 3, 4 };            // positional name-less
+    let q: Pkt = { .a = 7, .b = 9 };  // explicit
+    let r: Pkt = Pkt { 5, 6 };        // typed positional
+
+    assert!(p.a == 3, "p.a");
+    assert!(p.b == 4, "p.b");
+    assert!(q.a == 7, "q.a");
+    assert!(q.b == 9, "q.b");
+    assert!(r.a == 5, "r.a");
+    assert!(r.b == 6, "r.b");
+}

@@ -188,6 +188,7 @@ pub fn run_tests_with_engine<'e>(
     let derived_widths = siox_ir::derived_widths(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
+    let struct_fields = collect_struct_fields(modules);
     let mut results = Vec::new();
     for &root in &hier.roots {
         let inst = hier.instance(root);
@@ -196,7 +197,7 @@ pub fn run_tests_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, false).0);
+            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, &struct_fields, false).0);
         }
     }
     results
@@ -220,6 +221,7 @@ pub fn run_test_traced_with_engine<'e>(
     let derived_widths = siox_ir::derived_widths(modules);
     let consts = collect_consts(modules, &enums, &fns);
     let families = siox_ir::vector_families(modules);
+    let struct_fields = collect_struct_fields(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
         let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
@@ -227,7 +229,7 @@ pub fn run_test_traced_with_engine<'e>(
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, true));
+            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, &struct_fields, true));
         }
     }
     None
@@ -401,6 +403,36 @@ fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     out
 }
 
+/// Each aggregate struct's fields in declaration order (base fields first, for
+/// a derived `struct B : A`), so a positional literal `let p: Pkt = { 3, 4 }`
+/// can bind its parts to fields by position.
+fn collect_struct_fields(modules: &[Module]) -> HashMap<String, Vec<String>> {
+    let mut decls: HashMap<&str, &ast::StructDecl> = HashMap::new();
+    for m in modules {
+        for item in &m.items {
+            if let ast::Item::Struct(s) = item {
+                decls.insert(s.name.text.as_str(), s);
+            }
+        }
+    }
+    fn resolve(name: &str, decls: &HashMap<&str, &ast::StructDecl>, seen: &mut HashSet<String>) -> Vec<String> {
+        if !seen.insert(name.to_string()) {
+            return Vec::new(); // derivation cycle: bail
+        }
+        let Some(s) = decls.get(name) else { return Vec::new() };
+        let mut out = Vec::new();
+        if let Some(base) = s.base.as_ref().and_then(type_head_name) {
+            out.extend(resolve(base, decls, seen));
+        }
+        out.extend(s.fields.iter().map(|f| f.name.text.clone()));
+        out
+    }
+    decls
+        .keys()
+        .map(|&n| (n.to_string(), resolve(n, &decls, &mut HashSet::new())))
+        .collect()
+}
+
 type Defs<'a> = (HashMap<&'a str, &'a ast::EntityDecl>, HashMap<&'a str, Vec<&'a ast::ImplDecl>>);
 
 fn collect_defs(modules: &[Module]) -> Defs<'_> {
@@ -439,6 +471,7 @@ fn run_one<'a>(
     derived_widths: &'a HashMap<String, u32>,
     consts: &'a HashMap<String, u128>,
     families: &'a std::collections::HashSet<String>,
+    struct_fields: &'a HashMap<String, Vec<String>>,
     record: bool,
 ) -> (TestResult, Vec<Sample>) {
     // Map this test's local signal names to design signals via the connections
@@ -516,6 +549,7 @@ fn run_one<'a>(
         local_types: HashMap::new(),
         consts,
         families,
+        struct_fields,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
         warnings: Vec::new(),
@@ -633,6 +667,8 @@ struct Testbench<'a> {
     consts: &'a HashMap<String, u128>,
     /// Bit-vector families (name -> signed), for testbench conversions.
     families: &'a std::collections::HashSet<String>,
+    /// Struct name -> ordered field names, for positional struct literals.
+    struct_fields: &'a HashMap<String, Vec<String>>,
     /// `stop!()` / `finish!()` was executed: end the test cleanly (passing,
     /// unless a failure was already recorded).
     halted: bool,
@@ -743,6 +779,29 @@ impl Testbench<'_> {
 
     /// Apply a `let` in statement order: DUT-connected names write signals;
     /// an unconnected scalar becomes a testbench local.
+    /// Ordered field names of an aggregate struct (non-empty); `None` for an
+    /// entity, a vector family (`struct uint : Logic[]`, no fields), or unknown.
+    fn struct_order(&self, name: &str) -> Option<&Vec<String>> {
+        self.struct_fields.get(name).filter(|f| !f.is_empty())
+    }
+
+    /// Bind a struct literal's args to the local's flattened field signals:
+    /// `.field = v` by name, a bare positional arg by `order[i]`.
+    fn init_struct_fields(&mut self, local: &str, order: &[String], args: &[ast::ConnectArg]) {
+        for (i, a) in args.iter().enumerate() {
+            let fname = match &a.field {
+                Some(f) => f.text.clone(),
+                None => match order.get(i) {
+                    Some(n) => n.clone(),
+                    None => continue,
+                },
+            };
+            let field = format!("{local}.{fname}");
+            let val = a.value.as_ref().map(|v| self.eval_for(&field, v)).unwrap_or_else(|| u128::from_u64(0));
+            self.set_name(&field, val);
+        }
+    }
+
     fn apply_let(&mut self, l: &ast::LetDecl) {
         // A DUT instance (`let dut: Sub = {..}` / `let dut: Sub [= {..}]`) is
         // wired by elaboration; the testbench let itself does nothing here.
@@ -767,16 +826,44 @@ impl Testbench<'_> {
             self.local_types.insert(l.name.text.clone(), ty.to_string());
         }
         match &l.value {
-            // A named construct is an instance; elaboration handled it.
-            Some(ast::Expr::Construct { ty: Some(_), .. }) => {}
-            // A name-less struct literal initialises each field signal.
+            // A typed construct `S { .. }` is a struct literal when `S` is an
+            // aggregate struct; otherwise it is an entity instance already wired
+            // by elaboration (leave it).
+            Some(ast::Expr::Construct { ty: Some(t), args, .. }) => {
+                if let Some(order) = type_head_name(t).and_then(|n| self.struct_order(n)).cloned() {
+                    self.init_struct_fields(&l.name.text, &order, args);
+                }
+            }
+            // A name-less struct literal `{ .a = x }` (or `{ .a = x, b }`):
+            // fields bind by name, and a bare arg by the declared struct's order.
             Some(ast::Expr::Construct { args, .. }) => {
-                for c in args {
-                    // Positional name-less struct locals need struct field
-                    // order the runner doesn't track; named/explicit only here.
-                    if let (Some(f), Some(v)) = (&c.field, &c.value) {
-                        let field = format!("{}.{}", l.name.text, f.text);
-                        let val = self.eval_for(&field, v);
+                let order = l
+                    .ty
+                    .as_ref()
+                    .and_then(type_head_name)
+                    .and_then(|n| self.struct_order(n))
+                    .cloned()
+                    .unwrap_or_default();
+                self.init_struct_fields(&l.name.text, &order, args);
+            }
+            // A positional name-less struct literal `let p: Pkt = { 3, 4 }`
+            // lexes as a brace concat; bind its parts to the declared struct's
+            // fields by order. (Guarded on an aggregate struct so a real bit
+            // concat `let x: uint[8] = { hi, lo }` still falls through below.)
+            Some(ast::Expr::Concat { parts, .. })
+                if l.ty.as_ref().and_then(type_head_name).and_then(|n| self.struct_order(n)).is_some() =>
+            {
+                let order = l
+                    .ty
+                    .as_ref()
+                    .and_then(type_head_name)
+                    .and_then(|n| self.struct_order(n))
+                    .cloned()
+                    .unwrap_or_default();
+                for (i, e) in parts.iter().enumerate() {
+                    if let Some(fname) = order.get(i) {
+                        let field = format!("{}.{}", l.name.text, fname);
+                        let val = self.eval_for(&field, e);
                         self.set_name(&field, val);
                     }
                 }
