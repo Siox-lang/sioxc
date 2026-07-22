@@ -45,6 +45,9 @@ precise reference.
   `x::old` — are first-class.
 - **Four-value logic.** `Logic` carries `'0'/'1'/'Z'/'X'` with the std_logic
   truth tables and parallel-driver resolution; `Bit` is the two-value scalar.
+  The logic/value system tracks **IEEE 1076-2019** (`std_logic_1164`); today's
+  four values are a reduction of the standard's 9-value `std_ulogic`
+  (`'U','X','0','1','Z','W','L','H','-'`), which is the alignment target.
   There is no dedicated clock type — any `Logic`/`Bit` signal is a clock when
   edge detection (`clk.rising()`/`clk.falling()`) is applied to it.
 - **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,

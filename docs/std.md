@@ -170,9 +170,13 @@ pub enum Severity { Note, Warning, Error, Failure }
 - **`resize` / `to_integer` conversions** — need free or associated
   functions callable in expressions; today fns exist only as trait-impl
   bodies for inlining.
-- **9-value `std_ulogic`** (`'U' 'W' 'L' 'H' '-'`) — the 4-value reduction
-  covers Phase-1 simulation; widening `Logic` is a std-only change once
-  operators fully live here.
+- **9-value `std_ulogic`** (`'U' 'W' 'L' 'H' '-'`) — siox's logic/value system
+  tracks **IEEE 1076-2019** (`std_logic_1164`); the current `Logic` is a 4-value
+  reduction (`'0'/'1'/'Z'/'X'`) of the standard's 9-value `std_ulogic`
+  (`'U','X','0','1','Z','W','L','H','-'`). Full alignment — the 9 values,
+  the resolution function, and the 9-value operator tables — is a mostly
+  std-only widening (plus X/Z propagation through vector arithmetic in the
+  engine). Tracked in TODO.
 
 Examples exercising the library through real imports: `std_test.siox`
 (every module), `logic_test.siox` (X-propagation), `complex_test.siox`
