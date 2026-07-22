@@ -911,7 +911,18 @@ impl Ctx<'_> {
                             }
                         } else {
                             let e = match value {
-                                Some(v) => self.expr(v)?,
+                                // A char literal on an enum-typed local resolves
+                                // by position in that enum (data-driven), like
+                                // the JIT + hardware paths.
+                                Some(v) => match l
+                                    .ty
+                                    .as_ref()
+                                    .and_then(type_head_name)
+                                    .and_then(|h| self.enum_char_lit(h, v))
+                                {
+                                    Some(d) => format!("{d}ULL"),
+                                    None => self.expr(v)?,
+                                },
                                 // Uninitialized: the type's `new()` default
                                 // (`Logic` -> `'U'`), matching JIT + hardware.
                                 None => l
@@ -1278,6 +1289,45 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether an operand is a bare character/logic literal (`'g'`).
+    fn is_char_lit(&self, e: &ast::Expr) -> bool {
+        matches!(e, ast::Expr::LogicLit { .. })
+    }
+
+    /// A char literal's position in enum `en` (VHDL `T'pos`), data-driven from
+    /// the enum's declaration — `None` if `e` is not a char literal.
+    fn enum_char_lit(&self, en: &str, e: &ast::Expr) -> Option<u64> {
+        if let ast::Expr::LogicLit { ch, .. } = e {
+            return self.enums.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied();
+        }
+        None
+    }
+
+    /// The enum type of an operand that is an enum-typed signal or testbench
+    /// local — so a char-literal counterpart resolves by position in that enum.
+    fn enum_operand_type(&self, e: &ast::Expr) -> Option<String> {
+        let p = expr_path(e)?;
+        if let Some(&id) = self.map.get(&p) {
+            if let Some(en) = &self.design.signals[id.0 as usize].enum_type {
+                return Some(en.clone());
+            }
+        }
+        self.local_types
+            .borrow()
+            .get(&p)
+            .filter(|ty| self.enums.contains_key(*ty))
+            .cloned()
+    }
+
+    /// An operand in an enum comparison: a char literal takes its position in
+    /// `en`; anything else translates normally.
+    fn enum_operand_c(&self, en: &str, e: &ast::Expr) -> Result<String, String> {
+        match self.enum_char_lit(en, e) {
+            Some(d) => Ok(format!("{d}ULL")),
+            None => self.expr(e),
+        }
+    }
+
     /// Whether an operand reads a `real` signal.
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
         expr_path(e)
@@ -1437,6 +1487,13 @@ impl Ctx<'_> {
         if sig.char {
             if let ast::Expr::LogicLit { ch, .. } = e {
                 return Ok(format!("{}ULL", *ch as u32));
+            }
+        }
+        // A char literal written to an enum signal takes its position in that
+        // enum (data-driven), matching the IR's `coerce_to_target`.
+        if let Some(en) = &sig.enum_type {
+            if let Some(d) = self.enum_char_lit(en, e) {
+                return Ok(format!("{d}ULL"));
             }
         }
         self.expr(e)
@@ -1838,6 +1895,21 @@ impl Ctx<'_> {
                     let a = self.c_char_operand(lhs)?;
                     let b = self.c_char_operand(rhs)?;
                     return Ok(format!("({a} {} {b})", c_binop(op)?));
+                }
+                // A char literal compared for (in)equality against an enum-typed
+                // operand reads by its position in that enum (VHDL `T'pos`),
+                // data-driven — so `state == 'g'` matches the stored
+                // discriminant, not `'g'`'s logic value. Restricted to `==`/`!=`
+                // with exactly one char-literal side so custom/arithmetic
+                // operators on enums still dispatch normally.
+                if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne)
+                    && (self.is_char_lit(lhs) ^ self.is_char_lit(rhs))
+                {
+                    if let Some(en) = self.enum_operand_type(lhs).or_else(|| self.enum_operand_type(rhs)) {
+                        let a = self.enum_operand_c(&en, lhs)?;
+                        let b = self.enum_operand_c(&en, rhs)?;
+                        return Ok(format!("({a} {} {b})", c_binop(op)?));
+                    }
                 }
                 // A `real` operand switches to double semantics: reals read
                 // their bits as `double`, integer literals coerce (`z.re == 10`

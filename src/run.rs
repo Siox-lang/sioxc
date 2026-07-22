@@ -1056,6 +1056,19 @@ impl Testbench<'_> {
                 return u128::from_u64(*ch as u32 as u64);
             }
         }
+        // An enum-typed target: a char literal takes its position in that enum's
+        // own declaration (VHDL `T'pos`), data-driven — not the hardcoded Logic
+        // map — so a user char enum resolves correctly.
+        if let ast::Expr::LogicLit { ch, .. } = e {
+            if let Some(&d) = self
+                .local_types
+                .get(name)
+                .and_then(|ty| self.enums.get(ty))
+                .and_then(|m| m.get(&format!("'{ch}'")))
+            {
+                return u128::from_u64(d);
+            }
+        }
         self.eval(e)
     }
 
@@ -1883,6 +1896,21 @@ impl Testbench<'_> {
                     let b = self.eval_char(rhs);
                     return lower_ast_binop(op).map(|op| apply_binop(op, a, b)).unwrap_or_default();
                 }
+                // A char literal compared for (in)equality against an enum-typed
+                // operand reads by its position in that enum (VHDL `T'pos`),
+                // data-driven — so `state == 'g'` matches the stored
+                // discriminant, not `'g'`'s logic value. Restricted to `==`/`!=`
+                // with exactly one char-literal side so custom/arithmetic
+                // operators on enums still dispatch normally.
+                if matches!(lower_ast_binop(op), Some(BinOp::Eq | BinOp::Ne))
+                    && (self.is_char_lit(lhs) ^ self.is_char_lit(rhs))
+                {
+                    if let Some(en) = self.enum_operand_type(lhs).or_else(|| self.enum_operand_type(rhs)) {
+                        let a = self.eval_enum_char(lhs, &en);
+                        let b = self.eval_enum_char(rhs, &en);
+                        return lower_ast_binop(op).map(|op| apply_binop(op, a, b)).unwrap_or_default();
+                    }
+                }
                 // A real operand switches to float semantics: integer literal
                 // counterparts coerce, so `z.re == 10` compares 10.0.
                 if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
@@ -2112,6 +2140,34 @@ impl Testbench<'_> {
             ast::Expr::LogicLit { ch, .. } => u128::from_u64(*ch as u32 as u64),
             _ => self.eval(e),
         }
+    }
+
+    /// Whether an operand is a bare character/logic literal (`'g'`).
+    fn is_char_lit(&self, e: &ast::Expr) -> bool {
+        matches!(e, ast::Expr::LogicLit { .. })
+    }
+
+    /// The enum type of an operand that is an enum-typed signal or testbench
+    /// local — so a char-literal counterpart resolves by position in that enum.
+    fn enum_operand_type(&self, e: &ast::Expr) -> Option<String> {
+        let p = expr_path(e)?;
+        if let Some(&id) = self.map.get(&p) {
+            if let Some(en) = &self.engine.design().signals[id.0 as usize].enum_type {
+                return Some(en.clone());
+            }
+        }
+        self.local_types.get(&p).filter(|ty| self.enums.contains_key(*ty)).cloned()
+    }
+
+    /// An operand in an enum comparison: a char literal takes its position in
+    /// `en` (VHDL `T'pos`), data-driven; anything else reads normally.
+    fn eval_enum_char(&self, e: &ast::Expr, en: &str) -> u128 {
+        if let ast::Expr::LogicLit { ch, .. } = e {
+            if let Some(&d) = self.enums.get(en).and_then(|m| m.get(&format!("'{ch}'"))) {
+                return u128::from_u64(d);
+            }
+        }
+        self.eval(e)
     }
 
     /// Whether a stimulus expression reads a `real` signal.

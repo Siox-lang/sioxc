@@ -866,7 +866,8 @@ impl<'a> Lowering<'a> {
                     }
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
-                        if let Some(bits) = self.const_init_bits(v) {
+                        let en = self.out.signals[id.0 as usize].enum_type.clone();
+                        if let Some(bits) = self.const_init_bits(v, en.as_deref()) {
                             let w = self.out.signals[id.0 as usize].width;
                             let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
                             self.out.signals[id.0 as usize].init = masked;
@@ -1324,23 +1325,34 @@ impl<'a> Lowering<'a> {
 
     /// The bit pattern of a constant `let` initializer: integers, logic
     /// literals, enum variants, booleans, and real literals (f64 bits).
-    fn const_init_bits(&self, e: &ast::Expr) -> Option<u64> {
+    fn const_init_bits(&self, e: &ast::Expr, target: Option<&str>) -> Option<u64> {
         match e {
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 text.parse::<f64>().ok().map(f64::to_bits)
             }
-            ast::Expr::LogicLit { ch, .. } => Some(match ch {
-                '0' => 0,
-                '1' => 1,
-                'Z' => 2,
-                'X' => 3,
-                'U' => 4,
-                'W' => 5,
-                'L' => 6,
-                'H' => 7,
-                '-' => 8,
-                _ => 0,
-            }),
+            // A character literal has no intrinsic value — it reads by its
+            // position in the target type's declaration (VHDL `T'pos`),
+            // data-driven from `enum_variants`. With no type context we fall
+            // back to the `Logic`/`Bit` default ordering.
+            ast::Expr::LogicLit { ch, .. } => {
+                if let Some(en) = target {
+                    if let Some(d) = self.char_disc(*ch, en) {
+                        return Some(d);
+                    }
+                }
+                Some(match ch {
+                    '0' => 0,
+                    '1' => 1,
+                    'Z' => 2,
+                    'X' => 3,
+                    'U' => 4,
+                    'W' => 5,
+                    'L' => 6,
+                    'H' => 7,
+                    '-' => 8,
+                    _ => 0,
+                })
+            }
             ast::Expr::Bool { value, .. } => Some(*value as u64),
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
@@ -1369,7 +1381,7 @@ impl<'a> Lowering<'a> {
                 if let Some(body) = &f.body {
                     for st in &body.stmts {
                         if let ast::Stmt::Return { value: Some(e), .. } = st {
-                            if let Some(v) = self.const_init_bits(e) {
+                            if let Some(v) = self.const_init_bits(e, Some(ty)) {
                                 out.insert(ty.clone(), v);
                             }
                         }
@@ -2821,10 +2833,26 @@ impl<'a> Lowering<'a> {
         vars.get(&format!("'{c}'")).map(|&d| Expr::Const(d))
     }
 
+    /// A char literal's value in enum `en` — its position in that enum's own
+    /// declaration (VHDL `T'pos`), from `enum_variants`. Char variants are keyed
+    /// with quotes (`'g'`). `None` if `en` has no such variant.
+    fn char_disc(&self, ch: char, en: &str) -> Option<u64> {
+        self.enum_variants.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied()
+    }
+
     /// Coerce a driven value to the target's representation: integer
     /// constants become f64 bits when the target signal is `real`.
     fn coerce_to_target(&self, target: SignalId, expr: Expr) -> Expr {
         let sig = &self.out.signals[target.0 as usize];
+        // A char literal assigned to an enum-typed signal takes that variant's
+        // position in the enum's *own* declaration (VHDL `T'pos`) — data-driven
+        // from `enum_variants`, not a hardcoded Logic map, so a user char enum
+        // (`enum Color { 'r','g','b' }`) resolves correctly.
+        if let (Some(en), Expr::Logic(c)) = (&sig.enum_type, &expr) {
+            if let Some(d) = self.char_disc(*c, en) {
+                return Expr::Const(d);
+            }
+        }
         if sig.char {
             if let Expr::Logic(c) = expr {
                 return Expr::Const(c as u32 as u64);
