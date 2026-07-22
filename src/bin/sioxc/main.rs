@@ -830,6 +830,8 @@ fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
 }
 
 /// Trace the first `#[test]` for waveform export via the JIT.
+// Without the `llvm` feature the body is empty, so the inputs go unused.
+#[cfg_attr(not(feature = "llvm"), allow(unused_variables))]
 fn trace_first_test(
     modules: &[Module],
     hier: &siox::elab::Hierarchy,
