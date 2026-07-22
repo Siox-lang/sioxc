@@ -27,14 +27,13 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     if !issues.is_empty() {
         panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
     }
-    // This backend is i64-word-based; signals wider than 64 bits (the
-    // interpreter handles them via u128 slots) would silently truncate, so
-    // reject them rather than miscompile. Wide-word codegen lands with the
-    // type-narrowing work.
+    // This backend is i64-word-based; signals wider than 64 bits would silently
+    // truncate, so reject them rather than miscompile. Wide-word codegen lands
+    // with the type-narrowing work.
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
         panic!(
             "signal `{}` is {} bits wide; the LLVM backend is 64-bit-word only \
-             (use the interpreter, or wait for wide-word codegen)",
+             (wide-word codegen is not yet implemented)",
             s.path, s.width
         );
     }

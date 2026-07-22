@@ -8,9 +8,9 @@ repository.workspace = true
 
 [dependencies]
 siox-ir.workspace = true
-# inkwell is optional and behind the `llvm` feature: the default workspace
-# build (and the interpreter oracle) never needs an LLVM toolchain. Pinned to
-# the local LLVM (22); bump the feature to match your `llvm-config`.
+# inkwell is optional and behind the `llvm` feature: the default frontend-only
+# workspace build never needs an LLVM toolchain. Pinned to the local LLVM (22);
+# bump the feature to match your `llvm-config`.
 inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"], optional = true }
 
 [features]

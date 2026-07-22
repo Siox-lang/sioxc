@@ -674,7 +674,7 @@ impl siox_run::Engine for JitEngine<'_, '_> {
     }
 }
 
-/// Without the `llvm` feature, `--backend=llvm` is unavailable.
+/// Without the `llvm` feature there is no engine, so `siox test` cannot run.
 #[cfg(not(feature = "llvm"))]
 fn run_tests_llvm(
     _modules: &[Module],

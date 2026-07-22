@@ -4007,14 +4007,6 @@ fn eq(lhs: Expr, rhs: Expr) -> Expr {
     Expr::Binary { op: BinOp::Eq, lhs: Box::new(lhs), rhs: Box::new(rhs) }
 }
 
-fn and3(a: Expr, b: Expr, c: Expr) -> Expr {
-    Expr::Binary {
-        op: BinOp::And,
-        lhs: Box::new(Expr::Binary { op: BinOp::And, lhs: Box::new(a), rhs: Box::new(b) }),
-        rhs: Box::new(c),
-    }
-}
-
 /// `and` of an optional accumulated condition with a new one.
 fn and(acc: Option<Expr>, c: Expr) -> Expr {
     match acc {

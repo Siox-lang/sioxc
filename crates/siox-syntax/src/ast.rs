@@ -385,13 +385,14 @@ pub enum Expr {
     Array { elems: Vec<Expr>, span: Span },
 }
 
-/// A field connection inside an instance/struct literal (spec 3.12). Three
+/// A field connection inside an instance/struct literal (spec 3.12). Two
 /// shapes:
 /// - **explicit** `.clk = sig` — `field: Some`, `value: Some`.
-/// - **name shorthand** `.clk` (means `.clk = clk`) — `field: Some`,
-///   `value: None`.
 /// - **positional** `sig` — `field: None`, `value: Some`; bound to the port /
 ///   struct field at this argument's ordinal position.
+///
+/// (`value: None` is only an error-recovery artifact — a `.field` written
+/// without a value; the bare `.field` name-shorthand is not a form.)
 #[derive(Clone, Debug)]
 pub struct ConnectArg {
     pub field: Option<Ident>,
