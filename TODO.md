@@ -12,10 +12,13 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 - 🔴 **Nested generics** — `Box<Box<T>>` (generic-argument parsing ambiguity).
 - 🔴 **Struct spread-update** — `{ ..base, .x = v }`.
-- 🟡 **Partial instance arrays** — an `inst`-array whose elements are only
-  conditionally built (`let stage: Inc[3]` with a generate-`if` creating a
-  subset) works when the unbuilt elements aren't read; sizing/validation of the
-  reserved-but-unbuilt slots is loose.
+- 🟡 **Partial instance arrays** — an instance array whose elements are only
+  conditionally built (`let stage: Inc[3]` with a generate-`if` building a
+  subset) works when the unbuilt elements aren't read. Reading an *unbuilt* slot
+  (`stage[2].y` when only `stage[0]` was built) currently surfaces as a
+  confusing downstream error (e.g. a spurious multi-driver conflict) instead of
+  a clear "instance-array element not built" diagnostic. The desired behaviour
+  (error vs. warn, which read patterns) is still to be pinned down.
 
 ## Semantics & analysis
 
