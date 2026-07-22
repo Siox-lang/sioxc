@@ -42,7 +42,7 @@ is a documented shim, and the declaration here is canonical.
 
 ```siox
 pub enum Bit   { '0', '1' }
-pub enum Logic { '0', '1', 'Z', 'X' }
+pub enum Logic { 'U', 'X', '0', '1', 'Z', 'W', 'L', 'H', '-' }  // IEEE std_ulogic
 pub enum Bool  { false, true }
 
 pub const LOW: Bit = '0';
@@ -51,12 +51,14 @@ pub const HIGH: Bit = '1';
 
 - `Bit` — two-valued scalar (VHDL `bit`). Keeps the built-in two-value
   operators; a valid condition via `Boolean`.
-- `Logic` — four-valued scalar (VHDL `std_ulogic`, reduced): `'Z'`
-  high-impedance, `'X'` unknown. Core `and`/`or`/`not` and custom
-  `xor`/`nand`/`nor`/`xnor` are implemented here as truth tables with unknown propagation: a
-  dominant operand decides (`'0' and 'X' = '0'`, `'1' or 'X' = '1'`),
-  otherwise the result is `'X'`. Not a condition — compare explicitly
-  (`if rst == '1'`), because `'X'`/`'Z'` truth is ambiguous.
+- `Logic` — nine-valued scalar (VHDL `std_ulogic`, IEEE 1076-2019): `'U'`
+  uninitialized, `'X'` strong unknown, `'0'/'1'` forcing, `'Z'` high-impedance,
+  `'W'` weak unknown, `'L'/'H'` weak, `'-'` don't-care. Core `and`/`or`/`not`
+  and custom `xor`/`nand`/`nor`/`xnor` are the full `std_logic_1164` truth
+  tables (implemented here as impls; verified cell-for-cell against a reference
+  simulator), and `impl Resolve` is the `resolved` resolution function. Not a
+  condition — compare explicitly (`if rst == '1'`), because unknown truth is
+  ambiguous.
 - `Bool` — condition results (VHDL `boolean`), an ordinary enum.
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
@@ -170,13 +172,10 @@ pub enum Severity { Note, Warning, Error, Failure }
 - **`resize` / `to_integer` conversions** — need free or associated
   functions callable in expressions; today fns exist only as trait-impl
   bodies for inlining.
-- **9-value `std_ulogic`** (`'U' 'W' 'L' 'H' '-'`) — siox's logic/value system
-  tracks **IEEE 1076-2019** (`std_logic_1164`); the current `Logic` is a 4-value
-  reduction (`'0'/'1'/'Z'/'X'`) of the standard's 9-value `std_ulogic`
-  (`'U','X','0','1','Z','W','L','H','-'`). Full alignment — the 9 values,
-  the resolution function, and the 9-value operator tables — is a mostly
-  std-only widening (plus X/Z propagation through vector arithmetic in the
-  engine). Tracked in TODO.
+- **X/Z propagation through vector arithmetic** — scalar `Logic` is now the
+  full 9-value `std_ulogic` (IEEE 1076-2019), but `uint`/`int` are stored as
+  2-value words, so metavalues don't yet propagate through vector `+`/`-`/…
+  (needs a per-bit metavalue representation in the engine). Tracked in TODO.
 
 Examples exercising the library through real imports: `std_test.siox`
 (every module), `logic_test.siox` (X-propagation), `complex_test.siox`

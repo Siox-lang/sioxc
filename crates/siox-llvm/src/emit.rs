@@ -563,9 +563,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 /// Logic literal encoding, matching the interpreter's `logic_value`.
 fn logic_value(c: char) -> u64 {
     match c {
-        '1' | 'H' => 1,
+        '0' => 0,
+        '1' => 1,
         'Z' => 2,
-        'X' | 'U' | 'W' => 3,
+        'X' => 3,
+        'U' => 4,
+        'W' => 5,
+        'L' => 6,
+        'H' => 7,
+        '-' => 8,
         _ => 0,
     }
 }

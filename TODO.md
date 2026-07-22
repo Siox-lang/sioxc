@@ -81,16 +81,15 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   across modules (single global namespace); value identifiers resolve
   best-effort.
 - 🟡 **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
-  the reference standard. Two parts: (a) **X/Z propagation through vector
-  arithmetic** — scalar `Logic` is exact (std_logic tables + `impl Resolve`),
-  but `uint`/`int` are stored as 2-value words so vector ops don't propagate
-  metavalues; this needs a per-bit metavalue representation in the engine (the
-  big one). (b) **Widen `Logic` from the 4-value reduction (`'0'/'1'/'Z'/'X'`)
-  to the standard's 9-value `std_ulogic` (`'U','X','0','1','Z','W','L','H','-'`)**
-  — the 9 values, resolution function, and 9-value operator tables (mostly
-  std-only). Decision when (b) lands: the standard's default is `'U'` (leftmost),
-  which would reintroduce a visible-undriven value vs. today's `'0'` from the
-  `new`/first-variant default.
+  the reference standard. (b) ✅ **Scalar `Logic` widened to the full 9-value
+  `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
+  `std_logic_1164` operator tables + `resolved` resolution — **verified
+  exhaustively (333/333 cells) against `nvc`**; `logic_ninevalue_test` guards
+  it. (a) **Still open: X/Z propagation through vector arithmetic** — `uint`/
+  `int` are stored as 2-value words, so metavalues don't propagate through
+  vector `+`/`-`/…; needs a per-bit metavalue representation in the engine (the
+  big one). Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
+  default via `new`/first-variant — a separate decision if `'U'` is wanted.
 - 🟢 **Cascaded event domains — a register clocked by a derived clock.**
   ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
   each delta settles combinational logic, computes `event[i] = cur[i] != old[i]`

@@ -25,6 +25,15 @@ assertions, and VCD export — predates this changelog. See
   coincident edges, and cross-domain sampling (already correct) are unaffected.
 
 ### Added
+- **`Logic` is now the full 9-value IEEE 1076-2019 `std_ulogic`.** Widened from
+  the 4-value reduction (`'0'/'1'/'Z'/'X'`) to `'U','X','0','1','Z','W','L','H','-'`,
+  with the complete `std_logic_1164` `and`/`or`/`not`/`xor`/`nand`/`nor`/`xnor`
+  truth tables and the `resolved` resolution function — all as ordinary impls in
+  `std/logic.siox`. **Verified cell-for-cell (333/333) against `nvc`'s
+  `std_logic_1164`.** VCD export maps the weak/meta values to 4-state
+  (`L/H → 0/1`, `U/W/X/- → x`, `Z → z`). Existing `'0'/'1'/'Z'/'X'` designs are
+  unaffected; the uninitialized default stays `'0'` (not the standard's `'U'`).
+  (X/Z propagation through *vector* arithmetic is still pending.)
 - **Suspicious-comparison lint (`W-P008`).** Comparing an enum-valued operand
   (`Bit`/`Logic`/`Bool` or a user `enum`) to a bare integer literal — `b == 1`
   instead of `b == '1'` — now warns: its values are written as char/variant

@@ -18,7 +18,7 @@ module std::logic;
 //
 //     Bit        two-state '0'/'1'
 //      |
-//     ULogic     + 'Z'/'X'; still UNRESOLVED (no Resolve impl)
+//     ULogic     + 'Z'/'X'/'U'/'W'/'L'/'H'/'-' (9-value); still UNRESOLVED
 //      |
 //     Logic      same values as ULogic; gains Resolve (parallel drivers fold)
 
@@ -28,16 +28,24 @@ pub enum Bit {
     '1',
 }
 
-// Four-valued scalar (VHDL `std_ulogic`): adds high-impedance 'Z' and unknown
-// 'X' to Bit. No `Resolve` impl — driving a ULogic from several contexts is an
-// elaboration error (the single-driver safety rule). No `Boolean` impl either;
-// compare explicitly.
+// Nine-valued scalar (VHDL `std_ulogic`, IEEE 1076-2019 / std_logic_1164): the
+// forcing levels `'0'/'1'`, high-impedance `'Z'`, strong unknown `'X'`,
+// uninitialized `'U'`, weak unknown `'W'`, weak `'L'/'H'`, and don't-care `'-'`.
+// No `Resolve` impl — driving a ULogic from several contexts is an elaboration
+// error (the single-driver safety rule). No `Boolean` impl either; compare
+// explicitly. (Discriminant order here must match the `logic_value` shim in the
+// compiler backends.)
 pub enum ULogic : Bit {
     'Z',
     'X',
+    'U',
+    'W',
+    'L',
+    'H',
+    '-',
 }
 
-// The resolved four-valued scalar (VHDL `std_logic`): the same value domain as
+// The resolved nine-valued scalar (VHDL `std_logic`): the same value domain as
 // ULogic, but a distinct nominal type that implements `Resolve`, so parallel
 // drivers fold instead of erroring.
 pub enum Logic : ULogic;
@@ -88,32 +96,29 @@ impl ClockLike for Bit {
 pub const LOW: Bit = '0';
 pub const HIGH: Bit = '1';
 
-// --- Logic truth tables (std_logic_1164's core, as ordinary impls) ---------
+// --- Logic truth tables (IEEE 1076-2019 std_logic_1164, as ordinary impls) --
 //
-// Unknown propagation: 'Z' and 'X' both read as "unknown" to the operators.
-// A dominant operand still decides ('0' and X = '0'; '1' or X = '1'),
-// otherwise the result is 'X'. `Bit` keeps the built-in two-value operators.
+// The full 9-value tables. The "defined" levels are `'0'/'L'` (low) and
+// `'1'/'H'` (high); `'U'` (uninitialized) dominates any unknown, and the rest
+// (`'X'/'Z'/'W'/'-'`) read as strong-unknown `'X'`. Verified row-for-row
+// against a reference simulator's std_logic_1164. `Bit` keeps the built-in
+// two-value operators.
 
 impl And<Logic, Logic> for Logic {
     fn and(self, rhs: Logic) -> Logic {
-        if self == '0' or rhs == '0' {
-            return '0';
-        }
-        if self == '1' and rhs == '1' {
-            return '1';
-        }
+        // A low input (0/L) forces low, even against 'U'.
+        if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '0'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '1'; }
         return 'X';
     }
 }
 
 impl Or<Logic, Logic> for Logic {
     fn or(self, rhs: Logic) -> Logic {
-        if self == '1' or rhs == '1' {
-            return '1';
-        }
-        if self == '0' and rhs == '0' {
-            return '0';
-        }
+        if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '1'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
         return 'X';
     }
 }
@@ -121,30 +126,20 @@ impl Or<Logic, Logic> for Logic {
 #[precedence = 35]
 impl custom<"xor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
-        if self == '0' and rhs == '0' {
-            return '0';
-        }
-        if self == '1' and rhs == '1' {
-            return '0';
-        }
-        if self == '0' and rhs == '1' {
-            return '1';
-        }
-        if self == '1' and rhs == '0' {
-            return '1';
-        }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
+        if (self == '0' or self == 'L') and (rhs == '1' or rhs == 'H') { return '1'; }
+        if (self == '1' or self == 'H') and (rhs == '0' or rhs == 'L') { return '1'; }
         return 'X';
     }
 }
 
 impl Not<Logic> for Logic {
     fn not(self) -> Logic {
-        if self == '0' {
-            return '1';
-        }
-        if self == '1' {
-            return '0';
-        }
+        if self == '0' or self == 'L' { return '1'; }
+        if self == '1' or self == 'H' { return '0'; }
+        if self == 'U' { return 'U'; }
         return 'X';
     }
 }
@@ -152,12 +147,9 @@ impl Not<Logic> for Logic {
 #[precedence = 40]
 impl custom<"nand", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
-        if self == '0' or rhs == '0' {
-            return '1';
-        }
-        if self == '1' and rhs == '1' {
-            return '0';
-        }
+        if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '0'; }
         return 'X';
     }
 }
@@ -165,12 +157,9 @@ impl custom<"nand", Logic, Logic> for Logic {
 #[precedence = 30]
 impl custom<"nor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
-        if self == '1' or rhs == '1' {
-            return '0';
-        }
-        if self == '0' and rhs == '0' {
-            return '1';
-        }
+        if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
         return 'X';
     }
 }
@@ -178,30 +167,32 @@ impl custom<"nor", Logic, Logic> for Logic {
 #[precedence = 35]
 impl custom<"xnor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
-        if self == '0' and rhs == '0' {
-            return '1';
-        }
-        if self == '1' and rhs == '1' {
-            return '1';
-        }
-        if self == '0' and rhs == '1' {
-            return '0';
-        }
-        if self == '1' and rhs == '0' {
-            return '0';
-        }
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }
+        if (self == '1' or self == 'H') and (rhs == '1' or rhs == 'H') { return '1'; }
+        if (self == '0' or self == 'L') and (rhs == '1' or rhs == 'H') { return '0'; }
+        if (self == '1' or self == 'H') and (rhs == '0' or rhs == 'L') { return '0'; }
         return 'X';
     }
 }
 
-// The std_logic resolution table, reduced to four values: 'Z' yields to any
-// driver, agreement stands, and contention is 'X'.
+// The std_logic resolution function (std_logic_1164 `resolved`): 'U' dominates,
+// 'X'/'-' contend to 'X', 'Z' yields to any driver, a forcing level (0/1) beats
+// weak (L/H/W) and conflicting forcing is 'X', while conflicting weak folds to
+// 'W'.
 impl Resolve for Logic {
     fn resolve(self, rhs: Logic) -> Logic {
+        if self == 'U' or rhs == 'U' { return 'U'; }
+        if self == 'X' or rhs == 'X' or self == '-' or rhs == '-' { return 'X'; }
         if self == 'Z' { return rhs; }
         if rhs == 'Z' { return self; }
         if self == rhs { return self; }
-        return 'X';
+        if self == '0' or rhs == '0' {
+            if self == '1' or rhs == '1' { return 'X'; }
+            return '0';
+        }
+        if self == '1' or rhs == '1' { return '1'; }
+        return 'W';
     }
 }
 
