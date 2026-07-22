@@ -1375,7 +1375,7 @@ impl<'a> Parser<'a> {
     fn parse_generic_args(&mut self) -> Vec<GenericArg> {
         self.expect(TokenKind::Lt, "to open a generic argument list");
         let mut args = Vec::new();
-        while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+        while !self.at_generic_end() && !self.at(TokenKind::Eof) {
             if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
                 let name = self.parse_ident();
                 self.bump(); // `=`
@@ -1388,7 +1388,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(TokenKind::Gt, "to close a generic argument list");
+        self.close_generic("to close a generic argument list");
         args
     }
 
@@ -1431,7 +1431,7 @@ impl<'a> Parser<'a> {
     fn parse_params(&mut self) -> Params {
         self.expect(TokenKind::Lt, "to open a parameter list");
         let mut params = Vec::new();
-        while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+        while !self.at_generic_end() && !self.at(TokenKind::Eof) {
             let pstart = self.span();
             let name = self.parse_ident();
             let bound = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
@@ -1440,7 +1440,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(TokenKind::Gt, "to close a parameter list");
+        self.close_generic("to close a parameter list");
         Params { params }
     }
 
@@ -1632,6 +1632,31 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         t
+    }
+
+    /// Whether the current token can close a generic `<...>` — a `>`, or a `>>`
+    /// (`Shr`) that closes one level of a nested generic (`Box<Box<T>>`).
+    fn at_generic_end(&self) -> bool {
+        self.at(TokenKind::Gt) || self.at(TokenKind::Shr)
+    }
+
+    /// Close one generic `<...>`. A `>` is consumed normally; a `>>` is split in
+    /// place — one `>` closes this level, the other stays for the enclosing
+    /// generic — so `Box<Box<T>>` parses without a space between the angles.
+    fn close_generic(&mut self, ctx: &str) -> bool {
+        if self.at(TokenKind::Gt) {
+            self.bump();
+            true
+        } else if self.at(TokenKind::Shr) {
+            // Rewrite `>>` to a single `>` covering its second character and
+            // leave it at the current position for the outer close.
+            let sp = self.peek().span;
+            self.tokens[self.pos] =
+                Token { kind: TokenKind::Gt, span: Span::new(sp.file, sp.start + 1..sp.end) };
+            true
+        } else {
+            self.expect(TokenKind::Gt, ctx)
+        }
     }
 
     fn eat(&mut self, k: TokenKind) -> bool {
@@ -1827,6 +1852,19 @@ mod tests {
         let Item::Entity(e) = &m.items[2] else { panic!("expected entity") };
         assert_eq!(e.ports[0].dir, None); // direction lives in the bus-mode type
         assert!(matches!(&e.ports[0].ty, Type::Mode { .. }));
+    }
+
+    #[test]
+    fn nested_generic_close_splits_shr() {
+        // A `>>` closing two angle levels (a nested generic bound) parses: the
+        // `>>` token is split so one `>` closes `Bar<Bit>` and the other the
+        // param list. A plain shift expression still parses as a shift.
+        parse_ok("module m;\nfn f<T: Bar<Bit>>(x: T) -> Bit { return x.b(); }\n");
+        parse_ok("module m;\ntrait Foo<U> { fn g(self) -> Bar<U>; }\n");
+        let m = parse_ok("module m;\nimpl M {\n  y = a >> b;\n}\n");
+        let Item::Impl(i) = &m.items[0] else { panic!() };
+        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else { panic!() };
+        assert!(matches!(value, Expr::Binary { op: BinOp::Shr, .. }), "`a >> b` stays a shift");
     }
 
     #[test]

@@ -10,7 +10,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Language features
 
-- 🔴 **Nested generics** — `Box<Box<T>>` (generic-argument parsing ambiguity).
+- 🟡 **Nested generics** — the `>>` token now splits when closing angle levels,
+  so nested generic **bounds** parse (`fn f<T: Bar<Bit>>`, `-> Bar<U>`). Still
+  open: nested generic **type arguments** (`Box<Box<T>>`), because a generic arg
+  is parsed as an expression (`parse_generic_atom`) with no representation for a
+  nested generic type application — needs a `GenericArg::Type`/grammar extension
+  and disambiguation of `<` (type vs. comparison, via `matched_angle_end`).
 - 🔴 **Struct spread-update** — `{ ..base, .x = v }`.
 - 🟡 **Partial instance arrays** — an instance array whose elements are only
   conditionally built (`let stage: Inc[3]` with a generate-`if` building a
