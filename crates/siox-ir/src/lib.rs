@@ -303,6 +303,9 @@ struct Lowering<'a> {
     /// Plain (non-bus-mode, non-`inout`) `out` port signals, for the
     /// undriven-output warning after all drivers are collected.
     plain_out_ports: Vec<SignalId>,
+    /// Internal `let` signals with no initializer, in a non-`#[test]` entity —
+    /// they must be driven, so an undriven one is a forgotten assignment.
+    undriven_lets: Vec<SignalId>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -391,6 +394,7 @@ impl<'a> Lowering<'a> {
             cur_type_env: HashMap::new(),
             lower_stack: Vec::new(),
             plain_out_ports: Vec::new(),
+            undriven_lets: Vec::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -758,6 +762,35 @@ impl<'a> Lowering<'a> {
                     } else {
                         self.add_signal(path, &l.name.text, 0);
                     }
+                    // A value-less internal `let` in a component entity must be
+                    // driven; record its leaves for the undriven check. Root
+                    // entities are excluded: a `#[test]` testbench's locals are
+                    // driven by the runner, and a `#[top]` harness's wires are
+                    // stimulus fed externally — neither is a forgotten drive.
+                    // An instance array (`let stage: Inc[N]`, Inc an entity) is
+                    // built element-wise, not driven — never a signal to check.
+                    let is_instance_array = l
+                        .ty
+                        .as_ref()
+                        .and_then(type_head_name)
+                        .is_some_and(|h| self.entities.contains_key(h));
+                    if l.value.is_none()
+                        && !is_instance_array
+                        && !has_attr(edecl, "test")
+                        && !has_attr(edecl, "top")
+                    {
+                        let dot = format!("{}.", l.name.text);
+                        let idx = format!("{}[", l.name.text);
+                        let leaves: Vec<SignalId> = self
+                            .locals
+                            .iter()
+                            .filter(|(k, _)| {
+                                **k == l.name.text || k.starts_with(&dot) || k.starts_with(&idx)
+                            })
+                            .map(|(_, &id)| id)
+                            .collect();
+                        self.undriven_lets.extend(leaves);
+                    }
                     // `let rom: uint[8][N] = read("rom.bin");` — the compiler
                     // reads the file and bakes it into the element inits
                     // (little-endian packing for elements wider than a byte;
@@ -1104,6 +1137,20 @@ impl<'a> Lowering<'a> {
                 siox_diag::Diagnostic::warning(format!("output port `{path}` is never driven"))
                     .with_code(siox_diag::codes::UNDRIVEN_OUTPUT)
                     .help("drive it inside the entity, or make it an `in`/`inout` port"),
+            );
+        }
+        // Internal value-less `let` signals that are never driven — a forgotten
+        // assignment (they read `0` forever).
+        let lets = std::mem::take(&mut self.undriven_lets);
+        for sig in lets {
+            if !seen.insert(sig.0) || driven.contains(&sig.0) {
+                continue;
+            }
+            let path = self.out.signals[sig.0 as usize].path.clone();
+            self.sink.emit(
+                siox_diag::Diagnostic::warning(format!("signal `{path}` is never driven"))
+                    .with_code(siox_diag::codes::UNDRIVEN_OUTPUT)
+                    .help("assign it, give it an initial value, or remove it"),
             );
         }
     }
@@ -4900,6 +4947,25 @@ mod tests {
         let undriven: Vec<&String> = diags.iter().filter(|d| d.contains("W-P011")).collect();
         assert_eq!(undriven.len(), 1, "one undriven-output warning: {undriven:?}");
         assert!(undriven[0].contains("forgotten"), "flags forgotten: {undriven:?}");
+    }
+
+    #[test]
+    fn undriven_internal_signal_warns() {
+        // `dead` (value-less, never assigned) warns; `used` is driven and
+        // `konst` has an initializer, so neither does.
+        let diags = lower_diags(
+            "module m;\n\
+             entity E { in a: uint[8]; out y: uint[8]; }\n\
+             impl E {\n  let used: uint[8];\n  let dead: uint[8];\n  let konst: uint[8] = 5;\n\
+               used = a + 1;\n  y = used + konst;\n }\n\
+             #[top]\n\
+             entity T {}\n\
+             impl T { let a: uint[8]; let y: uint[8]; let dut: E = { .a = a, .y = y }; }\n",
+        );
+        let undriven: Vec<&String> =
+            diags.iter().filter(|d| d.contains("W-P011") && d.contains("never driven")).collect();
+        assert_eq!(undriven.len(), 1, "one undriven signal: {undriven:?}");
+        assert!(undriven[0].contains("dead"), "flags dead: {undriven:?}");
     }
 
     #[test]

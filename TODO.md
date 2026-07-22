@@ -30,11 +30,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Semantics & analysis
 
-- 🟡 **Undriven signals** — a never-driven **`out` port** now warns statically
-  (`W-P011`, plain non-bus/non-`inout` ports; 0 corpus false positives). Still
-  open for **internal signals**: a never-driven `let` reads `0` rather than going
-  `'X'`, which needs per-signal driven-flag / X-value tracking in the engine (and
-  the runner drives testbench signals invisibly to the IR). Structurally
+- 🟡 **Undriven signals** — statically warned (`W-P011`, 0 corpus false
+  positives) for a never-driven **`out` port** and a never-driven **value-less
+  internal `let`** in a component entity (excludes `#[test]`/`#[top]` harnesses,
+  instance arrays, and initialized `let x = ..` constants). Still open: a
+  runtime `'X'` for a signal that is undriven only on *some* paths — needs
+  per-signal driven-flag / X-value tracking in the engine. Structurally
   unconnected input *ports* are still caught statically (`E-P005`).
 - 🟡 **Full direction analysis** — writing an `in` port is now caught in all
   shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
