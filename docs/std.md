@@ -73,9 +73,9 @@ built-in operators; uint/int get theirs **here** as Rust-style trait impls:
 the stored width), and `int` gets a **sign-aware `impl Ord`** — signed
 comparison is library source, not compiler code (`-1 < 1` on int[8], while
 uint compares unsigned). Inside an operator impl, operands read as kernel
-words and `self::width` gives the operand's bit width. Remaining kernel
+words and `self::length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
-literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self::width`.
+literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self::length`.
 Bit-string literals `x"AB"` / `b"0101"` are sized `uint` constants (spec
 3.24). A file that never imports `std::bits` falls back to kernel word
 semantics.

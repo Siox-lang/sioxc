@@ -7,7 +7,7 @@
 //!
 //! Key Phase 1 rules to enforce:
 //! - system attributes `::event`/`::old` exist on every digital value
-//!   (spec 3.9), and range attributes `::width/::range/::high/::low/::left/
+//!   (spec 3.9), and range attributes `::length/::range/::high/::low/::left/
 //!   ::right/::direction` on range-like values (spec 3.23)
 //! - `::ddt` is rejected as Phase-2 analogue syntax (spec Stage 4)
 //! - no implicit broad conversions (spec 3.17): `uint[8]` !-> `uint[16]`
@@ -1563,7 +1563,8 @@ impl<'a> Checker<'a> {
                 // `::event` is Bool; the edge helpers are `ClockLike` methods now.
                 "event" => Ty::Bool,
                 "old" => self.type_of(base, sym),
-                "width" | "high" | "low" | "left" | "right" => Ty::Integer,
+                "length" | "high" | "low" | "left" | "right" => Ty::Integer,
+                "ascending" => Ty::Bool,
                 _ => Ty::Error,
             },
             Expr::Binary { op, lhs, rhs, .. } => {

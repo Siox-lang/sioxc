@@ -1701,7 +1701,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The fixed set of system attributes (`x::event`, `clk.rising()`, `d::width`).
+/// The fixed set of system attributes (`x::event`, `clk.rising()`, `d::length`).
 /// A `::`-suffix matching one of these reads as a [`Expr::SysAttr`] rather than
 /// extending a path. Spec 3.9 / 3.10 / 3.23.
 fn is_sysattr(name: &str) -> bool {
@@ -1716,8 +1716,8 @@ fn is_sysattr(name: &str) -> bool {
             | "rising"
             | "falling"
             | "edge"
-            | "width"
-            | "len"
+            | "length"
+            | "ascending"
             | "range"
             | "high"
             | "low"

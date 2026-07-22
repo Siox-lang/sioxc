@@ -765,7 +765,7 @@ impl Ctx<'_> {
         let w = self.name_width(&lname).unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), format!("({})", self.expr(lhs)?));
-        env.insert("self::width".to_string(), format!("{w}ULL"));
+        env.insert("self::length".to_string(), format!("{w}ULL"));
         if let Some(pdecl) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &pdecl.name {
                 let rw = match rhs {
@@ -775,7 +775,7 @@ impl Ctx<'_> {
                     _ => w,
                 };
                 env.insert(n.text.clone(), format!("({})", self.expr(rhs)?));
-                env.insert(format!("{}::width", n.text), format!("{rw}ULL"));
+                env.insert(format!("{}::length", n.text), format!("{rw}ULL"));
             }
         }
         self.fn_env.borrow_mut().push(env);
@@ -814,7 +814,7 @@ impl Ctx<'_> {
         let width = self.name_width(&name).unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), format!("({})", self.expr(rhs)?));
-        env.insert("self::width".to_string(), format!("{width}ULL"));
+        env.insert("self::length".to_string(), format!("{width}ULL"));
         self.fn_env.borrow_mut().push(env);
         let out = self.c_fn_stmts(&body.stmts);
         self.fn_env.borrow_mut().pop();
@@ -1691,7 +1691,7 @@ impl Ctx<'_> {
                     {
                         match args.get(1) {
                             Some(ast::Expr::Int { text, .. }) => parse_u64(text),
-                            // `resize(x, self::width)` inside an inlined
+                            // `resize(x, self::length)` inside an inlined
                             // operator impl: the bound width is a C literal
                             // like `8ULL` — recover the number.
                             Some(other) => {
@@ -1725,20 +1725,39 @@ impl Ctx<'_> {
                     format!("(({v}) & {}ULL)", (1u64 << w) - 1)
                 }
             }
-            ast::Expr::SysAttr { base, attr, .. } if attr.text == "width" => {
-                let path = expr_path(base).ok_or("::width needs a named base")?;
+            // `::length`: an impl body's bound length (`self::length`), an
+            // array's element count, or a name's bit width (they coincide for a
+            // flat vector) — VHDL `'length`.
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
+                let path = expr_path(base).ok_or("::length needs a named base")?;
                 if let Some(v) =
-                    self.fn_env.borrow().last().and_then(|m| m.get(&format!("{path}::width")))
+                    self.fn_env.borrow().last().and_then(|m| m.get(&format!("{path}::length")))
                 {
                     return Ok(v.clone());
                 }
-                format!("{}ULL", self.name_width(&path).ok_or("unknown ::width")?)
+                if let Some(n) = self.array_len(&path) {
+                    return Ok(format!("{n}ULL"));
+                }
+                format!("{}ULL", self.name_width(&path).ok_or("unknown ::length")?)
             }
-            ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => {
-                let n = expr_path(base)
-                    .and_then(|p| self.array_len(&p))
-                    .ok_or("::len needs a connected array")?;
-                format!("{n}ULL")
+            // Range bounds (VHDL `'left`/`'right`/`'high`/`'low`/`'ascending`).
+            // A name reads as ascending `0..width-1`; hardware bounds are
+            // const-folded in the IR, so this covers only bounds in emitted
+            // testbench code.
+            ast::Expr::SysAttr { base, attr, .. }
+                if matches!(
+                    attr.text.as_str(),
+                    "left" | "right" | "high" | "low" | "ascending"
+                ) =>
+            {
+                let w = expr_path(base).and_then(|p| self.name_width(&p)).unwrap_or(0) as i64;
+                let v = match attr.text.as_str() {
+                    "left" | "low" => 0,
+                    "right" | "high" => (w - 1).max(0),
+                    "ascending" => 1,
+                    _ => unreachable!(),
+                };
+                format!("{v}ULL")
             }
             ast::Expr::Path(p)
                 if p.segments.len() == 1

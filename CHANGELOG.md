@@ -19,8 +19,18 @@ assertions, and VCD export — predates this changelog. See
   element-wise. Writable explicitly as `T::new()` / `T()` — the zero-argument
   member of the `T(...)` family whose one-argument form `T(x)` is the conversion
   (§3.28/§3.29). (An `impl New for T` override awaits trait resolution.)
+- **VHDL range attributes.** A vector/array exposes its declared index range:
+  `::left`, `::right`, `::high`, `::low`, `::ascending` (direction preserved —
+  `Logic[7..0]` descending, width-only `Bit[4]` ascending). Important for data
+  alignment. `::range`/`::direction` are reserved but not yet lowered.
 
 ### Changed
+- **`::len` and `::width` unify into `::length`.** For a flat vector the element
+  count *is* the bit width, so the two collapse into one VHDL-style `::length`
+  (an array *of* vectors still distinguishes them: `tab::length` counts
+  elements, `tab[0]::length` the bits of one). `self::width` in operator impls
+  becomes `self::length`; std, all three evaluators (IR/runner/native), and the
+  corpus migrated.
 - **Connection/struct blocks have two forms, not three.** The bare `.field`
   name-shorthand (`{ .clk, .rst }`, meaning `.clk = clk`) is removed. A `.field`
   now always takes a value — **explicit** `{ .clk = clk, .rst = rst }` — or drop

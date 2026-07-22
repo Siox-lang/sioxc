@@ -256,6 +256,10 @@ struct Lowering<'a> {
     /// the derived `new()` default (VHDL `T'LEFT`): an uninitialized enum signal
     /// powers on holding this value, so it is always a valid member of the type.
     enum_first_disc: HashMap<String, u64>,
+    /// Signal/array name -> its declared index range `(left, right)` in written
+    /// order (`Logic[7..0]` -> `(7, 0)`; width-only `Bit[4]` -> `(0, 3)`). Backs
+    /// the VHDL range attributes `::left`/`::right`/`::high`/`::low`/`::ascending`.
+    local_range: HashMap<String, (i64, i64)>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Bus-mode per-leaf directions: `(struct, mode) -> {field -> dir}` from
@@ -382,6 +386,7 @@ impl<'a> Lowering<'a> {
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_first_disc: HashMap::new(),
+            local_range: HashMap::new(),
             structs: HashMap::new(),
             mode_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
@@ -1397,6 +1402,12 @@ impl<'a> Lowering<'a> {
             }
             _ => ty,
         };
+        // Record the declared index range so `::left`/`::right`/`::high`/
+        // `::low`/`::ascending` can read it (a written range keeps its
+        // direction; a width-only index is ascending `0..N-1`).
+        if let Some(range) = self.declared_range(ty, env) {
+            self.local_range.insert(name.to_string(), range);
+        }
         // An unconstrained array (`Char[]`) has no length to flatten with.
         if let ast::Type::Indexed { index: None, .. } = ty {
             self.sink.emit(
@@ -2693,15 +2704,15 @@ impl<'a> Lowering<'a> {
 
         // Bind `self` to the left operand and the first named param to the
         // right — plus each operand's bit width, so a body can say
-        // `self::width` (needed for e.g. sign-aware `int` comparison).
+        // `self::length` (needed for e.g. sign-aware `int` comparison).
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
-        fenv.insert("self::width".to_string(), Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)));
+        fenv.insert("self::length".to_string(), Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)));
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
                 fenv.insert(
-                    format!("{}::width", n.text),
+                    format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
                 );
             }
@@ -2893,7 +2904,7 @@ impl<'a> Lowering<'a> {
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), self.lower_val_env(rhs, &HashMap::new()));
         env.insert(
-            "self::width".to_string(),
+            "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
         );
         self.inline_block(&body.stmts, &env)
@@ -3038,7 +3049,7 @@ impl<'a> Lowering<'a> {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(arg, env));
                 fenv.insert(
-                    format!("{}::width", n.text),
+                    format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(arg) as u64)),
                 );
             }
@@ -3109,7 +3120,7 @@ impl<'a> Lowering<'a> {
     /// Lower a call to a module-level `fn`: const-fold when every argument
     /// const-evaluates (so `clog2(DEPTH)` is a constant), else inline the
     /// body like an operator impl (params bound positionally, with
-    /// `param::width` available). Depth-guarded against runaway recursion.
+    /// `param::length` available). Depth-guarded against runaway recursion.
     fn lower_free_call(
         &self,
         callee: &ast::Expr,
@@ -3167,7 +3178,7 @@ impl<'a> Lowering<'a> {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
                 fenv.insert(
-                    format!("{}::width", n.text),
+                    format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
                 );
                 // Propagate the argument's family so the body dispatches
@@ -3243,7 +3254,7 @@ impl<'a> Lowering<'a> {
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(base, env));
         fenv.insert(
-            "self::width".to_string(),
+            "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
         );
         // Family bindings to restore after the inline (nesting-safe).
@@ -3254,7 +3265,7 @@ impl<'a> Lowering<'a> {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
                 fenv.insert(
-                    format!("{}::width", n.text),
+                    format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
                 );
                 if let Some(fam) = self.operand_type_name(a) {
@@ -3440,7 +3451,7 @@ impl<'a> Lowering<'a> {
     /// `env`. Struct-typed locals and struct literals become per-field values.
     fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
-            // `self::width` inside an operator-impl body: the bound operand's
+            // `self::length` inside an operator-impl body: the bound operand's
             // width (inline_op stashes it under the "param::attr" key).
             ast::Expr::SysAttr { base, attr, .. } => {
                 if let Some(v) = expr_path(base)
@@ -3622,22 +3633,61 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// The declared index range `(left, right)` in written order of a vector or
+    /// array type — `Logic[7..0]` -> `(7, 0)`, a named `range` const keeps its
+    /// direction, a width-only `Bit[4]` -> `(0, 3)` (ascending). `None` for a
+    /// non-indexed type.
+    fn declared_range(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> Option<(i64, i64)> {
+        let ast::Type::Indexed { index: Some(idx), .. } = ty else { return None };
+        match idx.as_ref() {
+            // A written range keeps its direction (`[7..0]` is descending); the
+            // `Range` fields are first/second as written, not numerically sorted.
+            ast::Expr::Range { lo, hi, .. } => {
+                Some((eval_const(lo, env)?, eval_const(hi, env)?))
+            }
+            // A named range constant (`const BYTE: range = 7..0;`).
+            ast::Expr::Path(p)
+                if p.segments.len() == 1 && self.const_ranges.contains_key(&p.segments[0].text) =>
+            {
+                self.const_ranges.get(&p.segments[0].text).copied()
+            }
+            // A width-only index (`Bit[4]`, `uint[8]`) is ascending `0..N-1`.
+            _ => {
+                let n = eval_const(idx, env)?;
+                Some((0, (n - 1).max(0)))
+            }
+        }
+    }
+
     /// Lower a system attribute. `clk.rising()`/`falling`/`edge` expand into
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
     fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
-        // `xs::len` is elaboration-time metadata: the array's element count.
-        if attr == "len" {
-            if let Some(indices) =
-                expr_path(base).and_then(|p| self.local_array.get(&p))
-            {
+        // `::length` is elaboration-time metadata: an array's element count,
+        // else a signal's bit width (they coincide for a flat vector, so one
+        // attribute serves both — VHDL's `'length`).
+        if attr == "length" {
+            if let Some(indices) = expr_path(base).and_then(|p| self.local_array.get(&p)) {
                 return Expr::Const(indices.len() as u64);
+            }
+            if let Some(sig) = self.base_signal(base) {
+                return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
             }
             return Expr::Unknown;
         }
-        // `x::width` is elaboration-time metadata too: the signal's bit width.
-        if attr == "width" {
-            if let Some(sig) = self.base_signal(base) {
-                return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
+        // Range bounds from the declared index range (VHDL `'left`/`'right`/
+        // `'high`/`'low`/`'ascending`): `left`/`right` in written order,
+        // `high`/`low` numeric, `ascending` the direction (`to` vs `downto`).
+        if matches!(attr, "left" | "right" | "high" | "low" | "ascending") {
+            if let Some(&(l, r)) = expr_path(base).and_then(|p| self.local_range.get(&p)) {
+                let v = match attr {
+                    "left" => l,
+                    "right" => r,
+                    "high" => l.max(r),
+                    "low" => l.min(r),
+                    "ascending" => (l <= r) as i64,
+                    _ => unreachable!(),
+                };
+                return Expr::Const(v as u64);
             }
             return Expr::Unknown;
         }
@@ -5115,6 +5165,40 @@ mod tests {
         assert_eq!(drv(".o.ph"), 2, "enum field → first variant Idle = 2");
         assert_eq!(drv(".o.flag"), 0, "inherited Bit field → 0");
         assert_eq!(drv(".o.data"), 0, "numeric field → 0");
+    }
+
+    #[test]
+    fn range_attributes_read_declared_bounds() {
+        // A descending `[7..0]` and an ascending width-only `[8]` expose the
+        // VHDL range attributes; direction is preserved.
+        let d = lower_src(
+            "module m;\n\
+             #[top]\n\
+             entity E {\n\
+               in dn: uint[7..0]; in up: uint[8];\n\
+               out a: uint[8]; out b: uint[8]; out c: uint[8]; out e: uint[8];\n\
+               out f: uint[8]; out g: uint[8]; out h: uint[8];\n\
+             }\n\
+             impl E {\n\
+               a = dn::left; b = dn::right; c = dn::high; e = dn::low;\n\
+               f = dn::ascending; g = dn::length; h = up::ascending;\n\
+             }\n",
+        );
+        let drv = |suffix: &str| -> u64 {
+            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
+            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            match &dr.expr {
+                Expr::Const(c) => *c,
+                other => panic!("{suffix} not const: {other:?}"),
+            }
+        };
+        assert_eq!(drv(".a"), 7, "dn::left");
+        assert_eq!(drv(".b"), 0, "dn::right");
+        assert_eq!(drv(".c"), 7, "dn::high");
+        assert_eq!(drv(".e"), 0, "dn::low");
+        assert_eq!(drv(".f"), 0, "dn::ascending (descending → false)");
+        assert_eq!(drv(".g"), 8, "dn::length");
+        assert_eq!(drv(".h"), 1, "up::ascending (width-only → true)");
     }
 
     #[test]

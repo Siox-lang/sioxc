@@ -73,7 +73,7 @@ precise reference.
 - **Derived nominal types** — `enum B : A` / `struct B : A`, with total
   derivation conversions synthesised automatically.
 - `#[…]` attributes, including type-targeted ones.
-- System attributes for metadata: `x::width`, `xs::len`.
+- System attributes for metadata: `x::length`, range bounds `x::high`/`x::low`/`x::left`/`x::right`/`x::ascending`.
 
 ### Diagnostics
 
@@ -1233,35 +1233,32 @@ z = w[BYTE];
 Module constants and `using` aliases participate in widths, lengths, and
 slice bounds (`const N: integer = 4; let a: Bit[N];`).
 
-Range attributes:
-
-```siox
-data::width
-data::range
-data::low
-data::high
-data::left
-data::right
-data::direction
-```
-
-For:
+**Range attributes.** A vector or array exposes its declared index range
+through VHDL-style attributes (elaboration-time constants). There is one count
+attribute — `::length` — because for a flat vector the element count *is* the
+bit width; the older separate `::len`/`::width` pair collapses into it (an array
+*of* vectors distinguishes them: `tab::length` counts elements,
+`tab[0]::length` the bits of one).
 
 ```siox
 let data: Logic[31..0];
 ```
 
-meaning:
+| attribute | value | meaning |
+| --------- | ----- | ------- |
+| `data::left`      | 31    | first declared bound |
+| `data::right`     | 0     | second declared bound |
+| `data::high`      | 31    | `max(left, right)` — the MSB index |
+| `data::low`       | 0     | `min(left, right)` — the LSB index |
+| `data::length`    | 32    | element count (= bit width for a flat vector) |
+| `data::ascending` | false | direction: `true` for `[0..N]` (`to`), `false` for `[N..0]` (`downto`) |
 
-```text
-data::left      = 31
-data::right     = 0
-data::high      = 31
-data::low       = 0
-data::width     = 32
-data::direction = descending
-data::range     = 31..0
-```
+Direction is preserved from the declaration: a written range keeps its order
+(`Logic[7..0]` is descending, `ascending == false`), while a width-only
+`Bit[4]` (≡ `Bit[0..3]`) is ascending. These are what data alignment leans on —
+`high`/`low` say where the bits actually sit, `left`/`right`/`ascending` give
+the orientation. (`data::range` as a first-class range value and `::direction`
+as a `to`/`downto` symbol are reserved but not yet lowered; use `::ascending`.)
 
 Important distinction:
 
@@ -1775,12 +1772,12 @@ x::old
 Range-like values support:
 
 ```siox
-x::width
-x::range
+x::length
 x::high
 x::low
 x::left
 x::right
+x::ascending
 x::direction
 ```
 
@@ -2129,8 +2126,8 @@ payload-carrying enums — never a keyword.
 
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
-directly, Python-style — length is the `::len` system attribute (an
-elaboration-time fact, like `::width`).
+directly, Python-style — length is the `::length` system attribute (an
+elaboration-time fact).
 
 A numeric range `lo..hi` in a `for` is **inclusive and directional**, exactly
 like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`

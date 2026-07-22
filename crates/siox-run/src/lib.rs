@@ -943,7 +943,7 @@ impl Testbench<'_> {
                     self.map.contains_key(&format!("{}[0]", l.name.text));
                 if !self.map.contains_key(&l.name.text) && !elem_connected {
                     // A local array gets one slot per element, so indexing and
-                    // `::len` see it; scalars get a single slot.
+                    // `::length` see it; scalars get a single slot.
                     match l.ty.as_ref().and_then(|t| self.declared_len(t)) {
                         Some(n) => {
                             for i in 0..n {
@@ -1761,20 +1761,38 @@ impl Testbench<'_> {
                     v & ((1u128 << w) - 1)
                 }
             }
-            // `x::width`: an impl body's bound width (`self::width`) or a
-            // testbench name's declared/connected width.
-            ast::Expr::SysAttr { base, attr, .. } if attr.text == "width" => {
+            // `::length`: an impl body's bound length (`self::length`), an
+            // array's element count, or a testbench name's declared/connected
+            // bit width (they coincide for a flat vector) — VHDL `'length`.
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
                 let Some(path) = expr_path(base) else { return u128::from_u64(0) };
-                if let Some(&v) = fenv.get(&format!("{path}::width")) {
+                if let Some(&v) = fenv.get(&format!("{path}::length")) {
                     return v;
+                }
+                if let Some(n) = self.array_len(&path) {
+                    return u128::from_u64(n);
                 }
                 u128::from_u64(self.name_width(&path).unwrap_or(0) as u64)
             }
-            // `xs::len`: an array's element count (spec: `::` metadata).
-            ast::Expr::SysAttr { base, attr, .. } if attr.text == "len" => expr_path(base)
-                .and_then(|p| self.array_len(&p))
-                .map(u128::from_u64)
-                .unwrap_or_else(|| u128::from_u64(0)),
+            // Range bounds (VHDL `'left`/`'right`/`'high`/`'low`/`'ascending`).
+            // A testbench name reads as ascending `0..width-1`; hardware bounds
+            // are const-folded in the IR, so this covers only bounds written in
+            // testbench code.
+            ast::Expr::SysAttr { base, attr, .. }
+                if matches!(
+                    attr.text.as_str(),
+                    "left" | "right" | "high" | "low" | "ascending"
+                ) =>
+            {
+                let w = expr_path(base).and_then(|p| self.name_width(&p)).unwrap_or(0) as i64;
+                let v = match attr.text.as_str() {
+                    "left" | "low" => 0,
+                    "right" | "high" => (w - 1).max(0),
+                    "ascending" => 1,
+                    _ => unreachable!(),
+                };
+                u128::from_u64(v as u64)
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
                 if let Some(&v) = fenv.get(name) {
@@ -1971,7 +1989,7 @@ impl Testbench<'_> {
         let w = self.name_width(lname).unwrap_or(0);
         let mut env: HashMap<String, u128> = HashMap::new();
         env.insert("self".to_string(), self.eval_env(lhs, fenv));
-        env.insert("self::width".to_string(), u128::from_u64(w as u64));
+        env.insert("self::length".to_string(), u128::from_u64(w as u64));
         if let Some(pdecl) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &pdecl.name {
                 let rw = match rhs {
@@ -1981,7 +1999,7 @@ impl Testbench<'_> {
                     _ => w,
                 };
                 env.insert(n.text.clone(), self.eval_env(rhs, fenv));
-                env.insert(format!("{}::width", n.text), u128::from_u64(rw as u64));
+                env.insert(format!("{}::length", n.text), u128::from_u64(rw as u64));
             }
         }
         let r = self.eval_fn_stmts(&body.stmts, &env)?;
@@ -2005,7 +2023,7 @@ impl Testbench<'_> {
         let width = self.name_width(&name).unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), self.eval_env(rhs, fenv));
-        env.insert("self::width".to_string(), u128::from_u64(width as u64));
+        env.insert("self::length".to_string(), u128::from_u64(width as u64));
         let value = self.eval_fn_stmts(&body.stmts, &env)?;
         if width > 0 && (width as usize) < 128 {
             Some(value & ((1u128 << width) - 1))

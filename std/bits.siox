@@ -66,7 +66,7 @@ impl Or<uint, uint> for uint {
 }
 
 impl Not<uint> for uint {
-    fn not(self) -> uint { return ((1 << self::width) - 1) - self; }
+    fn not(self) -> uint { return ((1 << self::length) - 1) - self; }
 }
 
 impl And<int, int> for int {
@@ -78,7 +78,7 @@ impl Or<int, int> for int {
 }
 
 impl Not<int> for int {
-    fn not(self) -> int { return ((1 << self::width) - 1) - self; }
+    fn not(self) -> int { return ((1 << self::length) - 1) - self; }
 }
 
 #[precedence = 35]
@@ -89,21 +89,21 @@ impl custom<"xor", uint, uint> for uint {
 #[precedence = 40]
 impl custom<"nand", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::width) - 1) - (self and rhs);
+        return ((1 << self::length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
 impl custom<"nor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::width) - 1) - (self or rhs);
+        return ((1 << self::length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
 impl custom<"xnor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::width) - 1) - ((self or rhs) - (self and rhs));
+        return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
@@ -115,21 +115,21 @@ impl custom<"xor", int, int> for int {
 #[precedence = 40]
 impl custom<"nand", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::width) - 1) - (self and rhs);
+        return ((1 << self::length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
 impl custom<"nor", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::width) - 1) - (self or rhs);
+        return ((1 << self::length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
 impl custom<"xnor", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::width) - 1) - ((self or rhs) - (self and rhs));
+        return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
@@ -142,8 +142,8 @@ impl custom<"xnor", int, int> for int {
 pub fn sext(x: int) -> integer {
     // Test the sign bit on the RAW value: `x >> ..` would use int's own
     // (arithmetic) shift, but here we want the plain top bit.
-    if (integer(x) >> (x::width - 1)) == 1 {
-        return integer(x) - (1 << x::width);
+    if (integer(x) >> (x::length - 1)) == 1 {
+        return integer(x) - (1 << x::length);
     }
     return integer(x);
 }
@@ -168,14 +168,14 @@ impl Mul for int {
 // quotient as two's complement.
 impl Div for int {
     fn div(self, rhs: int) -> int {
-        if ((self >> (self::width - 1)) == 1) and ((rhs >> (rhs::width - 1)) == 1) {
-            return resize(0 - self, self::width) / resize(0 - rhs, rhs::width);
+        if ((self >> (self::length - 1)) == 1) and ((rhs >> (rhs::length - 1)) == 1) {
+            return resize(0 - self, self::length) / resize(0 - rhs, rhs::length);
         }
-        if (self >> (self::width - 1)) == 1 {
-            return 0 - (resize(0 - self, self::width) / rhs);
+        if (self >> (self::length - 1)) == 1 {
+            return 0 - (resize(0 - self, self::length) / rhs);
         }
-        if (rhs >> (rhs::width - 1)) == 1 {
-            return 0 - (self / resize(0 - rhs, rhs::width));
+        if (rhs >> (rhs::length - 1)) == 1 {
+            return 0 - (self / resize(0 - rhs, rhs::length));
         }
         return self / rhs;
     }
@@ -190,23 +190,23 @@ impl Shl for int {
 // positions); the shifted value's top bits are zero, so `+` sets them.
 impl Shr for int {
     fn shr(self, rhs: int) -> int {
-        if (self >> (self::width - 1)) == 1 {
-            return (self >> rhs) + ((1 << self::width) - (1 << (self::width - rhs)));
+        if (self >> (self::length - 1)) == 1 {
+            return (self >> rhs) + ((1 << self::length) - (1 << (self::length - rhs)));
         }
         return self >> rhs;
     }
 }
 
-// Sign-aware comparison: `self::width` is the operand's bit width, so
-// `self >> (self::width - 1)` is the sign bit. A negative orders below a
+// Sign-aware comparison: `self::length` is the operand's bit width, so
+// `self >> (self::length - 1)` is the sign bit. A negative orders below a
 // non-negative; same-sign two's-complement values order like their unsigned
 // words. One impl derives < <= > >= == != (spec 3.25).
 impl Ord for int {
     fn cmp(self, rhs: int) -> Ordering {
-        if (self >> (self::width - 1)) > (rhs >> (rhs::width - 1)) {
+        if (self >> (self::length - 1)) > (rhs >> (rhs::length - 1)) {
             return Ordering::Less;
         }
-        if (self >> (self::width - 1)) < (rhs >> (rhs::width - 1)) {
+        if (self >> (self::length - 1)) < (rhs >> (rhs::length - 1)) {
             return Ordering::Greater;
         }
         if self < rhs { return Ordering::Less; }
