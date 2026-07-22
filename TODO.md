@@ -12,8 +12,8 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 - 🟡 **Positional name-less struct locals in a testbench** — `let p: Pkt = { 3, 4 }`
   needs the struct's field order, which the runner/native emitter don't track;
-  named/shorthand (`.a = x`, `.a`) work. Hardware and entity connections are
-  fully covered.
+  the explicit form `let p: Pkt = { .a = 3, .b = 4 }` works. Hardware and entity
+  connections are fully covered.
 - 🔴 **Nested generics** — `Box<Box<T>>` (generic-argument parsing ambiguity).
 - 🔴 **Struct spread-update** — `{ ..base, .x = v }`.
 - 🟡 **Partial instance arrays** — an `inst`-array whose elements are only
