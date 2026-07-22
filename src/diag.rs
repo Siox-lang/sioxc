@@ -192,7 +192,8 @@ pub mod codes {
     pub const DUPLICATE_ITEM: &str = "E-P002";
     pub const TYPE_MISMATCH: &str = "E-P003";
     pub const WRITE_TO_INPUT_PORT: &str = "E-P004";
-    pub const MISSING_PORT_CONNECTION: &str = "E-P005";
+    // E-P005 (MISSING_PORT_CONNECTION) retired: an unconnected input is not an
+    // error — it holds its default value (§3.29). See `UNCONNECTED_INPUT` below.
     pub const INVALID_ATTR_TARGET: &str = "E-P006";
     pub const INVALID_ATTR_VALUE_TYPE: &str = "E-P007";
     pub const INVALID_METHOD_CALL: &str = "E-P008";
@@ -219,4 +220,8 @@ pub mod codes {
     pub const COMBINATIONAL_LOOP: &str = "W-P010";
     /// An `out` port that is never driven inside its entity.
     pub const UNDRIVEN_OUTPUT: &str = "W-P011";
+    /// A sub-instance `in` port left unconnected — it holds its default value
+    /// (§3.29) rather than being an error (an unconnected input is just
+    /// undriven; "always initialized, may be undriven").
+    pub const UNCONNECTED_INPUT: &str = "W-P012";
 }

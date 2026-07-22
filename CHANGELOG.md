@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Suspicious-comparison lint (`W-P008`).** Comparing an enum-valued operand
+  (`Bit`/`Logic`/`Bool` or a user `enum`) to a bare integer literal — `b == 1`
+  instead of `b == '1'` — now warns: its values are written as char/variant
+  literals, and an integer silently compares the raw discriminant. Numeric
+  vectors (`uint`/`int`) are excluded. (It caught a real `ok == 1` in the corpus.)
 - **`new` — uninitialized values have a defined default.** Every signal powers
   on to its type's structural default: an enum to its **first variant** (VHDL
   `T'LEFT`, so an enum with a non-zero-based first discriminant defaults to a
@@ -25,6 +30,11 @@ assertions, and VCD export — predates this changelog. See
   alignment. `::range`/`::direction` are reserved but not yet lowered.
 
 ### Changed
+- **An unconnected sub-instance input is a warning, not an error.** A forgotten
+  `in` connection was the hard error `E-P005`; under "always initialized, may be
+  undriven" (§3.29) it just holds its default value, so it is now the warning
+  `W-P012` (still surfaced). `E-P005` is retired. Top-level primary inputs are
+  unaffected.
 - **`siox-lsp` and the LLVM backend are separate crates.** So the language
   server can build without an LLVM toolchain, the tree is a small workspace: the
   root `siox` crate is the **backend-independent core** (pipeline through IR +

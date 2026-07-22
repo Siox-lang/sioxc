@@ -40,12 +40,11 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   unknowns. Statically warned today (`W-P011`, 0 corpus false positives) for a
   never-driven **`out` port** and a never-driven **value-less internal `let`** in
   a component entity (excludes `#[test]`/`#[top]` harnesses, instance arrays, and
-  initialized `let x = ..` constants). **To reconcile with the model:** a
-  structurally unconnected *input* port is currently a hard error (`E-P005`) — it
-  should become a **warning** uniform with `W-P011` (an unconnected input is just
-  undriven → reads its init value), firing on a *sub-instance's* forgotten input
-  but **not** a top-level entity's primary inputs (externally driven, same
-  exclusion as `#[top]`/`#[test]`).
+  initialized `let x = ..` constants). ✅ **Reconciled with the model:** a
+  structurally unconnected *sub-instance* input is now a **warning** (`W-P012`,
+  "holds its default value"), not the old hard error `E-P005` (retired) — an
+  unconnected input is just undriven → reads its init value (§3.29). Top-level
+  primary inputs are unaffected (they aren't instantiated).
 - 🟡 **Full direction analysis** — writing an `in` port is now caught in all
   shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
   `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
@@ -104,7 +103,12 @@ Remaining engine-specific notes:
   generic params** (their decl and `impl` declare the param separately, so a
   param used only in the impl body reads as unused; needs decl↔impl
   unification).
-- 🔴 **Suspicious `Logic` compare / reset** lint.
+- 🟡 **Suspicious `Logic` compare / reset** lint. ✅ **Compare done** (`W-P008`):
+  comparing an enum-valued operand (`Bit`/`Logic`/`Bool`/user `enum`) to a bare
+  integer literal (`b == 1` instead of `b == '1'`) warns — numeric vectors are
+  excluded; 0 corpus false positives (it caught one real `ok == 1` in the
+  corpus). Still open: the **reset** lint (`W-P009`) — needs a false-positive-safe
+  definition (reset polarity / edge-detecting a level-sensitive reset).
 
 ## Waveforms (Stage 9)
 

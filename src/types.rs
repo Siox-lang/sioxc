@@ -1396,6 +1396,34 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // Comparing an enum-valued operand (`Bit`/`Logic`/`Bool` or a
+                // user `enum`) to a bare integer literal is almost always a
+                // mistake: its values are written as char/variant literals
+                // (`'1'`, `Idle`), and an integer silently compares the raw
+                // discriminant (`b == 1` instead of `b == '1'`). Numeric
+                // vectors (`uint`/`int`) legitimately compare to integers, so
+                // they are excluded. (W-P008)
+                if matches!(op_str, "==" | "!=") {
+                    for (lit, other) in [(lhs, rhs), (rhs, lhs)] {
+                        let is_int_lit =
+                            matches!(lit.as_ref(), Expr::Int { text, .. } if !text.contains('.'));
+                        if is_int_lit {
+                            if let Some(name) = self.enum_operand_name(&self.type_of(other, sym)) {
+                                let hint = match name.as_str() {
+                                    "Bit" | "Logic" => "compare against a value literal, e.g. `== '1'`",
+                                    "Bool" => "compare against `true`/`false`, or use the value directly",
+                                    _ => "compare against a variant, e.g. `== Idle`",
+                                };
+                                self.warn(
+                                    codes::SUSPICIOUS_LOGIC_COMPARE,
+                                    *span,
+                                    format!("comparing `{name}` to an integer literal"),
+                                    hint,
+                                );
+                            }
+                        }
+                    }
+                }
                 // A user struct/enum operand needs an operator-trait impl
                 // (spec 3.25); intrinsic numerics keep built-in semantics.
                 // `==`/`!=` on enums stay built-in (discriminant compare).
@@ -1882,6 +1910,27 @@ impl<'a> Checker<'a> {
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
     }
+
+    fn warn(&mut self, code: &'static str, span: Span, msg: String, help: &str) {
+        self.sink.emit(Diagnostic::warning(msg).with_code(code).at(span).help(help.to_string()));
+    }
+
+    /// The enum name if `t` is a symbolic enum value (`Bit`/`Logic`/`Bool` or a
+    /// user `enum`) — the types whose values are written as char/variant
+    /// literals, not numbers. `None` for numerics (`uint`/`int`/`integer`/
+    /// `real`), `Char`, and non-enums.
+    fn enum_operand_name(&self, t: &Ty) -> Option<String> {
+        match t {
+            Ty::Bit => Some("Bit".into()),
+            Ty::Logic => Some("Logic".into()),
+            Ty::Bool => Some("Bool".into()),
+            Ty::Named(id) => {
+                let d = self.resolved.def(*id)?;
+                matches!(d.kind, DefKind::Enum).then(|| d.name.clone())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The base name of a type (`Counter<W>` -> `Counter`, `out S::Source` -> `S`).
@@ -2104,6 +2153,38 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    fn diag_codes(src: &str) -> Vec<String> {
+        let src = format!("{src}{VEC}");
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        sink.diagnostics().iter().map(|d| format!("{:?}", d.code)).collect()
+    }
+
+    #[test]
+    fn suspicious_logic_compare_warns_on_integer_literal() {
+        let warns = |src: &str| diag_codes(src).iter().any(|c| c.contains("W-P008"));
+        // Bit / Logic / enum vs a bare integer literal → W-P008.
+        assert!(
+            warns("module m;\nentity E { in b: Bit; out y: Bit; }\nimpl E { y = if b == 1 { '1' } else { '0' }; }\n"),
+            "Bit == 1 should warn"
+        );
+        assert!(
+            warns("module m;\nenum State { Idle, Run }\nentity E { out y: Bit; }\nimpl E { let s: State; y = if s == 0 { '1' } else { '0' }; }\n"),
+            "enum == 0 should warn"
+        );
+        // Numeric vector vs integer, and Bit vs a value literal → no warning.
+        assert!(
+            !warns("module m;\nentity E { in a: uint[8]; out y: Bit; }\nimpl E { y = if a == 5 { '1' } else { '0' }; }\n"),
+            "uint == 5 must not warn"
+        );
+        assert!(
+            !warns("module m;\nentity E { in b: Bit; out y: Bit; }\nimpl E { y = if b == '1' { '1' } else { '0' }; }\n"),
+            "Bit == '1' must not warn"
+        );
     }
 
     #[test]

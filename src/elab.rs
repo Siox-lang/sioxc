@@ -606,14 +606,20 @@ impl<'a> Elaborator<'a> {
                 && !driven.contains(&p.name.text)
                 && p.dir == Some(Direction::In)
             {
+                // An unconnected input isn't an error — it holds its default
+                // value (§3.29; "always initialized, may be undriven"). Warn so
+                // a forgotten connection is still surfaced.
                 self.sink.emit(
-                    Diagnostic::error(format!(
-                        "input port `{}` of `{}` is not connected",
+                    Diagnostic::warning(format!(
+                        "input port `{}` of `{}` is not connected; it holds its default value",
                         p.name.text, edecl.name.text
                     ))
-                    .with_code(codes::MISSING_PORT_CONNECTION)
+                    .with_code(codes::UNCONNECTED_INPUT)
                     .at(site)
-                    .help(format!("add `.{} = <signal>` to the connection", p.name.text)),
+                    .help(format!(
+                        "connect it with `.{} = <signal>`, or leave it if the default is intended",
+                        p.name.text
+                    )),
                 );
             }
         }
@@ -1070,6 +1076,36 @@ mod tests {
     }
 
     #[test]
+    fn unconnected_input_warns_not_errors() {
+        // A sub-instance with a forgotten `in` connection holds its default
+        // value (§3.29) — a warning (W-P012), not an error.
+        let src = "module m;\n\
+            entity Sub { in a: Bit; in b: Bit; out y: Bit; }\n\
+            impl Sub { y = a and b; }\n\
+            #[top]\n\
+            entity T {}\n\
+            impl T {\n\
+              let a: Bit = '0';\n\
+              let y: Bit;\n\
+              let dut: Sub = { .a = a, .y = y };\n\
+            }\n\
+            struct uint : Logic[];\nstruct int : Logic[];\n";
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+        let modules = std::slice::from_ref(&module);
+        let resolved = crate::resolve::resolve(modules, &mut sink);
+        let typed = crate::types::check(modules, &resolved, &mut sink);
+        let before = sink.error_count();
+        let _ = elaborate(modules, &typed, &mut sink);
+        assert_eq!(sink.error_count() - before, 0, "unconnected input must not error");
+        let warned = sink
+            .diagnostics()
+            .iter()
+            .any(|d| format!("{:?}", d.code).contains("W-P012"));
+        assert!(warned, "unconnected input `b` should warn W-P012");
+    }
+
+    #[test]
     fn type_param_named_like_an_entity_is_not_an_instance() {
         // `Buf<T>`'s `let s: T` is data (the bound type `uint[8]`), even though
         // the top entity is *also* named `T`. Previously the elaborator treated
@@ -1156,7 +1192,8 @@ mod tests {
 
     #[test]
     fn missing_connection_is_reported() {
-        // `rst` is left unconnected.
+        // `rst` is left unconnected — a warning (it holds its default), not an
+        // error (§3.29). See `unconnected_input_warns_not_errors` for the code.
         let src = "module m;\n\
             entity Counter<W: integer> { in clk: Bit; in rst: Logic; out count: uint[W]; }\n\
             impl Counter<W: integer> { count = 0; }\n\
@@ -1168,7 +1205,7 @@ mod tests {
               let dut: Counter<W = 8> = { .clk = clk, .count = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
-        assert_eq!(errors, 1);
+        assert_eq!(errors, 0, "an unconnected input is a warning, not an error");
     }
 
     #[test]
