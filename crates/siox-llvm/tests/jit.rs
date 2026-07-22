@@ -42,7 +42,7 @@ fn id(design: &Design, path: &str) -> SignalId {
 /// `expect` — the golden post-settle values.
 #[track_caller]
 fn check(design: &Design, inputs: &[(&str, u64)], expect: &[(&str, u64)]) {
-    siox::llvm::with_jit(design, |jit| {
+    siox_llvm::with_jit(design, |jit| {
         for &(path, v) in inputs {
             jit.set(id(design, path).0, v);
         }
@@ -63,7 +63,7 @@ type Step<'a> = &'a [(&'a str, u64)];
 #[track_caller]
 fn check_seq(design: &Design, steps: &[Step], golden: &[&[(&str, u64)]]) {
     assert_eq!(steps.len(), golden.len(), "one golden snapshot per step");
-    siox::llvm::with_jit(design, |jit| {
+    siox_llvm::with_jit(design, |jit| {
         for (n, step) in steps.iter().enumerate() {
             for &(path, v) in *step {
                 jit.set(id(design, path).0, v);

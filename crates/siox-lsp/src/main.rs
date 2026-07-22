@@ -41,6 +41,11 @@ fn main() -> ExitCode {
     }
 
     let _ = (stdio, std_dir);
-    eprintln!("siox-lsp: not yet implemented");
+    // The backend-independent frontend is linked and ready — this is what the
+    // server will drive (parse → resolve → type-check → lints) to publish
+    // diagnostics. It pulls in no LLVM backend. The LSP protocol layer over
+    // stdio is not built yet.
+    let _frontend = siox::diag::DiagnosticSink::new();
+    eprintln!("siox-lsp: not yet implemented (frontend linked, no LLVM backend)");
     ExitCode::from(69) // EX_UNAVAILABLE
 }

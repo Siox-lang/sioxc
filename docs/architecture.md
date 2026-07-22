@@ -1,45 +1,55 @@
 # Architecture
 
-The siox compiler is **one library crate (`siox`) plus two binaries**. The
-library's modules form **one strict top-to-bottom pipeline**: each module
-consumes the output of the module above it and produces the input to the module
-below. The only module everything may use is `diag`. Two binaries wrap the
-library — `sioxc` (the compiler/simulator CLI) and `siox-lsp` (the language
-server) — so both share the exact same pipeline.
+The siox compiler is a small **workspace of four crates**. The root crate
+`siox` is the **backend-independent core**: the whole compiler pipeline as
+modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
+module consumes the output of the module above it, the only module everything
+may use is `diag` — plus the simulation kernel and waveform export. It links no
+LLVM toolchain. Around it:
+
+- **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
+  `elab` → `ir`, plus `run` and `wave`.
+- **`crates/siox-llvm`** — the LLVM JIT + native AOT **execution engine**
+  (inkwell); depends on `siox`.
+- **`crates/sioxc`** — the compiler/simulator CLI; depends on `siox` + `siox-llvm`.
+- **`crates/siox-lsp`** — the language server; depends on **`siox` only**, so it
+  builds with no LLVM toolchain (it needs nothing below the `ir` module).
 
 ```mermaid
 flowchart LR
-    subgraph lib [siox library]
+    subgraph core [crate: siox — backend-independent core]
         subgraph pipeline [pipeline modules]
             direction LR
             SY[syntax] --> RE[resolve] --> TY[types] --> EL[elab] --> IR[ir]
         end
-        IR --> LL[llvm]
-        LL -. Engine .-> RUN[run]
+        IR --> RUN[run]
         RUN --> WA[wave]
         DIAG[diag] -. used by all .-> pipeline
     end
-    CLI[bin: sioxc] == drives ==> lib
-    LSP[bin: siox-lsp] == frontend ==> lib
+    IR --> LL[crate: siox-llvm]
+    LL -. Engine .-> RUN
+    CLI[crate: sioxc] == drives ==> core
+    CLI == engine ==> LL
+    LSP[crate: siox-lsp] == frontend only ==> core
 ```
 
 `run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
 stimulus + `await`/`clock` scheduler, owns simulation time, and records
-waveforms — driving whatever `Engine` it's handed. `llvm` is that `Engine` —
-it emits LLVM, JIT-runs, or AOT-compiles the `Design` to native code (`sioxc
-test` JIT-runs, `sim --wave` JIT-traces). It is the permanent, only engine, so
-building siox needs an LLVM toolchain (see `Cargo.toml` for the pinned
-version). `siox-lsp` uses only the frontend at runtime but is built as part of
-the same crate.
+waveforms — driving whatever `Engine` it's handed. `siox-llvm` is that `Engine`
+— it emits LLVM, JIT-runs, or AOT-compiles the `Design` to native code (`sioxc
+test` JIT-runs, `sim --wave` JIT-traces). It is the only engine, so *`sioxc`*
+needs an LLVM toolchain to build; the core and the language server do not.
 
 **Layering rule:** a module may use only the modules above it in this list
-(plus `diag`). The crate boundaries that once enforced this are gone — the
-layering is now a **convention**; do not introduce upward or sideways `use`s.
+(plus `diag`). Inside the `siox` crate the layering is a **convention** (the
+old per-stage crate boundaries are gone); across crates it is real — `siox-llvm`
+depends on `siox`, never the reverse. Do not introduce upward or sideways `use`s.
 
 ## Modules
 
-The library lives in `src/`, one file (or directory) per module below; the two
-binaries live in `src/bin/sioxc/` and `src/bin/siox-lsp/`.
+The core `siox` crate lives in `src/`, one file (or directory) per module below.
+The backend is `crates/siox-llvm/`, and the two binaries are `crates/sioxc/` and
+`crates/siox-lsp/`.
 
 | Module | Spec stage(s) | Role |
 | ------ | ------------- | ---- |
@@ -51,13 +61,19 @@ binaries live in `src/bin/sioxc/` and `src/bin/siox-lsp/`.
 | `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
 | `run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
 | `wave`    | 9    | `Trace` recording + VCD export (FST later). |
-| `llvm`    | B    | LLVM/inkwell backend (the permanent execution engine) — emit `.ll`, JIT-run, AOT native object. Consumes `ir::Design`; driven by `run`. |
-| `bin/sioxc`   | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the bin-local `build` module. |
-| `bin/siox-lsp`| — | The language server (skeleton). Frontend-only; reuses `syntax`…`types` for diagnostics. |
+
+The three sibling crates:
+
+| Crate | Spec stage(s) | Role |
+| ----- | ------------- | ---- |
+| `siox-llvm` | B  | LLVM/inkwell backend (the only execution engine) — emit `.ll`, JIT-run, AOT native object. Consumes `siox::ir::Design`; driven by `siox::run`. |
+| `sioxc`     | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the crate-local `build` module. Depends on `siox` + `siox-llvm`. |
+| `siox-lsp`  | — | The language server (skeleton). Depends on **`siox` only** — reaches at most the `ir` module for diagnostics, never the backend, so it builds without LLVM. |
 
 `src/lib.rs` opens with the module map, and each module's own file opens with a
 doc-comment summarising its responsibility and spec acceptance criteria — read
-it first when entering a module.
+it first when entering a module. Within the `siox` crate, refer to other modules
+as `crate::<module>`; the sibling crates use `siox::<module>` and `siox_llvm::`.
 
 ## Data that flows between stages
 

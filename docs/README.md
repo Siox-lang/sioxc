@@ -26,7 +26,9 @@ language and [architecture.md](architecture.md) for the compiler.
 
 ## The compiler pipeline
 
-Source flows top-to-bottom through one linear pipeline; each stage is a crate.
+Source flows top-to-bottom through one linear pipeline. Each stage is a module
+of the backend-independent `siox` core crate; the LLVM engine is the separate
+`siox-llvm` crate (see [architecture.md](architecture.md)).
 
 ```mermaid
 flowchart TD
@@ -40,11 +42,12 @@ flowchart TD
     ENG -->|"test runner + siox-wave"| VCD[VCD waveforms]
 ```
 
-`siox-diag` (spans, diagnostics, source map) underpins every stage, and `sioxc`
-is the binary that wires them together per subcommand. **`siox-llvm` (on by
-default) is the execution engine** — it JIT-runs or AOT-compiles the `Design` to
-native code; the engine-generic test runner drives it to produce `#[test]`
-results and traced waveforms.
+`diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
+crate is the binary that wires them together per subcommand. **`siox-llvm` is
+the execution engine** — it JIT-runs or AOT-compiles the `Design` to native
+code; the engine-generic test runner drives it to produce `#[test]` results and
+traced waveforms. The `siox-lsp` crate needs only the core, so it builds without
+LLVM.
 
 ## Current status (summary)
 
@@ -72,8 +75,8 @@ left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 cargo build                       # build the library + binaries (needs an LLVM toolchain)
 cargo test                        # run all tests
 
-cargo run --bin sioxc -- <file>           # compile the #[top] design
-cargo run --bin sioxc -- test <file>      # build + run #[test] entities (JIT)
+cargo run -p sioxc -- <file>           # compile the #[top] design
+cargo run -p sioxc -- test <file>      # build + run #[test] entities (JIT)
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like

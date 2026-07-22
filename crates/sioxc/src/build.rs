@@ -239,7 +239,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let obj = tmp.join("design.o");
     let csrc = tmp.join("sim.c");
-    siox::llvm::emit_object(design, &obj)?;
+    siox_llvm::emit_object(design, &obj)?;
     std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
     if std::env::var("SIOX_DEBUG_C").is_ok() {
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);

@@ -1,0 +1,15 @@
+[package]
+name = "siox-llvm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "siox LLVM backend: JIT + native AOT over the siox IR"
+
+[dependencies]
+siox.workspace = true
+# LLVM (via inkwell) — building this crate needs a matching LLVM toolchain.
+# Pinned to the local LLVM (22); bump the features to match your `llvm-config`.
+inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"] }

@@ -25,6 +25,13 @@ assertions, and VCD export — predates this changelog. See
   alignment. `::range`/`::direction` are reserved but not yet lowered.
 
 ### Changed
+- **`siox-lsp` and the LLVM backend are separate crates.** So the language
+  server can build without an LLVM toolchain, the tree is a small workspace: the
+  root `siox` crate is the **backend-independent core** (pipeline through IR +
+  the simulation kernel + waveform export — no inkwell); `crates/siox-llvm` is
+  the LLVM JIT/AOT backend; `crates/sioxc` is the compiler CLI (depends on both);
+  and `crates/siox-lsp` depends on **`siox` only**, so `cargo build -p siox-lsp`
+  links no LLVM. Backend code is reached as `siox_llvm::…`; the core is `siox::…`.
 - **One library, two binaries — no more workspace.** The ten pipeline crates
   (`siox-diag` … `sioxc`) collapse into a single `siox` library whose modules
   (`src/diag.rs`, `src/syntax/`, …) are the same strict top-to-bottom pipeline,

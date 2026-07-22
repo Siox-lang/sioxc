@@ -8,8 +8,8 @@ use std::process::Command;
 fn testbench_method_call_runs_on_jit() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     // Run from the repo root so `./std` resolves.
-    let root = env!("CARGO_MANIFEST_DIR");
-    let fixture = "tests/fixtures/method_test.siox";
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let fixture = "crates/sioxc/tests/fixtures/method_test.siox";
     let out = Command::new(siox)
         .current_dir(root)
         .args(["test", fixture, "--std", "std"])
@@ -31,8 +31,8 @@ fn testbench_method_call_runs_native() {
         return;
     }
     let siox = env!("CARGO_BIN_EXE_sioxc");
-    let root = env!("CARGO_MANIFEST_DIR");
-    let fixture = "tests/fixtures/method_test.siox";
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let fixture = "crates/sioxc/tests/fixtures/method_test.siox";
     let bin = std::env::temp_dir().join(format!("siox_method_{}", std::process::id()));
     // Build the standalone native test binary (struct-local + method inline).
     let build = Command::new(siox)

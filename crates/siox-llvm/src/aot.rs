@@ -12,9 +12,9 @@ use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 
-use crate::ir::Design;
+use siox::ir::Design;
 
-use crate::llvm::emit::build_module;
+use crate::emit::build_module;
 
 /// Emit `design` as a native object file at `path` (`.o`). The object exports
 /// `sx_reset`/`sx_set`/`sx_read`/`sx_settle`.
@@ -44,7 +44,7 @@ pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{BinOp, Driver, Expr, Signal, SignalId};
+    use siox::ir::{BinOp, Driver, Expr, Signal, SignalId};
     use std::process::Command;
 
     fn sig(path: &str, width: u32) -> Signal {

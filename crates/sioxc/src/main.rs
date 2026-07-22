@@ -434,7 +434,7 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         eprintln!("siox build: signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width);
         return ExitCode::FAILURE;
     }
-    match siox::llvm::emit_object(&design, &obj) {
+    match siox_llvm::emit_object(&design, &obj) {
         Ok(()) => {
             eprintln!("compiled `{top}` -> {} ({} signals)", obj.display(), design.signals.len());
             ExitCode::SUCCESS
@@ -530,7 +530,7 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    print!("{}", siox::llvm::emit_module_ir(&design));
+    print!("{}", siox_llvm::emit_module_ir(&design));
     ExitCode::SUCCESS
 }
 
@@ -617,7 +617,7 @@ fn run_tests_llvm(
         return Err(issues.join("; "));
     }
     eprintln!("backend: llvm (JIT)");
-    Ok(siox::llvm::with_jit(design, |jit| {
+    Ok(siox_llvm::with_jit(design, |jit| {
         siox::run::run_tests_with_engine(modules, hier, design, filter, || {
             jit.reset();
             Box::new(JitEngine { jit, design }) as Box<dyn siox::run::Engine>
@@ -627,7 +627,7 @@ fn run_tests_llvm(
 
 /// Adapts a JIT-compiled design to the test runner's [`siox::run::Engine`].
 struct JitEngine<'a, 'ctx> {
-    jit: &'a siox::llvm::Jit<'ctx>,
+    jit: &'a siox_llvm::Jit<'ctx>,
     design: &'a siox::ir::Design,
 }
 
@@ -800,7 +800,7 @@ fn trace_first_test(
     {
         let jittable = design.signals.iter().all(|s| s.width <= 64) && design.validate().is_empty();
         if jittable {
-            return siox::llvm::with_jit(design, |jit| {
+            return siox_llvm::with_jit(design, |jit| {
                 siox::run::run_test_traced_with_engine(modules, hier, design, None, || {
                     jit.reset();
                     Box::new(JitEngine { jit, design }) as Box<dyn siox::run::Engine>

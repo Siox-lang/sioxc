@@ -8,7 +8,7 @@ use inkwell::module::{Linkage, Module};
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::IntPredicate;
 
-use crate::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
+use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
 
 /// Build the LLVM module for `design` and return its textual IR (`.ll`).
 /// This is what `siox build --emit-llvm` prints and what golden tests diff.
@@ -533,7 +533,7 @@ fn logic_value(c: char) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Design, Driver, Signal};
+    use siox::ir::{Design, Driver, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
         Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }

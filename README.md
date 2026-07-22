@@ -117,7 +117,7 @@ parse tree, lowered IR, and instance hierarchy.
 completion, rename, and more. Build it and point your editor at it:
 
 ```bash
-cargo build --bin siox-lsp
+cargo build -p siox-lsp
 target/debug/siox-lsp --stdio --std ./std
 ```
 

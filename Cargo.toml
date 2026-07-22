@@ -1,34 +1,36 @@
-[package]
-name = "siox"
+[workspace]
+members = ["crates/siox-llvm", "crates/sioxc", "crates/siox-lsp"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Siox-lang/sioxc"
 authors = ["siox contributors"]
-description = "siox (silicon oxide): a digital hardware description language and simulator"
 
-# One library holds the whole compiler pipeline as modules; two binaries wrap it.
+[workspace.dependencies]
+# The backend-independent core (this package) and the LLVM backend, as path deps.
+siox = { path = "." }
+siox-llvm = { path = "crates/siox-llvm" }
+clap = { version = "4", features = ["derive"] }
+
+# The root package is `siox`: the backend-independent compiler core (pipeline
+# through IR + the simulation kernel + waveform export). It links no LLVM
+# toolchain, so a frontend consumer (`siox-lsp`) can depend on it alone.
+[package]
+name = "siox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "siox (silicon oxide): the backend-independent compiler core"
+
 [lib]
 name = "siox"
 path = "src/lib.rs"
-
-# The compiler / simulator CLI.
-[[bin]]
-name = "sioxc"
-path = "src/bin/sioxc/main.rs"
-
-# The language server (skeleton; speaks over stdio once implemented).
-[[bin]]
-name = "siox-lsp"
-path = "src/bin/siox-lsp/main.rs"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
-# LLVM (via inkwell) is the permanent backend — building siox needs an LLVM
-# toolchain. Pinned to the local LLVM (22); bump the features to match your
-# `llvm-config`.
-inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"] }
 
 [profile.release]
 lto = "thin"

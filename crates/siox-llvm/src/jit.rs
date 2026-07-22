@@ -9,9 +9,9 @@ use inkwell::context::Context;
 use inkwell::execution_engine::JitFunction;
 use inkwell::OptimizationLevel;
 
-use crate::ir::Design;
+use siox::ir::Design;
 
-use crate::llvm::emit::build_module;
+use crate::emit::build_module;
 
 type ResetFn = unsafe extern "C" fn();
 type SetFn = unsafe extern "C" fn(u32, u64);
@@ -67,7 +67,7 @@ pub fn with_jit<R>(design: &Design, f: impl FnOnce(&Jit) -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{BinOp, Driver, Expr, Signal, SignalId};
+    use siox::ir::{BinOp, Driver, Expr, Signal, SignalId};
 
     fn sig(path: &str, width: u32) -> Signal {
         Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }

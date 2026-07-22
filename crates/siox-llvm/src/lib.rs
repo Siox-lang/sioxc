@@ -1,6 +1,6 @@
 //! LLVM code generation for siox (compiled-backend plan, stage B2).
 //!
-//! Consumes the process-extracted [`crate::ir::Design`] and builds an LLVM
+//! Consumes the process-extracted [`siox::ir::Design`] and builds an LLVM
 //! module: three word-width state arrays (`cur`/`old`/`event`), the
 //! `sx_set`/`sx_read`/`sx_reset` accessors, and a `sx_settle` that evaluates
 //! the combinational processes in dependency order. Sequential (event-block)
