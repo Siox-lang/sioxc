@@ -30,18 +30,54 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Semantics & analysis
 
-- 🟡 **Undriven signals** — statically warned (`W-P011`, 0 corpus false
-  positives) for a never-driven **`out` port** and a never-driven **value-less
-  internal `let`** in a component entity (excludes `#[test]`/`#[top]` harnesses,
-  instance arrays, and initialized `let x = ..` constants). Still open: a
-  runtime `'X'` for a signal that is undriven only on *some* paths — needs
-  per-signal driven-flag / X-value tracking in the engine. Structurally
-  unconnected input *ports* are still caught statically (`E-P005`).
+- 🟡 **Undriven signals** — **model: always initialized, may be undriven.** Every
+  signal/port always holds a value (its `Init` value, see below); "undriven"
+  means nothing drives over it, so it keeps that value forever — deterministic,
+  never an undefined/error state. Undriven is therefore always a **warning**,
+  never an error, and there is **no runtime `'X'` from undriven-ness**: a signal
+  undriven on only *some* paths simply holds its init value there (the hold/latch
+  case, already `W-P002 POSSIBLE_LATCH`); `'X'`/`'Z'` come only from real
+  unknowns. Statically warned today (`W-P011`, 0 corpus false positives) for a
+  never-driven **`out` port** and a never-driven **value-less internal `let`** in
+  a component entity (excludes `#[test]`/`#[top]` harnesses, instance arrays, and
+  initialized `let x = ..` constants). **To reconcile with the model:** a
+  structurally unconnected *input* port is currently a hard error (`E-P005`) — it
+  should become a **warning** uniform with `W-P011` (an unconnected input is just
+  undriven → reads its init value), firing on a *sub-instance's* forgotten input
+  but **not** a top-level entity's primary inputs (externally driven, same
+  exclusion as `#[top]`/`#[test]`).
 - 🟡 **Full direction analysis** — writing an `in` port is now caught in all
   shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
   `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
   warns (`W-P011`). Still open: reading your own `out` port from within the
   entity (allowed today; some HDLs flag it).
+- 🟢 **`new` — uninitialized value semantics** — model the default value of an
+  undriven signal as the type's nullary constructor `T::new()`, not a hardcoded
+  `0`. Naming it `new` (a `New` trait, `fn new() -> Self`) folds "default value"
+  and "construction" into one concept rather than a separate `Default`/`Init`;
+  the **nullary** `new()` is the value a signal falls back to, while any
+  parameterized `new(args)` stays *explicit* construction. Written either
+  `T::new()` or **`T()`** — the zero-argument member of the same `T(...)` family
+  whose one-argument form `T(x)` is the conversion (§3.28); `T(...)` names the
+  *constructor* (a function), not the inert data, consistent with
+  `From::from`/`Ord::cmp`/`Boolean::as_bool`. `T()` is implemented (`lower_new`:
+  enum → first variant, numeric/vector/`Char`/`real`/`integer` → 0, struct →
+  field-wise `Val::Fields`). The *derived default*
+  is structural — an enum yields its **first variant** (VHDL `T'LEFT`), a
+  `Logic`/`Bit` vector yields all-`'0'` → `0`, a struct/array defaults
+  field/element-wise — which unifies "0 for numerics" and "first variant for
+  enums" under one recursive rule and fixes undriven enums with a
+  **non-zero-based first discriminant** (today they read `0`, not a valid
+  variant). Two stages: (1) ✅ **derived default landed** (siox-ir sets an enum
+  signal's `init` to its first-variant discriminant via `enum_first_discriminants`;
+  non-enum stays `0`; explicit `let x = V` still wins; `language.md` §3.29; 0
+  corpus regressions); (2) **`impl New for T` overrides** wait on **trait
+  resolution** (the same unlock as `Condition`/`Boolean`) and require the nullary
+  body to be a **constant expression** foldable to the `u64` `init`. Note
+  in the docs that a type-level default is a *simulation* power-on value, not a
+  synthesizable reset (real reset comes from reset logic). Relates to
+  **Undriven signals** above (this defines the value; the `'U'`-style runtime
+  *visibility* of undriven is a separate `Logic`-domain change).
 - 🟡 **Cross-module visibility** (resolve) — private items aren't yet enforced
   across modules (single global namespace); value identifiers resolve
   best-effort.

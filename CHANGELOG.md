@@ -11,6 +11,15 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Added
+- **`new` — uninitialized values have a defined default.** Every signal powers
+  on to its type's structural default: an enum to its **first variant** (VHDL
+  `T'LEFT`, so an enum with a non-zero-based first discriminant defaults to a
+  valid member, not `0`), a numeric/vector to `0`, a struct/array field- and
+  element-wise. Writable explicitly as `T::new()` / `T()` — the zero-argument
+  member of the `T(...)` family whose one-argument form `T(x)` is the conversion
+  (§3.28/§3.29). (An `impl New for T` override awaits trait resolution.)
+
 ### Changed
 - **Connection/struct blocks have two forms, not three.** The bare `.field`
   name-shorthand (`{ .clk, .rst }`, meaning `.clk = clk`) is removed. A `.field`

@@ -180,6 +180,7 @@ pub fn lower_in(
     l.out.base_dir = base_dir.to_path_buf();
     l.collect(modules);
     l.enum_variants = enum_discriminants(modules);
+    l.enum_first_disc = enum_first_discriminants(modules);
     // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
     // consumers can render stored discriminants symbolically.
     l.out.enum_syms = l
@@ -251,6 +252,10 @@ struct Lowering<'a> {
     entity_params: HashMap<String, HashMap<String, i64>>,
     /// Enum name -> variant name -> discriminant value.
     enum_variants: HashMap<String, HashMap<String, u64>>,
+    /// Enum name -> discriminant of its *first* (declaration-order) variant,
+    /// the derived `new()` default (VHDL `T'LEFT`): an uninitialized enum signal
+    /// powers on holding this value, so it is always a valid member of the type.
+    enum_first_disc: HashMap<String, u64>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Bus-mode per-leaf directions: `(struct, mode) -> {field -> dir}` from
@@ -376,6 +381,7 @@ impl<'a> Lowering<'a> {
             impls: HashMap::new(),
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
+            enum_first_disc: HashMap::new(),
             structs: HashMap::new(),
             mode_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
@@ -1428,6 +1434,13 @@ impl<'a> Lowering<'a> {
                 self.sig_type.insert(id.0, p.segments[0].text.clone());
                 // Record the enum type so consumers render variants symbolically.
                 self.out.signals[id.0 as usize].enum_type = Some(p.segments[0].text.clone());
+                // Derived `new()` default: an uninitialized enum signal powers on
+                // holding its first variant (`T'LEFT`), always a valid member —
+                // not a bare `0`, which a non-zero-based first variant would make
+                // invalid. An explicit `let x = V` overwrites this below.
+                if let Some(&d) = self.enum_first_disc.get(&p.segments[0].text) {
+                    self.out.signals[id.0 as usize].init = d;
+                }
             }
         } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
             // `integer<lo..hi>` stores in the smallest width covering the
@@ -2332,18 +2345,24 @@ impl<'a> Lowering<'a> {
 
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
-            ast::Expr::Call { callee, args, .. } => self
-                .lower_conversion(callee, args, &HashMap::new())
-                .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
-                .or_else(|| match self.lower_method_call(callee, args, &HashMap::new()) {
-                    Some(Val::Scalar(v)) => Some(v),
-                    _ => None,
-                })
-                .or_else(|| match self.lower_from(callee, args, &HashMap::new()) {
-                    Some(Val::Scalar(v)) => Some(v),
-                    _ => None,
-                })
-                .unwrap_or(Expr::Unknown),
+            ast::Expr::Call { callee, args, .. } => {
+                // `T()` — the nullary constructor — resolves to the type's
+                // default before any free-fn/conversion lookup (scalar context).
+                if let Some(Val::Scalar(v)) = self.lower_new(callee, args) {
+                    return v;
+                }
+                self.lower_conversion(callee, args, &HashMap::new())
+                    .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
+                    .or_else(|| match self.lower_method_call(callee, args, &HashMap::new()) {
+                        Some(Val::Scalar(v)) => Some(v),
+                        _ => None,
+                    })
+                    .or_else(|| match self.lower_from(callee, args, &HashMap::new()) {
+                        Some(Val::Scalar(v)) => Some(v),
+                        _ => None,
+                    })
+                    .unwrap_or(Expr::Unknown)
+            }
             // `if c { a } else { b }` is a mux: lower to a select.
             ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
                 cond: Box::new(self.lower_expr(cond)),
@@ -3027,6 +3046,66 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &fenv)
     }
 
+    /// `T()` / `T[N]()` — the nullary constructor: the structural `new()`
+    /// default of a named type, the explicit spelling of the value an
+    /// uninitialized signal already powers on to (§3.29), and the zero-argument
+    /// member of the same `T(...)` family whose one-argument form `T(x)` is the
+    /// conversion of §3.28. An enum yields its first variant (`T'LEFT`); a
+    /// numeric / vector / `Char` / `real` / kernel `integer` yields `0`; a
+    /// struct yields its fields defaulted the same way. The `impl New for T`
+    /// *override* waits on trait resolution; this is the derived default only.
+    /// (An array `T[N]()` of a composite defaults through its per-element signal
+    /// inits, not an expression value.)
+    fn lower_new(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Option<Val> {
+        if !args.is_empty() {
+            return None;
+        }
+        // The head type name — a bare `T` or the family of a sized `T[N]` (the
+        // width is irrelevant to a zero default).
+        let name = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
+            ast::Expr::Index { base, .. } => match base.as_ref() {
+                ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if let Some(&d) = self.enum_first_disc.get(name) {
+            return Some(Val::Scalar(Expr::Const(d)));
+        }
+        if let Some(fields) = self.struct_default_leaves(name, "") {
+            return Some(Val::Fields(fields));
+        }
+        (self.vector_families.contains(name)
+            || matches!(name.as_str(), "integer" | "Char" | "real"))
+        .then(|| Val::Scalar(Expr::Const(0)))
+    }
+
+    /// A struct's derived default as flattened `(leaf-dotted-name, expr)` pairs
+    /// (the shape `Val::Fields` assignment consumes), each field defaulted
+    /// structurally and nested structs recursed. `None` for a non-aggregate (a
+    /// scalar newtype like `struct uint : Logic[]`, which has no fields).
+    fn struct_default_leaves(&self, sname: &str, prefix: &str) -> Option<Vec<(String, Expr)>> {
+        let fields = self.raw_struct_fields(sname).filter(|f| !f.is_empty())?;
+        let mut out = Vec::new();
+        for (fname, fty) in fields {
+            let path =
+                if prefix.is_empty() { fname.clone() } else { format!("{prefix}.{fname}") };
+            if let Some(h) = type_head_name(&fty) {
+                if let Some(nested) = self.struct_default_leaves(h, &path) {
+                    out.extend(nested);
+                    continue;
+                }
+                if let Some(&d) = self.enum_first_disc.get(h) {
+                    out.push((path, Expr::Const(d)));
+                    continue;
+                }
+            }
+            out.push((path, Expr::Const(0)));
+        }
+        Some(out)
+    }
+
     /// Lower a call to a module-level `fn`: const-fold when every argument
     /// const-evaluates (so `clog2(DEPTH)` is a constant), else inline the
     /// body like an operator impl (params bound positionally, with
@@ -3376,6 +3455,12 @@ impl<'a> Lowering<'a> {
                 select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))
             }
             ast::Expr::Call { callee, args, .. } => {
+                // `T()` — the nullary constructor — resolves to the type's
+                // default (a struct yields per-field values) before any
+                // free-fn/conversion lookup.
+                if let Some(v) = self.lower_new(callee, args) {
+                    return v;
+                }
                 match self
                     .lower_conversion(callee, args, env)
                     .or_else(|| self.lower_free_call(callee, args, env))
@@ -4324,6 +4409,22 @@ pub fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String,
     out
 }
 
+/// Every enum's first-variant discriminant — the derived `new()` default
+/// (`T'LEFT`). Mirrors `enum_discriminants`' running-counter numbering but keeps
+/// only the first (declaration-order, base chain first) variant's value, so an
+/// enum whose first variant carries a non-zero `= n` still defaults to a valid
+/// member rather than a bare `0`.
+pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
+    let enums = enum_index(modules);
+    let mut out = HashMap::new();
+    for name in enums.keys() {
+        if let Some((_, disc)) = effective_variants(name, &enums, &mut Vec::new()).first() {
+            out.insert(name.clone(), disc.map(|d| d as u64).unwrap_or(0));
+        }
+    }
+    out
+}
+
 /// The dotted signal path of a name, struct-field, or constant-index access:
 /// `s` -> `"s"`, `s.data` -> `"s.data"`, `a[2]` -> `"a[2]"`. A dynamic index or
 /// anything else (calls, slices) yields `None`.
@@ -4930,6 +5031,90 @@ mod tests {
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn enum_signal_inits_to_first_variant() {
+        // Derived `new()` default: an uninitialized enum signal powers on
+        // holding its *first* variant. With a non-zero-based first
+        // discriminant, that is a valid member — a bare `0` would not be.
+        let d = lower_src(
+            "module m;\n\
+             enum Phase { Idle = 2, Run = 3, Done = 4 }\n\
+             enum Step  { A, B, C }\n\
+             #[top]\n\
+             entity T {}\n\
+             impl T { let p: Phase; let s: Step; }\n",
+        );
+        let init = |suffix: &str| {
+            d.signals.iter().find(|s| s.path.ends_with(suffix)).unwrap_or_else(|| panic!("no {suffix}")).init
+        };
+        assert_eq!(init(".p"), 2, "Phase defaults to Idle = 2, not 0");
+        assert_eq!(init(".s"), 0, "0-based Step still defaults to A = 0");
+    }
+
+    #[test]
+    fn explicit_enum_init_overrides_first_variant() {
+        // An explicit `let p = Run` beats the first-variant default.
+        let d = lower_src(
+            "module m;\n\
+             enum Phase { Idle = 2, Run = 3, Done = 4 }\n\
+             #[top]\n\
+             entity T {}\n\
+             impl T { let p: Phase = Phase::Run; }\n",
+        );
+        let p = d.signals.iter().find(|s| s.path.ends_with(".p")).expect("no .p");
+        assert_eq!(p.init, 3, "explicit initializer Run = 3 wins");
+    }
+
+    #[test]
+    fn nullary_constructor_lowers_to_default() {
+        // `T()` in expression position is the type's derived default: an enum →
+        // its first variant, a numeric/vector → 0. Same rule as the implicit
+        // signal init, now writable.
+        let d = lower_src(
+            "module m;\n\
+             enum Phase { Idle = 2, Run = 3 }\n\
+             #[top]\n\
+             entity E { out y: Phase; out z: uint[8]; }\n\
+             impl E { y = Phase(); z = uint[8](); }\n",
+        );
+        let drv = |suffix: &str| -> u64 {
+            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
+            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            match &dr.expr {
+                Expr::Const(c) => *c,
+                other => panic!("{suffix} not a const: {other:?}"),
+            }
+        };
+        assert_eq!(drv(".y"), 2, "Phase() == first variant Idle = 2");
+        assert_eq!(drv(".z"), 0, "uint[8]() == 0");
+    }
+
+    #[test]
+    fn nullary_constructor_defaults_struct_fields() {
+        // `S()` on a struct defaults each field structurally: an enum field to
+        // its first variant, a numeric field to 0 (inherited base fields too).
+        let d = lower_src(
+            "module m;\n\
+             enum Phase { Idle = 2, Run = 3 }\n\
+             struct Header { flag: Bit, ph: Phase }\n\
+             struct Packet : Header { data: uint[8] }\n\
+             #[top]\n\
+             entity E { out o: Packet; }\n\
+             impl E { o = Packet(); }\n",
+        );
+        let drv = |suffix: &str| -> u64 {
+            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
+            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            match &dr.expr {
+                Expr::Const(c) => *c,
+                other => panic!("{suffix} not a const: {other:?}"),
+            }
+        };
+        assert_eq!(drv(".o.ph"), 2, "enum field → first variant Idle = 2");
+        assert_eq!(drv(".o.flag"), 0, "inherited Bit field → 0");
+        assert_eq!(drv(".o.data"), 0, "numeric field → 0");
     }
 
     #[test]

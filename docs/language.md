@@ -1502,6 +1502,60 @@ directions (adding fields, narrowing an enum) require an explicit
 is a constructor call, a conversion is always visible at the site.
 ---
 
+### 3.29 Uninitialized values (`new`)
+
+Every signal always holds a value — there is no "no value" state. A declaration
+without an initializer takes its type's **default**, written `T::new()`:
+
+```siox
+let p: Phase;          // == Phase::new(): the default Phase
+let n: uint[8];        // == 0
+```
+
+`new` is siox's default constructor — a `New` trait, `fn new() -> Self`. It is
+written either as `T::new()` (the underlying trait method) or, equivalently, as
+**`T()`** — the zero-argument member of the same `T(...)` construction family
+whose one-argument form `T(x)` is the conversion of §3.28. `T(...)` reads as
+"construct a `T`", dispatched by its arguments: `T()` builds the default from
+nothing (`New::new()`), `T(x)` transforms an existing value. This is still a
+*function* acting to produce data — the type name in call position names the
+constructor, it does not invoke the inert data — consistent with every other
+trait (`From::from`, `Ord::cmp`, `Boolean::as_bool`). A parameterized
+`new(args)` (when a type provides one) is ordinary explicit construction.
+
+```siox
+let p: Phase;          // implicit: the default Phase
+let p2 = Phase();      // explicit: the same default, written out
+let n = uint[8]();     // == 0
+```
+
+**The derived default is structural** (VHDL's `T'LEFT`), applied recursively:
+
+- an **enum** → its **first variant** (§3.8) — so an enum whose first variant
+  carries a non-zero `= n` still defaults to a valid member, not a bare `0`;
+- a `Logic`/`Bit` **vector** (`uint`/`int`) → every bit is `Logic`'s first
+  value `'0'` → the value `0`;
+- a **struct** → each field defaulted by its own type;
+- an **array** → each element defaulted.
+
+This is one rule, not two: "`0` for numerics" *falls out* of "first value for
+enums", because a numeric's bits are `Logic` whose first value is `'0'`. A type
+may override the default with `impl New for T` (the nullary body must be a
+constant expression, foldable to the reset value).
+
+**Uninitialized is not undriven.** The default is what a signal *starts* at;
+whether anything ever drives over it is separate. A signal with no driver simply
+keeps its `new()` value forever — deterministic, never an undefined `'X'` (an
+undriven signal is a *warning*, §3.15/diagnostics, not an error). `'X'`/`'Z'`
+arise only from genuine unknowns, never from the mere absence of a driver.
+
+A type-level default is a **simulation** power-on value, not a synthesizable
+reset — real hardware powers up indeterminate, and a defined reset value comes
+from reset logic (§3.15). `new()` gives waveforms and testbenches a clean,
+valid starting value; it does not substitute for a reset.
+
+---
+
 ## Stage 1 — Syntax freeze and examples
 
 ### Goal
