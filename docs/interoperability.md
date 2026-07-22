@@ -41,7 +41,7 @@ siox ships a language server, `siox-lsp`, speaking LSP over stdin/stdout, so any
 LSP-capable editor can use it:
 
 ```bash
-cargo build -p siox-lsp
+cargo build --bin siox-lsp --no-default-features
 target/debug/siox-lsp --stdio --std ./std
 ```
 

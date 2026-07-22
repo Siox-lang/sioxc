@@ -25,6 +25,16 @@ assertions, and VCD export — predates this changelog. See
   alignment. `::range`/`::direction` are reserved but not yet lowered.
 
 ### Changed
+- **One library, two binaries — no more workspace.** The ten pipeline crates
+  (`siox-diag` … `sioxc`) collapse into a single `siox` library whose modules
+  (`src/diag.rs`, `src/syntax/`, …) are the same strict top-to-bottom pipeline,
+  wrapped by two binaries: `sioxc` (the compiler/simulator CLI, with its native
+  emitter as the bin-local `build` module) and `siox-lsp` (the language server,
+  frontend-only — currently a skeleton). The layering is now a convention rather
+  than crate-enforced. Cross-module references use `crate::<module>` inside the
+  library and `siox::<module>` from the binaries/tests. `cargo run -p sioxc`
+  becomes `cargo run --bin sioxc`; the frontend-only build is still
+  `--no-default-features`.
 - **`::len` and `::width` unify into `::length`.** For a flat vector the element
   count *is* the bit width, so the two collapse into one VHDL-style `::length`
   (an array *of* vectors still distinguishes them: `tab::length` counts

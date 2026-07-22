@@ -20,7 +20,7 @@ cargo build --release
 
 That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
 call it by path. siox compiles designs through LLVM, so this build needs a
-matching local LLVM install (see `crates/siox-llvm/Cargo.toml` for the pinned
+matching local LLVM install (see `Cargo.toml` for the pinned
 version).
 
 > **Frontend only (no LLVM).** `cargo build --release --no-default-features`
@@ -122,7 +122,7 @@ parse tree, lowered IR, and instance hierarchy.
 completion, rename, and more. Build it and point your editor at it:
 
 ```bash
-cargo build -p siox-lsp
+cargo build --bin siox-lsp --no-default-features
 target/debug/siox-lsp --stdio --std ./std
 ```
 

@@ -17,10 +17,10 @@ engines the language ships:
   a one-shot delayed write) is found and fired, then the design settles:
   - runner: `Runner::next_event` / `step_one_clock`, with `clocks: Vec<ClockGen>`
     (a free-running clock's half-period) and `oneshots: Vec<(fs, signal, value)>`
-    (`crates/siox-run/src/lib.rs`);
+    (`src/run.rs`);
   - native binary: the generated C emits the same wheel — `sx_next_edge` /
     `sx_step_clock` over sim-time + per-clock next-edge arrays
-    (`crates/sioxc/src/build.rs`).
+    (`src/bin/sioxc/build.rs`).
 - **Background clocks.** `clk = not clk after 5ns;` registers a free-running
   clock (half-period `5ns`); other `x = v after d;` schedules a one-shot write at
   `now + d`.

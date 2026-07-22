@@ -1,51 +1,63 @@
 # Architecture
 
-The siox compiler is a Cargo workspace arranged as **one strict top-to-bottom
-pipeline**. Each crate consumes the output of the crate above it and produces
-the input to the crate below. The only crate everything may depend on is
-`siox-diag`.
+The siox compiler is **one library crate (`siox`) plus two binaries**. The
+library's modules form **one strict top-to-bottom pipeline**: each module
+consumes the output of the module above it and produces the input to the module
+below. The only module everything may use is `diag`. Two binaries wrap the
+library — `sioxc` (the compiler/simulator CLI) and `siox-lsp` (the language
+server) — so both share the exact same pipeline.
 
 ```mermaid
 flowchart LR
-    subgraph pipeline [compiler pipeline]
-        direction LR
-        SY[siox-syntax] --> RE[siox-resolve] --> TY[siox-types] --> EL[siox-elab] --> IR[siox-ir]
+    subgraph lib [siox library]
+        subgraph pipeline [pipeline modules]
+            direction LR
+            SY[syntax] --> RE[resolve] --> TY[types] --> EL[elab] --> IR[ir]
+        end
+        IR --> LL[llvm]
+        LL -. Engine .-> RUN[run]
+        RUN --> WA[wave]
+        DIAG[diag] -. used by all .-> pipeline
     end
-    IR --> LL[siox-llvm]
-    LL -. Engine .-> RUN[siox-run]
-    RUN --> WA[siox-wave]
-    DIAG[siox-diag] -. used by all .-> pipeline
-    CLI[sioxc] == drives ==> pipeline
+    CLI[bin: sioxc] == drives ==> lib
+    LSP[bin: siox-lsp] == frontend ==> lib
 ```
 
-`siox-run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
+`run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
 stimulus + `await`/`clock` scheduler, owns simulation time, and records
-waveforms — driving whatever `Engine` it's handed. `siox-llvm` (the `llvm`
+waveforms — driving whatever `Engine` it's handed. `llvm` (the `llvm`
 feature, on by default) is that `Engine` — it emits LLVM, JIT-runs, or
 AOT-compiles the `Design` to native code (`sioxc test` JIT-runs, `sim --wave`
 JIT-traces). It is the only engine; the frontend still builds without an LLVM
-toolchain (`--no-default-features`), but then `siox test` has nothing to run.
+toolchain (`--no-default-features`), but then `sioxc test` has nothing to run.
+`siox-lsp` is frontend-only, so it is built that way.
 
-**Layering rule:** a crate may depend only on the crates above it in this list
-(plus `siox-diag`). Do not introduce upward or sideways dependencies.
+**Layering rule:** a module may use only the modules above it in this list
+(plus `diag`). The crate boundaries that once enforced this are gone — the
+layering is now a **convention**; do not introduce upward or sideways `use`s.
 
-## Crates
+## Modules
 
-| Crate | Spec stage(s) | Role |
-| ----- | ------------- | ---- |
-| `siox-diag`    | 10   | Foundation: `Span`, `SourceMap`, `Diagnostic`, `DiagnosticSink`, and the stable error/warning code catalogue (`codes`). |
-| `siox-syntax`  | 1–2  | Lexer, tokens, AST, recursive-descent + Pratt parser, pretty-printer. `parse_module` is the entry point. |
-| `siox-resolve` | 3    | Name resolution: top-level definitions and `DefId`s, `using` imports/aliases, `::` paths, enum-associated items, attribute names. Produces `Resolved` (definition table + use-site → `DefId` map). |
-| `siox-types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
-| `siox-elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
-| `siox-ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
-| `siox-run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
-| `siox-wave`    | 9    | `Trace` recording + VCD export (FST later). |
-| `siox-llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `siox-ir::Design`; driven by `siox-run`. |
-| `sioxc`     | 12   | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. |
+The library lives in `src/`, one file (or directory) per module below; the two
+binaries live in `src/bin/sioxc/` and `src/bin/siox-lsp/`.
 
-Each crate's `lib.rs` opens with a doc-comment summarising its responsibility
-and the spec acceptance criteria — read it first when entering a crate.
+| Module | Spec stage(s) | Role |
+| ------ | ------------- | ---- |
+| `diag`    | 10   | Foundation: `Span`, `SourceMap`, `Diagnostic`, `DiagnosticSink`, and the stable error/warning code catalogue (`codes`). |
+| `syntax`  | 1–2  | Lexer, tokens, AST, recursive-descent + Pratt parser, pretty-printer. `parse_module` is the entry point. |
+| `resolve` | 3    | Name resolution: top-level definitions and `DefId`s, `using` imports/aliases, `::` paths, enum-associated items, attribute names. Produces `Resolved` (definition table + use-site → `DefId` map). |
+| `types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
+| `elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
+| `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
+| `run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
+| `wave`    | 9    | `Trace` recording + VCD export (FST later). |
+| `llvm`    | B    | LLVM/inkwell backend (`llvm` feature, **on by default**) — the **execution engine**: emit `.ll`, JIT-run, AOT native object. Consumes `ir::Design`; driven by `run`. |
+| `bin/sioxc`   | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the bin-local `build` module. |
+| `bin/siox-lsp`| — | The language server (skeleton). Frontend-only; reuses `syntax`…`types` for diagnostics. |
+
+`src/lib.rs` opens with the module map, and each module's own file opens with a
+doc-comment summarising its responsibility and spec acceptance criteria — read
+it first when entering a module.
 
 ## Data that flows between stages
 

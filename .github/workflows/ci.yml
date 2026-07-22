@@ -66,7 +66,7 @@ jobs:
           fail=0
           for f in siox-tests/*.siox; do
             echo "== $f =="
-            if ! cargo run -q -p sioxc -- check "$f" --std std; then
+            if ! cargo run -q --bin sioxc -- check "$f" --std std; then
               echo "::error file=$f::check failed"
               fail=1
             fi

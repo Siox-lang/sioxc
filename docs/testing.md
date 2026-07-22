@@ -66,7 +66,7 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
 ## How the compiler is tested
 
 - **Per-crate unit tests** across the pipeline (`cargo test --workspace`).
-- **JIT behaviour tests** (`crates/siox-llvm/tests/jit.rs`) drive the JIT across
+- **JIT behaviour tests** (`tests/jit.rs`) drive the JIT across
   the whole expression surface — arithmetic, slices, concat, enum match,
   struct/array signals, clocked designs — and assert golden signal values. Those
   golden values were captured from the delta-cycle interpreter that used to be

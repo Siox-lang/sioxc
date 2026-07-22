@@ -1,42 +1,41 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/siox-diag",
-    "crates/siox-syntax",
-    "crates/siox-resolve",
-    "crates/siox-types",
-    "crates/siox-elab",
-    "crates/siox-ir",
-    "crates/siox-run",
-    "crates/siox-llvm",
-    "crates/siox-wave",
-    "crates/sioxc",
-]
-
-[workspace.package]
+[package]
+name = "siox"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Siox-lang/sioxc"
 authors = ["siox contributors"]
+description = "siox (silicon oxide): a digital hardware description language and simulator"
 
-[workspace.dependencies]
-# Internal crates (path deps so the whole tree builds as one unit).
-siox-diag = { path = "crates/siox-diag" }
-siox-syntax = { path = "crates/siox-syntax" }
-siox-resolve = { path = "crates/siox-resolve" }
-siox-types = { path = "crates/siox-types" }
-siox-elab = { path = "crates/siox-elab" }
-siox-ir = { path = "crates/siox-ir" }
-siox-run = { path = "crates/siox-run" }
-# default-features off (no inkwell/llvm-sys) so the frontend-only build works
-# without an LLVM toolchain; sioxc's `llvm` feature turns the backend on.
-siox-llvm = { path = "crates/siox-llvm", default-features = false }
-siox-wave = { path = "crates/siox-wave" }
+# One library holds the whole compiler pipeline as modules; two binaries wrap it.
+[lib]
+name = "siox"
+path = "src/lib.rs"
 
-# Third-party (kept minimal on purpose; add as stages need them).
+# The compiler / simulator CLI.
+[[bin]]
+name = "sioxc"
+path = "src/bin/sioxc/main.rs"
+
+# The language server (skeleton; speaks over stdio once implemented).
+[[bin]]
+name = "siox-lsp"
+path = "src/bin/siox-lsp/main.rs"
+
+[dependencies]
 clap = { version = "4", features = ["derive"] }
+# inkwell is optional and behind the `llvm` feature: the frontend-only build
+# (`--no-default-features`) needs no LLVM toolchain. Pinned to the local LLVM
+# (22); bump the feature to match your `llvm-config`.
+inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"], optional = true }
+
+[features]
+# LLVM is the only backend (the language is compiled-first). Build the frontend
+# without a toolchain via `--no-default-features`; `sioxc test` then has no
+# engine, and `siox-lsp` (frontend-only) is best built this way.
+default = ["llvm"]
+llvm = ["dep:inkwell"]
 
 [profile.release]
 lto = "thin"

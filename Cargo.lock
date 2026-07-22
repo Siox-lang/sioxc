@@ -231,100 +231,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "siox-diag"
-version = "0.1.0"
-
-[[package]]
-name = "siox-elab"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-resolve",
- "siox-syntax",
- "siox-types",
-]
-
-[[package]]
-name = "siox-ir"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-elab",
- "siox-resolve",
- "siox-syntax",
- "siox-types",
-]
-
-[[package]]
-name = "siox-llvm"
-version = "0.1.0"
-dependencies = [
- "inkwell",
- "siox-diag",
- "siox-elab",
- "siox-ir",
- "siox-resolve",
- "siox-run",
- "siox-syntax",
- "siox-types",
-]
-
-[[package]]
-name = "siox-resolve"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-syntax",
-]
-
-[[package]]
-name = "siox-run"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-elab",
- "siox-ir",
- "siox-syntax",
-]
-
-[[package]]
-name = "siox-syntax"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
-]
-
-[[package]]
-name = "siox-types"
-version = "0.1.0"
-dependencies = [
- "siox-diag",
- "siox-resolve",
- "siox-syntax",
-]
-
-[[package]]
-name = "siox-wave"
-version = "0.1.0"
-dependencies = [
- "siox-ir",
- "siox-run",
-]
-
-[[package]]
-name = "sioxc"
+name = "siox"
 version = "0.1.0"
 dependencies = [
  "clap",
- "siox-diag",
- "siox-elab",
- "siox-ir",
- "siox-llvm",
- "siox-resolve",
- "siox-run",
- "siox-syntax",
- "siox-types",
- "siox-wave",
+ "inkwell",
 ]
 
 [[package]]

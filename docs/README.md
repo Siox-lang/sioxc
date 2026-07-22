@@ -69,12 +69,12 @@ left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 ## Build and run
 
 ```bash
-cargo build                       # build the workspace (LLVM backend, default)
+cargo build                       # build the library + binaries (LLVM backend, default)
 cargo test                        # run all tests (needs an LLVM toolchain)
 cargo build --no-default-features # frontend only, no LLVM toolchain required
 
-cargo run -p sioxc -- <file>              # compile the #[top] design
-cargo run -p sioxc -- test <file>         # build + run #[test] entities (JIT)
+cargo run --bin sioxc -- <file>           # compile the #[top] design
+cargo run --bin sioxc -- test <file>      # build + run #[test] entities (JIT)
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
