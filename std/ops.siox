@@ -133,8 +133,8 @@ impl custom<"xnor", Bit, Bit> for Bit {
 }
 //
 // `Boolean` gives a type a truth representation so it can be used directly
-// as a condition (in `if`, and later `while`/assertions). Truth is the
-// kernel's intrinsic `integer`: 1 is true, 0 is false. The conversion is
+// as a condition (in `if`, and later `while`/assertions). Truth is the system
+// `Bool` type — `true`/`false`, not an `integer` code. The conversion is
 // applied only in condition position — it is not a general implicit cast.
 //
 // This is the canonical declaration of `Boolean`; name it with
@@ -153,26 +153,22 @@ pub enum Ordering {
 }
 
 pub trait Boolean {
-    fn as_bool(self) -> integer;
+    fn as_bool(self) -> Bool;
 }
 
 impl Boolean for Bit {
-    fn as_bool(self) -> integer {
+    fn as_bool(self) -> Bool {
         if self == '1' {
-            return 1;
+            return true;
         } else {
-            return 0;
+            return false;
         }
     }
 }
 
 impl Boolean for Bool {
-    fn as_bool(self) -> integer {
-        if self {
-            return 1;
-        } else {
-            return 0;
-        }
+    fn as_bool(self) -> Bool {
+        return self;
     }
 }
 

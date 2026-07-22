@@ -192,7 +192,8 @@ impl<'a> Checker<'a> {
             attr_value_kinds.insert(name.to_string(), ty);
         }
         // Mirror of std::ops' `Boolean` impls: `Bit` and `Bool` can be used
-        // directly as conditions (spec 3.16); truth is 1-bit, '1' = true.
+        // directly as conditions (spec 3.16); a condition's truth is a `Bool`
+        // (`true`/`false`), not an integer code.
         // `Logic` is omitted, so it still requires an explicit comparison.
         // ponytail: hardcoded shim — replace with real trait-impl lookup when
         // trait resolution lands, so user `impl Boolean for T` works from source.

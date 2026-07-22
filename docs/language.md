@@ -887,11 +887,11 @@ The compiler may recognize these patterns later for synthesis diagnostics, but P
 A condition (in `if`, and later `while`/assertions) must have a type that
 implements the `Boolean` trait — a type provides a truth representation, which
 is applied only in condition position (not as a general implicit cast). Truth
-is the kernel base type `integer`: 1 is true, 0 is false.
+is the system `Bool` type: `true`/`false`, not an integer code.
 
 ```siox
 trait Boolean {
-    fn as_bool(self) -> integer;
+    fn as_bool(self) -> Bool;
 }
 ```
 
@@ -928,10 +928,10 @@ A user type becomes usable as a condition by implementing `Boolean`:
 
 ```siox
 impl Boolean for State {
-    fn as_bool(self) -> integer {
+    fn as_bool(self) -> Bool {
         match self {
-            State::Idle => return 0,
-            _ => return 1,
+            State::Idle => return false,
+            _ => return true,
         }
     }
 }
@@ -2275,8 +2275,8 @@ std::assert
 
 The language kernel provides exactly three base types:
 
-- **`integer`** — unconstrained integer; also the truth type (1 true,
-  0 false; see 3.16).
+- **`integer`** — unconstrained integer. (Boolean truth is the `Bool` type —
+  `true`/`false` — not `integer`; see 3.16.)
 - **`real`** — unconstrained float (f64 in simulation).
 - **`Char`** — a character *symbol*, deliberately **non-numeric**.
   Characters and strings have no numbers: a numbering exists only relative

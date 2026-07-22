@@ -8,8 +8,9 @@ module std::logic;
 // name and keeps their operator semantics intrinsic — a temporary shim until
 // operator overloading (spec 3.13) lets the truth tables live here as trait
 // impls, the way std_logic_1164 defines `and`/`or` as plain functions.
-// The kernel's base types are `integer` and `real`; its only notion of truth
-// is `integer`: 1 is true, 0 is false (see std::ops::Boolean).
+// The kernel's base types are `integer` and `real`; boolean truth is the
+// system `Bool` type — `true`/`false` (see std::ops::Boolean), not an integer
+// code.
 
 // The digital scalar hierarchy is a nominal derivation chain (spec: derived
 // types). Each level reuses the representation of the one above and adds

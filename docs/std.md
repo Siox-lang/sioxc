@@ -84,15 +84,15 @@ semantics.
 
 ```siox
 pub enum Ordering { Less, Equal, Greater }
-pub trait Boolean { fn as_bool(self) -> integer; }
+pub trait Boolean { fn as_bool(self) -> Bool; }
 ```
 
 **`Ordering`** — the result of `impl Ord for T` (`fn cmp`, derives all six comparisons):
 one impl derives all of `< <= > >= == !=` (spec 3.25).
 
-**`Boolean`** — a type usable as a condition provides `as_bool` returning
-the kernel truth type `integer` (1 true, 0 false), applied only in condition
-position. `Bit`/`Bool` opt in; `Logic` deliberately does not.
+**`Boolean`** — a type usable as a condition provides `as_bool` returning the
+system `Bool` type (`true`/`false`), applied only in condition position.
+`Bit`/`Bool` opt in; `Logic` deliberately does not.
 
 Core operator hooks, `Suffix`, and `Prefix` are compiler bootstraps. Custom
 operator identity, precedence, input, and output are std/user declarations.
