@@ -3279,16 +3279,19 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
-        // (discriminant to compare against, negate?)
-        let (want, ne) = match op_str {
-            "<" => (0u64, false),  // == Less
-            "==" => (1, false),    // == Equal
-            ">" => (2, false),     // == Greater
-            ">=" => (0, true),     // != Less
-            "!=" => (1, true),     // != Equal
-            "<=" => (2, true),     // != Greater
+        // (`Ordering` variant to compare against, negate?). The discriminant
+        // comes from std's `Ordering` enum, not a baked-in 0/1/2 — the fallback
+        // is only the conventional layout for a std-less unit test.
+        let (variant, fallback, ne) = match op_str {
+            "<" => ("Less", 0u64, false),
+            "==" => ("Equal", 1, false),
+            ">" => ("Greater", 2, false),
+            ">=" => ("Less", 0, true),
+            "!=" => ("Equal", 1, true),
+            "<=" => ("Greater", 2, true),
             _ => return None,
         };
+        let want = self.enum_variant("Ordering", variant).unwrap_or(fallback);
         let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else { return None }; // -> Ord::cmp
         Some(Expr::Binary {
             op: if ne { BinOp::Ne } else { BinOp::Eq },

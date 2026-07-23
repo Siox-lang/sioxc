@@ -2002,12 +2002,16 @@ impl Testbench<'_> {
             return Some(u128::from_u64(((eq) == (op_str == "==")) as u64));
         }
         // Comparisons: (Ordering discriminant to compare, negate) — the same
-        // table the IR uses. `==`/`!=` stay raw bit equality.
+        // table the IR uses. The discriminant comes from std's `Ordering` enum,
+        // not a baked-in 0/2. `==`/`!=` stay raw bit equality.
+        let ord = |v: &str, fallback: u64| {
+            self.enums.get("Ordering").and_then(|m| m.get(v)).copied().unwrap_or(fallback)
+        };
         let cmp = match op_str {
-            "<" => Some((0u64, false)),
-            ">" => Some((2, false)),
-            ">=" => Some((0, true)),
-            "<=" => Some((2, true)),
+            "<" => Some((ord("Less", 0), false)),
+            ">" => Some((ord("Greater", 2), false)),
+            ">=" => Some((ord("Less", 0), true)),
+            "<=" => Some((ord("Greater", 2), true)),
             _ => None,
         };
         let tr = match cmp {

@@ -725,11 +725,15 @@ impl Ctx<'_> {
                 if op_str == "==" { "==" } else { "!=" }
             )));
         }
+        // `Ordering` discriminants from std's enum, not a baked-in 0/2.
+        let ord = |v: &str, fallback: u64| {
+            self.enums.get("Ordering").and_then(|m| m.get(v)).copied().unwrap_or(fallback)
+        };
         let cmp = match op_str {
-            "<" => Some((0u64, false)),
-            ">" => Some((2, false)),
-            ">=" => Some((0, true)),
-            "<=" => Some((2, true)),
+            "<" => Some((ord("Less", 0), false)),
+            ">" => Some((ord("Greater", 2), false)),
+            ">=" => Some((ord("Less", 0), true)),
+            "<=" => Some((ord("Greater", 2), true)),
             _ => None,
         };
         let tr = match cmp {
