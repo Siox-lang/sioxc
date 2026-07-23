@@ -90,10 +90,13 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
   `std_logic_1164` operator tables + `resolved` resolution — **verified
   exhaustively (333/333 cells) against `nvc`**; `logic_ninevalue_test` guards
-  it. (a) **Still open: X/Z propagation through vector arithmetic** — `uint`/
-  `int` are stored as 2-value words, so metavalues don't propagate through
-  vector `+`/`-`/…; needs a per-bit metavalue representation in the engine (the
-  big one). Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
+  it. (a) 🟢 **X/Z propagation through vector arithmetic** — designed:
+  [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)
+  (value word + `xmask` companion per `Logic`-vector; 4-state reduction on
+  vectors, scalar stays 9-value; `numeric_std` arithmetic poisoning + per-bit
+  `std_logic_1164` logical). Staged build: literals+representation → arithmetic
+  → logical → relational → VCD, each nvc-validated, corpus green throughout
+  (`xmask = 0` is bit-identical to today). Implementation pending. Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
   default via `new`/first-variant — a separate decision if `'U'` is wanted.
 - 🟢 **Cascaded event domains — a register clocked by a derived clock.**
   ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
