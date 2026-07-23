@@ -811,6 +811,22 @@ impl<'a> Lowering<'a> {
                     } else {
                         self.add_signal(path, &l.name.text, 0);
                     }
+                    // A string initializer on a flattened array
+                    // (`let arr: Color[3] = "rgb"`) seeds each element: a
+                    // char-enum variant, or a `Char` code point.
+                    if let Some(ast::Expr::StrLit { text, .. }) = &l.value {
+                        if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
+                            for (c, i) in text.chars().zip(&indices) {
+                                if let Some(&id) = self.locals.get(&format!("{}[{i}]", l.name.text)) {
+                                    let en = self.out.signals[id.0 as usize].enum_type.clone();
+                                    let v = en
+                                        .and_then(|e| self.char_disc(c, &e))
+                                        .unwrap_or(c as u32 as u64);
+                                    self.out.signals[id.0 as usize].init = v;
+                                }
+                            }
+                        }
+                    }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
                     // entities are excluded: a `#[test]` testbench's locals are
@@ -903,8 +919,8 @@ impl<'a> Lowering<'a> {
                         // A metavalue-carrying bit-string init (`b"01X0"`) needs a
                         // companion signal to record which elements are `'X'`/… —
                         // the storage half of X/Z vector propagation (stage 1c).
-                        if let ast::Expr::BitStrLit { base, digits, .. } = v {
-                            let (_, discs) = self.decode_bit_string(*base, digits);
+                        if let Some((base, digits)) = Self::bit_string_parts(v) {
+                            let (_, discs) = self.decode_bit_string(base, digits);
                             if discs & Self::META_MASK != 0 {
                                 self.ensure_meta_companion(id, discs);
                             }
@@ -1389,6 +1405,11 @@ impl<'a> Lowering<'a> {
             ast::Expr::BitStrLit { base, digits, .. } => {
                 Some(self.decode_bit_string(*base, digits).0)
             }
+            // A plain string on a logic-vector target reads as a logic array —
+            // each character is a `std_ulogic` (no `b"…"` prefix needed). Only
+            // reached for a single-signal (packed vector) target; a `Char[]`
+            // flattens and never lands here.
+            ast::Expr::StrLit { text, .. } => Some(self.decode_bit_string('b', text).0),
             // --- integer / const-fn arithmetic ---
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
@@ -1991,8 +2012,8 @@ impl<'a> Lowering<'a> {
                         // (`out = b"1X10"`) — the value driver keeps only the
                         // bits, so give the target a companion and drive its
                         // discriminant array (the disc is lost in the IR `Const`).
-                        if let ast::Expr::BitStrLit { base, digits, .. } = value {
-                            let (_, discs) = self.decode_bit_string(*base, digits);
+                        if let Some((base, digits)) = Self::bit_string_parts(value) {
+                            let (_, discs) = self.decode_bit_string(base, digits);
                             if discs & Self::META_MASK != 0 {
                                 let cid = self.driven_companion(tid);
                                 self.out.drivers.push(Driver {
@@ -2039,10 +2060,18 @@ impl<'a> Lowering<'a> {
                                 }
                                 for (c, i) in chars.iter().zip(&indices) {
                                     if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
+                                        // A char-enum element (`Color[3] = "rgb"`)
+                                        // takes the variant's discriminant; a
+                                        // plain `Char` array takes the code point.
+                                        let val = self.out.signals[sig.0 as usize]
+                                            .enum_type
+                                            .clone()
+                                            .and_then(|en| self.char_disc(*c, &en))
+                                            .unwrap_or(*c as u32 as u64);
                                         self.out.drivers.push(Driver {
                                             target: sig,
                                             cond: cond.clone(),
-                                            expr: Expr::Const(*c as u32 as u64),
+                                            expr: Expr::Const(val),
                                             ctx: self.cur_ctx,
                                         });
                                     }
@@ -3122,6 +3151,17 @@ impl<'a> Lowering<'a> {
             }
         }
         (value, discs)
+    }
+
+    /// The `(base, digits)` of a bit-string-like value: an explicit `b"…"`/`x"…"`
+    /// literal, or a plain string (base `'b'`) — a string of logic values reads
+    /// as a logic array, no prefix needed.
+    fn bit_string_parts<'e>(e: &'e ast::Expr) -> Option<(char, &'e str)> {
+        match e {
+            ast::Expr::BitStrLit { base, digits, .. } => Some((*base, digits)),
+            ast::Expr::StrLit { text, .. } => Some(('b', text)),
+            _ => None,
+        }
     }
 
     /// A nibble of this mask is nonzero exactly when its element's discriminant

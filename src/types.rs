@@ -1239,6 +1239,28 @@ impl<'a> Checker<'a> {
                 Ty::Error => true,
                 _ => false,
             },
+            // A string is a sequence of characters: assigned to a `Logic`-vector
+            // it fills each element with the matching `std_ulogic` (like `b"…"`),
+            // and assigned to an array of a char-enum each character is a variant
+            // — a string of logic values *is* a logic array, no prefix needed.
+            Expr::StrLit { text, .. } => {
+                let n = text.chars().count() as u32;
+                match lhs {
+                    Ty::Vector { width, .. } => {
+                        (*width == 0 || n == *width)
+                            && text.chars().all(|c| "01ZXUWLH-".contains(c))
+                    }
+                    // A char-enum array (`Color[3] = "rgb"`): each char a variant.
+                    Ty::Array { elem, len } if matches!(elem.as_ref(), Ty::Named(_)) => {
+                        let Ty::Named(id) = elem.as_ref() else { unreachable!() };
+                        (*len == 0 || n == *len)
+                            && text.chars().all(|c| self.enum_has_char_variant(*id, c))
+                    }
+                    // `Char[]` (a `string`) and everything else keep the existing
+                    // structural check.
+                    _ => compatible(lhs, &self.type_of(value, sym)),
+                }
+            }
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }
