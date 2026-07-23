@@ -13,6 +13,7 @@ fn lower(src: &str) -> Design {
     // self-contained, so declare the vector families locally.
     let src = format!(
         "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n\
+         enum Bool {{ false, true }}\n\
          enum Bit {{ '0', '1' }}\n\
          enum ULogic : Bit {{ 'Z', 'X', 'U', 'W', 'L', 'H', '-' }}\n\
          trait ClockLike {{ fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }}\n\

@@ -1348,7 +1348,13 @@ impl<'a> Lowering<'a> {
             ast::Expr::LogicLit { ch, .. } => target
                 .and_then(|en| self.char_disc(*ch, en))
                 .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
-            ast::Expr::Bool { value, .. } => Some(*value as u64),
+            // `true`/`false` take their positions in std's `Bool` enum, not a
+            // baked-in 1/0 — reorder `enum Bool` and this follows.
+            ast::Expr::Bool { value, .. } => self
+                .enum_variants
+                .get("Bool")
+                .and_then(|m| m.get(if *value { "true" } else { "false" }))
+                .copied(),
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
                 .get(&p.segments[0].text)
@@ -5158,7 +5164,7 @@ mod tests {
 
     /// A minimal `ClockLike` impl so self-contained test sources can use the
     /// `clk.rising()` edge methods (std provides these for real designs).
-    const CLK_PRELUDE: &str = "\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
+    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
 
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
