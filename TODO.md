@@ -112,12 +112,23 @@ Remaining engine-specific notes:
   `fopen`/`fread`, for a file that changes between build and run, is a possible
   follow-up; it needs a dynamic-length string local in C.
 
-### Codegen features (Cargo-gated, opt-in — see `crates/siox-llvm/Cargo.toml`)
+## Optimizations (lower priority than semantics — finish those first)
 
-Signal state is stored width-packed (a `Bit`/`Logic` takes one byte, not eight;
-`uint[32]` four, `uint[64]` eight), shared by the JIT and AOT via the emitted
-state struct.
+Codegen/footprint work, opt-in and Cargo-gated (see
+`crates/siox-llvm/Cargo.toml`). All lower priority than the semantics work
+above — none of it blocks correctness, so it waits. (`bitpack`/`simd` and the
+`event` bitset are pure speed/size; `wide`/`f128` add capability but are still
+opt-in and non-blocking.)
 
+Signal state is stored width-packed by default (a `Bit`/`Logic` takes one byte,
+not eight; `uint[32]` four, `uint[64]` eight), shared by the JIT and AOT.
+Composites already flatten to per-leaf signals, each minimally sized (an enum is
+`⌈log2(variants)⌉` bits), so structs/arrays/enums pack for free under `bitpack`.
+
+- 🔴 **`event` bitset** — under `bitpack` the `event`/changed-flags array still
+  gives each signal a full-width slot for a 1-bit flag. Pack it as a dedicated
+  1-bit-per-signal bitset (`⌈N/8⌉` bytes, independent of signal widths) — the
+  last real density win. Its own layout since flags are always 1 bit.
 - 🟢 **`bitpack`** *(implemented)* — pack many small signals into shared 64-bit
   words (a `Bit` takes 1 bit, a nibble `Logic` 4), instead of a byte each. Up to
   ~8× smaller state for `Bit`-heavy designs, at the cost of read-modify-write
