@@ -1985,6 +1985,22 @@ impl<'a> Lowering<'a> {
                 // `locals` so they fall through untouched.
                 if let Some(tpath) = expr_path(target) {
                     if let Some(&tid) = self.locals.get(&tpath) {
+                        // A metavalue bit-string literal in driver position
+                        // (`out = b"1X10"`) — the value driver keeps only the
+                        // bits, so give the target a companion and drive its
+                        // discriminant array (the disc is lost in the IR `Const`).
+                        if let ast::Expr::BitStrLit { base, digits, .. } = value {
+                            let (_, discs) = self.decode_bit_string(*base, digits);
+                            if discs & Self::META_MASK != 0 {
+                                let cid = self.driven_companion(tid);
+                                self.out.drivers.push(Driver {
+                                    target: SignalId(cid),
+                                    cond: cond.clone(),
+                                    expr: Expr::Const(discs),
+                                    ctx: self.cur_ctx,
+                                });
+                            }
+                        }
                         let tw = self.out.signals[tid.0 as usize].width;
                         if let Some(sw) = self.ref_width(value) {
                             if tw > 0 && sw > 0 && tw != sw {
