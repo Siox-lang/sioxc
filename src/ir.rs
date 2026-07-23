@@ -46,6 +46,12 @@ pub struct Design {
     /// against — the design's source directory. Empty means the current working
     /// directory (the default; a bare `Design` reads CWD-relative).
     pub base_dir: std::path::PathBuf,
+    /// A `Logic`-vector signal id -> its metavalue-companion signal id. The
+    /// companion carries which elements are metavalues (`'X'`/`'Z'`/…), the
+    /// storage half of X/Z vector propagation. Absent for metavalue-free
+    /// vectors, so a design that never touches metavalues is unchanged. See
+    /// `docs/proposals/xz-vector-propagation.md`.
+    pub meta_of: HashMap<u32, u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -892,6 +898,15 @@ impl<'a> Lowering<'a> {
                             let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
                             self.out.signals[id.0 as usize].init = masked;
                         }
+                        // A metavalue-carrying bit-string init (`b"01X0"`) needs a
+                        // companion signal to record which elements are `'X'`/… —
+                        // the storage half of X/Z vector propagation (stage 1c).
+                        if let ast::Expr::BitStrLit { base, digits, .. } = v {
+                            let (_, meta) = self.decode_bit_string(*base, digits);
+                            if meta != 0 {
+                                self.ensure_meta_companion(id, meta);
+                            }
+                        }
                     }
                 }
             }
@@ -1423,6 +1438,33 @@ impl<'a> Lowering<'a> {
             enum_type: None,
         });
         self.locals.insert(name.to_string(), id);
+    }
+
+    /// Ensure a `Logic`-vector signal has its metavalue companion — an extra,
+    /// same-width signal whose bit `i` marks element `i` as a metavalue
+    /// (`'X'`/`'Z'`/…). The companion is a normal signal, so the engines store
+    /// and reset it for free; only reads reconstruct the 9-value from the value
+    /// bit + this bit. Created only where a metavalue actually appears, so
+    /// metavalue-free designs are untouched. (Distinguishing *which* metavalue
+    /// widens the companion — a follow-on within this stage.)
+    fn ensure_meta_companion(&mut self, id: SignalId, meta_init: u64) {
+        if let Some(&cid) = self.out.meta_of.get(&id.0) {
+            self.out.signals[cid as usize].init = meta_init;
+            return;
+        }
+        let sig = &self.out.signals[id.0 as usize];
+        let companion = Signal {
+            path: format!("{}$meta", sig.path),
+            width: sig.width,
+            real: false,
+            char: false,
+            range: None,
+            init: meta_init,
+            enum_type: None,
+        };
+        let cid = self.out.signals.len() as u32;
+        self.out.signals.push(companion);
+        self.out.meta_of.insert(id.0, cid);
     }
 
     /// Add a signal for `name: ty`, flattening composites into scalar leaves: a
@@ -5650,6 +5692,7 @@ mod tests {
             enum_syms: HashMap::new(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         let issues = bad.validate();
         assert!(issues.iter().any(|i| i.contains("unknown width")), "{issues:?}");
@@ -5798,6 +5841,24 @@ mod tests {
         );
         let v = d.signals.iter().find(|s| s.path.ends_with(".v")).expect("no .v");
         assert_eq!(v.init, 10, "b\"1010\" -> init 10");
+    }
+
+    #[test]
+    fn metavalue_bit_string_creates_companion() {
+        // A metavalue init spawns a `$meta` companion recording the X element;
+        // a plain 2-value init does not.
+        let d = lower_src(
+            "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
+             impl E { let v: uint[4] = b\"1X10\"; let w: uint[4] = b\"1010\"; y = v; z = w; }\n\
+             #[top] entity T {}\n\
+             impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
+        );
+        let v = d.signals.iter().position(|s| s.path.ends_with(".v")).expect("v") as u32;
+        let w = d.signals.iter().position(|s| s.path.ends_with(".w")).expect("w") as u32;
+        let cid = *d.meta_of.get(&v).expect("v has a metavalue companion");
+        assert_eq!(d.signals[cid as usize].init, 4, "companion marks the X element (0100)");
+        assert!(d.signals[cid as usize].path.ends_with(".v$meta"));
+        assert!(!d.meta_of.contains_key(&w), "clean init gets no companion");
     }
 
     #[test]

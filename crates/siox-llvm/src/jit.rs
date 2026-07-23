@@ -97,6 +97,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         with_jit(&design, |jit| {
             jit.set(0, 30);

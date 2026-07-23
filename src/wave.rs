@@ -157,6 +157,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         }
     }
 
@@ -205,6 +206,7 @@ mod tests {
             enum_syms,
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         let samples = vec![
             Sample { time_fs: 0, values: vec![0, 0] },

@@ -797,6 +797,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // State layout, accessors, settle, and the add+mask are present. The
@@ -825,6 +826,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         emit_module_ir(&design);
     }
@@ -845,6 +847,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // In the settle body, the store to b's slot precedes the store to y's.

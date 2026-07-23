@@ -100,6 +100,7 @@ mod tests {
             enum_syms: Default::default(),
             new_defaults: Default::default(),
             base_dir: Default::default(),
+            meta_of: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));
