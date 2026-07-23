@@ -1542,8 +1542,54 @@ impl<'a> Lowering<'a> {
                     els: Box::new(me.unwrap_or(Expr::Const(0))),
                 })
             }
+            Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or) => {
+                self.logical_meta(*op, lhs, rhs, width)
+            }
+            Expr::Unary { op: UnOp::Not, rhs } => {
+                // `not` of any metavalue is `'X'` — the operand's metavalue
+                // positions become `X`, clean positions clean.
+                let m = self.lower_meta_ir(rhs, width)?;
+                let mut acc = Expr::Const(0);
+                for i in 0..width {
+                    acc = or_expr(acc, x_nibble(meta_bit(&Some(m.clone()), i), i));
+                }
+                Some(acc)
+            }
             _ => None,
         }
+    }
+
+    /// The metavalue companion of a per-element logical op (`std_logic_1164`),
+    /// unrolled per element (≤16): a result element is `'X'` when an operand is
+    /// a metavalue *and* no operand forces the output — `0 and X = 0`,
+    /// `1 or X = 1`, `X xor _ = X`.
+    fn logical_meta(&self, op: BinOp, lhs: &Expr, rhs: &Expr, width: u32) -> Option<Expr> {
+        let (ma, mb) = (self.lower_meta_ir(lhs, width), self.lower_meta_ir(rhs, width));
+        if ma.is_none() && mb.is_none() {
+            return None;
+        }
+        let mut acc = Expr::Const(0);
+        for i in 0..width {
+            let (am, bm) = (meta_bit(&ma, i), meta_bit(&mb, i));
+            let (av, bv) = (bit(lhs, i), bit(rhs, i));
+            let anymeta = or_expr(am.clone(), bm.clone());
+            // A "forcing" operand (whose value alone fixes the result) clears
+            // the metavalue: `and`'s forcing value is 0, `or`'s is 1, `xor` has
+            // none.
+            let forced = match op {
+                BinOp::And => or_expr(
+                    and_expr(not1(am), not1(av)),
+                    and_expr(not1(bm), not1(bv)),
+                ),
+                BinOp::Or => {
+                    or_expr(and_expr(not1(am), av), and_expr(not1(bm), bv))
+                }
+                _ => Expr::Const(0), // xor: no forcing
+            };
+            let meta_i = and_expr(anymeta, not1(forced));
+            acc = or_expr(acc, x_nibble(meta_i, i));
+        }
+        Some(acc)
     }
 
     /// Propagate metavalues through operators: drive each vector target's
@@ -4181,6 +4227,48 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
             }
         }
         _ => {}
+    }
+}
+
+// --- per-element logical metavalue builders (0/1-valued Exprs) --------------
+
+/// `a & b` (bitwise; on 0/1 operands this is logical and).
+fn and_expr(a: Expr, b: Expr) -> Expr {
+    Expr::Binary { op: BinOp::And, lhs: Box::new(a), rhs: Box::new(b) }
+}
+/// `a | b`.
+fn or_expr(a: Expr, b: Expr) -> Expr {
+    Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) }
+}
+/// Logical `not` of a 0/1 value: `x == 0`.
+fn not1(x: Expr) -> Expr {
+    Expr::Binary { op: BinOp::Eq, lhs: Box::new(x), rhs: Box::new(Expr::Const(0)) }
+}
+/// Bit `i` of a value expression.
+fn bit(e: &Expr, i: u32) -> Expr {
+    Expr::Slice { base: Box::new(e.clone()), hi: i, lo: i }
+}
+/// Whether element `i` of a metavalue disc-array is a metavalue (disc >= 2).
+fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
+    match m {
+        Some(m) => Expr::Binary {
+            op: BinOp::Ge,
+            lhs: Box::new(Expr::Slice { base: Box::new(m.clone()), hi: 4 * i + 3, lo: 4 * i }),
+            rhs: Box::new(Expr::Const(2)),
+        },
+        None => Expr::Const(0),
+    }
+}
+/// Place `'X'` (disc 3) in nibble `i` when `meta_i` (0/1) is set, else 0.
+fn x_nibble(meta_i: Expr, i: u32) -> Expr {
+    Expr::Binary {
+        op: BinOp::Shl,
+        lhs: Box::new(Expr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(meta_i),
+            rhs: Box::new(Expr::Const(3)),
+        }),
+        rhs: Box::new(Expr::Const(4 * i as u64)),
     }
 }
 
