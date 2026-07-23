@@ -2722,8 +2722,18 @@ impl<'a> Lowering<'a> {
                 let p = expr_path(e)?;
                 self.locals.get(&p).map(|&id| self.out.signals[id.0 as usize].width)
             }
-            ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index)?;
+                // A single element of a metavalue vector reconstructs to its
+                // full `Logic` discriminant (a 4-bit value), so its width is the
+                // element's, not one value bit.
+                if a == b
+                    && expr_path(base)
+                        .and_then(|p| self.locals.get(&p))
+                        .is_some_and(|id| self.out.meta_of.contains_key(&id.0))
+                {
+                    return Some(4);
+                }
                 Some((a.max(b) - a.min(b) + 1) as u32)
             }
             ast::Expr::Index { .. } => {
