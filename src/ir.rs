@@ -1343,27 +1343,11 @@ impl<'a> Lowering<'a> {
             }
             // A character literal has no intrinsic value — it reads by its
             // position in the target type's declaration (VHDL `T'pos`),
-            // data-driven from `enum_variants`. With no type context we fall
-            // back to the `Logic`/`Bit` default ordering.
-            ast::Expr::LogicLit { ch, .. } => {
-                if let Some(en) = target {
-                    if let Some(d) = self.char_disc(*ch, en) {
-                        return Some(d);
-                    }
-                }
-                Some(match ch {
-                    '0' => 0,
-                    '1' => 1,
-                    'Z' => 2,
-                    'X' => 3,
-                    'U' => 4,
-                    'W' => 5,
-                    'L' => 6,
-                    'H' => 7,
-                    '-' => 8,
-                    _ => 0,
-                })
-            }
+            // data-driven from `enum_variants`. With no type context it falls
+            // back to std's default logic type. No value table lives here.
+            ast::Expr::LogicLit { ch, .. } => target
+                .and_then(|en| self.char_disc(*ch, en))
+                .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
             ast::Expr::Bool { value, .. } => Some(*value as u64),
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
