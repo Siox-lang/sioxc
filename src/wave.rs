@@ -30,22 +30,17 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
     let logic_tables: Vec<Option<Vec<char>>> = design
         .signals
         .iter()
-        .map(|s| {
-            let syms = design.enum_syms.get(s.enum_type.as_deref()?)?;
-            let mut table = vec!['x'; syms.keys().max().map(|&m| m as usize + 1)?];
-            for (&d, sym) in syms {
-                let ch = sym.strip_prefix('\'')?.strip_suffix('\'')?.chars().next()?;
-                table[d as usize] = match ch {
-                    '0' | 'L' => '0',
-                    '1' | 'H' => '1',
-                    'Z' => 'z',
-                    'X' | 'U' | 'W' | '-' => 'x',
-                    _ => return None,
-                };
-            }
-            Some(table)
-        })
+        .map(|s| logic_vcd_table(design.enum_syms.get(s.enum_type.as_deref()?)?))
         .collect();
+
+    // The disc -> VCD-symbol table for X/Z metavalue vectors, from the logic
+    // enum's own declaration (not a baked-in `disc 2 = z`) — so the waveform
+    // reads its meaning from the same enum table everything else does.
+    let meta_table: Vec<char> = ["ULogic", "Logic"]
+        .iter()
+        .find_map(|n| design.enum_syms.get(*n))
+        .and_then(logic_vcd_table)
+        .unwrap_or_default();
 
     // A non-logic enum (an FSM `State`, `Bool`) dumps as a VCD `string` var —
     // the de-facto extension that waveform viewers (GTKWave, Surfer) render as
@@ -125,6 +120,7 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
                         sample.values[cid],
                         design.signals[owner].width,
                         &ids[owner],
+                        &meta_table,
                     )?;
                 }
                 continue;
@@ -169,25 +165,42 @@ fn write_value<W: Write>(out: &mut W, value: u128, width: u32, id: &str) -> io::
     }
 }
 
-/// A `Logic`-vector with metavalues: each element is `x`/`z` where its companion
-/// discriminant says so (disc 2 = `Z`, any other metavalue = `X`), else its
-/// value bit. MSB-first, VCD binary.
+/// Build a discriminant -> VCD-symbol table from a logic enum's own
+/// declaration (`disc -> 'X'` / `'Z'` / …), reducing the 9-value `std_ulogic`
+/// alphabet to VCD's `0/1/x/z`. The disc->char meaning comes from the enum
+/// table; only the `x`/`z`/`0`/`1` targets are the VCD format's fixed alphabet.
+fn logic_vcd_table(syms: &HashMap<u64, String>) -> Option<Vec<char>> {
+    let mut table = vec!['x'; syms.keys().max().map(|&m| m as usize + 1)?];
+    for (&d, sym) in syms {
+        let ch = sym.strip_prefix('\'')?.strip_suffix('\'')?.chars().next()?;
+        table[d as usize] = match ch {
+            '0' | 'L' => '0',
+            '1' | 'H' => '1',
+            'Z' => 'z',
+            'X' | 'U' | 'W' | '-' => 'x',
+            _ => return None,
+        };
+    }
+    Some(table)
+}
+
+/// A `Logic`-vector with metavalues: each element's discriminant maps through
+/// `table` (from the enum declaration) — an `x`/`z` symbol means a metavalue,
+/// otherwise the element takes its plain value bit. MSB-first, VCD binary.
 fn write_metavalue<W: Write>(
     out: &mut W,
     value: u128,
     meta: u128,
     width: u32,
     id: &str,
+    table: &[char],
 ) -> io::Result<()> {
     let mut bits = String::with_capacity(width as usize);
     for j in (0..width).rev() {
-        let nib = (meta >> (4 * j)) & 0xF;
-        bits.push(if nib >= 2 {
-            if nib == 2 {
-                'z'
-            } else {
-                'x'
-            }
+        let disc = ((meta >> (4 * j)) & 0xF) as usize;
+        let sym = table.get(disc).copied().unwrap_or('x');
+        bits.push(if sym == 'x' || sym == 'z' {
+            sym
         } else {
             char::from(b'0' + ((value >> j) & 1) as u8)
         });

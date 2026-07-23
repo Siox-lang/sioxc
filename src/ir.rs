@@ -1524,7 +1524,7 @@ impl<'a> Lowering<'a> {
                         rhs: Box::new(Expr::Const(0)),
                     })
                     .reduce(|a, b| Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) })?;
-                let all_x = (0..width).fold(0u64, |p, i| p | (3u64 << (4 * i)));
+                let all_x = (0..width).fold(0u64, |p, i| p | (self.x_disc() << (4 * i)));
                 Some(Expr::Select {
                     cond: Box::new(cond),
                     then: Box::new(Expr::Const(all_x)),
@@ -1549,9 +1549,10 @@ impl<'a> Lowering<'a> {
                 // `not` of any metavalue is `'X'` — the operand's metavalue
                 // positions become `X`, clean positions clean.
                 let m = self.lower_meta_ir(rhs, width)?;
+                let xd = self.x_disc();
                 let mut acc = Expr::Const(0);
                 for i in 0..width {
-                    acc = or_expr(acc, x_nibble(meta_bit(&Some(m.clone()), i), i));
+                    acc = or_expr(acc, x_nibble(meta_bit(&Some(m.clone()), i), i, xd));
                 }
                 Some(acc)
             }
@@ -1568,6 +1569,7 @@ impl<'a> Lowering<'a> {
         if ma.is_none() && mb.is_none() {
             return None;
         }
+        let x_disc = self.x_disc();
         let mut acc = Expr::Const(0);
         for i in 0..width {
             let (am, bm) = (meta_bit(&ma, i), meta_bit(&mb, i));
@@ -1587,7 +1589,7 @@ impl<'a> Lowering<'a> {
                 _ => Expr::Const(0), // xor: no forcing
             };
             let meta_i = and_expr(anymeta, not1(forced));
-            acc = or_expr(acc, x_nibble(meta_i, i));
+            acc = or_expr(acc, x_nibble(meta_i, i, x_disc));
         }
         Some(acc)
     }
@@ -3123,8 +3125,16 @@ impl<'a> Lowering<'a> {
     }
 
     /// A nibble of this mask is nonzero exactly when its element's discriminant
-    /// is `>= 2` — i.e. a metavalue. `discs & META_MASK != 0` ⇔ "has a metavalue".
+    /// is `>= 2` — i.e. a metavalue (`'0'`/`'1'` are discs 0/1 in std's
+    /// `Bit`-first `ULogic`, everything above is a metavalue).
+    /// `discs & META_MASK != 0` ⇔ "has a metavalue".
     const META_MASK: u64 = 0xEEEE_EEEE_EEEE_EEEE;
+
+    /// `'X'`'s discriminant, from std's logic enum (not a baked-in `3`), so the
+    /// poison value tracks the declaration.
+    fn x_disc(&self) -> u64 {
+        self.char_disc('X', DEFAULT_LOGIC_TYPE).unwrap_or(3)
+    }
 
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
     /// (enum signal, comparison counterpart) did not already resolve — to its
@@ -4275,14 +4285,15 @@ fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
         None => Expr::Const(0),
     }
 }
-/// Place `'X'` (disc 3) in nibble `i` when `meta_i` (0/1) is set, else 0.
-fn x_nibble(meta_i: Expr, i: u32) -> Expr {
+/// Place `'X'` (disc `x_disc`, from std's logic enum) in nibble `i` when
+/// `meta_i` (0/1) is set, else 0.
+fn x_nibble(meta_i: Expr, i: u32, x_disc: u64) -> Expr {
     Expr::Binary {
         op: BinOp::Shl,
         lhs: Box::new(Expr::Binary {
             op: BinOp::Mul,
             lhs: Box::new(meta_i),
-            rhs: Box::new(Expr::Const(3)),
+            rhs: Box::new(Expr::Const(x_disc)),
         }),
         rhs: Box::new(Expr::Const(4 * i as u64)),
     }
