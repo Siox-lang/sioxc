@@ -2556,6 +2556,22 @@ impl<'a> Lowering<'a> {
             // while `4..7` (ascending) extracts with the bit order reversed.
             ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index).unwrap();
+                // A single element of a metavalue vector reads its full 9-value
+                // discriminant from the companion (nibble `a`), so `v[2]` is
+                // `'X'`, not just its value bit.
+                if a == b {
+                    if let Some(&cid) = expr_path(base)
+                        .and_then(|p| self.locals.get(&p))
+                        .and_then(|&id| self.out.meta_of.get(&id.0))
+                    {
+                        let e = a as u32;
+                        return Expr::Slice {
+                            base: Box::new(Expr::Current(SignalId(cid))),
+                            hi: 4 * e + 3,
+                            lo: 4 * e,
+                        };
+                    }
+                }
                 let lowered = self.lower_expr(base);
                 if a >= b {
                     Expr::Slice { base: Box::new(lowered), hi: a as u32, lo: b as u32 }

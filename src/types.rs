@@ -1508,13 +1508,21 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::BitStrLit { base, digits, span } => {
-                let radix = if *base == 'x' { 16 } else { 2 };
-                if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                // A binary bit string admits the full `std_ulogic` alphabet
+                // (`0 1 Z X U W L H -`), not just `0`/`1`, so metavalues can be
+                // written (`b"01X0"`); hex stays 2-value.
+                let ok = !digits.is_empty()
+                    && if *base == 'x' {
+                        digits.chars().all(|c| c.is_ascii_hexdigit())
+                    } else {
+                        digits.chars().all(|c| "01ZXUWLH-".contains(c))
+                    };
+                if !ok {
                     self.error(
                         codes::TYPE_MISMATCH,
                         *span,
                         format!("invalid {} bit-string literal `{base}\"{digits}\"`",
-                            if radix == 16 { "hex" } else { "binary" }),
+                            if *base == 'x' { "hex" } else { "binary" }),
                     );
                 }
             }
