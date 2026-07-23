@@ -5,10 +5,29 @@ use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::TargetMachine;
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
+
+/// Run LLVM's default `-O2` pipeline over the module before codegen. The
+/// word-based IR is emitted naively — every value is an `i64`, so each `real`
+/// op bitcasts to `f64` and back, comparisons of constants stay unfolded, and
+/// each settle reloads signal globals. `-O2` folds the constants, eliminates
+/// the `i64`↔`f64` bitcast churn, GVNs redundant loads, and DCEs dead work,
+/// leaving the FPU/vector codegen to instruction selection. Shared by the JIT
+/// and AOT paths so both run identical, optimized code.
+pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String> {
+    // Give the optimizer the target's data layout and triple so it sizes
+    // pointers, aligns, and vectorizes for the real machine.
+    module.set_triple(&tm.get_triple());
+    module.set_data_layout(&tm.get_target_data().get_data_layout());
+    module
+        .run_passes("default<O2>", tm, PassBuilderOptions::create())
+        .map_err(|e| format!("LLVM optimization failed: {e}"))
+}
 
 /// Build the LLVM module for `design` and return its textual IR (`.ll`).
 /// This is what `siox build --emit-llvm` prints and what golden tests diff.

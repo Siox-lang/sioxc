@@ -47,8 +47,13 @@ impl Jit<'_> {
 pub fn with_jit<R>(design: &Design, f: impl FnOnce(&Jit) -> R) -> R {
     let ctx = Context::create();
     let module = build_module(&ctx, design);
+    // Optimize the IR (constant-fold, kill bitcast churn, GVN loads) before the
+    // engine codegens it, and let the engine's own codegen run aggressively.
+    if let Ok(tm) = crate::aot::host_target_machine() {
+        let _ = crate::emit::optimize_module(&module, &tm);
+    }
     let ee = module
-        .create_jit_execution_engine(OptimizationLevel::None)
+        .create_jit_execution_engine(OptimizationLevel::Aggressive)
         .expect("failed to create JIT engine");
     // SAFETY: the emitted signatures match the ABI types above; the engine
     // outlives the closure.

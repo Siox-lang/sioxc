@@ -16,15 +16,15 @@ use siox::ir::Design;
 
 use crate::emit::build_module;
 
-/// Emit `design` as a native object file at `path` (`.o`). The object exports
-/// `sx_reset`/`sx_set`/`sx_read`/`sx_settle`.
-pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
+/// A `TargetMachine` for the host CPU, tuned to its native features (so the
+/// backend may use the widest vector registers the machine has). Shared by the
+/// AOT object path and the JIT's optimization pass.
+pub fn host_target_machine() -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("target init failed: {e}"))?;
-
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).map_err(|e| e.to_string())?;
-    let tm = target
+    target
         .create_target_machine(
             &triple,
             TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic"),
@@ -33,10 +33,16 @@ pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
             RelocMode::PIC,
             CodeModel::Default,
         )
-        .ok_or("failed to create target machine")?;
+        .ok_or_else(|| "failed to create target machine".to_string())
+}
 
+/// Emit `design` as a native object file at `path` (`.o`). The object exports
+/// `sx_reset`/`sx_set`/`sx_read`/`sx_settle`.
+pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
+    let tm = host_target_machine()?;
     let ctx = Context::create();
     let module = build_module(&ctx, design);
+    crate::emit::optimize_module(&module, &tm)?;
     tm.write_to_file(&module, FileType::Object, path)
         .map_err(|e| format!("object emission failed: {e}"))
 }
