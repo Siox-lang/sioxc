@@ -1354,10 +1354,7 @@ impl<'a> Lowering<'a> {
                 .and_then(|en| self.char_disc(*ch, en))
                 .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
             // --- enum variants: a name resolved to its discriminant ---
-            // `true`/`false` are `Bool`'s two variants, resolved like any enum.
-            ast::Expr::Bool { value, .. } => {
-                self.enum_variant("Bool", if *value { "true" } else { "false" })
-            }
+            // Includes `Bool`'s `true`/`false` (desugared to `Bool::true` etc.).
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
                 self.enum_variant(&p.segments[0].text, &p.segments[1].text)
             }
@@ -2467,7 +2464,6 @@ impl<'a> Lowering<'a> {
             ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(
                 u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0),
             ),
-            ast::Expr::Bool { value, .. } => Expr::Const(*value as u64),
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
@@ -4338,7 +4334,6 @@ pub fn eval_const_fns(
     }
     match e {
         ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
-        ast::Expr::Bool { value, .. } => Some(*value as i64),
         ast::Expr::Path(p) if p.segments.len() == 1 => env.get(&p.segments[0].text).copied(),
         ast::Expr::IfExpr { cond, then, els, .. } => {
             if eval_const_fns(cond, env, fns, depth + 1)? != 0 {

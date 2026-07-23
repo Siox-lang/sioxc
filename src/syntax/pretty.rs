@@ -510,7 +510,15 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::BitStrLit { base, digits, .. } => (format!("{base}\"{digits}\""), u8::MAX),
         Expr::CharLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
         Expr::StrLit { text, .. } => (format!("\"{text}\""), u8::MAX),
-        Expr::Bool { value, .. } => (value.to_string(), u8::MAX),
+        // `true`/`false` desugar to `Bool::true`/`Bool::false`; print them back
+        // in their surface form so source round-trips.
+        Expr::Path(p)
+            if p.segments.len() == 2
+                && p.segments[0].text == "Bool"
+                && matches!(p.segments[1].text.as_str(), "true" | "false") =>
+        {
+            (p.segments[1].text.clone(), u8::MAX)
+        }
         Expr::Path(p) => (path(p), u8::MAX),
         Expr::Field { base, field, .. } => {
             (format!("{}.{}", expr_prec(base, POSTFIX_PREC), field.text), POSTFIX_PREC)

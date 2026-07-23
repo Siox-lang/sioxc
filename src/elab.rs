@@ -759,7 +759,6 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
     use ParamValue::{Int, Unknown};
     match e {
         Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
-        Expr::Bool { value, .. } => Int(*value as i64),
         Expr::Path(p) if p.segments.len() == 1 => {
             env.get(&p.segments[0].text).copied().map(Int).unwrap_or(Unknown)
         }

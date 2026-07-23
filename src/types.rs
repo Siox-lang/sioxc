@@ -967,7 +967,9 @@ impl<'a> Checker<'a> {
         let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
         let expected = self.attr_value_kinds.get(name).copied();
         let ok = match expected {
-            Some(AttrValueTy::Bool) => matches!(value, Expr::Bool { .. }),
+            Some(AttrValueTy::Bool) => {
+                matches!(value, Expr::Path(p) if p.segments.len() == 2 && p.segments[0].text == "Bool")
+            }
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
             Some(AttrValueTy::Integer) => matches!(value, Expr::Int { .. }),
             // Unknown attribute (reported by resolve) or an `Other`-typed one.
@@ -1519,7 +1521,6 @@ impl<'a> Checker<'a> {
             Expr::Int { .. }
             | Expr::CharLit { .. }
             | Expr::StrLit { .. }
-            | Expr::Bool { .. }
             | Expr::Path(_) => {}
         }
     }
@@ -1569,7 +1570,6 @@ impl<'a> Checker<'a> {
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.
             Expr::CharLit { .. } => Ty::Char,
-            Expr::Bool { .. } => Ty::Bool,
             // A string literal is `string` = `Char[N]`.
             Expr::StrLit { text, .. } => {
                 Ty::Array { elem: Box::new(Ty::Char), len: text.chars().count() as u32 }
@@ -1579,10 +1579,19 @@ impl<'a> Checker<'a> {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
                 } else {
                     // `Enum::Variant` has the enum's type, not the variant's.
+                    // `Bool`'s variants (`true`/`false`, desugared to
+                    // `Bool::true`) keep the primitive `Ty::Bool` so conditions
+                    // and attrs that expect it are unaffected.
                     match self.resolved.resolved(p.span).and_then(|id| self.resolved.def(id)) {
-                        Some(d) if d.kind == DefKind::EnumVariant => {
-                            d.parent.map(Ty::Named).unwrap_or(Ty::Error)
-                        }
+                        Some(d) if d.kind == DefKind::EnumVariant => match d.parent {
+                            Some(pid)
+                                if self.resolved.def(pid).map(|p| p.name == "Bool").unwrap_or(false) =>
+                            {
+                                Ty::Bool
+                            }
+                            Some(pid) => Ty::Named(pid),
+                            None => Ty::Error,
+                        },
                         _ => self.named_ty(p.span),
                     }
                 }
@@ -2119,7 +2128,6 @@ fn expr_span(e: &Expr) -> Span {
         | Expr::BitStrLit { span, .. }
         | Expr::CharLit { span, .. }
         | Expr::StrLit { span, .. }
-        | Expr::Bool { span, .. }
         | Expr::Field { span, .. }
         | Expr::SysAttr { span, .. }
         | Expr::IfExpr { span, .. }
@@ -2566,7 +2574,12 @@ mod tests {
         assert!(matches!(ty("module m;\nimpl E { y = 3.14; }\n"), Ty::Real));
         assert!(matches!(ty("module m;\nimpl E { y = '0'; }\n"), Ty::Char));
         assert!(matches!(ty("module m;\nimpl E { y = \"abc\"; }\n"), Ty::Array { .. }));
-        assert!(matches!(ty("module m;\nimpl E { y = true; }\n"), Ty::Bool));
+        // `true`/`false` desugar to `Bool::true`/`Bool::false`, so std's `Bool`
+        // enum must be in scope for them to resolve and type as `Ty::Bool`.
+        assert!(matches!(
+            ty("module m;\nenum Bool { false, true }\nimpl E { y = true; }\n"),
+            Ty::Bool
+        ));
     }
 
     #[test]

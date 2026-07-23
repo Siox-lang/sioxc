@@ -1182,9 +1182,14 @@ impl<'a> Parser<'a> {
                 inner
             }
             TokenKind::Ident if self.cur_text() == "true" || self.cur_text() == "false" => {
-                let value = self.cur_text() == "true";
+                // `true`/`false` are not primitives — they are the two variants
+                // of std's `enum Bool`. Desugar to the `Bool::<variant>` path so
+                // they resolve, type, and evaluate through the ordinary
+                // enum-variant machinery; std owns their values, not the parser.
+                let variant = self.cur_text().to_string();
                 let t = self.bump();
-                Expr::Bool { value, span: t.span }
+                let seg = |text: &str| Ident { text: text.to_string(), span: t.span };
+                Expr::Path(Path { segments: vec![seg("Bool"), seg(&variant)], span: t.span })
             }
             // A one-letter prefix glued to a string is a bit-string literal:
             // `x"123ABC"` (hex) / `b"0101"` (binary).

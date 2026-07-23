@@ -349,7 +349,6 @@ pub enum Expr {
     /// comes from context: the enum it is assigned to or compared against.
     CharLit { ch: char, span: Span },
     StrLit { text: String, span: Span },
-    Bool { value: bool, span: Span },
     Path(Path),
     /// `x.field` (spec `.` member access).
     Field { base: Box<Expr>, field: Ident, span: Span },

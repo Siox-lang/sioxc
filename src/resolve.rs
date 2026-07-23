@@ -752,8 +752,7 @@ impl<'a> Resolver<'a> {
             | Expr::SuffixLit { .. }
             | Expr::BitStrLit { .. }
             | Expr::CharLit { .. }
-            | Expr::StrLit { .. }
-            | Expr::Bool { .. } => {}
+            | Expr::StrLit { .. } => {}
             Expr::Path(p) => self.resolve_value_path(p),
             Expr::IfExpr { cond, then, els, .. } => {
                 self.resolve_expr(cond);

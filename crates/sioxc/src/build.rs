@@ -438,7 +438,6 @@ fn eval_c_const(
 ) -> Option<u128> {
     match e {
         ast::Expr::Int { text, .. } => Some(parse_u64(text) as u128),
-        ast::Expr::Bool { value, .. } => Some(*value as u128),
         ast::Expr::CharLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
         ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
         ast::Expr::Path(p) if p.segments.len() >= 2 => enums
@@ -1712,7 +1711,6 @@ impl Ctx<'_> {
             }
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
-            ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
             ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
             // A method call `recv.method(args)` (possibly nullary) inlines the

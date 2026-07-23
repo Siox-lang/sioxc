@@ -374,7 +374,6 @@ fn eval_tb_const(
 ) -> Option<u128> {
     match e {
         ast::Expr::Int { text, .. } => Some(u128::from_u64(parse_u64(text))),
-        ast::Expr::Bool { value, .. } => Some(u128::from_u64(*value as u64)),
         ast::Expr::CharLit { ch, .. } => Some(u128::from_u64(logic_lit_value(*ch, enums))),
         ast::Expr::Path(p) if p.segments.len() == 1 => {
             consts.get(&p.segments[0].text).copied()
@@ -1735,7 +1734,6 @@ impl Testbench<'_> {
                 let radix = if *base == 'x' { 16 } else { 2 };
                 u128::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
-            ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
             ast::Expr::CharLit { ch, .. } => u128::from_u64(logic_lit_value(*ch, self.enums)),
             // Conversions (spec 3.17): testbench evaluation masks to the
             // target width (`integer(x)` passes through); source
