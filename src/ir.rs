@@ -1367,6 +1367,11 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
                 self.enum_variant(&p.segments[0].text, &p.segments[1].text)
             }
+            // A bit-string literal initializer (`let v: uint[4] = b"1010"`) —
+            // its value bits (metavalue positions carried separately, stage 1b).
+            ast::Expr::BitStrLit { base, digits, .. } => {
+                Some(self.decode_bit_string(*base, digits).0)
+            }
             // --- integer / const-fn arithmetic ---
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
@@ -5779,6 +5784,20 @@ mod tests {
         let s = d.to_ir_string();
         assert!(s.contains("driver T.dut.y = 10"), "2-value unchanged:\n{s}");
         assert!(s.contains("driver T.dut.z = 14"), "metavalue digit decodes:\n{s}");
+    }
+
+    #[test]
+    fn bit_string_initializer_sets_init() {
+        // `let v: uint[4] = b"1010"` seeds the signal init to 10 (was 0 — no
+        // BitStrLit arm in const_init_value).
+        let d = lower_src(
+            "module m; entity E { out y: uint[4]; }\n\
+             impl E { let v: uint[4] = b\"1010\"; y = v; }\n\
+             #[top] entity T {}\n\
+             impl T { let y: uint[4]; let dut: E = { .y = y }; }",
+        );
+        let v = d.signals.iter().find(|s| s.path.ends_with(".v")).expect("no .v");
+        assert_eq!(v.init, 10, "b\"1010\" -> init 10");
     }
 
     #[test]
