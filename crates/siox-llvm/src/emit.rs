@@ -6,7 +6,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::values::{IntValue, PointerValue};
-use inkwell::IntPredicate;
+use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
 
@@ -526,6 +526,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             };
             return self.builder.build_bit_cast(r, self.i64t(), "fbits").unwrap().into_int_value();
         }
+        // Float comparison: reinterpret the words as f64 and compare with
+        // ordered predicates (NaN -> false, except `!=`), yielding a 0/1 word.
+        if matches!(
+            op,
+            BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe
+        ) {
+            let f = self.ctx.f64_type();
+            let a = self.builder.build_bit_cast(self.emit(lhs), f, "fa").unwrap().into_float_value();
+            let b = self.builder.build_bit_cast(self.emit(rhs), f, "fb").unwrap().into_float_value();
+            let p = match op {
+                BinOp::FEq => FloatPredicate::OEQ,
+                BinOp::FNe => FloatPredicate::UNE,
+                BinOp::FLt => FloatPredicate::OLT,
+                BinOp::FLe => FloatPredicate::OLE,
+                BinOp::FGt => FloatPredicate::OGT,
+                _ => FloatPredicate::OGE,
+            };
+            let c = self.builder.build_float_compare(p, a, b, "fcmp").unwrap();
+            return self.zext(c);
+        }
 
         let a = self.emit(lhs);
         let b = self.emit(rhs);
@@ -558,6 +578,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::Gt => cmp(IntPredicate::UGT, "gt"),
             BinOp::Ge => cmp(IntPredicate::UGE, "ge"),
             BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => unreachable!(),
+            BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe => {
+                unreachable!()
+            }
         }
     }
 }

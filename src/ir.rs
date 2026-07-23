@@ -167,6 +167,15 @@ pub enum BinOp {
     FSub,
     FMul,
     FDiv,
+    /// Float comparison on f64-bit values (`real` operands); the result is a
+    /// `Bool` (0/1), computed with ordered IEEE-754 semantics — integer compare
+    /// on the raw bits would misorder negatives and `±0.0`.
+    FEq,
+    FNe,
+    FLt,
+    FLe,
+    FGt,
+    FGe,
 }
 
 /// Lower the elaborated design into simulation IR. Relative file-read paths
@@ -2955,6 +2964,14 @@ impl<'a> Lowering<'a> {
                 ast::BinOp::Sub => BinOp::FSub,
                 ast::BinOp::Mul => BinOp::FMul,
                 ast::BinOp::Div => BinOp::FDiv,
+                // Comparisons need ordered float semantics, not integer compare
+                // on the bit patterns (which misorders negatives / `±0.0`).
+                ast::BinOp::Eq => BinOp::FEq,
+                ast::BinOp::Ne => BinOp::FNe,
+                ast::BinOp::Lt => BinOp::FLt,
+                ast::BinOp::Le => BinOp::FLe,
+                ast::BinOp::Gt => BinOp::FGt,
+                ast::BinOp::Ge => BinOp::FGe,
                 other => match lower_binop(other) {
                     Some(op) => op,
                     None => return Expr::Unknown,
@@ -4207,6 +4224,12 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::FSub => "-.",
         BinOp::FMul => "*.",
         BinOp::FDiv => "/.",
+        BinOp::FEq => "==.",
+        BinOp::FNe => "!=.",
+        BinOp::FLt => "<.",
+        BinOp::FLe => "<=.",
+        BinOp::FGt => ">.",
+        BinOp::FGe => ">=.",
     }
 }
 

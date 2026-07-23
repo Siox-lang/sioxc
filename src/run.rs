@@ -135,6 +135,14 @@ pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
         BinOp::FSub => S::from_u64((f64::from_bits(a.to_u64()) - f64::from_bits(b.to_u64())).to_bits()),
         BinOp::FMul => S::from_u64((f64::from_bits(a.to_u64()) * f64::from_bits(b.to_u64())).to_bits()),
         BinOp::FDiv => S::from_u64((f64::from_bits(a.to_u64()) / f64::from_bits(b.to_u64())).to_bits()),
+        // Float comparison: ordered IEEE-754 (matches Rust's f64 ops, the LLVM
+        // `fcmp o**`, and the native emitter's C double compares).
+        BinOp::FEq => bool_s(f64::from_bits(a.to_u64()) == f64::from_bits(b.to_u64())),
+        BinOp::FNe => bool_s(f64::from_bits(a.to_u64()) != f64::from_bits(b.to_u64())),
+        BinOp::FLt => bool_s(f64::from_bits(a.to_u64()) < f64::from_bits(b.to_u64())),
+        BinOp::FLe => bool_s(f64::from_bits(a.to_u64()) <= f64::from_bits(b.to_u64())),
+        BinOp::FGt => bool_s(f64::from_bits(a.to_u64()) > f64::from_bits(b.to_u64())),
+        BinOp::FGe => bool_s(f64::from_bits(a.to_u64()) >= f64::from_bits(b.to_u64())),
         BinOp::Lt => bool_s(a < b),
         BinOp::Le => bool_s(a <= b),
         BinOp::Gt => bool_s(a > b),
