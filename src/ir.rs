@@ -902,9 +902,9 @@ impl<'a> Lowering<'a> {
                         // companion signal to record which elements are `'X'`/… —
                         // the storage half of X/Z vector propagation (stage 1c).
                         if let ast::Expr::BitStrLit { base, digits, .. } = v {
-                            let (_, meta) = self.decode_bit_string(*base, digits);
-                            if meta != 0 {
-                                self.ensure_meta_companion(id, meta);
+                            let (_, discs) = self.decode_bit_string(*base, digits);
+                            if discs & Self::META_MASK != 0 {
+                                self.ensure_meta_companion(id, discs);
                             }
                         }
                     }
@@ -1440,26 +1440,36 @@ impl<'a> Lowering<'a> {
         self.locals.insert(name.to_string(), id);
     }
 
-    /// Ensure a `Logic`-vector signal has its metavalue companion — an extra,
-    /// same-width signal whose bit `i` marks element `i` as a metavalue
-    /// (`'X'`/`'Z'`/…). The companion is a normal signal, so the engines store
-    /// and reset it for free; only reads reconstruct the 9-value from the value
-    /// bit + this bit. Created only where a metavalue actually appears, so
-    /// metavalue-free designs are untouched. (Distinguishing *which* metavalue
-    /// widens the companion — a follow-on within this stage.)
-    fn ensure_meta_companion(&mut self, id: SignalId, meta_init: u64) {
+    /// Ensure a `Logic`-vector signal has its metavalue companion — an extra
+    /// signal, 4 bits per element, holding each element's full `std_ulogic`
+    /// discriminant (nibble *i* = element *i*'s 9-value), so a read reconstructs
+    /// the exact value (`'X'` vs `'Z'` vs …). The companion is a normal signal,
+    /// so the engines store/reset it for free. Created only where a metavalue
+    /// appears, so metavalue-free designs are untouched. Capped at 16 elements
+    /// (4×16 = 64 bits); wider metavalue vectors need the array companion (a
+    /// later widening) and warn rather than silently drop the metavalue.
+    fn ensure_meta_companion(&mut self, id: SignalId, discs: u64) {
         if let Some(&cid) = self.out.meta_of.get(&id.0) {
-            self.out.signals[cid as usize].init = meta_init;
+            self.out.signals[cid as usize].init = discs;
             return;
         }
         let sig = &self.out.signals[id.0 as usize];
+        if sig.width > 16 {
+            let path = sig.path.clone();
+            self.sink.emit(crate::diag::Diagnostic::warning(format!(
+                "metavalue in `{path}` ({} elements): X/Z is not yet tracked for \
+                 vectors wider than 16 elements; it reads as its value bit",
+                sig.width
+            )));
+            return;
+        }
         let companion = Signal {
             path: format!("{}$meta", sig.path),
-            width: sig.width,
+            width: sig.width * 4,
             real: false,
             char: false,
             range: None,
-            init: meta_init,
+            init: discs,
             enum_type: None,
         };
         let cid = self.out.signals.len() as u32;
@@ -2899,24 +2909,38 @@ impl<'a> Lowering<'a> {
         self.enum_variants.get(en).and_then(|m| m.get(variant)).copied()
     }
 
-    /// Decode a bit-string literal into `(value, meta)`, MSB-first: `value` is
-    /// the per-element 0/1 bit (a metavalue contributes its `std_ulogic`
-    /// low bit), `meta` marks elements that are metavalues (disc >= 2). A hex
-    /// string (`x"…"`) is pure 2-value, so `meta = 0`. This is the front-end
-    /// half of X/Z vector support (see `docs/proposals/xz-vector-propagation.md`);
-    /// `meta` is wired to the element containers in the next stage.
+    /// Decode a bit-string literal into `(value, discs)`, MSB-first: `value` is
+    /// the per-element 0/1 bit (element *i* at bit *i*); `discs` is the full
+    /// per-element `std_ulogic` discriminant packed 4 bits each (element *i* at
+    /// nibble *i*), so a metavalue's exact value survives. A hex string (`x"…"`)
+    /// is pure 2-value. This is the front-end half of X/Z vector support (see
+    /// `docs/proposals/xz-vector-propagation.md`); `discs` is stored in the
+    /// element-container companion.
     fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
         if base == 'x' {
-            return (u64::from_str_radix(digits, 16).unwrap_or(0), 0);
+            let v = u64::from_str_radix(digits, 16).unwrap_or(0);
+            let mut discs = 0u64;
+            for i in 0..(digits.len() * 4).min(16) as u32 {
+                discs |= ((v >> i) & 1) << (4 * i);
+            }
+            return (v, discs);
         }
-        let (mut value, mut meta) = (0u64, 0u64);
-        for ch in digits.chars() {
+        let n = digits.len();
+        let (mut value, mut discs) = (0u64, 0u64);
+        for (i, ch) in digits.chars().enumerate() {
+            let pos = (n - 1 - i) as u32; // MSB-first: first digit is the top bit
             let disc = self.char_disc(ch, DEFAULT_LOGIC_TYPE).unwrap_or(0);
-            value = (value << 1) | (disc & 1);
-            meta = (meta << 1) | u64::from(disc >= 2);
+            value |= (disc & 1) << pos;
+            if 4 * pos < 64 {
+                discs |= (disc & 0xF) << (4 * pos);
+            }
         }
-        (value, meta)
+        (value, discs)
     }
+
+    /// A nibble of this mask is nonzero exactly when its element's discriminant
+    /// is `>= 2` — i.e. a metavalue. `discs & META_MASK != 0` ⇔ "has a metavalue".
+    const META_MASK: u64 = 0xEEEE_EEEE_EEEE_EEEE;
 
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
     /// (enum signal, comparison counterpart) did not already resolve — to its
@@ -5856,7 +5880,10 @@ mod tests {
         let v = d.signals.iter().position(|s| s.path.ends_with(".v")).expect("v") as u32;
         let w = d.signals.iter().position(|s| s.path.ends_with(".w")).expect("w") as u32;
         let cid = *d.meta_of.get(&v).expect("v has a metavalue companion");
-        assert_eq!(d.signals[cid as usize].init, 4, "companion marks the X element (0100)");
+        // b"1X10": per-element discs, nibble i = element i. pos3=1, pos2=X(3),
+        // pos1=1, pos0=0 -> 0x1310. Companion is 4 bits/element wide.
+        assert_eq!(d.signals[cid as usize].init, 0x1310, "full per-element discs");
+        assert_eq!(d.signals[cid as usize].width, 16, "4 bits x 4 elements");
         assert!(d.signals[cid as usize].path.ends_with(".v$meta"));
         assert!(!d.meta_of.contains_key(&w), "clean init gets no companion");
     }
