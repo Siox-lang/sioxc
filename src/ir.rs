@@ -2470,9 +2470,7 @@ impl<'a> Lowering<'a> {
                         .unwrap_or(0),
                 ),
             },
-            ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(
-                u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0),
-            ),
+            ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(self.decode_bit_string(*base, digits).0),
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
@@ -2852,6 +2850,25 @@ impl<'a> Lowering<'a> {
     /// the one place enum values come from. `None` if either is unknown.
     fn enum_variant(&self, en: &str, variant: &str) -> Option<u64> {
         self.enum_variants.get(en).and_then(|m| m.get(variant)).copied()
+    }
+
+    /// Decode a bit-string literal into `(value, meta)`, MSB-first: `value` is
+    /// the per-element 0/1 bit (a metavalue contributes its `std_ulogic`
+    /// low bit), `meta` marks elements that are metavalues (disc >= 2). A hex
+    /// string (`x"…"`) is pure 2-value, so `meta = 0`. This is the front-end
+    /// half of X/Z vector support (see `docs/proposals/xz-vector-propagation.md`);
+    /// `meta` is wired to the element containers in the next stage.
+    fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
+        if base == 'x' {
+            return (u64::from_str_radix(digits, 16).unwrap_or(0), 0);
+        }
+        let (mut value, mut meta) = (0u64, 0u64);
+        for ch in digits.chars() {
+            let disc = self.char_disc(ch, DEFAULT_LOGIC_TYPE).unwrap_or(0);
+            value = (value << 1) | (disc & 1);
+            meta = (meta << 1) | u64::from(disc >= 2);
+        }
+        (value, meta)
     }
 
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
@@ -5746,6 +5763,22 @@ mod tests {
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
         assert_eq!(sig.width, 2, "3 variants -> 2 bits, same as base");
+    }
+
+    #[test]
+    fn bit_string_decodes_nine_value() {
+        // A plain 2-value string is unchanged; a metavalue digit decodes to its
+        // `std_ulogic` value bit (X = disc 3, low bit 1) instead of collapsing
+        // to 0. `b"1X10"` -> value bits 1110 = 14.
+        let d = lower_src(
+            "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
+             impl E { y = b\"1010\"; z = b\"1X10\"; }\n\
+             #[top] entity T {}\n\
+             impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
+        );
+        let s = d.to_ir_string();
+        assert!(s.contains("driver T.dut.y = 10"), "2-value unchanged:\n{s}");
+        assert!(s.contains("driver T.dut.z = 14"), "metavalue digit decodes:\n{s}");
     }
 
     #[test]
