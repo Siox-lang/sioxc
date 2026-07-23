@@ -508,7 +508,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Int { text, .. } => (text.clone(), u8::MAX),
         Expr::SuffixLit { text, suffix, .. } => (format!("{text}{}", suffix.text), u8::MAX),
         Expr::BitStrLit { base, digits, .. } => (format!("{base}\"{digits}\""), u8::MAX),
-        Expr::LogicLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
+        Expr::CharLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
         Expr::StrLit { text, .. } => (format!("\"{text}\""), u8::MAX),
         Expr::Bool { value, .. } => (value.to_string(), u8::MAX),
         Expr::Path(p) => (path(p), u8::MAX),

@@ -751,7 +751,7 @@ impl<'a> Resolver<'a> {
             Expr::Int { .. }
             | Expr::SuffixLit { .. }
             | Expr::BitStrLit { .. }
-            | Expr::LogicLit { .. }
+            | Expr::CharLit { .. }
             | Expr::StrLit { .. }
             | Expr::Bool { .. } => {}
             Expr::Path(p) => self.resolve_value_path(p),

@@ -5,9 +5,9 @@
 //! Lexical decisions pinned here (Stage 2):
 //! - Comments: `// line` and `/* nested block */`, emitted as [`TokenKind::Comment`]
 //!   trivia so later round-tripping can keep them; the parser skips trivia.
-//! - Logic literals: `'0' '1' 'Z' 'X'` — a single character between single
-//!   quotes. The lexer accepts any one-character form and leaves value
-//!   validation to the type checker.
+//! - Character literals: `'g' '0' '1' 'Z'` — a single character between single
+//!   quotes. The lexer accepts any one-character form and leaves the type (and
+//!   so the value) to context: the enum it is used with.
 //! - Numbers: decimal, `0x` hex, `0b` binary integers, and decimal floats
 //!   (`1000.0`). Numeric suffixes (`100n`, `1000.0f`) are intentionally *not*
 //!   consumed here — they lex as a following identifier and are the parser's
@@ -54,7 +54,7 @@ impl<'a> Lexer<'a> {
                 b'/' if self.peek_at(1) == Some(b'*') => self.block_comment(sink, start),
                 c if is_ident_start(c) => self.ident_or_keyword(),
                 c if c.is_ascii_digit() => self.number(sink, start),
-                b'\'' => self.logic_literal(sink, start),
+                b'\'' => self.character_literal(sink, start),
                 b'"' => {
                     self.string_body(sink, start);
                     TokenKind::StrLit
@@ -156,7 +156,7 @@ impl<'a> Lexer<'a> {
         TokenKind::Int
     }
 
-    fn logic_literal(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
+    fn character_literal(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         self.bump(); // opening `'`
         let mut chars = 0;
         while let Some(c) = self.peek() {
@@ -177,12 +177,12 @@ impl<'a> Lexer<'a> {
                 return TokenKind::CharacterLit;
             }
             sink.emit(
-                Diagnostic::error("logic literal must contain exactly one character")
+                Diagnostic::error("character literal must contain exactly one character")
                     .at(self.span(start, self.pos)),
             );
         } else {
             sink.emit(
-                Diagnostic::error("unterminated logic literal")
+                Diagnostic::error("unterminated character literal")
                     .at(self.span(start, self.pos)),
             );
         }

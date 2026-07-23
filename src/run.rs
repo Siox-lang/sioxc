@@ -375,7 +375,7 @@ fn eval_tb_const(
     match e {
         ast::Expr::Int { text, .. } => Some(u128::from_u64(parse_u64(text))),
         ast::Expr::Bool { value, .. } => Some(u128::from_u64(*value as u64)),
-        ast::Expr::LogicLit { ch, .. } => Some(u128::from_u64(logic_lit_value(*ch, enums))),
+        ast::Expr::CharLit { ch, .. } => Some(u128::from_u64(logic_lit_value(*ch, enums))),
         ast::Expr::Path(p) if p.segments.len() == 1 => {
             consts.get(&p.segments[0].text).copied()
         }
@@ -1048,14 +1048,14 @@ impl Testbench<'_> {
             .map(|&id| self.engine.design().signals[id.0 as usize].char)
             .unwrap_or(false);
         if is_char {
-            if let ast::Expr::LogicLit { ch, .. } = e {
+            if let ast::Expr::CharLit { ch, .. } = e {
                 return u128::from_u64(*ch as u32 as u64);
             }
         }
         // An enum-typed target: a char literal takes its position in that enum's
         // own declaration (VHDL `T'pos`), data-driven — not the hardcoded Logic
         // map — so a user char enum resolves correctly.
-        if let ast::Expr::LogicLit { ch, .. } = e {
+        if let ast::Expr::CharLit { ch, .. } = e {
             if let Some(&d) = self
                 .local_types
                 .get(name)
@@ -1736,7 +1736,7 @@ impl Testbench<'_> {
                 u128::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
             ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
-            ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_lit_value(*ch, self.enums)),
+            ast::Expr::CharLit { ch, .. } => u128::from_u64(logic_lit_value(*ch, self.enums)),
             // Conversions (spec 3.17): testbench evaluation masks to the
             // target width (`integer(x)` passes through); source
             // sign-extension is a hardware-lowering concern.
@@ -2133,14 +2133,14 @@ impl Testbench<'_> {
     /// points, signals read their slots.
     fn eval_char(&self, e: &ast::Expr) -> u128 {
         match e {
-            ast::Expr::LogicLit { ch, .. } => u128::from_u64(*ch as u32 as u64),
+            ast::Expr::CharLit { ch, .. } => u128::from_u64(*ch as u32 as u64),
             _ => self.eval(e),
         }
     }
 
     /// Whether an operand is a bare character/logic literal (`'g'`).
     fn is_char_lit(&self, e: &ast::Expr) -> bool {
-        matches!(e, ast::Expr::LogicLit { .. })
+        matches!(e, ast::Expr::CharLit { .. })
     }
 
     /// The enum type of an operand that is an enum-typed signal or testbench
@@ -2158,7 +2158,7 @@ impl Testbench<'_> {
     /// An operand in an enum comparison: a char literal takes its position in
     /// `en` (VHDL `T'pos`), data-driven; anything else reads normally.
     fn eval_enum_char(&self, e: &ast::Expr, en: &str) -> u128 {
-        if let ast::Expr::LogicLit { ch, .. } = e {
+        if let ast::Expr::CharLit { ch, .. } = e {
             if let Some(&d) = self.enums.get(en).and_then(|m| m.get(&format!("'{ch}'"))) {
                 return u128::from_u64(d);
             }

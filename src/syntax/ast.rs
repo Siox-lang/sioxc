@@ -344,7 +344,10 @@ pub enum Expr {
     /// `x"123ABC"` / `b"0101"` — bit-string literal; `base` is the prefix
     /// letter, `digits` the text between the quotes.
     BitStrLit { base: char, digits: String, span: Span },
-    LogicLit { ch: char, span: Span },
+    /// A single character between single quotes (`'g'`, `'0'`). A character
+    /// literal has no intrinsic value — its type (and so its numeric value)
+    /// comes from context: the enum it is assigned to or compared against.
+    CharLit { ch: char, span: Span },
     StrLit { text: String, span: Span },
     Bool { value: bool, span: Span },
     Path(Path),

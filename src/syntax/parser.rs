@@ -1167,7 +1167,7 @@ impl<'a> Parser<'a> {
                 let t = self.bump();
                 let text = self.text_of(t.span);
                 let ch = text.chars().nth(1).unwrap_or('?');
-                Expr::LogicLit { ch, span: t.span }
+                Expr::CharLit { ch, span: t.span }
             }
             TokenKind::StrLit => {
                 let t = self.bump();

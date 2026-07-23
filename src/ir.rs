@@ -878,7 +878,7 @@ impl<'a> Lowering<'a> {
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
                         let en = self.out.signals[id.0 as usize].enum_type.clone();
-                        if let Some(bits) = self.const_init_bits(v, en.as_deref()) {
+                        if let Some(bits) = self.const_init_value(v, en.as_deref()) {
                             let w = self.out.signals[id.0 as usize].width;
                             let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
                             self.out.signals[id.0 as usize].init = masked;
@@ -1334,32 +1334,34 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The bit pattern of a constant `let` initializer: integers, logic
-    /// literals, enum variants, booleans, and real literals (f64 bits).
-    fn const_init_bits(&self, e: &ast::Expr, target: Option<&str>) -> Option<u64> {
+    /// The initial value of a constant `let` initializer, folded at compile
+    /// time into a signal's power-on `init`. Two shapes reach here:
+    /// **literals** — a real's f64 bits, or a character's position in its enum
+    /// (a `'g'` has no intrinsic value; its type gives it one) — and **enum
+    /// variants** — `Color::Red`, or `Bool`'s `true`/`false`, resolved to their
+    /// discriminant. An integer or const-fn expression folds through
+    /// `eval_const_fns`. A string initializer is a `Char` array, not a scalar,
+    /// so it is written element-wise elsewhere, not here.
+    fn const_init_value(&self, e: &ast::Expr, target: Option<&str>) -> Option<u64> {
         match e {
+            // --- literals: a value read as bits ---
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 text.parse::<f64>().ok().map(f64::to_bits)
             }
-            // A character literal has no intrinsic value — it reads by its
-            // position in the target type's declaration (VHDL `T'pos`),
-            // data-driven from `enum_variants`. With no type context it falls
-            // back to std's default logic type. No value table lives here.
-            ast::Expr::LogicLit { ch, .. } => target
+            // A character reads by its position in the target enum (VHDL
+            // `T'pos`), else std's default logic type. No value table here.
+            ast::Expr::CharLit { ch, .. } => target
                 .and_then(|en| self.char_disc(*ch, en))
                 .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
-            // `true`/`false` take their positions in std's `Bool` enum, not a
-            // baked-in 1/0 — reorder `enum Bool` and this follows.
-            ast::Expr::Bool { value, .. } => self
-                .enum_variants
-                .get("Bool")
-                .and_then(|m| m.get(if *value { "true" } else { "false" }))
-                .copied(),
-            ast::Expr::Path(p) if p.segments.len() >= 2 => self
-                .enum_variants
-                .get(&p.segments[0].text)
-                .and_then(|m| m.get(&p.segments[1].text))
-                .copied(),
+            // --- enum variants: a name resolved to its discriminant ---
+            // `true`/`false` are `Bool`'s two variants, resolved like any enum.
+            ast::Expr::Bool { value, .. } => {
+                self.enum_variant("Bool", if *value { "true" } else { "false" })
+            }
+            ast::Expr::Path(p) if p.segments.len() >= 2 => {
+                self.enum_variant(&p.segments[0].text, &p.segments[1].text)
+            }
+            // --- integer / const-fn arithmetic ---
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
     }
@@ -1382,7 +1384,7 @@ impl<'a> Lowering<'a> {
                 if let Some(body) = &f.body {
                     for st in &body.stmts {
                         if let ast::Stmt::Return { value: Some(e), .. } = st {
-                            if let Some(v) = self.const_init_bits(e, Some(ty)) {
+                            if let Some(v) = self.const_init_value(e, Some(ty)) {
                                 out.insert(ty.clone(), v);
                             }
                         }
@@ -2466,7 +2468,7 @@ impl<'a> Lowering<'a> {
                 u64::from_str_radix(digits, if *base == 'x' { 16 } else { 2 }).unwrap_or(0),
             ),
             ast::Expr::Bool { value, .. } => Expr::Const(*value as u64),
-            ast::Expr::LogicLit { ch, .. } => Expr::Logic(*ch),
+            ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
                 if let Some(id) = self.locals.get(name) {
@@ -2599,12 +2601,12 @@ impl<'a> Lowering<'a> {
                 let (mut l, mut r) = (self.lower_expr(lhs), self.lower_expr(rhs));
                 // A character literal's identity comes from its counterpart's
                 // type (`c == 'x'` with c: Char reads 'x' as Unicode).
-                if let ast::Expr::LogicLit { ch, .. } = lhs.as_ref() {
+                if let ast::Expr::CharLit { ch, .. } = lhs.as_ref() {
                     if let Some(v) = self.typed_char_literal(*ch, rhs) {
                         l = v;
                     }
                 }
-                if let ast::Expr::LogicLit { ch, .. } = rhs.as_ref() {
+                if let ast::Expr::CharLit { ch, .. } = rhs.as_ref() {
                     if let Some(v) = self.typed_char_literal(*ch, lhs) {
                         r = v;
                     }
@@ -2838,7 +2840,13 @@ impl<'a> Lowering<'a> {
     /// declaration (VHDL `T'pos`), from `enum_variants`. Char variants are keyed
     /// with quotes (`'g'`). `None` if `en` has no such variant.
     fn char_disc(&self, ch: char, en: &str) -> Option<u64> {
-        self.enum_variants.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied()
+        self.enum_variant(en, &format!("'{ch}'"))
+    }
+
+    /// The discriminant of `variant` in enum `en`, from std's declaration —
+    /// the one place enum values come from. `None` if either is unknown.
+    fn enum_variant(&self, en: &str, variant: &str) -> Option<u64> {
+        self.enum_variants.get(en).and_then(|m| m.get(variant)).copied()
     }
 
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context

@@ -1212,7 +1212,7 @@ impl<'a> Checker<'a> {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
             Expr::Int { .. } => matches!(lhs, Ty::Vector { .. } | Ty::Integer | Ty::Real | Ty::Error),
-            Expr::LogicLit { ch, .. } => {
+            Expr::CharLit { ch, .. } => {
                 // A character literal reads through its context type (spec:
                 // type kernel): builtin scalars, `Char`, or a user enum with
                 // a matching character variant (e.g. ULogic's 'Z').
@@ -1325,7 +1325,7 @@ impl<'a> Checker<'a> {
                 // type (spec: type kernel); a numeric counterpart cannot read
                 // one — conversion goes through an encoding table.
                 for (lit, other) in [(lhs, rhs), (rhs, lhs)] {
-                    if matches!(lit.as_ref(), Expr::LogicLit { .. })
+                    if matches!(lit.as_ref(), Expr::CharLit { .. })
                         && matches!(
                             self.type_of(other, sym),
                             Ty::Vector { .. } | Ty::Integer | Ty::Real
@@ -1517,7 +1517,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Int { .. }
-            | Expr::LogicLit { .. }
+            | Expr::CharLit { .. }
             | Expr::StrLit { .. }
             | Expr::Bool { .. }
             | Expr::Path(_) => {}
@@ -1568,7 +1568,7 @@ impl<'a> Checker<'a> {
             }
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.
-            Expr::LogicLit { .. } => Ty::Char,
+            Expr::CharLit { .. } => Ty::Char,
             Expr::Bool { .. } => Ty::Bool,
             // A string literal is `string` = `Char[N]`.
             Expr::StrLit { text, .. } => {
@@ -2117,7 +2117,7 @@ fn expr_span(e: &Expr) -> Span {
         Expr::Int { span, .. }
         | Expr::SuffixLit { span, .. }
         | Expr::BitStrLit { span, .. }
-        | Expr::LogicLit { span, .. }
+        | Expr::CharLit { span, .. }
         | Expr::StrLit { span, .. }
         | Expr::Bool { span, .. }
         | Expr::Field { span, .. }

@@ -439,7 +439,7 @@ fn eval_c_const(
     match e {
         ast::Expr::Int { text, .. } => Some(parse_u64(text) as u128),
         ast::Expr::Bool { value, .. } => Some(*value as u128),
-        ast::Expr::LogicLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
+        ast::Expr::CharLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
         ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
         ast::Expr::Path(p) if p.segments.len() >= 2 => enums
             .get(&p.segments[0].text)
@@ -1284,20 +1284,20 @@ impl Ctx<'_> {
     /// point; anything else translates normally.
     fn c_char_operand(&self, e: &ast::Expr) -> Result<String, String> {
         match e {
-            ast::Expr::LogicLit { ch, .. } => Ok(format!("{}ULL", *ch as u32)),
+            ast::Expr::CharLit { ch, .. } => Ok(format!("{}ULL", *ch as u32)),
             _ => self.expr(e),
         }
     }
 
     /// Whether an operand is a bare character/logic literal (`'g'`).
     fn is_char_lit(&self, e: &ast::Expr) -> bool {
-        matches!(e, ast::Expr::LogicLit { .. })
+        matches!(e, ast::Expr::CharLit { .. })
     }
 
     /// A char literal's position in enum `en` (VHDL `T'pos`), data-driven from
     /// the enum's declaration — `None` if `e` is not a char literal.
     fn enum_char_lit(&self, en: &str, e: &ast::Expr) -> Option<u64> {
-        if let ast::Expr::LogicLit { ch, .. } = e {
+        if let ast::Expr::CharLit { ch, .. } = e {
             return self.enums.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied();
         }
         None
@@ -1485,7 +1485,7 @@ impl Ctx<'_> {
         }
         // A char-typed target reads a character literal as its code point.
         if sig.char {
-            if let ast::Expr::LogicLit { ch, .. } = e {
+            if let ast::Expr::CharLit { ch, .. } = e {
                 return Ok(format!("{}ULL", *ch as u32));
             }
         }
@@ -1713,7 +1713,7 @@ impl Ctx<'_> {
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
-            ast::Expr::LogicLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
+            ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
             // A method call `recv.method(args)` (possibly nullary) inlines the
             // impl body as a C expression, before the conversion logic below.

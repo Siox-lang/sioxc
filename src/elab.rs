@@ -968,7 +968,7 @@ fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
         Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
         Expr::Int { text, .. } => text.clone(),
-        Expr::LogicLit { ch, .. } => format!("'{ch}'"),
+        Expr::CharLit { ch, .. } => format!("'{ch}'"),
         // An indexed connection (`wires[i]`) names the flattened element
         // signal, with the (loop/const) index evaluated.
         Expr::Index { base, index, .. } => {
