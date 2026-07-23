@@ -15,6 +15,15 @@ use crate::run::Sample;
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {
     let ids: Vec<String> = (0..design.signals.len()).map(|i| format!("v{i}")).collect();
 
+    // X/Z metavalue companions (`v$meta`): a `Logic`-vector's per-element
+    // discriminant. They aren't dumped as their own vars — instead the vector
+    // renders each bit as `x`/`z` where its companion says so.
+    let companion_of: Vec<Option<usize>> =
+        (0..design.signals.len()).map(|i| design.meta_of.get(&(i as u32)).map(|&c| c as usize)).collect();
+    let owner_of: HashMap<usize, usize> =
+        design.meta_of.iter().map(|(&o, &c)| (c as usize, o as usize)).collect();
+    let is_companion: Vec<bool> = (0..design.signals.len()).map(|i| owner_of.contains_key(&i)).collect();
+
     // A logic-scalar enum (Bit/ULogic/Logic: every variant a quoted
     // logic character) dumps as a 1-bit VCD scalar with native 0/1/z/x states
     // instead of its raw discriminant — what waveform viewers expect.
@@ -68,6 +77,9 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
     for (scope, idxs) in &scopes {
         writeln!(out, "$scope module {scope} $end")?;
         for &i in idxs {
+            if is_companion[i] {
+                continue; // merged into its vector's rendering
+            }
             let (_, name) = split_path(&design.signals[i].path);
             if name_tables[i].is_some() {
                 writeln!(out, "$var string 1 {} {name} $end", ids[i])?;
@@ -99,8 +111,24 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
             writeln!(out, "#{}", sample.time_fs)?;
             cur_time = Some(sample.time_fs);
         }
+        let mut rendered_meta = std::collections::HashSet::new();
         for (i, v) in changes {
             last[i] = Some(v);
+            // A metavalue vector (or its companion changing) re-renders the
+            // vector with per-bit `x`/`z`, once per time.
+            let owner = if is_companion[i] { owner_of[&i] } else { i };
+            if let Some(cid) = companion_of[owner] {
+                if rendered_meta.insert(owner) {
+                    write_metavalue(
+                        out,
+                        sample.values[owner],
+                        sample.values[cid],
+                        design.signals[owner].width,
+                        &ids[owner],
+                    )?;
+                }
+                continue;
+            }
             if let Some(table) = &logic_tables[i] {
                 let ch = table.get(v as usize).copied().unwrap_or('x');
                 writeln!(out, "{ch}{}", ids[i])?;
@@ -139,6 +167,32 @@ fn write_value<W: Write>(out: &mut W, value: u128, width: u32, id: &str) -> io::
     } else {
         writeln!(out, "b{value:b} {id}")
     }
+}
+
+/// A `Logic`-vector with metavalues: each element is `x`/`z` where its companion
+/// discriminant says so (disc 2 = `Z`, any other metavalue = `X`), else its
+/// value bit. MSB-first, VCD binary.
+fn write_metavalue<W: Write>(
+    out: &mut W,
+    value: u128,
+    meta: u128,
+    width: u32,
+    id: &str,
+) -> io::Result<()> {
+    let mut bits = String::with_capacity(width as usize);
+    for j in (0..width).rev() {
+        let nib = (meta >> (4 * j)) & 0xF;
+        bits.push(if nib >= 2 {
+            if nib == 2 {
+                'z'
+            } else {
+                'x'
+            }
+        } else {
+            char::from(b'0' + ((value >> j) & 1) as u8)
+        });
+    }
+    writeln!(out, "b{bits} {id}")
 }
 
 #[cfg(test)]
