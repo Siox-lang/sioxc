@@ -16,19 +16,36 @@ use siox::ir::Design;
 
 use crate::emit::build_module;
 
-/// A `TargetMachine` for the host CPU, tuned to its native features (so the
-/// backend may use the widest vector registers the machine has). Shared by the
-/// AOT object path and the JIT's optimization pass.
+/// The `(cpu, features)` the target machine is built for. With the `simd`
+/// feature it is the host's own CPU and native feature set — so the backend may
+/// use the widest vector registers the machine has (AVX / AVX-512 → 256 / 512-
+/// bit). Without it, a portable baseline (`generic` x86-64, SSE2 128-bit), so
+/// objects run anywhere and the JIT stays deterministic across machines.
+fn target_cpu_features() -> (String, String) {
+    if cfg!(feature = "simd") {
+        (
+            TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic").to_string(),
+            TargetMachine::get_host_cpu_features().to_str().unwrap_or("").to_string(),
+        )
+    } else {
+        ("generic".to_string(), String::new())
+    }
+}
+
+/// A `TargetMachine` for codegen, tuned per the `simd` feature (see
+/// [`target_cpu_features`]). Shared by the AOT object path and the JIT's
+/// optimization pass so both agree on the target.
 pub fn host_target_machine() -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("target init failed: {e}"))?;
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).map_err(|e| e.to_string())?;
+    let (cpu, features) = target_cpu_features();
     target
         .create_target_machine(
             &triple,
-            TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic"),
-            TargetMachine::get_host_cpu_features().to_str().unwrap_or(""),
+            &cpu,
+            &features,
             OptimizationLevel::Default,
             RelocMode::PIC,
             CodeModel::Default,

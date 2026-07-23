@@ -13,3 +13,18 @@ siox.workspace = true
 # LLVM (via inkwell) — building this crate needs a matching LLVM toolchain.
 # Pinned to the local LLVM (22); bump the features to match your `llvm-config`.
 inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1", "target-x86"] }
+
+[features]
+default = []
+# Target the host's SIMD units: the JIT/AOT `TargetMachine` advertises the
+# host CPU's native features (AVX / AVX-512 -> 256 / 512-bit vector registers),
+# so the `-O2` vectorizer can use them for array/vector operations. Off by
+# default the build targets a portable baseline (generic x86-64, SSE2 128-bit).
+simd = []
+# Signals wider than 64 bits — `uint[128]` / `[256]` / `[512]`. EXPERIMENTAL and
+# incomplete: the word-based IR and the backends carry wide integers only
+# partially, so this is gated off; the base compiler stays 64-bit.
+wide = []
+# Quad-precision float (`f128`, LLVM `fp128`). EXPERIMENTAL: the runner has no
+# native `f128`, so this is gated off pending a soft-float path.
+f128 = []

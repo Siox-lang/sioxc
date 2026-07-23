@@ -16,3 +16,13 @@ path = "src/main.rs"
 siox.workspace = true
 siox-llvm.workspace = true
 clap.workspace = true
+
+[features]
+default = []
+# Forward the backend codegen features (see crates/siox-llvm/Cargo.toml):
+#   cargo build -p sioxc --features simd     # host SIMD (256/512-bit vectors)
+#   cargo build -p sioxc --features wide     # >64-bit signals (experimental)
+#   cargo build -p sioxc --features f128     # quad float (experimental)
+simd = ["siox-llvm/simd"]
+wide = ["siox-llvm/wide"]
+f128 = ["siox-llvm/f128"]
