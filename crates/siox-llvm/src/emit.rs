@@ -75,11 +75,19 @@ struct Codegen<'ctx, 'd> {
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
     /// it; compute stays in `i64`, so `load` zero-extends and `store` truncates.
+    #[cfg(not(feature = "bitpack"))]
     state_ty: inkwell::types::StructType<'ctx>,
+    /// The bit-packed layout (feature `bitpack`): `(word, shift)` per signal —
+    /// many small signals share a 64-bit word. State globals are `[words x i64]`.
+    #[cfg(feature = "bitpack")]
+    slots: Vec<(u32, u32)>,
+    #[cfg(feature = "bitpack")]
+    words: u32,
 }
 
 /// The smallest machine integer that holds `width` bits. Sub-byte widths (a
 /// 1-bit `Bit`, a 4-bit `Logic`) round up to a byte — the addressable floor.
+#[cfg(not(feature = "bitpack"))]
 fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
     match width {
         0..=8 => ctx.i8_type(),
@@ -89,19 +97,59 @@ fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
     }
 }
 
+/// The low-`w`-bits mask (`w >= 64` → all ones).
+#[cfg(feature = "bitpack")]
+fn width_mask(w: u32) -> u64 {
+    if w >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << w) - 1
+    }
+}
+
+/// Assign each signal a `(word, shift)` so its `width` bits sit within one
+/// 64-bit word (a field never straddles a word boundary — no multi-word
+/// access). Returns the per-signal slots and the number of words.
+#[cfg(feature = "bitpack")]
+fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
+    let mut slots = Vec::with_capacity(design.signals.len());
+    let (mut word, mut bit) = (0u32, 0u32);
+    for s in &design.signals {
+        let w = s.width.min(64).max(1);
+        if bit + w > 64 {
+            word += 1;
+            bit = 0;
+        }
+        slots.push((word, bit));
+        bit += w;
+    }
+    let words = (word + 1).max(1);
+    (slots, words)
+}
+
 impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn new(ctx: &'ctx Context, design: &'d Design) -> Self {
         let module = ctx.create_module("design");
-        let fields: Vec<_> =
-            design.signals.iter().map(|s| storage_int(ctx, s.width).into()).collect();
-        let state_ty = ctx.struct_type(&fields, true);
+        #[cfg(not(feature = "bitpack"))]
+        let state_ty = {
+            let fields: Vec<_> =
+                design.signals.iter().map(|s| storage_int(ctx, s.width).into()).collect();
+            ctx.struct_type(&fields, true)
+        };
+        #[cfg(feature = "bitpack")]
+        let (slots, words) = pack_layout(design);
         Codegen {
             ctx,
             module,
             builder: ctx.create_builder(),
             design,
             n: design.signals.len() as u32,
+            #[cfg(not(feature = "bitpack"))]
             state_ty,
+            #[cfg(feature = "bitpack")]
+            slots,
+            #[cfg(feature = "bitpack")]
+            words,
         }
     }
 
@@ -110,6 +158,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// The storage integer type of signal `id` (a field of [`Codegen::state_ty`]).
+    #[cfg(not(feature = "bitpack"))]
     fn slot_ty(&self, id: SignalId) -> inkwell::types::IntType<'ctx> {
         storage_int(self.ctx, self.design.signals[id.0 as usize].width)
     }
@@ -122,6 +171,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- state ------------------------------------------------------------
 
+    #[cfg(not(feature = "bitpack"))]
     fn state_globals(&self) {
         // Each of `cur`/`old`/`event`/`snap` is one width-packed struct (see
         // `state_ty`). `snap` holds each delta's entry values, so `old` can
@@ -139,6 +189,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// Pointer to signal `id`'s field in `@<arr>`.
+    #[cfg(not(feature = "bitpack"))]
     fn slot_ptr(&self, arr: &str, id: SignalId) -> PointerValue<'ctx> {
         self.builder
             .build_struct_gep(self.state_ty, self.array_ptr(arr), id.0, "slot")
@@ -147,6 +198,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Load signal `id` from `@<arr>`, zero-extended to the `i64` the compute
     /// paths use.
+    #[cfg(not(feature = "bitpack"))]
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
         let ty = self.slot_ty(id);
         let v = self.builder.build_load(ty, self.slot_ptr(arr, id), "v").unwrap().into_int_value();
@@ -159,6 +211,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Store an `i64` compute value into signal `id`'s width-sized slot in
     /// `@<arr>` (truncating; writers already mask to the signal width).
+    #[cfg(not(feature = "bitpack"))]
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
         let ty = self.slot_ty(id);
         let v = if ty.get_bit_width() < 64 {
@@ -167,6 +220,79 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             v
         };
         self.builder.build_store(self.slot_ptr(arr, id), v).unwrap();
+    }
+
+    // --- bit-packed state layout (feature `bitpack`) ----------------------
+
+    #[cfg(feature = "bitpack")]
+    fn state_globals(&self) {
+        // `cur`/`old`/`event`/`snap` are each `[words x i64]`; signals share
+        // words (see `pack_layout`). `snap` holds each delta's entry values so
+        // `old` can advance and internally-generated edges fire next delta.
+        let arr = self.i64t().array_type(self.words);
+        for name in ["cur", "old", "event", "snap"] {
+            let g = self.module.add_global(arr, None, name);
+            g.set_initializer(&arr.const_zero());
+            g.set_linkage(Linkage::Internal);
+        }
+    }
+
+    /// Pointer to `@<arr>`'s `word`-th `i64`.
+    #[cfg(feature = "bitpack")]
+    fn word_ptr(&self, arr: &str, word: u32) -> PointerValue<'ctx> {
+        let i64 = self.i64t();
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    i64.array_type(self.words),
+                    self.array_ptr(arr),
+                    &[i64.const_zero(), i64.const_int(word as u64, false)],
+                    "wp",
+                )
+                .unwrap()
+        }
+    }
+
+    /// Load signal `id`: read its word, shift its field down, mask to width.
+    #[cfg(feature = "bitpack")]
+    fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
+        let (word, shift) = self.slots[id.0 as usize];
+        let w = self.design.signals[id.0 as usize].width;
+        let i64 = self.i64t();
+        let word_val =
+            self.builder.build_load(i64, self.word_ptr(arr, word), "w").unwrap().into_int_value();
+        let shifted = if shift > 0 {
+            self.builder
+                .build_right_shift(word_val, i64.const_int(shift as u64, false), false, "sh")
+                .unwrap()
+        } else {
+            word_val
+        };
+        self.builder.build_and(shifted, i64.const_int(width_mask(w), false), "fld").unwrap()
+    }
+
+    /// Store signal `id`: read-modify-write its word — clear the field bits,
+    /// OR in the masked, shifted value.
+    #[cfg(feature = "bitpack")]
+    fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
+        let (word, shift) = self.slots[id.0 as usize];
+        let w = self.design.signals[id.0 as usize].width;
+        let i64 = self.i64t();
+        let mask = width_mask(w);
+        let field = self.builder.build_and(v, i64.const_int(mask, false), "m").unwrap();
+        let field = if shift > 0 {
+            self.builder
+                .build_left_shift(field, i64.const_int(shift as u64, false), "fsh")
+                .unwrap()
+        } else {
+            field
+        };
+        let ptr = self.word_ptr(arr, word);
+        let cur = self.builder.build_load(i64, ptr, "w").unwrap().into_int_value();
+        let keep = i64.const_int(!(mask << shift), false);
+        let cleared = self.builder.build_and(cur, keep, "clr").unwrap();
+        let next = self.builder.build_or(cleared, field, "ins").unwrap();
+        self.builder.build_store(ptr, next).unwrap();
     }
 
     // --- accessors: sx_set / sx_read / sx_reset ---------------------------
@@ -652,6 +778,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "bitpack"))] // asserts the default byte-struct layout
     fn emits_combinational_adder() {
         // y (id 2) = a (0) + b (1), width 8.
         let design = Design {
@@ -703,6 +830,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "bitpack"))] // asserts the default struct-GEP slots
     fn topo_orders_a_chain() {
         // Drivers declared out of dependency order: y=c, c=b, b=a. The emitted
         // settle must compute b, then c, then y (each after its input).

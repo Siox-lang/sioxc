@@ -118,6 +118,12 @@ Signal state is stored width-packed (a `Bit`/`Logic` takes one byte, not eight;
 `uint[32]` four, `uint[64]` eight), shared by the JIT and AOT via the emitted
 state struct.
 
+- 🟢 **`bitpack`** *(implemented)* — pack many small signals into shared 64-bit
+  words (a `Bit` takes 1 bit, a nibble `Logic` 4), instead of a byte each. Up to
+  ~8× smaller state for `Bit`-heavy designs, at the cost of read-modify-write
+  stores — a footprint win for huge designs; the default byte layout is faster
+  for cache-resident ones. Correctness is covered by the corpus differential
+  (all 61 pass identically packed and unpacked).
 - 🟢 **`simd`** *(implemented)* — the JIT/AOT `TargetMachine` targets the host
   CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
   `-O2` vectorizer can use them for array/vector ops. Off by default the build

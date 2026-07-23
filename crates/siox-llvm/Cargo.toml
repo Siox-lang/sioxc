@@ -28,3 +28,9 @@ wide = []
 # Quad-precision float (`f128`, LLVM `fp128`). EXPERIMENTAL: the runner has no
 # native `f128`, so this is gated off pending a soft-float path.
 f128 = []
+# Bit-pack signal state: many small signals share a 64-bit word (a `Bit` takes
+# 1 bit, a nibble `Logic` 4), instead of one byte each. Shrinks the state
+# footprint up to ~8x for `Bit`-heavy designs, at the cost of read-modify-write
+# stores. A memory-footprint win for huge designs; the default byte layout is
+# faster for cache-resident ones.
+bitpack = []
