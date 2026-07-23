@@ -1501,58 +1501,66 @@ impl<'a> Lowering<'a> {
         cid
     }
 
-    /// The metavalue disc-array of an IR operand, if it can carry one: a signal
-    /// read yields its companion. `None` = provably clean.
-    fn meta_ref(&self, e: &Expr) -> Option<Expr> {
+    /// The metavalue disc-array a driver expression produces, or `None` if it is
+    /// provably clean. `width` is the target element count (for the poison
+    /// pattern). Covers: a signal read (its companion — copies and port
+    /// connections carry the metavalue), `numeric_std` arithmetic (any metavalue
+    /// operand poisons the whole result to `'X'`), and a mux (per branch).
+    /// Logical/relational is a follow-on.
+    fn lower_meta_ir(&self, e: &Expr, width: u32) -> Option<Expr> {
         match e {
             Expr::Current(id) | Expr::Old(id) => {
                 self.out.meta_of.get(&id.0).map(|&c| Expr::Current(SignalId(c)))
+            }
+            Expr::Binary { op, lhs, rhs }
+                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
+            {
+                let cond = [self.lower_meta_ir(lhs, width), self.lower_meta_ir(rhs, width)]
+                    .into_iter()
+                    .flatten()
+                    .map(|m| Expr::Binary {
+                        op: BinOp::Ne,
+                        lhs: Box::new(m),
+                        rhs: Box::new(Expr::Const(0)),
+                    })
+                    .reduce(|a, b| Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) })?;
+                let all_x = (0..width).fold(0u64, |p, i| p | (3u64 << (4 * i)));
+                Some(Expr::Select {
+                    cond: Box::new(cond),
+                    then: Box::new(Expr::Const(all_x)),
+                    els: Box::new(Expr::Const(0)),
+                })
+            }
+            Expr::Select { cond, then, els } => {
+                let (mt, me) = (self.lower_meta_ir(then, width), self.lower_meta_ir(els, width));
+                if mt.is_none() && me.is_none() {
+                    return None;
+                }
+                Some(Expr::Select {
+                    cond: cond.clone(),
+                    then: Box::new(mt.unwrap_or(Expr::Const(0))),
+                    els: Box::new(me.unwrap_or(Expr::Const(0))),
+                })
             }
             _ => None,
         }
     }
 
-    /// Propagate metavalues through operators (numeric_std): a vector
-    /// `y = a op b` whose operand carries a metavalue poisons the whole result
-    /// to `'X'`. Runs after drivers are lowered; drives each poisoned target's
-    /// companion. Logical/relational propagation is a follow-on.
+    /// Propagate metavalues through operators: drive each vector target's
+    /// companion from [`lower_meta_ir`] of its value. Runs after drivers are
+    /// lowered.
     fn propagate_metavalues(&mut self) {
-        let mut poisoned: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
+        let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
         for d in &self.out.drivers {
             let n = self.out.signals[d.target.0 as usize].width;
             if n == 0 || n > 16 {
                 continue;
             }
-            let Expr::Binary { op, lhs, rhs } = &d.expr else { continue };
-            if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
-                continue;
+            if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
+                driven.push((d.target, d.cond.clone(), meta_expr, d.ctx));
             }
-            let anymeta: Vec<Expr> = [self.meta_ref(lhs), self.meta_ref(rhs)]
-                .into_iter()
-                .flatten()
-                .map(|m| Expr::Binary {
-                    op: BinOp::Ne,
-                    lhs: Box::new(m),
-                    rhs: Box::new(Expr::Const(0)),
-                })
-                .collect();
-            let Some(cond) = anymeta.into_iter().reduce(|a, b| Expr::Binary {
-                op: BinOp::Or,
-                lhs: Box::new(a),
-                rhs: Box::new(b),
-            }) else {
-                continue; // both operands provably clean
-            };
-            // `'X'` in every element (disc 3 per nibble) when poisoned, else 0.
-            let all_x = (0..n).fold(0u64, |p, i| p | (3u64 << (4 * i)));
-            let meta_expr = Expr::Select {
-                cond: Box::new(cond),
-                then: Box::new(Expr::Const(all_x)),
-                els: Box::new(Expr::Const(0)),
-            };
-            poisoned.push((d.target, d.cond.clone(), meta_expr, d.ctx));
         }
-        for (target, cond, expr, ctx) in poisoned {
+        for (target, cond, expr, ctx) in driven {
             let cid = self.driven_companion(target);
             self.out.drivers.push(Driver { target: SignalId(cid), cond, expr, ctx });
         }
