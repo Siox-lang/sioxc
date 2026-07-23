@@ -49,7 +49,9 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
   `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
   warns (`W-P011`). Still open: reading your own `out` port from within the
-  entity (allowed today; some HDLs flag it).
+  entity. ✅ **Resolved: keep it allowed** — IEEE 1076-2019 (VHDL-2008) permits
+  reading an `out` port; only pre-2008 VHDL forbade it, and we align with the
+  2019 reference, so no lint. Direction analysis is otherwise complete.
 - 🟢 **`new` — uninitialized value semantics** — model the default value of an
   undriven signal as the type's nullary constructor `T::new()`, not a hardcoded
   `0`. Naming it `new` (a `New` trait, `fn new() -> Self`) folds "default value"
@@ -70,9 +72,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   variant). Two stages: (1) ✅ **derived default landed** (siox-ir sets an enum
   signal's `init` to its first-variant discriminant via `enum_first_discriminants`;
   non-enum stays `0`; explicit `let x = V` still wins; `language.md` §3.29; 0
-  corpus regressions); (2) **`impl New for T` overrides** wait on **trait
-  resolution** (the same unlock as `Condition`/`Boolean`) and require the nullary
-  body to be a **constant expression** foldable to the `u64` `init`. Note
+  corpus regressions); (2) ✅ **`impl New for T` overrides landed** — `ir`'s
+  `compute_new_defaults` scans `op_impls[("New", T)]` and const-folds the nullary
+  `new()` body to the `u64` `init` (no full trait resolution needed). std uses it
+  for `New for Bit` → `'0'` and `New for Logic`/`ULogic` → `'U'`, so an undriven
+  `Logic` reads `'U'`; threaded to hardware signals + JIT/native testbench
+  locals. Note
   in the docs that a type-level default is a *simulation* power-on value, not a
   synthesizable reset (real reset comes from reset logic). Relates to
   **Undriven signals** above (this defines the value; the `'U'`-style runtime
