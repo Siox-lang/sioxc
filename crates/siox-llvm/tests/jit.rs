@@ -14,6 +14,7 @@ fn lower(src: &str) -> Design {
     let src = format!(
         "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n\
          enum Bit {{ '0', '1' }}\n\
+         enum ULogic : Bit {{ 'Z', 'X', 'U', 'W', 'L', 'H', '-' }}\n\
          trait ClockLike {{ fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }}\n\
          impl ClockLike for Bit {{\n\
            fn rising(self) -> Bool {{ return self::event and self::old == '0' and self == '1'; }}\n\

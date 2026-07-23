@@ -105,6 +105,13 @@ pub struct NextUpdate {
     pub expr: Expr,
 }
 
+/// The std type a bare, otherwise-untyped logic literal defaults to. Its
+/// variants (`'0','1','Z','X','U','W','L','H','-'`) and their positions come
+/// from `std/logic.siox` — the compiler names the type but holds no value
+/// table of its own. A typed context (an enum signal/local or a comparison
+/// counterpart) overrides this via `enum_variants`.
+pub const DEFAULT_LOGIC_TYPE: &str = "ULogic";
+
 /// IR expression. `::event`/`::old` are first-class so the scheduler can read
 /// them directly; `clk.rising()` lowers into `Event`/`Old`/`Current`.
 #[derive(Clone, Debug)]
@@ -241,6 +248,10 @@ pub fn lower_in(
     l.resolve_driver_contexts();
     l.lint_combinational_loops();
     l.lint_undriven_outputs();
+    // Resolve any logic literal that no typed context claimed to its position
+    // in std's default logic type, so the IR the backends consume carries only
+    // `Const`s — no raw chars, no compiler-side value table.
+    l.normalize_logic_literals();
     l.out
 }
 
@@ -2840,6 +2851,29 @@ impl<'a> Lowering<'a> {
         self.enum_variants.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied()
     }
 
+    /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
+    /// (enum signal, comparison counterpart) did not already resolve — to its
+    /// position in std's [`DEFAULT_LOGIC_TYPE`]. After this the backends see
+    /// only `Const`s, so no engine hardcodes what `'0'`/`'Z'`/… mean.
+    fn normalize_logic_literals(&mut self) {
+        let lut = self.enum_variants.get(DEFAULT_LOGIC_TYPE).cloned().unwrap_or_default();
+        for d in &mut self.out.drivers {
+            if let Some(c) = &mut d.cond {
+                resolve_logic_expr(c, &lut);
+            }
+            resolve_logic_expr(&mut d.expr, &lut);
+        }
+        for b in &mut self.out.event_blocks {
+            resolve_logic_expr(&mut b.condition, &lut);
+            for u in &mut b.updates {
+                if let Some(c) = &mut u.cond {
+                    resolve_logic_expr(c, &lut);
+                }
+                resolve_logic_expr(&mut u.expr, &lut);
+            }
+        }
+    }
+
     /// Coerce a driven value to the target's representation: integer
     /// constants become f64 bits when the target signal is `real`.
     fn coerce_to_target(&self, target: SignalId, expr: Expr) -> Expr {
@@ -3815,6 +3849,34 @@ pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
             read_set(els, out);
         }
         Expr::Const(_) | Expr::Real(_) | Expr::Logic(_) | Expr::Unknown => {}
+    }
+}
+
+/// Rewrite `Expr::Logic(c)` in place to `Const(position of c in `lut`)` — the
+/// std-supplied variant map of the default logic type. Recurses into children.
+fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
+    match e {
+        Expr::Logic(c) => {
+            *e = Expr::Const(lut.get(&format!("'{c}'")).copied().unwrap_or(0));
+        }
+        Expr::Unary { rhs, .. } => resolve_logic_expr(rhs, lut),
+        Expr::Binary { lhs, rhs, .. } => {
+            resolve_logic_expr(lhs, lut);
+            resolve_logic_expr(rhs, lut);
+        }
+        Expr::Slice { base, .. } => resolve_logic_expr(base, lut),
+        Expr::Select { cond, then, els } => {
+            resolve_logic_expr(cond, lut);
+            resolve_logic_expr(then, lut);
+            resolve_logic_expr(els, lut);
+        }
+        Expr::CCall { args, .. } => {
+            for a in args {
+                resolve_logic_expr(a, lut);
+            }
+        }
+        Expr::Const(_) | Expr::Real(_) | Expr::Current(_) | Expr::Old(_) | Expr::Event(_)
+        | Expr::Unknown => {}
     }
 }
 
@@ -5112,7 +5174,7 @@ mod tests {
 
     /// A minimal `ClockLike` impl so self-contained test sources can use the
     /// `clk.rising()` edge methods (std provides these for real designs).
-    const CLK_PRELUDE: &str = "\nenum Bit { '0', '1' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
+    const CLK_PRELUDE: &str = "\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
 
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
@@ -5674,10 +5736,12 @@ mod tests {
     fn rising_lowers_to_event_old_current() {
         let d = lower_src(COUNTER);
         let rendered = d.to_ir_string();
-        // clk.rising() expands into the explicit Event/Old/Current form.
+        // clk.rising() expands into the explicit Event/Old/Current form. The
+        // logic literals are resolved to their std positions ('0' -> 0,
+        // '1' -> 1), so the IR carries plain constants, no raw chars.
         assert!(rendered.contains("Event(H.dut.clk)"));
-        assert!(rendered.contains("Old(H.dut.clk) == '0'"));
-        assert!(rendered.contains("H.dut.clk == '1'"));
+        assert!(rendered.contains("Old(H.dut.clk) == 0"));
+        assert!(rendered.contains("H.dut.clk == 1"));
         // The combinational driver and the next-state updates are present.
         assert!(rendered.contains("driver H.dut.count = H.dut.value"));
         assert!(rendered.contains("next H.dut.value = 0"));

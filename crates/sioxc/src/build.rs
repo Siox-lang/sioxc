@@ -439,7 +439,7 @@ fn eval_c_const(
     match e {
         ast::Expr::Int { text, .. } => Some(parse_u64(text) as u128),
         ast::Expr::Bool { value, .. } => Some(*value as u128),
-        ast::Expr::LogicLit { ch, .. } => Some(logic_value(*ch) as u128),
+        ast::Expr::LogicLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
         ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
         ast::Expr::Path(p) if p.segments.len() >= 2 => enums
             .get(&p.segments[0].text)
@@ -1713,7 +1713,7 @@ impl Ctx<'_> {
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::Bool { value, .. } => (*value as u64).to_string(),
-            ast::Expr::LogicLit { ch, .. } => logic_value(*ch).to_string(),
+            ast::Expr::LogicLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
             // A method call `recv.method(args)` (possibly nullary) inlines the
             // impl body as a C expression, before the conversion logic below.
@@ -2170,17 +2170,13 @@ fn parse_u64(text: &str) -> u64 {
     }
 }
 
-fn logic_value(c: char) -> u64 {
-    match c {
-        '0' => 0,
-        '1' => 1,
-        'Z' => 2,
-        'X' => 3,
-        'U' => 4,
-        'W' => 5,
-        'L' => 6,
-        'H' => 7,
-        '-' => 8,
-        _ => 0,
-    }
+/// A logic character's value: its position in std's default logic type
+/// (`ULogic`), read from the parsed enum declaration — the emitter holds no
+/// value table of its own. `0` if the char is not one of that type's variants.
+fn logic_lit_value(c: char, enums: &HashMap<String, HashMap<String, u64>>) -> u64 {
+    enums
+        .get(siox::ir::DEFAULT_LOGIC_TYPE)
+        .and_then(|m| m.get(&format!("'{c}'")))
+        .copied()
+        .unwrap_or(0)
 }

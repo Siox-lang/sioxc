@@ -429,7 +429,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         match e {
             Expr::Const(v) => self.c(*v),
             Expr::Real(x) => self.c(x.to_bits()),
-            Expr::Logic(ch) => self.c(logic_value(*ch)),
+            // IR lowering resolves every logic literal to a `Const` (its
+            // position in std's logic type), so none reach the backend.
+            Expr::Logic(ch) => unreachable!("unresolved logic literal '{ch}' reached the backend"),
             Expr::Current(id) => self.load("cur", *id),
             Expr::Old(id) => self.load("old", *id),
             Expr::Event(id) => self.load("event", *id),
@@ -557,22 +559,6 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::Ge => cmp(IntPredicate::UGE, "ge"),
             BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => unreachable!(),
         }
-    }
-}
-
-/// Logic literal encoding, matching the interpreter's `logic_value`.
-fn logic_value(c: char) -> u64 {
-    match c {
-        '0' => 0,
-        '1' => 1,
-        'Z' => 2,
-        'X' => 3,
-        'U' => 4,
-        'W' => 5,
-        'L' => 6,
-        'H' => 7,
-        '-' => 8,
-        _ => 0,
     }
 }
 

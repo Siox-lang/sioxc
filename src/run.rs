@@ -103,19 +103,15 @@ pub trait Engine {
     fn design(&self) -> &Design;
 }
 
-pub fn logic_value(c: char) -> u64 {
-    match c {
-        '0' => 0,
-        '1' => 1,
-        'Z' => 2,
-        'X' => 3,
-        'U' => 4,
-        'W' => 5,
-        'L' => 6,
-        'H' => 7,
-        '-' => 8,
-        _ => 0,
-    }
+/// A logic character's value: its position in std's default logic type
+/// (`ULogic`), read from the parsed enum declaration — the runtime holds no
+/// value table of its own. `0` if the char is not one of that type's variants.
+fn logic_lit_value(c: char, enums: &HashMap<String, HashMap<String, u64>>) -> u64 {
+    enums
+        .get(crate::ir::DEFAULT_LOGIC_TYPE)
+        .and_then(|m| m.get(&format!("'{c}'")))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// `and`/`or`/`xor` are "boolean, per bit": on a bit array they apply per bit
@@ -379,7 +375,7 @@ fn eval_tb_const(
     match e {
         ast::Expr::Int { text, .. } => Some(u128::from_u64(parse_u64(text))),
         ast::Expr::Bool { value, .. } => Some(u128::from_u64(*value as u64)),
-        ast::Expr::LogicLit { ch, .. } => Some(u128::from_u64(logic_value(*ch))),
+        ast::Expr::LogicLit { ch, .. } => Some(u128::from_u64(logic_lit_value(*ch, enums))),
         ast::Expr::Path(p) if p.segments.len() == 1 => {
             consts.get(&p.segments[0].text).copied()
         }
@@ -1740,7 +1736,7 @@ impl Testbench<'_> {
                 u128::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
             ast::Expr::Bool { value, .. } => u128::from_u64(*value as u64),
-            ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_value(*ch)),
+            ast::Expr::LogicLit { ch, .. } => u128::from_u64(logic_lit_value(*ch, self.enums)),
             // Conversions (spec 3.17): testbench evaluation masks to the
             // target width (`integer(x)` passes through); source
             // sign-extension is a hardware-lowering concern.
