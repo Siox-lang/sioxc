@@ -4106,6 +4106,36 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
 /// (disc >= 2), else the value bit. Recurses; does not descend into the node it
 /// creates (the companion has no companion).
 fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
+    // A whole-vector comparison with a metavalue operand is false (numeric_std).
+    if let Expr::Binary { op, lhs, rhs } = e {
+        if matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        ) {
+            let comp = |x: &Expr| match x {
+                Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
+                _ => None,
+            };
+            let cond = [comp(lhs), comp(rhs)]
+                .into_iter()
+                .flatten()
+                .map(|c| Expr::Binary {
+                    op: BinOp::Ne,
+                    lhs: Box::new(Expr::Current(SignalId(c))),
+                    rhs: Box::new(Expr::Const(0)),
+                })
+                .reduce(|a, b| Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) });
+            if let Some(cond) = cond {
+                let orig = e.clone();
+                *e = Expr::Select {
+                    cond: Box::new(cond),
+                    then: Box::new(Expr::Const(0)),
+                    els: Box::new(orig),
+                };
+                return;
+            }
+        }
+    }
     if let Expr::Slice { base, hi, lo } = e {
         if hi == lo {
             if let Expr::Current(vid) = base.as_ref() {
