@@ -112,6 +112,25 @@ Remaining engine-specific notes:
   `fopen`/`fread`, for a file that changes between build and run, is a possible
   follow-up; it needs a dynamic-length string local in C.
 
+### Codegen features (Cargo-gated, opt-in — see `crates/siox-llvm/Cargo.toml`)
+
+Signal state is stored width-packed (a `Bit`/`Logic` takes one byte, not eight;
+`uint[32]` four, `uint[64]` eight), shared by the JIT and AOT via the emitted
+state struct.
+
+- 🟢 **`simd`** *(implemented)* — the JIT/AOT `TargetMachine` targets the host
+  CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
+  `-O2` vectorizer can use them for array/vector ops. Off by default the build
+  targets a portable baseline (generic x86-64, SSE2 128-bit).
+- 🔴 **`wide`** — signals wider than 64 bits (`uint[128]` / `[256]` / `[512]`).
+  Feature flag declared; the base compiler is hard-capped at 64-bit. Needs
+  wide integers (`i128`/`iN`) threaded through `ir::Expr`/`Signal`, the three
+  backends (sized loads/stores + masked arithmetic on the wide types), and VCD.
+  Until then a `>64`-bit signal is rejected rather than silently miscompiled.
+- 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
+  needs `make_binary`/`emit` to carry `fp128` and a soft-float path for the
+  runner (no native Rust `f128`).
+
 ## Diagnostics & lints (Stage 10)
 
 - 🟡 **Unused signal / parameter** warnings — **fn generic params** warn today

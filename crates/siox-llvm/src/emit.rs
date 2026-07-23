@@ -71,16 +71,47 @@ struct Codegen<'ctx, 'd> {
     builder: Builder<'ctx>,
     design: &'d Design,
     n: u32,
+    /// The signal-state layout: one field per signal, each an integer sized to
+    /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
+    /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
+    /// it; compute stays in `i64`, so `load` zero-extends and `store` truncates.
+    state_ty: inkwell::types::StructType<'ctx>,
+}
+
+/// The smallest machine integer that holds `width` bits. Sub-byte widths (a
+/// 1-bit `Bit`, a 4-bit `Logic`) round up to a byte — the addressable floor.
+fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
+    match width {
+        0..=8 => ctx.i8_type(),
+        9..=16 => ctx.i16_type(),
+        17..=32 => ctx.i32_type(),
+        _ => ctx.i64_type(),
+    }
 }
 
 impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn new(ctx: &'ctx Context, design: &'d Design) -> Self {
         let module = ctx.create_module("design");
-        Codegen { ctx, module, builder: ctx.create_builder(), design, n: design.signals.len() as u32 }
+        let fields: Vec<_> =
+            design.signals.iter().map(|s| storage_int(ctx, s.width).into()).collect();
+        let state_ty = ctx.struct_type(&fields, true);
+        Codegen {
+            ctx,
+            module,
+            builder: ctx.create_builder(),
+            design,
+            n: design.signals.len() as u32,
+            state_ty,
+        }
     }
 
     fn i64t(&self) -> inkwell::types::IntType<'ctx> {
         self.ctx.i64_type()
+    }
+
+    /// The storage integer type of signal `id` (a field of [`Codegen::state_ty`]).
+    fn slot_ty(&self, id: SignalId) -> inkwell::types::IntType<'ctx> {
+        storage_int(self.ctx, self.design.signals[id.0 as usize].width)
     }
 
     fn build(&self) {
@@ -92,13 +123,13 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     // --- state ------------------------------------------------------------
 
     fn state_globals(&self) {
-        let arr = self.i64t().array_type(self.n);
-        // `snap` holds each delta's entry values, so `old` can advance to them
-        // and internally-generated edges fire in the next delta (cascaded
-        // event domains / derived clocks).
+        // Each of `cur`/`old`/`event`/`snap` is one width-packed struct (see
+        // `state_ty`). `snap` holds each delta's entry values, so `old` can
+        // advance to them and internally-generated edges fire in the next delta
+        // (cascaded event domains / derived clocks).
         for name in ["cur", "old", "event", "snap"] {
-            let g = self.module.add_global(arr, None, name);
-            g.set_initializer(&arr.const_zero());
+            let g = self.module.add_global(self.state_ty, None, name);
+            g.set_initializer(&self.state_ty.const_zero());
             g.set_linkage(Linkage::Internal);
         }
     }
@@ -107,27 +138,34 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.module.get_global(name).unwrap().as_pointer_value()
     }
 
-    /// Pointer to `@<arr>[id]`.
+    /// Pointer to signal `id`'s field in `@<arr>`.
     fn slot_ptr(&self, arr: &str, id: SignalId) -> PointerValue<'ctx> {
-        let zero = self.i64t().const_zero();
-        let idx = self.i64t().const_int(id.0 as u64, false);
-        unsafe {
-            self.builder
-                .build_in_bounds_gep(
-                    self.i64t().array_type(self.n),
-                    self.array_ptr(arr),
-                    &[zero, idx],
-                    "slot",
-                )
-                .unwrap()
+        self.builder
+            .build_struct_gep(self.state_ty, self.array_ptr(arr), id.0, "slot")
+            .unwrap()
+    }
+
+    /// Load signal `id` from `@<arr>`, zero-extended to the `i64` the compute
+    /// paths use.
+    fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
+        let ty = self.slot_ty(id);
+        let v = self.builder.build_load(ty, self.slot_ptr(arr, id), "v").unwrap().into_int_value();
+        if ty.get_bit_width() < 64 {
+            self.builder.build_int_z_extend(v, self.i64t(), "vz").unwrap()
+        } else {
+            v
         }
     }
 
-    fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
-        self.builder.build_load(self.i64t(), self.slot_ptr(arr, id), "v").unwrap().into_int_value()
-    }
-
+    /// Store an `i64` compute value into signal `id`'s width-sized slot in
+    /// `@<arr>` (truncating; writers already mask to the signal width).
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
+        let ty = self.slot_ty(id);
+        let v = if ty.get_bit_width() < 64 {
+            self.builder.build_int_truncate(v, ty, "vt").unwrap()
+        } else {
+            v
+        };
         self.builder.build_store(self.slot_ptr(arr, id), v).unwrap();
     }
 
@@ -634,8 +672,9 @@ mod tests {
             base_dir: Default::default(),
         };
         let ll = emit_module_ir(&design);
-        // State layout, accessors, settle, and the add+mask are present.
-        assert!(ll.contains("@cur = internal global [3 x i64]"), "{ll}");
+        // State layout, accessors, settle, and the add+mask are present. The
+        // state is a width-packed struct: three 8-bit signals -> three `i8`s.
+        assert!(ll.contains("@cur = internal global <{ i8, i8, i8 }>"), "{ll}");
         assert!(ll.contains("define void @sx_settle()"), "{ll}");
         assert!(ll.contains("define void @sx_set(i32"), "{ll}");
         assert!(ll.contains("define i64 @sx_read(i32"), "{ll}");
@@ -682,8 +721,9 @@ mod tests {
         let ll = emit_module_ir(&design);
         // In the settle body, the store to b's slot precedes the store to y's.
         let body = ll.split("@sx_settle()").nth(1).unwrap();
-        let store_b = body.find("i64 0, i64 1").expect("b store"); // gep index 1 = b
-        let store_y = body.find("i64 0, i64 3").expect("y store"); // gep index 3 = y
+        // Struct-GEP field indices: `i32 0, i32 <id>`.
+        let store_b = body.find("i32 0, i32 1").expect("b store"); // field 1 = b
+        let store_y = body.find("i32 0, i32 3").expect("y store"); // field 3 = y
         assert!(store_b < store_y, "b must settle before y:\n{body}");
     }
 }
