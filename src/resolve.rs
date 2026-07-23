@@ -131,6 +131,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         .filter(|m| m.path.segments.first().map(|s| s.text.as_str()) == Some("std"))
         .map(|m| m.span.file)
         .collect();
+    r.lint_private_imports(&std_files);
     r.lint_unused_imports(&std_files);
     r.lint_unused_params(&std_files);
     r.out
@@ -323,6 +324,34 @@ impl<'a> Resolver<'a> {
     /// declaration is never referenced elsewhere in the same file. Usage is
     /// scoped by file (an import serves its own module), and the import's own
     /// name span is excluded so the binding doesn't count as a use of itself.
+    /// Warn (W-P013) when a `using` imports a non-`pub` item from another
+    /// module — reaching into its private surface. std's own files are exempt
+    /// (its imports serve the whole library). A soft rule for now; a future
+    /// hard error once std/user code is `pub`-clean.
+    fn lint_private_imports(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
+        let sites = self.import_sites.clone();
+        for (imp_span, id) in sites {
+            if std_files.contains(&imp_span.file) {
+                continue;
+            }
+            // Type aliases (`using X = T`) carry no visibility marker in the AST
+            // yet, so they're always exportable — don't flag imported aliases.
+            let bad = self.out.def(id).map(|d| {
+                (d.name.clone(), !d.is_pub && d.span.is_some() && d.kind != DefKind::TypeAlias)
+            });
+            if let Some((name, true)) = bad {
+                self.sink.emit(
+                    Diagnostic::warning(format!(
+                        "`{name}` is not `pub`; importing a private item from another module"
+                    ))
+                    .with_code(codes::PRIVATE_IMPORT)
+                    .at(imp_span)
+                    .help("mark it `pub` in its module to export it"),
+                );
+            }
+        }
+    }
+
     fn lint_unused_imports(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
         let sites = std::mem::take(&mut self.import_sites);
         for (imp_span, id) in sites {
@@ -986,6 +1015,32 @@ mod tests {
             .collect();
         assert_eq!(unused.len(), 1, "one unused-import warning: {unused:?}");
         assert!(unused[0].contains("Dead"), "flags Dead, not Used: {unused:?}");
+    }
+
+    #[test]
+    fn private_import_warns() {
+        // A provider with a private and a `pub` item; a user imports both. Only
+        // importing the non-`pub` one is a cross-module visibility violation.
+        let mut sink = DiagnosticSink::new();
+        let provider = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\nenum Secret { A }\npub enum Public { B }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module m;\nusing a::{Secret, Public};\nentity E { in s: Secret; in p: Public; }\n",
+            &mut sink,
+        );
+        resolve(&[provider, user], &mut sink);
+        let priv_warns: Vec<&str> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::PRIVATE_IMPORT))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(priv_warns.len(), 1, "one private-import warning: {priv_warns:?}");
+        assert!(priv_warns[0].contains("Secret"), "flags Secret, not Public: {priv_warns:?}");
     }
 
     #[test]

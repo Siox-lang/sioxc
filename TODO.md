@@ -82,9 +82,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   synthesizable reset (real reset comes from reset logic). Relates to
   **Undriven signals** above (this defines the value; the `'U'`-style runtime
   *visibility* of undriven is a separate `Logic`-domain change).
-- 🟡 **Cross-module visibility** (resolve) — private items aren't yet enforced
-  across modules (single global namespace); value identifiers resolve
-  best-effort.
+- 🟡 **Cross-module visibility** (resolve) — 🟢 **soft-enforced:** importing a
+  non-`pub` item from another module warns (`W-P013 PRIVATE_IMPORT`; std files
+  exempt; type aliases exempt until `pub using` carries visibility in the AST) —
+  0 corpus false positives. Resolution still uses one global namespace, so a
+  *qualified* cross-module reference isn't checked; promoting the import warning
+  to a hard error waits on a `pub using` visibility marker and a std `pub` audit.
 - 🟡 **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
   the reference standard. (b) ✅ **Scalar `Logic` widened to the full 9-value
   `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
