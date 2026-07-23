@@ -93,12 +93,12 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   it. (a) 🟢 **X/Z propagation through vector arithmetic** — designed:
   [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)
   (full 9-value per element — a `uint` is `Logic[]`, so vectors share the
-  scalar's `std_ulogic` tables — held as 4 bit-planes per `Logic`-vector;
-  `numeric_std` arithmetic poisoning + per-element `std_logic_1164` logical).
-  Wide 9-value vectors (`uint[>16]`) need `wide` (4 planes > 64 bits), so the
-  two ship together. Staged build: literals+representation → arithmetic →
-  logical → relational → VCD, each nvc-validated, corpus green throughout
-  (metavalue-free vector = empty planes, bit-identical to today). Pending. Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
+  scalar's `std_ulogic` tables — stored as an **array of nibble containers**;
+  ops gather a ≤64-bit `val`/`meta`, so `numeric_std` arithmetic stays ≤64-bit
+  and **needs no `wide`**, per-element `std_logic_1164` logical). Staged build:
+  literals+representation → arithmetic → logical → relational → VCD, each
+  nvc-validated, corpus green throughout (metavalue-free vector = empty `meta`,
+  bit-identical to today). Pending. Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
   default via `new`/first-variant — a separate decision if `'U'` is wanted.
 - 🟢 **Cascaded event domains — a register clocked by a derived clock.**
   ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:

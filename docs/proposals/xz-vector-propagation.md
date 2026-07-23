@@ -36,49 +36,53 @@ against `nvc` (333/333), applied element-wise.
 - **`to_integer` / reads**: a vector with any metavalue reads `0` (+ warning);
   the waveform shows each element's metavalue.
 
-## Representation: 9-value elements, bit-sliced
+## Representation: an array of element containers
 
-Each vector element is a 4-bit `std_ulogic` discriminant (0–8, the scalar
-encoding). Rather than pack 4 bits/element in one word (slow per-element
-extraction for word-parallel ops), store a `Logic`-vector of `N` elements as
-**4 bit-planes** of `N` bits each — `p0,p1,p2,p3`, where element *i*'s
-discriminant is `p3[i]p2[i]p1[i]p0[i]`. This makes every op **word-parallel**
-across all `N` elements:
+A `Logic`-vector is what its type says — an **array of `std_ulogic` elements**,
+each a container sized to hold the element (a **nibble** for a 9-value `Logic`;
+one bit for a `Bit`). A `uint[N]` is `N` nibbles laid out as an array, *not* a
+single `4N`-bit integer. This matters: it **decouples from `wide`**. `wide` is
+for a single integer wider than 64 bits (wide *arithmetic*); the nibble-array is
+storage, and every op reads/writes it through the ≤64-bit *value* it represents.
 
-- `is01[i]` (a clean bit) = `~p1[i] & ~p2[i] & ~p3[i]` (disc 0 or 1); the bit
-  value is `p0`.
-- `anymeta` = `(p1 | p2 | p3) != 0` — drives arithmetic poisoning.
-- logical ops = boolean formulas over the four planes (derived from the 9-value
-  tables, validated cell-by-cell vs `nvc`).
+The value/metavalue split per element (nibble = disc 0–8):
+- a **clean** element is disc `0`/`1` — its bit value is the low bit;
+- **metavalue** = disc ≥ 2.
+
+Ops therefore work on two ≤64-bit words gathered from the array — `val` (the
+0/1 bits) and `meta` (1 where an element is a metavalue) — so **arithmetic
+stays ≤64-bit and needs no `wide`** for any width the compiler already supports
+(`uint[64]` → a 64-bit `val`, a 64-bit add). Only `uint[>64]` needs `wide`, the
+same cap as today — X/Z does **not** widen that cap.
 
 Scope by type:
-- **Scalar `Logic`** — unchanged (its single 4-bit discriminant already carries
-  all 9); no planes.
-- **`Bit` / `Bit[]`** — 2-value by definition; stays one bit/element, no planes.
-- **`Logic`-family vectors** (`uint`/`int`) — get the plane representation.
+- **Scalar `Logic`** — unchanged (a single nibble already holds all 9).
+- **`Bit` / `Bit[]`** — 2-value by definition; one bit/element, no metavalue
+  plane.
+- **`Logic`-family vectors** (`uint`/`int`) — the nibble-array.
 
-Storage: `N`-element vector = `4N` bits (4 `N`-bit planes). A `uint[16]` fits a
-64-bit word; wider (`uint[32]`/`[64]`) exceeds the 64-bit cap and rides on the
-`wide` feature — so **X/Z on wide vectors depends on `wide`**, and the two
-land together. The planes are held as companion signals `S$p1/$p2/$p3` (`p0` is
-the existing value word), so a metavalue-free vector is `p1=p2=p3=0` and
-bit-identical to today.
+A metavalue-free vector has an all-zero `meta`, so it reads/writes exactly the
+same `val` word as today — **bit-identical**, corpus unaffected. (Whether the
+nibble array is materialized in memory always, or only for signals a driver can
+actually make metavalue, is a storage-sizing question the container-sizing /
+`bitpack` work already answers — see [[signal-container-sizing]].)
 
-## Op formulas (planes `p0..p3` per operand)
+## Op formulas (per operand: array of nibbles; `val`/`meta` gathered)
 
-Element-wise ops are boolean formulas over the planes, one word-parallel
-evaluation covering all `N` elements. They reduce to the **same 9-value truth
-tables** the scalar `Logic` already carries in std — the vector op is "apply the
-scalar cell to every element", so the tables are shared, not re-derived, and the
-same `nvc` differential (333/333 cells) guards both.
+Ops read each operand's nibble array as two ≤64-bit words — `val` (element low
+bits) and `meta` (1 where an element is disc ≥ 2) — and write the result array
+back. They reduce to the **same 9-value tables** the scalar `Logic` already
+carries in std — the vector op is "apply the scalar cell to every element", so
+the tables are shared, not re-derived, and the same `nvc` differential (333/333
+cells) guards both.
 
-- `not`: per-element `std_logic_1164` `not` LUT over the planes.
-- `and/or/xor/nand/nor/xnor`: the two operands' planes combine via the op's
-  9-value LUT (a forced `0`/`1` element clears the metavalue, per the table).
-- `add/sub/mul` (`numeric_std`): `anymeta = (a.p1|a.p2|a.p3|b.p1|b.p2|b.p3)!=0`;
-  if set, result is all-`'X'` (every element disc 3 → `p0=1,p1=1,p2=p3=0`);
-  else the plain 2-value `p0` arithmetic, other planes `0`.
-- `eq/lt/…`: `anymeta ? false : (a.p0 op b.p0)`.
+- `not`: per-element `std_logic_1164` `not` over each nibble.
+- `and/or/xor/nand/nor/xnor`: element-wise via the op's 9-value cell (a forced
+  `0`/`1` element clears the metavalue, per the table).
+- `add/sub/mul` (`numeric_std`): `anymeta = (a.meta | b.meta) != 0`; if set the
+  whole result is all-`'X'` (every nibble ← disc 3); else the plain `val`
+  arithmetic (≤64-bit — no `wide`), result nibbles clean.
+- `eq/lt/…`: `anymeta ? false : (a.val op b.val)`.
 
 ## Where it touches (staging)
 
@@ -100,8 +104,10 @@ bit-identical to today, `xmask = 0`).
 
 - **Full 9-value on vectors** (same `std_ulogic` set as the scalar) — the vector
   and scalar tables are one and the same, shared from std.
-- Wide 9-value vectors (`uint[>16]`) need the `wide` feature (4 planes ×
-  width > 64 bits), so X/Z-on-wide-vectors and `wide` ship together.
+- **Independent of `wide`.** A vector is an array of element containers; ops act
+  on the ≤64-bit `val`/`meta` gathered from it, so arithmetic stays ≤64-bit at
+  every width the compiler already supports. `wide` (single integers > 64 bits)
+  is a separate feature; only `uint[>64]` touches both.
 - No new undriven-`U` source (siox stays always-initialized), so the practical
   metavalue sources are explicit `'X'`/`'Z'` literals, tristate `'Z'`, and op
   outputs — not undriven signals.
