@@ -90,15 +90,19 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
   `std_logic_1164` operator tables + `resolved` resolution — **verified
   exhaustively (333/333 cells) against `nvc`**; `logic_ninevalue_test` guards
-  it. (a) 🟢 **X/Z propagation through vector arithmetic** — designed:
-  [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)
-  (full 9-value per element — a `uint` is `Logic[]`, so vectors share the
-  scalar's `std_ulogic` tables — stored as an **array of nibble containers**;
-  ops gather a ≤64-bit `val`/`meta`, so `numeric_std` arithmetic stays ≤64-bit
-  and **needs no `wide`**, per-element `std_logic_1164` logical). Staged build:
-  literals+representation → arithmetic → logical → relational → VCD, each
-  nvc-validated, corpus green throughout (metavalue-free vector = empty `meta`,
-  bit-identical to today). Pending. Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
+  it. (a) 🟡 **X/Z propagation through vectors** — **largely implemented**
+  (design: [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)).
+  A `uint` is `Logic[]`, so a metavalue vector carries a per-element
+  discriminant **companion** (`$meta`, 4 bits/element, ≤16 elements), made only
+  where a metavalue appears — metavalue-free designs stay bit-identical.
+  **Working on JIT + native** (`xz_vector_test`/`xz_poison_test` guard it):
+  ✅ 9-value bit-string literals (`b"1X10"`); ✅ storage + per-element
+  reconstruction (`v[i]` reads its `std_ulogic`); ✅ `numeric_std` **arithmetic
+  poisoning**; ✅ **relational poisoning** (a metavalue comparison is false);
+  ✅ propagation through copies / port connections / muxes. **Remaining:**
+  per-element `std_logic_1164` **logical** ops (`and`/`or`/… where `0 and X = 0`
+  — the SWAR tables), **VCD** `x`/`z` rendering, and vectors wider than 16
+  elements (array companion). Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
   default via `new`/first-variant — a separate decision if `'U'` is wanted.
 - 🟢 **Cascaded event domains — a register clocked by a derived clock.**
   ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
