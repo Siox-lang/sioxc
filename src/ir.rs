@@ -261,6 +261,8 @@ pub fn lower_in(
     }
     l.lint_possible_latches();
     l.resolve_driver_contexts();
+    l.propagate_metavalues();
+    l.reconstruct_reads();
     l.lint_combinational_loops();
     l.lint_undriven_outputs();
     // Resolve any logic literal that no typed context claimed to its position
@@ -1477,6 +1479,108 @@ impl<'a> Lowering<'a> {
         self.out.meta_of.insert(id.0, cid);
     }
 
+    /// The metavalue companion for a *driven* vector: existing one, or a fresh
+    /// all-clean (`init = 0`) companion. Never overwrites an init companion.
+    fn driven_companion(&mut self, id: SignalId) -> u32 {
+        if let Some(&c) = self.out.meta_of.get(&id.0) {
+            return c;
+        }
+        let sig = &self.out.signals[id.0 as usize];
+        let companion = Signal {
+            path: format!("{}$meta", sig.path),
+            width: sig.width * 4,
+            real: false,
+            char: false,
+            range: None,
+            init: 0,
+            enum_type: None,
+        };
+        let cid = self.out.signals.len() as u32;
+        self.out.signals.push(companion);
+        self.out.meta_of.insert(id.0, cid);
+        cid
+    }
+
+    /// The metavalue disc-array of an IR operand, if it can carry one: a signal
+    /// read yields its companion. `None` = provably clean.
+    fn meta_ref(&self, e: &Expr) -> Option<Expr> {
+        match e {
+            Expr::Current(id) | Expr::Old(id) => {
+                self.out.meta_of.get(&id.0).map(|&c| Expr::Current(SignalId(c)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Propagate metavalues through operators (numeric_std): a vector
+    /// `y = a op b` whose operand carries a metavalue poisons the whole result
+    /// to `'X'`. Runs after drivers are lowered; drives each poisoned target's
+    /// companion. Logical/relational propagation is a follow-on.
+    fn propagate_metavalues(&mut self) {
+        let mut poisoned: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
+        for d in &self.out.drivers {
+            let n = self.out.signals[d.target.0 as usize].width;
+            if n == 0 || n > 16 {
+                continue;
+            }
+            let Expr::Binary { op, lhs, rhs } = &d.expr else { continue };
+            if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+                continue;
+            }
+            let anymeta: Vec<Expr> = [self.meta_ref(lhs), self.meta_ref(rhs)]
+                .into_iter()
+                .flatten()
+                .map(|m| Expr::Binary {
+                    op: BinOp::Ne,
+                    lhs: Box::new(m),
+                    rhs: Box::new(Expr::Const(0)),
+                })
+                .collect();
+            let Some(cond) = anymeta.into_iter().reduce(|a, b| Expr::Binary {
+                op: BinOp::Or,
+                lhs: Box::new(a),
+                rhs: Box::new(b),
+            }) else {
+                continue; // both operands provably clean
+            };
+            // `'X'` in every element (disc 3 per nibble) when poisoned, else 0.
+            let all_x = (0..n).fold(0u64, |p, i| p | (3u64 << (4 * i)));
+            let meta_expr = Expr::Select {
+                cond: Box::new(cond),
+                then: Box::new(Expr::Const(all_x)),
+                els: Box::new(Expr::Const(0)),
+            };
+            poisoned.push((d.target, d.cond.clone(), meta_expr, d.ctx));
+        }
+        for (target, cond, expr, ctx) in poisoned {
+            let cid = self.driven_companion(target);
+            self.out.drivers.push(Driver { target: SignalId(cid), cond, expr, ctx });
+        }
+    }
+
+    /// Rewrite each single-element read of a metavalue vector into its 9-value
+    /// reconstruction (companion nibble when a metavalue, else the value bit).
+    /// A post-pass so it sees driven companions (created in propagation), not
+    /// just init ones.
+    fn reconstruct_reads(&mut self) {
+        let meta_of = self.out.meta_of.clone();
+        for d in &mut self.out.drivers {
+            if let Some(c) = &mut d.cond {
+                reconstruct_expr(c, &meta_of);
+            }
+            reconstruct_expr(&mut d.expr, &meta_of);
+        }
+        for b in &mut self.out.event_blocks {
+            reconstruct_expr(&mut b.condition, &meta_of);
+            for u in &mut b.updates {
+                if let Some(c) = &mut u.cond {
+                    reconstruct_expr(c, &meta_of);
+                }
+                reconstruct_expr(&mut u.expr, &meta_of);
+            }
+        }
+    }
+
     /// Add a signal for `name: ty`, flattening composites into scalar leaves: a
     /// struct into one signal per field (`s.valid`), an array into one per
     /// element (`a[0]`). Nested composites recurse. An integer vector
@@ -2556,22 +2660,6 @@ impl<'a> Lowering<'a> {
             // while `4..7` (ascending) extracts with the bit order reversed.
             ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index).unwrap();
-                // A single element of a metavalue vector reads its full 9-value
-                // discriminant from the companion (nibble `a`), so `v[2]` is
-                // `'X'`, not just its value bit.
-                if a == b {
-                    if let Some(&cid) = expr_path(base)
-                        .and_then(|p| self.locals.get(&p))
-                        .and_then(|&id| self.out.meta_of.get(&id.0))
-                    {
-                        let e = a as u32;
-                        return Expr::Slice {
-                            base: Box::new(Expr::Current(SignalId(cid))),
-                            hi: 4 * e + 3,
-                            lo: 4 * e,
-                        };
-                    }
-                }
                 let lowered = self.lower_expr(base);
                 if a >= b {
                     Expr::Slice { base: Box::new(lowered), hi: a as u32, lo: b as u32 }
@@ -2724,13 +2812,13 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index)?;
-                // A single element of a metavalue vector reconstructs to its
-                // full `Logic` discriminant (a 4-bit value), so its width is the
-                // element's, not one value bit.
+                // A single element of a `Logic`-vector *is* a `Logic` — its
+                // width is the element's (a 4-bit disc), not one value bit — so
+                // `s: Logic = v[i]` matches, and a metavalue reconstructs.
                 if a == b
                     && expr_path(base)
                         .and_then(|p| self.locals.get(&p))
-                        .is_some_and(|id| self.out.meta_of.contains_key(&id.0))
+                        .is_some_and(|&id| self.out.signals[id.0 as usize].width > 1)
                 {
                     return Some(4);
                 }
@@ -4002,6 +4090,59 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
         }
         Expr::Const(_) | Expr::Real(_) | Expr::Current(_) | Expr::Old(_) | Expr::Event(_)
         | Expr::Unknown => {}
+    }
+}
+
+/// Rewrite `Slice(Current(v), i, i)` — one element of a metavalue vector — into
+/// its 9-value reconstruction: the companion nibble when it is a metavalue
+/// (disc >= 2), else the value bit. Recurses; does not descend into the node it
+/// creates (the companion has no companion).
+fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
+    if let Expr::Slice { base, hi, lo } = e {
+        if hi == lo {
+            if let Expr::Current(vid) = base.as_ref() {
+                if let Some(&cid) = meta_of.get(&vid.0) {
+                    let elem = *lo;
+                    let nibble = Expr::Slice {
+                        base: Box::new(Expr::Current(SignalId(cid))),
+                        hi: 4 * elem + 3,
+                        lo: 4 * elem,
+                    };
+                    let valbit = (**base).clone();
+                    let valbit =
+                        Expr::Slice { base: Box::new(valbit), hi: *hi, lo: *lo };
+                    *e = Expr::Select {
+                        cond: Box::new(Expr::Binary {
+                            op: BinOp::Ge,
+                            lhs: Box::new(nibble.clone()),
+                            rhs: Box::new(Expr::Const(2)),
+                        }),
+                        then: Box::new(nibble),
+                        els: Box::new(valbit),
+                    };
+                    return;
+                }
+            }
+        }
+    }
+    match e {
+        Expr::Unary { rhs, .. } => reconstruct_expr(rhs, meta_of),
+        Expr::Binary { lhs, rhs, .. } => {
+            reconstruct_expr(lhs, meta_of);
+            reconstruct_expr(rhs, meta_of);
+        }
+        Expr::Slice { base, .. } => reconstruct_expr(base, meta_of),
+        Expr::Select { cond, then, els } => {
+            reconstruct_expr(cond, meta_of);
+            reconstruct_expr(then, meta_of);
+            reconstruct_expr(els, meta_of);
+        }
+        Expr::CCall { args, .. } => {
+            for a in args {
+                reconstruct_expr(a, meta_of);
+            }
+        }
+        _ => {}
     }
 }
 
