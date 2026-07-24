@@ -2,37 +2,25 @@ module std::ops;
 
 using std::logic::{Bit, Bool};
 
-// Conversion traits for the standard library.
-//
-// Operator overloading is Rust-style (spec 3.25): `a + b` dispatches to
-// `impl Add for <type of a>` (method `add`, overloads select by the rhs
-// type), `and` to `And<Input, Output>`, unary `not` to `Not`, and one `impl Ord`
-// (`fn cmp(self, rhs) -> Ordering`) derives all six comparisons. The trait
-// Core operator traits are declared here so their contracts are visible to
-// users. Non-core operators use `custom<"symbol", Input, Output>` impls.
-
-// `and` has one type-directed meaning. For Bool-like inputs it is scalar
-// boolean conjunction; for bit-derived inputs it is applied per bit. Input
-// and output are explicit parameters so implementations may preserve their
-// operand type or deliberately produce another type.
-pub trait And<Input, Output> {
-    fn and(self, rhs: Input) -> Output;
+// Operator overloading is Rust-style (spec 3.25) but goes through a single
+// symbol-parameterized trait: `a <op> b` dispatches to
+// `impl Operator<"<op>", Input, Output> for <type of a>` (method `apply`;
+// overloads select by the rhs/`Input` type, and the impl's `Output` names the
+// result type). The standard symbols (`+ - * / << >> and or not <=>`) carry
+// built-in precedence; a user operator such as `xor` declares its precedence
+// with `#[precedence = N]`. Unary `not` implements `apply(self)` with no rhs.
+// The three-way `<=>` returns `Ordering` and derives all of < <= > >= == !=.
+pub trait Operator<op: string, input, output> {
+    fn apply(self, rhs: input) -> output {}
 }
 
-// Custom infix operators are implementations on their left operand type:
-// `impl custom<"symbol", Input, Output> for Left`. The implementation carries
-// `#[precedence = N]`; the method body supplies its semantics.
-pub trait custom<Symbol, Input, Output> {
-    fn apply(self, rhs: Input) -> Output;
-}
-
-// Literal affixes are symbol-parameterized like custom operators (spec 3.24):
-// the first argument is the affix string, the second the literal's data type.
+// Literal affixes are symbol-parameterized the same way (spec 3.24): the first
+// argument is the affix string, the second the literal's data type.
 //   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", string> for T`
 //   - a numeric suffix `10ns` dispatches to `impl Suffix<"ns", integer> for T`
-// The impl's target type is what the literal produces; evaluation is a compiler
-// intrinsic (radix expansion / scale table) until const string operations land,
-// so impls inherit the empty default body.
+// The impl's target type is what the literal produces; prefix evaluation is a
+// compiler intrinsic (radix expansion) until const string operations land, so
+// prefix impls inherit the empty default body.
 pub trait Prefix<char: string, T> {
     fn prefix(data: T) {}
 }
@@ -41,16 +29,10 @@ pub trait Suffix<char: string, T> {
     fn suffix(data: T) {}
 }
 
-pub trait Or<Input, Output> {
-    fn or(self, rhs: Input) -> Output;
-}
-
-pub trait Not<Output> {
-    fn not(self) -> Output;
-}
-
-impl And<Bool, Bool> for Bool {
-    fn and(self, rhs: Bool) -> Bool {
+// `and`/`or` have one type-directed meaning. For Bool-like operands they are
+// scalar boolean logic; for bit-derived operands they apply per bit.
+impl Operator<"and", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
         if self {
             return rhs;
         }
@@ -58,24 +40,22 @@ impl And<Bool, Bool> for Bool {
     }
 }
 
-impl And<Bit, Bit> for Bit {
-    fn and(self, rhs: Bit) -> Bit {
-        if self == '1' {
-            return rhs;
-        }
-        return '0';
-    }
-}
-
-impl Or<Bool, Bool> for Bool {
-    fn or(self, rhs: Bool) -> Bool {
+impl Operator<"or", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
         if self { return true; }
         return rhs;
     }
 }
 
+impl Operator<"not", Bool, Bool> for Bool {
+    fn apply(self) -> Bool {
+        if self { return false; }
+        return true;
+    }
+}
+
 #[precedence = 35]
-impl custom<"xor", Bool, Bool> for Bool {
+impl Operator<"xor", Bool, Bool> for Bool {
     fn apply(self, rhs: Bool) -> Bool {
         if self { return not rhs; }
         return rhs;
@@ -83,46 +63,48 @@ impl custom<"xor", Bool, Bool> for Bool {
 }
 
 #[precedence = 40]
-impl custom<"nand", Bool, Bool> for Bool {
+impl Operator<"nand", Bool, Bool> for Bool {
     fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
 }
 
 #[precedence = 30]
-impl custom<"nor", Bool, Bool> for Bool {
+impl Operator<"nor", Bool, Bool> for Bool {
     fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
 }
 
 #[precedence = 35]
-impl custom<"xnor", Bool, Bool> for Bool {
+impl Operator<"xnor", Bool, Bool> for Bool {
     fn apply(self, rhs: Bool) -> Bool {
         if self == rhs { return true; }
         return false;
     }
 }
 
-impl Or<Bit, Bit> for Bit {
-    fn or(self, rhs: Bit) -> Bit {
+impl Operator<"and", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == '1' {
+            return rhs;
+        }
+        return '0';
+    }
+}
+
+impl Operator<"or", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
         if self == '1' { return '1'; }
         return rhs;
     }
 }
 
-impl Not<Bool> for Bool {
-    fn not(self) -> Bool {
-        if self { return false; }
-        return true;
-    }
-}
-
-impl Not<Bit> for Bit {
-    fn not(self) -> Bit {
+impl Operator<"not", Bit, Bit> for Bit {
+    fn apply(self) -> Bit {
         if self == '1' { return '0'; }
         return '1';
     }
 }
 
 #[precedence = 35]
-impl custom<"xor", Bit, Bit> for Bit {
+impl Operator<"xor", Bit, Bit> for Bit {
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '0'; }
         return '1';
@@ -130,17 +112,17 @@ impl custom<"xor", Bit, Bit> for Bit {
 }
 
 #[precedence = 40]
-impl custom<"nand", Bit, Bit> for Bit {
+impl Operator<"nand", Bit, Bit> for Bit {
     fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
 }
 
 #[precedence = 30]
-impl custom<"nor", Bit, Bit> for Bit {
+impl Operator<"nor", Bit, Bit> for Bit {
     fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
 }
 
 #[precedence = 35]
-impl custom<"xnor", Bit, Bit> for Bit {
+impl Operator<"xnor", Bit, Bit> for Bit {
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '1'; }
         return '0';
@@ -157,8 +139,8 @@ impl custom<"xnor", Bit, Bit> for Bit {
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
 
-// The result of a three-way comparison (`impl Ord for T`, spec 3.25).
-// One `cmp` impl derives all of < <= > >= == != — like Rust's Ord.
+// The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
+// spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
 // Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
 // comparisons test against them.
 pub enum Ordering {
@@ -205,7 +187,7 @@ pub trait New {
 
 // Explicit conversion for named types (spec 3.17): `T(x)` on a struct/enum
 // dispatches to `impl From<Source> for T` (the trait argument names the
-// source, like `Add<Rhs>`). Conversions NEVER fire implicitly — only at a
+// source, like `Operator<Rhs>`). Conversions NEVER fire implicitly — only at a
 // conversion expression. Kernel numeric conversions (`uint[16](x)`,
 // `integer(x)`, `resize`) stay width-driven builtins.
 pub trait From {

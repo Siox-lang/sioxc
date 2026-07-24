@@ -541,9 +541,12 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                             } else {
-                                // `impl Add<integer> for T`: the trait's type
-                                // argument names the rhs operand type.
-                                let custom_symbol = (tr.text == "custom")
+                                // `impl Operator<"+", integer, _> for T`: the
+                                // symbol keys the impl and the next trait
+                                // argument names the rhs operand type. A
+                                // non-operator trait (Resolve/New/From) keys by
+                                // its own name and reads its first type arg.
+                                let op_symbol = (tr.text == "Operator")
                                     .then(|| im.trait_args.first())
                                     .flatten()
                                     .and_then(|a| match a {
@@ -553,14 +556,14 @@ impl<'a> Lowering<'a> {
                                         }) => Some(text.clone()),
                                         _ => None,
                                     });
-                                let input_index = usize::from(custom_symbol.is_some());
+                                let input_index = usize::from(op_symbol.is_some());
                                 let rhs_arg = im.trait_args.get(input_index).and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::Path(p)) => {
                                         p.segments.last().map(|s| s.text.clone())
                                     }
                                     _ => None,
                                 });
-                                let operator = custom_symbol.unwrap_or_else(|| tr.text.clone());
+                                let operator = op_symbol.unwrap_or_else(|| tr.text.clone());
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
@@ -3011,7 +3014,7 @@ impl<'a> Lowering<'a> {
         let lhs_ty = self.operand_type_name(lhs)?;
         let rhs_ty = self.operand_type_name(rhs);
         // `a + b` dispatches to the Rust-style trait (`Add`), spec 3.25.
-        let tr = crate::syntax::ast::op_trait_name(op).unwrap_or(op);
+        let tr = op;
         let fns = self.op_impls.get(&(tr.to_string(), lhs_ty.clone()))?;
 
         // Overload selection. Each candidate's declared rhs type is the
@@ -3362,7 +3365,7 @@ impl<'a> Lowering<'a> {
     /// Inline a unary operator impl (`not a`): binds only `self`.
     fn inline_unary(&self, op: &str, rhs: &ast::Expr) -> Option<Val> {
         let ty = self.operand_type_name(rhs)?;
-        let tr = crate::syntax::ast::op_trait_name(op).unwrap_or(op);
+        let tr = op;
         let fns = self.op_impls.get(&(tr.to_string(), ty))?;
         let (f, _) = fns.first()?;
         let body = f.body.as_ref()?;

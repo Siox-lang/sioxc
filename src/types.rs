@@ -319,7 +319,12 @@ impl<'a> Checker<'a> {
                     let trait_name = tr.segments.last().map(|s| s.text.clone());
                     let target = type_head_name(&im.target).map(|s| s.to_string());
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
-                        let custom = if t == "custom" {
+                        // `impl Operator<"<sym>", Input, Output> for T`: the
+                        // first trait argument is the operator symbol, which
+                        // keys the impl. A user operator (a non-standard symbol)
+                        // must declare `#[precedence = N]`; the standard symbols
+                        // carry built-in precedence.
+                        let operator = if t == "Operator" {
                             im.trait_args.first().and_then(|a| match a {
                                 GenericArg::Positional(Expr::StrLit { text, .. }) => {
                                     Some(text.clone())
@@ -329,46 +334,48 @@ impl<'a> Checker<'a> {
                         } else {
                             None
                         };
-                        if let Some(symbol) = &custom {
+                        if let Some(symbol) = &operator {
                             t = symbol.clone();
-                            let precedence = im.attrs.iter().find_map(|a| {
-                                (a.name.segments.last().is_some_and(|n| n.text == "precedence"))
-                                    .then_some(a)
-                                    .and_then(|a| a.value.as_ref())
-                                    .and_then(|v| match v {
-                                        Expr::Int { text, span } => {
-                                            text.parse::<u8>().ok().map(|p| (p, *span))
+                            if !crate::syntax::ast::is_builtin_operator(symbol) {
+                                let precedence = im.attrs.iter().find_map(|a| {
+                                    (a.name.segments.last().is_some_and(|n| n.text == "precedence"))
+                                        .then_some(a)
+                                        .and_then(|a| a.value.as_ref())
+                                        .and_then(|v| match v {
+                                            Expr::Int { text, span } => {
+                                                text.parse::<u8>().ok().map(|p| (p, *span))
+                                            }
+                                            _ => None,
+                                        })
+                                });
+                                match precedence {
+                                    Some((value, span)) => {
+                                        if let Some((previous, previous_span)) =
+                                            self.operator_precedence.get(symbol).copied()
+                                        {
+                                            if previous != value {
+                                                self.sink.emit(
+                                                    Diagnostic::error(format!(
+                                                        "custom operator `{symbol}` has precedence {value}, but another implementation uses {previous}"
+                                                    ))
+                                                    .with_code(codes::TYPE_MISMATCH)
+                                                    .at(span)
+                                                    .label(previous_span, "previous precedence declared here"),
+                                                );
+                                            }
+                                        } else {
+                                            self.operator_precedence
+                                                .insert(symbol.clone(), (value, span));
                                         }
-                                        _ => None,
-                                    })
-                            });
-                            match precedence {
-                                Some((value, span)) => {
-                                    if let Some((previous, previous_span)) =
-                                        self.operator_precedence.get(symbol).copied()
-                                    {
-                                        if previous != value {
-                                            self.sink.emit(
-                                                Diagnostic::error(format!(
-                                                    "custom operator `{symbol}` has precedence {value}, but another implementation uses {previous}"
-                                                ))
-                                                .with_code(codes::TYPE_MISMATCH)
-                                                .at(span)
-                                                .label(previous_span, "previous precedence declared here"),
-                                            );
-                                        }
-                                    } else {
-                                        self.operator_precedence
-                                            .insert(symbol.clone(), (value, span));
                                     }
-                                }
-                                None => self.error(
-                                    codes::TYPE_MISMATCH,
-                                    im.span,
-                                    format!(
-                                        "custom operator `{symbol}` requires `#[precedence = N]`"
+                                    None => self.error(
+                                        codes::TYPE_MISMATCH,
+                                        im.span,
+                                        format!(
+                                            "custom operator `{symbol}` requires `#[precedence = N]`"
+                                        ),
                                     ),
-                                ),
+                                }
                             }
                         }
                         // `impl Suffix<"ns", _> for T` / `impl Prefix<"x", _>
@@ -387,20 +394,19 @@ impl<'a> Checker<'a> {
                                 table.entry(text.clone()).or_default().push(ty.clone());
                             }
                         }
-                        if crate::resolve::OPERATORS.contains(&t.as_str()) || custom.is_some() {
-                            let offset = usize::from(custom.is_some());
+                        // Operator overload signature: `input`/`output` are the
+                        // 2nd/3rd trait arguments (after the symbol), falling
+                        // back to the `apply` method's rhs-param / return types.
+                        if operator.is_some() {
                             let arg_name = |index: usize| {
-                                im.trait_args.get(index + offset).and_then(|a| match a {
+                                im.trait_args.get(index + 1).and_then(|a| match a {
                                     GenericArg::Positional(Expr::Path(p)) => {
                                         p.segments.last().map(|s| s.text.clone())
                                     }
                                     _ => None,
                                 })
                             };
-                            let input = (t != "Not").then(|| arg_name(0)).flatten().or_else(|| {
-                                if t == "Not" {
-                                    return None;
-                                }
+                            let input = arg_name(0).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
                                     ImplItem::Fn(f) => f
                                         .params
@@ -412,7 +418,7 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                             });
-                            let output = (if t == "Not" { arg_name(0) } else { arg_name(1) }).or_else(|| {
+                            let output = arg_name(1).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
                                     ImplItem::Fn(f) => f
                                         .ret
@@ -1465,17 +1471,15 @@ impl<'a> Checker<'a> {
                         let has_op = |tr: &str| {
                             self.trait_impls.get(tr).is_some_and(|set| set.contains(&name))
                         };
-                        // The Rust-style trait for this operator; one `Ord`
-                        // (cmp -> Ordering) impl derives every comparison.
-                        let tr = crate::syntax::ast::op_trait_name(op_str).unwrap_or(op_str);
+                        // Operators dispatch by symbol; one three-way `<=>`
+                        // (`-> Ordering`) impl derives every comparison.
                         let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
-                        let has = has_op(tr) || (is_cmp && has_op("Ord"));
-                        if !has {
-                            let want = if is_cmp { "Ord" } else { tr };
+                        let sym = if is_cmp { "<=>" } else { op_str };
+                        if !has_op(sym) {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
-                                format!("`{op_str}` needs an `impl {want} for {name}`"),
+                                format!("`{op_str}` needs an `impl Operator<\"{sym}\", …> for {name}`"),
                             );
                         }
                     }
@@ -1674,7 +1678,7 @@ impl<'a> Checker<'a> {
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
                 let op_str = crate::syntax::pretty::bin_op(op);
-                let tr = crate::syntax::ast::op_trait_name(op_str).unwrap_or(op_str);
+                let tr = op_str;
                 if let (Some(owner), Some(input)) =
                     (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty))
                 {
@@ -1717,9 +1721,7 @@ impl<'a> Checker<'a> {
                             .def(id)
                             .map(|d| &d.name)
                             .is_some_and(|name| {
-                                let op_str = crate::syntax::pretty::bin_op(op);
-                                let tr = crate::syntax::ast::op_trait_name(op_str)
-                                    .unwrap_or(op_str);
+                                let tr = crate::syntax::pretty::bin_op(op);
                                 self.trait_impls
                                     .get(tr)
                                     .is_some_and(|set| set.contains(name))
@@ -2523,11 +2525,11 @@ mod tests {
         let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { in p: V; in q: V; out y: Bit; }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
         // Without an impl, `+` on a struct is rejected.
         assert_eq!(check_src(&base.replace("OPIMPL\n", "")), 1);
-        // With `impl Add for V`, it is accepted.
+        // With `impl Operator<"+", V, V> for V`, it is accepted.
         assert_eq!(
             check_src(&base.replace(
                 "OPIMPL",
-                "impl Add for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}"
+                "impl Operator<\"+\", V, V> for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
             )),
             0
         );
@@ -2691,22 +2693,22 @@ mod tests {
             enum Left { L }\n\
             enum Right { R }\n\
             enum Result { Yes }\n\
-            impl And<Right, Result> for Left {\n\
-              fn and(self, rhs: Right) -> Result { return Result::Yes; }\n\
+            impl Operator<\"and\", Right, Result> for Left {\n\
+              fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
             entity E { in a: Left; in b: Right; out y: Result; }\n\
             impl E { y = a and b; }\n";
-        assert_eq!(check_src(src), 0, "And's Output parameter types the expression");
+        assert_eq!(check_src(src), 0, "the Output parameter types the expression");
     }
 
     #[test]
     fn custom_operator_selects_input_and_output_templates() {
         let ok = "module m;\n\
             attr precedence: integer for impl;\n\
-            trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
+            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
             #[precedence = 45]\n\
-            impl custom<\"merge\", Right, Result> for Left {\n\
+            impl Operator<\"merge\", Right, Result> for Left {\n\
               fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
             entity E { in a: Left; in b: Right; out y: Result; }\n\
@@ -2720,17 +2722,17 @@ mod tests {
     #[test]
     fn custom_operator_precedence_is_required_and_consistent() {
         let header = "module m;\nattr precedence: integer for impl;\n\
-            trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
+            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
             enum A { A0 } enum B { B0 }\n";
         let missing = format!(
-            "{header}impl custom<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl Operator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
         );
         assert_eq!(check_src(&missing), 1);
 
         let conflict = format!(
             "{header}\
-             #[precedence = 40] impl custom<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
-             #[precedence = 30] impl custom<\"join\", B, B> for B {{ fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
+             #[precedence = 40] impl Operator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
+             #[precedence = 30] impl Operator<\"join\", B, B> for B {{ fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
         );
         assert_eq!(check_src(&conflict), 1);
     }

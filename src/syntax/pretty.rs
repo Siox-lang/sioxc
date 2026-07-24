@@ -799,10 +799,10 @@ mod tests {
         // Custom precedence composes with core and/or; `not` is prefix.
         roundtrip(
             "module m;\n\
-             trait custom<S, I, O> { fn apply(self, rhs: I) -> O; }\n\
-             #[precedence = 35] impl custom<\"xor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 40] impl custom<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 30] impl custom<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
+             #[precedence = 35] impl Operator<\"xor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             #[precedence = 40] impl Operator<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             #[precedence = 30] impl Operator<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }

@@ -49,7 +49,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
             if let ast::Item::Impl(im) = item {
                 let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                 if let (Some(tr), Some(ty)) = (tr, type_head_name(&im.target)) {
-                    let operator = if tr.text == "custom" {
+                    let operator = if tr.text == "Operator" {
                         im.trait_args.first().and_then(|a| match a {
                             ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
                                 Some(text.clone())
@@ -60,7 +60,7 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
                         Some(tr.text.clone())
                     };
                     let Some(operator) = operator else { continue };
-                    let input_index = usize::from(tr.text == "custom");
+                    let input_index = usize::from(tr.text == "Operator");
                     let input = im.trait_args.get(input_index).and_then(|a| match a {
                         ast::GenericArg::Positional(ast::Expr::Path(p)) => {
                             p.segments.last().map(|s| s.text.clone())
@@ -737,8 +737,8 @@ impl Ctx<'_> {
             _ => None,
         };
         let tr = match cmp {
-            Some(_) => "Ord",
-            None => siox::syntax::ast::op_trait_name(op_str).unwrap_or(op_str),
+            Some(_) => "<=>",
+            None => op_str,
         };
         let Some(candidates) = self.op_impls.get(&(tr.to_string(), fam.clone())) else {
             return Ok(None);
@@ -808,7 +808,7 @@ impl Ctx<'_> {
         let Some(family) = family else { return Ok(None) };
         let Some((f, _)) = self
             .op_impls
-            .get(&("Not".to_string(), family))
+            .get(&("not".to_string(), family))
             .and_then(|candidates| candidates.first())
         else {
             return Ok(None);

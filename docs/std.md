@@ -8,10 +8,11 @@ transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
-The compiler bootstraps only core operator mechanics. Their public contracts
-live in `std::ops`; non-core infix operators are
-`custom<"symbol", Input, Output>` implementations with an attributed
-precedence discovered before expression parsing.
+The compiler bootstraps only the single `Operator` name. Its public contract
+lives in `std::ops`; every operator is an
+`Operator<"symbol", Input, Output>` implementation, and a user operator
+(a non-standard symbol) carries an attributed precedence discovered before
+expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
 three base types — `integer`, `real`, and `Char` (a non-numeric character
@@ -29,7 +30,7 @@ is a documented shim, and the declaration here is canonical.
 | ------------- | -------------------------------- | -------- |
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
-| `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as trait impls (incl. `int`'s signed `Ord`) |
+| `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as `Operator` impls (incl. `int`'s signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -70,9 +71,9 @@ detection is applied to it — `clk.rising()` / `clk.falling()` (the
 `uint[N]` (VHDL `unsigned`) and `int[N]` (`signed`) are *derived* Logic
 vectors with numeric interpretation, and accept `integer` on assignment
 (`let x: uint[8] = 42;`). Only the kernel types (`integer`/`real`) have
-built-in operators; uint/int get theirs **here** as Rust-style trait impls:
-`Add`/`Sub`/`Mul`/`Div`/`Shl`/`Shr` over the kernel word operators (wrap at
-the stored width), and `int` gets a **sign-aware `impl Ord`** — signed
+built-in operators; uint/int get theirs **here** as `Operator` impls:
+`"+"`/`"-"`/`"*"`/`"/"`/`"<<"`/`">>"` over the kernel word operators (wrap at
+the stored width), and `int` gets a **sign-aware `Operator<"<=>", int, Ordering>`** — signed
 comparison is library source, not compiler code (`-1 < 1` on int[8], while
 uint compares unsigned). Inside an operator impl, operands read as kernel
 words and `self::length` gives the operand's bit width. Remaining kernel
@@ -90,19 +91,18 @@ pub enum Ordering { Less, Equal, Greater }
 pub trait Boolean { fn as_bool(self) -> Bool; }
 ```
 
-**`Ordering`** — the result of `impl Ord for T` (`fn cmp`, derives all six comparisons):
-one impl derives all of `< <= > >= == !=` (spec 3.25).
+**`Ordering`** — the result of `impl Operator<"<=>", T, Ordering>` (the `apply`
+three-way compare): one impl derives all of `< <= > >= == !=` (spec 3.25).
 
 **`Boolean`** — a type usable as a condition provides `as_bool` returning the
 system `Bool` type (`true`/`false`), applied only in condition position.
 `Bit`/`Bool` opt in; `Logic` deliberately does not.
 
-Core operator hooks, `Suffix`, and `Prefix` are compiler bootstraps. Custom
-operator identity, precedence, input, and output are std/user declarations.
-Impls are inlined
+`Operator`, `Suffix`, and `Prefix` are compiler bootstraps. Operator symbol,
+precedence, input, and output are std/user declarations. Impls are inlined
 at lowering as pure expression trees; mixed operand types overload by the
-rhs parameter type, and `impl Add for integer` catches literal left operands
-(`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
+`Input` parameter type, and `impl Operator<"+", Complex, _> for integer`
+catches literal left operands (`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
 by its symbol argument, its `suffix` method inlined at the use site (`10ns` →
 a `Time`); two loaded types defining one suffix is an ambiguity error. See
 spec 3.24/3.25.

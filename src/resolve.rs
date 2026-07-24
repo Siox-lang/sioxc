@@ -29,14 +29,14 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
-/// The Rust-style operator traits (spec 3.25): `a + b` dispatches to `Add`,
-/// `and` to `And`, unary `not` to `Not`, and one `Ord` (`cmp -> Ordering`)
-/// impl derives all six comparisons. Seeded as builtins so `impl Add for T`
-/// needs no import. Non-core infix operators dispatch through std's `custom`
-/// trait and are keyed by the symbol in its first template argument.
-pub const OPERATORS: &[&str] = &[
-    "Add", "Sub", "Mul", "Div", "Shl", "Shr", "And", "Or", "Not", "Ord",
-];
+/// The single operator trait (spec 3.25): every operator dispatches through
+/// `impl Operator<"<sym>", Input, Output> for T` (method `apply`), keyed by the
+/// symbol in its first template argument. `a + b` -> `Operator<"+", _, _>`,
+/// `and` -> `Operator<"and", _, _>`, unary `not` -> `Operator<"not", _, _>`,
+/// and one three-way `Operator<"<=>", _, Ordering>` derives all six
+/// comparisons. Seeded as a builtin so `impl Operator<..> for T` needs no
+/// import.
+pub const OPERATORS: &[&str] = &["Operator"];
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
 /// raw names.
@@ -1064,9 +1064,9 @@ mod tests {
 
     #[test]
     fn operator_traits_resolve_and_reject_unknown_operators() {
-        // A core operator trait and its impl resolve cleanly.
+        // The operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
-            "module m;\nstruct V { a: Bit }\nimpl Add for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+            "module m;\nstruct V { a: Bit }\nimpl Operator<\"+\", V, V> for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
         assert_eq!(errs, 0);
 

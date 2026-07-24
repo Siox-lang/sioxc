@@ -132,8 +132,8 @@ Logic family (`struct F : Logic[]`) as a numeric vector and reads
 `impl Signed` for the interpretation, so uint/int and future fixed-point
 families share one mechanism. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style
-trait impls — including
-`int`'s sign-aware `Ord` (signed comparison is library source, not compiler
+`Operator` impls — including
+`int`'s sign-aware `<=>` (signed comparison is library source, not compiler
 code). The CLI loads `std::` modules transitively from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
 compile, so the core types always carry their std semantics — the kernel

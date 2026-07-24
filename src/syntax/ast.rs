@@ -465,20 +465,14 @@ pub enum GenericArg {
 /// follow Rust's `std::ops` where that matches the language. Siox uses one
 /// type-directed `And` contract for both scalar boolean and per-bit `and`;
 /// `==`/`!=` stay built-in (or derive from `Ord`).
-pub fn op_trait_name(op: &str) -> Option<&'static str> {
-    Some(match op {
-        "+" => "Add",
-        "-" => "Sub",
-        "*" => "Mul",
-        "/" => "Div",
-        "<<" => "Shl",
-        ">>" => "Shr",
-        "and" => "And",
-        "or" => "Or",
-        "not" => "Not",
-        "<=>" => "Ord",
-        _ => return None,
-    })
+/// The standard operator symbols that carry built-in precedence — an
+/// `impl Operator<sym, _, _>` for one of these needs no `#[precedence]`. Any
+/// other symbol (a user operator like `xor`) must declare its precedence.
+pub fn is_builtin_operator(sym: &str) -> bool {
+    matches!(
+        sym,
+        "+" | "-" | "*" | "/" | "<<" | ">>" | "and" | "or" | "not" | "<=>"
+    )
 }
 
 pub fn suffix_scale(s: &str) -> Option<u128> {

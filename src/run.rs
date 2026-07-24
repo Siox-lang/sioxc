@@ -275,7 +275,7 @@ fn collect_op_impls(
                 let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                 let target = type_head_name(&im.target);
                 if let (Some(tr), Some(ty)) = (tr, target) {
-                    let operator = if tr.text == "custom" {
+                    let operator = if tr.text == "Operator" {
                         im.trait_args.first().and_then(|a| match a {
                             ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
                                 Some(text.clone())
@@ -286,7 +286,7 @@ fn collect_op_impls(
                         Some(tr.text.clone())
                     };
                     let Some(operator) = operator else { continue };
-                    let input_index = usize::from(tr.text == "custom");
+                    let input_index = usize::from(tr.text == "Operator");
                     let input = im.trait_args.get(input_index).and_then(|a| match a {
                         ast::GenericArg::Positional(ast::Expr::Path(p)) => {
                             p.segments.last().map(|s| s.text.clone())
@@ -2019,8 +2019,8 @@ impl Testbench<'_> {
             _ => None,
         };
         let tr = match cmp {
-            Some(_) => "Ord",
-            None => crate::syntax::ast::op_trait_name(op_str).unwrap_or(op_str),
+            Some(_) => "<=>",
+            None => op_str,
         };
         let candidates = self.op_impls.get(&(tr.to_string(), fam.clone()))?;
         let rhs_type = self
@@ -2070,7 +2070,7 @@ impl Testbench<'_> {
         fenv: &HashMap<String, u128>,
     ) -> Option<u128> {
         let (family, name) = self.operand_family(rhs)?;
-        let (f, _) = self.op_impls.get(&("Not".to_string(), family))?.first()?;
+        let (f, _) = self.op_impls.get(&("not".to_string(), family))?.first()?;
         let body = f.body.as_ref()?;
         let width = self.name_width(&name).unwrap_or(0);
         let mut env = HashMap::new();

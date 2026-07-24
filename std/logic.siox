@@ -104,8 +104,8 @@ pub const HIGH: Bit = '1';
 // against a reference simulator's std_logic_1164. `Bit` keeps the built-in
 // two-value operators.
 
-impl And<Logic, Logic> for Logic {
-    fn and(self, rhs: Logic) -> Logic {
+impl Operator<"and", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         // A low input (0/L) forces low, even against 'U'.
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -114,8 +114,8 @@ impl And<Logic, Logic> for Logic {
     }
 }
 
-impl Or<Logic, Logic> for Logic {
-    fn or(self, rhs: Logic) -> Logic {
+impl Operator<"or", Logic, Logic> for Logic {
+    fn apply(self, rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
@@ -124,7 +124,7 @@ impl Or<Logic, Logic> for Logic {
 }
 
 #[precedence = 35]
-impl custom<"xor", Logic, Logic> for Logic {
+impl Operator<"xor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
@@ -135,8 +135,8 @@ impl custom<"xor", Logic, Logic> for Logic {
     }
 }
 
-impl Not<Logic> for Logic {
-    fn not(self) -> Logic {
+impl Operator<"not", Logic, Logic> for Logic {
+    fn apply(self) -> Logic {
         if self == '0' or self == 'L' { return '1'; }
         if self == '1' or self == 'H' { return '0'; }
         if self == 'U' { return 'U'; }
@@ -145,7 +145,7 @@ impl Not<Logic> for Logic {
 }
 
 #[precedence = 40]
-impl custom<"nand", Logic, Logic> for Logic {
+impl Operator<"nand", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -155,7 +155,7 @@ impl custom<"nand", Logic, Logic> for Logic {
 }
 
 #[precedence = 30]
-impl custom<"nor", Logic, Logic> for Logic {
+impl Operator<"nor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -165,7 +165,7 @@ impl custom<"nor", Logic, Logic> for Logic {
 }
 
 #[precedence = 35]
-impl custom<"xnor", Logic, Logic> for Logic {
+impl Operator<"xnor", Logic, Logic> for Logic {
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }

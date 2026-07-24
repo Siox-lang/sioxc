@@ -70,8 +70,8 @@ precise reference.
 ### Types and generics
 
 - Generics with trait bounds and `where` clauses.
-- **Rust-style operator traits** — `impl Add for T`, one `impl Ord`
-  (`cmp -> Ordering`) deriving all six comparisons.
+- **One operator trait** — `impl Operator<"+", In, Out> for T`, with a single
+  three-way `Operator<"<=>", T, Ordering>` deriving all six comparisons.
 - **Methods** — `recv.method(args)` on a value's inherent or trait impl
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
@@ -411,7 +411,7 @@ array of a bit scalar — `struct uint : Logic[]` — *is* a packed bit vector
 (one N-bit signal); no annotation is needed, since an array of bits already
 says so. The compiler tracks **no signedness at all** — `uint` and `int` are the same
 shape (`Logic[]`), and their difference is entirely their **operator impls**:
-`int` has a signed `Ord` (compare), an arithmetic `Shr`, and a signed `Div`;
+`int` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
 `uint` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
 marker (attribute or trait) — signedness is behaviour, and behaviour lives in
 impls. The one thing that is not an operator — sign-extension when widening —
@@ -1336,45 +1336,45 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ### 3.25 Operator traits (Rust-style)
 
-Operator overloading follows Rust's `std::ops` model. Core operators map to
-named traits, while other infix operators use `std::ops::custom`. Public
-contracts live in std; the compiler only bootstraps core names so parsing and
-diagnostics can proceed before std resolution completes:
+Operator overloading goes through a **single** trait,
+`std::ops::Operator<op, Input, Output>`, parameterized by the operator symbol
+(like Rust's `std::ops` collapsed into one). Every operator — arithmetic,
+logical, comparison, and user-defined — is `impl Operator<"<sym>", Input,
+Output> for T` with one method, `apply`. Public contracts live in std; the
+compiler bootstraps the single `Operator` name so parsing and diagnostics
+proceed before std resolution completes:
 
-| operator | trait | method |    | operator | trait | method |
-|---|---|---|---|---|---|---|
-| `+` | `Add` | `add` |    | `and` | `And<Input, Output>` | `and` |
-| `-` | `Sub` | `sub` |    | `or` | `Or<Input, Output>` | `or` |
-| `*` | `Mul` | `mul` |    | `xor` | `custom<"xor", Input, Output>` | `apply` |
-| `/` | `Div` | `div` |    | `nand` | `custom<"nand", Input, Output>` | `apply` |
-| `<<` | `Shl` | `shl` |    | `nor` | `custom<"nor", Input, Output>` | `apply` |
-| `>>` | `Shr` | `shr` |    | `xnor` | `custom<"xnor", Input, Output>` | `apply` |
-| `not` (unary) | `Not<Output>` | `not` |    | `< <= > >=` | `Ord` | `cmp` |
+| operator | impl | operator | impl |
+|---|---|---|---|
+| `+` | `Operator<"+", In, Out>` | `and` | `Operator<"and", In, Out>` |
+| `-` | `Operator<"-", In, Out>` | `or` | `Operator<"or", In, Out>` |
+| `*` | `Operator<"*", In, Out>` | `not` (unary) | `Operator<"not", In, Out>` |
+| `/` | `Operator<"/", In, Out>` | `xor`/`nand`/`nor`/`xnor` | `Operator<"xor", …>` … |
+| `<<` `>>` | `Operator<"<<", …>` … | `< <= > >= == !=` | `Operator<"<=>", T, Ordering>` |
 
 ```siox
-impl Add for Complex {
-    fn add(self, rhs: Complex) -> Complex {
+impl Operator<"+", Complex, Complex> for Complex {
+    fn apply(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
 ```
 
-Only `and`, `or`, and unary `not` are core logical operators. Other textual
-operators are ordinary `custom<"symbol", Input, Output>` implementations on
-their left operand type. Their `#[precedence = N]` metadata supplies binding
-power. Using an operator on a user struct/enum
-without a matching impl is an error
-(`==`/`!=` stay built-in on enums as discriminant comparison). `Self` in an
-impl refers to the implementing type.
+The **standard symbols** (`+ - * / << >> and or not <=>`) carry built-in
+precedence. Any **other symbol** is a user operator (`xor`, `nand`, `^^`, …):
+its impl declares binding power with `#[precedence = N]`. Unary `not`
+implements `apply(self)` with no rhs. Using an operator on a user struct/enum
+without a matching impl is an error (`==`/`!=` stay built-in on enums as
+discriminant comparison). `Self` in an impl refers to the implementing type.
 
-**Comparisons (`Ord`).** One `cmp` impl returning `std::ops::Ordering`
-(`Less`/`Equal`/`Greater`) derives all six comparisons — like Rust's `Ord`
-(or C++'s `operator<=>`): `a < b` lowers to `a.cmp(b) == Ordering::Less`,
-and struct equality (which has no built-in form) comes with it:
+**Comparisons.** One three-way `Operator<"<=>", T, Ordering>` impl (`apply`
+returning `std::ops::Ordering` — `Less`/`Equal`/`Greater`) derives all six
+comparisons — like Rust's `Ord` / C++'s `operator<=>`: `a < b` lowers to
+`(a <=> b) == Ordering::Less`, and struct equality comes with it:
 
 ```siox
-impl Ord for Version {
-    fn cmp(self, rhs: Version) -> Ordering {
+impl Operator<"<=>", Version, Ordering> for Version {
+    fn apply(self, rhs: Version) -> Ordering {
         if self.major < rhs.major { return Ordering::Less; }
         if self.major > rhs.major { return Ordering::Greater; }
         if self.minor < rhs.minor { return Ordering::Less; }
@@ -1411,25 +1411,24 @@ body must be `return e;` or `if`/`else` chains ending in returns (no loops,
 no state). Enum- and struct-typed operands are supported (a struct result
 lowers to one driver per field).
 
-**Mixed operands** use the trait's type argument, exactly Rust's spelling:
-`impl Add<Rhs> for T`. A bare `impl Add for T` reads as `Add<Self>`; impls
-on `integer` catch literal left operands:
+**Mixed operands** use the `Input` type argument (the second parameter);
+impls on `integer` catch literal left operands:
 
 ```siox
-impl Add for Complex {
-    fn add(self, rhs: Complex) -> Complex { ... }
+impl Operator<"+", Complex, Complex> for Complex {
+    fn apply(self, rhs: Complex) -> Complex { ... }
 }
 
-impl Add<integer> for Complex {
-    fn add(self, rhs: integer) -> Complex { ... }   // z + 3
+impl Operator<"+", integer, Complex> for Complex {
+    fn apply(self, rhs: integer) -> Complex { ... }   // z + 3
 }
 
-impl Add<Complex> for integer {
-    fn add(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
+impl Operator<"+", Complex, Complex> for integer {
+    fn apply(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
 }
 ```
 
-Selection is by (trait, lhs type, rhs type) — the trait argument declares
+Selection is by (symbol, lhs type, rhs type) — the `Input` argument declares
 the rhs, falling back to the method's rhs parameter type. `Self` reads as
 the impl target.
 
@@ -1536,7 +1535,7 @@ whose one-argument form `T(x)` is the conversion of §3.28. `T(...)` reads as
 nothing (`New::new()`), `T(x)` transforms an existing value. This is still a
 *function* acting to produce data — the type name in call position names the
 constructor, it does not invoke the inert data — consistent with every other
-trait (`From::from`, `Ord::cmp`, `Boolean::as_bool`). A parameterized
+trait (`From::from`, `Operator::apply`, `Boolean::as_bool`). A parameterized
 `new(args)` (when a type provides one) is ordinary explicit construction.
 
 ```siox
@@ -2095,17 +2094,18 @@ the after-form is the one generator.)
 A function may be generic over a type with an optional trait bound:
 
 ```siox
-fn maxi<T: Ord>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Ord
+fn maxi<T: Operator>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Operator
     if a > b { return a; }
     return b;
 }
 ```
 
 Functions inline, so a call is its own monomorphization: the body dispatches
-operators on the caller's concrete type (`int`'s signed `Ord`, not the kernel
+operators on the caller's concrete type (`int`'s signed `<=>`, not the kernel
 compare), and the bound is checked at the call site — a named struct/enum must
 carry an explicit `impl Tr`, while kernel scalars and vectors satisfy the
-built-in capabilities. `where T: Ord` is exact sugar for `<T: Ord>`; the two
+built-in capabilities. `T: Operator` is the capability bound "supports operator
+overloading". `where T: Operator` is exact sugar for `<T: Operator>`; the two
 forms parse to the same declaration. Abstract bodies are not type-checked on
 their own — each call is.
 

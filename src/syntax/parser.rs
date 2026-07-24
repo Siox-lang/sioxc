@@ -62,7 +62,7 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
             let limit = (i + 20).min(tokens.len());
             let mut j = i + 1;
             while j < limit {
-                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "custom" {
+                if tokens[j].kind == TokenKind::Ident && text(&tokens[j]) == "Operator" {
                     while j < limit && tokens[j].kind != TokenKind::StrLit {
                         j += 1;
                     }
@@ -618,12 +618,13 @@ impl<'a> Parser<'a> {
             // Pre-Rust-style operator traits were quoted (`impl "+" for T`).
             let t = self.bump();
             let text = self.text_of(t.span).trim_matches('"').to_string();
-            let name = crate::syntax::ast::op_trait_name(&text).unwrap_or("Add").to_string();
             self.error_at(
                 t.span,
-                format!("quoted operator traits were removed; use the Rust-style name (`{name}`)"),
+                format!(
+                    "quoted operator traits were removed; use `Operator<\"{text}\", Input, Output>`"
+                ),
             );
-            Ident { text: name, span: t.span }
+            Ident { text: "Operator".to_string(), span: t.span }
         } else {
             self.parse_ident()
         }

@@ -30,28 +30,28 @@ pub struct int : Logic[];
 
 // --- uint[N]: modular unsigned arithmetic ---------------------------------
 
-impl Add for uint {
-    fn add(self, rhs: uint) -> uint { return self + rhs; }
+impl Operator<"+", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self + rhs; }
 }
 
-impl Sub for uint {
-    fn sub(self, rhs: uint) -> uint { return self - rhs; }
+impl Operator<"-", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self - rhs; }
 }
 
-impl Mul for uint {
-    fn mul(self, rhs: uint) -> uint { return self * rhs; }
+impl Operator<"*", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self * rhs; }
 }
 
-impl Div for uint {
-    fn div(self, rhs: uint) -> uint { return self / rhs; }
+impl Operator<"/", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self / rhs; }
 }
 
-impl Shl for uint {
-    fn shl(self, rhs: uint) -> uint { return self << rhs; }
+impl Operator<"<<", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self << rhs; }
 }
 
-impl Shr for uint {
-    fn shr(self, rhs: uint) -> uint { return self >> rhs; }
+impl Operator<">>", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self >> rhs; }
 }
 
 // Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
@@ -67,77 +67,77 @@ impl Prefix<"o", string> for uint {}
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
 
-impl And<uint, uint> for uint {
-    fn and(self, rhs: uint) -> uint { return self and rhs; }
+impl Operator<"and", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self and rhs; }
 }
 
-impl Or<uint, uint> for uint {
-    fn or(self, rhs: uint) -> uint { return self or rhs; }
+impl Operator<"or", uint, uint> for uint {
+    fn apply(self, rhs: uint) -> uint { return self or rhs; }
 }
 
-impl Not<uint> for uint {
-    fn not(self) -> uint { return ((1 << self::length) - 1) - self; }
+impl Operator<"not", uint, uint> for uint {
+    fn apply(self) -> uint { return ((1 << self::length) - 1) - self; }
 }
 
-impl And<int, int> for int {
-    fn and(self, rhs: int) -> int { return self and rhs; }
+impl Operator<"and", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self and rhs; }
 }
 
-impl Or<int, int> for int {
-    fn or(self, rhs: int) -> int { return self or rhs; }
+impl Operator<"or", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self or rhs; }
 }
 
-impl Not<int> for int {
-    fn not(self) -> int { return ((1 << self::length) - 1) - self; }
+impl Operator<"not", int, int> for int {
+    fn apply(self) -> int { return ((1 << self::length) - 1) - self; }
 }
 
 #[precedence = 35]
-impl custom<"xor", uint, uint> for uint {
+impl Operator<"xor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint { return (self or rhs) - (self and rhs); }
 }
 
 #[precedence = 40]
-impl custom<"nand", uint, uint> for uint {
+impl Operator<"nand", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
         return ((1 << self::length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
-impl custom<"nor", uint, uint> for uint {
+impl Operator<"nor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
         return ((1 << self::length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
-impl custom<"xnor", uint, uint> for uint {
+impl Operator<"xnor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
         return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
 #[precedence = 35]
-impl custom<"xor", int, int> for int {
+impl Operator<"xor", int, int> for int {
     fn apply(self, rhs: int) -> int { return (self or rhs) - (self and rhs); }
 }
 
 #[precedence = 40]
-impl custom<"nand", int, int> for int {
+impl Operator<"nand", int, int> for int {
     fn apply(self, rhs: int) -> int {
         return ((1 << self::length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
-impl custom<"nor", int, int> for int {
+impl Operator<"nor", int, int> for int {
     fn apply(self, rhs: int) -> int {
         return ((1 << self::length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
-impl custom<"xnor", int, int> for int {
+impl Operator<"xnor", int, int> for int {
     fn apply(self, rhs: int) -> int {
         return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
     }
@@ -159,16 +159,16 @@ pub fn sext(x: int) -> integer {
 }
 
 
-impl Add for int {
-    fn add(self, rhs: int) -> int { return self + rhs; }
+impl Operator<"+", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self + rhs; }
 }
 
-impl Sub for int {
-    fn sub(self, rhs: int) -> int { return self - rhs; }
+impl Operator<"-", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self - rhs; }
 }
 
-impl Mul for int {
-    fn mul(self, rhs: int) -> int { return self * rhs; }
+impl Operator<"*", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self * rhs; }
 }
 
 // Signed division: divide the magnitudes with the kernel's unsigned divide,
@@ -176,8 +176,8 @@ impl Mul for int {
 // word-wrapping negate, truncated back to the operand's width); results
 // wrap to the target's width when stored, which re-encodes a negative
 // quotient as two's complement.
-impl Div for int {
-    fn div(self, rhs: int) -> int {
+impl Operator<"/", int, int> for int {
+    fn apply(self, rhs: int) -> int {
         if ((self >> (self::length - 1)) == 1) and ((rhs >> (rhs::length - 1)) == 1) {
             return resize(0 - self, self::length) / resize(0 - rhs, rhs::length);
         }
@@ -191,15 +191,15 @@ impl Div for int {
     }
 }
 
-impl Shl for int {
-    fn shl(self, rhs: int) -> int { return self << rhs; }
+impl Operator<"<<", int, int> for int {
+    fn apply(self, rhs: int) -> int { return self << rhs; }
 }
 
 // Arithmetic shift-right: replicate the sign into the vacated top bits.
 // `(1 << w) - (1 << (w - n))` is a mask of the top n bits (the shifted-in
 // positions); the shifted value's top bits are zero, so `+` sets them.
-impl Shr for int {
-    fn shr(self, rhs: int) -> int {
+impl Operator<">>", int, int> for int {
+    fn apply(self, rhs: int) -> int {
         if (self >> (self::length - 1)) == 1 {
             return (self >> rhs) + ((1 << self::length) - (1 << (self::length - rhs)));
         }
@@ -211,8 +211,8 @@ impl Shr for int {
 // `self >> (self::length - 1)` is the sign bit. A negative orders below a
 // non-negative; same-sign two's-complement values order like their unsigned
 // words. One impl derives < <= > >= == != (spec 3.25).
-impl Ord for int {
-    fn cmp(self, rhs: int) -> Ordering {
+impl Operator<"<=>", int, Ordering> for int {
+    fn apply(self, rhs: int) -> Ordering {
         if (self >> (self::length - 1)) > (rhs >> (rhs::length - 1)) {
             return Ordering::Less;
         }
