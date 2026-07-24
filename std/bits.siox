@@ -76,7 +76,7 @@ impl Operator<"or", uint, uint> for uint {
 }
 
 impl Operator<"not", uint, uint> for uint {
-    fn apply(self) -> uint { return ((1 << self::length) - 1) - self; }
+    fn apply(self) -> uint { return ((1 << self'length) - 1) - self; }
 }
 
 impl Operator<"and", int, int> for int {
@@ -88,7 +88,7 @@ impl Operator<"or", int, int> for int {
 }
 
 impl Operator<"not", int, int> for int {
-    fn apply(self) -> int { return ((1 << self::length) - 1) - self; }
+    fn apply(self) -> int { return ((1 << self'length) - 1) - self; }
 }
 
 #[precedence = 35]
@@ -99,21 +99,21 @@ impl Operator<"xor", uint, uint> for uint {
 #[precedence = 40]
 impl Operator<"nand", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::length) - 1) - (self and rhs);
+        return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
 impl Operator<"nor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::length) - 1) - (self or rhs);
+        return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
 impl Operator<"xnor", uint, uint> for uint {
     fn apply(self, rhs: uint) -> uint {
-        return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
+        return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
@@ -125,21 +125,21 @@ impl Operator<"xor", int, int> for int {
 #[precedence = 40]
 impl Operator<"nand", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::length) - 1) - (self and rhs);
+        return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
 impl Operator<"nor", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::length) - 1) - (self or rhs);
+        return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
 impl Operator<"xnor", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        return ((1 << self::length) - 1) - ((self or rhs) - (self and rhs));
+        return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
@@ -152,8 +152,8 @@ impl Operator<"xnor", int, int> for int {
 pub fn sext(x: int) -> integer {
     // Test the sign bit on the RAW value: `x >> ..` would use int's own
     // (arithmetic) shift, but here we want the plain top bit.
-    if (integer(x) >> (x::length - 1)) == 1 {
-        return integer(x) - (1 << x::length);
+    if (integer(x) >> (x'length - 1)) == 1 {
+        return integer(x) - (1 << x'length);
     }
     return integer(x);
 }
@@ -178,14 +178,14 @@ impl Operator<"*", int, int> for int {
 // quotient as two's complement.
 impl Operator<"/", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        if ((self >> (self::length - 1)) == 1) and ((rhs >> (rhs::length - 1)) == 1) {
-            return resize(0 - self, self::length) / resize(0 - rhs, rhs::length);
+        if ((self >> (self'length - 1)) == 1) and ((rhs >> (rhs'length - 1)) == 1) {
+            return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
         }
-        if (self >> (self::length - 1)) == 1 {
-            return 0 - (resize(0 - self, self::length) / rhs);
+        if (self >> (self'length - 1)) == 1 {
+            return 0 - (resize(0 - self, self'length) / rhs);
         }
-        if (rhs >> (rhs::length - 1)) == 1 {
-            return 0 - (self / resize(0 - rhs, rhs::length));
+        if (rhs >> (rhs'length - 1)) == 1 {
+            return 0 - (self / resize(0 - rhs, rhs'length));
         }
         return self / rhs;
     }
@@ -200,23 +200,23 @@ impl Operator<"<<", int, int> for int {
 // positions); the shifted value's top bits are zero, so `+` sets them.
 impl Operator<">>", int, int> for int {
     fn apply(self, rhs: int) -> int {
-        if (self >> (self::length - 1)) == 1 {
-            return (self >> rhs) + ((1 << self::length) - (1 << (self::length - rhs)));
+        if (self >> (self'length - 1)) == 1 {
+            return (self >> rhs) + ((1 << self'length) - (1 << (self'length - rhs)));
         }
         return self >> rhs;
     }
 }
 
-// Sign-aware comparison: `self::length` is the operand's bit width, so
-// `self >> (self::length - 1)` is the sign bit. A negative orders below a
+// Sign-aware comparison: `self'length` is the operand's bit width, so
+// `self >> (self'length - 1)` is the sign bit. A negative orders below a
 // non-negative; same-sign two's-complement values order like their unsigned
 // words. One impl derives < <= > >= == != (spec 3.25).
 impl Operator<"<=>", int, Ordering> for int {
     fn apply(self, rhs: int) -> Ordering {
-        if (self >> (self::length - 1)) > (rhs >> (rhs::length - 1)) {
+        if (self >> (self'length - 1)) > (rhs >> (rhs'length - 1)) {
             return Ordering::Less;
         }
-        if (self >> (self::length - 1)) < (rhs >> (rhs::length - 1)) {
+        if (self >> (self'length - 1)) < (rhs >> (rhs'length - 1)) {
             return Ordering::Greater;
         }
         if self < rhs { return Ordering::Less; }

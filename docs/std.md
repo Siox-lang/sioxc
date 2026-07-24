@@ -64,7 +64,7 @@ pub const HIGH: Bit = '1';
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
 detection is applied to it — `clk.rising()` / `clk.falling()` (the
-`rising_edge(clk)` analogue), built-in syntax over `::event`/`::old`.
+`rising_edge(clk)` analogue), built-in syntax over `'event`/`'old`.
 
 ## `std::bits`
 
@@ -76,9 +76,9 @@ built-in operators; uint/int get theirs **here** as `Operator` impls:
 the stored width), and `int` gets a **sign-aware `Operator<"<=>", int, Ordering>`** — signed
 comparison is library source, not compiler code (`-1 < 1` on int[8], while
 uint compares unsigned). Inside an operator impl, operands read as kernel
-words and `self::length` gives the operand's bit width. Remaining kernel
+words and `self'length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
-literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self::length`.
+literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self'length`.
 Radix bit-string literals `x"AB"` / `o"17"` are sized `uint` constants,
 declared by `impl Prefix<"x", _> for uint` in `std::bits` (spec 3.24); a plain string
 `"0101"` covers the binary case with no prefix. A file that never imports

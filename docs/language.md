@@ -41,8 +41,8 @@ precise reference.
 
 - **Combinational vs. sequential are kept distinct.** A continuous assignment
   (`count = value;`) is a wire; an event block (`if clk.rising() { … }`) updates
-  only on the edge. Edge and history queries — `clk.rising()`, `x::event`,
-  `x::old` — are first-class.
+  only on the edge. Edge and history queries — `clk.rising()`, `x'event`,
+  `x'old` — are first-class.
 - **Nine-value logic.** `Logic` is the full **IEEE 1076-2019** `std_ulogic`
   value set — `'U','X','0','1','Z','W','L','H','-'` — with the `std_logic_1164`
   `and`/`or`/`not`/`xor`/… truth tables and `resolved` parallel-driver
@@ -79,7 +79,7 @@ precise reference.
 - **Derived nominal types** — `enum B : A` / `struct B : A`, with total
   derivation conversions synthesised automatically.
 - `#[…]` attributes, including type-targeted ones.
-- System attributes for metadata: `x::length`, range bounds `x::high`/`x::low`/`x::left`/`x::right`/`x::ascending`.
+- System attributes for metadata: `x'length`, range bounds `x'high`/`x'low`/`x'left`/`x'right`/`x'ascending`.
 
 ### Diagnostics
 
@@ -112,7 +112,7 @@ It should support:
 - Traits.
 - Digital directions: `in`, `out`, `inout`.
 - Parameterized entities and structs.
-- Digital system attributes: `::event`, `::old`.
+- Digital system attributes: `'event`, `'old`.
 - Derived clock helpers such as `clk.rising()`, `clk.falling()`, `clk.edge()`.
 - Digital simulation with delta cycles.
 - Combinational assignments.
@@ -125,7 +125,7 @@ It should not support yet:
 
 - Analogue `domain`.
 - `across` / `through` quantities.
-- `::ddt`.
+- `'ddt`.
 - Analogue solvers.
 - Mixed-signal bridges such as `sample`, `hold`, `cross`, `quantize`.
 - Schematic/design language.
@@ -517,11 +517,21 @@ Phase 1 should avoid Rust-style payload enums. Keep enums simple.
 
 ### 3.9 Digital system attributes exist on every digital/discrete value
 
-Every digital/discrete value has:
+Attributes use a VHDL-style **tick** `'`, distinct from the other two
+selectors — one sigil, one job:
+
+- `.` — values: field access and method calls (`pkt.data`, `clk.rising()`)
+- `::` — types & modules: paths, enum variants, associated items, bus views
+  (`std::logic::Bit`, `Color::Red`, `Stream<T>::Source`)
+- `'` — attributes (`sig'event`, `x'length`)
+
+The tick is unambiguous against a character literal by shape: `'0'`/`'X'`
+(quote · one symbol · quote) is a literal; `'event`/`'length` is an attribute
+(no attribute name is a single character). Every digital/discrete value has:
 
 ```siox
-x::event
-x::old
+x'event
+x'old
 ```
 
 This includes:
@@ -538,21 +548,21 @@ This includes:
 Meaning:
 
 ```text
-x::event
+x'event
     true if x changed value during the current simulation step/delta cycle
 
-x::old
+x'old
     value of x before the current update/event
 ```
 
 Enum example:
 
 ```siox
-if state::event {
+if state'event {
     changed = '1';
 }
 
-if state::old == State::Idle and state == State::Start {
+if state'old == State::Idle and state == State::Start {
     started = '1';
 }
 ```
@@ -567,11 +577,11 @@ struct Packet {
 
 let p: Packet;
 
-if p::event {
+if p'event {
     packet_changed = '1';
 }
 
-if p::old.valid == '0' and p.valid == '1' {
+if p'old.valid == '0' and p.valid == '1' {
     packet_became_valid = '1';
 }
 ```
@@ -615,23 +625,23 @@ let byte: uint[8] = { hi_nibble, lo_nibble };  // hi occupies bits 7..4
 For structs:
 
 ```text
-p::event = any field changed
-p::old   = previous full struct value
+p'event = any field changed
+p'old   = previous full struct value
 ```
 
 For arrays:
 
 ```text
-array::event = any element changed
-array::old   = previous full array value
+array'event = any element changed
+array'old   = previous full array value
 ```
 
 ---
 
-### 3.10 Clock helpers are `ClockLike` methods over `::event` and `::old`
+### 3.10 Clock helpers are `ClockLike` methods over `'event` and `'old`
 
 `rising`, `falling`, and `edge` are **trait methods** — `clk.rising()` — not
-system attributes. `::event` and `::old` are the compiler primitives (the
+system attributes. `'event` and `'old` are the compiler primitives (the
 engine tracks the event/history); the edge helpers are ordinary library code
 built from them, in `std::logic`. A user type is a clock by implementing
 `ClockLike`; writing `clk::rising` is an error (use `clk.rising()`).
@@ -647,15 +657,15 @@ trait ClockLike {
 
 impl ClockLike for Logic {
     fn rising(self) -> Bool {
-        return self::event and self::old == '0' and self == '1';
+        return self'event and self'old == '0' and self == '1';
     }
 
     fn falling(self) -> Bool {
-        return self::event and self::old == '1' and self == '0';
+        return self'event and self'old == '1' and self == '0';
     }
 
     fn edge(self) -> Bool {
-        return self::event;
+        return self'event;
     }
 }
 ```
@@ -670,7 +680,7 @@ if clk.rising() {
 }
 ```
 
-The compiler recognizes that `clk.rising()` depends on `clk::event`, so the block is event-controlled.
+The compiler recognizes that `clk.rising()` depends on `clk'event`, so the block is event-controlled.
 
 ---
 
@@ -686,7 +696,7 @@ if clk.rising() {
 }
 ```
 
-is event-controlled because the condition depends on `clk::event`.
+is event-controlled because the condition depends on `clk'event`.
 
 This:
 
@@ -1241,10 +1251,10 @@ slice bounds (`const N: integer = 4; let a: Bit[N];`).
 
 **Range attributes.** A vector or array exposes its declared index range
 through VHDL-style attributes (elaboration-time constants). There is one count
-attribute — `::length` — because for a flat vector the element count *is* the
+attribute — `'length` — because for a flat vector the element count *is* the
 bit width; the older separate `::len`/`::width` pair collapses into it (an array
-*of* vectors distinguishes them: `tab::length` counts elements,
-`tab[0]::length` the bits of one).
+*of* vectors distinguishes them: `tab'length` counts elements,
+`tab[0]'length` the bits of one).
 
 ```siox
 let data: Logic[31..0];
@@ -1252,19 +1262,19 @@ let data: Logic[31..0];
 
 | attribute | value | meaning |
 | --------- | ----- | ------- |
-| `data::left`      | 31    | first declared bound |
-| `data::right`     | 0     | second declared bound |
-| `data::high`      | 31    | `max(left, right)` — the MSB index |
-| `data::low`       | 0     | `min(left, right)` — the LSB index |
-| `data::length`    | 32    | element count (= bit width for a flat vector) |
-| `data::ascending` | false | direction: `true` for `[0..N]` (`to`), `false` for `[N..0]` (`downto`) |
+| `data'left`      | 31    | first declared bound |
+| `data'right`     | 0     | second declared bound |
+| `data'high`      | 31    | `max(left, right)` — the MSB index |
+| `data'low`       | 0     | `min(left, right)` — the LSB index |
+| `data'length`    | 32    | element count (= bit width for a flat vector) |
+| `data'ascending` | false | direction: `true` for `[0..N]` (`to`), `false` for `[N..0]` (`downto`) |
 
 Direction is preserved from the declaration: a written range keeps its order
 (`Logic[7..0]` is descending, `ascending == false`), while a width-only
 `Bit[4]` (≡ `Bit[0..3]`) is ascending. These are what data alignment leans on —
 `high`/`low` say where the bits actually sit, `left`/`right`/`ascending` give
-the orientation. (`data::range` as a first-class range value and `::direction`
-as a `to`/`downto` symbol are reserved but not yet lowered; use `::ascending`.)
+the orientation. (`data'range` as a first-class range value and `'direction`
+as a `to`/`downto` symbol are reserved but not yet lowered; use `'ascending`.)
 
 Important distinction:
 
@@ -1635,7 +1645,7 @@ The following examples must have final Phase 1 syntax:
 - FSM.
 - Ready/valid stream producer.
 - Ready/valid stream consumer.
-- Enum transition monitor using `::old`.
+- Enum transition monitor using `'old`.
 - Test entity with assertions.
 - External entity binding.
 - Attribute declaration and usage.
@@ -1792,26 +1802,26 @@ Implement:
 Digital/discrete values support:
 
 ```siox
-x::event
-x::old
+x'event
+x'old
 ```
 
 Range-like values support:
 
 ```siox
-x::length
-x::high
-x::low
-x::left
-x::right
-x::ascending
-x::direction
+x'length
+x'high
+x'low
+x'left
+x'right
+x'ascending
+x'direction
 ```
 
 Analogue attributes are not part of Phase 1:
 
 ```siox
-x::ddt // invalid in Phase 1
+x'ddt // invalid in Phase 1
 ```
 
 ### Endgoal
@@ -1924,7 +1934,7 @@ Sequential assignment:
 OnEvent(event_condition): next(signal) = expression
 ```
 
-`x::event` and `x::old` should become explicit IR operations.
+`x'event` and `x'old` should become explicit IR operations.
 
 Example:
 
@@ -1958,7 +1968,7 @@ The compiler can print a normalized digital IR.
 - Event dependencies are explicit.
 - Combinational dependencies are explicit.
 - Sequential updates are separated from immediate local assignments.
-- `::event` and `::old` are represented directly.
+- `'event` and `'old` are represented directly.
 - Method calls used in hardware code are resolved or lowered.
 
 ---
@@ -1987,7 +1997,7 @@ Simulate Phase 1 digital designs.
 1. Apply initial values.
 2. Evaluate combinational drivers.
 3. Commit signal changes.
-4. Mark ::event for changed values.
+4. Mark 'event for changed values.
 5. Wake event-controlled blocks whose event conditions may now be true.
 6. Evaluate event-controlled blocks.
 7. Queue next-state updates.
@@ -1996,37 +2006,37 @@ Simulate Phase 1 digital designs.
 10. Advance simulation time when requested by test/stimulus.
 ```
 
-### `::old` rule
+### `'old` rule
 
 For every digital value:
 
 ```text
-x::old = value of x before the current committed change
+x'old = value of x before the current committed change
 x      = current value after the committed change
 ```
 
-### `::event` rule
+### `'event` rule
 
 ```text
-x::event = true in the delta cycle where x changed
+x'event = true in the delta cycle where x changed
 ```
 
 For structs:
 
 ```text
-struct::event = any field changed
+struct'event = any field changed
 ```
 
 For arrays:
 
 ```text
-array::event = any element changed
+array'event = any element changed
 ```
 
 For enums:
 
 ```text
-enum::event = variant changed
+enum'event = variant changed
 ```
 
 ### Endgoal
@@ -2042,7 +2052,7 @@ Must simulate correctly:
 - Counter.
 - FSM.
 - Ready/valid handshaking.
-- Enum transition monitor using `::old`.
+- Enum transition monitor using `'old`.
 - Struct event detection.
 - Array element event detection.
 
@@ -2154,7 +2164,7 @@ payload-carrying enums — never a keyword.
 
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
-directly, Python-style — length is the `::length` system attribute (an
+directly, Python-style — length is the `'length` system attribute (an
 elaboration-time fact).
 
 A numeric range `lo..hi` in a `for` is **inclusive and directional**, exactly
@@ -2176,12 +2186,12 @@ on the scheduler those clocks run on:
 
 ```siox
 await 10ns;                 // advance simulation time
-await clk.rising();          // wait for the next rising edge (also clk.falling(), ::event)
+await clk.rising();          // wait for the next rising edge (also clk.falling(), 'event)
 await count == 7;           // wait until a condition holds
 ```
 
 `await`'s three forms are: a **duration** (advance time), an **edge**
-(`clk.rising()`/`clk.falling()`/`::event`), and a **condition** (any boolean). Edge
+(`clk.rising()`/`clk.falling()`/`'event`), and a **condition** (any boolean). Edge
 and condition forms are driven by the background clocks — the scheduler steps
 the clocks until the trigger fires. `await` runs identically on the JIT and the
 native `--no-run` binary. (`wait`/`tick` remain for straight-line, self-clocked
@@ -2266,7 +2276,7 @@ The user can open a waveform file in GTKWave or another viewer.
 - Counter waveform shows `clk`, `rst`, `en`, `count`.
 - FSM waveform shows symbolic states or encoded values.
 - Struct fields appear as separate trace paths.
-- `::old` does not need to be dumped by default, but may be enabled as debug trace.
+- `'old` does not need to be dumped by default, but may be enabled as debug trace.
 
 ---
 
@@ -2548,14 +2558,14 @@ Phase 1 is complete when the project can:
 4. Elaborate parameterized entities into a concrete hierarchy.
 5. Lower designs into digital simulation IR.
 6. Simulate combinational and sequential digital behavior.
-7. Support `::event` and `::old` on all digital/discrete values.
+7. Support `'event` and `'old` on all digital/discrete values.
 8. Run `#[test]` entities.
 9. Evaluate assertions.
 10. Export waveforms.
 11. Report useful diagnostics.
 ```
 
-At that point, siox has a real digital HDL foundation. Phase 2 can then add analogue `domain`, `across`, `through`, `::ddt`, analysis domains, physical solvers, and mixed-signal bridges without destabilizing the digital core.
+At that point, siox has a real digital HDL foundation. Phase 2 can then add analogue `domain`, `across`, `through`, `'ddt`, analysis domains, physical solvers, and mixed-signal bridges without destabilizing the digital core.
 
 ---
 

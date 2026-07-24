@@ -353,7 +353,9 @@ pub enum Expr {
     Path(Path),
     /// `x.field` (spec `.` member access).
     Field { base: Box<Expr>, field: Ident, span: Span },
-    /// `x::event`, `x::old`, `clk.rising()`, `data::length` (spec 3.9/3.10/3.23).
+    /// A VHDL-style attribute tick: `sig'event`, `sig'old`, `data'length`,
+    /// `arr'high` (spec 3.9/3.10/3.23). `'` is exclusively for attributes; `::`
+    /// is namespace/type selection and `.` is field/method access.
     SysAttr { base: Box<Expr>, attr: Ident, span: Span },
     /// `data[7..0]` slice or `data[0]` index (spec 3.23).
     Index { base: Box<Expr>, index: Box<Expr>, span: Span },

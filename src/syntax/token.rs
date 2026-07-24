@@ -45,7 +45,7 @@ pub enum TokenKind {
     For,
     Return,
     Extern,
-    SelfKw,    // self (method receiver + `self::event`, spec 3.9/3.20); `true`/`false` stay idents (enum)
+    SelfKw,    // self (method receiver + `self'event`, spec 3.9/3.20); `true`/`false` stay idents (enum)
 
     // Punctuation
     LParen,    // (
@@ -86,6 +86,8 @@ pub enum TokenKind {
     GtEq,      // >=
     CustomOp,  // user-defined punctuation operator, e.g. %% or ^^
     Pound,     // # (attribute application `#[...]`, spec 3.5/3.6)
+    Tick,      // ' (VHDL-style attribute accessor `sig'event`, spec 3.9); a
+               //   `'c'`-shaped run stays a CharacterLit — see the lexer.
 
     // Trivia / control
     Comment,

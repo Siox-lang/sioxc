@@ -21,7 +21,7 @@ per-signal `event` flags):
 2. Evaluate combinational drivers to a **fixpoint** (re-run until nothing
    changes; a non-converging loop is caught and warned, not hung).
 3. Fire event blocks — each computes its next state from the **pre-commit**
-   values (so `x::old` and same-cycle reads see the value before the edge).
+   values (so `x'old` and same-cycle reads see the value before the edge).
 4. Commit those next-state writes, then re-settle combinational logic.
 5. Roll `old <- cur` and clear the event flags.
 
@@ -60,7 +60,7 @@ earliest pending event and advances to it:
 
   ```siox
   await 10ns;          // advance simulation time
-  await clk.rising();  // wait for an edge   (also .falling(), ::event)
+  await clk.rising();  // wait for an edge   (also .falling(), 'event)
   await count == 7;    // wait until a condition holds
   ```
 

@@ -8,6 +8,9 @@
 //! - Character literals: `'g' '0' '1' 'Z'` — a single character between single
 //!   quotes. The lexer accepts any one-character form and leaves the type (and
 //!   so the value) to context: the enum it is used with.
+//! - `'` is overloaded, VHDL-style: a `'c'`-shaped run is a character literal;
+//!   any other `'` is the attribute tick ([`TokenKind::Tick`], `sig'event`).
+//!   Pure forward lookahead decides — no attribute name is a single character.
 //! - Numbers: decimal, `0x` hex, `0b` binary integers, and decimal floats
 //!   (`1000.0`). Numeric suffixes (`100n`, `1000.0f`) are intentionally *not*
 //!   consumed here — they lex as a following identifier and are the parser's
@@ -54,7 +57,15 @@ impl<'a> Lexer<'a> {
                 b'/' if self.peek_at(1) == Some(b'*') => self.block_comment(sink, start),
                 c if is_ident_start(c) => self.ident_or_keyword(),
                 c if c.is_ascii_digit() => self.number(sink, start),
-                b'\'' => self.character_literal(sink, start),
+                // A `'c'`-shaped run (one char/symbol between quotes) is a
+                // character literal; any other `'` is the attribute accessor
+                // (`sig'event`). No attribute name is a single character, so
+                // the two never overlap — pure forward lookahead, no context.
+                b'\'' if self.char_literal_ahead() => self.character_literal(sink, start),
+                b'\'' => {
+                    self.bump();
+                    TokenKind::Tick
+                }
                 b'"' => {
                     self.string_body(sink, start);
                     TokenKind::StrLit
@@ -154,6 +165,24 @@ impl<'a> Lexer<'a> {
             return TokenKind::Float;
         }
         TokenKind::Int
+    }
+
+    /// At an opening `'`, whether what follows is a `'c'`-shaped character
+    /// literal: exactly one character (any UTF-8 symbol) then a closing quote.
+    /// Otherwise the `'` is an attribute tick (`sig'event`).
+    fn char_literal_ahead(&self) -> bool {
+        let b1 = match self.peek_at(1) {
+            Some(b) if b != b'\'' && b != b'\n' => b,
+            _ => return false,
+        };
+        // Width of the one UTF-8 character starting just after the quote.
+        let len = match b1 {
+            b if b & 0x80 == 0 => 1,
+            b if b & 0xE0 == 0xC0 => 2,
+            b if b & 0xF0 == 0xE0 => 3,
+            _ => 4,
+        };
+        self.peek_at(1 + len) == Some(b'\'')
     }
 
     fn character_literal(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
@@ -395,8 +424,19 @@ mod tests {
         // Analogue keywords are not recognised in Phase 1: plain idents.
         assert_eq!(kinds("domain across through"), vec![Ident, Ident, Ident, Eof]);
         // `self` is a keyword; `true`/`false` are enum idents, not keywords.
-        assert_eq!(kinds("self::event"), vec![SelfKw, ColonColon, Ident, Eof]);
+        assert_eq!(kinds("self::Mode"), vec![SelfKw, ColonColon, Ident, Eof]);
         assert_eq!(kinds("true false"), vec![Ident, Ident, Eof]);
+    }
+
+    #[test]
+    fn tick_attribute_vs_character_literal() {
+        // A `'c'`-shaped run is a character literal; any other `'` is the
+        // attribute tick (`sig'event`), even glued to an identifier.
+        assert_eq!(kinds("'0' 'X'"), vec![CharacterLit, CharacterLit, Eof]);
+        assert_eq!(kinds("sig'event"), vec![Ident, Tick, Ident, Eof]);
+        assert_eq!(kinds("self'length"), vec![SelfKw, Tick, Ident, Eof]);
+        // The tricky mix: an attribute tick immediately before a char literal.
+        assert_eq!(kinds("q'old == '1'"), vec![Ident, Tick, Ident, EqEq, CharacterLit, Eof]);
     }
 
     #[test]

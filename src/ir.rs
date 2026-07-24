@@ -318,7 +318,7 @@ struct Lowering<'a> {
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
     /// The receiver signal bound to `self` while inlining a method body, so a
-    /// `self::event`/`self::old` sysattr in the body resolves to the receiver's
+    /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
     self_signal: std::cell::Cell<Option<SignalId>>,
     /// Type-family of each generic-fn parameter during inlining (param name ->
@@ -3716,7 +3716,7 @@ impl<'a> Lowering<'a> {
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
-        // Bind `self` to the receiver's signal so a `self::event`/`self::old`
+        // Bind `self` to the receiver's signal so a `self'event`/`self'old`
         // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
         let saved_self = self.self_signal.replace(self.base_signal(base));
         let mut fenv: HashMap<String, Val> = HashMap::new();
@@ -5677,7 +5677,7 @@ mod tests {
 
     /// A minimal `ClockLike` impl so self-contained test sources can use the
     /// `clk.rising()` edge methods (std provides these for real designs).
-    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self::event and self::old == '0' and self == '1'; } fn falling(self) -> Bool { return self::event and self::old == '1' and self == '0'; } fn edge(self) -> Bool { return self::event; } }\n";
+    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
 
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
@@ -5816,8 +5816,8 @@ mod tests {
                out f: uint[8]; out g: uint[8]; out h: uint[8];\n\
              }\n\
              impl E {\n\
-               a = dn::left; b = dn::right; c = dn::high; e = dn::low;\n\
-               f = dn::ascending; g = dn::length; h = up::ascending;\n\
+               a = dn'left; b = dn'right; c = dn'high; e = dn'low;\n\
+               f = dn'ascending; g = dn'length; h = up'ascending;\n\
              }\n",
         );
         let drv = |suffix: &str| -> u64 {
@@ -5828,13 +5828,13 @@ mod tests {
                 other => panic!("{suffix} not const: {other:?}"),
             }
         };
-        assert_eq!(drv(".a"), 7, "dn::left");
-        assert_eq!(drv(".b"), 0, "dn::right");
-        assert_eq!(drv(".c"), 7, "dn::high");
-        assert_eq!(drv(".e"), 0, "dn::low");
-        assert_eq!(drv(".f"), 0, "dn::ascending (descending → false)");
-        assert_eq!(drv(".g"), 8, "dn::length");
-        assert_eq!(drv(".h"), 1, "up::ascending (width-only → true)");
+        assert_eq!(drv(".a"), 7, "dn'left");
+        assert_eq!(drv(".b"), 0, "dn'right");
+        assert_eq!(drv(".c"), 7, "dn'high");
+        assert_eq!(drv(".e"), 0, "dn'low");
+        assert_eq!(drv(".f"), 0, "dn'ascending (descending → false)");
+        assert_eq!(drv(".g"), 8, "dn'length");
+        assert_eq!(drv(".h"), 1, "up'ascending (width-only → true)");
     }
 
     #[test]

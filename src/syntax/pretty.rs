@@ -524,7 +524,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             (format!("{}.{}", expr_prec(base, POSTFIX_PREC), field.text), POSTFIX_PREC)
         }
         Expr::SysAttr { base, attr, .. } => {
-            (format!("{}::{}", expr_prec(base, POSTFIX_PREC), attr.text), POSTFIX_PREC)
+            (format!("{}'{}", expr_prec(base, POSTFIX_PREC), attr.text), POSTFIX_PREC)
         }
         Expr::Index { base, index, .. } => {
             (format!("{}[{}]", expr_prec(base, POSTFIX_PREC), expr(index)), POSTFIX_PREC)
@@ -776,7 +776,7 @@ mod tests {
              trait ClockLike { fn rising(self); }\n\
              impl ClockLike for Logic {\n\
                fn rising(self) {\n\
-                 return self::event and self::old == '0' and self == '1';\n\
+                 return self'event and self'old == '0' and self == '1';\n\
                }\n\
              }\n\
              impl M {\n\

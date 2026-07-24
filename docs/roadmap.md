@@ -55,10 +55,10 @@ attr
 in / out / inout
     digital port direction / permission semantics
 
-::event
+'event
     true when a digital/discrete value changed this simulation step
 
-::old
+'old
     previous value of a digital/discrete value
 ```
 
@@ -98,8 +98,8 @@ entity Counter<W: integer> {
 All digital/discrete values get:
 
 ```siox
-x::event
-x::old
+x'event
+x'old
 ```
 
 This includes:
@@ -128,11 +128,11 @@ enum State {
 impl Controller {
     let state: State = State::Idle;
 
-    if state::event {
+    if state'event {
         changed = '1';
     }
 
-    if state::old == State::Idle & state == State::Start {
+    if state'old == State::Idle & state == State::Start {
         started = '1';
     }
 }
@@ -140,7 +140,7 @@ impl Controller {
 
 ### Clock/Event Logic
 
-Clock edges can be expressed as derived attributes over `::event` and `::old`.
+Clock edges can be expressed as derived attributes over `'event` and `'old`.
 
 ```siox
 trait ClockLike {
@@ -151,15 +151,15 @@ trait ClockLike {
 
 impl ClockLike for Logic {
     let rising(self) {
-        self::event & self::old == '0' & self == '1'
+        self'event & self'old == '0' & self == '1'
     }
 
     let falling(self) {
-        self::event & self::old == '1' & self == '0'
+        self'event & self'old == '1' & self == '0'
     }
 
     let edge(self) {
-        self::event
+        self'event
     }
 }
 ```
@@ -172,7 +172,7 @@ if clk.rising() {
 }
 ```
 
-The scheduler can infer that this block is event-controlled because the condition depends on `clk::event` through `clk.rising()`.
+The scheduler can infer that this block is event-controlled because the condition depends on `clk'event` through `clk.rising()`.
 
 ### Example: Counter
 
@@ -211,7 +211,7 @@ entity/impl elaboration
 digital event scheduler
 combinational assignment semantics
 sequential assignment semantics
-system attributes: ::event, ::old
+system attributes: 'event, 'old
 traits for derived digital attributes
 basic test runner
 VCD/FST waveform output
@@ -249,7 +249,7 @@ path.<across>
 path.<through>
     through quantity from a to b
 
-::ddt
+'ddt
     derivative of an analogue/domain quantity
 ```
 
@@ -281,10 +281,10 @@ path.v
 path.i
     current from p to n
 
-path.v::ddt
+path.v'ddt
     derivative of voltage
 
-path.i::ddt
+path.i'ddt
     derivative of current
 ```
 
@@ -319,19 +319,19 @@ The same component equations can be lowered differently depending on the analysi
 
 ```text
 Time:
-    x::ddt -> dx/dt
+    x'ddt -> dx/dt
 
 DiscreteTime:
-    x::ddt -> finite difference / solver companion model
+    x'ddt -> finite difference / solver companion model
 
 Phasor<F>:
-    x::ddt -> jωx
+    x'ddt -> jωx
 
 Laplace:
-    x::ddt -> sx
+    x'ddt -> sx
 
 DC:
-    x::ddt -> 0
+    x'ddt -> 0
 ```
 
 ### Example: Resistor
@@ -360,7 +360,7 @@ entity Capacitor<C: Farad, A: Analysis> {
 impl Capacitor<C: Farad, A: Analysis> {
     let path = p -> n;
 
-    path.i = C * path.v::ddt;
+    path.i = C * path.v'ddt;
 }
 ```
 
@@ -375,7 +375,7 @@ entity Inductor<L: Henry, A: Analysis> {
 impl Inductor<L: Henry, A: Analysis> {
     let path = p -> n;
 
-    path.v = L * path.i::ddt;
+    path.v = L * path.i'ddt;
 }
 ```
 
@@ -508,7 +508,7 @@ impl SampledComparator {
 domain parser/type checker
 across/through semantics
 analogue path elaboration: a -> b
-domain quantity system attributes: ::ddt
+domain quantity system attributes: 'ddt
 equation IR
 conservation equation generation
 analysis-domain trait system

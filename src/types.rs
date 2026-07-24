@@ -2420,14 +2420,14 @@ mod tests {
 
     #[test]
     fn rejects_phase2_ddt() {
-        let errors = check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  y = x::ddt;\n}\n");
+        let errors = check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  y = x'ddt;\n}\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
     fn accepts_digital_sysattrs() {
         let errors = check_src(
-            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk.rising() {\n    q = clk::old;\n  }\n}\n",
+            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk.rising() {\n    q = clk'old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }

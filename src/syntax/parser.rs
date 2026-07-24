@@ -8,9 +8,9 @@
 //!
 //! Notes on a few intentional simplifications:
 //! - `Comment` trivia is stripped on construction; the grammar never sees it.
-//! - `a::b` is greedily a path, except a trailing `::<system-attribute>`
-//!   (`event/old/rising/...`) which becomes [`Expr::SysAttr`]. The fixed
-//!   system-attribute set is the only syntactic signal available pre-resolve.
+//! - `a::b` is greedily a path (namespaces/types/variants/views); an attribute
+//!   rides the VHDL-style tick `a'attr` and becomes [`Expr::SysAttr`]. The two
+//!   sigils never overlap, so no name list is consulted pre-resolve.
 //! - Float / hex-string literal tokens map to [`Expr::Int`] (which stores raw
 //!   text); a dedicated literal node can be added when a later stage needs it.
 
@@ -1104,9 +1104,10 @@ impl<'a> Parser<'a> {
                         span: start.to(self.prev_span()),
                     };
                 }
-                // A remaining `::` here is a system attribute (`x::old`); plain
-                // `::` path segments were already absorbed by `parse_primary`.
-                TokenKind::ColonColon => {
+                // `sig'event` — a VHDL-style attribute accessor (spec 3.9). The
+                // tick is exclusively for attributes; `::` is namespace/type
+                // selection, absorbed by `parse_primary`.
+                TokenKind::Tick => {
                     self.bump();
                     let attr = self.parse_ident();
                     e = Expr::SysAttr {
@@ -1267,15 +1268,14 @@ impl<'a> Parser<'a> {
         Expr::Concat { parts, span: start.to(self.prev_span()) }
     }
 
-    /// A path expression, possibly an instance/struct construction. Path
-    /// extension stops before a trailing `::<system-attribute>`, which the
-    /// postfix loop turns into a [`Expr::SysAttr`].
+    /// A path expression, possibly an instance/struct construction. `::` is
+    /// pure namespace/type selection; attributes ride the tick (`x'old`) and
+    /// are handled by the postfix loop as [`Expr::SysAttr`].
     fn parse_path_expr_or_construct(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         let mut segments = vec![self.parse_ident()];
         while self.at(TokenKind::ColonColon)
             && self.kind_at(self.pos + 1) == &TokenKind::Ident
-            && !is_sysattr(self.text_at(self.pos + 1))
         {
             self.bump(); // `::`
             segments.push(self.parse_ident());
@@ -1654,9 +1654,6 @@ impl<'a> Parser<'a> {
         self.text_of(self.peek().span)
     }
 
-    fn text_at(&self, i: usize) -> &str {
-        self.text_of(self.tokens[i.min(self.tokens.len() - 1)].span)
-    }
 
     fn text_of(&self, span: Span) -> &str {
         &self.src[span.start as usize..span.end as usize]
@@ -1725,42 +1722,12 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The fixed set of system attributes (`x::event`, `clk.rising()`, `d::length`).
-/// A `::`-suffix matching one of these reads as a [`Expr::SysAttr`] rather than
-/// extending a path. Spec 3.9 / 3.10 / 3.23.
 /// A bit-string prefix is a single letter glued to a string (`x"AB"`). The
 /// parser recognizes the shape; std's `impl Prefix for T` owns which letters
 /// are valid (checked in typeck), so a stray `q"…"` parses then errors clearly.
 fn is_prefix_letter(text: &str) -> bool {
     let mut chars = text.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && chars.next().is_none()
-}
-
-fn is_sysattr(name: &str) -> bool {
-    matches!(
-        name,
-        // Phase 1 digital + range attributes (spec 3.9 / 3.23). `rising`/
-        // `falling`/`edge` are still lexed as sysattrs only so the type checker
-        // reports them as unknown attributes rather than silently reading them
-        // as a path — they are std `ClockLike` methods now, not attributes.
-        "event"
-            | "old"
-            | "rising"
-            | "falling"
-            | "edge"
-            | "length"
-            | "ascending"
-            | "range"
-            | "high"
-            | "low"
-            | "left"
-            | "right"
-            | "direction"
-            // `::ddt` is analogue (Phase 2); recognized only so it parses as a
-            // system attribute and can be rejected rather than silently accepted
-            // (spec Stage 4). The rest of the analogue set is a Phase-2 concern.
-            | "ddt"
-    )
 }
 
 /// Process the standard escapes in a string literal body: `\\n`, `\\t`,
@@ -1859,11 +1826,11 @@ mod tests {
     #[test]
     fn sysattr_vs_path_in_expressions() {
         let m = parse_ok(
-            "module m;\nimpl M {\n  if state::old == State::Idle {\n    started = '1';\n  }\n}\n",
+            "module m;\nimpl M {\n  if state'old == State::Idle {\n    started = '1';\n  }\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
         let ImplItem::Stmt(Stmt::If(iff)) = &i.items[0] else { panic!("expected if") };
-        // LHS of `==` is `state::old` (SysAttr); RHS is `State::Idle` (Path).
+        // LHS of `==` is `state'old` (SysAttr); RHS is `State::Idle` (Path).
         let Expr::Binary { lhs, rhs, op, .. } = &iff.cond else { panic!("expected binary") };
         assert_eq!(op, &BinOp::Eq);
         assert!(matches!(**lhs, Expr::SysAttr { .. }));
@@ -1874,7 +1841,7 @@ mod tests {
     #[test]
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
-            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self::event and self::old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self::event;\n  }\n}\n",
+            "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self'event;\n  }\n}\n",
         );
         let Item::Trait(t) = &m.items[0] else { panic!("expected trait") };
         assert_eq!(t.items.len(), 2);

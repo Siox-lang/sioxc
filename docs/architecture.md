@@ -56,9 +56,9 @@ The backend is `crates/siox-llvm/`, and the two binaries are `crates/sioxc/` and
 | `diag`    | 10   | Foundation: `Span`, `SourceMap`, `Diagnostic`, `DiagnosticSink`, and the stable error/warning code catalogue (`codes`). |
 | `syntax`  | 1–2  | Lexer, tokens, AST, recursive-descent + Pratt parser, pretty-printer. `parse_module` is the entry point. |
 | `resolve` | 3    | Name resolution: top-level definitions and `DefId`s, `using` imports/aliases, `::` paths, enum-associated items, attribute names. Produces `Resolved` (definition table + use-site → `DefId` map). |
-| `types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`::ddt`). Produces `Typed`. |
+| `types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`'ddt`). Produces `Typed`. |
 | `elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
-| `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `::event`/`::old` become first-class IR ops. Produces `Design`. |
+| `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `'event`/`'old` become first-class IR ops. Produces `Design`. |
 | `run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
 | `wave`    | 9    | `Trace` recording + VCD export (FST later). |
 
@@ -118,7 +118,7 @@ name-use site to the declaration it resolves to.
   Preserve this split when working in `siox-ir`/`siox-llvm`.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
-  `across`/`through`, `::ddt`, layout attrs) must produce errors
+  `across`/`through`, `'ddt`, layout attrs) must produce errors
   (`codes::PHASE2_SYNTAX`), not silent acceptance.
 
 ## The type kernel and the std shim
