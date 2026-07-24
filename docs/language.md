@@ -56,7 +56,7 @@ precise reference.
   an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
   double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one
   scalar — so an enum array is written `{'a', 'b'}`, not `"ab"`. Bit vectors use
-  the bit-string literal `b"0101"` / `x"AB"`.
+  a bit-string literal `b"0101"` / `o"17"` / `x"AB"` (or a bare `"0101"`).
 - **Numeric vectors.** `uint[N]` / `int[N]` are library types built on `Logic`
   vectors; signedness lives in the operator impls (int's arithmetic shift,
   signed division and comparison), not in a type flag.
@@ -1311,10 +1311,16 @@ intrinsic until const string operations exist:
 
 ```siox
 let a: uint[8]  = x"AB";        // hex: width = 4 * digits
+let t: uint[6]  = o"17";        // octal: width = 3 * digits (= 15)
 let m: uint[8]  = b"01010101";  // binary: width = digits
 let k: uint[24] = x"123ABC";
 ```
 
+`x"…"` (hex, 4 bits/digit) and `o"…"` (octal, 3 bits/digit) are 2-value; the
+binary `b"…"` admits the full `std_ulogic` alphabet, so metavalues can be
+written directly (`b"01X0"`), as can bit-pattern don't-cares in `match`
+(`b"01??"`). A bare string assigned to a bit vector behaves like `b"…"`
+(each char a `std_ulogic` value), so the `b` prefix is usually redundant.
 Digits must be valid for the base; widths participate in the strict
 assignment/connection width rules (3.17) and in concatenation sizing.
 

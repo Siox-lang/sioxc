@@ -1192,9 +1192,9 @@ impl<'a> Parser<'a> {
                 Expr::Path(Path { segments: vec![seg("Bool"), seg(&variant)], span: t.span })
             }
             // A one-letter prefix glued to a string is a bit-string literal:
-            // `x"123ABC"` (hex) / `b"0101"` (binary).
+            // `x"123ABC"` (hex) / `o"17"` (octal) / `b"0101"` (binary).
             TokenKind::Ident
-                if matches!(self.cur_text(), "x" | "b")
+                if matches!(self.cur_text(), "x" | "b" | "o")
                     && self.kind_at(self.pos + 1) == &TokenKind::StrLit
                     && self.span_at(self.pos + 1).start == self.span().end =>
             {

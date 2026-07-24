@@ -2969,7 +2969,7 @@ impl<'a> Lowering<'a> {
             }
             // A bit-string literal has an explicit digit-count width.
             ast::Expr::BitStrLit { base, digits, .. } => {
-                (digits.len() as u32 * if *base == 'x' { 4 } else { 1 }).max(1)
+                (digits.len() as u32 * bits_per_digit(*base)).max(1)
             }
             // A signal reference (name, struct field, constant array element).
             _ => expr_path(e)
@@ -3132,10 +3132,15 @@ impl<'a> Lowering<'a> {
     /// `docs/proposals/xz-vector-propagation.md`); `discs` is stored in the
     /// element-container companion.
     fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
-        if base == 'x' {
-            let v = u64::from_str_radix(digits, 16).unwrap_or(0);
+        // Radix-expanded 2-value strings: hex is 4 bits/digit, octal 3.
+        if let Some((radix, bits)) = match base {
+            'x' => Some((16, 4u32)),
+            'o' => Some((8, 3)),
+            _ => None,
+        } {
+            let v = u64::from_str_radix(digits, radix).unwrap_or(0);
             let mut discs = 0u64;
-            for i in 0..(digits.len() * 4).min(16) as u32 {
+            for i in 0..(digits.len() as u32 * bits).min(16) {
                 discs |= ((v >> i) & 1) << (4 * i);
             }
             return (v, discs);
@@ -4296,6 +4301,16 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Bits contributed by one digit of a bit-string literal: hex 4, octal 3,
+/// binary (and per-char logic strings) 1.
+fn bits_per_digit(base: char) -> u32 {
+    match base {
+        'x' => 4,
+        'o' => 3,
+        _ => 1,
     }
 }
 

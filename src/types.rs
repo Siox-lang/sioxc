@@ -1532,19 +1532,17 @@ impl<'a> Checker<'a> {
             Expr::BitStrLit { base, digits, span } => {
                 // A binary bit string admits the full `std_ulogic` alphabet
                 // (`0 1 Z X U W L H -`), not just `0`/`1`, so metavalues can be
-                // written (`b"01X0"`); hex stays 2-value.
-                let ok = !digits.is_empty()
-                    && if *base == 'x' {
-                        digits.chars().all(|c| c.is_ascii_hexdigit())
-                    } else {
-                        digits.chars().all(|c| "01ZXUWLH-".contains(c))
-                    };
-                if !ok {
+                // written (`b"01X0"`); hex and octal stay 2-value.
+                let (ok, kind) = match *base {
+                    'x' => (digits.chars().all(|c| c.is_ascii_hexdigit()), "hex"),
+                    'o' => (digits.chars().all(|c| ('0'..='7').contains(&c)), "octal"),
+                    _ => (digits.chars().all(|c| "01ZXUWLH-".contains(c)), "binary"),
+                };
+                if digits.is_empty() || !ok {
                     self.error(
                         codes::TYPE_MISMATCH,
                         *span,
-                        format!("invalid {} bit-string literal `{base}\"{digits}\"`",
-                            if *base == 'x' { "hex" } else { "binary" }),
+                        format!("invalid {kind} bit-string literal `{base}\"{digits}\"`"),
                     );
                 }
             }
@@ -1592,10 +1590,12 @@ impl<'a> Checker<'a> {
                 if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
-                Ty::Vector {
-                    family: None,
-                    width: digits.len() as u32 * if *base == 'x' { 4 } else { 1 },
-                }
+                let bits = match *base {
+                    'x' => 4,
+                    'o' => 3,
+                    _ => 1,
+                };
+                Ty::Vector { family: None, width: digits.len() as u32 * bits }
             }
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.

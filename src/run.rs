@@ -1739,7 +1739,11 @@ impl Testbench<'_> {
                 parse_u64(text).saturating_mul(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
             ),
             ast::Expr::BitStrLit { base, digits, .. } => {
-                let radix = if *base == 'x' { 16 } else { 2 };
+                let radix = match *base {
+                    'x' => 16,
+                    'o' => 8,
+                    _ => 2,
+                };
                 u128::from_u64(u64::from_str_radix(digits, radix).unwrap_or(0))
             }
             ast::Expr::CharLit { ch, .. } => u128::from_u64(logic_lit_value(*ch, self.enums)),
