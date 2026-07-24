@@ -67,7 +67,14 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                         j += 1;
                     }
                     if j < limit {
-                        out.insert(text(&tokens[j]).trim_matches('"').to_string(), precedence);
+                        let symbol = text(&tokens[j]).trim_matches('"').to_string();
+                        // A reserved grammar symbol (`=`, `::`, …) must not enter
+                        // the custom-operator table, or it would shadow the
+                        // language's own use of the token; the type checker
+                        // reports the impl as an error instead.
+                        if !crate::syntax::ast::is_reserved_operator(&symbol) {
+                            out.insert(symbol, precedence);
+                        }
                     }
                     break;
                 }

@@ -475,6 +475,27 @@ pub fn is_builtin_operator(sym: &str) -> bool {
     )
 }
 
+/// Symbols the grammar reserves for the language itself — assignment, paths,
+/// ranges, separators, brackets, attributes — so an `Operator<sym, …>` impl
+/// cannot claim them (spec 3.25). The six comparisons are reserved too: they
+/// are derived from the three-way `<=>`, so overload that instead. An empty
+/// symbol is rejected here as well.
+pub fn is_reserved_operator(sym: &str) -> bool {
+    matches!(
+        sym,
+        "" | "=" | "::" | ":" | ";" | "," | "." | ".."
+            | "=>" | "->" | "#" | "!" | "&" | "|" | "@"
+            | "<" | ">" | "==" | "!=" | "<=" | ">="
+            | "+=" | "-=" | "*=" | "/=" | "&=" | "|="
+            | "(" | ")" | "{" | "}" | "[" | "]"
+    )
+}
+
+/// Whether `sym` is one of the six comparison operators derived from `<=>`.
+pub fn is_comparison_operator(sym: &str) -> bool {
+    matches!(sym, "<" | ">" | "==" | "!=" | "<=" | ">=")
+}
+
 pub fn suffix_scale(s: &str) -> Option<u128> {
     Some(match s {
         "fs" => 1,

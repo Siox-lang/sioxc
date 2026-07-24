@@ -1367,6 +1367,12 @@ implements `apply(self)` with no rhs. Using an operator on a user struct/enum
 without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.
 
+**Reserved symbols cannot be overloaded.** The grammar owns `=`, `::`, `:`,
+`.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so an
+`Operator<"=", …>` impl is an error. The six comparison operators
+(`< <= > >= == !=`) are reserved too — overload the three-way `<=>` and they
+are all derived.
+
 **Comparisons.** One three-way `Operator<"<=>", T, Ordering>` impl (`apply`
 returning `std::ops::Ordering` — `Less`/`Equal`/`Greater`) derives all six
 comparisons — like Rust's `Ord` / C++'s `operator<=>`: `a < b` lowers to

@@ -336,7 +336,18 @@ impl<'a> Checker<'a> {
                         };
                         if let Some(symbol) = &operator {
                             t = symbol.clone();
-                            if !crate::syntax::ast::is_builtin_operator(symbol) {
+                            if crate::syntax::ast::is_reserved_operator(symbol) {
+                                let hint = if crate::syntax::ast::is_comparison_operator(symbol) {
+                                    " — derive comparisons from a `<=>` impl instead"
+                                } else {
+                                    " and cannot be overloaded"
+                                };
+                                self.error(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    format!("`{symbol}` is reserved by the language{hint}"),
+                                );
+                            } else if !crate::syntax::ast::is_builtin_operator(symbol) {
                                 let precedence = im.attrs.iter().find_map(|a| {
                                     (a.name.segments.last().is_some_and(|n| n.text == "precedence"))
                                         .then_some(a)
@@ -2717,6 +2728,26 @@ mod tests {
 
         let bad = ok.replace("in b: Right", "in b: Left");
         assert_eq!(check_src(&bad), 1, "the Input template participates in overload selection");
+    }
+
+    #[test]
+    fn reserved_operators_cannot_be_overloaded() {
+        let header = "module m;\nattr precedence: integer for impl;\n\
+            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
+            enum A { A0 }\n";
+        // Grammar symbols (assignment, path, ranges) and the derived
+        // comparisons cannot be claimed by an operator impl.
+        for sym in ["=", "::", ".", "..", "<", "=="] {
+            let src = format!(
+                "{header}#[precedence = 5] impl Operator<\"{sym}\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+            );
+            assert!(check_src(&src) >= 1, "reserved operator `{sym}` should error");
+        }
+        // A genuine custom punctuation operator is accepted.
+        let ok = format!(
+            "{header}#[precedence = 5] impl Operator<\"^^\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+        );
+        assert_eq!(check_src(&ok), 0);
     }
 
     #[test]
