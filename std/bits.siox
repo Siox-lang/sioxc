@@ -54,6 +54,17 @@ impl Shr for uint {
     fn shr(self, rhs: uint) -> uint { return self >> rhs; }
 }
 
+// Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
+// bits/digit) and `o"17"` octal (3 bits/digit). Their declaration lives here
+// — the compiler names the `Prefix` trait but std owns which prefixes exist —
+// while evaluation stays a compiler intrinsic until const string operations
+// land (hence signature-only bodies). A plain string of logic values
+// (`"1X10"`) needs no prefix: it reads as a Logic array by context.
+impl Prefix for uint {
+    fn x(digits: string) -> uint;
+    fn o(digits: string) -> uint;
+}
+
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
 

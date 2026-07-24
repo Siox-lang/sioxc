@@ -808,7 +808,7 @@ impl<'a> Parser<'a> {
             let body = if self.at(TokenKind::LBrace) {
                 self.parse_block()
             } else {
-                // Single statement arm: `b"00??" => op = Op::Alu,`.
+                // Single statement arm: `"00--" => op = Op::Alu,`.
                 let sstart = self.span();
                 let stmt = self.parse_arm_single_stmt();
                 Block { stmts: vec![stmt], span: sstart.to(self.prev_span()) }
@@ -874,11 +874,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Pattern::Wildcard
             }
-            // A bit pattern `b"01??"` / `x"A?"` (spec 3.22): a one-letter
-            // prefix glued to a string, like the bit-string literal. `?`
-            // digits are don't-cares.
+            // A radix bit pattern `x"A?"` / `o"7?"` (spec 3.22): a one-letter
+            // prefix glued to a string; `?` masks one radix group (nibble/triad)
+            // as a don't-care.
             TokenKind::Ident
-                if matches!(self.cur_text(), "x" | "b")
+                if matches!(self.cur_text(), "x" | "o")
                     && self.kind_at(self.pos + 1) == &TokenKind::StrLit
                     && self.span_at(self.pos + 1).start == self.span().end =>
             {
@@ -890,6 +890,14 @@ impl<'a> Parser<'a> {
                     text: format!("{base}\"{digits}\""),
                     span: p.span.to(t.span),
                 }
+            }
+            // A bare-string bit pattern `"1-1-0000"` (spec 3.22): each char is
+            // one bit, `-` (the `std_ulogic` don't-care) matches either value.
+            // This replaces the old `b"…"` prefix form.
+            TokenKind::StrLit => {
+                let t = self.bump();
+                let digits = self.text_of(t.span).trim_matches('"');
+                Pattern::BitPattern { text: format!("\"{digits}\""), span: t.span }
             }
             // An integer literal (`5`) or inclusive range (`0..9`, `-1..1`).
             TokenKind::Int | TokenKind::Minus => {
@@ -1192,9 +1200,12 @@ impl<'a> Parser<'a> {
                 Expr::Path(Path { segments: vec![seg("Bool"), seg(&variant)], span: t.span })
             }
             // A one-letter prefix glued to a string is a bit-string literal:
-            // `x"123ABC"` (hex) / `o"17"` (octal) / `b"0101"` (binary).
+            // `x"123ABC"` (hex) / `o"17"` (octal). The parser only recognizes
+            // the *shape* (a single-letter prefix); which prefixes are valid is
+            // owned by std's `impl Prefix for T` and checked in typeck. A bare
+            // `"1010"` needs no prefix (it reads as a Logic array by context).
             TokenKind::Ident
-                if matches!(self.cur_text(), "x" | "b" | "o")
+                if is_prefix_letter(self.cur_text())
                     && self.kind_at(self.pos + 1) == &TokenKind::StrLit
                     && self.span_at(self.pos + 1).start == self.span().end =>
             {
@@ -1709,6 +1720,14 @@ impl<'a> Parser<'a> {
 /// The fixed set of system attributes (`x::event`, `clk.rising()`, `d::length`).
 /// A `::`-suffix matching one of these reads as a [`Expr::SysAttr`] rather than
 /// extending a path. Spec 3.9 / 3.10 / 3.23.
+/// A bit-string prefix is a single letter glued to a string (`x"AB"`). The
+/// parser recognizes the shape; std's `impl Prefix for T` owns which letters
+/// are valid (checked in typeck), so a stray `q"…"` parses then errors clearly.
+fn is_prefix_letter(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && chars.next().is_none()
+}
+
 fn is_sysattr(name: &str) -> bool {
     matches!(
         name,

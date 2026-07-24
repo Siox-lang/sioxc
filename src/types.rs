@@ -153,6 +153,10 @@ struct Checker<'a> {
     /// Literal suffix -> the type names defining it via `impl Suffix for T`
     /// (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
+    /// Bit-string prefix (`x`, `o`) -> the type names defining it via
+    /// `impl Prefix for T` (spec 3.24). std declares which prefixes exist; the
+    /// compiler evaluates the known radix ones intrinsically.
+    prefix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
     /// (type head, method name) -> the method's declared return type, for
@@ -222,6 +226,7 @@ impl<'a> Checker<'a> {
             vector_families: HashSet::new(),
             generic_fns: HashMap::new(),
             suffix_types: HashMap::new(),
+            prefix_types: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
             mode_dirs: HashMap::new(),
@@ -372,6 +377,18 @@ impl<'a> Checker<'a> {
                             for it in &im.items {
                                 if let ImplItem::Fn(f) = it {
                                     self.suffix_types
+                                        .entry(f.name.text.clone())
+                                        .or_default()
+                                        .push(ty.clone());
+                                }
+                            }
+                        }
+                        // `impl Prefix for T`: each fn's name is a bit-string
+                        // prefix producing a T (spec 3.24), e.g. `x"AB"`.
+                        if t == "Prefix" {
+                            for it in &im.items {
+                                if let ImplItem::Fn(f) = it {
+                                    self.prefix_types
                                         .entry(f.name.text.clone())
                                         .or_default()
                                         .push(ty.clone());
@@ -1530,13 +1547,34 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::BitStrLit { base, digits, span } => {
-                // A binary bit string admits the full `std_ulogic` alphabet
-                // (`0 1 Z X U W L H -`), not just `0`/`1`, so metavalues can be
-                // written (`b"01X0"`); hex and octal stay 2-value.
+                // std owns which prefixes exist (`impl Prefix for T`): when it is
+                // in scope, a prefix it doesn't declare is unknown. When std is
+                // absent (some unit tests) the compiler still recognizes its
+                // intrinsic radix prefixes — mirroring the suffix fs/Hz fallback.
+                // (A plain string `"1X10"` needs no prefix; `b"…"` is gone.)
+                if !self.prefix_types.is_empty()
+                    && !self.prefix_types.contains_key(&base.to_string())
+                {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!("unknown bit-string prefix `{base}` — no `impl Prefix` declares it"),
+                    );
+                    return;
+                }
+                // Evaluation is a compiler intrinsic until const string ops
+                // exist, so only the known radix prefixes carry an alphabet.
                 let (ok, kind) = match *base {
                     'x' => (digits.chars().all(|c| c.is_ascii_hexdigit()), "hex"),
                     'o' => (digits.chars().all(|c| ('0'..='7').contains(&c)), "octal"),
-                    _ => (digits.chars().all(|c| "01ZXUWLH-".contains(c)), "binary"),
+                    _ => {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!("bit-string prefix `{base}` has no compiler evaluation yet"),
+                        );
+                        return;
+                    }
                 };
                 if digits.is_empty() || !ok {
                     self.error(
@@ -1590,10 +1628,13 @@ impl<'a> Checker<'a> {
                 if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
             }
             Expr::BitStrLit { base, digits, .. } => {
+                // Only the intrinsic radix prefixes have a known width; an
+                // unknown prefix is `Ty::Error` so its diagnostic doesn't
+                // cascade into a spurious width mismatch.
                 let bits = match *base {
                     'x' => 4,
                     'o' => 3,
-                    _ => 1,
+                    _ => return Ty::Error,
                 };
                 Ty::Vector { family: None, width: digits.len() as u32 * bits }
             }
@@ -2533,10 +2574,17 @@ mod tests {
             check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c: integer = 5i;\n  y = '0';\n}\n"),
             1
         );
-        // Bad digits for the base are an error.
+        // Bad digits for the base are an error (`G` is not a hex digit).
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: uint[5]; }\nimpl E {\n  y = b\"01021\";\n}\n"
+                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"
+            ),
+            1
+        );
+        // An unknown prefix (no `impl Prefix` declares `q`) is an error.
+        assert_eq!(
+            check_src(
+                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"
             ),
             1
         );

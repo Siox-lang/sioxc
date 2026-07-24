@@ -322,7 +322,7 @@ impl MatchArm {
     }
 }
 
-/// Patterns: enum paths, bit patterns `b"01??"`, and `_` (spec 3.22).
+/// Patterns: enum paths, bit patterns `"01--"` / `x"A?"`, and `_` (spec 3.22).
 #[derive(Clone, Debug)]
 pub enum Pattern {
     Wildcard,
@@ -341,8 +341,9 @@ pub enum Expr {
     /// `1ns`, `10MHz`, `5i` — a numeric literal with an adjacent unit/type
     /// suffix. `text` is the numeric part exactly as written.
     SuffixLit { text: String, suffix: Ident, span: Span },
-    /// `x"123ABC"` / `b"0101"` — bit-string literal; `base` is the prefix
-    /// letter, `digits` the text between the quotes.
+    /// `x"123ABC"` / `o"17"` — a radix bit-string literal; `base` is the
+    /// prefix letter (validated against std's `impl Prefix`), `digits` the
+    /// text between the quotes. (A plain string is `StrLit`, not this.)
     BitStrLit { base: char, digits: String, span: Span },
     /// A single character between single quotes (`'g'`, `'0'`). A character
     /// literal has no intrinsic value — its type (and so its numeric value)

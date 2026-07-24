@@ -916,7 +916,7 @@ impl<'a> Lowering<'a> {
                             let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
                             self.out.signals[id.0 as usize].init = masked;
                         }
-                        // A metavalue-carrying bit-string init (`b"01X0"`) needs a
+                        // A metavalue-carrying string init (`"01X0"`) needs a
                         // companion signal to record which elements are `'X'`/… —
                         // the storage half of X/Z vector propagation (stage 1c).
                         if let Some((base, digits)) = Self::bit_string_parts(v) {
@@ -1400,13 +1400,13 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
                 self.enum_variant(&p.segments[0].text, &p.segments[1].text)
             }
-            // A bit-string literal initializer (`let v: uint[4] = b"1010"`) —
+            // A radix bit-string initializer (`let v: uint[8] = x"AB"`) —
             // its value bits (metavalue positions carried separately, stage 1b).
             ast::Expr::BitStrLit { base, digits, .. } => {
                 Some(self.decode_bit_string(*base, digits).0)
             }
             // A plain string on a logic-vector target reads as a logic array —
-            // each character is a `std_ulogic` (no `b"…"` prefix needed). Only
+            // each character is a `std_ulogic` (no prefix needed). Only
             // reached for a single-signal (packed vector) target; a `Char[]`
             // flattens and never lands here.
             ast::Expr::StrLit { text, .. } => Some(self.decode_bit_string('b', text).0),
@@ -2009,7 +2009,7 @@ impl<'a> Lowering<'a> {
                 if let Some(tpath) = expr_path(target) {
                     if let Some(&tid) = self.locals.get(&tpath) {
                         // A metavalue bit-string literal in driver position
-                        // (`out = b"1X10"`) — the value driver keeps only the
+                        // (`out = "1X10"`) — the value driver keeps only the
                         // bits, so give the target a companion and drive its
                         // discriminant array (the disc is lost in the IR `Const`).
                         if let Some((base, digits)) = Self::bit_string_parts(value) {
@@ -2733,6 +2733,10 @@ impl<'a> Lowering<'a> {
                 ),
             },
             ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(self.decode_bit_string(*base, digits).0),
+            // A plain string in value position is a logic-value vector
+            // (`out = "1X10"`) — decode it per-char like a binary bit string.
+            // (Char/enum arrays are filled element-wise before reaching here.)
+            ast::Expr::StrLit { text, .. } => Expr::Const(self.decode_bit_string('b', text).0),
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
@@ -3158,9 +3162,9 @@ impl<'a> Lowering<'a> {
         (value, discs)
     }
 
-    /// The `(base, digits)` of a bit-string-like value: an explicit `b"…"`/`x"…"`
-    /// literal, or a plain string (base `'b'`) — a string of logic values reads
-    /// as a logic array, no prefix needed.
+    /// The `(base, digits)` of a bit-string-like value: an explicit radix
+    /// literal `x"…"`/`o"…"`, or a plain string (internal base `'b'`, per-char
+    /// binary) — a string of logic values reads as a logic array, no prefix.
     fn bit_string_parts<'e>(e: &'e ast::Expr) -> Option<(char, &'e str)> {
         match e {
             ast::Expr::BitStrLit { base, digits, .. } => Some((*base, digits)),
@@ -4575,21 +4579,24 @@ impl Design {
 
 // --- expression builders ----------------------------------------------------
 
-/// Decode a bit-pattern literal (`b"01??"` / `x"A?"`, spec 3.22) into a
-/// `(mask, value)` pair: an input matches when `input & mask == value`. `?`
-/// digits are don't-cares (mask 0); a hex `?` masks its whole nibble. `_`
-/// separators are ignored. `None` when the text isn't a well-formed pattern
-/// (an invalid digit, or wider than 64 bits).
+/// Decode a bit-pattern literal (`"1-1-"` / `x"A?"`, spec 3.22) into a
+/// `(mask, value)` pair: an input matches when `input & mask == value`.
+/// A bare string (empty prefix) is per-bit, using `-` (the `std_ulogic`
+/// don't-care) as the wildcard; a radix prefix (`x`/`o`) uses `?` to mask its
+/// whole group (nibble/triad). `_` separators are ignored. `None` when the
+/// text isn't a well-formed pattern (an invalid digit, or wider than 64 bits).
 pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
     let (base, digits) = match text.split_once('"') {
         Some((b, rest)) => (b, rest.trim_end_matches('"')),
         None => return None,
     };
     let per: u32 = match base {
-        "b" => 1,
+        "" => 1, // bare string, per-bit
+        "o" => 3,
         "x" => 4,
         _ => return None,
     };
+    let radix = 1u32 << per; // 2, 8, or 16
     let mut mask = 0u64;
     let mut value = 0u64;
     let mut bits = 0u32;
@@ -4602,9 +4609,9 @@ pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
             return None;
         }
         let (m, v) = match c {
-            '?' => (0, 0),
+            '?' | '-' => (0, 0), // don't-care: `-` in bare strings, `?` in radix groups
             _ => {
-                let d = c.to_digit(if per == 1 { 2 } else { 16 })? as u64;
+                let d = c.to_digit(radix)? as u64;
                 (((1u64 << per) - 1), d)
             }
         };
@@ -5688,11 +5695,14 @@ mod tests {
 
     #[test]
     fn bit_pattern_masks() {
-        assert_eq!(bit_pattern_mask("b\"01??\""), Some((0b1100, 0b0100)));
-        assert_eq!(bit_pattern_mask("b\"0000_11??\""), Some((0b11111100, 0b00001100)));
+        // Bare strings are per-bit with `-` as the don't-care.
+        assert_eq!(bit_pattern_mask("\"01--\""), Some((0b1100, 0b0100)));
+        assert_eq!(bit_pattern_mask("\"0000_11--\""), Some((0b11111100, 0b00001100)));
+        // Radix prefixes mask a whole group with `?`.
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
-        assert_eq!(bit_pattern_mask("b\"2\""), None); // bad binary digit
+        assert_eq!(bit_pattern_mask("o\"7?\""), Some((0o70, 0o70)));
+        assert_eq!(bit_pattern_mask("\"2\""), None); // bad binary digit
     }
 
     #[test]
@@ -6219,10 +6229,10 @@ mod tests {
     fn bit_string_decodes_nine_value() {
         // A plain 2-value string is unchanged; a metavalue digit decodes to its
         // `std_ulogic` value bit (X = disc 3, low bit 1) instead of collapsing
-        // to 0. `b"1X10"` -> value bits 1110 = 14.
+        // to 0. `"1X10"` -> value bits 1110 = 14.
         let d = lower_src(
             "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
-             impl E { y = b\"1010\"; z = b\"1X10\"; }\n\
+             impl E { y = \"1010\"; z = \"1X10\"; }\n\
              #[top] entity T {}\n\
              impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
         );
@@ -6233,11 +6243,11 @@ mod tests {
 
     #[test]
     fn bit_string_initializer_sets_init() {
-        // `let v: uint[4] = b"1010"` seeds the signal init to 10 (was 0 — no
-        // BitStrLit arm in const_init_value).
+        // `let v: uint[4] = "1010"` seeds the signal init to 10 (was 0 — no
+        // string-init arm in const_init_value).
         let d = lower_src(
             "module m; entity E { out y: uint[4]; }\n\
-             impl E { let v: uint[4] = b\"1010\"; y = v; }\n\
+             impl E { let v: uint[4] = \"1010\"; y = v; }\n\
              #[top] entity T {}\n\
              impl T { let y: uint[4]; let dut: E = { .y = y }; }",
         );
@@ -6251,14 +6261,14 @@ mod tests {
         // a plain 2-value init does not.
         let d = lower_src(
             "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
-             impl E { let v: uint[4] = b\"1X10\"; let w: uint[4] = b\"1010\"; y = v; z = w; }\n\
+             impl E { let v: uint[4] = \"1X10\"; let w: uint[4] = \"1010\"; y = v; z = w; }\n\
              #[top] entity T {}\n\
              impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
         );
         let v = d.signals.iter().position(|s| s.path.ends_with(".v")).expect("v") as u32;
         let w = d.signals.iter().position(|s| s.path.ends_with(".w")).expect("w") as u32;
         let cid = *d.meta_of.get(&v).expect("v has a metavalue companion");
-        // b"1X10": per-element discs, nibble i = element i. pos3=1, pos2=X(3),
+        // "1X10": per-element discs, nibble i = element i. pos3=1, pos2=X(3),
         // pos1=1, pos0=0 -> 0x1310. Companion is 4 bits/element wide.
         assert_eq!(d.signals[cid as usize].init, 0x1310, "full per-element discs");
         assert_eq!(d.signals[cid as usize].width, 16, "4 bits x 4 elements");

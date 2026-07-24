@@ -56,13 +56,14 @@ precise reference.
   an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
   double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one
   scalar — so an enum array is written `{'a', 'b'}`, not `"ab"`. Bit vectors use
-  a bit-string literal `b"0101"` / `o"17"` / `x"AB"` (or a bare `"0101"`).
+  a plain string `"0101"` (logic values by context) or a radix prefix `o"17"` /
+  `x"AB"`.
 - **Numeric vectors.** `uint[N]` / `int[N]` are library types built on `Logic`
   vectors; signedness lives in the operator impls (int's arithmetic shift,
   signed division and comparison), not in a type flag.
 - **Bit operations.** Slices (`a[7..4]`, direction-aware), concatenation
   (`{hi, lo}`, also as an assignment target), and bit-pattern `match`
-  (`b"01??"` with `?` don't-cares).
+  (`"01--"` with `-` don't-cares, or `x"A?"` at nibble granularity).
 - **Array literals.** `[a, b, c]` builds an array value one element at a time
   (`table = [10, 20, 30, 40]`), distinct from `{..}` concatenation.
 
@@ -1144,25 +1145,25 @@ Bit-pattern match with wildcard:
 
 ```siox
 match opcode {
-    b"00??" => op = Op::Alu,
-    b"01??" => op = Op::Load,
-    b"10??" => op = Op::Store,
-    _       => op = Op::Nop,
+    "00------" => op = Op::Alu,     // bare string, '-' = don't-care bit
+    "01------" => op = Op::Load,
+    "10------" => op = Op::Store,
+    x"A?"      => op = Op::Ext,     // radix prefix, '?' masks a whole nibble
+    _          => op = Op::Nop,
 }
 ```
 
-The `?` wildcard lives inside the pattern string. A prefixed string like
-`b"00??"` is not a special literal token — it lexes as an identifier glued to a
-string and is interpreted as a bit pattern via a *string overload* (a library
-mechanism). This is not yet implemented.
+A bare string in pattern position is a per-bit pattern: `0`/`1` are fixed and
+`-` (the `std_ulogic` don't-care) matches either value. A radix-prefixed
+string (`x"A?"` / `o"7?"`) masks a whole group (nibble/triad) with `?`. These
+are not special literal tokens — a prefixed string lexes as an identifier
+glued to a string; the compiler lowers each arm to `(scrut & mask) == value`.
 
-Invalid:
+A bit pattern is only meaningful in `match` position — it is not a value:
 
 ```siox
-let x: uint[4] = b"10??";
+let x: uint[4] = "10--";   // '-' here is the std_ulogic value, not a wildcard
 ```
-
-unless Phase 1 explicitly introduces a pattern type, which is not recommended.
 
 ---
 
@@ -1305,23 +1306,31 @@ literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
 `await 10ns` without imports.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
-a sized `uint` constant. The `Prefix` trait is their declared home
-(`impl Prefix for uint { fn x(digits: string) -> uint; }`), with evaluation
-intrinsic until const string operations exist:
+a sized `uint` constant. Prefixes are *radix conversions* — the compiler names
+the `Prefix` trait, but std owns which prefixes exist, declaring them as
+signature-only methods (evaluation stays a compiler intrinsic until const
+string operations land):
+
+```siox
+// in std::bits
+impl Prefix for uint {
+    fn x(digits: string) -> uint;   // hex:   4 bits/digit
+    fn o(digits: string) -> uint;   // octal: 3 bits/digit
+}
+```
 
 ```siox
 let a: uint[8]  = x"AB";        // hex: width = 4 * digits
 let t: uint[6]  = o"17";        // octal: width = 3 * digits (= 15)
-let m: uint[8]  = b"01010101";  // binary: width = digits
 let k: uint[24] = x"123ABC";
+let m: uint[8]  = "01010101";   // no prefix: a string of logic values
 ```
 
-`x"…"` (hex, 4 bits/digit) and `o"…"` (octal, 3 bits/digit) are 2-value; the
-binary `b"…"` admits the full `std_ulogic` alphabet, so metavalues can be
-written directly (`b"01X0"`), as can bit-pattern don't-cares in `match`
-(`b"01??"`). A bare string assigned to a bit vector behaves like `b"…"`
-(each char a `std_ulogic` value), so the `b` prefix is usually redundant.
-Digits must be valid for the base; widths participate in the strict
+`x"…"` and `o"…"` are 2-value radix expansions. A prefix that no `impl Prefix`
+declares is an error. There is no binary `b"…"` prefix: a plain string is
+already a sequence of `std_ulogic` values (metavalues too — `"01X0"`), read as
+a Logic array by context (§3.17), so it covers the binary case directly. Digits
+must be valid for the base; widths participate in the strict
 assignment/connection width rules (3.17) and in concatenation sizing.
 
 ---
@@ -2361,11 +2370,12 @@ The language kernel provides exactly three base types:
   a valid literal (`'€'`).
 
   A **string literal `"c"` is not a character**: double quotes always mean
-  `string` (`Char[N]`), so `"c"` is a one-element array, never a single
-  `Char`/`Logic`/enum value. It cannot stand in for a scalar (`s: Logic =
-  "0"`) nor build an enum/logic array (`{'a', 'b'}`, not `"ab"`); the type
-  error points at the character literal or, for a vector target, the
-  bit-string literal `b"…"`.
+  a *sequence*, never a single `Char`/`Logic`/enum value, so it cannot stand
+  in for a scalar (`s: Logic = "0"` is an error — use `'0'`). Against an array
+  target a string reads element-wise by context (like VHDL): a Logic vector
+  takes each char as a `std_ulogic` value (`"01X0"`), and a char-enum array
+  takes each char as a variant (`"rgb"`); the type error, when the shape
+  doesn't fit, points at the string literal.
 
 Plus the type machinery: enums (including character-literal variants —
 symbol domains themselves), structs, arrays, ranges, value-range

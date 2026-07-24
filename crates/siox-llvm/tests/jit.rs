@@ -526,7 +526,7 @@ fn struct_port_across_instances_agrees() {
 
 #[test]
 fn bit_pattern_match_agrees() {
-    // `match` over bit patterns with `?` don't-cares (spec 3.22): each arm
+    // `match` over bit patterns with `-` don't-cares (spec 3.22): each arm
     // lowers to `(scrut & mask) == value` with first-match priority. Both
     // engines must classify every opcode identically.
     let d = lower(
@@ -534,9 +534,9 @@ fn bit_pattern_match_agrees() {
          entity Dec { in op: uint[4]; out kind: uint[2]; }\n\
          impl Dec {\n\
            match op {\n\
-             b\"00??\" => { kind = 0; }\n\
-             b\"01??\" => { kind = 1; }\n\
-             b\"1?1?\" => { kind = 2; }\n\
+             \"00--\" => { kind = 0; }\n\
+             \"01--\" => { kind = 1; }\n\
+             \"1-1-\" => { kind = 2; }\n\
              _ => { kind = 3; }\n\
            }\n\
          }\n\

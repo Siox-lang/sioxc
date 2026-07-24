@@ -78,9 +78,10 @@ uint compares unsigned). Inside an operator impl, operands read as kernel
 words and `self::length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
 literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self::length`.
-Bit-string literals `x"AB"` / `b"0101"` are sized `uint` constants (spec
-3.24). A file that never imports `std::bits` falls back to kernel word
-semantics.
+Radix bit-string literals `x"AB"` / `o"17"` are sized `uint` constants,
+declared by `impl Prefix for uint` in `std::bits` (spec 3.24); a plain string
+`"0101"` covers the binary case with no prefix. A file that never imports
+`std::bits` falls back to kernel word semantics.
 
 ## `std::ops`
 

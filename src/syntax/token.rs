@@ -21,7 +21,7 @@ pub enum TokenKind {
     Int,        // 42, 0xFF, 0b1010 (numeric suffixes like 100n lex as a trailing ident)
     Float,      // 1000.0  (the `f`-style suffix lexes as a trailing ident, like Int)
     CharacterLit, // a single character in single quotes: '0' '1' 'Z' 'X', 'a', '!'
-    StrLit,     // "work"  (prefixed strings like b"01??"/x"05AB" lex as Ident + StrLit)
+    StrLit,     // "work"  (prefixed strings like x"05AB" lex as Ident + StrLit)
 
     // Keywords (Phase 1)
     Module,
