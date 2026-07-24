@@ -26,6 +26,21 @@ pub trait custom<Symbol, Input, Output> {
     fn apply(self, rhs: Input) -> Output;
 }
 
+// Literal affixes are symbol-parameterized like custom operators (spec 3.24):
+// the first argument is the affix string, the second the literal's data type.
+//   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", string> for T`
+//   - a numeric suffix `10ns` dispatches to `impl Suffix<"ns", integer> for T`
+// The impl's target type is what the literal produces; evaluation is a compiler
+// intrinsic (radix expansion / scale table) until const string operations land,
+// so impls inherit the empty default body.
+pub trait Prefix<char: string, T> {
+    fn prefix(data: T) {}
+}
+
+pub trait Suffix<char: string, T> {
+    fn suffix(data: T) {}
+}
+
 pub trait Or<Input, Output> {
     fn or(self, rhs: Input) -> Output;
 }

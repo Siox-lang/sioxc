@@ -40,11 +40,10 @@ impl From<integer> for Complex {
     }
 }
 
-// `5i` is a pure imaginary: Complex::i(5.0).
-impl Suffix for Complex {
-    fn i(v: real) -> Complex {
-        return Complex { .re = 0, .im = v };
-    }
+// `5i` is a pure imaginary `Complex` (the `i` suffix, over a real magnitude);
+// the `suffix` method builds the value and is inlined at the use site.
+impl Suffix<"i", real> for Complex {
+    fn suffix(v: real) -> Complex { return Complex { .re = 0, .im = v }; }
 }
 
 // Integer helpers (spec Stage 11; VHDL math_real's sign-free core). Pure

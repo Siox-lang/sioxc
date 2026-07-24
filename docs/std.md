@@ -79,7 +79,7 @@ words and `self::length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
 literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self::length`.
 Radix bit-string literals `x"AB"` / `o"17"` are sized `uint` constants,
-declared by `impl Prefix for uint` in `std::bits` (spec 3.24); a plain string
+declared by `impl Prefix<"x", _> for uint` in `std::bits` (spec 3.24); a plain string
 `"0101"` covers the binary case with no prefix. A file that never imports
 `std::bits` falls back to kernel word semantics.
 
@@ -102,9 +102,10 @@ operator identity, precedence, input, and output are std/user declarations.
 Impls are inlined
 at lowering as pure expression trees; mixed operand types overload by the
 rhs parameter type, and `impl Add for integer` catches literal left operands
-(`10 + 5i`). Each fn of an `impl Suffix for T` defines the literal suffix of
-its name (`10ns` → `Time::ns(10)`); two loaded types defining one suffix is
-an ambiguity error. See spec 3.24/3.25.
+(`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
+by its symbol argument, its `suffix` method inlined at the use site (`10ns` →
+a `Time`); two loaded types defining one suffix is an ambiguity error. See
+spec 3.24/3.25.
 
 ## `std::math`
 

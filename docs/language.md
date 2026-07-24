@@ -1285,18 +1285,19 @@ Both may use the English word “direction”, but they are different concepts.
 A numeric literal may carry an adjacent identifier suffix (no space):
 
 ```siox
-let t: Time = 10ns;      // std::sim::Time, via impl Suffix for Time
+let t: Time = 10ns;      // std::sim::Time, via impl Suffix<"ns", _> for Time
 let f: Freq = 100MHz;    // std::sim::Freq
 let z: Complex = 5i;     // std::math::Complex
 ```
 
-Suffixes are defined by the `Suffix` trait: **each fn's name is the suffix it
-defines**, and the literal desugars to that fn, inlined at lowering like an
-operator impl (3.25):
+Suffixes and prefixes are *affixes*, parameterized by their symbol like custom
+operators (3.25): the trait's first argument is the affix string and the impl's
+target type is what the literal produces. `Suffix`'s `suffix` method builds the
+value and is inlined at lowering, so the scale lives in std source:
 
 ```siox
-impl Suffix for Time {
-    fn ns(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
+impl Suffix<"ns", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
 }
 ```
 
@@ -1307,16 +1308,14 @@ literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
 a sized `uint` constant. Prefixes are *radix conversions* — the compiler names
-the `Prefix` trait, but std owns which prefixes exist, declaring them as
-signature-only methods (evaluation stays a compiler intrinsic until const
-string operations land):
+the `Prefix` trait, but std owns which prefixes exist. Evaluation stays a
+compiler intrinsic until const string operations land, so the impls inherit
+the empty default body:
 
 ```siox
 // in std::bits
-impl Prefix for uint {
-    fn x(digits: string) -> uint;   // hex:   4 bits/digit
-    fn o(digits: string) -> uint;   // octal: 3 bits/digit
-}
+impl Prefix<"x", string> for uint {}   // hex:   4 bits/digit
+impl Prefix<"o", string> for uint {}   // octal: 3 bits/digit
 ```
 
 ```siox

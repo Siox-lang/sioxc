@@ -10,43 +10,41 @@ pub struct Time {
     fs: integer,
 }
 
-// Time-unit literal suffixes: `10ns` is `Time::ns(10)`.
-impl Suffix for Time {
-    fn fs(v: integer) -> Time {
-        return Time { .fs = v };
-    }
-    fn ps(v: integer) -> Time {
-        return Time { .fs = v * 1000 };
-    }
-    fn ns(v: integer) -> Time {
-        return Time { .fs = v * 1000000 };
-    }
-    fn us(v: integer) -> Time {
-        return Time { .fs = v * 1000000000 };
-    }
-    fn ms(v: integer) -> Time {
-        return Time { .fs = v * 1000000000000 };
-    }
+// Time-unit literal suffixes: `10ns` is a `Time`. The symbol parameterizes the
+// `Suffix` trait; the `suffix` method builds the value (inlined at the use
+// site), so the fs scale per unit lives here in std source.
+impl Suffix<"fs", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v }; }
+}
+impl Suffix<"ps", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000 }; }
+}
+impl Suffix<"ns", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
+}
+impl Suffix<"us", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000000 }; }
+}
+impl Suffix<"ms", integer> for Time {
+    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000000000 }; }
 }
 
 pub struct Freq {
     hz: integer,
 }
 
-// Frequency literal suffixes: `100MHz` is `Freq::MHz(100)`.
-impl Suffix for Freq {
-    fn Hz(v: integer) -> Freq {
-        return Freq { .hz = v };
-    }
-    fn kHz(v: integer) -> Freq {
-        return Freq { .hz = v * 1000 };
-    }
-    fn MHz(v: integer) -> Freq {
-        return Freq { .hz = v * 1000000 };
-    }
-    fn GHz(v: integer) -> Freq {
-        return Freq { .hz = v * 1000000000 };
-    }
+// Frequency literal suffixes: `100MHz` is a `Freq`.
+impl Suffix<"Hz", integer> for Freq {
+    fn suffix(v: integer) -> Freq { return Freq { .hz = v }; }
+}
+impl Suffix<"kHz", integer> for Freq {
+    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000 }; }
+}
+impl Suffix<"MHz", integer> for Freq {
+    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000000 }; }
+}
+impl Suffix<"GHz", integer> for Freq {
+    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000000000 }; }
 }
 
 // Raw femtosecond multipliers, for integer time arithmetic.

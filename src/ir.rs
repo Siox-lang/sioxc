@@ -516,18 +516,28 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     // A trait impl's first fn is the operator body for
-                    // `impl "+" for T` (spec 3.25); each fn of an
-                    // `impl Suffix for T` defines the literal suffix of its
-                    // name (spec 3.24).
+                    // `impl "+" for T` (spec 3.25); an `impl Suffix<"ns", _>
+                    // for T` defines the literal suffix named by its symbol
+                    // argument, its `suffix` method inlined at the use site
+                    // (spec 3.24).
                     ast::Item::Impl(im) => {
                         let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                         let target = type_head_name(&im.target);
                         if let (Some(tr), Some(ty)) = (tr, target) {
                             if tr.text == "Suffix" {
-                                for it in &im.items {
-                                    if let ast::ImplItem::Fn(f) = it {
-                                        self.suffix_impls
-                                            .insert(f.name.text.clone(), (ty.to_string(), f));
+                                let symbol = im.trait_args.first().and_then(|a| match a {
+                                    ast::GenericArg::Positional(ast::Expr::StrLit {
+                                        text,
+                                        ..
+                                    }) => Some(text.clone()),
+                                    _ => None,
+                                });
+                                if let Some(symbol) = symbol {
+                                    for it in &im.items {
+                                        if let ast::ImplItem::Fn(f) = it {
+                                            self.suffix_impls
+                                                .insert(symbol.clone(), (ty.to_string(), f));
+                                        }
                                     }
                                 }
                             } else {
@@ -4041,8 +4051,9 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Inline the `impl Suffix for T` fn for a suffixed literal (`5i` ->
-    /// `Complex::i(5)`): the fn's parameter binds to the literal value.
+    /// Inline the `impl Suffix<sym, _> for T` `suffix` fn for a suffixed
+    /// literal (`5i` -> the `"i"` impl's body): its parameter binds to the
+    /// literal value.
     fn inline_suffix(&self, e: &ast::Expr) -> Option<Val> {
         let ast::Expr::SuffixLit { text, suffix, .. } = e else { return None };
         let (_, f) = self.suffix_impls.get(&suffix.text)?;

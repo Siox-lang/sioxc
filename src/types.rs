@@ -150,12 +150,12 @@ struct Checker<'a> {
     /// Generic module fns: name -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
-    /// Literal suffix -> the type names defining it via `impl Suffix for T`
-    /// (more than one is an ambiguity error at the use site).
+    /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
+    /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
     /// Bit-string prefix (`x`, `o`) -> the type names defining it via
-    /// `impl Prefix for T` (spec 3.24). std declares which prefixes exist; the
-    /// compiler evaluates the known radix ones intrinsically.
+    /// `impl Prefix<sym, _> for T` (spec 3.24). std declares which prefixes
+    /// exist; the compiler evaluates the known radix ones intrinsically.
     prefix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
@@ -371,28 +371,20 @@ impl<'a> Checker<'a> {
                                 ),
                             }
                         }
-                        // `impl Suffix for T`: each fn's name is a literal
-                        // suffix producing a T (spec 3.24).
-                        if t == "Suffix" {
-                            for it in &im.items {
-                                if let ImplItem::Fn(f) = it {
-                                    self.suffix_types
-                                        .entry(f.name.text.clone())
-                                        .or_default()
-                                        .push(ty.clone());
-                                }
-                            }
-                        }
-                        // `impl Prefix for T`: each fn's name is a bit-string
-                        // prefix producing a T (spec 3.24), e.g. `x"AB"`.
-                        if t == "Prefix" {
-                            for it in &im.items {
-                                if let ImplItem::Fn(f) = it {
-                                    self.prefix_types
-                                        .entry(f.name.text.clone())
-                                        .or_default()
-                                        .push(ty.clone());
-                                }
+                        // `impl Suffix<"ns", _> for T` / `impl Prefix<"x", _>
+                        // for T`: the first trait argument is the affix symbol
+                        // and the impl target `T` is what the literal produces
+                        // (spec 3.24). std owns which affixes exist.
+                        if t == "Suffix" || t == "Prefix" {
+                            if let Some(GenericArg::Positional(Expr::StrLit { text, .. })) =
+                                im.trait_args.first()
+                            {
+                                let table = if t == "Suffix" {
+                                    &mut self.suffix_types
+                                } else {
+                                    &mut self.prefix_types
+                                };
+                                table.entry(text.clone()).or_default().push(ty.clone());
                             }
                         }
                         if crate::resolve::OPERATORS.contains(&t.as_str()) || custom.is_some() {
@@ -1547,7 +1539,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::BitStrLit { base, digits, span } => {
-                // std owns which prefixes exist (`impl Prefix for T`): when it is
+                // std owns which prefixes exist (`impl Prefix<sym, _> for T`): when it is
                 // in scope, a prefix it doesn't declare is unknown. When std is
                 // absent (some unit tests) the compiler still recognizes its
                 // intrinsic radix prefixes — mirroring the suffix fs/Hz fallback.
@@ -2543,8 +2535,8 @@ mod tests {
 
     #[test]
     fn suffix_traits_define_and_disambiguate_literals() {
-        let time = "struct Time { fs: uint[48] }\nimpl Suffix for Time {\n  fn s(v: integer) -> Time {\n    return Time { .fs = v };\n  }\n}\n";
-        // A Suffix-impl fn defines the literal's type: Time = 5s init passes.
+        let time = "struct Time { fs: uint[48] }\nimpl Suffix<\"s\", integer> for Time {}\n";
+        // A Suffix impl's symbol defines the literal's type: Time = 5s passes.
         assert_eq!(
             check_src(&format!(
                 "module m;\n{time}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
@@ -2553,7 +2545,7 @@ mod tests {
         );
         // Two types defining the same suffix is an ambiguity error (the
         // cascading init mismatch is separate).
-        let score = "struct Score { p: uint[8] }\nimpl Suffix for Score {\n  fn s(v: integer) -> Score {\n    return Score { .p = v };\n  }\n}\n";
+        let score = "struct Score { p: uint[8] }\nimpl Suffix<\"s\", integer> for Score {}\n";
         let src = format!(
             "module m;\n{time}{score}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
         );
