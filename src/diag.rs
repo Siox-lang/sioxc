@@ -227,6 +227,9 @@ pub mod codes {
     /// (§3.29) rather than being an error (an unconnected input is just
     /// undriven; "always initialized, may be undriven").
     pub const UNCONNECTED_INPUT: &str = "W-P012";
+    /// A signal assigned unconditionally twice in one block: the earlier
+    /// assignment can never be observed (drivers in a context override).
+    pub const DEAD_ASSIGNMENT: &str = "W-P014";
     /// A `using` that imports a non-`pub` item from another module — reaching
     /// into its private surface (cross-module visibility, §3.x).
     pub const PRIVATE_IMPORT: &str = "W-P013";

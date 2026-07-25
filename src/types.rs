@@ -839,6 +839,10 @@ impl<'a> Checker<'a> {
                 ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym),
             }
         }
+        self.lint_dead_assignments(im.items.iter().filter_map(|it| match it {
+            ImplItem::Stmt(s) => Some(s),
+            _ => None,
+        }));
     }
 
     /// Build the value environment for an impl body: the `in` ports (for the
@@ -892,6 +896,39 @@ impl<'a> Checker<'a> {
         )
     }
 
+    /// Two *unconditional* assignments to one target in the same block: the
+    /// first can never be observed, because within a driver context a later
+    /// assignment overrides (spec 3.14). Almost always a typo or leftover.
+    /// Conservative — any conditional/looping statement in between resets the
+    /// scan, so the common `default then override` shapes never trip it.
+    fn lint_dead_assignments<'s>(&mut self, stmts: impl Iterator<Item = &'s Stmt>) {
+        let mut seen: HashMap<String, Span> = HashMap::new();
+        for s in stmts {
+            match s {
+                Stmt::Assign { target, span, .. } => {
+                    let key = crate::syntax::pretty::expr_string(target);
+                    if let Some(prev) = seen.insert(key.clone(), *span) {
+                        self.sink.emit(
+                            Diagnostic::warning(format!(
+                                "`{key}` is assigned again here; the earlier \
+                                 assignment has no effect"
+                            ))
+                            .with_code(codes::DEAD_ASSIGNMENT)
+                            .at(*span)
+                            .label(prev, "this assignment is overridden")
+                            .help(
+                                "remove the dead assignment, or make one of them \
+                                 conditional if you meant a default",
+                            ),
+                        );
+                    }
+                }
+                // Anything that may write conditionally ends the run.
+                _ => seen.clear(),
+            }
+        }
+    }
+
     fn check_block(&mut self, b: &Block) {
         let (dirs, sym) = (
             PortDirs {
@@ -900,6 +937,7 @@ impl<'a> Checker<'a> {
             },
             HashMap::new(),
         );
+        self.lint_dead_assignments(b.stmts.iter());
         for s in &b.stmts {
             self.check_stmt(s, &dirs, &sym);
         }
@@ -1364,21 +1402,61 @@ impl<'a> Checker<'a> {
         let Some(v) = args.first().and_then(const_fold) else {
             return;
         };
-        // No signedness: a literal fits an N-bit vector if it lands in the
-        // union of the unsigned (0..2^N) and signed (-2^(N-1)..) ranges.
-        let hi = if width == 64 {
-            i64::MAX
-        } else {
-            (1i64 << width) - 1
-        };
+        self.check_fits_width(v, width as u32, expr_span(site));
+    }
+
+    /// A constant that cannot be represented in `width` bits is an error
+    /// wherever it meets a sized vector — a conversion or a comparison. No
+    /// signedness: a literal fits an N-bit vector if it lands in the union of
+    /// the unsigned (`0..2^N`) and signed (`-2^(N-1)..`) ranges.
+    fn check_fits_width(&mut self, v: i64, width: u32, span: Span) {
+        if !(1..=64).contains(&width) {
+            return;
+        }
+        let hi = if width == 64 { i64::MAX } else { (1i64 << width) - 1 };
         let lo = -(1i64 << (width - 1));
-        let fits = v >= lo && v <= hi;
-        if !fits {
+        if v < lo || v > hi {
             self.error(
                 codes::TYPE_MISMATCH,
-                expr_span(site),
+                span,
                 format!("`{v}` does not fit in a {width}-bit vector"),
             );
+        }
+    }
+
+    /// Const-fold a literal arithmetic expression (`3`, `0 - 3`). `None` once
+    /// any operand is a runtime value.
+    fn const_literal(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let (a, b) = (Self::const_literal(lhs)?, Self::const_literal(rhs)?);
+                Some(match op {
+                    BinOp::Add => a.checked_add(b)?,
+                    BinOp::Sub => a.checked_sub(b)?,
+                    BinOp::Mul => a.checked_mul(b)?,
+                    BinOp::Div if b != 0 => a / b,
+                    _ => return None,
+                })
+            }
+            _ => signed_lit(e),
+        }
+    }
+
+    /// `sig == 600` with `sig: uint[8]`: the comparison masks both sides to the
+    /// operand width, so the literal silently becomes 88 and the guard fires on
+    /// the wrong value. The masking is right for a *wrapped* expression
+    /// (`q == 0 - 3` really is 253), so reject the un-representable literal
+    /// instead (spec 3.17/3.26).
+    fn check_comparison_fit(&mut self, lhs: &Expr, rhs: &Expr, sym: &HashMap<String, Ty>) {
+        for (operand, lit) in [(lhs, rhs), (rhs, lhs)] {
+            // Only flag a bare constant against a sized runtime operand.
+            if Self::const_literal(operand).is_some() {
+                continue;
+            }
+            let Some(v) = Self::const_literal(lit) else { continue };
+            if let Ty::Vector { width, .. } = self.type_of(operand, sym) {
+                self.check_fits_width(v, width, expr_span(lit));
+            }
         }
     }
 
@@ -1532,6 +1610,18 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
                 self.check_expr(rhs, sym);
+                if is_comparison(op) {
+                    self.check_comparison_fit(lhs, rhs, sym);
+                }
+                // A constant zero divisor is always a mistake: hardware has no
+                // trap for it, so today it just yields 0 with no complaint.
+                if matches!(op, BinOp::Div) && Self::const_literal(rhs) == Some(0) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(rhs),
+                        "division by a constant zero".to_string(),
+                    );
+                }
                 // A character literal's identity comes from its counterpart's
                 // type (spec: type kernel); a numeric counterpart cannot read
                 // one — conversion goes through an encoding table.
@@ -2999,6 +3089,61 @@ mod tests {
             1,
             "the Input template participates in overload selection"
         );
+    }
+
+    /// A literal that cannot fit the operand width made the comparison mask it
+    /// (600 -> 88 on a `uint[8]`), so the guard compared the wrong value and
+    /// silently passed. The wrapped-expression case must still be allowed.
+    #[test]
+    fn out_of_range_comparison_literal_is_rejected() {
+        let ent = "module m;\nentity E { in q: uint[8]; out y: uint[8]; }\nimpl E { y = ";
+        assert_eq!(
+            check_src(&format!("{ent}if q == 600 {{ 1 }} else {{ 0 }}; }}\n")),
+            1,
+            "600 cannot be a uint[8]"
+        );
+        assert_eq!(
+            check_src(&format!("{ent}if q == 0 - 3 {{ 1 }} else {{ 0 }}; }}\n")),
+            0,
+            "a wrapped constant is a real 8-bit pattern (253)"
+        );
+        assert_eq!(
+            check_src(&format!("{ent}if q == 255 {{ 1 }} else {{ 0 }}; }}\n")),
+            0,
+            "the top of the range still fits"
+        );
+        // The literal may sit on either side.
+        assert_eq!(
+            check_src(&format!("{ent}if 600 == q {{ 1 }} else {{ 0 }}; }}\n")),
+            1,
+            "flagged from the left too"
+        );
+    }
+
+    /// Hardware has no divide-by-zero trap, so a constant zero divisor just
+    /// yielded 0 with no complaint.
+    #[test]
+    fn constant_zero_divisor_is_rejected() {
+        let src = "module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = a / 0; }\n";
+        assert_eq!(check_src(src), 1);
+        let ok = "module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\nimpl E { y = a / b; }\n";
+        assert_eq!(check_src(ok), 0, "a runtime divisor is fine");
+    }
+
+    /// Assigning one target twice unconditionally makes the first dead — the
+    /// later driver overrides within a context, so it silently did nothing.
+    #[test]
+    fn dead_assignment_warns_but_defaults_do_not() {
+        let dead = "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
+        assert_eq!(warnings(dead, codes::DEAD_ASSIGNMENT), 1);
+
+        // A conditional override is the normal `default then override` shape.
+        let guarded = "module m;\nentity E { in c: Bit; out y: uint[8]; }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
+        assert_eq!(warnings(guarded, codes::DEAD_ASSIGNMENT), 0);
+
+        // Distinct targets are unrelated.
+        let distinct = "module m;\nentity E { out y: uint[8]; out z: uint[8]; }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
+        assert_eq!(warnings(distinct, codes::DEAD_ASSIGNMENT), 0);
     }
 
     #[test]

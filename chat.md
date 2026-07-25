@@ -372,3 +372,39 @@ a syntax-level helper and `ir` needs it now. Same behaviour, one definition.
 Test `conflicting_drivers_name_the_conflict_and_its_sites` locks the shape
 (code + names the conflict + primary span + labels + help). Full suite green,
 corpus 68/68.
+
+### 2026-07-25 — Claude — three correctness bugs found by probing
+
+Went looking for what silently goes *wrong* rather than what's missing. Three
+real ones, all fixed with regression tests; 0 corpus false positives.
+
+**1. `sig == 600` on a `uint[8]` was true when `sig` held 88.** The comparison
+masks both sides to the operand width, so an out-of-range literal became
+in-range (600 & 0xFF = 88) and the guard fired on the wrong value. Worse, it
+*diverged*: hardware compared correctly (`0`), only the testbench evaluator was
+wrong — the two-engine risk biting for real.
+
+The mask isn't the bug — it's right for a wrapped expression (`q == 0 - 3` is
+genuinely 253). The un-representable *literal* is the bug, so it's now rejected
+at type-check (reusing the conversion fit check, which existed but only ever
+ran on explicit conversions). `q == 0 - 3` and `q == 255` still compile.
+
+**2. Constant zero divisor** (`a / 0`) lowered silently to 0 — no error
+anywhere. Now a type error; a runtime divisor is untouched.
+
+**3. `y = 1; y = 2;` in one block** silently kept `2`, no diagnostic — the
+first assignment is dead code. New `W-P014 DEAD_ASSIGNMENT`, deliberately
+conservative: any conditional/loop between the two resets the scan, so the
+`default then override` idiom (`y = 1; if c { y = 2; }`) never trips it.
+
+New codes: `E-P014 CONFLICTING_DRIVERS` (earlier commit), `W-P014
+DEAD_ASSIGNMENT`. Shared-file heads-up: `types.rs` gained `check_fits_width` /
+`const_literal` / `check_comparison_fit` / `lint_dead_assignments`, hooked into
+the `Expr::Binary` arm of `check_expr` and into both statement walks.
+
+Still open from the same sweep, not yet fixed: recursion depth exhaustion
+lowers `Expr::Unknown` into the middle of a driver with **no diagnostic** (you
+only get the generic "no engine can run this design" later), and `>64-bit`
+signals are rejected by the backend rather than the type checker. Also
+`TODO.md`'s "metavalue in driver position loses its disc" is stale — I tested
+both positions and they agree.
