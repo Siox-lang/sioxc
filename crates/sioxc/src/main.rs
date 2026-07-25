@@ -923,6 +923,7 @@ fn describe_item(item: &Item) -> (&'static str, String) {
         }
         Item::Const(c) => ("const", c.name.text.clone()),
         Item::Struct(s) => ("struct", s.name.text.clone()),
+        Item::View(v) => ("view", v.name.text.clone()),
         Item::Enum(e) => ("enum", e.name.text.clone()),
         Item::Entity(e) => {
             let tag = if e.is_extern { "extern " } else { "" };

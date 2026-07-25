@@ -1026,6 +1026,21 @@ Port direction is primarily compiler/type-checker information, not a normal user
 
 Structs do not contain direction. Directional modes define how a struct behaves at a boundary.
 
+The declaration's leading direction names the endpoint role: `view out` is a
+producer-facing implementation, `view in` is consumer-facing, and `view
+inout` is bidirectional. A view may project a reusable struct, or declare a
+small bus layout directly:
+
+```siox
+view out Handshake {
+    out valid: Bit;
+    in ready: Bit;
+}
+```
+
+Standalone view fields carry types. Fields in a view declared `for` a struct
+inherit their types from that struct and therefore only name their directions.
+
 Example struct:
 
 ```siox
@@ -1041,7 +1056,7 @@ struct Stream<T> {
 Source mode:
 
 ```siox
-impl out Stream<T>::Source {
+view out StreamSource<T> for Stream<T> {
     in clk;
     in rst;
     out valid;
@@ -1053,7 +1068,7 @@ impl out Stream<T>::Source {
 Sink mode:
 
 ```siox
-impl in Stream<T>::Sink {
+view in StreamSink<T> for Stream<T> {
     in clk;
     in rst;
     in valid;
@@ -1066,11 +1081,11 @@ Usage:
 
 ```siox
 entity Producer {
-    bus: out Stream<uint[32]>::Source;
+    bus: StreamSource<uint[32]>;
 }
 
 entity Consumer {
-    bus: in Stream<uint[32]>::Sink;
+    bus: StreamSink<uint[32]>;
 }
 ```
 
@@ -1104,7 +1119,7 @@ trait Source<T> {
 Implementation:
 
 ```siox
-impl Source<T> for out Stream<T>::Source {
+impl Source<T> for StreamSource<T> {
     fn send(self, value: T) {
         self.valid = '1';
         self.data = value;

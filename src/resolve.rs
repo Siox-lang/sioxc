@@ -49,6 +49,7 @@ pub enum DefKind {
     /// Primitive type or seeded attribute (`Bit`, `uint`, `top`, ...).
     Builtin,
     Struct,
+    View,
     Enum,
     EnumVariant,
     Entity,
@@ -195,10 +196,8 @@ impl<'a> Resolver<'a> {
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
         for name in [
-            "integer", "real", "Char", "Bit", "Logic", "Bool", "string",
-            "range",
-        ]
-        {
+            "integer", "real", "Char", "Bit", "Logic", "Bool", "string", "range",
+        ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }
@@ -228,7 +227,9 @@ impl<'a> Resolver<'a> {
             let mut cur = name.clone();
             let mut guard = 0;
             while let Some(base) = self.enum_derives.get(&cur).cloned() {
-                let Some(&bid) = self.enum_ids.get(&base) else { break };
+                let Some(&bid) = self.enum_ids.get(&base) else {
+                    break;
+                };
                 if let Some(m) = self.enum_variants.get(&bid) {
                     inherited.push(m.clone());
                 }
@@ -279,6 +280,9 @@ impl<'a> Resolver<'a> {
             Item::Struct(s) => {
                 self.declare(&s.name.text, DefKind::Struct, s.is_pub, s.name.span);
             }
+            Item::View(v) => {
+                self.declare(&v.name.text, DefKind::View, v.is_pub, v.name.span);
+            }
             Item::Enum(e) => {
                 let id = self.declare(&e.name.text, DefKind::Enum, e.is_pub, e.name.span);
                 let mut vars = HashMap::new();
@@ -307,8 +311,13 @@ impl<'a> Resolver<'a> {
                 self.declare(&t.name.text, DefKind::Trait, t.is_pub, t.name.span);
             }
             Item::AttrDecl(a) => {
-                let id =
-                    self.add_def(a.name.text.clone(), DefKind::Attr, a.is_pub, Some(a.name.span), None);
+                let id = self.add_def(
+                    a.name.text.clone(),
+                    DefKind::Attr,
+                    a.is_pub,
+                    Some(a.name.span),
+                    None,
+                );
                 if self.attrs.contains_key(&a.name.text) {
                     // Redeclaring a seeded/known attribute is harmless; keep the
                     // user's declaration as the resolution target.
@@ -337,7 +346,10 @@ impl<'a> Resolver<'a> {
             // Type aliases (`using X = T`) carry no visibility marker in the AST
             // yet, so they're always exportable — don't flag imported aliases.
             let bad = self.out.def(id).map(|d| {
-                (d.name.clone(), !d.is_pub && d.span.is_some() && d.kind != DefKind::TypeAlias)
+                (
+                    d.name.clone(),
+                    !d.is_pub && d.span.is_some() && d.kind != DefKind::TypeAlias,
+                )
             });
             if let Some((name, true)) = bad {
                 self.sink.emit(
@@ -407,17 +419,27 @@ impl<'a> Resolver<'a> {
     /// an import that matches nothing is a hard error.
     fn resolve_imports(&mut self, item: &Item) {
         let Item::Using(u) = item else { return };
-        let UsingKind::Import { base, names } = &u.kind else { return };
+        let UsingKind::Import { base, names } = &u.kind else {
+            return;
+        };
         for n in names {
-            let found = self.globals.get(&n.text).or_else(|| self.attrs.get(&n.text)).copied();
+            let found = self
+                .globals
+                .get(&n.text)
+                .or_else(|| self.attrs.get(&n.text))
+                .copied();
             match found {
                 Some(id) => {
                     self.out.uses.insert(n.span, id);
                     self.import_sites.push((n.span, id));
                 }
                 None => {
-                    let base_str =
-                        base.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::");
+                    let base_str = base
+                        .segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::");
                     let mut diag = Diagnostic::error(format!(
                         "unresolved import: no `{}` in `{base_str}`",
                         n.text
@@ -471,7 +493,13 @@ impl<'a> Resolver<'a> {
         parent: Option<DefId>,
     ) -> DefId {
         let id = DefId(self.out.defs.len() as u32);
-        self.out.defs.push(DefInfo { name, kind, is_pub, span, parent });
+        self.out.defs.push(DefInfo {
+            name,
+            kind,
+            is_pub,
+            span,
+            parent,
+        });
         id
     }
 
@@ -505,6 +533,19 @@ impl<'a> Resolver<'a> {
                 self.bind_params(&s.params, false);
                 for f in &s.fields {
                     self.resolve_type(&f.ty);
+                }
+                self.exit();
+            }
+            Item::View(v) => {
+                self.enter();
+                self.bind_params(&v.params, false);
+                if let Some(target) = &v.target {
+                    self.resolve_type(target);
+                }
+                for field in &v.fields {
+                    if let Some(ty) = &field.ty {
+                        self.resolve_type(ty);
+                    }
                 }
                 self.exit();
             }
@@ -555,7 +596,13 @@ impl<'a> Resolver<'a> {
                 if let GenericArg::Positional(Expr::Path(p)) = a {
                     if p.segments.len() == 1 && self.lookup(&p.segments[0].text).is_none() {
                         let name = p.segments[0].text.clone();
-                        let id = self.add_def(name.clone(), DefKind::Param, false, Some(p.segments[0].span), None);
+                        let id = self.add_def(
+                            name.clone(),
+                            DefKind::Param,
+                            false,
+                            Some(p.segments[0].span),
+                            None,
+                        );
                         self.bind(&name, id);
                     }
                 }
@@ -674,7 +721,9 @@ impl<'a> Resolver<'a> {
                     self.resolve_block(&arm.body);
                 }
             }
-            Stmt::For { var, range, body, .. } => {
+            Stmt::For {
+                var, range, body, ..
+            } => {
                 self.resolve_expr(range);
                 self.enter();
                 self.bind_local(&var.text);
@@ -783,12 +832,16 @@ impl<'a> Resolver<'a> {
             | Expr::CharLit { .. }
             | Expr::StrLit { .. } => {}
             Expr::Path(p) => self.resolve_value_path(p),
-            Expr::IfExpr { cond, then, els, .. } => {
+            Expr::IfExpr {
+                cond, then, els, ..
+            } => {
                 self.resolve_expr(cond);
                 self.resolve_expr(then);
                 self.resolve_expr(els);
             }
-            Expr::Match { scrutinee, arms, .. } => {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.resolve_expr(scrutinee);
                 for arm in arms {
                     self.resolve_pattern(&arm.pattern);
@@ -898,8 +951,13 @@ impl<'a> Resolver<'a> {
     /// only in the target would otherwise read as unused).
     fn bind_params(&mut self, params: &Params, lint: bool) {
         for p in &params.params {
-            let id =
-                self.add_def(p.name.text.clone(), DefKind::Param, false, Some(p.name.span), None);
+            let id = self.add_def(
+                p.name.text.clone(),
+                DefKind::Param,
+                false,
+                Some(p.name.span),
+                None,
+            );
             self.bind(&p.name.text, id);
             if lint {
                 self.param_sites.push((p.name.span, id));
@@ -933,7 +991,11 @@ impl<'a> Resolver<'a> {
     /// The closest in-scope name to `name` (edit distance <= 2), for a
     /// "did you mean?" suggestion.
     fn suggest(&self, name: &str) -> Option<String> {
-        let candidates = self.scopes.iter().flat_map(|s| s.keys()).chain(self.globals.keys());
+        let candidates = self
+            .scopes
+            .iter()
+            .flat_map(|s| s.keys())
+            .chain(self.globals.keys());
         let mut best: Option<(usize, &String)> = None;
         for cand in candidates {
             let d = levenshtein(name, cand);
@@ -945,11 +1007,15 @@ impl<'a> Resolver<'a> {
     }
 
     fn variant(&self, enum_id: DefId, name: &str) -> Option<DefId> {
-        self.enum_variants.get(&enum_id).and_then(|m| m.get(name)).copied()
+        self.enum_variants
+            .get(&enum_id)
+            .and_then(|m| m.get(name))
+            .copied()
     }
 
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
-        self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
+        self.sink
+            .emit(Diagnostic::error(msg).with_code(code).at(span));
     }
 }
 
@@ -1014,7 +1080,10 @@ mod tests {
             .map(|d| d.message.as_str())
             .collect();
         assert_eq!(unused.len(), 1, "one unused-import warning: {unused:?}");
-        assert!(unused[0].contains("Dead"), "flags Dead, not Used: {unused:?}");
+        assert!(
+            unused[0].contains("Dead"),
+            "flags Dead, not Used: {unused:?}"
+        );
     }
 
     #[test]
@@ -1039,8 +1108,15 @@ mod tests {
             .filter(|d| d.code == Some(codes::PRIVATE_IMPORT))
             .map(|d| d.message.as_str())
             .collect();
-        assert_eq!(priv_warns.len(), 1, "one private-import warning: {priv_warns:?}");
-        assert!(priv_warns[0].contains("Secret"), "flags Secret, not Public: {priv_warns:?}");
+        assert_eq!(
+            priv_warns.len(),
+            1,
+            "one private-import warning: {priv_warns:?}"
+        );
+        assert!(
+            priv_warns[0].contains("Secret"),
+            "flags Secret, not Public: {priv_warns:?}"
+        );
     }
 
     #[test]
@@ -1073,7 +1149,9 @@ mod tests {
         // Quoted operator traits were removed with the Rust-style pivot.
         let sink = diagnostics("module m;\npub trait \"+\" {\n  fn apply(self) -> Self;\n}\n");
         assert!(
-            sink.diagnostics().iter().any(|d| d.message.contains("quoted operator traits")),
+            sink.diagnostics()
+                .iter()
+                .any(|d| d.message.contains("quoted operator traits")),
             "expected the removal error"
         );
     }
@@ -1081,7 +1159,11 @@ mod tests {
     #[test]
     fn unknown_type_suggests_a_close_name() {
         let sink = diagnostics("module m;\nstruct Packet { a: Bit }\nentity E { out y: Packe; }\n");
-        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::UNKNOWN_NAME)).unwrap();
+        let d = sink
+            .diagnostics()
+            .iter()
+            .find(|d| d.code == Some(codes::UNKNOWN_NAME))
+            .unwrap();
         assert_eq!(d.help.as_deref(), Some("did you mean `Packet`?"));
     }
 
@@ -1095,7 +1177,11 @@ mod tests {
     #[test]
     fn duplicate_item_points_to_the_first() {
         let sink = diagnostics("module m;\nstruct P { a: Bit }\nstruct P { b: Bit }\n");
-        let d = sink.diagnostics().iter().find(|d| d.code == Some(codes::DUPLICATE_ITEM)).unwrap();
+        let d = sink
+            .diagnostics()
+            .iter()
+            .find(|d| d.code == Some(codes::DUPLICATE_ITEM))
+            .unwrap();
         assert!(d.help.is_some());
         assert_eq!(d.labels.len(), 1); // "first declared here"
     }

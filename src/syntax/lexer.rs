@@ -373,6 +373,7 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "entity" => TokenKind::Entity,
         "impl" => TokenKind::Impl,
         "struct" => TokenKind::Struct,
+        "view" => TokenKind::View,
         "enum" => TokenKind::Enum,
         "trait" => TokenKind::Trait,
         "attr" => TokenKind::Attr,

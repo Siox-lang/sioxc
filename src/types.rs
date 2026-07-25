@@ -47,11 +47,17 @@ pub enum Ty {
     /// family shares one operator surface (keyed `uint` in [`Self::ty_head`]),
     /// and width comparison ignores `family` — `family` never gates a check,
     /// it only labels.
-    Vector { family: Option<String>, width: u32 },
+    Vector {
+        family: Option<String>,
+        width: u32,
+    },
     /// Named struct / enum / entity, keyed by its definition.
     Named(crate::resolve::DefId),
     /// `T[range]` array/vector of a digital element type.
-    Array { elem: Box<Ty>, len: u32 },
+    Array {
+        elem: Box<Ty>,
+        len: u32,
+    },
     /// Placeholder for an as-yet-unresolved/error type.
     Error,
 }
@@ -108,8 +114,8 @@ struct PortInfo {
     name: String,
     ty: Ty,
     dir: Option<Direction>,
-    /// `(struct, mode)` when this is a bus-mode port (`out Stream::Source`).
-    mode: Option<(String, String)>,
+    /// Named directional view when this port is view-typed.
+    mode: Option<String>,
 }
 
 /// The value type an attribute declaration expects (spec 3.5).
@@ -144,6 +150,8 @@ struct Checker<'a> {
     enum_bases: HashMap<String, String>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
+    /// View name -> underlying struct type.
+    views: HashMap<String, Option<Type>>,
     /// Struct name -> signedness, for structs carrying `#[vector]` (an
     /// array-derived numeric family). Membership is the attribute, not shape.
     vector_families: HashSet<String>,
@@ -163,10 +171,8 @@ struct Checker<'a> {
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
-    /// Bus-mode per-field directions `(struct, mode) -> {field -> dir}` from
-    /// `impl <dir> Struct::Mode { in a; out b; }` (spec 3.19), so a write to an
-    /// `in` bus leaf can be rejected.
-    mode_dirs: HashMap<(String, String), HashMap<String, Direction>>,
+    /// Named view -> per-field directions.
+    mode_dirs: HashMap<String, HashMap<String, Direction>>,
 }
 
 impl<'a> Checker<'a> {
@@ -182,7 +188,10 @@ impl<'a> Checker<'a> {
             ("name", &["entity"]),
             ("precedence", &["impl"]),
         ] {
-            attr_targets.insert(name.to_string(), targets.iter().map(|s| s.to_string()).collect());
+            attr_targets.insert(
+                name.to_string(),
+                targets.iter().map(|s| s.to_string()).collect(),
+            );
         }
         let mut attr_value_kinds = HashMap::new();
         for (name, ty) in [
@@ -208,7 +217,10 @@ impl<'a> Checker<'a> {
         );
         trait_impls.insert(
             "Not".to_string(),
-            ["Bit", "Bool", "Logic"].iter().map(|s| s.to_string()).collect(),
+            ["Bit", "Bool", "Logic"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         );
         Checker {
             sink,
@@ -223,6 +235,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
+            views: HashMap::new(),
             vector_families: HashSet::new(),
             generic_fns: HashMap::new(),
             suffix_types: HashMap::new(),
@@ -260,7 +273,7 @@ impl<'a> Checker<'a> {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
-                            mode: mode_key(&p.ty),
+                            mode: view_key(&p.ty, &self.views),
                         })
                         .collect();
                     self.entities.insert(e.name.text.clone(), ports);
@@ -286,23 +299,6 @@ impl<'a> Checker<'a> {
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
             }
             Item::Impl(im) => {
-                // A bus-mode impl (`impl out Stream::Source { in a; out b; }`,
-                // spec 3.19) records each field's direction.
-                if im.mode_dir.is_some() {
-                    if let Type::Mode { inner, .. } = &im.target {
-                        if let Type::Path(p) = inner.as_ref() {
-                            if p.segments.len() >= 2 {
-                                let key = (p.segments[0].text.clone(), p.segments[1].text.clone());
-                                let map = self.mode_dirs.entry(key).or_default();
-                                for it in &im.items {
-                                    if let ImplItem::ModeField { dir, name, .. } = it {
-                                        map.insert(name.text.clone(), *dir);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
                 if let Some(ty) = type_head_name(&im.target) {
@@ -349,15 +345,18 @@ impl<'a> Checker<'a> {
                                 );
                             } else if !crate::syntax::ast::is_builtin_operator(symbol) {
                                 let precedence = im.attrs.iter().find_map(|a| {
-                                    (a.name.segments.last().is_some_and(|n| n.text == "precedence"))
-                                        .then_some(a)
-                                        .and_then(|a| a.value.as_ref())
-                                        .and_then(|v| match v {
-                                            Expr::Int { text, span } => {
-                                                text.parse::<u8>().ok().map(|p| (p, *span))
-                                            }
-                                            _ => None,
-                                        })
+                                    (a.name
+                                        .segments
+                                        .last()
+                                        .is_some_and(|n| n.text == "precedence"))
+                                    .then_some(a)
+                                    .and_then(|a| a.value.as_ref())
+                                    .and_then(|v| match v {
+                                        Expr::Int { text, span } => {
+                                            text.parse::<u8>().ok().map(|p| (p, *span))
+                                        }
+                                        _ => None,
+                                    })
                                 });
                                 match precedence {
                                     Some((value, span)) => {
@@ -431,11 +430,9 @@ impl<'a> Checker<'a> {
                             });
                             let output = arg_name(1).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
-                                    ImplItem::Fn(f) => f
-                                        .ret
-                                        .as_ref()
-                                        .and_then(type_head_name)
-                                        .map(str::to_string),
+                                    ImplItem::Fn(f) => {
+                                        f.ret.as_ref().and_then(type_head_name).map(str::to_string)
+                                    }
                                     _ => None,
                                 })
                             });
@@ -449,8 +446,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Enum(e) => {
-                let vars: Vec<String> =
-                    e.variants.iter().map(|v| v.name.text.clone()).collect();
+                let vars: Vec<String> = e.variants.iter().map(|v| v.name.text.clone()).collect();
                 self.own_variants.insert(e.name.text.clone(), vars.clone());
                 self.enum_variants.insert(e.name.text.clone(), vars);
                 if let Some(t) = &e.repr {
@@ -471,7 +467,8 @@ impl<'a> Checker<'a> {
             }
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
-                self.structs.insert(st.name.text.clone(), (st.base.clone(), fields));
+                self.structs
+                    .insert(st.name.text.clone(), (st.base.clone(), fields));
                 // A bodyless struct over an array of bit scalars is a bit
                 // vector by shape (`struct uint : Logic[]`); signedness comes
                 // from `impl Signed for T`, applied in a post-pass.
@@ -486,6 +483,15 @@ impl<'a> Checker<'a> {
                 if is_vec {
                     self.vector_families.insert(st.name.text.clone());
                 }
+            }
+            Item::View(v) => {
+                self.views.insert(v.name.text.clone(), v.target.clone());
+                let dirs = v
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.text.clone(), f.dir))
+                    .collect();
+                self.mode_dirs.insert(v.name.text.clone(), dirs);
             }
             Item::Using(u) => {
                 if let UsingKind::Alias { name, ty } = &u.kind {
@@ -586,7 +592,9 @@ impl<'a> Checker<'a> {
                 if self.vector_families.contains(&name) {
                     continue;
                 }
-                let Some((base, fields)) = self.structs.get(&name) else { continue };
+                let Some((base, fields)) = self.structs.get(&name) else {
+                    continue;
+                };
                 if !fields.is_empty() {
                     continue;
                 }
@@ -596,7 +604,9 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 let is_vec = matches!(elem.as_deref(), Some("Logic" | "Bit" | "ULogic"))
-                    || elem.as_deref().is_some_and(|h| self.vector_families.contains(h));
+                    || elem
+                        .as_deref()
+                        .is_some_and(|h| self.vector_families.contains(h));
                 if is_vec {
                     self.vector_families.insert(name);
                     changed = true;
@@ -612,12 +622,10 @@ impl<'a> Checker<'a> {
     fn is_array_base(&self, ty: &Type) -> bool {
         match ty {
             Type::Indexed { .. } => true,
-            Type::Path(p) if p.segments.len() == 1 => {
-                match self.aliases.get(&p.segments[0].text) {
-                    Some(t) => self.is_array_base(t),
-                    None => false,
-                }
-            }
+            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
+                Some(t) => self.is_array_base(t),
+                None => false,
+            },
             _ => false,
         }
     }
@@ -665,7 +673,80 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Struct(st) => self.check_struct(st),
+            Item::View(v) => self.check_view(v),
             Item::Using(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
+        }
+    }
+
+    fn check_view(&mut self, view: &ViewDecl) {
+        if view.target.is_none() {
+            let mut seen = HashSet::new();
+            for f in &view.fields {
+                if f.ty.is_none() {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        f.name.span,
+                        format!("standalone view field `{}` requires a type", f.name.text),
+                    );
+                }
+                if !seen.insert(f.name.text.clone()) {
+                    self.error(
+                        codes::DUPLICATE_ITEM,
+                        f.name.span,
+                        format!("view field `{}` is declared more than once", f.name.text),
+                    );
+                }
+            }
+            return;
+        }
+        let target_ty = view.target.as_ref().unwrap();
+        let Some(target) = type_head_name(target_ty) else { return };
+        if !self.structs.contains_key(target) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                type_head_span(target_ty).unwrap_or(view.span),
+                format!(
+                    "view `{}` must target a struct, found `{target}`",
+                    view.name.text
+                ),
+            );
+            return;
+        }
+        let fields = self.base_struct_fields(target_ty);
+        let mut seen = HashSet::new();
+        for f in &view.fields {
+            if f.ty.is_some() {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    f.name.span,
+                    format!("attached view field `{}` inherits its type from `{target}`", f.name.text),
+                );
+            }
+            if !fields.iter().any(|n| n == &f.name.text) {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    f.name.span,
+                    format!("struct `{target}` has no field `{}`", f.name.text),
+                );
+            } else if !seen.insert(f.name.text.clone()) {
+                self.error(
+                    codes::DUPLICATE_ITEM,
+                    f.name.span,
+                    format!("view field `{}` is declared more than once", f.name.text),
+                );
+            }
+        }
+        for field in fields {
+            if !seen.contains(&field) {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    view.name.span,
+                    format!(
+                        "view `{}` does not specify direction for `{field}`",
+                        view.name.text
+                    ),
+                );
+            }
         }
     }
 
@@ -676,7 +757,12 @@ impl<'a> Checker<'a> {
     /// vendor metadata, preserved for external tools). Unknown attribute
     /// names on entities are reported by name resolution.
     fn check_attr_target(&mut self, a: &Attr, kind: &str, type_name: Option<&str>) {
-        let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+        let name = a
+            .name
+            .segments
+            .last()
+            .map(|s| s.text.as_str())
+            .unwrap_or("");
         let verdict = self.attr_targets.get(name).map(|targets| {
             let ok = targets
                 .iter()
@@ -719,8 +805,12 @@ impl<'a> Checker<'a> {
                         _ => l.ty.as_ref().and_then(type_head_name).map(str::to_string),
                     };
                     for a in &l.attrs {
-                        let name =
-                            a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+                        let name = a
+                            .name
+                            .segments
+                            .last()
+                            .map(|s| s.text.as_str())
+                            .unwrap_or("");
                         if !self.attr_targets.contains_key(name) {
                             self.error(
                                 codes::UNKNOWN_NAME,
@@ -790,11 +880,23 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
-        (PortDirs { illegal, plain_in_roots }, sym)
+        (
+            PortDirs {
+                illegal,
+                plain_in_roots,
+            },
+            sym,
+        )
     }
 
     fn check_block(&mut self, b: &Block) {
-        let (dirs, sym) = (PortDirs { illegal: HashSet::new(), plain_in_roots: HashSet::new() }, HashMap::new());
+        let (dirs, sym) = (
+            PortDirs {
+                illegal: HashSet::new(),
+                plain_in_roots: HashSet::new(),
+            },
+            HashMap::new(),
+        );
         for s in &b.stmts {
             self.check_stmt(s, &dirs, &sym);
         }
@@ -864,7 +966,9 @@ impl<'a> Checker<'a> {
     /// An unknown (`Error`) condition type is skipped to avoid false positives.
     fn check_condition(&mut self, cond: &Expr, sym: &HashMap<String, Ty>) {
         let ty = self.type_of(cond, sym);
-        let Some(name) = self.type_kind_name(&ty) else { return };
+        let Some(name) = self.type_kind_name(&ty) else {
+            return;
+        };
         if !self.implements_boolean(&name) {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -880,9 +984,15 @@ impl<'a> Checker<'a> {
     /// Warn (spec Stage 10) when a `match` on an enum omits variants and has no
     /// `_` wildcard.
     fn check_match_exhaustive(&mut self, m: &MatchStmt, sym: &HashMap<String, Ty>) {
-        let Ty::Named(id) = self.type_of(&m.scrutinee, sym) else { return };
-        let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else { return };
-        let Some(variants) = self.enum_variants.get(&enum_name).cloned() else { return };
+        let Ty::Named(id) = self.type_of(&m.scrutinee, sym) else {
+            return;
+        };
+        let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else {
+            return;
+        };
+        let Some(variants) = self.enum_variants.get(&enum_name).cloned() else {
+            return;
+        };
 
         // Collect the covered variant names, flattening or-patterns; a wildcard
         // (bare or inside an `|`) makes the match exhaustive.
@@ -894,15 +1004,23 @@ impl<'a> Checker<'a> {
             }
             covered.extend(vars);
         }
-        let missing: Vec<String> =
-            variants.into_iter().filter(|v| !covered.contains(v.as_str())).collect();
+        let missing: Vec<String> = variants
+            .into_iter()
+            .filter(|v| !covered.contains(v.as_str()))
+            .collect();
         if !missing.is_empty() {
-            let names = missing.iter().map(|v| format!("`{v}`")).collect::<Vec<_>>().join(", ");
+            let names = missing
+                .iter()
+                .map(|v| format!("`{v}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
             self.sink.emit(
-                Diagnostic::warning(format!("non-exhaustive match on `{enum_name}`: missing {names}"))
-                    .with_code(codes::NON_EXHAUSTIVE_MATCH)
-                    .at(m.span)
-                    .help("add the missing arms, or a `_` wildcard"),
+                Diagnostic::warning(format!(
+                    "non-exhaustive match on `{enum_name}`: missing {names}"
+                ))
+                .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                .at(m.span)
+                .help("add the missing arms, or a `_` wildcard"),
             );
         }
     }
@@ -940,7 +1058,9 @@ impl<'a> Checker<'a> {
     }
 
     fn implements_boolean(&self, name: &str) -> bool {
-        self.trait_impls.get("Boolean").is_some_and(|set| set.contains(name))
+        self.trait_impls
+            .get("Boolean")
+            .is_some_and(|set| set.contains(name))
     }
 
     /// The name a type is keyed by in the trait-impl table (`uint[8]` and
@@ -974,9 +1094,11 @@ impl<'a> Checker<'a> {
             Expr::Field { .. } | Expr::Index { .. } => target_root_name(target),
             _ => None,
         };
-        let bad = exact.as_deref().filter(|n| dirs.illegal.contains(*n)).map(str::to_string).or_else(
-            || root.filter(|r| dirs.plain_in_roots.contains(r)),
-        );
+        let bad = exact
+            .as_deref()
+            .filter(|n| dirs.illegal.contains(*n))
+            .map(str::to_string)
+            .or_else(|| root.filter(|r| dirs.plain_in_roots.contains(r)));
         if let Some(name) = bad {
             self.sink.emit(
                 Diagnostic::error(format!("cannot assign to input port `{name}`"))
@@ -990,7 +1112,12 @@ impl<'a> Checker<'a> {
     /// Spec 3.5: an attribute's value must match the type its declaration gives.
     fn check_attr_value(&mut self, a: &Attr) {
         let Some(value) = &a.value else { return };
-        let name = a.name.segments.last().map(|s| s.text.as_str()).unwrap_or("");
+        let name = a
+            .name
+            .segments
+            .last()
+            .map(|s| s.text.as_str())
+            .unwrap_or("");
         let expected = self.attr_value_kinds.get(name).copied();
         let ok = match expected {
             Some(AttrValueTy::Bool) => {
@@ -1024,12 +1151,9 @@ impl<'a> Checker<'a> {
         if l.ty.is_some() {
             return;
         }
-        let mut diag = Diagnostic::error(format!(
-            "`let {}` needs a type annotation",
-            l.name.text
-        ))
-        .with_code(codes::MISSING_TYPE_ANNOTATION)
-        .at(l.span);
+        let mut diag = Diagnostic::error(format!("`let {}` needs a type annotation", l.name.text))
+            .with_code(codes::MISSING_TYPE_ANNOTATION)
+            .at(l.span);
         // Point at the clean form for the common instance case.
         if let Some(Expr::Construct { ty: Some(t), .. }) = &l.value {
             if let Some(head) = type_head_name(t) {
@@ -1044,7 +1168,9 @@ impl<'a> Checker<'a> {
     /// An entity is a hardware instance, not a compile-time value, so it may be
     /// declared with `let` but never `const` (`const dut: Counter = ..`).
     fn check_const_not_entity(&mut self, c: &ConstDecl) {
-        let Some(head) = type_head_name(&c.ty) else { return };
+        let Some(head) = type_head_name(&c.ty) else {
+            return;
+        };
         // Use the resolved definition so a generic parameter that shadows an
         // entity name isn't misjudged.
         let is_entity = type_head_span(&c.ty)
@@ -1070,7 +1196,8 @@ impl<'a> Checker<'a> {
         // not a data assignment: a positional/empty block lexes as a concat,
         // and a dotted one as a name-less construct. Either way it is checked
         // structurally by elaboration, not by initializer compatibility.
-        if matches!(lhs, Ty::Named(_)) && matches!(value, Expr::Construct { .. } | Expr::Concat { .. })
+        if matches!(lhs, Ty::Named(_))
+            && matches!(value, Expr::Construct { .. } | Expr::Concat { .. })
         {
             return;
         }
@@ -1117,10 +1244,12 @@ impl<'a> Checker<'a> {
     /// `Error` type on either side suppresses the check.
     /// Whether `id` is an enum declaring the character variant `ch`.
     fn enum_has_char_variant(&self, id: crate::resolve::DefId, ch: char) -> bool {
-        let Some(d) = self.resolved.def(id) else { return false };
-        self.enum_variants.get(&d.name).is_some_and(|vars| {
-            vars.iter().any(|v| v.trim_matches('\'') == ch.to_string())
-        })
+        let Some(d) = self.resolved.def(id) else {
+            return false;
+        };
+        self.enum_variants
+            .get(&d.name)
+            .is_some_and(|vars| vars.iter().any(|v| v.trim_matches('\'') == ch.to_string()))
     }
 
     /// Enforce a generic fn's trait bounds at the call site (spec: generic
@@ -1138,9 +1267,13 @@ impl<'a> Checker<'a> {
         };
         for gp in &generics {
             let Some(bound) = &gp.bound else { continue };
-            let Some(trait_name) = type_head_name(bound) else { continue };
+            let Some(trait_name) = type_head_name(bound) else {
+                continue;
+            };
             // Infer the type param from the first value param named after it.
-            let inferred = vparams.iter().position(|(_, t)| type_head_name(t) == Some(&gp.name.text))
+            let inferred = vparams
+                .iter()
+                .position(|(_, t)| type_head_name(t) == Some(&gp.name.text))
                 .and_then(|i| args.get(i))
                 .map(|a| self.type_of(a, sym));
             let Some(ty) = inferred else { continue };
@@ -1166,7 +1299,11 @@ impl<'a> Checker<'a> {
     fn satisfies(&self, ty: &Ty, trait_name: &str) -> bool {
         match self.type_kind_name(ty) {
             Some(kind) => {
-                if self.trait_impls.get(trait_name).is_some_and(|s| s.contains(&kind)) {
+                if self
+                    .trait_impls
+                    .get(trait_name)
+                    .is_some_and(|s| s.contains(&kind))
+                {
                     return true;
                 }
                 // A named (struct/enum) type without the impl fails; a kernel
@@ -1221,10 +1358,16 @@ impl<'a> Checker<'a> {
                 _ => signed_lit(e),
             }
         }
-        let Some(v) = args.first().and_then(const_fold) else { return };
+        let Some(v) = args.first().and_then(const_fold) else {
+            return;
+        };
         // No signedness: a literal fits an N-bit vector if it lands in the
         // union of the unsigned (0..2^N) and signed (-2^(N-1)..) ranges.
-        let hi = if width == 64 { i64::MAX } else { (1i64 << width) - 1 };
+        let hi = if width == 64 {
+            i64::MAX
+        } else {
+            (1i64 << width) - 1
+        };
         let lo = -(1i64 << (width - 1));
         let fits = v >= lo && v <= hi;
         if !fits {
@@ -1239,7 +1382,9 @@ impl<'a> Checker<'a> {
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
-            Expr::Int { .. } => matches!(lhs, Ty::Vector { .. } | Ty::Integer | Ty::Real | Ty::Error),
+            Expr::Int { .. } => {
+                matches!(lhs, Ty::Vector { .. } | Ty::Integer | Ty::Real | Ty::Error)
+            }
             Expr::CharLit { ch, .. } => {
                 // A character literal reads through its context type (spec:
                 // type kernel): builtin scalars, `Char`, or a user enum with
@@ -1260,7 +1405,8 @@ impl<'a> Checker<'a> {
             // read through it, as in an initialiser).
             Expr::Array { elems, .. } => match lhs {
                 Ty::Array { elem, len } => {
-                    elems.len() as u32 == *len && elems.iter().all(|e| self.assignable(elem, e, sym))
+                    elems.len() as u32 == *len
+                        && elems.iter().all(|e| self.assignable(elem, e, sym))
                 }
                 Ty::Error => true,
                 _ => false,
@@ -1278,7 +1424,9 @@ impl<'a> Checker<'a> {
                     }
                     // A char-enum array (`Color[3] = "rgb"`): each char a variant.
                     Ty::Array { elem, len } if matches!(elem.as_ref(), Ty::Named(_)) => {
-                        let Ty::Named(id) = elem.as_ref() else { unreachable!() };
+                        let Ty::Named(id) = elem.as_ref() else {
+                            unreachable!()
+                        };
                         (*len == 0 || n == *len)
                             && text.chars().all(|c| self.enum_has_char_variant(*id, c))
                     }
@@ -1300,7 +1448,10 @@ impl<'a> Checker<'a> {
                     self.error(
                         codes::PHASE2_SYNTAX,
                         *span,
-                        format!("`::{}` is Phase-2 analogue syntax, not available in Phase 1", attr.text),
+                        format!(
+                            "`::{}` is Phase-2 analogue syntax, not available in Phase 1",
+                            attr.text
+                        ),
                     );
                 }
                 // The edge helpers are ordinary trait methods now, so the
@@ -1315,7 +1466,9 @@ impl<'a> Checker<'a> {
                 }
                 self.check_expr(base, sym);
             }
-            Expr::Match { scrutinee, arms, .. } => {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 self.check_expr(scrutinee, sym);
                 for arm in arms {
                     if let Some(v) = arm.value_expr() {
@@ -1341,7 +1494,10 @@ impl<'a> Checker<'a> {
                         self.error(
                             codes::TYPE_MISMATCH,
                             *span,
-                            format!("`not` is a per-bit operator; `{}` is not a bit-derived type", ty_name(&t)),
+                            format!(
+                                "`not` is a per-bit operator; `{}` is not a bit-derived type",
+                                ty_name(&t)
+                            ),
                         );
                     }
                     if let Some(owner) = self.ty_head(&t) {
@@ -1361,7 +1517,9 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::IfExpr { cond, then, els, .. } => {
+            Expr::IfExpr {
+                cond, then, els, ..
+            } => {
                 // Same condition rule as statement `if` (must be Boolean).
                 self.check_condition(cond, sym);
                 self.check_expr(cond, sym);
@@ -1460,8 +1618,12 @@ impl<'a> Checker<'a> {
                         if is_int_lit {
                             if let Some(name) = self.enum_operand_name(&self.type_of(other, sym)) {
                                 let hint = match name.as_str() {
-                                    "Bit" | "Logic" => "compare against a value literal, e.g. `== '1'`",
-                                    "Bool" => "compare against `true`/`false`, or use the value directly",
+                                    "Bit" | "Logic" => {
+                                        "compare against a value literal, e.g. `== '1'`"
+                                    }
+                                    "Bool" => {
+                                        "compare against `true`/`false`, or use the value directly"
+                                    }
                                     _ => "compare against a variant, e.g. `== Idle`",
                                 };
                                 self.warn(
@@ -1480,7 +1642,9 @@ impl<'a> Checker<'a> {
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
                         let has_op = |tr: &str| {
-                            self.trait_impls.get(tr).is_some_and(|set| set.contains(&name))
+                            self.trait_impls
+                                .get(tr)
+                                .is_some_and(|set| set.contains(&name))
                         };
                         // Operators dispatch by symbol; one three-way `<=>`
                         // (`-> Ordering`) impl derives every comparison.
@@ -1490,7 +1654,9 @@ impl<'a> Checker<'a> {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
-                                format!("`{op_str}` needs an `impl Operator<\"{sym}\", …> for {name}`"),
+                                format!(
+                                    "`{op_str}` needs an `impl Operator<\"{sym}\", …> for {name}`"
+                                ),
                             );
                         }
                     }
@@ -1565,7 +1731,9 @@ impl<'a> Checker<'a> {
                     self.error(
                         codes::TYPE_MISMATCH,
                         *span,
-                        format!("unknown bit-string prefix `{base}` — no `impl Prefix` declares it"),
+                        format!(
+                            "unknown bit-string prefix `{base}` — no `impl Prefix` declares it"
+                        ),
                     );
                     return;
                 }
@@ -1591,10 +1759,7 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Expr::Int { .. }
-            | Expr::CharLit { .. }
-            | Expr::StrLit { .. }
-            | Expr::Path(_) => {}
+            Expr::Int { .. } | Expr::CharLit { .. } | Expr::StrLit { .. } | Expr::Path(_) => {}
         }
     }
 
@@ -1626,13 +1791,16 @@ impl<'a> Checker<'a> {
                         .defs()
                         .iter()
                         .position(|d| {
-                            d.name == *ty
-                                && matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                            d.name == *ty && matches!(d.kind, DefKind::Struct | DefKind::Enum)
                         })
                         .map(|i| Ty::Named(crate::resolve::DefId(i as u32)))
                         .unwrap_or(Ty::Error);
                 }
-                if suffix_scale(&suffix.text).is_some() { Ty::Integer } else { Ty::Error }
+                if suffix_scale(&suffix.text).is_some() {
+                    Ty::Integer
+                } else {
+                    Ty::Error
+                }
             }
             Expr::BitStrLit { base, digits, .. } => {
                 // Only the intrinsic radix prefixes have a known width; an
@@ -1643,15 +1811,19 @@ impl<'a> Checker<'a> {
                     'o' => 3,
                     _ => return Ty::Error,
                 };
-                Ty::Vector { family: None, width: digits.len() as u32 * bits }
+                Ty::Vector {
+                    family: None,
+                    width: digits.len() as u32 * bits,
+                }
             }
             // A char literal defaults to `Char`; an annotation/target
             // overrides it (Bit/Logic/enum) via `assignable`.
             Expr::CharLit { .. } => Ty::Char,
             // A string literal is `string` = `Char[N]`.
-            Expr::StrLit { text, .. } => {
-                Ty::Array { elem: Box::new(Ty::Char), len: text.chars().count() as u32 }
-            }
+            Expr::StrLit { text, .. } => Ty::Array {
+                elem: Box::new(Ty::Char),
+                len: text.chars().count() as u32,
+            },
             Expr::Path(p) => {
                 if p.segments.len() == 1 {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
@@ -1660,10 +1832,18 @@ impl<'a> Checker<'a> {
                     // `Bool`'s variants (`true`/`false`, desugared to
                     // `Bool::true`) keep the primitive `Ty::Bool` so conditions
                     // and attrs that expect it are unaffected.
-                    match self.resolved.resolved(p.span).and_then(|id| self.resolved.def(id)) {
+                    match self
+                        .resolved
+                        .resolved(p.span)
+                        .and_then(|id| self.resolved.def(id))
+                    {
                         Some(d) if d.kind == DefKind::EnumVariant => match d.parent {
                             Some(pid)
-                                if self.resolved.def(pid).map(|p| p.name == "Bool").unwrap_or(false) =>
+                                if self
+                                    .resolved
+                                    .def(pid)
+                                    .map(|p| p.name == "Bool")
+                                    .unwrap_or(false) =>
                             {
                                 Ty::Bool
                             }
@@ -1690,9 +1870,7 @@ impl<'a> Checker<'a> {
                 let rhs_ty = self.type_of(rhs, sym);
                 let op_str = crate::syntax::pretty::bin_op(op);
                 let tr = op_str;
-                if let (Some(owner), Some(input)) =
-                    (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty))
-                {
+                if let (Some(owner), Some(input)) = (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty)) {
                     if let Some((_, Some(output))) = self
                         .operator_sigs
                         .get(&(tr.to_string(), owner.clone()))
@@ -1727,16 +1905,12 @@ impl<'a> Checker<'a> {
                 // impl-owning operand's type.
                 if !matches!(lhs_ty, Ty::Named(_)) {
                     if let Ty::Named(id) = self.type_of(rhs, sym) {
-                        let has_impl = self
-                            .resolved
-                            .def(id)
-                            .map(|d| &d.name)
-                            .is_some_and(|name| {
-                                let tr = crate::syntax::pretty::bin_op(op);
-                                self.trait_impls
-                                    .get(tr)
-                                    .is_some_and(|set| set.contains(name))
-                            });
+                        let has_impl = self.resolved.def(id).map(|d| &d.name).is_some_and(|name| {
+                            let tr = crate::syntax::pretty::bin_op(op);
+                            self.trait_impls
+                                .get(tr)
+                                .is_some_and(|set| set.contains(name))
+                        });
                         if has_impl {
                             return Ty::Named(id);
                         }
@@ -1744,7 +1918,9 @@ impl<'a> Checker<'a> {
                 }
                 lhs_ty
             }
-            Expr::Unary { op: UnOp::Not, rhs, .. } => {
+            Expr::Unary {
+                op: UnOp::Not, rhs, ..
+            } => {
                 let rhs_ty = self.type_of(rhs, sym);
                 if let Some(owner) = self.ty_head(&rhs_ty) {
                     if let Some((_, Some(output))) = self
@@ -1765,12 +1941,21 @@ impl<'a> Checker<'a> {
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
             // A concatenation is an unsigned bit vector of unknown width.
-            Expr::Concat { .. } => Ty::Vector { family: None, width: 0 },
+            Expr::Concat { .. } => Ty::Vector {
+                family: None,
+                width: 0,
+            },
             // An array literal: element type from the first element, length
             // from the count.
             Expr::Array { elems, .. } => {
-                let elem = elems.first().map(|e| self.type_of(e, sym)).unwrap_or(Ty::Error);
-                Ty::Array { elem: Box::new(elem), len: elems.len() as u32 }
+                let elem = elems
+                    .first()
+                    .map(|e| self.type_of(e, sym))
+                    .unwrap_or(Ty::Error);
+                Ty::Array {
+                    elem: Box::new(elem),
+                    len: elems.len() as u32,
+                }
             }
             // Conversion expressions type as their target (spec 3.17):
             // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
@@ -1782,25 +1967,25 @@ impl<'a> Checker<'a> {
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
                     match self.vector_families.get(head) {
-                        Some(_) => Ty::Vector { family: Some(head.to_string()), width: w },
+                        Some(_) => Ty::Vector {
+                            family: Some(head.to_string()),
+                            width: w,
+                        },
                         None => Ty::Error,
                     }
                 }
                 Expr::Path(p) if p.segments.len() == 1 => match p.segments[0].text.as_str() {
                     // A named struct/enum: a `From` conversion, typed as the
                     // target (fn calls and kernel conversions fall through).
-                    name
-                        if name != "integer"
-                            && name != "resize"
-                            && match self.path_ty(p) {
-                                Ty::Named(id) => self
-                                    .resolved
-                                    .def(id)
-                                    .is_some_and(|d| {
-                                        matches!(d.kind, DefKind::Struct | DefKind::Enum)
-                                    }),
-                                _ => false,
-                            } =>
+                    name if name != "integer"
+                        && name != "resize"
+                        && match self.path_ty(p) {
+                            Ty::Named(id) => self
+                                .resolved
+                                .def(id)
+                                .is_some_and(|d| matches!(d.kind, DefKind::Struct | DefKind::Enum)),
+                            _ => false,
+                        } =>
                     {
                         self.path_ty(p)
                     }
@@ -1833,9 +2018,7 @@ impl<'a> Checker<'a> {
                 }
                 _ => Ty::Error,
             },
-            Expr::Field { .. } | Expr::Index { .. } | Expr::Range { .. } => {
-                Ty::Error
-            }
+            Expr::Field { .. } | Expr::Index { .. } | Expr::Range { .. } => Ty::Error,
         }
     }
 
@@ -1863,9 +2046,10 @@ impl<'a> Checker<'a> {
             "Char" => Ty::Char,
             "integer" => Ty::Integer,
             "real" => Ty::Real,
-            name if self.is_vector_family(name) => {
-                Ty::Vector { family: Some(name.to_string()), width: 0 }
-            }
+            name if self.is_vector_family(name) => Ty::Vector {
+                family: Some(name.to_string()),
+                width: 0,
+            },
             name => self
                 .resolved
                 .defs()
@@ -1896,18 +2080,18 @@ impl<'a> Checker<'a> {
         // Resolve one alias hop (`using Byte = integer<0..255>`).
         let resolved;
         let t = match decl_ty {
-            Type::Path(p) if p.segments.len() == 1 => {
-                match self.aliases.get(&p.segments[0].text) {
-                    Some(a) => {
-                        resolved = a.clone();
-                        &resolved
-                    }
-                    None => decl_ty,
+            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
+                Some(a) => {
+                    resolved = a.clone();
+                    &resolved
                 }
-            }
+                None => decl_ty,
+            },
             _ => decl_ty,
         };
-        let Type::Generic { base, args, .. } = t else { return };
+        let Type::Generic { base, args, .. } = t else {
+            return;
+        };
         let Type::Path(p) = base.as_ref() else { return };
         if p.segments.last().map(|s| s.text.as_str()) != Some("integer") {
             return;
@@ -1915,7 +2099,9 @@ impl<'a> Checker<'a> {
         let [GenericArg::Positional(Expr::Range { lo, hi, .. })] = args.as_slice() else {
             return;
         };
-        let (Some(a), Some(b)) = (signed_lit(lo), signed_lit(hi)) else { return };
+        let (Some(a), Some(b)) = (signed_lit(lo), signed_lit(hi)) else {
+            return;
+        };
         let (min, max) = (a.min(b), a.max(b));
         if let Some(v) = signed_lit(value) {
             if v < min || v > max {
@@ -1941,8 +2127,14 @@ impl<'a> Checker<'a> {
                     // (`uint[8]`). A *second* index makes an array of those
                     // vectors (`uint[8][4]` = 4 elements, each 8 wide).
                     Ty::Vector { family, width: 0 } => Ty::Vector { family, width },
-                    v @ Ty::Vector { .. } => Ty::Array { elem: Box::new(v), len: width },
-                    other => Ty::Array { elem: Box::new(other), len: width },
+                    v @ Ty::Vector { .. } => Ty::Array {
+                        elem: Box::new(v),
+                        len: width,
+                    },
+                    other => Ty::Array {
+                        elem: Box::new(other),
+                        len: width,
+                    },
                 }
             }
             Type::Generic { base, .. } => self.ast_ty(base),
@@ -1981,9 +2173,10 @@ impl<'a> Checker<'a> {
                     Some(t) => self.ast_ty(&t.clone()),
                     // A bit-vector family (`struct F : Logic[]`): width applies
                     // via `F[N]` (ast_ty's Indexed).
-                    None if self.is_vector_family(name) => {
-                        Ty::Vector { family: Some(name.to_string()), width: 0 }
-                    }
+                    None if self.is_vector_family(name) => Ty::Vector {
+                        family: Some(name.to_string()),
+                        width: 0,
+                    },
                     None => self.named_ty(p.span),
                 },
             }
@@ -1993,11 +2186,17 @@ impl<'a> Checker<'a> {
     }
 
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
-        self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
+        self.sink
+            .emit(Diagnostic::error(msg).with_code(code).at(span));
     }
 
     fn warn(&mut self, code: &'static str, span: Span, msg: String, help: &str) {
-        self.sink.emit(Diagnostic::warning(msg).with_code(code).at(span).help(help.to_string()));
+        self.sink.emit(
+            Diagnostic::warning(msg)
+                .with_code(code)
+                .at(span)
+                .help(help.to_string()),
+        );
     }
 
     /// The enum name if `t` is a symbolic enum value (`Bit`/`Logic`/`Bool` or a
@@ -2088,20 +2287,9 @@ struct PortDirs {
 
 /// The `(struct, mode)` of a bus-mode type (`out Stream::Source` ->
 /// `("Stream", "Source")`), for looking up per-leaf directions.
-fn mode_key(ty: &Type) -> Option<(String, String)> {
-    if let Type::Mode { inner, mode, .. } = ty {
-        // Generic form `Stream<..>::Source`.
-        if let Some(m) = mode {
-            return Some((type_head_name(inner)?.to_string(), m.text.clone()));
-        }
-        // Plain form `Stream::Source` (two-segment inner path).
-        if let Type::Path(p) = inner.as_ref() {
-            if p.segments.len() >= 2 {
-                return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));
-            }
-        }
-    }
-    None
+fn view_key(ty: &Type, views: &HashMap<String, Option<Type>>) -> Option<String> {
+    let head = type_head_name(ty)?;
+    views.contains_key(head).then(|| head.to_string())
 }
 
 /// Width of a bracketed type index when it is a literal (`uint[8]` -> 8);
@@ -2114,7 +2302,10 @@ fn width_of(index: &Expr) -> u32 {
 }
 
 fn is_comparison(op: &BinOp) -> bool {
-    matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+    )
 }
 
 /// Whether a value of type `rhs` may be assigned to `lhs` with no conversion.
@@ -2148,7 +2339,9 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
 /// and point at the right form: `'c'` for a single value, `b"..."` for a bit
 /// vector. Assigning a string to a `Char` array is fine, so no hint there.
 fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
-    let Expr::StrLit { text, .. } = value else { return None };
+    let Expr::StrLit { text, .. } = value else {
+        return None;
+    };
     match lhs {
         // A string *is* a Char array — that assignment is correct.
         Ty::Array { elem, .. } if matches!(**elem, Ty::Char) => None,
@@ -2192,7 +2385,9 @@ fn ty_name(t: &Ty) -> String {
 fn signed_lit(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int { text, .. } => text.parse::<i64>().ok(),
-        Expr::Unary { op: UnOp::Neg, rhs, .. } => signed_lit(rhs).map(|v| -v),
+        Expr::Unary {
+            op: UnOp::Neg, rhs, ..
+        } => signed_lit(rhs).map(|v| -v),
         _ => None,
     }
 }
@@ -2245,7 +2440,10 @@ mod tests {
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
         check(std::slice::from_ref(&module), &resolved, &mut sink);
-        sink.diagnostics().iter().map(|d| format!("{:?}", d.code)).collect()
+        sink.diagnostics()
+            .iter()
+            .map(|d| format!("{:?}", d.code))
+            .collect()
     }
 
     #[test]
@@ -2278,8 +2476,8 @@ mod tests {
         let bad = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             impl out S::Source { out valid; in ready; }\n\
-             entity P { bus: out S::Source; }\n\
+             view out Source for S { out valid; in ready; }\n\
+             entity P { bus: Source; }\n\
              impl P { bus.valid = '1'; bus.ready = '1'; }\n",
         );
         assert_eq!(bad, 1, "driving the `in` leaf bus.ready must error");
@@ -2288,8 +2486,8 @@ mod tests {
         let ok = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             impl out S::Source { out valid; in ready; }\n\
-             entity P { bus: out S::Source; out r: Bit; }\n\
+             view out Source for S { out valid; in ready; }\n\
+             entity P { bus: Source; out r: Bit; }\n\
              impl P { bus.valid = '1'; r = bus.ready; }\n",
         );
         assert_eq!(ok, 0, "driving out leaves + reading in leaves is fine");
@@ -2304,7 +2502,11 @@ mod tests {
             impl S { fn ready(self) -> Logic { return self.v; } }\n\
             entity E { out o: Logic; }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
-        assert_eq!(check_src(bad), 1, "Logic-returning method as a condition should error");
+        assert_eq!(
+            check_src(bad),
+            1,
+            "Logic-returning method as a condition should error"
+        );
 
         // A `Bool`-returning method is a valid condition — no error.
         let good = "module m;\n\
@@ -2312,35 +2514,67 @@ mod tests {
             impl S { fn ready(self) -> Bool { return true; } }\n\
             entity E { out o: Logic; }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
-        assert_eq!(check_src(good), 0, "Bool-returning method as a condition should pass");
+        assert_eq!(
+            check_src(good),
+            0,
+            "Bool-returning method as a condition should pass"
+        );
     }
 
     #[test]
     fn string_literal_gets_a_targeted_hint() {
         let sp = crate::diag::Span::new(FileId(0), 0..1);
-        let s = |t: &str| Expr::StrLit { text: t.to_string(), span: sp };
+        let s = |t: &str| Expr::StrLit {
+            text: t.to_string(),
+            span: sp,
+        };
         // A scalar Logic/Bit/Char points at the character literal.
         let h = strlit_help(&Ty::Logic, &s("0")).unwrap();
         assert!(h.contains("'0'"), "{h}");
         // A bit vector points at the bit-string literal.
-        let h = strlit_help(&Ty::Vector { family: None, width: 4 }, &s("0101")).unwrap();
+        let h = strlit_help(
+            &Ty::Vector {
+                family: None,
+                width: 4,
+            },
+            &s("0101"),
+        )
+        .unwrap();
         assert!(h.contains("b\"0101\""), "{h}");
         // Assigning a string to a Char array is correct — no hint.
-        let str_ty = Ty::Array { elem: Box::new(Ty::Char), len: 2 };
+        let str_ty = Ty::Array {
+            elem: Box::new(Ty::Char),
+            len: 2,
+        };
         assert!(strlit_help(&str_ty, &s("hi")).is_none());
     }
 
     #[test]
     fn vector_names_its_real_family() {
         // A known family displays by name; anonymous vectors fall back to uint.
-        let int8 = Ty::Vector { family: Some("int".to_string()), width: 8 };
+        let int8 = Ty::Vector {
+            family: Some("int".to_string()),
+            width: 8,
+        };
         assert_eq!(ty_name(&int8), "int[8]");
-        let byte = Ty::Vector { family: Some("Byte".to_string()), width: 0 };
+        let byte = Ty::Vector {
+            family: Some("Byte".to_string()),
+            width: 0,
+        };
         assert_eq!(ty_name(&byte), "Byte");
-        let anon = Ty::Vector { family: None, width: 4 };
+        let anon = Ty::Vector {
+            family: None,
+            width: 4,
+        };
         assert_eq!(ty_name(&anon), "uint[4]");
         // Width still ignores the family: uint[8] and int[8] stay compatible.
-        assert!(compatible(&int8, &Ty::Vector { family: None, width: 8 }));
+        assert!(compatible(
+            &int8,
+            &Ty::Vector {
+                family: None,
+                width: 8
+            }
+        ));
     }
 
     /// The number of warnings with a given code emitted while checking `src`.
@@ -2351,7 +2585,10 @@ mod tests {
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
         check(std::slice::from_ref(&module), &resolved, &mut sink);
-        sink.diagnostics().iter().filter(|d| d.code == Some(code)).count()
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(code))
+            .count()
     }
 
     #[test]
@@ -2392,7 +2629,10 @@ mod tests {
         // Missing `Done` and no `_` -> one warning.
         assert_eq!(
             warnings(
-                &base.replace("ARMS", "State::Idle => { y = '0'; } State::Run => { y = '1'; }"),
+                &base.replace(
+                    "ARMS",
+                    "State::Idle => { y = '0'; } State::Run => { y = '1'; }"
+                ),
                 codes::NON_EXHAUSTIVE_MATCH
             ),
             1
@@ -2442,9 +2682,8 @@ mod tests {
 
     #[test]
     fn writing_output_is_fine() {
-        let errors = check_src(
-            "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en;\n}\n",
-        );
+        let errors =
+            check_src("module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en;\n}\n");
         assert_eq!(errors, 0);
     }
 
@@ -2581,16 +2820,12 @@ mod tests {
         );
         // Bad digits for the base are an error (`G` is not a hex digit).
         assert_eq!(
-            check_src(
-                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"
-            ),
+            check_src("module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"),
             1
         );
         // An unknown prefix (no `impl Prefix` declares `q`) is an error.
         assert_eq!(
-            check_src(
-                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"
-            ),
+            check_src("module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"),
             1
         );
     }
@@ -2656,7 +2891,10 @@ mod tests {
         assert!(matches!(ty("module m;\nimpl E { y = 42; }\n"), Ty::Integer));
         assert!(matches!(ty("module m;\nimpl E { y = 3.14; }\n"), Ty::Real));
         assert!(matches!(ty("module m;\nimpl E { y = '0'; }\n"), Ty::Char));
-        assert!(matches!(ty("module m;\nimpl E { y = \"abc\"; }\n"), Ty::Array { .. }));
+        assert!(matches!(
+            ty("module m;\nimpl E { y = \"abc\"; }\n"),
+            Ty::Array { .. }
+        ));
         // `true`/`false` desugar to `Bool::true`/`Bool::false`, so std's `Bool`
         // enum must be in scope for them to resolve and type as `Ty::Bool`.
         assert!(matches!(
@@ -2709,7 +2947,11 @@ mod tests {
             }\n\
             entity E { in a: Left; in b: Right; out y: Result; }\n\
             impl E { y = a and b; }\n";
-        assert_eq!(check_src(src), 0, "the Output parameter types the expression");
+        assert_eq!(
+            check_src(src),
+            0,
+            "the Output parameter types the expression"
+        );
     }
 
     #[test]
@@ -2727,7 +2969,11 @@ mod tests {
         assert_eq!(check_src(ok), 0);
 
         let bad = ok.replace("in b: Right", "in b: Left");
-        assert_eq!(check_src(&bad), 1, "the Input template participates in overload selection");
+        assert_eq!(
+            check_src(&bad),
+            1,
+            "the Input template participates in overload selection"
+        );
     }
 
     #[test]
@@ -2741,7 +2987,10 @@ mod tests {
             let src = format!(
                 "{header}#[precedence = 5] impl Operator<\"{sym}\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
             );
-            assert!(check_src(&src) >= 1, "reserved operator `{sym}` should error");
+            assert!(
+                check_src(&src) >= 1,
+                "reserved operator `{sym}` should error"
+            );
         }
         // A genuine custom punctuation operator is accepted.
         let ok = format!(
@@ -2771,14 +3020,10 @@ mod tests {
     #[test]
     fn derived_struct_field_collision_errors() {
         // A field re-declaring an inherited one is rejected.
-        let n = check_src(
-            "module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n",
-        );
+        let n = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n");
         assert_eq!(n, 1, "duplicate inherited field");
         // A fresh field name is fine.
-        let ok = check_src(
-            "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n",
-        );
+        let ok = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
         assert_eq!(ok, 0);
     }
 
@@ -2786,9 +3031,7 @@ mod tests {
     fn field_adding_over_array_base_errors() {
         // Deriving fields over an array-shaped base is rejected; the bodyless
         // form is allowed.
-        let bad = check_src(
-            "module m;\nstruct Foo : Bit[] { parity: Bit }\n",
-        );
+        let bad = check_src("module m;\nstruct Foo : Bit[] { parity: Bit }\n");
         assert_eq!(bad, 1, "fields over array base");
         let ok = check_src("module m;\nstruct Word : Bit[];\n");
         assert_eq!(ok, 0, "bodyless array-derived is fine");

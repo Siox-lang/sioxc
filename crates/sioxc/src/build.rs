@@ -22,9 +22,17 @@ use siox::syntax::Module;
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
 /// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
 /// in the same object.
-pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) -> Result<(), String> {
+pub fn build(
+    modules: &[Module],
+    hier: &Hierarchy,
+    design: &Design,
+    out: &Path,
+) -> Result<(), String> {
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
-        return Err(format!("signal `{}` is {} bits; siox build is 64-bit only", s.path, s.width));
+        return Err(format!(
+            "signal `{}` is {} bits; siox build is 64-bit only",
+            s.path, s.width
+        ));
     }
     let issues = design.validate();
     if !issues.is_empty() {
@@ -90,8 +98,23 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
     for m in modules {
         for item in &m.items {
-            if let ast::Item::Fn(f) = item {
-                fns.insert(f.name.text.clone(), f);
+            match item {
+                ast::Item::Fn(f) => {
+                    fns.insert(f.name.text.clone(), f);
+                }
+                // A *static* associated fn (no `self`) is callable as
+                // `Type::name(..)`, keyed like a module-level fn.
+                ast::Item::Impl(im) => {
+                    let Some(ty) = type_head_name(&im.target) else { continue };
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            if !f.params.iter().any(|p| p.is_self) {
+                                fns.insert(format!("{ty}::{}", f.name.text), f);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -138,7 +161,9 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
     prog.push_str("static const char *g_msg;\n");
     prog.push_str("static int g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
-    prog.push_str("static uint64_t sx_b64(double d) { uint64_t b; memcpy(&b, &d, 8); return b; }\n");
+    prog.push_str(
+        "static uint64_t sx_b64(double d) { uint64_t b; memcpy(&b, &d, 8); return b; }\n",
+    );
     // xorshift64* with the runner's constants: identical random sequences.
     prog.push_str(
         "static uint64_t g_rand = 0x9E3779B97F4A7C15ULL;\n\
@@ -245,7 +270,14 @@ pub fn build(modules: &[Module], hier: &Hierarchy, design: &Design, out: &Path) 
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);
     }
     let status = Command::new("clang")
-        .args([csrc.to_str().unwrap(), obj.to_str().unwrap(), "-O2", "-lm", "-o", out.to_str().unwrap()])
+        .args([
+            csrc.to_str().unwrap(),
+            obj.to_str().unwrap(),
+            "-O2",
+            "-lm",
+            "-o",
+            out.to_str().unwrap(),
+        ])
         .status()
         .map_err(|e| format!("failed to run clang: {e}"))?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -343,7 +375,11 @@ fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type
         for item in &m.items {
             if let ast::Item::Struct(s) = item {
                 let base = s.base.as_ref().and_then(type_head_name).map(str::to_string);
-                let own = s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())).collect();
+                let own = s
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.text.clone(), f.ty.clone()))
+                    .collect();
                 raw.insert(s.name.text.clone(), (base, own));
             }
         }
@@ -356,7 +392,9 @@ fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type
         if depth > 32 {
             return Vec::new();
         }
-        let Some((base, own)) = raw.get(name) else { return Vec::new() };
+        let Some((base, own)) = raw.get(name) else {
+            return Vec::new();
+        };
         let mut out = match base {
             Some(b) => flat(b, raw, depth + 1),
             None => Vec::new(),
@@ -377,7 +415,8 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
                 if let Some(ty) = type_head_name(&im.target) {
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
-                            out.entry((ty.to_string(), f.name.text.clone())).or_insert(f);
+                            out.entry((ty.to_string(), f.name.text.clone()))
+                                .or_insert(f);
                         }
                     }
                 }
@@ -391,8 +430,12 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
 /// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
 /// The literal path of a `read`/`read_to_string` call, if `e` is one.
 fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
-    let ast::Expr::Call { callee, args, .. } = e else { return None };
-    let ast::Expr::Path(p) = callee.as_ref() else { return None };
+    let ast::Expr::Call { callee, args, .. } = e else {
+        return None;
+    };
+    let ast::Expr::Path(p) = callee.as_ref() else {
+        return None;
+    };
     if p.segments.len() != 1 || p.segments[0].text != which {
         return None;
     }
@@ -469,7 +512,9 @@ impl Ctx<'_> {
     /// `true` when handled. `read`/`read_to_string` in *initializer* position of
     /// a DUT signal is baked by the IR; this covers the testbench-local case.
     fn try_declare_fs_read_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
-        let Some(value) = &l.value else { return Ok(false) };
+        let Some(value) = &l.value else {
+            return Ok(false);
+        };
         let (path, bytes) = match (
             fs_read_path(value, "read_to_string"),
             fs_read_path(value, "read"),
@@ -494,7 +539,9 @@ impl Ctx<'_> {
         };
         let name = &l.name.text;
         if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
-            self.local_types.borrow_mut().insert(name.clone(), head.to_string());
+            self.local_types
+                .borrow_mut()
+                .insert(name.clone(), head.to_string());
         }
         for (i, &code) in codes.iter().enumerate() {
             let key = format!("{name}[{i}]");
@@ -503,7 +550,10 @@ impl Ctx<'_> {
             if let Some(&id) = self.map.get(&key) {
                 b.push_str(&format!("    sx_set({}, {code}ULL);\n", id.0));
             } else {
-                b.push_str(&format!("    uint64_t {} = {code}ULL;\n", c_local_ident(&key)));
+                b.push_str(&format!(
+                    "    uint64_t {} = {code}ULL;\n",
+                    c_local_ident(&key)
+                ));
                 self.locals.borrow_mut().insert(key);
             }
         }
@@ -521,7 +571,9 @@ impl Ctx<'_> {
     /// *connected* struct port (fields in the signal map) returns `false` so the
     /// existing signal path handles it. Returns `true` when handled.
     fn try_declare_struct_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
-        let Some(head) = l.ty.as_ref().and_then(|t| type_head_name(t)) else { return Ok(false) };
+        let Some(head) = l.ty.as_ref().and_then(|t| type_head_name(t)) else {
+            return Ok(false);
+        };
         // Only a genuine field-aggregate is expanded into per-field locals. A
         // type that *inherits from an array* — `uint`/`int` (`struct uint :
         // Logic[]`) or a user enum vector (`: SomeEnum[]`) — carries no named
@@ -537,7 +589,9 @@ impl Ctx<'_> {
         if connected {
             return Ok(false);
         }
-        self.local_types.borrow_mut().insert(l.name.text.clone(), head.to_string());
+        self.local_types
+            .borrow_mut()
+            .insert(l.name.text.clone(), head.to_string());
         let init: HashMap<&str, &ast::Expr> = match &l.value {
             Some(ast::Expr::Construct { args, .. }) => args
                 .iter()
@@ -563,7 +617,9 @@ impl Ctx<'_> {
         };
         // `{ ..base, .x = v }`: fields not overridden are copied from `base`.
         let spread_base: Option<String> = match &l.value {
-            Some(ast::Expr::Construct { spread: Some(base), .. }) => expr_path(base),
+            Some(ast::Expr::Construct {
+                spread: Some(base), ..
+            }) => expr_path(base),
             _ => None,
         };
         self.declare_struct_fields(&l.name.text, fields, &init, spread_base.as_deref(), b)?;
@@ -586,8 +642,13 @@ impl Ctx<'_> {
             // field that inherits from an array (a `uint`/`int`/enum vector,
             // which has no fields) is a scalar leaf.
             let fhead = type_head_name(fty);
-            if let Some(sub) = fhead.and_then(|h| self.structs.get(h)).filter(|f| !f.is_empty()) {
-                self.local_types.borrow_mut().insert(key.clone(), fhead.unwrap().to_string());
+            if let Some(sub) = fhead
+                .and_then(|h| self.structs.get(h))
+                .filter(|f| !f.is_empty())
+            {
+                self.local_types
+                    .borrow_mut()
+                    .insert(key.clone(), fhead.unwrap().to_string());
                 let sub_base = spread_base.map(|s| format!("{s}.{fname}"));
                 self.declare_struct_fields(&key, sub, &HashMap::new(), sub_base.as_deref(), b)?;
                 continue;
@@ -615,7 +676,10 @@ impl Ctx<'_> {
                     _ => "0".to_string(),
                 },
             };
-            b.push_str(&format!("    uint64_t {} = {init_e};\n", c_local_ident(&key)));
+            b.push_str(&format!(
+                "    uint64_t {} = {init_e};\n",
+                c_local_ident(&key)
+            ));
             self.locals.borrow_mut().insert(key);
         }
         Ok(())
@@ -643,7 +707,9 @@ impl Ctx<'_> {
                     // order (a follow-up). A value-less arg is parser recovery.
                     let Some(f) = &arg.field else { continue };
                     let field = format!("{name}.{}", f.text);
-                    let Some(&id) = self.map.get(&field) else { continue };
+                    let Some(&id) = self.map.get(&field) else {
+                        continue;
+                    };
                     let e = match &arg.value {
                         Some(v) => self.value_for(id, v)?,
                         None => "0".to_string(),
@@ -659,7 +725,12 @@ impl Ctx<'_> {
     /// The declared `(family, width)` of a vector-family type (`int[8]` ->
     /// ("int", 8)). Mirrors the runner's rule.
     fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
-        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+        if let ast::Type::Indexed {
+            base,
+            index: Some(i),
+            ..
+        } = ty
+        {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_family(base);
             }
@@ -683,7 +754,9 @@ impl Ctx<'_> {
         if let Some(&w) = self.local_widths.borrow().get(name) {
             return Some(w);
         }
-        self.map.get(name).map(|&id| self.design.signals[id.0 as usize].width)
+        self.map
+            .get(name)
+            .map(|&id| self.design.signals[id.0 as usize].width)
     }
 
     /// Translate `lhs op rhs` through the lhs family's operator impl as an
@@ -714,7 +787,9 @@ impl Ctx<'_> {
         let op_str = siox::syntax::pretty::bin_op(op);
         // `==`/`!=`: bit equality at the type's width (mask both sides).
         if matches!(op_str, "==" | "!=") {
-            let Some(w) = self.name_width(&lname) else { return Ok(None) };
+            let Some(w) = self.name_width(&lname) else {
+                return Ok(None);
+            };
             if w == 0 || w >= 64 {
                 return Ok(None);
             }
@@ -727,7 +802,11 @@ impl Ctx<'_> {
         }
         // `Ordering` discriminants from std's enum, not a baked-in 0/2.
         let ord = |v: &str, fallback: u64| {
-            self.enums.get("Ordering").and_then(|m| m.get(v)).copied().unwrap_or(fallback)
+            self.enums
+                .get("Ordering")
+                .and_then(|m| m.get(v))
+                .copied()
+                .unwrap_or(fallback)
         };
         let cmp = match op_str {
             "<" => Some((ord("Less", 0), false)),
@@ -762,8 +841,12 @@ impl Ctx<'_> {
                 })
             })
             .or_else(|| (candidates.len() == 1).then(|| &candidates[0]));
-        let Some((f, _)) = selected else { return Ok(None) };
-        let Some(body) = f.body.as_ref() else { return Ok(None) };
+        let Some((f, _)) = selected else {
+            return Ok(None);
+        };
+        let Some(body) = f.body.as_ref() else {
+            return Ok(None);
+        };
 
         let w = self.name_width(&lname).unwrap_or(0);
         let mut env = HashMap::new();
@@ -794,7 +877,9 @@ impl Ctx<'_> {
     }
 
     fn c_dispatch_not(&self, rhs: &ast::Expr) -> Result<Option<String>, String> {
-        let ast::Expr::Path(p) = rhs else { return Ok(None) };
+        let ast::Expr::Path(p) = rhs else {
+            return Ok(None);
+        };
         if p.segments.len() != 1 {
             return Ok(None);
         }
@@ -805,7 +890,9 @@ impl Ctx<'_> {
             .get(&name)
             .cloned()
             .or_else(|| self.local_types.borrow().get(&name).cloned());
-        let Some(family) = family else { return Ok(None) };
+        let Some(family) = family else {
+            return Ok(None);
+        };
         let Some((f, _)) = self
             .op_impls
             .get(&("not".to_string(), family))
@@ -813,7 +900,9 @@ impl Ctx<'_> {
         else {
             return Ok(None);
         };
-        let Some(body) = f.body.as_ref() else { return Ok(None) };
+        let Some(body) = f.body.as_ref() else {
+            return Ok(None);
+        };
         let width = self.name_width(&name).unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), format!("({})", self.expr(rhs)?));
@@ -822,7 +911,11 @@ impl Ctx<'_> {
         let out = self.c_fn_stmts(&body.stmts);
         self.fn_env.borrow_mut().pop();
         let value = out?;
-        Ok(Some(if width > 0 { mask_c(&value, width) } else { value }))
+        Ok(Some(if width > 0 {
+            mask_c(&value, width)
+        } else {
+            value
+        }))
     }
 
     /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
@@ -837,7 +930,12 @@ impl Ctx<'_> {
                 }
             }
         }
-        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+        if let ast::Type::Indexed {
+            base,
+            index: Some(i),
+            ..
+        } = ty
+        {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_width(base);
             }
@@ -859,7 +957,10 @@ impl Ctx<'_> {
     /// assert (printing its message first, like a panic).
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
-        b.push_str(&format!("int test_{}(void) {{\n    sx_reset();\n", self.name));
+        b.push_str(&format!(
+            "int test_{}(void) {{\n    sx_reset();\n",
+            self.name
+        ));
 
         // The test's event wheel: sim time + per-clock next-edge state. Arrays
         // are sized >=1 so clock-less tests still compile; `_nclk` grows as
@@ -890,10 +991,11 @@ impl Ctx<'_> {
                     value => {
                         // Record the vector family for every declared name
                         // (connected ports too): operators dispatch on it.
-                        if let Some((fam, _)) =
-                            l.ty.as_ref().and_then(|t| self.declared_family(t))
+                        if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t))
                         {
-                            self.local_families.borrow_mut().insert(l.name.text.clone(), fam);
+                            self.local_families
+                                .borrow_mut()
+                                .insert(l.name.text.clone(), fam);
                         }
                         if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
                             self.local_types
@@ -928,19 +1030,21 @@ impl Ctx<'_> {
                                 },
                                 // Uninitialized: the type's `new()` default
                                 // (`Logic` -> `'U'`), matching JIT + hardware.
-                                None => l
-                                    .ty
-                                    .as_ref()
-                                    .and_then(type_head_name)
-                                    .and_then(|h| self.design.new_defaults.get(h))
-                                    .map(|v| format!("{v}ULL"))
-                                    .unwrap_or_else(|| "0".to_string()),
+                                None => {
+                                    l.ty.as_ref()
+                                        .and_then(type_head_name)
+                                        .and_then(|h| self.design.new_defaults.get(h))
+                                        .map(|v| format!("{v}ULL"))
+                                        .unwrap_or_else(|| "0".to_string())
+                                }
                             };
                             // A vector-family local wraps at its declared
                             // width, like the equivalent hardware signal.
                             let e = match l.ty.as_ref().and_then(|t| self.declared_width(t)) {
                                 Some(w) => {
-                                    self.local_widths.borrow_mut().insert(l.name.text.clone(), w);
+                                    self.local_widths
+                                        .borrow_mut()
+                                        .insert(l.name.text.clone(), w);
                                     mask_c(&e, w)
                                 }
                                 None => e,
@@ -951,7 +1055,9 @@ impl Ctx<'_> {
                             // renders its symbol, not the raw discriminant.
                             if let Some(h) = l.ty.as_ref().and_then(|t| type_head_name(t)) {
                                 if self.enums.contains_key(h) {
-                                    self.local_types.borrow_mut().insert(l.name.text.clone(), h.to_string());
+                                    self.local_types
+                                        .borrow_mut()
+                                        .insert(l.name.text.clone(), h.to_string());
                                 }
                             }
                         }
@@ -975,14 +1081,22 @@ impl Ctx<'_> {
         b.push_str("    return 0;\n}\n\n");
         // Post-settle range asserts (values persist, so checking at the next
         // settle also catches violations that occur inside await loops).
-        let b = b.replace("sx_settle();", "sx_settle(); if (sx_check_ranges()) return 1;");
+        let b = b.replace(
+            "sx_settle();",
+            "sx_settle(); if (sx_check_ranges()) return 1;",
+        );
         Ok(b)
     }
 
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
-            ast::Stmt::Assign { target, value, after, .. } => {
+            ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
                 if after.is_some() {
                     // `clk = !clk after d;` registers on the event wheel; other
                     // delayed writes aren't compiled yet.
@@ -1018,7 +1132,10 @@ impl Ctx<'_> {
                     b.push_str(&format!("{ind}{} = {e};\n", c_local_ident(&name)));
                     return Ok(());
                 }
-                let id = *self.map.get(&name).ok_or_else(|| format!("unknown signal `{name}`"))?;
+                let id = *self
+                    .map
+                    .get(&name)
+                    .ok_or_else(|| format!("unknown signal `{name}`"))?;
                 let e = self.value_for(id, value)?;
                 // Drive every port this name connects to (sx_set masks to each
                 // signal's width).
@@ -1029,10 +1146,14 @@ impl Ctx<'_> {
                 b.push_str(&format!(" }}\n{ind}sx_settle();\n"));
                 let _ = id;
             }
-            ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, .. }) => {
+            ast::Stmt::Expr(ast::Expr::Call {
+                callee, args, bang, ..
+            }) => {
                 self.call(callee, args, *bang, b, depth)?;
             }
-            ast::Stmt::For { var, range, body, .. } => {
+            ast::Stmt::For {
+                var, range, body, ..
+            } => {
                 let v = &var.text;
                 // `for x in xs`: iterate a DUT-connected array via an id table.
                 if let Some((path, n)) =
@@ -1040,8 +1161,9 @@ impl Ctx<'_> {
                 {
                     let k = self.tmp.get();
                     self.tmp.set(k + 1);
-                    let ids: Vec<String> =
-                        (0..n).map(|i| self.map[&format!("{path}[{i}]")].0.to_string()).collect();
+                    let ids: Vec<String> = (0..n)
+                        .map(|i| self.map[&format!("{path}[{i}]")].0.to_string())
+                        .collect();
                     b.push_str(&format!(
                         "{ind}{{ static const uint32_t _a{k}[] = {{{}}};\n\
                          {ind}for (int _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
@@ -1159,10 +1281,12 @@ impl Ctx<'_> {
             // `tick`/`wait` were removed: `await` is the one timing primitive
             // (`wait` errors at parse; tick() returns to std later as source).
             "tick" => {
-                return Err("`tick()` was removed (it returns as a std function later); \
+                return Err(
+                    "`tick()` was removed (it returns as a std function later); \
                             write `clk = '1'; await 5ns; clk = '0';` or start a clock \
                             generator (`clk = not clk after 5ns;`)"
-                    .into());
+                        .into(),
+                );
             }
             // clock(clk, period): register a background clock on the wheel
             // (init low; first toggle one half period from now).
@@ -1189,17 +1313,19 @@ impl Ctx<'_> {
                         let sig = expr_path(a)
                             .and_then(|p| self.map.get(&p))
                             .map(|id| &self.design.signals[id.0 as usize]);
-                        let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
-                            matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
-                        });
+                        let is_real = sig.map(|s| s.real).unwrap_or_else(
+                            || matches!(a, ast::Expr::Int { text, .. } if text.contains('.')),
+                        );
                         // An enum-typed signal prints its variant symbol via a
                         // ternary over the value (a clang statement-expression
                         // evaluates the operand once).
                         // A signal's enum type, or an enum/Logic testbench
                         // local's declared type, selects symbol rendering.
-                        let ety: Option<String> = sig
-                            .and_then(|s| s.enum_type.clone())
-                            .or_else(|| expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned()));
+                        let ety: Option<String> =
+                            sig.and_then(|s| s.enum_type.clone()).or_else(|| {
+                                expr_path(a)
+                                    .and_then(|p| self.local_types.borrow().get(&p).cloned())
+                            });
                         let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
                         if let Some(syms) = enum_syms {
                             let mut tern = String::from("\"?\"");
@@ -1244,17 +1370,25 @@ impl Ctx<'_> {
             "assert" if bang => {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
-                let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "assertion failed".into());
+                let msg = args
+                    .get(1)
+                    .and_then(str_lit)
+                    .unwrap_or_else(|| "assertion failed".into());
                 let msg = c_escape(&msg);
                 // Record the failure message and fail this test; `main` prints
                 // the `test <name> ... FAILED` line and the message.
-                b.push_str(&format!("{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"));
+                b.push_str(&format!(
+                    "{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"
+                ));
             }
             // warn!(cond, msg): non-fatal — report to stderr, keep running.
             "warn" if bang => {
                 let cond = args.first().ok_or("warn needs a condition")?;
                 let c = self.expr(cond)?;
-                let msg = args.get(1).and_then(str_lit).unwrap_or_else(|| "warning".into());
+                let msg = args
+                    .get(1)
+                    .and_then(str_lit)
+                    .unwrap_or_else(|| "warning".into());
                 let msg = c_escape(&msg);
                 b.push_str(&format!(
                     "{ind}if (!({c})) {{ fprintf(stderr, \"warning: {msg}\\n\"); g_warnings++; }}\n"
@@ -1301,7 +1435,11 @@ impl Ctx<'_> {
     /// the enum's declaration — `None` if `e` is not a char literal.
     fn enum_char_lit(&self, en: &str, e: &ast::Expr) -> Option<u64> {
         if let ast::Expr::CharLit { ch, .. } = e {
-            return self.enums.get(en).and_then(|m| m.get(&format!("'{ch}'"))).copied();
+            return self
+                .enums
+                .get(en)
+                .and_then(|m| m.get(&format!("'{ch}'")))
+                .copied();
         }
         None
     }
@@ -1369,7 +1507,11 @@ impl Ctx<'_> {
         }
         // A testbench-local string: one C local per element (`sxl_path_i`).
         let mut elems = Vec::new();
-        while self.locals.borrow().contains(&format!("{path}[{}]", elems.len())) {
+        while self
+            .locals
+            .borrow()
+            .contains(&format!("{path}[{}]", elems.len()))
+        {
             elems.push(c_local_ident(&format!("{path}[{}]", elems.len())));
         }
         (!elems.is_empty()).then_some(elems)
@@ -1404,8 +1546,16 @@ impl Ctx<'_> {
             .zip(&chars)
             .map(|(e, &c)| format!("({e} == {}ULL)", c as u32))
             .collect();
-        let all = if terms.is_empty() { "1".to_string() } else { terms.join(" && ") };
-        Ok(Some(if eq { format!("({all})") } else { format!("(!({all}))") }))
+        let all = if terms.is_empty() {
+            "1".to_string()
+        } else {
+            terms.join(" && ")
+        };
+        Ok(Some(if eq {
+            format!("({all})")
+        } else {
+            format!("(!({all}))")
+        }))
     }
 
     /// `await <duration> | <edge> | <condition>` in the native harness, on the
@@ -1547,18 +1697,22 @@ impl Ctx<'_> {
                 map.insert(n.text.clone(), a.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> =
-            body.stmts.iter().map(|s| siox::ir::subst_stmt_paths(s, &map)).collect();
+        let stmts: Vec<ast::Stmt> = body
+            .stmts
+            .iter()
+            .map(|s| siox::ir::subst_stmt_paths(s, &map))
+            .collect();
         self.c_fn_stmts(&stmts)
     }
 
     /// A module-fn call as a C expression: bind the arguments, then flatten
     /// the `return`/`if` body into nested conditionals.
     fn c_fn_call(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Result<String, String> {
-        let name = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-            _ => return Err("unsupported call in testbench expression".into()),
+        // A bare name, or `Type::name` for a static associated fn.
+        let Some(key) = siox::ir::call_fn_key(callee) else {
+            return Err("unsupported call in testbench expression".into());
         };
+        let name = key.as_str();
         let Some(f) = self.fns.get(name) else {
             // Runtime-provided functions (std::rand).
             return match name {
@@ -1633,9 +1787,7 @@ impl Ctx<'_> {
     /// `return e;` / `if c { .. } else { .. }` chains as nested C ternaries.
     fn c_fn_stmts(&self, stmts: &[ast::Stmt]) -> Result<String, String> {
         match stmts.first() {
-            Some(ast::Stmt::Return { value: Some(v), .. }) => {
-                Ok(format!("({})", self.expr(v)?))
-            }
+            Some(ast::Stmt::Return { value: Some(v), .. }) => Ok(format!("({})", self.expr(v)?)),
             Some(ast::Stmt::If(iff)) => {
                 let c = self.expr(&iff.cond)?;
                 let t = self.c_fn_stmts(&iff.then.stmts)?;
@@ -1666,8 +1818,8 @@ impl Ctx<'_> {
                 Some(format!("(({scrut}) == {d}ULL)"))
             }
             ast::Pattern::BitPattern { text, .. } => {
-                let (mask, value) =
-                    siox::ir::bit_pattern_mask(text).ok_or_else(|| format!("bad bit pattern `{text}`"))?;
+                let (mask, value) = siox::ir::bit_pattern_mask(text)
+                    .ok_or_else(|| format!("bad bit pattern `{text}`"))?;
                 Some(format!("((({scrut}) & {mask}ULL) == {value}ULL)"))
             }
             ast::Pattern::Or { alts, .. } => {
@@ -1693,11 +1845,20 @@ impl Ctx<'_> {
 
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
         Ok(match e {
-            ast::Expr::IfExpr { cond, then, els, .. } => {
-                format!("(({}) ? ({}) : ({}))", self.expr(cond)?, self.expr(then)?, self.expr(els)?)
+            ast::Expr::IfExpr {
+                cond, then, els, ..
+            } => {
+                format!(
+                    "(({}) ? ({}) : ({}))",
+                    self.expr(cond)?,
+                    self.expr(then)?,
+                    self.expr(els)?
+                )
             }
             // A match-expression: a first-match C ternary chain over the arms.
-            ast::Expr::Match { scrutinee, arms, .. } => {
+            ast::Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 let scrut = self.expr(scrutinee)?;
                 // Build from the last arm backward.
                 let mut out = String::from("0");
@@ -1731,11 +1892,11 @@ impl Ctx<'_> {
             // `rand`) — rather than a type conversion.
             ast::Expr::Call { callee, args, .. }
                 if matches!(callee.as_ref(), ast::Expr::Path(p)
-                    if p.segments.len() == 1 && {
-                        let n = p.segments[0].text.as_str();
-                        self.fns.contains_key(n)
-                            || matches!(n, "exists" | "rand" | "randint" | "read" | "read_to_string")
-                    }) =>
+                if p.segments.len() == 1 && {
+                    let n = p.segments[0].text.as_str();
+                    self.fns.contains_key(n)
+                        || matches!(n, "exists" | "rand" | "randint" | "read" | "read_to_string")
+                }) =>
             {
                 return self.c_fn_call(callee, args);
             }
@@ -1763,9 +1924,9 @@ impl Ctx<'_> {
                             // like `8ULL` — recover the number.
                             Some(other) => {
                                 let c = self.expr(other)?;
-                                c.trim_end_matches("ULL")
-                                    .parse()
-                                    .map_err(|_| "resize width must be a constant here".to_string())?
+                                c.trim_end_matches("ULL").parse().map_err(|_| {
+                                    "resize width must be a constant here".to_string()
+                                })?
                             }
                             None => return Err("resize width must be a constant here".into()),
                         }
@@ -1797,8 +1958,11 @@ impl Ctx<'_> {
             // flat vector) — VHDL `'length`.
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
                 let path = expr_path(base).ok_or("::length needs a named base")?;
-                if let Some(v) =
-                    self.fn_env.borrow().last().and_then(|m| m.get(&format!("{path}::length")))
+                if let Some(v) = self
+                    .fn_env
+                    .borrow()
+                    .last()
+                    .and_then(|m| m.get(&format!("{path}::length")))
                 {
                     return Ok(v.clone());
                 }
@@ -1817,7 +1981,9 @@ impl Ctx<'_> {
                     "left" | "right" | "high" | "low" | "ascending"
                 ) =>
             {
-                let w = expr_path(base).and_then(|p| self.name_width(&p)).unwrap_or(0) as i64;
+                let w = expr_path(base)
+                    .and_then(|p| self.name_width(&p))
+                    .unwrap_or(0) as i64;
                 let v = match attr.text.as_str() {
                     "left" | "low" => 0,
                     "right" | "high" => (w - 1).max(0),
@@ -1907,7 +2073,10 @@ impl Ctx<'_> {
                 if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne)
                     && (self.is_char_lit(lhs) ^ self.is_char_lit(rhs))
                 {
-                    if let Some(en) = self.enum_operand_type(lhs).or_else(|| self.enum_operand_type(rhs)) {
+                    if let Some(en) = self
+                        .enum_operand_type(lhs)
+                        .or_else(|| self.enum_operand_type(rhs))
+                    {
                         let a = self.enum_operand_c(&en, lhs)?;
                         let b = self.enum_operand_c(&en, rhs)?;
                         return Ok(format!("({a} {} {b})", c_binop(op)?));
@@ -1930,7 +2099,11 @@ impl Ctx<'_> {
                             | ast::BinOp::Gt
                             | ast::BinOp::Ge
                     );
-                    return Ok(if is_cmp { e } else { format!("sx_b64((double){e})") });
+                    return Ok(if is_cmp {
+                        e
+                    } else {
+                        format!("sx_b64((double){e})")
+                    });
                 }
                 // A typed operand inlines its family's operator impl (int's
                 // signed Div/Ord), matching the runner.
@@ -2001,10 +2174,19 @@ fn c_binop(op: &ast::BinOp) -> Result<&'static str, String> {
 // --- helpers (small replicas of interpreter internals) ---------------------
 
 /// A `clk = !clk after d;` self-toggle: `Some((clock path, half period))`.
-fn after_toggle(target: &ast::Expr, value: &ast::Expr, after: &Option<ast::Expr>) -> Option<(String, u64)> {
+fn after_toggle(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    after: &Option<ast::Expr>,
+) -> Option<(String, u64)> {
     let delay = after.as_ref()?;
     let path = expr_path(target)?;
-    if let ast::Expr::Unary { op: ast::UnOp::Not, rhs, .. } = value {
+    if let ast::Expr::Unary {
+        op: ast::UnOp::Not,
+        rhs,
+        ..
+    } = value
+    {
         if expr_path(rhs).as_deref() == Some(path.as_str()) {
             let half = duration_fs(std::slice::from_ref(delay)).max(1);
             return Some((path, half));
@@ -2027,7 +2209,12 @@ fn scan_clocks(
     };
     for item in items {
         match item {
-            ast::ImplItem::Stmt(ast::Stmt::Assign { target, value, after, .. }) => {
+            ast::ImplItem::Stmt(ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            }) => {
                 if let Some((path, half)) = after_toggle(target, value, after) {
                     // A clock shared by several DUTs toggles every port.
                     for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -2064,9 +2251,10 @@ fn is_test_entity(modules: &[Module], entity: &str) -> bool {
         for it in &m.items {
             if let ast::Item::Entity(e) = it {
                 if e.name.text == entity {
-                    return e.attrs.iter().any(|a| {
-                        a.name.segments.last().map(|s| s.text.as_str()) == Some("test")
-                    });
+                    return e
+                        .attrs
+                        .iter()
+                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("test"));
                 }
             }
         }
@@ -2145,9 +2333,13 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
-        ast::Expr::Field { base, field, .. } => Some(format!("{}.{}", expr_path(base)?, field.text)),
+        ast::Expr::Field { base, field, .. } => {
+            Some(format!("{}.{}", expr_path(base)?, field.text))
+        }
         ast::Expr::Index { base, index, .. } => match index.as_ref() {
-            ast::Expr::Int { text, .. } => Some(format!("{}[{}]", expr_path(base)?, parse_u64(text))),
+            ast::Expr::Int { text, .. } => {
+                Some(format!("{}[{}]", expr_path(base)?, parse_u64(text)))
+            }
             _ => None,
         },
         _ => None,

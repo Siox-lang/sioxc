@@ -892,18 +892,20 @@ fn generic_struct_agrees() {
 
 #[test]
 fn bus_mode_agrees() {
-    // A directional bus view (spec 3.19): `impl out Stream::Source` /
-    // `impl in Stream::Sink` give each leaf a per-field direction, so
+    // Named directional views give each leaf a per-field direction, so
     // valid/data flow Source->Sink and ready flows Sink->Source across the
     // shared net. Both engines must agree.
     let d = lower(
         "module m;\n\
          struct Stream { valid: Bit, ready: Bit, data: uint[8], }\n\
-         impl out Stream::Source { out valid; out data; in ready; }\n\
-         impl in Stream::Sink { in valid; in data; out ready; }\n\
-         entity Producer { bus: out Stream::Source; in d: uint[8]; out canpush: Bit; }\n\
-         impl Producer { bus.valid = '1'; bus.data = d; canpush = bus.ready; }\n\
-         entity Consumer { bus: in Stream::Sink; in accept: Bit; out got: uint[8]; }\n\
+         view out Source for Stream { out valid; out data; in ready; }\n\
+         view in Sink for Stream { in valid; in data; out ready; }\n\
+         impl Source {\n\
+           fn drive(self, value: uint[8]) { self.valid = '1'; self.data = value; }\n\
+         }\n\
+         entity Producer { bus: Source; in d: uint[8]; out canpush: Bit; }\n\
+         impl Producer { bus.drive(d); canpush = bus.ready; }\n\
+         entity Consumer { bus: Sink; in accept: Bit; out got: uint[8]; }\n\
          impl Consumer { bus.ready = accept; got = bus.data; }\n\
          #[top]\n\
          entity T { in d: uint[8]; in accept: Bit; out got: uint[8]; out canpush: Bit; }\n\

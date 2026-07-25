@@ -131,10 +131,18 @@ pub fn apply_binop<S: Slot>(op: BinOp, a: S, b: S) -> S {
         BinOp::Eq => bool_s(a == b),
         BinOp::Ne => bool_s(a != b),
         // Float arithmetic on f64-bit values (`real` operands, low 64 bits).
-        BinOp::FAdd => S::from_u64((f64::from_bits(a.to_u64()) + f64::from_bits(b.to_u64())).to_bits()),
-        BinOp::FSub => S::from_u64((f64::from_bits(a.to_u64()) - f64::from_bits(b.to_u64())).to_bits()),
-        BinOp::FMul => S::from_u64((f64::from_bits(a.to_u64()) * f64::from_bits(b.to_u64())).to_bits()),
-        BinOp::FDiv => S::from_u64((f64::from_bits(a.to_u64()) / f64::from_bits(b.to_u64())).to_bits()),
+        BinOp::FAdd => {
+            S::from_u64((f64::from_bits(a.to_u64()) + f64::from_bits(b.to_u64())).to_bits())
+        }
+        BinOp::FSub => {
+            S::from_u64((f64::from_bits(a.to_u64()) - f64::from_bits(b.to_u64())).to_bits())
+        }
+        BinOp::FMul => {
+            S::from_u64((f64::from_bits(a.to_u64()) * f64::from_bits(b.to_u64())).to_bits())
+        }
+        BinOp::FDiv => {
+            S::from_u64((f64::from_bits(a.to_u64()) / f64::from_bits(b.to_u64())).to_bits())
+        }
         // Float comparison: ordered IEEE-754 (matches Rust's f64 ops, the LLVM
         // `fcmp o**`, and the native emitter's C double compares).
         BinOp::FEq => bool_s(f64::from_bits(a.to_u64()) == f64::from_bits(b.to_u64())),
@@ -202,12 +210,33 @@ pub fn run_tests_with_engine<'e>(
     let mut results = Vec::new();
     for &root in &hier.roots {
         let inst = hier.instance(root);
-        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        let is_test = entities
+            .get(inst.entity.as_str())
+            .is_some_and(|e| has_attr(e, "test"));
         let selected = filter.is_none_or(|f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            results.push(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, &struct_fields, false).0);
+            results.push(
+                run_one(
+                    engine,
+                    &inst.entity,
+                    root,
+                    hier,
+                    design,
+                    &body,
+                    &enums,
+                    &fns,
+                    &op_impls,
+                    &methods,
+                    &derived_widths,
+                    &consts,
+                    &families,
+                    &struct_fields,
+                    false,
+                )
+                .0,
+            );
         }
     }
     results
@@ -234,12 +263,30 @@ pub fn run_test_traced_with_engine<'e>(
     let struct_fields = collect_struct_fields(modules);
     for &root in &hier.roots {
         let inst = hier.instance(root);
-        let is_test = entities.get(inst.entity.as_str()).is_some_and(|e| has_attr(e, "test"));
+        let is_test = entities
+            .get(inst.entity.as_str())
+            .is_some_and(|e| has_attr(e, "test"));
         let selected = filter.is_none_or(|f| inst.entity.contains(f));
         if is_test && selected {
             let body = impls.get(inst.entity.as_str()).cloned().unwrap_or_default();
             let engine = make_engine();
-            return Some(run_one(engine, &inst.entity, root, hier, design, &body, &enums, &fns, &op_impls, &methods, &derived_widths, &consts, &families, &struct_fields, true));
+            return Some(run_one(
+                engine,
+                &inst.entity,
+                root,
+                hier,
+                design,
+                &body,
+                &enums,
+                &fns,
+                &op_impls,
+                &methods,
+                &derived_widths,
+                &consts,
+                &families,
+                &struct_fields,
+                true,
+            ));
         }
     }
     None
@@ -249,8 +296,12 @@ pub fn run_test_traced_with_engine<'e>(
 /// sample at every simulation step for waveform export (spec Stage 9).
 /// The literal path of a `read`/`read_to_string` call, when `e` is one.
 fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
-    let ast::Expr::Call { callee, args, .. } = e else { return None };
-    let ast::Expr::Path(p) = callee.as_ref() else { return None };
+    let ast::Expr::Call { callee, args, .. } = e else {
+        return None;
+    };
+    let ast::Expr::Path(p) = callee.as_ref() else {
+        return None;
+    };
     if p.segments.len() != 1 || p.segments[0].text != which {
         return None;
     }
@@ -267,8 +318,7 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
 fn collect_op_impls(
     modules: &[Module],
 ) -> HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> {
-    let mut out: HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> =
-        HashMap::new();
+    let mut out: HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
@@ -326,7 +376,8 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
                 if let Some(ty) = type_head_name(&im.target) {
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
-                            out.entry((ty.to_string(), f.name.text.clone())).or_insert(f);
+                            out.entry((ty.to_string(), f.name.text.clone()))
+                                .or_insert(f);
                         }
                     }
                 }
@@ -383,9 +434,7 @@ fn eval_tb_const(
     match e {
         ast::Expr::Int { text, .. } => Some(u128::from_u64(parse_u64(text))),
         ast::Expr::CharLit { ch, .. } => Some(u128::from_u64(logic_lit_value(*ch, enums))),
-        ast::Expr::Path(p) if p.segments.len() == 1 => {
-            consts.get(&p.segments[0].text).copied()
-        }
+        ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
         ast::Expr::Path(p) if p.segments.len() >= 2 => enums
             .get(&p.segments[0].text)
             .and_then(|m| m.get(&p.segments[1].text))
@@ -393,8 +442,10 @@ fn eval_tb_const(
         // Arithmetic / const-fn: reuse the shared signed evaluator with the
         // already-known consts as the environment.
         _ => {
-            let env: HashMap<String, i64> =
-                consts.iter().map(|(k, &v)| (k.clone(), v.to_u64() as i64)).collect();
+            let env: HashMap<String, i64> = consts
+                .iter()
+                .map(|(k, &v)| (k.clone(), v.to_u64() as i64))
+                .collect();
             crate::ir::eval_const_fns(e, &env, fns, 0).map(|v| u128::from_u64(v as u64))
         }
     }
@@ -404,8 +455,24 @@ fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
-            if let ast::Item::Fn(f) = item {
-                out.insert(f.name.text.clone(), f);
+            match item {
+                ast::Item::Fn(f) => {
+                    out.insert(f.name.text.clone(), f);
+                }
+                // A *static* associated fn (no `self`) is callable in
+                // expressions as `Type::name(..)`, keyed like a module-level
+                // fn so one lookup serves both (spec 3.20).
+                ast::Item::Impl(im) => {
+                    let Some(ty) = type_head_name(&im.target) else { continue };
+                    for it in &im.items {
+                        if let ast::ImplItem::Fn(f) = it {
+                            if !f.params.iter().any(|p| p.is_self) {
+                                out.insert(format!("{ty}::{}", f.name.text), f);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -424,11 +491,17 @@ fn collect_struct_fields(modules: &[Module]) -> HashMap<String, Vec<String>> {
             }
         }
     }
-    fn resolve(name: &str, decls: &HashMap<&str, &ast::StructDecl>, seen: &mut HashSet<String>) -> Vec<String> {
+    fn resolve(
+        name: &str,
+        decls: &HashMap<&str, &ast::StructDecl>,
+        seen: &mut HashSet<String>,
+    ) -> Vec<String> {
         if !seen.insert(name.to_string()) {
             return Vec::new(); // derivation cycle: bail
         }
-        let Some(s) = decls.get(name) else { return Vec::new() };
+        let Some(s) = decls.get(name) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         if let Some(base) = s.base.as_ref().and_then(type_head_name) {
             out.extend(resolve(base, decls, seen));
@@ -442,7 +515,10 @@ fn collect_struct_fields(modules: &[Module]) -> HashMap<String, Vec<String>> {
         .collect()
 }
 
-type Defs<'a> = (HashMap<&'a str, &'a ast::EntityDecl>, HashMap<&'a str, Vec<&'a ast::ImplDecl>>);
+type Defs<'a> = (
+    HashMap<&'a str, &'a ast::EntityDecl>,
+    HashMap<&'a str, Vec<&'a ast::ImplDecl>>,
+);
 
 fn collect_defs(modules: &[Module]) -> Defs<'_> {
     let mut entities = HashMap::new();
@@ -692,7 +768,12 @@ impl Testbench<'_> {
     /// ("int", 8), and the element of an array of one. None for enums,
     /// kernel numerics, and structs.
     fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
-        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+        if let ast::Type::Indexed {
+            base,
+            index: Some(i),
+            ..
+        } = ty
+        {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_family(base);
             }
@@ -723,7 +804,12 @@ impl Testbench<'_> {
                 }
             }
         }
-        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+        if let ast::Type::Indexed {
+            base,
+            index: Some(i),
+            ..
+        } = ty
+        {
             // `F[w][n]`: an array of vectors — the element width governs.
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_width(base);
@@ -758,13 +844,22 @@ impl Testbench<'_> {
     fn set_signal(&mut self, id: crate::ir::SignalId, v: u128) {
         let sig = &self.engine.design().signals[id.0 as usize];
         let w = sig.width;
-        let v = if !sig.real && w > 0 && (w as usize) < 128 { v & ((1u128 << w) - 1) } else { v };
+        let v = if !sig.real && w > 0 && (w as usize) < 128 {
+            v & ((1u128 << w) - 1)
+        } else {
+            v
+        };
         self.engine.set(id, v);
     }
 
     /// The element count of an array-of-vectors type: `uint[8][5]` -> 5.
     fn declared_len(&self, ty: &ast::Type) -> Option<usize> {
-        if let ast::Type::Indexed { base, index: Some(i), .. } = ty {
+        if let ast::Type::Indexed {
+            base,
+            index: Some(i),
+            ..
+        } = ty
+        {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 if let ast::Expr::Int { text, .. } = i.as_ref() {
                     return text.parse().ok();
@@ -823,7 +918,11 @@ impl Testbench<'_> {
                 },
             };
             let field = format!("{local}.{fname}");
-            let val = a.value.as_ref().map(|v| self.eval_for(&field, v)).unwrap_or_else(|| u128::from_u64(0));
+            let val = a
+                .value
+                .as_ref()
+                .map(|v| self.eval_for(&field, v))
+                .unwrap_or_else(|| u128::from_u64(0));
             self.set_name(&field, val);
         }
     }
@@ -855,8 +954,16 @@ impl Testbench<'_> {
             // A typed construct `S { .. }` is a struct literal when `S` is an
             // aggregate struct; otherwise it is an entity instance already wired
             // by elaboration (leave it).
-            Some(ast::Expr::Construct { ty: Some(t), args, spread, .. }) => {
-                if let Some(order) = type_head_name(t).and_then(|n| self.struct_order(n)).cloned() {
+            Some(ast::Expr::Construct {
+                ty: Some(t),
+                args,
+                spread,
+                ..
+            }) => {
+                if let Some(order) = type_head_name(t)
+                    .and_then(|n| self.struct_order(n))
+                    .cloned()
+                {
                     if let Some(base) = spread {
                         self.spread_struct(&l.name.text, &order, base);
                     }
@@ -866,13 +973,12 @@ impl Testbench<'_> {
             // A name-less struct literal `{ .a = x }` (or `{ ..base, .a = x }`):
             // fields bind by name, and a spread base fills the rest.
             Some(ast::Expr::Construct { args, spread, .. }) => {
-                let order = l
-                    .ty
-                    .as_ref()
-                    .and_then(type_head_name)
-                    .and_then(|n| self.struct_order(n))
-                    .cloned()
-                    .unwrap_or_default();
+                let order =
+                    l.ty.as_ref()
+                        .and_then(type_head_name)
+                        .and_then(|n| self.struct_order(n))
+                        .cloned()
+                        .unwrap_or_default();
                 if let Some(base) = spread {
                     self.spread_struct(&l.name.text, &order, base);
                 }
@@ -883,15 +989,18 @@ impl Testbench<'_> {
             // fields by order. (Guarded on an aggregate struct so a real bit
             // concat `let x: uint[8] = { hi, lo }` still falls through below.)
             Some(ast::Expr::Concat { parts, .. })
-                if l.ty.as_ref().and_then(type_head_name).and_then(|n| self.struct_order(n)).is_some() =>
-            {
-                let order = l
-                    .ty
+                if l.ty
                     .as_ref()
                     .and_then(type_head_name)
                     .and_then(|n| self.struct_order(n))
-                    .cloned()
-                    .unwrap_or_default();
+                    .is_some() =>
+            {
+                let order =
+                    l.ty.as_ref()
+                        .and_then(type_head_name)
+                        .and_then(|n| self.struct_order(n))
+                        .cloned()
+                        .unwrap_or_default();
                 for (i, e) in parts.iter().enumerate() {
                     if let Some(fname) = order.get(i) {
                         let field = format!("{}.{}", l.name.text, fname);
@@ -914,10 +1023,8 @@ impl Testbench<'_> {
                         }
                     }
                     Err(e) => {
-                        self.failure = Some((
-                            format!("read_to_string(\"{fpath}\"): {e}"),
-                            l.name.span,
-                        ));
+                        self.failure =
+                            Some((format!("read_to_string(\"{fpath}\"): {e}"), l.name.span));
                     }
                 }
             }
@@ -930,8 +1037,7 @@ impl Testbench<'_> {
                         }
                     }
                     Err(e) => {
-                        self.failure =
-                            Some((format!("read(\"{fpath}\"): {e}"), l.name.span));
+                        self.failure = Some((format!("read(\"{fpath}\"): {e}"), l.name.span));
                     }
                 }
             }
@@ -948,8 +1054,7 @@ impl Testbench<'_> {
                 // A DUT-connected array registers its *elements* in the signal
                 // map (`xs[0]`), not the base name — don't shadow those with
                 // locals.
-                let elem_connected =
-                    self.map.contains_key(&format!("{}[0]", l.name.text));
+                let elem_connected = self.map.contains_key(&format!("{}[0]", l.name.text));
                 if !self.map.contains_key(&l.name.text) && !elem_connected {
                     // Seed with the type's `new()` default (`Logic` -> `'U'`),
                     // matching the hardware signal default; 0 otherwise.
@@ -1080,7 +1185,10 @@ impl Testbench<'_> {
         if self.record {
             let n = self.engine.design().signals.len() as u32;
             let values = (0..n).map(|i| self.engine.read(SignalId(i))).collect();
-            self.samples.push(Sample { time_fs: self.time_fs, values });
+            self.samples.push(Sample {
+                time_fs: self.time_fs,
+                values,
+            });
         }
         self.check_ranges();
     }
@@ -1147,7 +1255,12 @@ impl Testbench<'_> {
 
     fn exec(&mut self, s: &ast::Stmt) {
         match s {
-            ast::Stmt::Assign { target, value, after, .. } => {
+            ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
                 if let Some(delay) = after {
                     self.exec_after(target, value, delay);
                     return;
@@ -1183,10 +1296,17 @@ impl Testbench<'_> {
                 self.engine.settle();
                 self.sample();
             }
-            ast::Stmt::Expr(ast::Expr::Call { callee, args, bang, span }) => {
+            ast::Stmt::Expr(ast::Expr::Call {
+                callee,
+                args,
+                bang,
+                span,
+            }) => {
                 self.exec_call(callee, args, *bang, *span);
             }
-            ast::Stmt::For { var, range, body, .. } => {
+            ast::Stmt::For {
+                var, range, body, ..
+            } => {
                 // `for x in xs` iterates an array's elements (Python-style);
                 // `for i in lo..hi` binds the index. The loop variable is a
                 // testbench local for the body's duration.
@@ -1276,8 +1396,7 @@ impl Testbench<'_> {
             // clock() was sugar; the canonical generator is the after-form.
             "clock" => {
                 self.failure = Some((
-                    "`clock()` was removed; write `clk = not clk after <half-period>;`"
-                        .to_string(),
+                    "`clock()` was removed; write `clk = not clk after <half-period>;`".to_string(),
                     span,
                 ));
             }
@@ -1287,7 +1406,9 @@ impl Testbench<'_> {
             // the argument's kind (real -> float, Char -> the character,
             // else decimal); auto-newline, like $display.
             "print" if bang => {
-                let Some(ast::Expr::StrLit { text, .. }) = args.first() else { return };
+                let Some(ast::Expr::StrLit { text, .. }) = args.first() else {
+                    return;
+                };
                 let mut out = String::new();
                 let mut vals = args[1..].iter();
                 let mut rest = text.as_str();
@@ -1313,7 +1434,10 @@ impl Testbench<'_> {
             }
             // assert!(cond, "msg"): record the first failure.
             "assert" if bang => {
-                let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
+                let ok = args
+                    .first()
+                    .map(|c| !self.eval(c).is_zero())
+                    .unwrap_or(true);
                 if !ok {
                     let msg = args
                         .get(1)
@@ -1325,7 +1449,10 @@ impl Testbench<'_> {
             // warn!(cond, msg): a non-fatal assertion — records a warning but
             // lets the test continue (the recoverable tier; SV `$warning`).
             "warn" if bang => {
-                let ok = args.first().map(|c| !self.eval(c).is_zero()).unwrap_or(true);
+                let ok = args
+                    .first()
+                    .map(|c| !self.eval(c).is_zero())
+                    .unwrap_or(true);
                 if !ok {
                     let msg = args
                         .get(1)
@@ -1380,18 +1507,29 @@ impl Testbench<'_> {
     /// clock with `d` as its half period (the canonical clock generator); any
     /// other RHS is evaluated now and applied at `now + d`.
     fn exec_after(&mut self, target: &ast::Expr, value: &ast::Expr, delay: &ast::Expr) {
-        let Some(path) = expr_path(target) else { return };
+        let Some(path) = expr_path(target) else {
+            return;
+        };
         if !self.map.contains_key(&path) {
             return;
         }
         let ids = self.alias_ids(&path);
         let d = duration_fs(std::slice::from_ref(delay)).max(1);
-        if let ast::Expr::Unary { op: ast::UnOp::Not, rhs, .. } = value {
+        if let ast::Expr::Unary {
+            op: ast::UnOp::Not,
+            rhs,
+            ..
+        } = value
+        {
             if expr_path(rhs).as_deref() == Some(path.as_str()) {
                 // The signal keeps its initial value; first toggle at `now + d`.
                 // A shared clock toggles every connected port in phase.
                 for id in ids {
-                    self.clocks.push(ClockGen { id, half_period: d, next_edge: self.time_fs + d });
+                    self.clocks.push(ClockGen {
+                        id,
+                        half_period: d,
+                        next_edge: self.time_fs + d,
+                    });
                 }
                 return;
             }
@@ -1510,14 +1648,20 @@ impl Testbench<'_> {
                     return format!("{}", f64::from_bits(v.to_u64()));
                 }
                 if sig.char {
-                    return char::from_u32(v.to_u64() as u32).map(String::from).unwrap_or_default();
+                    return char::from_u32(v.to_u64() as u32)
+                        .map(String::from)
+                        .unwrap_or_default();
                 }
                 // An enum-typed signal renders its stored discriminant as the
                 // variant symbol (`'X'` for Logic, `Idle` for an FSM state).
                 // `enum_syms` spans every module, `std` included.
                 if let Some(ety) = &sig.enum_type {
-                    if let Some(sym) =
-                        self.engine.design().enum_syms.get(ety).and_then(|m| m.get(&v.to_u64()))
+                    if let Some(sym) = self
+                        .engine
+                        .design()
+                        .enum_syms
+                        .get(ety)
+                        .and_then(|m| m.get(&v.to_u64()))
                     {
                         return sym.clone();
                     }
@@ -1526,8 +1670,12 @@ impl Testbench<'_> {
             // A testbench *local* of an enum/Logic type renders its symbol too
             // (`'Z'`, `Idle`), not the raw discriminant — via its declared type.
             if let Some(ety) = self.local_types.get(&p) {
-                if let Some(sym) =
-                    self.engine.design().enum_syms.get(ety).and_then(|m| m.get(&v.to_u64()))
+                if let Some(sym) = self
+                    .engine
+                    .design()
+                    .enum_syms
+                    .get(ety)
+                    .and_then(|m| m.get(&v.to_u64()))
                 {
                     return sym.clone();
                 }
@@ -1566,10 +1714,9 @@ impl Testbench<'_> {
         if let ast::Expr::Field { base, field, .. } = callee {
             return self.eval_method_call(base, &field.text, args, fenv);
         }
-        let name = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-            _ => return 0,
-        };
+        // A bare name, or `Type::name` for a static associated fn.
+        let Some(key) = crate::ir::call_fn_key(callee) else { return 0 };
+        let name = key.as_str();
         let Some(f) = self.fns.get(name) else {
             // Runtime-provided functions (std::rand): ordinary calls, no
             // special syntax — the runtime supplies the implementation.
@@ -1587,8 +1734,14 @@ impl Testbench<'_> {
                     u128::from_u64(x.to_bits())
                 }
                 "randint" => {
-                    let lo = args.first().map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(0);
-                    let hi = args.get(1).map(|a| self.eval_env(a, fenv).to_u64()).unwrap_or(lo);
+                    let lo = args
+                        .first()
+                        .map(|a| self.eval_env(a, fenv).to_u64())
+                        .unwrap_or(0);
+                    let hi = args
+                        .get(1)
+                        .map(|a| self.eval_env(a, fenv).to_u64())
+                        .unwrap_or(lo);
                     let span = hi.saturating_sub(lo).saturating_add(1).max(1);
                     u128::from_u64(lo + self.next_rand() % span)
                 }
@@ -1643,8 +1796,12 @@ impl Testbench<'_> {
         args: &[ast::Expr],
         fenv: &HashMap<String, u128>,
     ) -> u128 {
-        let Some(ty) = self.receiver_type(recv) else { return 0 };
-        let Some(f) = self.methods.get(&(ty, method.to_string())) else { return 0 };
+        let Some(ty) = self.receiver_type(recv) else {
+            return 0;
+        };
+        let Some(f) = self.methods.get(&(ty, method.to_string())) else {
+            return 0;
+        };
         let Some(body) = &f.body else { return 0 };
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         map.insert("self".to_string(), recv.clone());
@@ -1653,8 +1810,11 @@ impl Testbench<'_> {
                 map.insert(n.text.clone(), a.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> =
-            body.stmts.iter().map(|s| crate::ir::subst_stmt_paths(s, &map)).collect();
+        let stmts: Vec<ast::Stmt> = body
+            .stmts
+            .iter()
+            .map(|s| crate::ir::subst_stmt_paths(s, &map))
+            .collect();
         self.eval_fn_stmts(&stmts, fenv).unwrap_or(0)
     }
 
@@ -1705,16 +1865,16 @@ impl Testbench<'_> {
                 crate::ir::bit_pattern_mask(text).is_some_and(|(m, v)| scrut & m == v)
             }
             ast::Pattern::Or { alts, .. } => alts.iter().any(|a| self.pattern_hit(a, scrut)),
-            ast::Pattern::Range { lo, hi, .. } => {
-                (*lo as u64) <= scrut && scrut <= (*hi as u64)
-            }
+            ast::Pattern::Range { lo, hi, .. } => (*lo as u64) <= scrut && scrut <= (*hi as u64),
             _ => false,
         }
     }
 
     fn eval_env(&self, e: &ast::Expr, fenv: &HashMap<String, u128>) -> u128 {
         match e {
-            ast::Expr::IfExpr { cond, then, els, .. } => {
+            ast::Expr::IfExpr {
+                cond, then, els, ..
+            } => {
                 if !self.eval_env(cond, fenv).is_zero() {
                     self.eval_env(then, fenv)
                 } else {
@@ -1722,7 +1882,9 @@ impl Testbench<'_> {
                 }
             }
             // A match-expression: evaluate the first matching arm's value.
-            ast::Expr::Match { scrutinee, arms, .. } => {
+            ast::Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 let scrut = self.eval_env(scrutinee, fenv).to_u64();
                 for arm in arms {
                     if self.pattern_hit(&arm.pattern, scrut) {
@@ -1770,7 +1932,9 @@ impl Testbench<'_> {
                     ast::Expr::Path(p)
                         if p.segments.len() == 1 && p.segments[0].text == "resize" =>
                     {
-                        args.get(1).map(|n| self.eval_env(n, fenv).to_u64() as u32).unwrap_or(0)
+                        args.get(1)
+                            .map(|n| self.eval_env(n, fenv).to_u64() as u32)
+                            .unwrap_or(0)
                     }
                     ast::Expr::Path(p)
                         if p.segments.len() == 1
@@ -1798,7 +1962,9 @@ impl Testbench<'_> {
             // array's element count, or a testbench name's declared/connected
             // bit width (they coincide for a flat vector) — VHDL `'length`.
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
-                let Some(path) = expr_path(base) else { return u128::from_u64(0) };
+                let Some(path) = expr_path(base) else {
+                    return u128::from_u64(0);
+                };
                 if let Some(&v) = fenv.get(&format!("{path}::length")) {
                     return v;
                 }
@@ -1817,7 +1983,9 @@ impl Testbench<'_> {
                     "left" | "right" | "high" | "low" | "ascending"
                 ) =>
             {
-                let w = expr_path(base).and_then(|p| self.name_width(&p)).unwrap_or(0) as i64;
+                let w = expr_path(base)
+                    .and_then(|p| self.name_width(&p))
+                    .unwrap_or(0) as i64;
                 let v = match attr.text.as_str() {
                     "left" | "low" => 0,
                     "right" | "high" => (w - 1).max(0),
@@ -1838,7 +2006,10 @@ impl Testbench<'_> {
                     return self.engine.read(id);
                 }
                 // A module-level `const` (`LOW`, `HIGH`, a user const).
-                self.consts.get(name).copied().unwrap_or_else(|| u128::from_u64(0))
+                self.consts
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| u128::from_u64(0))
             }
             // `Enum::Variant` evaluates to its discriminant.
             ast::Expr::Path(p) if p.segments.len() >= 2 => u128::from_u64(
@@ -1891,7 +2062,11 @@ impl Testbench<'_> {
                 // (a string is a Char array).
                 if matches!(lower_ast_binop(op), Some(BinOp::Eq | BinOp::Ne)) {
                     if let Some(eq) = self.string_eq(lhs, rhs) {
-                        let v = if matches!(lower_ast_binop(op), Some(BinOp::Eq)) { eq } else { !eq };
+                        let v = if matches!(lower_ast_binop(op), Some(BinOp::Eq)) {
+                            eq
+                        } else {
+                            !eq
+                        };
                         return u128::from_u64(v as u64);
                     }
                 }
@@ -1900,7 +2075,9 @@ impl Testbench<'_> {
                 if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
                     let a = self.eval_char(lhs);
                     let b = self.eval_char(rhs);
-                    return lower_ast_binop(op).map(|op| apply_binop(op, a, b)).unwrap_or_default();
+                    return lower_ast_binop(op)
+                        .map(|op| apply_binop(op, a, b))
+                        .unwrap_or_default();
                 }
                 // A char literal compared for (in)equality against an enum-typed
                 // operand reads by its position in that enum (VHDL `T'pos`),
@@ -1911,10 +2088,15 @@ impl Testbench<'_> {
                 if matches!(lower_ast_binop(op), Some(BinOp::Eq | BinOp::Ne))
                     && (self.is_char_lit(lhs) ^ self.is_char_lit(rhs))
                 {
-                    if let Some(en) = self.enum_operand_type(lhs).or_else(|| self.enum_operand_type(rhs)) {
+                    if let Some(en) = self
+                        .enum_operand_type(lhs)
+                        .or_else(|| self.enum_operand_type(rhs))
+                    {
                         let a = self.eval_enum_char(lhs, &en);
                         let b = self.eval_enum_char(rhs, &en);
-                        return lower_ast_binop(op).map(|op| apply_binop(op, a, b)).unwrap_or_default();
+                        return lower_ast_binop(op)
+                            .map(|op| apply_binop(op, a, b))
+                            .unwrap_or_default();
                     }
                 }
                 // A real operand switches to float semantics: integer literal
@@ -1933,7 +2115,11 @@ impl Testbench<'_> {
                         Some(BinOp::Le) => u128::from_u64((a <= b) as u64),
                         Some(BinOp::Gt) => u128::from_u64((a > b) as u64),
                         Some(BinOp::Ge) => u128::from_u64((a >= b) as u64),
-                        Some(other) => apply_binop(other, u128::from_u64(a.to_bits()), u128::from_u64(b.to_bits())),
+                        Some(other) => apply_binop(
+                            other,
+                            u128::from_u64(a.to_bits()),
+                            u128::from_u64(b.to_bits()),
+                        ),
                         None => u128::default(),
                     };
                 }
@@ -2009,7 +2195,11 @@ impl Testbench<'_> {
         // table the IR uses. The discriminant comes from std's `Ordering` enum,
         // not a baked-in 0/2. `==`/`!=` stay raw bit equality.
         let ord = |v: &str, fallback: u64| {
-            self.enums.get("Ordering").and_then(|m| m.get(v)).copied().unwrap_or(fallback)
+            self.enums
+                .get("Ordering")
+                .and_then(|m| m.get(v))
+                .copied()
+                .unwrap_or(fallback)
         };
         let cmp = match op_str {
             "<" => Some((ord("Less", 0), false)),
@@ -2056,19 +2246,13 @@ impl Testbench<'_> {
         }
         let r = self.eval_fn_stmts(&body.stmts, &env)?;
         match cmp {
-            Some((want, ne)) => {
-                Some(u128::from_u64(((r.to_u64() == want) != ne) as u64))
-            }
+            Some((want, ne)) => Some(u128::from_u64(((r.to_u64() == want) != ne) as u64)),
             None if w > 0 && (w as usize) < 128 => Some(r & ((1u128 << w) - 1)),
             None => Some(r),
         }
     }
 
-    fn dispatch_not(
-        &self,
-        rhs: &ast::Expr,
-        fenv: &HashMap<String, u128>,
-    ) -> Option<u128> {
+    fn dispatch_not(&self, rhs: &ast::Expr, fenv: &HashMap<String, u128>) -> Option<u128> {
         let (family, name) = self.operand_family(rhs)?;
         let (f, _) = self.op_impls.get(&("not".to_string(), family))?.first()?;
         let body = f.body.as_ref()?;
@@ -2122,7 +2306,9 @@ impl Testbench<'_> {
                 let b = self.char_array(rhs)?;
                 return Some(
                     a.len() == b.len()
-                        && a.iter().zip(&b).all(|(&x, &y)| self.engine.read(x) == self.engine.read(y)),
+                        && a.iter()
+                            .zip(&b)
+                            .all(|(&x, &y)| self.engine.read(x) == self.engine.read(y)),
                 );
             }
         };
@@ -2166,7 +2352,10 @@ impl Testbench<'_> {
                 return Some(en.clone());
             }
         }
-        self.local_types.get(&p).filter(|ty| self.enums.contains_key(*ty)).cloned()
+        self.local_types
+            .get(&p)
+            .filter(|ty| self.enums.contains_key(*ty))
+            .cloned()
     }
 
     /// An operand in an enum comparison: a char literal takes its position in
@@ -2208,7 +2397,9 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
         ast::Expr::Index { base, index, .. } => match index.as_ref() {
-            ast::Expr::Int { text, .. } => Some(format!("{}[{}]", expr_path(base)?, parse_u64(text))),
+            ast::Expr::Int { text, .. } => {
+                Some(format!("{}[{}]", expr_path(base)?, parse_u64(text)))
+            }
             _ => None,
         },
         _ => None,
@@ -2216,7 +2407,9 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
 }
 
 fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
-    e.attrs.iter().any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
+    e.attrs
+        .iter()
+        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
 }
 
 fn type_head_name(t: &ast::Type) -> Option<&str> {

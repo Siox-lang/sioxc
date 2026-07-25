@@ -14,9 +14,9 @@
 //! - Float / hex-string literal tokens map to [`Expr::Int`] (which stores raw
 //!   text); a dedicated literal node can be added when a later stage needs it.
 
+use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Token, TokenKind};
-use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use std::collections::HashMap;
 
 /// Lightweight declaration pass used before the full Pratt parse. It finds
@@ -98,9 +98,17 @@ impl<'a> Parser<'a> {
     pub fn new(src: &'a str, tokens: Vec<Token>, sink: &'a mut DiagnosticSink) -> Self {
         // Strip comment trivia so the grammar can ignore it. The trailing `Eof`
         // is always kept.
-        let tokens: Vec<Token> =
-            tokens.into_iter().filter(|t| t.kind != TokenKind::Comment).collect();
-        Parser { src, tokens, pos: 0, sink, custom_operators: HashMap::new() }
+        let tokens: Vec<Token> = tokens
+            .into_iter()
+            .filter(|t| t.kind != TokenKind::Comment)
+            .collect();
+        Parser {
+            src,
+            tokens,
+            pos: 0,
+            sink,
+            custom_operators: HashMap::new(),
+        }
     }
 
     /// Supply custom textual operators discovered before full expression
@@ -130,7 +138,11 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        Module { path, items, span: start.to(self.prev_span()) }
+        Module {
+            path,
+            items,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_item(&mut self) -> Option<Item> {
@@ -167,7 +179,11 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect(TokenKind::RBrace, "to close an extern block");
-            return Some(Item::ExternBlock { abi, fns, span: start.to(self.prev_span()) });
+            return Some(Item::ExternBlock {
+                abi,
+                fns,
+                span: start.to(self.prev_span()),
+            });
         }
 
         if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Impl) {
@@ -184,6 +200,7 @@ impl<'a> Parser<'a> {
                 Item::Fn(self.parse_fn_after_name(start, name))
             }
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
+            TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
             TokenKind::Impl => Item::Impl(self.parse_impl(attrs)),
@@ -191,7 +208,7 @@ impl<'a> Parser<'a> {
             TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
             _ => {
                 self.error_here(
-                    "expected an item (using, const, fn, struct, enum, entity, impl, trait, attr)",
+                    "expected an item (using, const, fn, struct, view, enum, entity, impl, trait, attr)",
                 );
                 return None;
             }
@@ -210,6 +227,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Fn
                     | TokenKind::Const
                     | TokenKind::Struct
+                    | TokenKind::View
                     | TokenKind::Enum
                     | TokenKind::Entity
                     | TokenKind::Impl
@@ -235,9 +253,17 @@ impl<'a> Parser<'a> {
             self.bump(); // `#`
             self.expect(TokenKind::LBracket, "to open an attribute");
             let name = self.parse_path();
-            let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
+            let value = if self.eat(TokenKind::Eq) {
+                Some(self.parse_expr(false))
+            } else {
+                None
+            };
             self.expect(TokenKind::RBracket, "to close an attribute");
-            attrs.push(Attr { name, value, span: start.to(self.prev_span()) });
+            attrs.push(Attr {
+                name,
+                value,
+                span: start.to(self.prev_span()),
+            });
         }
         attrs
     }
@@ -249,45 +275,54 @@ impl<'a> Parser<'a> {
         self.bump(); // `using`
         let path = self.parse_path();
 
-        let kind = if self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::LBrace
-        {
-            // `using a::b::{ c, d };`
-            self.bump(); // `::`
-            self.bump(); // `{`
-            let mut names = Vec::new();
-            while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                // Operator traits import by their quoted name: `{"+", Boolean}`.
-                names.push(self.parse_trait_name());
-                if !self.eat(TokenKind::Comma) {
-                    break;
+        let kind =
+            if self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::LBrace {
+                // `using a::b::{ c, d };`
+                self.bump(); // `::`
+                self.bump(); // `{`
+                let mut names = Vec::new();
+                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                    // Operator traits import by their quoted name: `{"+", Boolean}`.
+                    names.push(self.parse_trait_name());
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
                 }
-            }
-            self.expect(TokenKind::RBrace, "to close an import list");
-            UsingKind::Import { base: path, names }
-        } else if self.at(TokenKind::Eq) {
-            // `using Word = uint[32];`
-            self.bump(); // `=`
-            let name = path.segments.last().cloned().unwrap_or_else(|| Ident {
-                text: String::new(),
-                span: path.span,
-            });
-            if path.segments.len() != 1 {
-                self.error_at(path.span, "an alias name must be a single identifier");
-            }
-            let ty = self.parse_type();
-            UsingKind::Alias { name, ty }
-        } else {
-            // `using a::b::C;` — last segment is the imported name.
-            let mut segments = path.segments.clone();
-            let name = segments.pop().unwrap_or_else(|| Ident {
-                text: String::new(),
-                span: path.span,
-            });
-            let base = Path { segments, span: path.span };
-            UsingKind::Import { base, names: vec![name] }
-        };
+                self.expect(TokenKind::RBrace, "to close an import list");
+                UsingKind::Import { base: path, names }
+            } else if self.at(TokenKind::Eq) {
+                // `using Word = uint[32];`
+                self.bump(); // `=`
+                let name = path.segments.last().cloned().unwrap_or_else(|| Ident {
+                    text: String::new(),
+                    span: path.span,
+                });
+                if path.segments.len() != 1 {
+                    self.error_at(path.span, "an alias name must be a single identifier");
+                }
+                let ty = self.parse_type();
+                UsingKind::Alias { name, ty }
+            } else {
+                // `using a::b::C;` — last segment is the imported name.
+                let mut segments = path.segments.clone();
+                let name = segments.pop().unwrap_or_else(|| Ident {
+                    text: String::new(),
+                    span: path.span,
+                });
+                let base = Path {
+                    segments,
+                    span: path.span,
+                };
+                UsingKind::Import {
+                    base,
+                    names: vec![name],
+                }
+            };
         self.expect(TokenKind::Semi, "after a `using`");
-        Using { kind, span: start.to(self.prev_span()) }
+        Using {
+            kind,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_const(&mut self, is_pub: bool) -> ConstDecl {
@@ -299,7 +334,13 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Eq, "before a const value");
         let value = self.parse_expr(false);
         self.expect(TokenKind::Semi, "after a const");
-        ConstDecl { is_pub, name, ty, value, span: start.to(self.prev_span()) }
+        ConstDecl {
+            is_pub,
+            name,
+            ty,
+            value,
+            span: start.to(self.prev_span()),
+        }
     }
 
     // --- struct / enum ------------------------------------------------------
@@ -310,7 +351,11 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident();
         let params = self.parse_params_opt();
         // Nominal derivation: `struct B : A` / `struct B : A { ... }`.
-        let base = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
+        let base = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
         // A derived struct may be bodyless (`struct B : A;` newtype form).
         if base.is_some() && self.eat(TokenKind::Semi) {
             return StructDecl {
@@ -329,24 +374,102 @@ impl<'a> Parser<'a> {
             let fname = self.parse_ident();
             self.expect(TokenKind::Colon, "before a field type");
             let ty = self.parse_type();
-            fields.push(Field { name: fname, ty, span: fstart.to(self.prev_span()) });
+            fields.push(Field {
+                name: fname,
+                ty,
+                span: fstart.to(self.prev_span()),
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
         }
         self.expect(TokenKind::RBrace, "to close a struct body");
-        StructDecl { is_pub, name, params, base, fields, span: start.to(self.prev_span()) }
+        StructDecl {
+            is_pub,
+            name,
+            params,
+            base,
+            fields,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    fn parse_view(&mut self, is_pub: bool) -> ViewDecl {
+        let start = self.span();
+        self.bump(); // `view`
+        let Some(dir) = self.eat_direction() else {
+            self.error_here("expected `in`, `out`, or `inout` after `view`");
+            return ViewDecl {
+                is_pub,
+                dir: Direction::Inout,
+                name: self.parse_ident(),
+                params: Params::default(),
+                target: None,
+                fields: Vec::new(),
+                span: start.to(self.prev_span()),
+            };
+        };
+        let name = self.parse_ident();
+        let params = self.parse_params_opt();
+        let target = if self.eat(TokenKind::For) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+        self.expect(TokenKind::LBrace, "to open a view body");
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let fstart = self.span();
+            let Some(dir) = self.eat_direction() else {
+                self.error_here("expected `in`, `out`, or `inout` in a view");
+                self.bump();
+                continue;
+            };
+            let name = self.parse_ident();
+            let ty = if self.eat(TokenKind::Colon) {
+                Some(self.parse_type())
+            } else {
+                None
+            };
+            self.expect(TokenKind::Semi, "after a view field");
+            fields.push(ViewField {
+                dir,
+                name,
+                ty,
+                span: fstart.to(self.prev_span()),
+            });
+        }
+        self.expect(TokenKind::RBrace, "to close a view body");
+        ViewDecl {
+            is_pub,
+            dir,
+            name,
+            params,
+            target,
+            fields,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_enum(&mut self, is_pub: bool) -> EnumDecl {
         let start = self.span();
         self.bump(); // `enum`
         let name = self.parse_ident();
-        let repr = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
+        let repr = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
         // A derived enum may be bodyless (`enum Logic : ULogic;` — same
         // variants, new nominal type).
         if repr.is_some() && self.eat(TokenKind::Semi) {
-            return EnumDecl { is_pub, name, repr, variants: Vec::new(), span: start.to(self.prev_span()) };
+            return EnumDecl {
+                is_pub,
+                name,
+                repr,
+                variants: Vec::new(),
+                span: start.to(self.prev_span()),
+            };
         }
         self.expect(TokenKind::LBrace, "to open an enum body");
         let mut variants = Vec::new();
@@ -357,18 +480,35 @@ impl<'a> Parser<'a> {
             // literals.
             let vname = if self.at(TokenKind::CharacterLit) {
                 let t = self.bump();
-                Ident { text: self.text_of(t.span).to_string(), span: t.span }
+                Ident {
+                    text: self.text_of(t.span).to_string(),
+                    span: t.span,
+                }
             } else {
                 self.parse_ident()
             };
-            let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
-            variants.push(EnumVariant { name: vname, value, span: vstart.to(self.prev_span()) });
+            let value = if self.eat(TokenKind::Eq) {
+                Some(self.parse_expr(false))
+            } else {
+                None
+            };
+            variants.push(EnumVariant {
+                name: vname,
+                value,
+                span: vstart.to(self.prev_span()),
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
         }
         self.expect(TokenKind::RBrace, "to close an enum body");
-        EnumDecl { is_pub, name, repr, variants, span: start.to(self.prev_span()) }
+        EnumDecl {
+            is_pub,
+            name,
+            repr,
+            variants,
+            span: start.to(self.prev_span()),
+        }
     }
 
     // --- entity -------------------------------------------------------------
@@ -388,7 +528,15 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close an entity body");
-        EntityDecl { attrs, is_pub, is_extern, name, params, ports, span: start.to(self.prev_span()) }
+        EntityDecl {
+            attrs,
+            is_pub,
+            is_extern,
+            name,
+            params,
+            ports,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_port(&mut self) -> Port {
@@ -400,7 +548,12 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Colon, "before a port type");
         let ty = self.parse_type();
         self.expect(TokenKind::Semi, "after a port");
-        Port { dir, name, ty, span: start.to(self.prev_span()) }
+        Port {
+            dir,
+            name,
+            ty,
+            span: start.to(self.prev_span()),
+        }
     }
 
     // --- impl ---------------------------------------------------------------
@@ -415,7 +568,10 @@ impl<'a> Parser<'a> {
         let head_path = if self.at(TokenKind::StrLit) {
             let name = self.parse_trait_name();
             let span = name.span;
-            Path { segments: vec![name], span }
+            Path {
+                segments: vec![name],
+                span,
+            }
         } else {
             self.parse_path()
         };
@@ -457,11 +613,19 @@ impl<'a> Parser<'a> {
         let head_span = head_path.span;
         let mut target = Type::Path(head_path);
         if let Some(args) = head_args {
-            target = Type::Generic { base: Box::new(target), args, span: head_span };
+            target = Type::Generic {
+                base: Box::new(target),
+                args,
+                span: head_span,
+            };
         }
         // Optional bus-mode `::Source` suffix and array suffixes on the target.
         if dir1.is_some() {
-            let mode = if self.eat(TokenKind::ColonColon) { Some(self.parse_ident()) } else { None };
+            let mode = if self.eat(TokenKind::ColonColon) {
+                Some(self.parse_ident())
+            } else {
+                None
+            };
             target = Type::Mode {
                 dir: dir1.unwrap(),
                 inner: Box::new(target),
@@ -526,7 +690,11 @@ impl<'a> Parser<'a> {
                 let dir = self.eat_direction().unwrap();
                 let name = self.parse_ident();
                 self.expect(TokenKind::Semi, "after a bus-mode field");
-                Some(ImplItem::ModeField { dir, name, span: start.to(self.prev_span()) })
+                Some(ImplItem::ModeField {
+                    dir,
+                    name,
+                    span: start.to(self.prev_span()),
+                })
             }
             _ => Some(ImplItem::Stmt(self.parse_stmt())),
         }
@@ -537,16 +705,34 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
-        let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
-        let value = if self.eat(TokenKind::Eq) { Some(self.parse_expr(false)) } else { None };
+        let ty = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+        let value = if self.eat(TokenKind::Eq) {
+            Some(self.parse_expr(false))
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi, "after a `let`");
-        LetDecl { attrs, name, ty, value, span: start.to(self.prev_span()) }
+        LetDecl {
+            attrs,
+            name,
+            ty,
+            value,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_fn_after_name(&mut self, start: Span, name: Ident) -> FnDecl {
         let mut generics = self.parse_params_opt();
         let params = self.parse_fn_params();
-        let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()) } else { None };
+        let ret = if self.eat(TokenKind::Arrow) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
         self.parse_where_into(&mut generics);
         let body = if self.at(TokenKind::LBrace) {
             Some(self.parse_block())
@@ -554,7 +740,14 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Semi, "after a method signature");
             None
         };
-        FnDecl { name, generics, params, ret, body, span: start.to(self.prev_span()) }
+        FnDecl {
+            name,
+            generics,
+            params,
+            ret,
+            body,
+            span: start.to(self.prev_span()),
+        }
     }
 
     /// Parse an optional `where` clause and desugar its predicates onto the
@@ -600,7 +793,11 @@ impl<'a> Parser<'a> {
                 });
             } else {
                 let name = self.parse_ident();
-                let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
+                let ty = if self.eat(TokenKind::Colon) {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
                 params.push(FnParam {
                     is_self: false,
                     name: Some(name),
@@ -631,7 +828,10 @@ impl<'a> Parser<'a> {
                     "quoted operator traits were removed; use `Operator<\"{text}\", Input, Output>`"
                 ),
             );
-            Ident { text: "Operator".to_string(), span: t.span }
+            Ident {
+                text: "Operator".to_string(),
+                span: t.span,
+            }
         } else {
             self.parse_ident()
         }
@@ -658,7 +858,13 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a trait body");
-        TraitDecl { is_pub, name, params, items, span: start.to(self.prev_span()) }
+        TraitDecl {
+            is_pub,
+            name,
+            params,
+            items,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_attr_decl(&mut self, is_pub: bool) -> AttrDecl {
@@ -678,7 +884,13 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::Semi, "after an attribute declaration");
-        AttrDecl { is_pub, name, ty, targets, span: start.to(self.prev_span()) }
+        AttrDecl {
+            is_pub,
+            name,
+            ty,
+            targets,
+            span: start.to(self.prev_span()),
+        }
     }
 
     // --- statements ---------------------------------------------------------
@@ -695,7 +907,10 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a block");
-        Block { stmts, span: start.to(self.prev_span()) }
+        Block {
+            stmts,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -712,9 +927,16 @@ impl<'a> Parser<'a> {
             TokenKind::Return => {
                 let start = self.span();
                 self.bump();
-                let value = if self.at(TokenKind::Semi) { None } else { Some(self.parse_expr(false)) };
+                let value = if self.at(TokenKind::Semi) {
+                    None
+                } else {
+                    Some(self.parse_expr(false))
+                };
                 self.expect(TokenKind::Semi, "after a `return`");
-                Stmt::Return { value, span: start.to(self.prev_span()) }
+                Stmt::Return {
+                    value,
+                    span: start.to(self.prev_span()),
+                }
             }
             // `wait <expr>;` / `await <expr>;` timing primitives (no parens):
             // modeled as a call. `await 10ns` advances time; `await clk.rising()`
@@ -728,11 +950,19 @@ impl<'a> Parser<'a> {
                 }
                 let mut ident = self.parse_ident();
                 ident.text = "await".to_string();
-                let callee = Expr::Path(Path { segments: vec![ident], span: start });
+                let callee = Expr::Path(Path {
+                    segments: vec![ident],
+                    span: start,
+                });
                 let arg = self.parse_expr(false);
                 self.expect(TokenKind::Semi, "after a timing primitive");
                 let span = start.to(self.prev_span());
-                Stmt::Expr(Expr::Call { callee: Box::new(callee), args: vec![arg], bang: false, span })
+                Stmt::Expr(Expr::Call {
+                    callee: Box::new(callee),
+                    args: vec![arg],
+                    bang: false,
+                    span,
+                })
             }
             _ => self.parse_expr_or_assign_stmt(),
         }
@@ -751,7 +981,12 @@ impl<'a> Parser<'a> {
                 None
             };
             self.expect(TokenKind::Semi, "after an assignment");
-            Stmt::Assign { target: lhs, value, after, span: start.to(self.prev_span()) }
+            Stmt::Assign {
+                target: lhs,
+                value,
+                after,
+                span: start.to(self.prev_span()),
+            }
         } else if let Some(op) = Self::compound_binop_impl(self.kind()) {
             // `x += e` desugars to `x = x + e` (spec 3.12).
             self.bump();
@@ -764,7 +999,12 @@ impl<'a> Parser<'a> {
                 rhs: Box::new(rhs),
                 span,
             };
-            Stmt::Assign { target: lhs, value, after: None, span }
+            Stmt::Assign {
+                target: lhs,
+                value,
+                after: None,
+                span,
+            }
         } else {
             // No implicit tail-expression returns: every expression statement is
             // terminated by `;`. A function returns a value via `return`.
@@ -799,7 +1039,12 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        IfStmt { cond, then, else_, span: start.to(self.prev_span()) }
+        IfStmt {
+            cond,
+            then,
+            else_,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_match(&mut self) -> MatchStmt {
@@ -819,16 +1064,27 @@ impl<'a> Parser<'a> {
                 // Single statement arm: `"00--" => op = Op::Alu,`.
                 let sstart = self.span();
                 let stmt = self.parse_arm_single_stmt();
-                Block { stmts: vec![stmt], span: sstart.to(self.prev_span()) }
+                Block {
+                    stmts: vec![stmt],
+                    span: sstart.to(self.prev_span()),
+                }
             };
             self.eat(TokenKind::Comma);
-            arms.push(MatchArm { pattern, body, span: astart.to(self.prev_span()) });
+            arms.push(MatchArm {
+                pattern,
+                body,
+                span: astart.to(self.prev_span()),
+            });
             if self.pos == before {
                 self.bump();
             }
         }
         self.expect(TokenKind::RBrace, "to close a match body");
-        MatchStmt { scrutinee, arms, span: start.to(self.prev_span()) }
+        MatchStmt {
+            scrutinee,
+            arms,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_arm_single_stmt(&mut self) -> Stmt {
@@ -841,12 +1097,20 @@ impl<'a> Parser<'a> {
             } else {
                 Some(self.parse_expr(false))
             };
-            return Stmt::Return { value, span: start.to(self.prev_span()) };
+            return Stmt::Return {
+                value,
+                span: start.to(self.prev_span()),
+            };
         }
         let lhs = self.parse_expr(false);
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr(false);
-            Stmt::Assign { target: lhs, value, after: None, span: start.to(self.prev_span()) }
+            Stmt::Assign {
+                target: lhs,
+                value,
+                after: None,
+                span: start.to(self.prev_span()),
+            }
         } else {
             Stmt::Expr(lhs)
         }
@@ -859,7 +1123,12 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::In, "after the loop variable");
         let range = self.parse_expr(true);
         let body = self.parse_block();
-        Stmt::For { var, range, body, span: start.to(self.prev_span()) }
+        Stmt::For {
+            var,
+            range,
+            body,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_pattern(&mut self) -> Pattern {
@@ -873,7 +1142,10 @@ impl<'a> Parser<'a> {
         while self.eat(TokenKind::Pipe) {
             alts.push(self.parse_pattern_atom());
         }
-        Pattern::Or { alts, span: start.to(self.prev_span()) }
+        Pattern::Or {
+            alts,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_pattern_atom(&mut self) -> Pattern {
@@ -905,7 +1177,10 @@ impl<'a> Parser<'a> {
             TokenKind::StrLit => {
                 let t = self.bump();
                 let digits = self.text_of(t.span).trim_matches('"');
-                Pattern::BitPattern { text: format!("\"{digits}\""), span: t.span }
+                Pattern::BitPattern {
+                    text: format!("\"{digits}\""),
+                    span: t.span,
+                }
             }
             // An integer literal (`5`) or inclusive range (`0..9`, `-1..1`).
             TokenKind::Int | TokenKind::Minus => {
@@ -916,7 +1191,11 @@ impl<'a> Parser<'a> {
                 } else {
                     lo
                 };
-                Pattern::Range { lo, hi, span: start.to(self.prev_span()) }
+                Pattern::Range {
+                    lo,
+                    hi,
+                    span: start.to(self.prev_span()),
+                }
             }
             _ => Pattern::Path(self.parse_path()),
         }
@@ -949,7 +1228,11 @@ impl<'a> Parser<'a> {
         if self.at(TokenKind::DotDot) {
             self.bump();
             let hi = self.parse_bin(0, no_struct);
-            Expr::Range { lo: Box::new(lhs), hi: Box::new(hi), span: start.to(self.prev_span()) }
+            Expr::Range {
+                lo: Box::new(lhs),
+                hi: Box::new(hi),
+                span: start.to(self.prev_span()),
+            }
         } else {
             lhs
         }
@@ -1026,7 +1309,10 @@ impl<'a> Parser<'a> {
         }
         (end == wanted_end).then(|| {
             (
-                BinOp::Custom { symbol: symbol.clone(), precedence },
+                BinOp::Custom {
+                    symbol: symbol.clone(),
+                    precedence,
+                },
                 precedence,
                 precedence.saturating_add(1),
                 consumed,
@@ -1058,7 +1344,11 @@ impl<'a> Parser<'a> {
         if let Some(op) = op {
             self.bump();
             let rhs = self.parse_unary(no_struct);
-            return Expr::Unary { op, rhs: Box::new(rhs), span: start.to(self.prev_span()) };
+            return Expr::Unary {
+                op,
+                rhs: Box::new(rhs),
+                span: start.to(self.prev_span()),
+            };
         }
         self.parse_postfix(no_struct)
     }
@@ -1073,7 +1363,10 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LBrace, "to open an if-expression branch");
         let then = self.parse_expr(false);
         self.expect(TokenKind::RBrace, "to close an if-expression branch");
-        self.expect(TokenKind::Else, "— an `if` used as a value needs an `else` branch");
+        self.expect(
+            TokenKind::Else,
+            "— an `if` used as a value needs an `else` branch",
+        );
         let els = if self.at(TokenKind::If) {
             self.parse_if_expr()
         } else {
@@ -1205,8 +1498,14 @@ impl<'a> Parser<'a> {
                 // enum-variant machinery; std owns their values, not the parser.
                 let variant = self.cur_text().to_string();
                 let t = self.bump();
-                let seg = |text: &str| Ident { text: text.to_string(), span: t.span };
-                Expr::Path(Path { segments: vec![seg("Bool"), seg(&variant)], span: t.span })
+                let seg = |text: &str| Ident {
+                    text: text.to_string(),
+                    span: t.span,
+                };
+                Expr::Path(Path {
+                    segments: vec![seg("Bool"), seg(&variant)],
+                    span: t.span,
+                })
             }
             // A one-letter prefix glued to a string is a bit-string literal:
             // `x"123ABC"` (hex) / `o"17"` (octal). The parser only recognizes
@@ -1222,13 +1521,20 @@ impl<'a> Parser<'a> {
                 let base = self.text_of(p.span).chars().next().unwrap_or('x');
                 let t = self.bump();
                 let digits = self.text_of(t.span).trim_matches('"').to_string();
-                Expr::BitStrLit { base, digits, span: p.span.to(t.span) }
+                Expr::BitStrLit {
+                    base,
+                    digits,
+                    span: p.span.to(t.span),
+                }
             }
             TokenKind::Ident | TokenKind::SelfKw => self.parse_path_expr_or_construct(no_struct),
             // A leading `{`: `{ .field = ... }` is a name-less struct literal
             // (typed from context); `{ a, b }` is a bit concatenation.
             TokenKind::LBrace
-                if matches!(self.kind_at(self.pos + 1), TokenKind::Dot | TokenKind::DotDot) =>
+                if matches!(
+                    self.kind_at(self.pos + 1),
+                    TokenKind::Dot | TokenKind::DotDot
+                ) =>
             {
                 self.parse_construct(start, None)
             }
@@ -1245,12 +1551,18 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect(TokenKind::RBracket, "to close an array literal");
-                Expr::Array { elems, span: start.to(self.prev_span()) }
+                Expr::Array {
+                    elems,
+                    span: start.to(self.prev_span()),
+                }
             }
             _ => {
                 self.error_here("expected an expression");
                 // Synthesize a placeholder so callers can keep going.
-                Expr::Int { text: String::new(), span: start }
+                Expr::Int {
+                    text: String::new(),
+                    span: start,
+                }
             }
         }
     }
@@ -1265,7 +1577,10 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RBrace, "to close a concatenation");
-        Expr::Concat { parts, span: start.to(self.prev_span()) }
+        Expr::Concat {
+            parts,
+            span: start.to(self.prev_span()),
+        }
     }
 
     /// A path expression, possibly an instance/struct construction. `::` is
@@ -1274,13 +1589,14 @@ impl<'a> Parser<'a> {
     fn parse_path_expr_or_construct(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         let mut segments = vec![self.parse_ident()];
-        while self.at(TokenKind::ColonColon)
-            && self.kind_at(self.pos + 1) == &TokenKind::Ident
-        {
+        while self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::Ident {
             self.bump(); // `::`
             segments.push(self.parse_ident());
         }
-        let path = Path { segments, span: start.to(self.prev_span()) };
+        let path = Path {
+            segments,
+            span: start.to(self.prev_span()),
+        };
 
         // Construction: `Counter<W = 8> { ... }` or `Packet { ... }`.
         if self.at(TokenKind::Lt) && self.angle_then_brace(self.pos) {
@@ -1343,13 +1659,22 @@ impl<'a> Parser<'a> {
                 };
                 (field, value)
             };
-            args.push(ConnectArg { field, value, span: cstart.to(self.prev_span()) });
+            args.push(ConnectArg {
+                field,
+                value,
+                span: cstart.to(self.prev_span()),
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
         }
         self.expect(TokenKind::RBrace, "to close a construction");
-        Expr::Construct { ty, args, spread, span: start.to(self.prev_span()) }
+        Expr::Construct {
+            ty,
+            args,
+            spread,
+            span: start.to(self.prev_span()),
+        }
     }
 
     // --- types --------------------------------------------------------------
@@ -1358,7 +1683,11 @@ impl<'a> Parser<'a> {
         let start = self.span();
         if let Some(dir) = self.eat_direction() {
             let inner = self.parse_type_core();
-            let mode = if self.eat(TokenKind::ColonColon) { Some(self.parse_ident()) } else { None };
+            let mode = if self.eat(TokenKind::ColonColon) {
+                Some(self.parse_ident())
+            } else {
+                None
+            };
             return Type::Mode {
                 dir,
                 inner: Box::new(inner),
@@ -1374,7 +1703,11 @@ impl<'a> Parser<'a> {
         match dir {
             Some(dir) => {
                 let inner = self.parse_type_core();
-                let mode = if self.eat(TokenKind::ColonColon) { Some(self.parse_ident()) } else { None };
+                let mode = if self.eat(TokenKind::ColonColon) {
+                    Some(self.parse_ident())
+                } else {
+                    None
+                };
                 Type::Mode {
                     dir,
                     inner: Box::new(inner),
@@ -1392,7 +1725,11 @@ impl<'a> Parser<'a> {
         let mut ty = Type::Path(path);
         if self.at(TokenKind::Lt) {
             let args = self.parse_generic_args();
-            ty = Type::Generic { base: Box::new(ty), args, span: start.to(self.prev_span()) };
+            ty = Type::Generic {
+                base: Box::new(ty),
+                args,
+                span: start.to(self.prev_span()),
+            };
         }
         while self.at(TokenKind::LBracket) {
             self.bump();
@@ -1403,7 +1740,11 @@ impl<'a> Parser<'a> {
                 Some(Box::new(self.parse_expr(false)))
             };
             self.expect(TokenKind::RBracket, "to close a type index");
-            ty = Type::Indexed { base: Box::new(ty), index, span: start.to(self.prev_span()) };
+            ty = Type::Indexed {
+                base: Box::new(ty),
+                index,
+                span: start.to(self.prev_span()),
+            };
         }
         ty
     }
@@ -1438,7 +1779,11 @@ impl<'a> Parser<'a> {
             self.bump();
             let hi = self.parse_generic_atom();
             let span = start.to(self.prev_span());
-            return Expr::Range { lo: Box::new(lo), hi: Box::new(hi), span };
+            return Expr::Range {
+                lo: Box::new(lo),
+                hi: Box::new(hi),
+                span,
+            };
         }
         lo
     }
@@ -1449,7 +1794,11 @@ impl<'a> Parser<'a> {
             self.bump();
             let rhs = self.parse_postfix(false);
             let span = start.to(self.prev_span());
-            return Expr::Unary { op: UnOp::Neg, rhs: Box::new(rhs), span };
+            return Expr::Unary {
+                op: UnOp::Neg,
+                rhs: Box::new(rhs),
+                span,
+            };
         }
         self.parse_postfix(false)
     }
@@ -1470,8 +1819,16 @@ impl<'a> Parser<'a> {
         while !self.at_generic_end() && !self.at(TokenKind::Eof) {
             let pstart = self.span();
             let name = self.parse_ident();
-            let bound = if self.eat(TokenKind::Colon) { Some(self.parse_type()) } else { None };
-            params.push(Param { name, bound, span: pstart.to(self.prev_span()) });
+            let bound = if self.eat(TokenKind::Colon) {
+                Some(self.parse_type())
+            } else {
+                None
+            };
+            params.push(Param {
+                name,
+                bound,
+                span: pstart.to(self.prev_span()),
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -1487,16 +1844,25 @@ impl<'a> Parser<'a> {
             self.bump(); // `::`
             segments.push(self.parse_ident());
         }
-        Path { segments, span: start.to(self.prev_span()) }
+        Path {
+            segments,
+            span: start.to(self.prev_span()),
+        }
     }
 
     fn parse_ident(&mut self) -> Ident {
         if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) {
             let t = self.bump();
-            Ident { text: self.text_of(t.span).to_string(), span: t.span }
+            Ident {
+                text: self.text_of(t.span).to_string(),
+                span: t.span,
+            }
         } else {
             self.error_here("expected an identifier");
-            Ident { text: String::new(), span: self.span() }
+            Ident {
+                text: String::new(),
+                span: self.span(),
+            }
         }
     }
 
@@ -1505,10 +1871,16 @@ impl<'a> Parser<'a> {
     fn parse_word(&mut self) -> Ident {
         if self.is_name_token() {
             let t = self.bump();
-            Ident { text: self.text_of(t.span).to_string(), span: t.span }
+            Ident {
+                text: self.text_of(t.span).to_string(),
+                span: t.span,
+            }
         } else {
             self.error_here("expected a name");
-            Ident { text: String::new(), span: self.span() }
+            Ident {
+                text: String::new(),
+                span: self.span(),
+            }
         }
     }
 
@@ -1523,6 +1895,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Entity
                 | TokenKind::Impl
                 | TokenKind::Struct
+                | TokenKind::View
                 | TokenKind::Enum
                 | TokenKind::Trait
                 | TokenKind::Attr
@@ -1654,7 +2027,6 @@ impl<'a> Parser<'a> {
         self.text_of(self.peek().span)
     }
 
-
     fn text_of(&self, span: Span) -> &str {
         &self.src[span.start as usize..span.end as usize]
     }
@@ -1684,8 +2056,10 @@ impl<'a> Parser<'a> {
             // Rewrite `>>` to a single `>` covering its second character and
             // leave it at the current position for the outer close.
             let sp = self.peek().span;
-            self.tokens[self.pos] =
-                Token { kind: TokenKind::Gt, span: Span::new(sp.file, sp.start + 1..sp.end) };
+            self.tokens[self.pos] = Token {
+                kind: TokenKind::Gt,
+                span: Span::new(sp.file, sp.start + 1..sp.end),
+            };
             true
         } else {
             self.expect(TokenKind::Gt, ctx)
@@ -1777,7 +2151,9 @@ mod tests {
 
     #[test]
     fn module_header_and_imports() {
-        let m = parse_ok("module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = uint[32];\n");
+        let m = parse_ok(
+            "module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = uint[32];\n",
+        );
         assert_eq!(m.path.segments.len(), 2);
         assert_eq!(m.path.segments[1].text, "logic");
         assert_eq!(m.items.len(), 2);
@@ -1789,7 +2165,9 @@ mod tests {
         let m = parse_ok(
             "module m;\nentity Counter<W: integer> {\n  in clk: Bit;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
         );
-        let Item::Entity(e) = &m.items[0] else { panic!("expected entity") };
+        let Item::Entity(e) = &m.items[0] else {
+            panic!("expected entity")
+        };
         assert_eq!(e.name.text, "Counter");
         assert_eq!(e.params.params.len(), 1);
         assert_eq!(e.ports.len(), 4);
@@ -1803,7 +2181,9 @@ mod tests {
             "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State: uint[2] { Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
         );
         assert_eq!(m.items.len(), 3);
-        let Item::Enum(e) = &m.items[2] else { panic!("expected enum") };
+        let Item::Enum(e) = &m.items[2] else {
+            panic!("expected enum")
+        };
         assert_eq!(e.variants.len(), 4);
         assert!(e.repr.is_some());
     }
@@ -1813,7 +2193,9 @@ mod tests {
         let m = parse_ok(
             "module m;\nimpl Counter<W: integer> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
         );
-        let Item::Impl(i) = &m.items[0] else { panic!("expected impl") };
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
         assert_eq!(i.params.params.len(), 1);
         // const, let, if-block, assignment.
         assert_eq!(i.items.len(), 4);
@@ -1829,12 +2211,18 @@ mod tests {
             "module m;\nimpl M {\n  if state'old == State::Idle {\n    started = '1';\n  }\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Stmt(Stmt::If(iff)) = &i.items[0] else { panic!("expected if") };
+        let ImplItem::Stmt(Stmt::If(iff)) = &i.items[0] else {
+            panic!("expected if")
+        };
         // LHS of `==` is `state'old` (SysAttr); RHS is `State::Idle` (Path).
-        let Expr::Binary { lhs, rhs, op, .. } = &iff.cond else { panic!("expected binary") };
+        let Expr::Binary { lhs, rhs, op, .. } = &iff.cond else {
+            panic!("expected binary")
+        };
         assert_eq!(op, &BinOp::Eq);
         assert!(matches!(**lhs, Expr::SysAttr { .. }));
-        let Expr::Path(p) = &**rhs else { panic!("expected path") };
+        let Expr::Path(p) = &**rhs else {
+            panic!("expected path")
+        };
         assert_eq!(p.segments.len(), 2);
     }
 
@@ -1843,10 +2231,14 @@ mod tests {
         let m = parse_ok(
             "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self'event;\n  }\n}\n",
         );
-        let Item::Trait(t) = &m.items[0] else { panic!("expected trait") };
+        let Item::Trait(t) = &m.items[0] else {
+            panic!("expected trait")
+        };
         assert_eq!(t.items.len(), 2);
         assert!(t.items[0].body.is_none());
-        let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
+        let Item::Impl(i) = &m.items[1] else {
+            panic!("expected impl")
+        };
         assert_eq!(i.trait_.as_ref().unwrap().segments[0].text, "ClockLike");
         assert!(matches!(i.items[0], ImplItem::Fn(_)));
     }
@@ -1854,15 +2246,21 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nimpl out Stream<T>::Source {\n  in clk;\n  out valid;\n  in ready;\n}\nentity Producer {\n  bus: out Stream<uint[32]>::Source;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview out Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nview in SimpleBus { in request: Bit; out acknowledge: Bit; }\nimpl Source<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source<uint[32]>;\n}\n",
         );
-        let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
-        assert!(matches!(i.mode_dir, Some(Direction::Out)));
-        assert!(matches!(&i.target, Type::Mode { mode: Some(_), .. }));
-        assert!(matches!(i.items[0], ImplItem::ModeField { dir: Direction::In, .. }));
-        let Item::Entity(e) = &m.items[2] else { panic!("expected entity") };
+        let Item::View(v) = &m.items[1] else {
+            panic!("expected view")
+        };
+        assert_eq!(v.name.text, "Source");
+        assert_eq!(v.fields.len(), 4);
+        let Item::View(simple) = &m.items[2] else { panic!("expected standalone view") };
+        assert!(simple.target.is_none());
+        assert!(simple.fields.iter().all(|f| f.ty.is_some()));
+        let Item::Entity(e) = &m.items[4] else {
+            panic!("expected entity")
+        };
         assert_eq!(e.ports[0].dir, None); // direction lives in the bus-mode type
-        assert!(matches!(&e.ports[0].ty, Type::Mode { .. }));
+        assert!(matches!(&e.ports[0].ty, Type::Generic { .. }));
     }
 
     #[test]
@@ -1874,8 +2272,13 @@ mod tests {
         parse_ok("module m;\ntrait Foo<U> { fn g(self) -> Bar<U>; }\n");
         let m = parse_ok("module m;\nimpl M {\n  y = a >> b;\n}\n");
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else { panic!() };
-        assert!(matches!(value, Expr::Binary { op: BinOp::Shr, .. }), "`a >> b` stays a shift");
+        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else {
+            panic!()
+        };
+        assert!(
+            matches!(value, Expr::Binary { op: BinOp::Shr, .. }),
+            "`a >> b` stays a shift"
+        );
     }
 
     #[test]
@@ -1885,8 +2288,12 @@ mod tests {
             "module m;\nimpl Test {\n  let c: Counter<W = 8> = {\n    .clk = clk,\n    .rst = rst,\n    .count = count8,\n  };\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Let(l) = &i.items[0] else { panic!("expected let") };
-        let Some(Expr::Construct { args, .. }) = &l.value else { panic!("expected construct") };
+        let ImplItem::Let(l) = &i.items[0] else {
+            panic!("expected let")
+        };
+        let Some(Expr::Construct { args, .. }) = &l.value else {
+            panic!("expected construct")
+        };
         assert_eq!(args.len(), 3);
         assert!(args.iter().all(|a| a.field.is_some() && a.value.is_some()));
 
@@ -1894,14 +2301,17 @@ mod tests {
         // whose parts elaboration binds to ports by order.
         let m = parse_ok("module m;\nimpl Test {\n  let c: Counter = { clk, rst, count8 };\n}\n");
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Let(l) = &i.items[0] else { panic!("expected let") };
+        let ImplItem::Let(l) = &i.items[0] else {
+            panic!("expected let")
+        };
         assert!(matches!(&l.value, Some(Expr::Concat { parts, .. }) if parts.len() == 3));
     }
 
     #[test]
     fn bare_field_shorthand_is_rejected() {
         // The old name-shorthand `.clk` (dot, no value) is no longer a form.
-        let (_, errors) = parse("module m;\nimpl Test {\n  let c: Counter = { .clk, .rst = rst };\n}\n");
+        let (_, errors) =
+            parse("module m;\nimpl Test {\n  let c: Counter = { .clk, .rst = rst };\n}\n");
         assert!(errors > 0, "`.clk` without a value should be a parse error");
     }
 
@@ -1910,8 +2320,12 @@ mod tests {
         // `a and b or c` must parse as `(a and b) or c` (and binds tighter).
         let m = parse_ok("module m;\nimpl M {\n  y = a and b or c;\n}\n");
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else { panic!() };
-        let Expr::Binary { op, lhs, .. } = value else { panic!("expected binary") };
+        let ImplItem::Stmt(Stmt::Assign { value, .. }) = &i.items[0] else {
+            panic!()
+        };
+        let Expr::Binary { op, lhs, .. } = value else {
+            panic!("expected binary")
+        };
         assert_eq!(op, &BinOp::Or); // top-level is `or`
         assert!(matches!(**lhs, Expr::Binary { op: BinOp::And, .. }));
     }
@@ -1922,7 +2336,9 @@ mod tests {
             "module m;\nimpl M {\n  match state {\n    State::Idle => { next = State::Start; }\n    _ => next = State::Idle,\n  }\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else { panic!() };
-        let ImplItem::Stmt(Stmt::Match(mt)) = &i.items[0] else { panic!("expected match") };
+        let ImplItem::Stmt(Stmt::Match(mt)) = &i.items[0] else {
+            panic!("expected match")
+        };
         assert_eq!(mt.arms.len(), 2);
         assert!(matches!(mt.arms[0].pattern, Pattern::Path(_)));
         assert!(matches!(mt.arms[1].pattern, Pattern::Wildcard));
@@ -1933,15 +2349,23 @@ mod tests {
         let m = parse_ok(
             "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: integer> {\n  in a: uint[W];\n  out b: uint[W];\n}\n",
         );
-        let Item::AttrDecl(a) = &m.items[0] else { panic!("expected attr decl") };
+        let Item::AttrDecl(a) = &m.items[0] else {
+            panic!("expected attr decl")
+        };
         assert!(a.is_pub);
         assert_eq!(a.targets.len(), 1);
-        let Item::AttrDecl(a2) = &m.items[1] else { panic!() };
+        let Item::AttrDecl(a2) = &m.items[1] else {
+            panic!()
+        };
         assert_eq!(a2.targets.len(), 2);
-        let Item::Entity(top) = &m.items[2] else { panic!("expected entity") };
+        let Item::Entity(top) = &m.items[2] else {
+            panic!("expected entity")
+        };
         assert_eq!(top.attrs.len(), 1);
         assert_eq!(top.attrs[0].name.segments[0].text, "top");
-        let Item::Entity(bb) = &m.items[3] else { panic!() };
+        let Item::Entity(bb) = &m.items[3] else {
+            panic!()
+        };
         assert!(bb.is_extern);
     }
 
@@ -1950,10 +2374,15 @@ mod tests {
         let m = parse_ok(
             "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk = clk,\n    .count = count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk.rising();\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
         );
-        let Item::Impl(i) = &m.items[1] else { panic!("expected impl") };
+        let Item::Impl(i) = &m.items[1] else {
+            panic!("expected impl")
+        };
         // clk, dut, await, rst=, for, assert.
         assert_eq!(i.items.len(), 6);
-        assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::Expr(Expr::Call { .. }))));
+        assert!(matches!(
+            i.items[2],
+            ImplItem::Stmt(Stmt::Expr(Expr::Call { .. }))
+        ));
         assert!(matches!(i.items[4], ImplItem::Stmt(Stmt::For { .. })));
         let ImplItem::Stmt(Stmt::Expr(Expr::Call { bang, .. })) = &i.items[5] else {
             panic!("expected assert call")
@@ -1966,6 +2395,9 @@ mod tests {
         let (m, errors) = parse("module m;\n@@@ junk\nentity Good { out y: Bit; }\n");
         assert!(errors > 0);
         // The good entity after the junk still parses.
-        assert!(m.items.iter().any(|it| matches!(it, Item::Entity(e) if e.name.text == "Good")));
+        assert!(m
+            .items
+            .iter()
+            .any(|it| matches!(it, Item::Entity(e) if e.name.text == "Good")));
     }
 }

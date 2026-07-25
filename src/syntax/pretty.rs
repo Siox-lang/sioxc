@@ -62,6 +62,7 @@ impl Printer {
                 self.line("}");
             }
             Item::Struct(s) => self.struct_decl(s),
+            Item::View(v) => self.view_decl(v),
             Item::Enum(e) => self.enum_decl(e),
             Item::Entity(e) => self.entity(e),
             Item::Impl(i) => self.impl_decl(i),
@@ -111,6 +112,27 @@ impl Printer {
         self.indent += 1;
         for f in &s.fields {
             self.line(&format!("{}: {},", f.name.text, type_str(&f.ty)));
+        }
+        self.indent -= 1;
+        self.line("}");
+    }
+
+    fn view_decl(&mut self, v: &ViewDecl) {
+        let kw = pub_kw(v.is_pub);
+        let target = v.target.as_ref()
+            .map(|t| format!(" for {}", type_str(t)))
+            .unwrap_or_default();
+        self.line(&format!(
+            "{kw}view {} {}{}{} {{",
+            dir_str(v.dir),
+            v.name.text,
+            params(&v.params),
+            target
+        ));
+        self.indent += 1;
+        for f in &v.fields {
+            let ty = f.ty.as_ref().map(|t| format!(": {}", type_str(t))).unwrap_or_default();
+            self.line(&format!("{} {}{};", dir_str(f.dir), f.name.text, ty));
         }
         self.indent -= 1;
         self.line("}");

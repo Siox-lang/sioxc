@@ -6,9 +6,27 @@ AOT binary, with assertions and VCD waveforms); what remains is filling gaps and
 deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
-Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known.
+Status audited 2026-07-24 against the compiler, standard library, workspace
+tests, and `siox-tests` corpus.
+
+Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known ·
+✅ implemented and covered.
 
 ## Language features
+
+- 🟡 **First-class directional views** — `view out|in|inout Name for Struct`
+  defines a nominal projection over a reusable layout; `view ... Name { ... }`
+  defines a standalone typed bus. Views have their own inherent/trait impls,
+  flatten onto the backing signals, preserve generic substitution, and enforce
+  leaf permissions. Covered by parser/type/IR tests and the executable
+  `view_bus_test` / `stream_bus_test` corpus examples. Still open: the
+  declaration-level `in`/`out`/`inout` role is preserved and makes each view a
+  distinct nominal type, but connection checking does not yet use that role to
+  diagnose incompatible endpoint pairings.
+- ✅ **Unified customisable operators** — all overloads use
+  `Operator<"symbol", Input, Output>` and `apply`; `and`/`or`/`not` are core
+  syntax but use the same type-directed contract. Library operators such as
+  `xor`/`nand`/`nor` are ordinary implementations carrying `precedence`.
 
 - 🟢 **Nested generics** — nested generic **bounds** parse (`fn f<T: Bar<Bit>>`,
   `-> Bar<U>`; the `>>` token splits when closing angle levels). A nested
@@ -30,6 +48,13 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Semantics & analysis
 
+- 🟡 **Persistent typed IR from the checker** — `Typed` is still an empty
+  marker and later stages recompute type facts from the AST. Likewise,
+  `Ty::is_digital` currently treats every resolved named type as digital rather
+  than recursively checking a struct's fields. Correctness checks exist, but
+  retaining expression/signal/method types would simplify the LSP and remove
+  duplicated inference in elaboration/lowering.
+
 - 🟡 **Undriven signals** — **model: always initialized, may be undriven.** Every
   signal/port always holds a value (its `Init` value, see below); "undriven"
   means nothing drives over it, so it keeps that value forever — deterministic,
@@ -45,14 +70,14 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   "holds its default value"), not the old hard error `E-P005` (retired) — an
   unconnected input is just undriven → reads its init value (§3.29). Top-level
   primary inputs are unaffected (they aren't instantiated).
-- 🟡 **Full direction analysis** — writing an `in` port is now caught in all
-  shapes (bare `a = ..`, an `in` bus-mode leaf, and a field/index of a plain
+- ✅ **Full direction analysis** — writing an `in` port is now caught in all
+  shapes (bare `a = ..`, an `in` view leaf, and a field/index of a plain
   `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
   warns (`W-P011`). Still open: reading your own `out` port from within the
   entity. ✅ **Resolved: keep it allowed** — IEEE 1076-2019 (VHDL-2008) permits
   reading an `out` port; only pre-2008 VHDL forbade it, and we align with the
   2019 reference, so no lint. Direction analysis is otherwise complete.
-- 🟢 **`new` — uninitialized value semantics** — model the default value of an
+- ✅ **`new` — uninitialized value semantics** — model the default value of an
   undriven signal as the type's nullary constructor `T::new()`, not a hardcoded
   `0`. Naming it `new` (a `New` trait, `fn new() -> Self`) folds "default value"
   and "construction" into one concept rather than a separate `Default`/`Init`;
@@ -61,7 +86,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `T::new()` or **`T()`** — the zero-argument member of the same `T(...)` family
   whose one-argument form `T(x)` is the conversion (§3.28); `T(...)` names the
   *constructor* (a function), not the inert data, consistent with
-  `From::from`/`Ord::cmp`/`Boolean::as_bool`. `T()` is implemented (`lower_new`:
+  `From::from`/`Operator::apply`/`Boolean::as_bool`. `T()` is implemented (`lower_new`:
   enum → first variant, numeric/vector/`Char`/`real`/`integer` → 0, struct →
   field-wise `Val::Fields`). The *derived default*
   is structural — an enum yields its **first variant** (VHDL `T'LEFT`), a
@@ -99,17 +124,19 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   discriminant **companion** (`$meta`, 4 bits/element, ≤16 elements), made only
   where a metavalue appears — metavalue-free designs stay bit-identical.
   **Working on JIT + native**, guarded by `xz_vector_test`/`xz_poison_test`/
-  `xz_logical_test`: 9-value bit-string literals (`b"1X10"`); storage +
+  `xz_logical_test`: 9-value contextual bit strings (`"1X10"`); storage +
   per-element reconstruction (`v[i]` reads its `std_ulogic`); `numeric_std`
   **arithmetic** + **relational** poisoning; per-element `std_logic_1164`
   **logical** (`0 and X = 0`, `1 or X = 1`, `not X = X`); propagation through
   copies / port connections / muxes; **VCD** `x`/`z` rendering. **Minor
-  follow-ons:** a metavalue literal in *driver* position (`out = b"1X10"`) loses
+  follow-ons:** a metavalue literal in *driver* position (`out = "1X10"`) loses
   its disc in the IR `Const` (init-position and all propagation work); vectors
   wider than 16 elements (array companion); width-1 vectors (`uint[1]`) element
-  typing. Note: siox keeps `'0'` (not the standard's `'U'`) as the uninitialized
-  default via `new`/first-variant — a separate decision if `'U'` is wanted.
-- 🟢 **Cascaded event domains — a register clocked by a derived clock.**
+  typing. Logic-vector literals now use bare contextual strings (`"1X10"`);
+  the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
+  default to `'U'` through their std `New` implementations, while `Bit`
+  defaults to `'0'`.
+- ✅ **Cascaded event domains — a register clocked by a derived clock.**
   ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
   each delta settles combinational logic, computes `event[i] = cur[i] != old[i]`
   (and a `snap`), runs the event blocks with next-state staging, then advances
@@ -148,13 +175,13 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   gives each signal a full-width slot for a 1-bit flag. Pack it as a dedicated
   1-bit-per-signal bitset (`⌈N/8⌉` bytes, independent of signal widths) — the
   last real density win. Its own layout since flags are always 1 bit.
-- 🟢 **`bitpack`** *(implemented)* — pack many small signals into shared 64-bit
+- ✅ **`bitpack`** — pack many small signals into shared 64-bit
   words (a `Bit` takes 1 bit, a nibble `Logic` 4), instead of a byte each. Up to
   ~8× smaller state for `Bit`-heavy designs, at the cost of read-modify-write
   stores — a footprint win for huge designs; the default byte layout is faster
-  for cache-resident ones. Correctness is covered by the corpus differential
-  (all 61 pass identically packed and unpacked).
-- 🟢 **`simd`** *(implemented)* — the JIT/AOT `TargetMachine` targets the host
+  for cache-resident ones. Correctness is covered by the packed/unpacked corpus
+  differential.
+- ✅ **`simd`** — the JIT/AOT `TargetMachine` targets the host
   CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
   `-O2` vectorizer can use them for array/vector ops. Off by default the build
   targets a portable baseline (generic x86-64, SSE2 128-bit).
@@ -188,6 +215,15 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
 
 ## Tooling & integration
 
+- 🟡 **Documentation/spec synchronization** — `docs/language.md` tracks the
+  current grammar, but the Phase-1 examples in `docs/roadmap.md` still contain
+  early spellings such as trait `let` methods and symbolic boolean `&`.
+  Refresh or clearly label those sketches so they are not mistaken for
+  accepted source.
+- 🔴 **LSP protocol server** — `siox-lsp` is currently only an argument-parsing
+  skeleton that links the frontend and exits with `EX_UNAVAILABLE`. Still
+  needed: JSON-RPC/stdio transport, document synchronization, diagnostics,
+  locations/hover/completion, and VS Code/Neovim integration tests.
 - 🔴 **cocotb integration** — drive the compiled design via VPI/GPI (the runtime
   ABI is already VPI-shaped for this). Tracked as the main open runtime task.
 

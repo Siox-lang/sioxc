@@ -129,22 +129,41 @@ pub enum Expr {
     Current(SignalId),
     Old(SignalId),
     Event(SignalId),
-    Unary { op: UnOp, rhs: Box<Expr> },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    Unary {
+        op: UnOp,
+        rhs: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// Bit slice `base[hi..lo]` (inclusive), value `(base >> lo) & mask(hi-lo+1)`.
-    Slice { base: Box<Expr>, hi: u32, lo: u32 },
+    Slice {
+        base: Box<Expr>,
+        hi: u32,
+        lo: u32,
+    },
     /// `cond ? then : els` — produced by inlining operator-trait impl bodies
     /// (`if`/`else` chains of `return`s become nested selects).
-    Select { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
+    Select {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+    },
     /// A foreign C call (`extern "C"` declarations, spec 3.27): `real`
     /// parameters/results are f64 (bit-pattern operands), everything else a
     /// 64-bit word. Engines call the named symbol (JIT: process symbols;
     /// native: linked libraries; the interpreter evaluates the libm set).
-    CCall { name: String, args: Vec<Expr>, f64_args: Vec<bool>, f64_ret: bool },
+    CCall {
+        name: String,
+        args: Vec<Expr>,
+        f64_args: Vec<bool>,
+        f64_ret: bool,
+    },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
@@ -214,7 +233,10 @@ pub fn lower_in(
         .enum_variants
         .iter()
         .map(|(ty, vars)| {
-            (ty.clone(), vars.iter().map(|(sym, &d)| (d, sym.clone())).collect())
+            (
+                ty.clone(),
+                vars.iter().map(|(sym, &d)| (d, sym.clone())).collect(),
+            )
         })
         .collect();
     l.enum_reprs = enum_reprs(modules);
@@ -235,15 +257,17 @@ pub fn lower_in(
     for inst in &hier.instances {
         if !seen.contains(&inst.entity) {
             seen.push(inst.entity.clone());
-            l.entity_params.entry(inst.entity.clone()).or_insert_with(|| {
-                inst.params
-                    .iter()
-                    .filter_map(|(n, v)| match v {
-                        crate::elab::ParamValue::Int(i) => Some((n.clone(), *i)),
-                        crate::elab::ParamValue::Unknown => None,
-                    })
-                    .collect()
-            });
+            l.entity_params
+                .entry(inst.entity.clone())
+                .or_insert_with(|| {
+                    inst.params
+                        .iter()
+                        .filter_map(|(n, v)| match v {
+                            crate::elab::ParamValue::Int(i) => Some((n.clone(), *i)),
+                            crate::elab::ParamValue::Unknown => None,
+                        })
+                        .collect()
+                });
         }
     }
     // Lower only the top-level designs — the `#[top]`/`#[test]` roots. Their
@@ -299,9 +323,10 @@ struct Lowering<'a> {
     local_range: HashMap<String, (i64, i64)>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
-    /// Bus-mode per-leaf directions: `(struct, mode) -> {field -> dir}` from
-    /// `impl <dir> Struct::Mode { in a; out b; }` (spec 3.19).
-    mode_dirs: HashMap<(String, String), HashMap<String, ast::Direction>>,
+    /// Named, storage-free directional views.
+    views: HashMap<String, &'a ast::ViewDecl>,
+    /// View name -> per-leaf directions.
+    mode_dirs: HashMap<String, HashMap<String, ast::Direction>>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
     /// Enum name -> base enum name (derivation chain, enums only).
@@ -403,7 +428,11 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
                         .unwrap_or(Expr::Unknown);
                     (
                         name,
-                        Expr::Select { cond: Box::new(cond.clone()), then: Box::new(t), els: Box::new(e) },
+                        Expr::Select {
+                            cond: Box::new(cond.clone()),
+                            then: Box::new(t),
+                            els: Box::new(e),
+                        },
                     )
                 })
                 .collect(),
@@ -426,6 +455,7 @@ impl<'a> Lowering<'a> {
             new_defaults: HashMap::new(),
             local_range: HashMap::new(),
             structs: HashMap::new(),
+            views: HashMap::new(),
             mode_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
@@ -475,6 +505,16 @@ impl<'a> Lowering<'a> {
                     ast::Item::Struct(s) => {
                         self.structs.insert(s.name.text.clone(), s);
                     }
+                    ast::Item::View(v) => {
+                        self.views.insert(v.name.text.clone(), v);
+                        self.mode_dirs.insert(
+                            v.name.text.clone(),
+                            v.fields
+                                .iter()
+                                .map(|f| (f.name.text.clone(), f.dir))
+                                .collect(),
+                        );
+                    }
                     // Module constants join the width environment; range
                     // constants (`const BYTE: range = 7..0`) keep their
                     // written direction. Aliases substitute during lowering.
@@ -499,20 +539,11 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
-                        // A bus-mode impl (`impl out Stream::Source { in a;
-                        // out b; }`, spec 3.19) records its fields' directions;
-                        // a plain inherent impl holds methods.
-                        if im.mode_dir.is_some() {
-                            if let Some(key) = Self::mode_of(&im.target) {
-                                let map = self.mode_dirs.entry(key).or_default();
-                                for it in &im.items {
-                                    if let ast::ImplItem::ModeField { dir, name, .. } = it {
-                                        map.insert(name.text.clone(), *dir);
-                                    }
-                                }
+                        self.register_static_fns(im);
+                        if im.mode_dir.is_none() {
+                            if let Some(name) = type_head_name(&im.target) {
+                                self.impls.entry(name.to_string()).or_default().push(im);
                             }
-                        } else if let Some(name) = type_head_name(&im.target) {
-                            self.impls.entry(name.to_string()).or_default().push(im);
                         }
                     }
                     // A trait impl's first fn is the operator body for
@@ -523,12 +554,12 @@ impl<'a> Lowering<'a> {
                     ast::Item::Impl(im) => {
                         let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                         let target = type_head_name(&im.target);
+                        self.register_static_fns(im);
                         if let (Some(tr), Some(ty)) = (tr, target) {
                             if tr.text == "Suffix" {
                                 let symbol = im.trait_args.first().and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::StrLit {
-                                        text,
-                                        ..
+                                        text, ..
                                     }) => Some(text.clone()),
                                     _ => None,
                                 });
@@ -557,12 +588,13 @@ impl<'a> Lowering<'a> {
                                         _ => None,
                                     });
                                 let input_index = usize::from(op_symbol.is_some());
-                                let rhs_arg = im.trait_args.get(input_index).and_then(|a| match a {
-                                    ast::GenericArg::Positional(ast::Expr::Path(p)) => {
-                                        p.segments.last().map(|s| s.text.clone())
-                                    }
-                                    _ => None,
-                                });
+                                let rhs_arg =
+                                    im.trait_args.get(input_index).and_then(|a| match a {
+                                        ast::GenericArg::Positional(ast::Expr::Path(p)) => {
+                                            p.segments.last().map(|s| s.text.clone())
+                                        }
+                                        _ => None,
+                                    });
                                 let operator = op_symbol.unwrap_or_else(|| tr.text.clone());
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
@@ -581,8 +613,25 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Register an impl's *static* associated fns (those without a `self`
+    /// parameter) under a `Type::name` key, so `Unicode::code(c)` is callable
+    /// in expressions through the same const-folding/inlining path as a
+    /// module-level `fn`. Methods take `self` and dispatch via the receiver.
+    fn register_static_fns(&mut self, im: &'a ast::ImplDecl) {
+        let Some(ty) = type_head_name(&im.target) else { return };
+        for it in &im.items {
+            if let ast::ImplItem::Fn(f) = it {
+                if !f.params.iter().any(|p| p.is_self) {
+                    self.free_fns.insert(format!("{ty}::{}", f.name.text), f);
+                }
+            }
+        }
+    }
+
     fn lower_entity(&mut self, name: &str) {
-        let Some(edecl) = self.entities.get(name).copied() else { return };
+        let Some(edecl) = self.entities.get(name).copied() else {
+            return;
+        };
         // Extern entities are black boxes.
         if edecl.is_extern {
             return;
@@ -612,8 +661,7 @@ impl<'a> Lowering<'a> {
         // one name binds an `out` and `in` ports (a DUT feeding another, or
         // its own input), the out drives the ins as real hardware, so the
         // value propagates on every settle without runner involvement.
-        let mut bindings: HashMap<String, Vec<(SignalId, Option<ast::Direction>)>> =
-            HashMap::new();
+        let mut bindings: HashMap<String, Vec<(SignalId, Option<ast::Direction>)>> = HashMap::new();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
@@ -623,12 +671,19 @@ impl<'a> Lowering<'a> {
                             let mut sub_env = self.consts.clone();
                             sub_env.extend(self.construct_params(&cty, env));
                             let sub_tenv = self.construct_type_params(&cty, sub);
-                            let sub_ports =
-                                self.lower_body(sub, &sub_path, &sub_env, &sub_tenv, &HashMap::new());
+                            let sub_ports = self.lower_body(
+                                sub,
+                                &sub_path,
+                                &sub_env,
+                                &sub_tenv,
+                                &HashMap::new(),
+                            );
                             for (port, value) in self.norm_conns(&args, sub) {
                                 // The testbench name the port binds to; a
                                 // literal/expression connection has no name.
-                                let Some(tbname) = expr_path(&value) else { continue };
+                                let Some(tbname) = expr_path(&value) else {
+                                    continue;
+                                };
                                 if let Some(&(sig, dir)) = sub_ports.get(&port) {
                                     bindings.entry(tbname).or_default().push((sig, dir));
                                 }
@@ -729,7 +784,7 @@ impl<'a> Lowering<'a> {
             // A bus-mode port (`bus: out Stream::Source`) gives each leaf its own
             // direction from the mode impl (`out valid; in ready;`); a plain port
             // applies its single direction to every leaf.
-            let mode = Self::mode_of(&p.ty).and_then(|k| self.mode_dirs.get(&k));
+            let mode = self.view_of(&p.ty).and_then(|k| self.mode_dirs.get(&k));
             for (k, &id) in &self.locals {
                 if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
                     let dir = match mode {
@@ -797,8 +852,10 @@ impl<'a> Lowering<'a> {
                         }
                         // `let s: string = read_to_string("f.txt");` — the
                         // compiler reads the file; its length sets the range.
-                        if let Some(fpath) =
-                            l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read_to_string"))
+                        if let Some(fpath) = l
+                            .value
+                            .as_ref()
+                            .and_then(|v| Self::fs_read_call(v, "read_to_string"))
                         {
                             match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                 Ok(text) => {
@@ -830,7 +887,8 @@ impl<'a> Lowering<'a> {
                     if let Some(ast::Expr::StrLit { text, .. }) = &l.value {
                         if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
                             for (c, i) in text.chars().zip(&indices) {
-                                if let Some(&id) = self.locals.get(&format!("{}[{i}]", l.name.text)) {
+                                if let Some(&id) = self.locals.get(&format!("{}[{i}]", l.name.text))
+                                {
                                     let en = self.out.signals[id.0 as usize].enum_type.clone();
                                     let v = en
                                         .and_then(|e| self.char_disc(c, &e))
@@ -847,11 +905,10 @@ impl<'a> Lowering<'a> {
                     // stimulus fed externally — neither is a forgotten drive.
                     // An instance array (`let stage: Inc[N]`, Inc an entity) is
                     // built element-wise, not driven — never a signal to check.
-                    let is_instance_array = l
-                        .ty
-                        .as_ref()
-                        .and_then(type_head_name)
-                        .is_some_and(|h| self.entities.contains_key(h));
+                    let is_instance_array =
+                        l.ty.as_ref()
+                            .and_then(type_head_name)
+                            .is_some_and(|h| self.entities.contains_key(h));
                     if l.value.is_none()
                         && !is_instance_array
                         && !has_attr(edecl, "test")
@@ -926,7 +983,11 @@ impl<'a> Lowering<'a> {
                         let en = self.out.signals[id.0 as usize].enum_type.clone();
                         if let Some(bits) = self.const_init_value(v, en.as_deref()) {
                             let w = self.out.signals[id.0 as usize].width;
-                            let masked = if w > 0 && w < 64 { bits & ((1u64 << w) - 1) } else { bits };
+                            let masked = if w > 0 && w < 64 {
+                                bits & ((1u64 << w) - 1)
+                            } else {
+                                bits
+                            };
                             self.out.signals[id.0 as usize].init = masked;
                         }
                         // A metavalue-carrying string init (`"01X0"`) needs a
@@ -948,7 +1009,9 @@ impl<'a> Lowering<'a> {
         // parent's. The recursion saves/restores this body's scope, so the
         // parent's names resolve again here.
         for (inst, cty, conns) in &subinsts {
-            let Some(sub_ename) = type_head_name(cty) else { continue };
+            let Some(sub_ename) = type_head_name(cty) else {
+                continue;
+            };
             // Cyclic instantiation (already diagnosed by the elaborator): don't
             // recurse back into an entity that is still being lowered.
             if self.lower_stack.iter().any(|e| e == sub_ename) {
@@ -999,7 +1062,8 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            let sub_ports = self.lower_body(sub_ename, &sub_path, &sub_env, &sub_type_env, &aliases);
+            let sub_ports =
+                self.lower_body(sub_ename, &sub_path, &sub_env, &sub_type_env, &aliases);
             // Expose the sub-instance's ports in this scope so `inst.port`
             // (and `stage[i].port`) reads resolve to the child's signal —
             // an output need not be wired to a local to be read.
@@ -1032,12 +1096,22 @@ impl<'a> Lowering<'a> {
                     if dir == Some(ast::Direction::Out) {
                         if let Some(target) = self.target_signal(value) {
                             let ctx = self.next_ctx();
-                            self.out.drivers.push(Driver { target, cond: None, expr: Expr::Current(child_id), ctx });
+                            self.out.drivers.push(Driver {
+                                target,
+                                cond: None,
+                                expr: Expr::Current(child_id),
+                                ctx,
+                            });
                         }
                     } else {
                         let expr = self.lower_expr(value);
                         let ctx = self.next_ctx();
-                        self.out.drivers.push(Driver { target: child_id, cond: None, expr, ctx });
+                        self.out.drivers.push(Driver {
+                            target: child_id,
+                            cond: None,
+                            expr,
+                            ctx,
+                        });
                     }
                     continue;
                 }
@@ -1045,7 +1119,9 @@ impl<'a> Lowering<'a> {
                 // A composite (struct/array) port: wire each leaf to the matching
                 // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
                 // The parent side must be a signal path.
-                let Some(base) = expr_path(value) else { continue };
+                let Some(base) = expr_path(value) else {
+                    continue;
+                };
                 leaves.sort_by(|a, b| a.0.cmp(&b.0));
                 for (k, child_id, dir) in leaves {
                     let suffix = &k[field.len()..]; // ".valid", "[0]"
@@ -1060,9 +1136,19 @@ impl<'a> Lowering<'a> {
                     }
                     let ctx = self.next_ctx();
                     if dir == Some(ast::Direction::Out) {
-                        self.out.drivers.push(Driver { target: parent_id, cond: None, expr: Expr::Current(child_id), ctx });
+                        self.out.drivers.push(Driver {
+                            target: parent_id,
+                            cond: None,
+                            expr: Expr::Current(child_id),
+                            ctx,
+                        });
                     } else {
-                        self.out.drivers.push(Driver { target: child_id, cond: None, expr: Expr::Current(parent_id), ctx });
+                        self.out.drivers.push(Driver {
+                            target: child_id,
+                            cond: None,
+                            expr: Expr::Current(parent_id),
+                            ctx,
+                        });
                     }
                 }
             }
@@ -1115,8 +1201,12 @@ impl<'a> Lowering<'a> {
         let (Some(decl), ast::Type::Generic { args, .. }) = (self.entities.get(ename), ty) else {
             return out;
         };
-        let type_params: Vec<&ast::Param> =
-            decl.params.params.iter().filter(|p| p.bound.is_none()).collect();
+        let type_params: Vec<&ast::Param> = decl
+            .params
+            .params
+            .iter()
+            .filter(|p| p.bound.is_none())
+            .collect();
         for (i, a) in args.iter().enumerate() {
             match a {
                 ast::GenericArg::Named { name, value } => {
@@ -1295,7 +1385,12 @@ impl<'a> Lowering<'a> {
         // target -> ctx -> ordered driver indices
         let mut by_target: BTreeMap<u32, BTreeMap<u32, Vec<usize>>> = BTreeMap::new();
         for (i, d) in self.out.drivers.iter().enumerate() {
-            by_target.entry(d.target.0).or_default().entry(d.ctx).or_default().push(i);
+            by_target
+                .entry(d.target.0)
+                .or_default()
+                .entry(d.ctx)
+                .or_default()
+                .push(i);
         }
         let mut replaced: Vec<(u32, Expr)> = Vec::new();
         for (t, ctxs) in &by_target {
@@ -1303,7 +1398,9 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let ty = self.sig_type.get(t).cloned().unwrap_or_default();
-            let has_resolve = self.op_impls.contains_key(&("Resolve".to_string(), ty.clone()));
+            let has_resolve = self
+                .op_impls
+                .contains_key(&("Resolve".to_string(), ty.clone()));
             let path = self.out.signals[*t as usize].path.clone();
             if !has_resolve {
                 self.sink.emit(crate::diag::Diagnostic::error(format!(
@@ -1359,7 +1456,9 @@ impl<'a> Lowering<'a> {
 
     /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
     fn inline_resolve(&self, ty: &str, a: Expr, b: Expr) -> Option<Expr> {
-        let fns = self.op_impls.get(&("Resolve".to_string(), ty.to_string()))?;
+        let fns = self
+            .op_impls
+            .get(&("Resolve".to_string(), ty.to_string()))?;
         let (f, _) = fns.first()?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
@@ -1378,8 +1477,12 @@ impl<'a> Lowering<'a> {
     /// A `read("path")` / `read_to_string("path")` initializer's literal
     /// path, when `e` is one (elaboration-time file reads, spec std::fs).
     fn fs_read_call<'e>(e: &'e ast::Expr, which: &str) -> Option<&'e str> {
-        let ast::Expr::Call { callee, args, .. } = e else { return None };
-        let ast::Expr::Path(p) = callee.as_ref() else { return None };
+        let ast::Expr::Call { callee, args, .. } = e else {
+            return None;
+        };
+        let ast::Expr::Path(p) = callee.as_ref() else {
+            return None;
+        };
         if p.segments.len() != 1 || p.segments[0].text != which {
             return None;
         }
@@ -1543,21 +1646,30 @@ impl<'a> Lowering<'a> {
     /// Logical/relational is a follow-on.
     fn lower_meta_ir(&self, e: &Expr, width: u32) -> Option<Expr> {
         match e {
-            Expr::Current(id) | Expr::Old(id) => {
-                self.out.meta_of.get(&id.0).map(|&c| Expr::Current(SignalId(c)))
-            }
+            Expr::Current(id) | Expr::Old(id) => self
+                .out
+                .meta_of
+                .get(&id.0)
+                .map(|&c| Expr::Current(SignalId(c))),
             Expr::Binary { op, lhs, rhs }
                 if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
             {
-                let cond = [self.lower_meta_ir(lhs, width), self.lower_meta_ir(rhs, width)]
-                    .into_iter()
-                    .flatten()
-                    .map(|m| Expr::Binary {
-                        op: BinOp::Ne,
-                        lhs: Box::new(m),
-                        rhs: Box::new(Expr::Const(0)),
-                    })
-                    .reduce(|a, b| Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) })?;
+                let cond = [
+                    self.lower_meta_ir(lhs, width),
+                    self.lower_meta_ir(rhs, width),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|m| Expr::Binary {
+                    op: BinOp::Ne,
+                    lhs: Box::new(m),
+                    rhs: Box::new(Expr::Const(0)),
+                })
+                .reduce(|a, b| Expr::Binary {
+                    op: BinOp::Or,
+                    lhs: Box::new(a),
+                    rhs: Box::new(b),
+                })?;
                 let all_x = (0..width).fold(0u64, |p, i| p | (self.x_disc() << (4 * i)));
                 Some(Expr::Select {
                     cond: Box::new(cond),
@@ -1566,7 +1678,10 @@ impl<'a> Lowering<'a> {
                 })
             }
             Expr::Select { cond, then, els } => {
-                let (mt, me) = (self.lower_meta_ir(then, width), self.lower_meta_ir(els, width));
+                let (mt, me) = (
+                    self.lower_meta_ir(then, width),
+                    self.lower_meta_ir(els, width),
+                );
                 if mt.is_none() && me.is_none() {
                     return None;
                 }
@@ -1599,7 +1714,10 @@ impl<'a> Lowering<'a> {
     /// a metavalue *and* no operand forces the output — `0 and X = 0`,
     /// `1 or X = 1`, `X xor _ = X`.
     fn logical_meta(&self, op: BinOp, lhs: &Expr, rhs: &Expr, width: u32) -> Option<Expr> {
-        let (ma, mb) = (self.lower_meta_ir(lhs, width), self.lower_meta_ir(rhs, width));
+        let (ma, mb) = (
+            self.lower_meta_ir(lhs, width),
+            self.lower_meta_ir(rhs, width),
+        );
         if ma.is_none() && mb.is_none() {
             return None;
         }
@@ -1613,13 +1731,8 @@ impl<'a> Lowering<'a> {
             // the metavalue: `and`'s forcing value is 0, `or`'s is 1, `xor` has
             // none.
             let forced = match op {
-                BinOp::And => or_expr(
-                    and_expr(not1(am), not1(av)),
-                    and_expr(not1(bm), not1(bv)),
-                ),
-                BinOp::Or => {
-                    or_expr(and_expr(not1(am), av), and_expr(not1(bm), bv))
-                }
+                BinOp::And => or_expr(and_expr(not1(am), not1(av)), and_expr(not1(bm), not1(bv))),
+                BinOp::Or => or_expr(and_expr(not1(am), av), and_expr(not1(bm), bv)),
                 _ => Expr::Const(0), // xor: no forcing
             };
             let meta_i = and_expr(anymeta, not1(forced));
@@ -1644,7 +1757,12 @@ impl<'a> Lowering<'a> {
         }
         for (target, cond, expr, ctx) in driven {
             let cid = self.driven_companion(target);
-            self.out.drivers.push(Driver { target: SignalId(cid), cond, expr, ctx });
+            self.out.drivers.push(Driver {
+                target: SignalId(cid),
+                cond,
+                expr,
+                ctx,
+            });
         }
     }
 
@@ -1675,7 +1793,13 @@ impl<'a> Lowering<'a> {
     /// struct into one signal per field (`s.valid`), an array into one per
     /// element (`a[0]`). Nested composites recurse. An integer vector
     /// (`uint[8]`) stays a single scalar signal.
-    fn add_typed_signal(&mut self, entity: &str, name: &str, ty: &ast::Type, env: &HashMap<String, i64>) {
+    fn add_typed_signal(
+        &mut self,
+        entity: &str,
+        name: &str,
+        ty: &ast::Type,
+        env: &HashMap<String, i64>,
+    ) {
         // A generic entity's type parameters (`T -> uint[8]`) substitute first,
         // so a port/signal typed `T` becomes its concrete type here.
         let subst_ty;
@@ -1698,7 +1822,11 @@ impl<'a> Lowering<'a> {
                     None => ty,
                 }
             }
-            ast::Type::Indexed { base, index: Some(i), span } => {
+            ast::Type::Indexed {
+                base,
+                index: Some(i),
+                span,
+            } => {
                 let inner = match base.as_ref() {
                     ast::Type::Path(p) if p.segments.len() == 1 => {
                         self.aliases.get(&p.segments[0].text)
@@ -1706,7 +1834,11 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 };
                 match inner {
-                    Some(ast::Type::Indexed { base: elem, index: None, .. }) => {
+                    Some(ast::Type::Indexed {
+                        base: elem,
+                        index: None,
+                        ..
+                    }) => {
                         resolved = ast::Type::Indexed {
                             base: elem.clone(),
                             index: Some(i.clone()),
@@ -1740,7 +1872,8 @@ impl<'a> Lowering<'a> {
         // scalar leaf and takes its inherited width below.
         if let Some(fields) = self.struct_fields(ty).filter(|f| !f.is_empty()) {
             if let ast::Type::Path(p) = ty {
-                self.local_struct.insert(name.to_string(), p.segments[0].text.clone());
+                self.local_struct
+                    .insert(name.to_string(), p.segments[0].text.clone());
             }
             for (fname, fty) in fields {
                 self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
@@ -1755,7 +1888,8 @@ impl<'a> Lowering<'a> {
             }
         } else if let Some(w) = self.enum_width(ty) {
             if let ast::Type::Path(p) = ty {
-                self.local_enum.insert(name.to_string(), p.segments[0].text.clone());
+                self.local_enum
+                    .insert(name.to_string(), p.segments[0].text.clone());
             }
             self.add_signal(entity, name, w);
             if let (ast::Type::Path(p), Some(&id)) = (ty, self.locals.get(name)) {
@@ -1767,8 +1901,10 @@ impl<'a> Lowering<'a> {
                 // otherwise its first variant (`T'LEFT`) — always a valid member,
                 // not a bare `0`. An explicit `let x = V` overwrites this below.
                 let name = &p.segments[0].text;
-                if let Some(&d) =
-                    self.new_defaults.get(name).or_else(|| self.enum_first_disc.get(name))
+                if let Some(&d) = self
+                    .new_defaults
+                    .get(name)
+                    .or_else(|| self.enum_first_disc.get(name))
                 {
                     self.out.signals[id.0 as usize].init = d;
                 }
@@ -1785,7 +1921,11 @@ impl<'a> Lowering<'a> {
                 self.out.signals[id.0 as usize].range = range;
             }
         } else {
-            self.add_signal(entity, name, type_width(ty, env, &self.free_fns, &self.structs));
+            self.add_signal(
+                entity,
+                name,
+                type_width(ty, env, &self.free_fns, &self.structs),
+            );
             // A Logic-vector family `F[N]` dispatches its operators to
             // `impl _ for F` (spec 3.25). uint/int are recognized the same way
             // as any user `struct F : Logic[]`.
@@ -1793,7 +1933,8 @@ impl<'a> Lowering<'a> {
                 if let ast::Type::Path(p) = base.as_ref() {
                     let head = p.segments.last().map(|s| s.text.as_str()).unwrap_or("");
                     if self.vector_families.contains(head) {
-                        self.local_numeric.insert(name.to_string(), head.to_string());
+                        self.local_numeric
+                            .insert(name.to_string(), head.to_string());
                         if let Some(&id) = self.locals.get(name) {
                             self.sig_type.insert(id.0, head.to_string());
                         }
@@ -1823,20 +1964,27 @@ impl<'a> Lowering<'a> {
     /// (`integer<lo..hi>` / `real<lo..hi>`), if `ty` is one. Returns
     /// `(width, is_real)`.
     fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool, Option<(i64, i64)>)> {
-        let ast::Type::Generic { base, args, .. } = ty else { return None };
-        let ast::Type::Path(p) = base.as_ref() else { return None };
+        let ast::Type::Generic { base, args, .. } = ty else {
+            return None;
+        };
+        let ast::Type::Path(p) = base.as_ref() else {
+            return None;
+        };
         let kind = p.segments.last().map(|s| s.text.as_str())?;
         if kind != "integer" && kind != "real" {
             return None;
         }
-        let [ast::GenericArg::Positional(arg)] = args.as_slice() else { return None };
+        let [ast::GenericArg::Positional(arg)] = args.as_slice() else {
+            return None;
+        };
         if kind == "real" {
             return Some((64, true, None)); // range is a constraint, storage is f64
         }
         let (a, b) = match arg {
-            ast::Expr::Range { lo, hi, .. } => {
-                (eval_const(lo, &self.cur_env)?, eval_const(hi, &self.cur_env)?)
-            }
+            ast::Expr::Range { lo, hi, .. } => (
+                eval_const(lo, &self.cur_env)?,
+                eval_const(hi, &self.cur_env)?,
+            ),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 self.const_ranges.get(&p.segments[0].text).copied()?
             }
@@ -1900,6 +2048,31 @@ impl<'a> Lowering<'a> {
             // base struct's field types.
             ast::Type::Generic { base, args, .. } => {
                 let sname = type_head_name(base)?;
+                if let Some(v) = self.views.get(sname) {
+                    let mut subst = HashMap::new();
+                    for (param, arg) in v.params.params.iter().zip(args) {
+                        if let ast::GenericArg::Positional(e) = arg {
+                            if let Some(t) = expr_to_type(e) {
+                                subst.insert(param.name.text.clone(), t);
+                            }
+                        }
+                    }
+                    if let Some(target) = &v.target {
+                        let target = subst_type_params(target, &subst);
+                        return self.struct_fields(&target);
+                    }
+                    return Some(
+                        v.fields
+                            .iter()
+                            .filter_map(|f| {
+                                Some((
+                                    f.name.text.clone(),
+                                    subst_type_params(f.ty.as_ref()?, &subst),
+                                ))
+                            })
+                            .collect(),
+                    );
+                }
                 let s = self.structs.get(sname)?;
                 let mut subst: HashMap<String, ast::Type> = HashMap::new();
                 for (param, arg) in s.params.params.iter().zip(args) {
@@ -1926,7 +2099,20 @@ impl<'a> Lowering<'a> {
                 _ => None,
             },
             ast::Type::Path(p) if p.segments.len() == 1 => {
-                self.raw_struct_fields(&p.segments[0].text)
+                let name = &p.segments[0].text;
+                if let Some(v) = self.views.get(name) {
+                    match &v.target {
+                        Some(target) => self.struct_fields(target),
+                        None => Some(
+                            v.fields
+                                .iter()
+                                .filter_map(|f| Some((f.name.text.clone(), f.ty.clone()?)))
+                                .collect(),
+                        ),
+                    }
+                } else {
+                    self.raw_struct_fields(name)
+                }
             }
             _ => None,
         }
@@ -1944,23 +2130,9 @@ impl<'a> Lowering<'a> {
         Some(fields)
     }
 
-    /// The `(struct, mode)` names of a bus-mode type (`out Stream::Source` ->
-    /// `("Stream", "Source")`), for looking up per-leaf directions.
-    fn mode_of(ty: &ast::Type) -> Option<(String, String)> {
-        if let ast::Type::Mode { inner, mode, .. } = ty {
-            // Generic form `Stream<..>::Source`: the mode is the `Mode.mode`
-            // ident and the struct is the inner's head.
-            if let Some(m) = mode {
-                return Some((type_head_name(inner)?.to_string(), m.text.clone()));
-            }
-            // Plain form `Stream::Source`: a two-segment inner path.
-            if let ast::Type::Path(p) = inner.as_ref() {
-                if p.segments.len() >= 2 {
-                    return Some((p.segments[0].text.clone(), p.segments[1].text.clone()));
-                }
-            }
-        }
-        None
+    fn view_of(&self, ty: &ast::Type) -> Option<String> {
+        let head = type_head_name(ty)?;
+        self.views.contains_key(head).then(|| head.to_string())
     }
 
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
@@ -1971,7 +2143,11 @@ impl<'a> Lowering<'a> {
         // — skip it so unrolling a `for` doesn't mistake it for an assignment. A
         // struct-construct assignment (`y = Point { .. }`) is real data and
         // flows through normally.
-        if let ast::Stmt::Assign { value: ast::Expr::Construct { ty: Some(t), .. }, .. } = stmt {
+        if let ast::Stmt::Assign {
+            value: ast::Expr::Construct { ty: Some(t), .. },
+            ..
+        } = stmt
+        {
             if type_head_name(t).is_some_and(|n| self.entities.contains_key(n)) {
                 return;
             }
@@ -1980,7 +2156,12 @@ impl<'a> Lowering<'a> {
             // `for i in lo..hi { .. }`: a generate loop — unroll over the static
             // range, substituting the index, so per-iteration drivers (and
             // nested generate-`if`s) are lowered concretely.
-            ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
+            ast::Stmt::For {
+                var,
+                range: ast::Expr::Range { lo, hi, .. },
+                body,
+                ..
+            } => {
                 if let (Some(a), Some(b)) =
                     (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
                 {
@@ -2002,7 +2183,12 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            ast::Stmt::Assign { target, value, after, span } => {
+            ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                span,
+            } => {
                 // `after` delays are testbench stimulus, not synthesizable
                 // hardware (Phase 1): reject rather than silently drop.
                 if after.is_some() {
@@ -2047,8 +2233,10 @@ impl<'a> Lowering<'a> {
                                     ))
                                     .with_code(crate::diag::codes::TYPE_MISMATCH)
                                     .at(*span)
-                                    .help("widths must match; use a conversion \
-                                           (`uint[N](x)` / `resize(x, N)`) to change width"),
+                                    .help(
+                                        "widths must match; use a conversion \
+                                           (`uint[N](x)` / `resize(x, N)`) to change width",
+                                    ),
                                 );
                             }
                         }
@@ -2154,7 +2342,12 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
-                    self.out.drivers.push(Driver { target, cond, expr, ctx: self.cur_ctx });
+                    self.out.drivers.push(Driver {
+                        target,
+                        cond,
+                        expr,
+                        ctx: self.cur_ctx,
+                    });
                 } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
                     for u in ups {
                         self.out.drivers.push(Driver {
@@ -2187,7 +2380,12 @@ impl<'a> Lowering<'a> {
                     {
                         d.expr = merged;
                     } else {
-                        self.out.drivers.push(Driver { target: sig, cond, expr: merged, ctx: self.cur_ctx });
+                        self.out.drivers.push(Driver {
+                            target: sig,
+                            cond,
+                            expr: merged,
+                            ctx: self.cur_ctx,
+                        });
                     }
                 } else if let ast::Expr::Concat { parts, .. } = target {
                     // `{hi, lo} = w;` unpacks the value MSB-first: each part
@@ -2238,7 +2436,9 @@ impl<'a> Lowering<'a> {
                         let neg = Some(not(self.lower_expr(&iff.cond)));
                         self.lower_event_else(eb, neg, &mut updates);
                     }
-                    self.out.event_blocks.push(EventBlock { condition, updates });
+                    self.out
+                        .event_blocks
+                        .push(EventBlock { condition, updates });
                 } else if let Some(k) = eval_const(&iff.cond, &self.cur_env) {
                     // A generate-if: the condition is a compile-time constant
                     // (a parameter/const), so only the taken branch is lowered.
@@ -2340,7 +2540,10 @@ impl<'a> Lowering<'a> {
         let scrut = self.lower_expr(scrutinee);
         let mut result: Option<Expr> = None;
         for arm in arms.iter().rev() {
-            let val = arm.value_expr().map(|v| self.lower_expr(v)).unwrap_or(Expr::Unknown);
+            let val = arm
+                .value_expr()
+                .map(|v| self.lower_expr(v))
+                .unwrap_or(Expr::Unknown);
             match self.arm_match_cond(&arm.pattern, &scrut) {
                 None => result = Some(val), // wildcard: the default branch
                 Some(cond) => {
@@ -2438,10 +2641,20 @@ impl<'a> Lowering<'a> {
 
     /// Lower the body of an event-controlled block into next-state updates,
     /// accumulating the priority condition through nested `if`/`else`.
-    fn lower_event_block(&mut self, block: &ast::Block, cond: Option<Expr>, out: &mut Vec<NextUpdate>) {
+    fn lower_event_block(
+        &mut self,
+        block: &ast::Block,
+        cond: Option<Expr>,
+        out: &mut Vec<NextUpdate>,
+    ) {
         for s in &block.stmts {
             match s {
-                ast::Stmt::Assign { target, value, after, .. } => {
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after,
+                    ..
+                } => {
                     if after.is_some() {
                         self.sink.emit(
                             crate::diag::Diagnostic::error(
@@ -2453,7 +2666,11 @@ impl<'a> Lowering<'a> {
                     }
                     if let Some(target) = self.target_signal(target) {
                         let expr = self.lower_expr(value);
-                        out.push(NextUpdate { target, cond: cond.clone(), expr });
+                        out.push(NextUpdate {
+                            target,
+                            cond: cond.clone(),
+                            expr,
+                        });
                     } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
                         out.extend(ups);
                     } else if let Some((sig, hi, lo)) = self.slice_target(target) {
@@ -2462,7 +2679,11 @@ impl<'a> Lowering<'a> {
                         let v = self.lower_expr(value);
                         let width = self.out.signals[sig.0 as usize].width;
                         let expr = self.merge_slice(Expr::Current(sig), hi, lo, v, width);
-                        out.push(NextUpdate { target: sig, cond: cond.clone(), expr });
+                        out.push(NextUpdate {
+                            target: sig,
+                            cond: cond.clone(),
+                            expr,
+                        });
                     } else if let ast::Expr::Concat { parts, .. } = target {
                         // `{hi, lo} = w;` in a clocked block: each part takes
                         // its width's slice of the RHS, MSB-first.
@@ -2482,7 +2703,11 @@ impl<'a> Lowering<'a> {
                                 hi: off - 1,
                                 lo: off - w,
                             };
-                            out.push(NextUpdate { target: t, cond: cond.clone(), expr });
+                            out.push(NextUpdate {
+                                target: t,
+                                cond: cond.clone(),
+                                expr,
+                            });
                             off -= w;
                         }
                     } else {
@@ -2521,7 +2746,12 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn lower_event_else(&mut self, eb: &ast::ElseBranch, cond: Option<Expr>, out: &mut Vec<NextUpdate>) {
+    fn lower_event_else(
+        &mut self,
+        eb: &ast::ElseBranch,
+        cond: Option<Expr>,
+        out: &mut Vec<NextUpdate>,
+    ) {
         match eb {
             ast::ElseBranch::Block(b) => self.lower_event_block(b, cond, out),
             ast::ElseBranch::If(inner) => {
@@ -2575,7 +2805,9 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         cond: &Option<Expr>,
     ) -> Option<Vec<NextUpdate>> {
-        let ast::Expr::Index { base, index, .. } = target else { return None };
+        let ast::Expr::Index { base, index, .. } = target else {
+            return None;
+        };
         let bpath = expr_path(base)?;
         let indices = self.local_array.get(&bpath)?.clone();
         let idx = self.lower_expr(index);
@@ -2600,7 +2832,9 @@ impl<'a> Lowering<'a> {
     /// A slice-assignment target `y[hi..lo]`: the base signal and the
     /// (normalized) bit range.
     fn slice_target(&self, target: &ast::Expr) -> Option<(SignalId, u32, u32)> {
-        let ast::Expr::Index { base, index, .. } = target else { return None };
+        let ast::Expr::Index { base, index, .. } = target else {
+            return None;
+        };
         let (a, b) = self.slice_bounds(index)?;
         let sig = *self.locals.get(&expr_path(base)?)?;
         Some((sig, a.max(b) as u32, a.min(b) as u32))
@@ -2611,8 +2845,16 @@ impl<'a> Lowering<'a> {
     /// [hi..lo] window. `width` is the target signal's width.
     fn merge_slice(&self, base: Expr, hi: u32, lo: u32, value: Expr, width: u32) -> Expr {
         let slice_w = hi - lo + 1;
-        let slice_mask = if slice_w >= 64 { u64::MAX } else { (1u64 << slice_w) - 1 };
-        let full = if width == 0 || width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let slice_mask = if slice_w >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << slice_w) - 1
+        };
+        let full = if width == 0 || width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
         let keep = full & !(slice_mask << lo);
         let kept = Expr::Binary {
             op: BinOp::And,
@@ -2629,7 +2871,11 @@ impl<'a> Lowering<'a> {
             lhs: Box::new(masked),
             rhs: Box::new(Expr::Const(lo as u64)),
         };
-        Expr::Binary { op: BinOp::Or, lhs: Box::new(kept), rhs: Box::new(shifted) }
+        Expr::Binary {
+            op: BinOp::Or,
+            lhs: Box::new(kept),
+            rhs: Box::new(shifted),
+        }
     }
 
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
@@ -2708,10 +2954,12 @@ impl<'a> Lowering<'a> {
                 }
                 self.lower_conversion(callee, args, &HashMap::new())
                     .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
-                    .or_else(|| match self.lower_method_call(callee, args, &HashMap::new()) {
-                        Some(Val::Scalar(v)) => Some(v),
-                        _ => None,
-                    })
+                    .or_else(
+                        || match self.lower_method_call(callee, args, &HashMap::new()) {
+                            Some(Val::Scalar(v)) => Some(v),
+                            _ => None,
+                        },
+                    )
                     .or_else(|| match self.lower_from(callee, args, &HashMap::new()) {
                         Some(Val::Scalar(v)) => Some(v),
                         _ => None,
@@ -2719,13 +2967,17 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(Expr::Unknown)
             }
             // `if c { a } else { b }` is a mux: lower to a select.
-            ast::Expr::IfExpr { cond, then, els, .. } => Expr::Select {
+            ast::Expr::IfExpr {
+                cond, then, els, ..
+            } => Expr::Select {
                 cond: Box::new(self.lower_expr(cond)),
                 then: Box::new(self.lower_expr(then)),
                 els: Box::new(self.lower_expr(els)),
             },
             // A match-expression is a first-match `Select` chain over the arms.
-            ast::Expr::Match { scrutinee, arms, .. } => self.lower_match_expr(scrutinee, arms),
+            ast::Expr::Match {
+                scrutinee, arms, ..
+            } => self.lower_match_expr(scrutinee, arms),
             // A decimal point makes it a `real` literal (`1.5`).
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 Expr::Real(text.parse().unwrap_or(0.0))
@@ -2745,7 +2997,9 @@ impl<'a> Lowering<'a> {
                         .unwrap_or(0),
                 ),
             },
-            ast::Expr::BitStrLit { base, digits, .. } => Expr::Const(self.decode_bit_string(*base, digits).0),
+            ast::Expr::BitStrLit { base, digits, .. } => {
+                Expr::Const(self.decode_bit_string(*base, digits).0)
+            }
             // A plain string in value position is a logic-value vector
             // (`out = "1X10"`) — decode it per-char like a binary bit string.
             // (Char/enum arrays are filled element-wise before reaching here.)
@@ -2780,7 +3034,11 @@ impl<'a> Lowering<'a> {
                 let (a, b) = self.slice_bounds(index).unwrap();
                 let lowered = self.lower_expr(base);
                 if a >= b {
-                    Expr::Slice { base: Box::new(lowered), hi: a as u32, lo: b as u32 }
+                    Expr::Slice {
+                        base: Box::new(lowered),
+                        hi: a as u32,
+                        lo: b as u32,
+                    }
                 } else {
                     // Ascending: reassemble bits a..=b with significance
                     // reversed: source bit (a+k) lands at result bit (w-1-k).
@@ -2837,9 +3095,7 @@ impl<'a> Lowering<'a> {
                     // (their `not` is the impl above, or undefined).
                     let is_vector_ref = match rhs.as_ref() {
                         // A slice is always a bit vector.
-                        ast::Expr::Index { index, .. }
-                            if self.slice_bounds(index).is_some() =>
-                        {
+                        ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
                             true
                         }
                         ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
@@ -2853,8 +3109,7 @@ impl<'a> Lowering<'a> {
                     if is_vector_ref {
                         let w = self.ast_width(rhs);
                         if w > 1 && w <= 64 {
-                            let mask =
-                                if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+                            let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
                             return Expr::Binary {
                                 op: BinOp::Sub,
                                 lhs: Box::new(Expr::Const(mask)),
@@ -2863,7 +3118,10 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                Expr::Unary { op: lower_unop(*op), rhs: Box::new(self.lower_expr(rhs)) }
+                Expr::Unary {
+                    op: lower_unop(*op),
+                    rhs: Box::new(self.lower_expr(rhs)),
+                }
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its
@@ -2902,9 +3160,16 @@ impl<'a> Lowering<'a> {
                 for part in parts {
                     let w = self.ast_width(part);
                     let e = self.lower_expr(part);
-                    let shifted =
-                        Expr::Binary { op: BinOp::Shl, lhs: Box::new(acc), rhs: Box::new(Expr::Const(w as u64)) };
-                    acc = Expr::Binary { op: BinOp::Add, lhs: Box::new(shifted), rhs: Box::new(e) };
+                    let shifted = Expr::Binary {
+                        op: BinOp::Shl,
+                        lhs: Box::new(acc),
+                        rhs: Box::new(Expr::Const(w as u64)),
+                    };
+                    acc = Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(shifted),
+                        rhs: Box::new(e),
+                    };
                 }
                 acc
             }
@@ -2926,7 +3191,9 @@ impl<'a> Lowering<'a> {
         match e {
             ast::Expr::Path(_) | ast::Expr::Field { .. } => {
                 let p = expr_path(e)?;
-                self.locals.get(&p).map(|&id| self.out.signals[id.0 as usize].width)
+                self.locals
+                    .get(&p)
+                    .map(|&id| self.out.signals[id.0 as usize].width)
             }
             ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
                 let (a, b) = self.slice_bounds(index)?;
@@ -2945,11 +3212,11 @@ impl<'a> Lowering<'a> {
             ast::Expr::Index { .. } => {
                 // A constant element index (`v[2]`) reads its element signal.
                 let p = expr_path(e)?;
-                self.locals.get(&p).map(|&id| self.out.signals[id.0 as usize].width)
+                self.locals
+                    .get(&p)
+                    .map(|&id| self.out.signals[id.0 as usize].width)
             }
-            ast::Expr::Concat { parts, .. } => {
-                Some(parts.iter().map(|p| self.ast_width(p)).sum())
-            }
+            ast::Expr::Concat { parts, .. } => Some(parts.iter().map(|p| self.ast_width(p)).sum()),
             _ => None,
         }
     }
@@ -2964,11 +3231,11 @@ impl<'a> Lowering<'a> {
                         .as_deref()
                         .is_some_and(|h| self.vector_families.contains(h)) =>
                 {
-                    eval_const(index, &self.cur_env).map(|w| w as u32).unwrap_or(64)
+                    eval_const(index, &self.cur_env)
+                        .map(|w| w as u32)
+                        .unwrap_or(64)
                 }
-                ast::Expr::Path(p)
-                    if p.segments.len() == 1 && p.segments[0].text == "resize" =>
-                {
+                ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                     args.get(1)
                         .and_then(|n| eval_const(n, &self.cur_env))
                         .map(|w| w as u32)
@@ -3041,7 +3308,8 @@ impl<'a> Lowering<'a> {
                 .find(|(f, a)| declared(f, a).as_deref() == Some(r.as_str()))
                 .or_else(|| {
                     if r == "integer" {
-                        fns.iter().find(|(f, a)| declared(f, a).as_deref() == Some(lhs_ty.as_str()))
+                        fns.iter()
+                            .find(|(f, a)| declared(f, a).as_deref() == Some(lhs_ty.as_str()))
                     } else {
                         None
                     }
@@ -3062,7 +3330,10 @@ impl<'a> Lowering<'a> {
         // `self::length` (needed for e.g. sign-aware `int` comparison).
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
-        fenv.insert("self::length".to_string(), Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)));
+        fenv.insert(
+            "self::length".to_string(),
+            Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)),
+        );
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
@@ -3104,7 +3375,8 @@ impl<'a> Lowering<'a> {
 
     /// Declare `name` as a `Char[n]` array (string-literal inference).
     fn add_char_array(&mut self, entity: &str, name: &str, n: usize) {
-        self.local_array.insert(name.to_string(), (0..n as i64).collect());
+        self.local_array
+            .insert(name.to_string(), (0..n as i64).collect());
         for i in 0..n {
             let elem = format!("{name}[{i}]");
             self.add_signal(entity, &elem, 32);
@@ -3138,7 +3410,10 @@ impl<'a> Lowering<'a> {
     /// The discriminant of `variant` in enum `en`, from std's declaration —
     /// the one place enum values come from. `None` if either is unknown.
     fn enum_variant(&self, en: &str, variant: &str) -> Option<u64> {
-        self.enum_variants.get(en).and_then(|m| m.get(variant)).copied()
+        self.enum_variants
+            .get(en)
+            .and_then(|m| m.get(variant))
+            .copied()
     }
 
     /// Decode a bit-string literal into `(value, discs)`, MSB-first: `value` is
@@ -3203,7 +3478,11 @@ impl<'a> Lowering<'a> {
     /// position in std's [`DEFAULT_LOGIC_TYPE`]. After this the backends see
     /// only `Const`s, so no engine hardcodes what `'0'`/`'Z'`/… mean.
     fn normalize_logic_literals(&mut self) {
-        let lut = self.enum_variants.get(DEFAULT_LOGIC_TYPE).cloned().unwrap_or_default();
+        let lut = self
+            .enum_variants
+            .get(DEFAULT_LOGIC_TYPE)
+            .cloned()
+            .unwrap_or_default();
         for d in &mut self.out.drivers {
             if let Some(c) = &mut d.cond {
                 resolve_logic_expr(c, &lut);
@@ -3321,10 +3600,18 @@ impl<'a> Lowering<'a> {
                     None => return Expr::Unknown,
                 },
             };
-            return Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            return Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         match lower_binop(op) {
-            Some(op) => Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+            Some(op) => Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
             None => Expr::Unknown,
         }
     }
@@ -3354,7 +3641,9 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
         let want = self.enum_variant("Ordering", variant).unwrap_or(fallback);
-        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else { return None }; // -> Ord::cmp
+        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else {
+            return None;
+        }; // -> Ord::cmp
         Some(Expr::Binary {
             op: if ne { BinOp::Ne } else { BinOp::Eq },
             lhs: Box::new(cmp),
@@ -3394,11 +3683,9 @@ impl<'a> Lowering<'a> {
     ) -> Option<Val> {
         let src = src?;
         // Enum case: chain-connected and source variants subset of target.
-        if let (Some(sv), Some(tv)) =
-            (self.enum_variants.get(src), self.enum_variants.get(target))
+        if let (Some(sv), Some(tv)) = (self.enum_variants.get(src), self.enum_variants.get(target))
         {
-            let connected =
-                self.enum_ancestor(src, target) || self.enum_ancestor(target, src);
+            let connected = self.enum_ancestor(src, target) || self.enum_ancestor(target, src);
             let total = sv.keys().all(|v| tv.contains_key(v));
             if connected && total {
                 return Some(self.lower_val_env(arg, env)); // identity
@@ -3449,7 +3736,9 @@ impl<'a> Lowering<'a> {
         let mut cur = name.to_string();
         let mut guard = 0;
         while let Some(s) = self.structs.get(&cur) {
-            let Some(b) = s.base.as_ref().and_then(type_head_name) else { return false };
+            let Some(b) = s.base.as_ref().and_then(type_head_name) else {
+                return false;
+            };
             if b == base {
                 return true;
             }
@@ -3464,7 +3753,9 @@ impl<'a> Lowering<'a> {
 
     /// A struct type's full (inherited + own) field names, base chain first.
     fn struct_field_names(&self, name: &str) -> Vec<String> {
-        let Some(s) = self.structs.get(name) else { return Vec::new() };
+        let Some(s) = self.structs.get(name) else {
+            return Vec::new();
+        };
         let mut out = match s.base.as_ref().and_then(type_head_name) {
             Some(b) => self.struct_field_names(b),
             None => Vec::new(),
@@ -3504,7 +3795,9 @@ impl<'a> Lowering<'a> {
             })
         };
         let chosen = match &src {
-            Some(sty) => fns.iter().find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
+            Some(sty) => fns
+                .iter()
+                .find(|(f, a)| declared(f, a).as_deref() == Some(sty)),
             None => (fns.len() == 1).then(|| &fns[0]),
         };
         let (f, _) = match chosen {
@@ -3568,8 +3861,11 @@ impl<'a> Lowering<'a> {
         let fields = self.raw_struct_fields(sname).filter(|f| !f.is_empty())?;
         let mut out = Vec::new();
         for (fname, fty) in fields {
-            let path =
-                if prefix.is_empty() { fname.clone() } else { format!("{prefix}.{fname}") };
+            let path = if prefix.is_empty() {
+                fname.clone()
+            } else {
+                format!("{prefix}.{fname}")
+            };
             if let Some(h) = type_head_name(&fty) {
                 if let Some(nested) = self.struct_default_leaves(h, &path) {
                     out.extend(nested);
@@ -3595,10 +3891,8 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
-        let name = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-            _ => return None,
-        };
+        let name = call_fn_key(callee)?;
+        let name = name.as_str();
         let f = *self.free_fns.get(name)?;
         // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
@@ -3614,7 +3908,12 @@ impl<'a> Lowering<'a> {
                 .collect();
             let f64_ret = is_real(&f.ret);
             let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
-            return Some(Expr::CCall { name: name.to_string(), args, f64_args, f64_ret });
+            return Some(Expr::CCall {
+                name: name.to_string(),
+                args,
+                f64_args,
+                f64_ret,
+            });
         }
         // Constant arguments: run the body statically.
         let consts: Option<Vec<i64>> = args
@@ -3628,9 +3927,7 @@ impl<'a> Lowering<'a> {
                     fenv.insert(n.text.clone(), v);
                 }
             }
-            if let Some(v) =
-                eval_const_stmts(&f.body.as_ref()?.stmts, &fenv, &self.free_fns, 0)
-            {
+            if let Some(v) = eval_const_stmts(&f.body.as_ref()?.stmts, &fenv, &self.free_fns, 0) {
                 return Some(Expr::Const(v as u64));
             }
         }
@@ -3657,7 +3954,11 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let out = match f.body.as_ref().and_then(|b| self.inline_block(&b.stmts, &fenv)) {
+        let out = match f
+            .body
+            .as_ref()
+            .and_then(|b| self.inline_block(&b.stmts, &fenv))
+        {
             Some(Val::Scalar(v)) => Some(v),
             _ => None,
         };
@@ -3708,7 +4009,9 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let ast::Expr::Field { base, field, .. } = callee else { return None };
+        let ast::Expr::Field { base, field, .. } = callee else {
+            return None;
+        };
         let ty = self.operand_type_name(base)?;
         let f = self.find_method(&ty, &field.text)?;
         let body = f.body.as_ref()?;
@@ -3727,7 +4030,10 @@ impl<'a> Lowering<'a> {
         );
         // Family bindings to restore after the inline (nesting-safe).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
-        let self_prev = self.param_types.borrow_mut().insert("self".to_string(), ty.clone());
+        let self_prev = self
+            .param_types
+            .borrow_mut()
+            .insert("self".to_string(), ty.clone());
         saved.push(("self".to_string(), self_prev));
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
@@ -3767,11 +4073,17 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         cond: Option<Expr>,
     ) -> bool {
-        let Some(ty) = self.operand_type_name(recv) else { return false };
+        let Some(ty) = self.operand_type_name(recv) else {
+            return false;
+        };
         // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
         // lowering calls below.
-        let Some(f) = self.find_method(&ty, method) else { return false };
-        let Some(body) = f.body.as_ref() else { return false };
+        let Some(f) = self.find_method(&ty, method) else {
+            return false;
+        };
+        let Some(body) = f.body.as_ref() else {
+            return false;
+        };
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         map.insert("self".to_string(), recv.clone());
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
@@ -3779,8 +4091,11 @@ impl<'a> Lowering<'a> {
                 map.insert(n.text.clone(), a.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> =
-            body.stmts.iter().map(|s| subst_stmt_paths(s, &map)).collect();
+        let stmts: Vec<ast::Stmt> = body
+            .stmts
+            .iter()
+            .map(|s| subst_stmt_paths(s, &map))
+            .collect();
         for s in &stmts {
             self.lower_stmt(s, cond.clone());
         }
@@ -3823,7 +4138,9 @@ impl<'a> Lowering<'a> {
                 (Some(w), true)
             }
             ast::Expr::Index { base, index, .. }
-                if head(base).as_deref().is_some_and(|h| self.vector_families.contains(h)) =>
+                if head(base)
+                    .as_deref()
+                    .is_some_and(|h| self.vector_families.contains(h)) =>
             {
                 let w = match self.lower_scalar_env(index, env) {
                     Expr::Const(c) => c as u32,
@@ -3839,7 +4156,11 @@ impl<'a> Lowering<'a> {
         // widening is the library `std::bits::sext`, not the compiler's job.
         let v = self.lower_scalar_env(arg, env);
         Some(match target_w {
-            Some(w) if w > 0 && w < 64 => Expr::Slice { base: Box::new(v), hi: w - 1, lo: 0 },
+            Some(w) if w > 0 && w < 64 => Expr::Slice {
+                base: Box::new(v),
+                hi: w - 1,
+                lo: 0,
+            },
             _ => v,
         })
     }
@@ -3850,9 +4171,10 @@ impl<'a> Lowering<'a> {
     fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
         match e {
             ast::Expr::Int { .. } => Some("integer".to_string()),
-            ast::Expr::SuffixLit { suffix, .. } => {
-                self.suffix_impls.get(&suffix.text).map(|(ty, _)| ty.clone())
-            }
+            ast::Expr::SuffixLit { suffix, .. } => self
+                .suffix_impls
+                .get(&suffix.text)
+                .map(|(ty, _)| ty.clone()),
             // A conversion expression `F[N](x)` / `F(x)` reads as its target
             // family, so operators on it dispatch correctly (`int[32](a) < ..`
             // uses int's signed Ord).
@@ -3922,16 +4244,22 @@ impl<'a> Lowering<'a> {
             // `self::length` inside an operator-impl body: the bound operand's
             // width (inline_op stashes it under the "param::attr" key).
             ast::Expr::SysAttr { base, attr, .. } => {
-                if let Some(v) = expr_path(base)
-                    .and_then(|p| env.get(&format!("{p}::{}", attr.text)))
+                if let Some(v) =
+                    expr_path(base).and_then(|p| env.get(&format!("{p}::{}", attr.text)))
                 {
                     return v.clone();
                 }
                 Val::Scalar(self.lower_expr(e))
             }
-            ast::Expr::IfExpr { cond, then, els, .. } => {
+            ast::Expr::IfExpr {
+                cond, then, els, ..
+            } => {
                 let c = self.lower_scalar_env(cond, env);
-                select_val(c, self.lower_val_env(then, env), self.lower_val_env(els, env))
+                select_val(
+                    c,
+                    self.lower_val_env(then, env),
+                    self.lower_val_env(els, env),
+                )
             }
             ast::Expr::Call { callee, args, .. } => {
                 // `T()` — the nullary constructor — resolves to the type's
@@ -3983,7 +4311,12 @@ impl<'a> Lowering<'a> {
             // A struct literal (named or name-less): one value per field.
             // Explicit `.re = v` binds by name; a positional arg binds to the
             // struct's field at that position (needs a named struct type).
-            ast::Expr::Construct { ty, args, spread, span } => {
+            ast::Expr::Construct {
+                ty,
+                args,
+                spread,
+                span,
+            } => {
                 // Field order comes from the construct's type, or (for a
                 // name-less `{ ..base, .. }`) from the spread base's struct type.
                 let struct_name: Option<String> = ty
@@ -4006,7 +4339,10 @@ impl<'a> Lowering<'a> {
                     for f in order {
                         let fe = ast::Expr::Field {
                             base: Box::new((**base).clone()),
-                            field: ast::Ident { text: f.clone(), span: *span },
+                            field: ast::Ident {
+                                text: f.clone(),
+                                span: *span,
+                            },
                             span: *span,
                         };
                         fields.push((f.clone(), self.lower_scalar_env(&fe, env)));
@@ -4015,7 +4351,10 @@ impl<'a> Lowering<'a> {
                 for (i, a) in args.iter().enumerate() {
                     let fname = match &a.field {
                         Some(f) => f.text.clone(),
-                        None => field_order.as_ref().and_then(|o| o.get(i).cloned()).unwrap_or_default(),
+                        None => field_order
+                            .as_ref()
+                            .and_then(|o| o.get(i).cloned())
+                            .unwrap_or_default(),
                     };
                     // Every field carries a value; a value-less arg only reaches
                     // here on parser recovery (already diagnosed).
@@ -4040,7 +4379,10 @@ impl<'a> Lowering<'a> {
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, env) {
                     return Val::Scalar(derived);
                 }
-                let (l, r) = (self.lower_scalar_env(lhs, env), self.lower_scalar_env(rhs, env));
+                let (l, r) = (
+                    self.lower_scalar_env(lhs, env),
+                    self.lower_scalar_env(rhs, env),
+                );
                 Val::Scalar(self.make_binary(op.clone(), l, r))
             }
             ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
@@ -4058,7 +4400,9 @@ impl<'a> Lowering<'a> {
     /// literal (`5i` -> the `"i"` impl's body): its parameter binds to the
     /// literal value.
     fn inline_suffix(&self, e: &ast::Expr) -> Option<Val> {
-        let ast::Expr::SuffixLit { text, suffix, .. } = e else { return None };
+        let ast::Expr::SuffixLit { text, suffix, .. } = e else {
+            return None;
+        };
         let (_, f) = self.suffix_impls.get(&suffix.text)?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
@@ -4107,13 +4451,16 @@ impl<'a> Lowering<'a> {
     /// direction, a width-only `Bit[4]` -> `(0, 3)` (ascending). `None` for a
     /// non-indexed type.
     fn declared_range(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> Option<(i64, i64)> {
-        let ast::Type::Indexed { index: Some(idx), .. } = ty else { return None };
+        let ast::Type::Indexed {
+            index: Some(idx), ..
+        } = ty
+        else {
+            return None;
+        };
         match idx.as_ref() {
             // A written range keeps its direction (`[7..0]` is descending); the
             // `Range` fields are first/second as written, not numerically sorted.
-            ast::Expr::Range { lo, hi, .. } => {
-                Some((eval_const(lo, env)?, eval_const(hi, env)?))
-            }
+            ast::Expr::Range { lo, hi, .. } => Some((eval_const(lo, env)?, eval_const(hi, env)?)),
             // A named range constant (`const BYTE: range = 7..0;`).
             ast::Expr::Path(p)
                 if p.segments.len() == 1 && self.const_ranges.contains_key(&p.segments[0].text) =>
@@ -4160,7 +4507,9 @@ impl<'a> Lowering<'a> {
             }
             return Expr::Unknown;
         }
-        let Some(sig) = self.base_signal(base) else { return Expr::Unknown };
+        let Some(sig) = self.base_signal(base) else {
+            return Expr::Unknown;
+        };
         match attr {
             // `::event`/`::old` are the primitives; the edge helpers are the
             // std `ClockLike` methods, which inline to these plus a comparison.
@@ -4234,7 +4583,11 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
                 resolve_logic_expr(a, lut);
             }
         }
-        Expr::Const(_) | Expr::Real(_) | Expr::Current(_) | Expr::Old(_) | Expr::Event(_)
+        Expr::Const(_)
+        | Expr::Real(_)
+        | Expr::Current(_)
+        | Expr::Old(_)
+        | Expr::Event(_)
         | Expr::Unknown => {}
     }
 }
@@ -4262,7 +4615,11 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
                     lhs: Box::new(Expr::Current(SignalId(c))),
                     rhs: Box::new(Expr::Const(0)),
                 })
-                .reduce(|a, b| Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) });
+                .reduce(|a, b| Expr::Binary {
+                    op: BinOp::Or,
+                    lhs: Box::new(a),
+                    rhs: Box::new(b),
+                });
             if let Some(cond) = cond {
                 let orig = e.clone();
                 *e = Expr::Select {
@@ -4285,8 +4642,11 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
                         lo: 4 * elem,
                     };
                     let valbit = (**base).clone();
-                    let valbit =
-                        Expr::Slice { base: Box::new(valbit), hi: *hi, lo: *lo };
+                    let valbit = Expr::Slice {
+                        base: Box::new(valbit),
+                        hi: *hi,
+                        lo: *lo,
+                    };
                     *e = Expr::Select {
                         cond: Box::new(Expr::Binary {
                             op: BinOp::Ge,
@@ -4322,6 +4682,21 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
     }
 }
 
+/// The lookup key for a call to a free or associated function: a bare name
+/// (`clog2`) for a module-level fn, or `Type::name` for a *static* associated
+/// fn declared in an `impl` block (`Unicode::code(c)`). Associated fns are
+/// registered under the same key at collection time, so the whole free-fn
+/// inlining/const-folding machinery serves both. `None` for anything else
+/// (deeper paths, non-path callees).
+pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
+    let ast::Expr::Path(p) = callee else { return None };
+    match p.segments.as_slice() {
+        [f] => Some(f.text.clone()),
+        [ty, f] => Some(format!("{}::{}", ty.text, f.text)),
+        _ => None,
+    }
+}
+
 /// Bits contributed by one digit of a bit-string literal: hex 4, octal 3,
 /// binary (and per-char logic strings) 1.
 fn bits_per_digit(base: char) -> u32 {
@@ -4336,26 +4711,46 @@ fn bits_per_digit(base: char) -> u32 {
 
 /// `a & b` (bitwise; on 0/1 operands this is logical and).
 fn and_expr(a: Expr, b: Expr) -> Expr {
-    Expr::Binary { op: BinOp::And, lhs: Box::new(a), rhs: Box::new(b) }
+    Expr::Binary {
+        op: BinOp::And,
+        lhs: Box::new(a),
+        rhs: Box::new(b),
+    }
 }
 /// `a | b`.
 fn or_expr(a: Expr, b: Expr) -> Expr {
-    Expr::Binary { op: BinOp::Or, lhs: Box::new(a), rhs: Box::new(b) }
+    Expr::Binary {
+        op: BinOp::Or,
+        lhs: Box::new(a),
+        rhs: Box::new(b),
+    }
 }
 /// Logical `not` of a 0/1 value: `x == 0`.
 fn not1(x: Expr) -> Expr {
-    Expr::Binary { op: BinOp::Eq, lhs: Box::new(x), rhs: Box::new(Expr::Const(0)) }
+    Expr::Binary {
+        op: BinOp::Eq,
+        lhs: Box::new(x),
+        rhs: Box::new(Expr::Const(0)),
+    }
 }
 /// Bit `i` of a value expression.
 fn bit(e: &Expr, i: u32) -> Expr {
-    Expr::Slice { base: Box::new(e.clone()), hi: i, lo: i }
+    Expr::Slice {
+        base: Box::new(e.clone()),
+        hi: i,
+        lo: i,
+    }
 }
 /// Whether element `i` of a metavalue disc-array is a metavalue (disc >= 2).
 fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
     match m {
         Some(m) => Expr::Binary {
             op: BinOp::Ge,
-            lhs: Box::new(Expr::Slice { base: Box::new(m.clone()), hi: 4 * i + 3, lo: 4 * i }),
+            lhs: Box::new(Expr::Slice {
+                base: Box::new(m.clone()),
+                hi: 4 * i + 3,
+                lo: 4 * i,
+            }),
             rhs: Box::new(Expr::Const(2)),
         },
         None => Expr::Const(0),
@@ -4432,7 +4827,10 @@ pub enum ProcessKind {
     /// A combinational target, resolved from the drivers that target it, in
     /// source order (spec 3.14 last-writer-wins). `drivers` indexes
     /// `Design::drivers`.
-    Comb { target: SignalId, drivers: Vec<usize> },
+    Comb {
+        target: SignalId,
+        drivers: Vec<usize>,
+    },
     /// A clocked event block. `block` indexes `Design::event_blocks`.
     Event { block: usize },
 }
@@ -4479,7 +4877,10 @@ impl Design {
         }
         let target = |id: SignalId, what: &str, issues: &mut Vec<String>| {
             if id.0 >= n {
-                issues.push(format!("{what}: target signal id {} out of range (n={n})", id.0));
+                issues.push(format!(
+                    "{what}: target signal id {} out of range (n={n})",
+                    id.0
+                ));
             }
         };
         for (di, d) in self.drivers.iter().enumerate() {
@@ -4533,7 +4934,11 @@ impl Design {
                 read_set(&d.expr, &mut reads);
             }
             dedup(&mut reads);
-            procs.push(Process { kind: ProcessKind::Comb { target, drivers }, reads, writes: vec![target] });
+            procs.push(Process {
+                kind: ProcessKind::Comb { target, drivers },
+                reads,
+                writes: vec![target],
+            });
         }
 
         // One process per event block.
@@ -4550,7 +4955,11 @@ impl Design {
             }
             dedup(&mut reads);
             dedup(&mut writes);
-            procs.push(Process { kind: ProcessKind::Event { block: bi }, reads, writes });
+            procs.push(Process {
+                kind: ProcessKind::Event { block: bi },
+                reads,
+                writes,
+            });
         }
         procs
     }
@@ -4559,7 +4968,11 @@ impl Design {
     pub fn to_ir_string(&self) -> String {
         let mut out = String::new();
         for s in &self.signals {
-            let w = if s.width == 0 { "?".to_string() } else { s.width.to_string() };
+            let w = if s.width == 0 {
+                "?".to_string()
+            } else {
+                s.width.to_string()
+            };
             out.push_str(&format!("signal {} : {w}\n", s.path));
         }
         for d in &self.drivers {
@@ -4636,17 +5049,28 @@ pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
 }
 
 fn not(e: Expr) -> Expr {
-    Expr::Unary { op: UnOp::Not, rhs: Box::new(e) }
+    Expr::Unary {
+        op: UnOp::Not,
+        rhs: Box::new(e),
+    }
 }
 
 fn eq(lhs: Expr, rhs: Expr) -> Expr {
-    Expr::Binary { op: BinOp::Eq, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+    Expr::Binary {
+        op: BinOp::Eq,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
 }
 
 /// `and` of an optional accumulated condition with a new one.
 fn and(acc: Option<Expr>, c: Expr) -> Expr {
     match acc {
-        Some(a) => Expr::Binary { op: BinOp::And, lhs: Box::new(a), rhs: Box::new(c) },
+        Some(a) => Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(a),
+            rhs: Box::new(c),
+        },
         None => c,
     }
 }
@@ -4656,7 +5080,11 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 fn render(e: &Expr, d: &Design) -> String {
     match e {
         Expr::CCall { name, args, .. } => {
-            let a = args.iter().map(|x| render(x, d)).collect::<Vec<_>>().join(", ");
+            let a = args
+                .iter()
+                .map(|x| render(x, d))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{name}({a})")
         }
         Expr::Const(v) => v.to_string(),
@@ -4671,7 +5099,12 @@ fn render(e: &Expr, d: &Design) -> String {
         }
         Expr::Slice { base, hi, lo } => format!("{}[{hi}..{lo}]", paren(base, d)),
         Expr::Select { cond, then, els } => {
-            format!("{} ? {} : {}", paren(cond, d), paren(then, d), paren(els, d))
+            format!(
+                "{} ? {} : {}",
+                paren(cond, d),
+                paren(then, d),
+                paren(els, d)
+            )
         }
         Expr::Unknown => "?".to_string(),
     }
@@ -4810,14 +5243,21 @@ fn type_width(
         // For `uint[8]` the index is the width; for `Logic[31..0]` it is the
         // span; unconstrained `T[]` stays width 0 ("set at use").
         ast::Type::Indexed { index: None, .. } => 0,
-        ast::Type::Indexed { index: Some(index), .. } => match index.as_ref() {
+        ast::Type::Indexed {
+            index: Some(index), ..
+        } => match index.as_ref() {
             ast::Expr::Range { lo, hi, .. } => {
-                match (eval_const_fns(lo, env, fns, 0), eval_const_fns(hi, env, fns, 0)) {
+                match (
+                    eval_const_fns(lo, env, fns, 0),
+                    eval_const_fns(hi, env, fns, 0),
+                ) {
                     (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
                     _ => 0,
                 }
             }
-            e => eval_const_fns(e, env, fns, 0).map(|v| v.max(0) as u32).unwrap_or(0),
+            e => eval_const_fns(e, env, fns, 0)
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(0),
         },
         ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => {
             type_width(base, env, fns, structs)
@@ -4845,7 +5285,9 @@ pub fn eval_const_fns(
     match e {
         ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
         ast::Expr::Path(p) if p.segments.len() == 1 => env.get(&p.segments[0].text).copied(),
-        ast::Expr::IfExpr { cond, then, els, .. } => {
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
             if eval_const_fns(cond, env, fns, depth + 1)? != 0 {
                 eval_const_fns(then, env, fns, depth + 1)
             } else {
@@ -4853,10 +5295,7 @@ pub fn eval_const_fns(
             }
         }
         ast::Expr::Call { callee, args, .. } => {
-            let name = match callee.as_ref() {
-                ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
-                _ => return None,
-            };
+            let name = call_fn_key(callee)?;
             // Kernel conversions are value-transparent in const context.
             if name == "integer" || name == "Char" {
                 return eval_const_fns(args.first()?, env, fns, depth + 1);
@@ -4929,9 +5368,12 @@ pub fn eval_const_stmts(
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
-                            if let Some(v) =
-                                eval_const_stmts(std::slice::from_ref(&ast::Stmt::If(inner.clone())), env, fns, depth)
-                            {
+                            if let Some(v) = eval_const_stmts(
+                                std::slice::from_ref(&ast::Stmt::If(inner.clone())),
+                                env,
+                                fns,
+                                depth,
+                            ) {
                                 return Some(v);
                             }
                         }
@@ -5012,7 +5454,10 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
 /// (`struct Byte : uint[8]`) — a packed bit vector. This is what makes uint/int
 /// and user vectors; the shape (and its base) is the definition, not an
 /// attribute.
-fn is_bit_vector_struct(st: &ast::StructDecl, families: &std::collections::HashSet<String>) -> bool {
+fn is_bit_vector_struct(
+    st: &ast::StructDecl,
+    families: &std::collections::HashSet<String>,
+) -> bool {
     if !st.fields.is_empty() {
         return false;
     }
@@ -5022,8 +5467,7 @@ fn is_bit_vector_struct(st: &ast::StructDecl, families: &std::collections::HashS
         Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
         _ => None,
     };
-    matches!(elem, Some("Logic" | "Bit" | "ULogic"))
-        || elem.is_some_and(|h| families.contains(h))
+    matches!(elem, Some("Logic" | "Bit" | "ULogic")) || elem.is_some_and(|h| families.contains(h))
 }
 
 fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
@@ -5052,7 +5496,9 @@ fn effective_variants(
     enums: &HashMap<String, &ast::EnumDecl>,
     seen: &mut Vec<String>,
 ) -> Vec<(String, Option<i64>)> {
-    let Some(e) = enums.get(name) else { return Vec::new() };
+    let Some(e) = enums.get(name) else {
+        return Vec::new();
+    };
     if seen.iter().any(|n| n == name) {
         return Vec::new(); // cycle guard
     }
@@ -5125,7 +5571,12 @@ fn instance_let_parts(
     l: &ast::LetDecl,
     entities: &HashMap<String, &ast::EntityDecl>,
 ) -> Option<(ast::Type, Vec<ast::ConnectArg>)> {
-    if let Some(ast::Expr::Construct { ty: Some(cty), args, .. }) = &l.value {
+    if let Some(ast::Expr::Construct {
+        ty: Some(cty),
+        args,
+        ..
+    }) = &l.value
+    {
         return Some((cty.clone(), args.clone()));
     }
     let ann = l.ty.as_ref()?;
@@ -5145,7 +5596,11 @@ fn instance_let_parts(
         Some(ast::Expr::Concat { parts, span }) => {
             let args = parts
                 .iter()
-                .map(|p| ast::ConnectArg { field: None, value: Some(p.clone()), span: *span })
+                .map(|p| ast::ConnectArg {
+                    field: None,
+                    value: Some(p.clone()),
+                    span: *span,
+                })
                 .collect();
             Some((ann.clone(), args))
         }
@@ -5179,12 +5634,26 @@ fn gather_generate(
         // Instance-array element: `stage[i] = Sub { .. }` (index already
         // substituted). The rendered target (`stage[1]`) is the instance name,
         // matching the elaborator so `stage[i].port` reads line up.
-        ast::Stmt::Assign { target, value: ast::Expr::Construct { ty: Some(cty), args, .. }, .. } => {
+        ast::Stmt::Assign {
+            target,
+            value:
+                ast::Expr::Construct {
+                    ty: Some(cty),
+                    args,
+                    ..
+                },
+            ..
+        } => {
             if let Some(name) = expr_path(target) {
                 out.push((name, cty.clone(), args.clone()));
             }
         }
-        ast::Stmt::For { var, range: ast::Expr::Range { lo, hi, .. }, body, .. } => {
+        ast::Stmt::For {
+            var,
+            range: ast::Expr::Range { lo, hi, .. },
+            body,
+            ..
+        } => {
             if let (Some(a), Some(b)) = (eval_const(lo, env), eval_const(hi, env)) {
                 for i in loop_range(a, b) {
                     let mut e = env.clone();
@@ -5218,7 +5687,13 @@ fn gather_generate(
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
-                            gather_generate(&ast::Stmt::If(inner.clone()), env, loop_idx, entities, out);
+                            gather_generate(
+                                &ast::Stmt::If(inner.clone()),
+                                env,
+                                loop_idx,
+                                entities,
+                                out,
+                            );
                         }
                         None => {}
                     }
@@ -5250,9 +5725,10 @@ fn expr_to_type(e: &ast::Expr) -> Option<ast::Type> {
 /// array/generic/mode wrappers.
 fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
     match ty {
-        ast::Type::Path(p) if p.segments.len() == 1 => {
-            subst.get(&p.segments[0].text).cloned().unwrap_or_else(|| ty.clone())
-        }
+        ast::Type::Path(p) if p.segments.len() == 1 => subst
+            .get(&p.segments[0].text)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
         ast::Type::Indexed { base, index, span } => ast::Type::Indexed {
             base: Box::new(subst_type_params(base, subst)),
             index: index.clone(),
@@ -5263,7 +5739,12 @@ fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast:
             args: args.clone(),
             span: *span,
         },
-        ast::Type::Mode { dir, inner, mode, span } => ast::Type::Mode {
+        ast::Type::Mode {
+            dir,
+            inner,
+            mode,
+            span,
+        } => ast::Type::Mode {
             dir: *dir,
             inner: Box::new(subst_type_params(inner, subst)),
             mode: mode.clone(),
@@ -5282,7 +5763,12 @@ fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast:
 pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast::Stmt {
     use ast::Stmt;
     match s {
-        Stmt::Assign { target, value, after, span } => Stmt::Assign {
+        Stmt::Assign {
+            target,
+            value,
+            after,
+            span,
+        } => Stmt::Assign {
             target: subst_expr_paths(target, map),
             value: subst_expr_paths(value, map),
             after: after.as_ref().map(|a| subst_expr_paths(a, map)),
@@ -5302,7 +5788,12 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
                 .collect(),
             span: m.span,
         }),
-        Stmt::For { var, range, body, span } => Stmt::For {
+        Stmt::For {
+            var,
+            range,
+            body,
+            span,
+        } => Stmt::For {
             var: var.clone(),
             range: subst_expr_paths(range, map),
             body: subst_block_paths(body, map),
@@ -5349,27 +5840,58 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
     use ast::Expr;
     let sub = |x: &Expr| Box::new(subst_expr_paths(x, map));
     match e {
-        Expr::Path(p) if p.segments.len() == 1 => {
-            map.get(&p.segments[0].text).cloned().unwrap_or_else(|| e.clone())
-        }
-        Expr::Field { base, field, span } => {
-            Expr::Field { base: sub(base), field: field.clone(), span: *span }
-        }
-        Expr::SysAttr { base, attr, span } => {
-            Expr::SysAttr { base: sub(base), attr: attr.clone(), span: *span }
-        }
-        Expr::Index { base, index, span } => {
-            Expr::Index { base: sub(base), index: sub(index), span: *span }
-        }
-        Expr::Range { lo, hi, span } => Expr::Range { lo: sub(lo), hi: sub(hi), span: *span },
-        Expr::Unary { op, rhs, span } => Expr::Unary { op: *op, rhs: sub(rhs), span: *span },
-        Expr::Binary { op, lhs, rhs, span } => {
-            Expr::Binary { op: op.clone(), lhs: sub(lhs), rhs: sub(rhs), span: *span }
-        }
-        Expr::IfExpr { cond, then, els, span } => {
-            Expr::IfExpr { cond: sub(cond), then: sub(then), els: sub(els), span: *span }
-        }
-        Expr::Call { callee, args, bang, span } => Expr::Call {
+        Expr::Path(p) if p.segments.len() == 1 => map
+            .get(&p.segments[0].text)
+            .cloned()
+            .unwrap_or_else(|| e.clone()),
+        Expr::Field { base, field, span } => Expr::Field {
+            base: sub(base),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::SysAttr { base, attr, span } => Expr::SysAttr {
+            base: sub(base),
+            attr: attr.clone(),
+            span: *span,
+        },
+        Expr::Index { base, index, span } => Expr::Index {
+            base: sub(base),
+            index: sub(index),
+            span: *span,
+        },
+        Expr::Range { lo, hi, span } => Expr::Range {
+            lo: sub(lo),
+            hi: sub(hi),
+            span: *span,
+        },
+        Expr::Unary { op, rhs, span } => Expr::Unary {
+            op: *op,
+            rhs: sub(rhs),
+            span: *span,
+        },
+        Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
+            op: op.clone(),
+            lhs: sub(lhs),
+            rhs: sub(rhs),
+            span: *span,
+        },
+        Expr::IfExpr {
+            cond,
+            then,
+            els,
+            span,
+        } => Expr::IfExpr {
+            cond: sub(cond),
+            then: sub(then),
+            els: sub(els),
+            span: *span,
+        },
+        Expr::Call {
+            callee,
+            args,
+            bang,
+            span,
+        } => Expr::Call {
             callee: sub(callee),
             args: args.iter().map(|a| subst_expr_paths(a, map)).collect(),
             bang: *bang,
@@ -5383,7 +5905,12 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
             elems: elems.iter().map(|e| subst_expr_paths(e, map)).collect(),
             span: *span,
         },
-        Expr::Construct { ty, args, spread, span } => Expr::Construct {
+        Expr::Construct {
+            ty,
+            args,
+            spread,
+            span,
+        } => Expr::Construct {
             ty: ty.clone(),
             args: args
                 .iter()
@@ -5407,7 +5934,12 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
             l.value = l.value.as_ref().map(|v| subst_expr(v, var, val));
             ast::Stmt::Let(l)
         }
-        ast::Stmt::For { var: v, range, body, span } => ast::Stmt::For {
+        ast::Stmt::For {
+            var: v,
+            range,
+            body,
+            span,
+        } => ast::Stmt::For {
             var: v.clone(),
             range: subst_expr(range, var, val),
             body: {
@@ -5419,7 +5951,12 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
         },
         // `stage[i] = Sub { .x = w[i] }`: substitute in both the indexed target
         // and the construct, so instance-array elements unroll concretely.
-        ast::Stmt::Assign { target, value, after, span } => ast::Stmt::Assign {
+        ast::Stmt::Assign {
+            target,
+            value,
+            after,
+            span,
+        } => ast::Stmt::Assign {
             target: subst_expr(target, var, val),
             value: subst_expr(value, var, val),
             after: after.as_ref().map(|a| subst_expr(a, var, val)),
@@ -5432,7 +5969,12 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
             let mut m = m.clone();
             m.scrutinee = subst_expr(&m.scrutinee, var, val);
             for arm in &mut m.arms {
-                arm.body.stmts = arm.body.stmts.iter().map(|s| subst_stmt(s, var, val)).collect();
+                arm.body.stmts = arm
+                    .body
+                    .stmts
+                    .iter()
+                    .map(|s| subst_stmt(s, var, val))
+                    .collect();
             }
             ast::Stmt::Match(m)
         }
@@ -5443,7 +5985,12 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
 fn subst_if(iff: &ast::IfStmt, var: &str, val: i64) -> ast::IfStmt {
     let mut n = iff.clone();
     n.cond = subst_expr(&iff.cond, var, val);
-    n.then.stmts = iff.then.stmts.iter().map(|s| subst_stmt(s, var, val)).collect();
+    n.then.stmts = iff
+        .then
+        .stmts
+        .iter()
+        .map(|s| subst_stmt(s, var, val))
+        .collect();
     n.else_ = iff.else_.as_ref().map(|eb| {
         Box::new(match eb.as_ref() {
             ast::ElseBranch::Block(b) => {
@@ -5463,36 +6010,66 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
     use ast::Expr;
     let sub = |x: &Expr| Box::new(subst_expr(x, var, val));
     match e {
-        Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => {
-            Expr::Int { text: val.to_string(), span: p.span }
-        }
-        Expr::Field { base, field, span } => {
-            Expr::Field { base: sub(base), field: field.clone(), span: *span }
-        }
-        Expr::SysAttr { base, attr, span } => {
-            Expr::SysAttr { base: sub(base), attr: attr.clone(), span: *span }
-        }
-        Expr::Index { base, index, span } => {
-            Expr::Index { base: sub(base), index: sub(index), span: *span }
-        }
-        Expr::Range { lo, hi, span } => Expr::Range { lo: sub(lo), hi: sub(hi), span: *span },
+        Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => Expr::Int {
+            text: val.to_string(),
+            span: p.span,
+        },
+        Expr::Field { base, field, span } => Expr::Field {
+            base: sub(base),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::SysAttr { base, attr, span } => Expr::SysAttr {
+            base: sub(base),
+            attr: attr.clone(),
+            span: *span,
+        },
+        Expr::Index { base, index, span } => Expr::Index {
+            base: sub(base),
+            index: sub(index),
+            span: *span,
+        },
+        Expr::Range { lo, hi, span } => Expr::Range {
+            lo: sub(lo),
+            hi: sub(hi),
+            span: *span,
+        },
         // Fold constant arithmetic so a substituted index like `wires[i+1]`
         // becomes the literal `wires[2]` that `expr_path` can resolve.
         Expr::Unary { op, rhs, span } => {
-            let n = Expr::Unary { op: *op, rhs: sub(rhs), span: *span };
+            let n = Expr::Unary {
+                op: *op,
+                rhs: sub(rhs),
+                span: *span,
+            };
             fold_const(n, *span)
         }
         Expr::Binary { op, lhs, rhs, span } => {
-            let n = Expr::Binary { op: op.clone(), lhs: sub(lhs), rhs: sub(rhs), span: *span };
+            let n = Expr::Binary {
+                op: op.clone(),
+                lhs: sub(lhs),
+                rhs: sub(rhs),
+                span: *span,
+            };
             fold_const(n, *span)
         }
-        Expr::IfExpr { cond, then, els, span } => Expr::IfExpr {
+        Expr::IfExpr {
+            cond,
+            then,
+            els,
+            span,
+        } => Expr::IfExpr {
             cond: sub(cond),
             then: sub(then),
             els: sub(els),
             span: *span,
         },
-        Expr::Call { callee, args, bang, span } => Expr::Call {
+        Expr::Call {
+            callee,
+            args,
+            bang,
+            span,
+        } => Expr::Call {
             callee: sub(callee),
             args: args.iter().map(|a| subst_expr(a, var, val)).collect(),
             bang: *bang,
@@ -5506,7 +6083,12 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
             elems: elems.iter().map(|e| subst_expr(e, var, val)).collect(),
             span: *span,
         },
-        Expr::Construct { ty, args, spread, span } => Expr::Construct {
+        Expr::Construct {
+            ty,
+            args,
+            spread,
+            span,
+        } => Expr::Construct {
             ty: ty.as_ref().map(|t| subst_type(t, var, val)),
             args: args
                 .iter()
@@ -5538,7 +6120,10 @@ pub fn loop_range(a: i64, b: i64) -> Vec<i64> {
 /// index expressions resolve as plain `Int`s. Non-constant nodes pass through.
 fn fold_const(e: ast::Expr, span: crate::diag::Span) -> ast::Expr {
     match eval_const(&e, &HashMap::new()) {
-        Some(v) => ast::Expr::Int { text: v.to_string(), span },
+        Some(v) => ast::Expr::Int {
+            text: v.to_string(),
+            span,
+        },
         None => e,
     }
 }
@@ -5567,7 +6152,12 @@ fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
                 .collect(),
             span: *span,
         },
-        ast::Type::Mode { dir, inner, mode, span } => ast::Type::Mode {
+        ast::Type::Mode {
+            dir,
+            inner,
+            mode,
+            span,
+        } => ast::Type::Mode {
             dir: *dir,
             inner: Box::new(subst_type(inner, var, val)),
             mode: mode.clone(),
@@ -5584,7 +6174,9 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
         ast::Expr::Index { base, index, .. } => match index.as_ref() {
-            ast::Expr::Int { text, .. } => Some(format!("{}[{}]", expr_path(base)?, parse_int(text)?)),
+            ast::Expr::Int { text, .. } => {
+                Some(format!("{}[{}]", expr_path(base)?, parse_int(text)?))
+            }
             _ => None,
         },
         _ => None,
@@ -5603,7 +6195,14 @@ fn array_of<'t>(
     const_ranges: &HashMap<String, (i64, i64)>,
     families: &std::collections::HashSet<String>,
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
-    let ast::Type::Indexed { base, index: Some(index), .. } = ty else { return None };
+    let ast::Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = ty
+    else {
+        return None;
+    };
     // A Logic-vector family (uint/int/user) `F[N]` is one N-bit signal, not an
     // N-element array — but only when the base is DIRECTLY the family (`uint`),
     // not when it is itself indexed (`uint[8][4]` is an array of vectors).
@@ -5613,9 +6212,7 @@ fn array_of<'t>(
         return None;
     }
     let bounds = match index.as_ref() {
-        ast::Expr::Range { lo, hi, .. } => {
-            Some((eval_const(lo, env)?, eval_const(hi, env)?))
-        }
+        ast::Expr::Range { lo, hi, .. } => Some((eval_const(lo, env)?, eval_const(hi, env)?)),
         ast::Expr::Path(p) if p.segments.len() == 1 => {
             const_ranges.get(&p.segments[0].text).copied()
         }
@@ -5646,10 +6243,21 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
         // A numeric `: repr` sets the width explicitly; otherwise the width
         // covers the effective variant count (inherited + declared).
         let w = if e.repr.is_some() && enum_base_name(e, &enums).is_none() {
-            type_width(e.repr.as_ref().unwrap(), &empty, &HashMap::new(), &HashMap::new())
+            type_width(
+                e.repr.as_ref().unwrap(),
+                &empty,
+                &HashMap::new(),
+                &HashMap::new(),
+            )
         } else {
-            let n = effective_variants(name, &enums, &mut Vec::new()).len().max(1) as u32;
-            if n <= 1 { 1 } else { u32::BITS - (n - 1).leading_zeros() }
+            let n = effective_variants(name, &enums, &mut Vec::new())
+                .len()
+                .max(1) as u32;
+            if n <= 1 {
+                1
+            } else {
+                u32::BITS - (n - 1).leading_zeros()
+            }
         };
         out.insert(name.clone(), w);
     }
@@ -5681,9 +6289,7 @@ mod tests {
 
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
-        let src = format!(
-            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}"
-        );
+        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -5704,19 +6310,38 @@ mod tests {
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let hier = crate::elab::elaborate(modules, &typed, &mut sink);
         let _ = lower(modules, &hier, &mut sink);
-        sink.diagnostics().iter().map(|d| format!("{:?}: {}", d.code, d.message)).collect()
+        sink.diagnostics()
+            .iter()
+            .map(|d| format!("{:?}: {}", d.code, d.message))
+            .collect()
     }
 
     #[test]
     fn bit_pattern_masks() {
         // Bare strings are per-bit with `-` as the don't-care.
         assert_eq!(bit_pattern_mask("\"01--\""), Some((0b1100, 0b0100)));
-        assert_eq!(bit_pattern_mask("\"0000_11--\""), Some((0b11111100, 0b00001100)));
+        assert_eq!(
+            bit_pattern_mask("\"0000_11--\""),
+            Some((0b11111100, 0b00001100))
+        );
         // Radix prefixes mask a whole group with `?`.
         assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
         assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
         assert_eq!(bit_pattern_mask("o\"7?\""), Some((0o70, 0o70)));
         assert_eq!(bit_pattern_mask("\"2\""), None); // bad binary digit
+    }
+
+    #[test]
+    fn standalone_view_declares_and_flattens_its_own_fields() {
+        let d = lower_src(
+            "module m;\n\
+             view out Handshake { out valid: Bit; in ready: Bit; }\n\
+             impl Handshake { fn assert_valid(self) { self.valid = '1'; } }\n\
+             #[top] entity Producer { bus: Handshake; out observed: Bit; }\n\
+             impl Producer { bus.assert_valid(); observed = bus.ready; }",
+        );
+        assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));
+        assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.ready")));
     }
 
     #[test]
@@ -5733,7 +6358,11 @@ mod tests {
              impl T { let p: Phase; let s: Step; }\n",
         );
         let init = |suffix: &str| {
-            d.signals.iter().find(|s| s.path.ends_with(suffix)).unwrap_or_else(|| panic!("no {suffix}")).init
+            d.signals
+                .iter()
+                .find(|s| s.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no {suffix}"))
+                .init
         };
         assert_eq!(init(".p"), 2, "Phase defaults to Idle = 2, not 0");
         assert_eq!(init(".s"), 0, "0-based Step still defaults to A = 0");
@@ -5749,7 +6378,11 @@ mod tests {
              entity T {}\n\
              impl T { let p: Phase = Phase::Run; }\n",
         );
-        let p = d.signals.iter().find(|s| s.path.ends_with(".p")).expect("no .p");
+        let p = d
+            .signals
+            .iter()
+            .find(|s| s.path.ends_with(".p"))
+            .expect("no .p");
         assert_eq!(p.init, 3, "explicit initializer Run = 3 wins");
     }
 
@@ -5766,8 +6399,16 @@ mod tests {
              impl E { y = Phase(); z = uint[8](); }\n",
         );
         let drv = |suffix: &str| -> u64 {
-            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
-            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            let sig = d
+                .signals
+                .iter()
+                .position(|s| s.path.ends_with(suffix))
+                .expect("sig");
+            let dr = d
+                .drivers
+                .iter()
+                .find(|dr| dr.target.0 as usize == sig)
+                .expect("driver");
             match &dr.expr {
                 Expr::Const(c) => *c,
                 other => panic!("{suffix} not a const: {other:?}"),
@@ -5791,8 +6432,16 @@ mod tests {
              impl E { o = Packet(); }\n",
         );
         let drv = |suffix: &str| -> u64 {
-            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
-            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            let sig = d
+                .signals
+                .iter()
+                .position(|s| s.path.ends_with(suffix))
+                .expect("sig");
+            let dr = d
+                .drivers
+                .iter()
+                .find(|dr| dr.target.0 as usize == sig)
+                .expect("driver");
             match &dr.expr {
                 Expr::Const(c) => *c,
                 other => panic!("{suffix} not a const: {other:?}"),
@@ -5821,8 +6470,16 @@ mod tests {
              }\n",
         );
         let drv = |suffix: &str| -> u64 {
-            let sig = d.signals.iter().position(|s| s.path.ends_with(suffix)).expect("sig");
-            let dr = d.drivers.iter().find(|dr| dr.target.0 as usize == sig).expect("driver");
+            let sig = d
+                .signals
+                .iter()
+                .position(|s| s.path.ends_with(suffix))
+                .expect("sig");
+            let dr = d
+                .drivers
+                .iter()
+                .find(|dr| dr.target.0 as usize == sig)
+                .expect("driver");
             match &dr.expr {
                 Expr::Const(c) => *c,
                 other => panic!("{suffix} not const: {other:?}"),
@@ -5850,8 +6507,15 @@ mod tests {
                let dut: E = { .a = a, .driven = d, .forgotten = f }; }\n",
         );
         let undriven: Vec<&String> = diags.iter().filter(|d| d.contains("W-P011")).collect();
-        assert_eq!(undriven.len(), 1, "one undriven-output warning: {undriven:?}");
-        assert!(undriven[0].contains("forgotten"), "flags forgotten: {undriven:?}");
+        assert_eq!(
+            undriven.len(),
+            1,
+            "one undriven-output warning: {undriven:?}"
+        );
+        assert!(
+            undriven[0].contains("forgotten"),
+            "flags forgotten: {undriven:?}"
+        );
     }
 
     #[test]
@@ -5867,8 +6531,10 @@ mod tests {
              entity T {}\n\
              impl T { let a: uint[8]; let y: uint[8]; let dut: E = { .a = a, .y = y }; }\n",
         );
-        let undriven: Vec<&String> =
-            diags.iter().filter(|d| d.contains("W-P011") && d.contains("never driven")).collect();
+        let undriven: Vec<&String> = diags
+            .iter()
+            .filter(|d| d.contains("W-P011") && d.contains("never driven"))
+            .collect();
         assert_eq!(undriven.len(), 1, "one undriven signal: {undriven:?}");
         assert!(undriven[0].contains("dead"), "flags dead: {undriven:?}");
     }
@@ -5962,7 +6628,10 @@ mod tests {
              #[top] entity Top {}\n\
              impl Top { let x: uint[8]; let y: uint[8]; let d: C = { .x = x, .y = y }; }\n",
         );
-        assert!(!ok.iter().any(|d| d.contains("W-P010")), "no false positive: {ok:?}");
+        assert!(
+            !ok.iter().any(|d| d.contains("W-P010")),
+            "no false positive: {ok:?}"
+        );
     }
 
     #[test]
@@ -5999,8 +6668,14 @@ mod tests {
         let sig = |p: &str| d.signals.iter().find(|s| s.path == p).unwrap();
         assert_eq!(sig("Top.e.a").enum_type.as_deref(), Some("Logic"));
         assert_eq!(sig("Top.e.s").enum_type.as_deref(), Some("State"));
-        assert_eq!(d.enum_syms["Logic"].get(&3).map(String::as_str), Some("'X'"));
-        assert_eq!(d.enum_syms["State"].get(&0).map(String::as_str), Some("Idle"));
+        assert_eq!(
+            d.enum_syms["Logic"].get(&3).map(String::as_str),
+            Some("'X'")
+        );
+        assert_eq!(
+            d.enum_syms["State"].get(&0).map(String::as_str),
+            Some("Idle")
+        );
     }
 
     const COUNTER: &str = "module m;\n\
@@ -6066,7 +6741,12 @@ mod tests {
               let dut: Add2 = { .a = a, .y = y };\n\
             }\n";
         let d = lower_src(src);
-        let id = |path: &str| d.signals.iter().position(|s| s.path == path).map(|i| SignalId(i as u32));
+        let id = |path: &str| {
+            d.signals
+                .iter()
+                .position(|s| s.path == path)
+                .map(|i| SignalId(i as u32))
+        };
         // Two distinct Add1 instances, each with its own signals.
         assert!(id("T.dut.s1.a").is_some() && id("T.dut.s1.y").is_some());
         assert!(id("T.dut.s2.a").is_some() && id("T.dut.s2.y").is_some());
@@ -6094,9 +6774,17 @@ mod tests {
              impl T { let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
                let dut: Mux = { .sel = sel, .a = a, .b = b, .y = y }; }\n",
         );
-        let y = d.signals.iter().position(|s| s.path == "T.dut.y").map(|i| SignalId(i as u32)).unwrap();
+        let y = d
+            .signals
+            .iter()
+            .position(|s| s.path == "T.dut.y")
+            .map(|i| SignalId(i as u32))
+            .unwrap();
         let dr = d.drivers.iter().find(|dr| dr.target == y).unwrap();
-        assert!(matches!(&dr.expr, Expr::Select { .. }), "if-expression must lower to a select");
+        assert!(
+            matches!(&dr.expr, Expr::Select { .. }),
+            "if-expression must lower to a select"
+        );
     }
 
     #[test]
@@ -6104,14 +6792,26 @@ mod tests {
         // A lowered counter is well-formed.
         assert!(lower_src(COUNTER).validate().is_empty());
 
-        let sig = |w: u32| Signal { path: "s".into(), width: w, real: false, char: false, range: None, init: 0, enum_type: None };
+        let sig = |w: u32| Signal {
+            path: "s".into(),
+            width: w,
+            real: false,
+            char: false,
+            range: None,
+            init: 0,
+            enum_type: None,
+        };
         // Out-of-range signal id, an Unknown, a bad slice, and a width-0 signal.
         let bad = Design {
             signals: vec![sig(0)], // width 0 -> flagged
             drivers: vec![Driver {
                 target: SignalId(9), // out of range
                 cond: Some(Expr::Unknown),
-                expr: Expr::Slice { base: Box::new(Expr::Current(SignalId(0))), hi: 1, lo: 3 },
+                expr: Expr::Slice {
+                    base: Box::new(Expr::Current(SignalId(0))),
+                    hi: 1,
+                    lo: 3,
+                },
                 ctx: 0,
             }],
             event_blocks: vec![],
@@ -6121,18 +6821,26 @@ mod tests {
             meta_of: Default::default(),
         };
         let issues = bad.validate();
-        assert!(issues.iter().any(|i| i.contains("unknown width")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("out of range")), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.contains("unknown width")),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.contains("out of range")),
+            "{issues:?}"
+        );
         assert!(issues.iter().any(|i| i.contains("Unknown")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("slice bounds")), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.contains("slice bounds")),
+            "{issues:?}"
+        );
     }
 
     #[test]
     fn processes_carry_sensitivity_and_write_sets() {
         let d = lower_src(COUNTER);
-        let sig = |path: &str| {
-            SignalId(d.signals.iter().position(|s| s.path == path).unwrap() as u32)
-        };
+        let sig =
+            |path: &str| SignalId(d.signals.iter().position(|s| s.path == path).unwrap() as u32);
         let procs = d.processes();
         // A combinational process for `count = value` and one event process.
         let comb = procs
@@ -6185,8 +6893,16 @@ mod tests {
         );
         // The y driver should be a read-modify-write (an Or of a masked base
         // and a shifted value), not a bare assignment.
-        let dr = d.drivers.iter().find(|dr| d.signals[dr.target.0 as usize].path == "H.dut.y").unwrap();
-        assert!(matches!(dr.expr, Expr::Binary { op: BinOp::Or, .. }), "slice write merges: {:?}", dr.expr);
+        let dr = d
+            .drivers
+            .iter()
+            .find(|dr| d.signals[dr.target.0 as usize].path == "H.dut.y")
+            .unwrap();
+        assert!(
+            matches!(dr.expr, Expr::Binary { op: BinOp::Or, .. }),
+            "slice write merges: {:?}",
+            dr.expr
+        );
     }
 
     #[test]
@@ -6252,7 +6968,10 @@ mod tests {
         );
         let s = d.to_ir_string();
         assert!(s.contains("driver T.dut.y = 10"), "2-value unchanged:\n{s}");
-        assert!(s.contains("driver T.dut.z = 14"), "metavalue digit decodes:\n{s}");
+        assert!(
+            s.contains("driver T.dut.z = 14"),
+            "metavalue digit decodes:\n{s}"
+        );
     }
 
     #[test]
@@ -6265,7 +6984,11 @@ mod tests {
              #[top] entity T {}\n\
              impl T { let y: uint[4]; let dut: E = { .y = y }; }",
         );
-        let v = d.signals.iter().find(|s| s.path.ends_with(".v")).expect("no .v");
+        let v = d
+            .signals
+            .iter()
+            .find(|s| s.path.ends_with(".v"))
+            .expect("no .v");
         assert_eq!(v.init, 10, "b\"1010\" -> init 10");
     }
 
@@ -6279,12 +7002,23 @@ mod tests {
              #[top] entity T {}\n\
              impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
         );
-        let v = d.signals.iter().position(|s| s.path.ends_with(".v")).expect("v") as u32;
-        let w = d.signals.iter().position(|s| s.path.ends_with(".w")).expect("w") as u32;
+        let v = d
+            .signals
+            .iter()
+            .position(|s| s.path.ends_with(".v"))
+            .expect("v") as u32;
+        let w = d
+            .signals
+            .iter()
+            .position(|s| s.path.ends_with(".w"))
+            .expect("w") as u32;
         let cid = *d.meta_of.get(&v).expect("v has a metavalue companion");
         // "1X10": per-element discs, nibble i = element i. pos3=1, pos2=X(3),
         // pos1=1, pos0=0 -> 0x1310. Companion is 4 bits/element wide.
-        assert_eq!(d.signals[cid as usize].init, 0x1310, "full per-element discs");
+        assert_eq!(
+            d.signals[cid as usize].init, 0x1310,
+            "full per-element discs"
+        );
         assert_eq!(d.signals[cid as usize].width, 16, "4 bits x 4 elements");
         assert!(d.signals[cid as usize].path.ends_with(".v$meta"));
         assert!(!d.meta_of.contains_key(&w), "clean init gets no companion");
@@ -6310,8 +7044,14 @@ mod tests {
         let d = lower_src(COUNTER);
         let u = &d.event_blocks[0].updates;
         // First update guarded by rst == '1'.
-        assert!(matches!(&u[0].cond, Some(Expr::Binary { op: BinOp::Eq, .. })));
+        assert!(matches!(
+            &u[0].cond,
+            Some(Expr::Binary { op: BinOp::Eq, .. })
+        ));
         // Second guarded by the negation AND en.
-        assert!(matches!(&u[1].cond, Some(Expr::Binary { op: BinOp::And, .. })));
+        assert!(matches!(
+            &u[1].cond,
+            Some(Expr::Binary { op: BinOp::And, .. })
+        ));
     }
 }

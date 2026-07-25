@@ -30,6 +30,7 @@ pub enum TokenKind {
     Entity,
     Impl,
     Struct,
+    View,
     Enum,
     Trait,
     Attr,

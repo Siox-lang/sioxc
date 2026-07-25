@@ -694,6 +694,54 @@ probe/check/assert support
 GUI round-trip support
 ```
 
+### FPGA synthesis and vendor export
+
+Once digital entities and design-level composition elaborate into a stable
+netlist, siox should be able to export the synthesizable subset for existing
+FPGA toolchains. The first backend should be vendor-neutral rather than tying
+the language directly to one proprietary API:
+
+```text
+siox source
+    -> resolved/elaborated digital design
+    -> synthesizable SystemVerilog or VHDL
+    -> Vivado, Quartus, Yosys, Radiant, Libero, and similar tools
+```
+
+The export boundary should preserve:
+
+```text
+module/entity hierarchy
+parameters and concrete widths
+ports, directional views, and flattened bus leaves
+combinational and clocked processes
+resets and initial values where the target supports them
+black-box/vendor IP declarations
+source locations and stable generated names
+```
+
+Timing and pin constraints need a separate portable model. SDC is the common
+baseline; thin adapters can emit Xilinx XDC, Intel QSF/SDC, and other
+vendor-specific project fragments. Vendor attributes should remain declared
+metadata, interpreted only by the selected export adapter.
+
+Directly invoking Vivado or Quartus is a later integration layer. The core
+deliverable is deterministic HDL/netlist and constraint output that users can
+inspect, version, and feed into those tools independently.
+
+Additional roadmap deliverables:
+
+```text
+synthesizable-subset validation and diagnostics
+SystemVerilog/VHDL emitter
+portable clock/pin/timing constraint model
+XDC and QSF/SDC adapters
+black-box and vendor-IP mapping
+Yosys-based open-source regression flow
+Vivado/Quartus smoke-test projects
+post-elaboration source/name map
+```
+
 ---
 
 ## Dependency Order

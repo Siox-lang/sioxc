@@ -41,8 +41,13 @@ pub enum Item {
     /// callable from siox: `real` maps to `double`, integer-shaped types to
     /// 64-bit words. Engines call the named symbols (JIT: process symbols;
     /// native: the linked libraries).
-    ExternBlock { abi: String, fns: Vec<FnDecl>, span: Span },
+    ExternBlock {
+        abi: String,
+        fns: Vec<FnDecl>,
+        span: Span,
+    },
     Struct(StructDecl),
+    View(ViewDecl),
     Enum(EnumDecl),
     Entity(EntityDecl),
     Impl(ImplDecl),
@@ -100,6 +105,35 @@ pub struct StructDecl {
     /// for a plain aggregate struct.
     pub base: Option<Type>,
     pub fields: Vec<Field>,
+    pub span: Span,
+}
+
+/// `view out Source<T> for Stream<T> { out valid; in ready; }`, or a
+/// standalone `view out Bus { out valid: Bit; in ready: Bit; }`.
+///
+/// A view is a named, storage-free directional projection of a struct. It is
+/// a nominal type for method/trait lookup. Attached views reuse their target's
+/// fields and representation; standalone views declare their layout directly.
+#[derive(Clone, Debug)]
+pub struct ViewDecl {
+    pub is_pub: bool,
+    /// Endpoint role: producer (`out`), consumer (`in`), or bidirectional.
+    pub dir: Direction,
+    pub name: Ident,
+    pub params: Params,
+    /// Backing struct for `view ... for Struct`; absent for standalone views.
+    pub target: Option<Type>,
+    pub fields: Vec<ViewField>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewField {
+    pub dir: Direction,
+    pub name: Ident,
+    /// Required for standalone views; inherited from the backing struct for
+    /// attached views.
+    pub ty: Option<Type>,
     pub span: Span,
 }
 
@@ -190,7 +224,11 @@ pub enum ImplItem {
     /// Method / function: `fn send(self, value: T) { ... }`
     Fn(FnDecl),
     /// Bus-mode leaf direction: `in clk;` / `out valid;` (spec 3.19).
-    ModeField { dir: Direction, name: Ident, span: Span },
+    ModeField {
+        dir: Direction,
+        name: Ident,
+        span: Span,
+    },
     /// Bare behavioral statement (combinational or event-controlled block).
     Stmt(Stmt),
 }
@@ -271,14 +309,27 @@ pub enum Stmt {
     /// `x = v;`, optionally delayed VHDL-style: `clk = !clk after 5ns;`
     /// (`after` is testbench-only in Phase 1; the self-toggle idiom is the
     /// canonical clock generator).
-    Assign { target: Expr, value: Expr, after: Option<Expr>, span: Span },
+    Assign {
+        target: Expr,
+        value: Expr,
+        after: Option<Expr>,
+        span: Span,
+    },
     If(IfStmt),
     Match(MatchStmt),
     /// `for i in 0..10 { ... }` over a static range (spec Stage 1 / 8).
-    For { var: Ident, range: Expr, body: Block, span: Span },
+    For {
+        var: Ident,
+        range: Expr,
+        body: Block,
+        span: Span,
+    },
     /// `assert!(cond, "msg");`, `wait 10.ns;`, `tick(clk);` (Stage 8).
     Expr(Expr),
-    Return { value: Option<Expr>, span: Span },
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -327,50 +378,116 @@ impl MatchArm {
 pub enum Pattern {
     Wildcard,
     Path(Path),
-    BitPattern { text: String, span: Span },
+    BitPattern {
+        text: String,
+        span: Span,
+    },
     /// `A | B | C` — matches if any alternative matches (spec 3.22).
-    Or { alts: Vec<Pattern>, span: Span },
+    Or {
+        alts: Vec<Pattern>,
+        span: Span,
+    },
     /// An integer literal (`5`) or inclusive range (`0..9`) pattern for a
     /// numeric scrutinee; a bare literal is `lo == hi`.
-    Range { lo: i64, hi: i64, span: Span },
+    Range {
+        lo: i64,
+        hi: i64,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Int { text: String, span: Span },
+    Int {
+        text: String,
+        span: Span,
+    },
     /// `1ns`, `10MHz`, `5i` — a numeric literal with an adjacent unit/type
     /// suffix. `text` is the numeric part exactly as written.
-    SuffixLit { text: String, suffix: Ident, span: Span },
+    SuffixLit {
+        text: String,
+        suffix: Ident,
+        span: Span,
+    },
     /// `x"123ABC"` / `o"17"` — a radix bit-string literal; `base` is the
     /// prefix letter (validated against std's `impl Prefix`), `digits` the
     /// text between the quotes. (A plain string is `StrLit`, not this.)
-    BitStrLit { base: char, digits: String, span: Span },
+    BitStrLit {
+        base: char,
+        digits: String,
+        span: Span,
+    },
     /// A single character between single quotes (`'g'`, `'0'`). A character
     /// literal has no intrinsic value — its type (and so its numeric value)
     /// comes from context: the enum it is assigned to or compared against.
-    CharLit { ch: char, span: Span },
-    StrLit { text: String, span: Span },
+    CharLit {
+        ch: char,
+        span: Span,
+    },
+    StrLit {
+        text: String,
+        span: Span,
+    },
     Path(Path),
     /// `x.field` (spec `.` member access).
-    Field { base: Box<Expr>, field: Ident, span: Span },
+    Field {
+        base: Box<Expr>,
+        field: Ident,
+        span: Span,
+    },
     /// A VHDL-style attribute tick: `sig'event`, `sig'old`, `data'length`,
     /// `arr'high` (spec 3.9/3.10/3.23). `'` is exclusively for attributes; `::`
     /// is namespace/type selection and `.` is field/method access.
-    SysAttr { base: Box<Expr>, attr: Ident, span: Span },
+    SysAttr {
+        base: Box<Expr>,
+        attr: Ident,
+        span: Span,
+    },
     /// `data[7..0]` slice or `data[0]` index (spec 3.23).
-    Index { base: Box<Expr>, index: Box<Expr>, span: Span },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
     /// `0..10`, `31..0`.
-    Range { lo: Box<Expr>, hi: Box<Expr>, span: Span },
-    Unary { op: UnOp, rhs: Box<Expr>, span: Span },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    Range {
+        lo: Box<Expr>,
+        hi: Box<Expr>,
+        span: Span,
+    },
+    Unary {
+        op: UnOp,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
     /// Rust-style `if c { a } else { b }` as a value (else required; branches
     /// are single expressions). `else if` chains nest in `els`.
-    IfExpr { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr>, span: Span },
+    IfExpr {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+        span: Span,
+    },
     /// `match s { A => e1, _ => e2 }` in value position — each arm's body is a
     /// single expression (spec 3.22).
-    Match { scrutinee: Box<Expr>, arms: Vec<MatchArm>, span: Span },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
     /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
-    Call { callee: Box<Expr>, args: Vec<Expr>, bang: bool, span: Span },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        bang: bool,
+        span: Span,
+    },
     /// Instance/struct construction `Counter<W = 8> { .clk = clk, .count = c }`
     /// (spec 3.2/3.12). `ty` is `None` for a name-less struct literal
     /// `{ .valid = '1', .data = 5 }`, whose type comes from the assignment
@@ -385,9 +502,15 @@ pub enum Expr {
         span: Span,
     },
     /// Bit concatenation `{a, b, c}` — the first element is the most significant.
-    Concat { parts: Vec<Expr>, span: Span },
+    Concat {
+        parts: Vec<Expr>,
+        span: Span,
+    },
     /// `[a, b, c]` — an array literal (spec 3.23), one value per element.
-    Array { elems: Vec<Expr>, span: Span },
+    Array {
+        elems: Vec<Expr>,
+        span: Span,
+    },
 }
 
 /// A field connection inside an instance/struct literal (spec 3.12). Two
@@ -422,7 +545,10 @@ pub enum BinOp {
     Or,
     /// A library/user-defined textual infix operator. Its binding power comes
     /// from the implementation's `#[precedence = N]` metadata.
-    Custom { symbol: String, precedence: u8 },
+    Custom {
+        symbol: String,
+        precedence: u8,
+    },
     Shl,
     Shr,
     Eq,
@@ -442,12 +568,25 @@ pub enum Type {
     /// Also covers array/slice types `Logic[31..0]` (spec 3.23); the bracket
     /// content is an expression (a width or a range). `None` is the
     /// unconstrained form `Char[]` — the range is set at use (spec 3.23).
-    Indexed { base: Box<Type>, index: Option<Box<Expr>>, span: Span },
+    Indexed {
+        base: Box<Type>,
+        index: Option<Box<Expr>>,
+        span: Span,
+    },
     /// `Counter<W = 8>`, `Stream<uint[32]>` — generic application.
-    Generic { base: Box<Type>, args: Vec<GenericArg>, span: Span },
+    Generic {
+        base: Box<Type>,
+        args: Vec<GenericArg>,
+        span: Span,
+    },
     /// Directional bus-mode view: `out Stream<T>::Source`, `in Packet`
     /// (spec 3.19). `mode` is the trailing `::Source`/`::Sink` if present.
-    Mode { dir: Direction, inner: Box<Type>, mode: Option<Ident>, span: Span },
+    Mode {
+        dir: Direction,
+        inner: Box<Type>,
+        mode: Option<Ident>,
+        span: Span,
+    },
 }
 
 /// One argument inside `<...>`. Spec 3.2 forbids mixing named and positional.
@@ -485,11 +624,38 @@ pub fn is_builtin_operator(sym: &str) -> bool {
 pub fn is_reserved_operator(sym: &str) -> bool {
     matches!(
         sym,
-        "" | "=" | "::" | ":" | ";" | "," | "." | ".."
-            | "=>" | "->" | "#" | "!" | "&" | "|" | "@"
-            | "<" | ">" | "==" | "!=" | "<=" | ">="
-            | "+=" | "-=" | "*=" | "/=" | "&=" | "|="
-            | "(" | ")" | "{" | "}" | "[" | "]"
+        "" | "="
+            | "::"
+            | ":"
+            | ";"
+            | ","
+            | "."
+            | ".."
+            | "=>"
+            | "->"
+            | "#"
+            | "!"
+            | "&"
+            | "|"
+            | "@"
+            | "<"
+            | ">"
+            | "=="
+            | "!="
+            | "<="
+            | ">="
+            | "+="
+            | "-="
+            | "*="
+            | "/="
+            | "&="
+            | "|="
+            | "("
+            | ")"
+            | "{"
+            | "}"
+            | "["
+            | "]"
     )
 }
 
