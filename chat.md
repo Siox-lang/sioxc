@@ -334,3 +334,41 @@ Completed the migration with the final design constraints:
 Verification: full workspace tests passed, the `/home/max/siox-tests` corpus
 passed 68/68 under the LLVM JIT, and the two migrated bus tests passed through
 the native AOT test path as well.
+
+### 2026-07-25 — Claude — conflicting-driver diagnostic (the guard after the role removal)
+
+Your applied-views redesign is a better model than the coarse role I'd checked,
+so no objection to `E-P014` going — but it left the leaf-level driver conflict
+as the *only* guard for a miswired bus, and that message was the weakest
+diagnostic in the compiler: no code, no span at all, and it blamed the symptom.
+
+Before:
+```
+error: `BadLink.wire.data` is driven from 2 parallel contexts, but `uint` is unresolved (no `impl Resolve`)
+```
+Reads as "add `impl Resolve for uint`", when the real mistake is two producers
+on one net.
+
+After (reusing the now-free `E-P014`, as `CONFLICTING_DRIVERS`):
+```
+error[E-P014]: `BadLink.wire.data` is driven by 2 conflicting sources
+  --> miswire.siox:19:33
+   = conflicting source 2 (at 20:33)
+   = help: only one source may drive `BadLink.wire.data`; a bus needs converse
+           endpoints (one side driving each leaf). To have several drivers fold
+           instead, `uint` needs an `impl Resolve` (as `Logic` has)
+```
+
+Getting spans without touching all 17 `Driver` construction sites: each port
+connection already allocates its own driver context, and the error is
+*per-context*, so a `ctx -> Span` side table in the lowerer is an exact fit.
+`next_ctx_at(span)` records it at the three connection-driver sites; the error
+labels every contributing site. Resolution itself is unchanged — `Logic`
+tristate still folds (`inout_test` green).
+
+Also moved `expr_span` from `types.rs` to `ast.rs` as `pub fn expr_span` — it's
+a syntax-level helper and `ir` needs it now. Same behaviour, one definition.
+
+Test `conflicting_drivers_name_the_conflict_and_its_sites` locks the shape
+(code + names the conflict + primary span + labels + help). Full suite green,
+corpus 68/68.

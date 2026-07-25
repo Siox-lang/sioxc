@@ -391,6 +391,10 @@ struct Lowering<'a> {
     local_array: HashMap<String, Vec<i64>>,
     /// The active driver context (bumped per impl block / connection).
     cur_ctx: u32,
+    /// Driver context -> the source site that created it (a port connection's
+    /// value expression). Lets the conflicting-driver error point at each
+    /// contributing connection instead of naming only the signal.
+    ctx_span: HashMap<u32, crate::diag::Span>,
     /// Signal -> declared type name (enum / uint / int), for Resolve lookup.
     sig_type: HashMap<u32, String>,
     /// Array-derived Logic vector families (`struct F : Logic[]`) -> signed?.
@@ -483,6 +487,7 @@ impl<'a> Lowering<'a> {
             local_numeric: HashMap::new(),
             vector_families: std::collections::HashSet::new(),
             cur_ctx: 0,
+            ctx_span: HashMap::new(),
             sig_type: HashMap::new(),
         }
     }
@@ -1094,7 +1099,7 @@ impl<'a> Lowering<'a> {
                     }
                     if dir == Some(ast::Direction::Out) {
                         if let Some(target) = self.target_signal(value) {
-                            let ctx = self.next_ctx();
+                            let ctx = self.next_ctx_at(ast::expr_span(value));
                             self.out.drivers.push(Driver {
                                 target,
                                 cond: None,
@@ -1104,7 +1109,7 @@ impl<'a> Lowering<'a> {
                         }
                     } else {
                         let expr = self.lower_expr(value);
-                        let ctx = self.next_ctx();
+                        let ctx = self.next_ctx_at(ast::expr_span(value));
                         self.out.drivers.push(Driver {
                             target: child_id,
                             cond: None,
@@ -1133,7 +1138,7 @@ impl<'a> Lowering<'a> {
                     if parent_id == child_id {
                         continue;
                     }
-                    let ctx = self.next_ctx();
+                    let ctx = self.next_ctx_at(ast::expr_span(value));
                     if dir == Some(ast::Direction::Out) {
                         self.out.drivers.push(Driver {
                             target: parent_id,
@@ -1402,10 +1407,28 @@ impl<'a> Lowering<'a> {
                 .contains_key(&("Resolve".to_string(), ty.clone()));
             let path = self.out.signals[*t as usize].path.clone();
             if !has_resolve {
-                self.sink.emit(crate::diag::Diagnostic::error(format!(
-                    "`{path}` is driven from {} parallel contexts, but `{ty}` is \
-                     unresolved (no `impl Resolve`)",
+                // Lead with the mistake (several sources driving one signal),
+                // not its symptom (a missing `Resolve` impl) — the usual cause
+                // is a miswired bus, e.g. two producers on one net. Point at
+                // each contributing connection when we know where it came from.
+                let sites: Vec<crate::diag::Span> =
+                    ctxs.keys().filter_map(|c| self.ctx_span.get(c).copied()).collect();
+                let mut d = crate::diag::Diagnostic::error(format!(
+                    "`{path}` is driven by {} conflicting sources",
                     ctxs.len()
+                ))
+                .with_code(crate::diag::codes::CONFLICTING_DRIVERS);
+                if let Some((first, rest)) = sites.split_first() {
+                    d = d.at(*first);
+                    for (i, s) in rest.iter().enumerate() {
+                        d = d.label(*s, format!("conflicting source {}", i + 2));
+                    }
+                }
+                self.sink.emit(d.help(format!(
+                    "only one source may drive `{path}`; a bus needs converse \
+                     endpoints (one side driving each leaf). To have several \
+                     drivers fold instead, `{ty}` needs an `impl Resolve` (as \
+                     `Logic` has)"
                 )));
                 continue;
             }
@@ -1562,6 +1585,14 @@ impl<'a> Lowering<'a> {
     fn next_ctx(&mut self) -> u32 {
         self.cur_ctx += 1;
         self.cur_ctx
+    }
+
+    /// A fresh driver context tied to the source site that created it, so a
+    /// later conflict can point at the connection rather than just the signal.
+    fn next_ctx_at(&mut self, span: crate::diag::Span) -> u32 {
+        let ctx = self.next_ctx();
+        self.ctx_span.insert(ctx, span);
+        ctx
     }
 
     fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
@@ -6278,6 +6309,52 @@ mod tests {
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    #[test]
+    /// Two producers wired to one bus net is the classic miswiring. It must
+    /// name the conflict (not the missing `Resolve` impl it happens to hit),
+    /// carry a code, and point at each contributing connection — this is the
+    /// only guard left now that views carry no coarse endpoint role.
+    #[test]
+    fn conflicting_drivers_name_the_conflict_and_its_sites() {
+        let src = "module m;\n\
+            struct Stream { valid: Bit, data: uint[8] }\n\
+            view Source for Stream { out valid; out data; }\n\
+            entity Producer { bus: Source Stream; in value: uint[8]; }\n\
+            impl Producer { bus.valid = '1'; bus.data = value; }\n\
+            #[top]\n\
+            entity BadLink { in a: uint[8]; in b: uint[8]; }\n\
+            impl BadLink {\n\
+              let wire: Stream;\n\
+              let p1: Producer = { .bus = wire, .value = a };\n\
+              let p2: Producer = { .bus = wire, .value = b };\n\
+            }\n";
+        let mut sink = DiagnosticSink::new();
+        let full = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
+        let module = crate::syntax::parse_module(FileId(0), &full, &mut sink);
+        let modules = std::slice::from_ref(&module);
+        let resolved = crate::resolve::resolve(modules, &mut sink);
+        let typed = crate::types::check(modules, &resolved, &mut sink);
+        let hier = crate::elab::elaborate(modules, &typed, &mut sink);
+        let _ = lower(modules, &hier, &mut sink);
+
+        let conflicts: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(crate::diag::codes::CONFLICTING_DRIVERS))
+            .collect();
+        assert!(!conflicts.is_empty(), "expected a conflicting-drivers error");
+        for d in &conflicts {
+            assert!(
+                d.message.contains("conflicting sources"),
+                "should name the conflict, got: {}",
+                d.message
+            );
+            assert!(d.primary.is_some(), "should point at a connection site");
+            assert!(!d.labels.is_empty(), "should label the other source(s)");
+            assert!(d.help.is_some(), "should say how to fix it");
+        }
     }
 
     #[test]

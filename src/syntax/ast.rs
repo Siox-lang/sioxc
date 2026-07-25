@@ -595,6 +595,30 @@ pub enum GenericArg {
 /// follow Rust's `std::ops` where that matches the language. Siox uses one
 /// type-directed `And` contract for both scalar boolean and per-bit `and`;
 /// `==`/`!=` stay built-in (or derive from `Ord`).
+/// The source span of any expression node.
+pub fn expr_span(e: &Expr) -> Span {
+    match e {
+        Expr::Int { span, .. }
+        | Expr::SuffixLit { span, .. }
+        | Expr::BitStrLit { span, .. }
+        | Expr::CharLit { span, .. }
+        | Expr::StrLit { span, .. }
+        | Expr::Field { span, .. }
+        | Expr::SysAttr { span, .. }
+        | Expr::IfExpr { span, .. }
+        | Expr::Match { span, .. }
+        | Expr::Index { span, .. }
+        | Expr::Range { span, .. }
+        | Expr::Unary { span, .. }
+        | Expr::Binary { span, .. }
+        | Expr::Call { span, .. }
+        | Expr::Construct { span, .. }
+        | Expr::Concat { span, .. }
+        | Expr::Array { span, .. } => *span,
+        Expr::Path(p) => p.span,
+    }
+}
+
 /// The standard operator symbols that carry built-in precedence — an
 /// `impl Operator<sym, _, _>` for one of these needs no `#[precedence]`. Any
 /// other symbol (a user operator like `xor`) must declare its precedence.

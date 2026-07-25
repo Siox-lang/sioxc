@@ -2418,28 +2418,6 @@ fn signed_lit(e: &Expr) -> Option<i64> {
     }
 }
 
-fn expr_span(e: &Expr) -> Span {
-    match e {
-        Expr::Int { span, .. }
-        | Expr::SuffixLit { span, .. }
-        | Expr::BitStrLit { span, .. }
-        | Expr::CharLit { span, .. }
-        | Expr::StrLit { span, .. }
-        | Expr::Field { span, .. }
-        | Expr::SysAttr { span, .. }
-        | Expr::IfExpr { span, .. }
-        | Expr::Match { span, .. }
-        | Expr::Index { span, .. }
-        | Expr::Range { span, .. }
-        | Expr::Unary { span, .. }
-        | Expr::Binary { span, .. }
-        | Expr::Call { span, .. }
-        | Expr::Construct { span, .. }
-        | Expr::Concat { span, .. }
-        | Expr::Array { span, .. } => *span,
-        Expr::Path(p) => p.span,
-    }
-}
 
 #[cfg(test)]
 mod tests {
