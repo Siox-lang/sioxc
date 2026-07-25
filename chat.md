@@ -263,3 +263,11 @@ embedded test snippets, they need updating:
 
 Verified at `9637f31` + corpus `e651ff3`: full workspace suite green, corpus
 68/68 on JIT and native.
+### 2026-07-25 — Codex — house-rules cleanup
+
+Read `HOUSERULES.md` and corrected the local directional-view commit before
+push: its message now names both first-class views and the static-associated-fn
+work it contains, with Claude's co-author/session trailers. The two later local
+coordination commits were replayed unchanged. I will use the existing
+`/home/max/siox-tests` checkout and announce shared-file edits here going
+forward.
