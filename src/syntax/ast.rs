@@ -108,21 +108,18 @@ pub struct StructDecl {
     pub span: Span,
 }
 
-/// `view out Source<T> for Stream<T> { out valid; in ready; }`, or a
-/// standalone `view out Bus { out valid: Bit; in ready: Bit; }`.
+/// `view Source<T> for Stream<T> { out valid; in ready; }`.
 ///
 /// A view is a named, storage-free directional projection of a struct. It is
-/// a nominal type for method/trait lookup. Attached views reuse their target's
-/// fields and representation; standalone views declare their layout directly.
+/// a nominal type for method/trait lookup and reuses its target's fields and
+/// representation.
 #[derive(Clone, Debug)]
 pub struct ViewDecl {
     pub is_pub: bool,
-    /// Endpoint role: producer (`out`), consumer (`in`), or bidirectional.
-    pub dir: Direction,
     pub name: Ident,
     pub params: Params,
-    /// Backing struct for `view ... for Struct`; absent for standalone views.
-    pub target: Option<Type>,
+    /// Backing struct named by `for Struct`.
+    pub target: Type,
     pub fields: Vec<ViewField>,
     pub span: Span,
 }
@@ -131,9 +128,6 @@ pub struct ViewDecl {
 pub struct ViewField {
     pub dir: Direction,
     pub name: Ident,
-    /// Required for standalone views; inherited from the backing struct for
-    /// attached views.
-    pub ty: Option<Type>,
     pub span: Span,
 }
 
@@ -181,8 +175,8 @@ pub struct EntityDecl {
 
 #[derive(Clone, Debug)]
 pub struct Port {
-    /// `None` means direction comes from a bus mode / recursive default
-    /// (spec 3.19), e.g. `bus: in Stream<...>::Sink`.
+    /// `None` means direction comes from an applied view (spec 3.19), e.g.
+    /// `bus: Sink Stream<...>`.
     pub dir: Option<Direction>,
     pub name: Ident,
     pub ty: Type,
@@ -196,8 +190,7 @@ pub enum Direction {
     Inout,
 }
 
-/// `impl Counter<W: integer> { ... }`, `impl Trait for Type { ... }`, or a
-/// directional bus mode `impl out Stream<T>::Source { ... }` (spec 3.19).
+/// `impl Counter<W: integer> { ... }` or `impl Trait for Type { ... }`.
 #[derive(Clone, Debug)]
 pub struct ImplDecl {
     /// Metadata on an implementation. Custom operators use `precedence` here.
@@ -209,8 +202,6 @@ pub struct ImplDecl {
     /// `impl Add<integer> for Complex` (the rhs operand type). Empty when the
     /// trait is unparameterized (`impl Add for T` reads as `Add<Self>`).
     pub trait_args: Vec<GenericArg>,
-    /// Optional leading direction for bus-mode impls (`impl out ...`).
-    pub mode_dir: Option<Direction>,
     pub target: Type,
     pub items: Vec<ImplItem>,
     pub span: Span,
@@ -579,12 +570,10 @@ pub enum Type {
         args: Vec<GenericArg>,
         span: Span,
     },
-    /// Directional bus-mode view: `out Stream<T>::Source`, `in Packet`
-    /// (spec 3.19). `mode` is the trailing `::Source`/`::Sink` if present.
-    Mode {
-        dir: Direction,
-        inner: Box<Type>,
-        mode: Option<Ident>,
+    /// A named view applied to a backing struct: `Source Stream<T>`.
+    View {
+        view: Path,
+        target: Box<Type>,
         span: Span,
     },
 }

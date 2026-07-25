@@ -119,20 +119,16 @@ impl Printer {
 
     fn view_decl(&mut self, v: &ViewDecl) {
         let kw = pub_kw(v.is_pub);
-        let target = v.target.as_ref()
-            .map(|t| format!(" for {}", type_str(t)))
-            .unwrap_or_default();
+        let target = format!(" for {}", type_str(&v.target));
         self.line(&format!(
-            "{kw}view {} {}{}{} {{",
-            dir_str(v.dir),
+            "{kw}view {}{}{} {{",
             v.name.text,
             params(&v.params),
             target
         ));
         self.indent += 1;
         for f in &v.fields {
-            let ty = f.ty.as_ref().map(|t| format!(": {}", type_str(t))).unwrap_or_default();
-            self.line(&format!("{} {}{};", dir_str(f.dir), f.name.text, ty));
+            self.line(&format!("{} {};", dir_str(f.dir), f.name.text));
         }
         self.indent -= 1;
         self.line("}");
@@ -448,13 +444,7 @@ pub fn type_str(t: &Type) -> String {
             let inner = args.iter().map(generic_arg).collect::<Vec<_>>().join(", ");
             format!("{}<{inner}>", type_str(base))
         }
-        Type::Mode { dir, inner, mode, .. } => {
-            let m = match mode {
-                Some(name) => format!("::{}", name.text),
-                None => String::new(),
-            };
-            format!("{} {}{m}", dir_str(*dir), type_str(inner))
-        }
+        Type::View { view, target, .. } => format!("{} {}", path(view), type_str(target)),
     }
 }
 
@@ -773,7 +763,7 @@ mod tests {
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Bit;\n\
-               bus: out Stream<uint[32]>::Source;\n\
+               bus: Source Stream<uint[32]>;\n\
                out count: uint[W];\n\
              }\n\
              impl Counter<W: integer> {\n\

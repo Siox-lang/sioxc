@@ -397,25 +397,10 @@ impl<'a> Parser<'a> {
     fn parse_view(&mut self, is_pub: bool) -> ViewDecl {
         let start = self.span();
         self.bump(); // `view`
-        let Some(dir) = self.eat_direction() else {
-            self.error_here("expected `in`, `out`, or `inout` after `view`");
-            return ViewDecl {
-                is_pub,
-                dir: Direction::Inout,
-                name: self.parse_ident(),
-                params: Params::default(),
-                target: None,
-                fields: Vec::new(),
-                span: start.to(self.prev_span()),
-            };
-        };
         let name = self.parse_ident();
         let params = self.parse_params_opt();
-        let target = if self.eat(TokenKind::For) {
-            Some(self.parse_type())
-        } else {
-            None
-        };
+        self.expect(TokenKind::For, "between a view name and its backing struct");
+        let target = self.parse_type();
         self.expect(TokenKind::LBrace, "to open a view body");
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -426,23 +411,20 @@ impl<'a> Parser<'a> {
                 continue;
             };
             let name = self.parse_ident();
-            let ty = if self.eat(TokenKind::Colon) {
-                Some(self.parse_type())
-            } else {
-                None
-            };
+            if self.eat(TokenKind::Colon) {
+                self.error_here("view fields inherit their types from the backing struct");
+                let _ = self.parse_type();
+            }
             self.expect(TokenKind::Semi, "after a view field");
             fields.push(ViewField {
                 dir,
                 name,
-                ty,
                 span: fstart.to(self.prev_span()),
             });
         }
         self.expect(TokenKind::RBrace, "to close a view body");
         ViewDecl {
             is_pub,
-            dir,
             name,
             params,
             target,
@@ -562,8 +544,6 @@ impl<'a> Parser<'a> {
         let start = self.span();
         self.bump(); // `impl`
 
-        // Leading direction for a bus-mode impl without a trait: `impl out S::Source`.
-        let dir1 = self.eat_direction();
         // `impl "+" for T` names an operator trait by its quoted string.
         let head_path = if self.at(TokenKind::StrLit) {
             let name = self.parse_trait_name();
@@ -594,15 +574,13 @@ impl<'a> Parser<'a> {
             // arguments (`impl Add<integer> for Complex`).
             self.bump();
             let trait_ = Some(head_path);
-            let mode_dir = self.eat_direction();
-            let target = self.parse_type_after_optional_dir(mode_dir);
+            let target = self.parse_type();
             let items = self.parse_impl_body();
             return ImplDecl {
                 attrs,
                 params,
                 trait_,
                 trait_args: head_args.unwrap_or_default(),
-                mode_dir: dir1.or(mode_dir),
                 target,
                 items,
                 span: start.to(self.prev_span()),
@@ -619,17 +597,19 @@ impl<'a> Parser<'a> {
                 span: head_span,
             };
         }
-        // Optional bus-mode `::Source` suffix and array suffixes on the target.
-        if dir1.is_some() {
-            let mode = if self.eat(TokenKind::ColonColon) {
-                Some(self.parse_ident())
-            } else {
-                None
+        // A view applied to its backing struct: `impl Source Stream<T>`.
+        if !self.at(TokenKind::LBrace) {
+            let view = match target {
+                Type::Path(p) => p,
+                _ => {
+                    self.error_here("a view name before its backing type cannot have arguments");
+                    Path { segments: Vec::new(), span: head_span }
+                }
             };
-            target = Type::Mode {
-                dir: dir1.unwrap(),
-                inner: Box::new(target),
-                mode,
+            let backing = self.parse_type_core();
+            target = Type::View {
+                view,
+                target: Box::new(backing),
                 span: head_span.to(self.prev_span()),
             };
         }
@@ -639,7 +619,6 @@ impl<'a> Parser<'a> {
             params,
             trait_: None,
             trait_args: Vec::new(),
-            mode_dir: dir1,
             target,
             items,
             span: start.to(self.prev_span()),
@@ -689,7 +668,7 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 let dir = self.eat_direction().unwrap();
                 let name = self.parse_ident();
-                self.expect(TokenKind::Semi, "after a bus-mode field");
+                self.expect(TokenKind::Semi, "after a view field");
                 Some(ImplItem::ModeField {
                     dir,
                     name,
@@ -1681,42 +1660,24 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> Type {
         let start = self.span();
-        if let Some(dir) = self.eat_direction() {
-            let inner = self.parse_type_core();
-            let mode = if self.eat(TokenKind::ColonColon) {
-                Some(self.parse_ident())
-            } else {
-                None
+        let first = self.parse_type_core();
+        // Two adjacent type names form an applied view: `Source Stream<T>`.
+        if matches!(self.kind(), TokenKind::Ident) && self.cur_text() != "where" {
+            let view = match first {
+                Type::Path(p) => p,
+                _ => {
+                    self.error_here("a view name before its backing type cannot have arguments");
+                    return first;
+                }
             };
-            return Type::Mode {
-                dir,
-                inner: Box::new(inner),
-                mode,
+            let target = self.parse_type_core();
+            return Type::View {
+                view,
+                target: Box::new(target),
                 span: start.to(self.prev_span()),
             };
         }
-        self.parse_type_core()
-    }
-
-    fn parse_type_after_optional_dir(&mut self, dir: Option<Direction>) -> Type {
-        let start = self.prev_span();
-        match dir {
-            Some(dir) => {
-                let inner = self.parse_type_core();
-                let mode = if self.eat(TokenKind::ColonColon) {
-                    Some(self.parse_ident())
-                } else {
-                    None
-                };
-                Type::Mode {
-                    dir,
-                    inner: Box::new(inner),
-                    mode,
-                    span: start.to(self.prev_span()),
-                }
-            }
-            None => self.parse_type_core(),
-        }
+        first
     }
 
     fn parse_type_core(&mut self) -> Type {
@@ -2246,21 +2207,32 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview out Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nview in SimpleBus { in request: Bit; out acknowledge: Bit; }\nimpl Source<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source<uint[32]>;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nimpl Source Stream<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source Stream<uint[32]>;\n}\n",
         );
         let Item::View(v) = &m.items[1] else {
             panic!("expected view")
         };
         assert_eq!(v.name.text, "Source");
         assert_eq!(v.fields.len(), 4);
-        let Item::View(simple) = &m.items[2] else { panic!("expected standalone view") };
-        assert!(simple.target.is_none());
-        assert!(simple.fields.iter().all(|f| f.ty.is_some()));
-        let Item::Entity(e) = &m.items[4] else {
+        let Item::Entity(e) = &m.items[3] else {
             panic!("expected entity")
         };
-        assert_eq!(e.ports[0].dir, None); // direction lives in the bus-mode type
-        assert!(matches!(&e.ports[0].ty, Type::Generic { .. }));
+        assert_eq!(e.ports[0].dir, None); // direction lives in the view fields
+        assert!(matches!(&e.ports[0].ty, Type::View { .. }));
+    }
+
+    #[test]
+    fn direction_keywords_cannot_be_view_names() {
+        for name in ["in", "out", "inout"] {
+            let src = format!(
+                "module m;\nstruct Bus {{ bit: Bit }}\nview {name} for Bus {{ in bit; }}\n"
+            );
+            let (_, errors) = parse(&src);
+            assert!(
+                errors > 0,
+                "`{name}` must stay reserved for default port directions"
+            );
+        }
     }
 
     #[test]

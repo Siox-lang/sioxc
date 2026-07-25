@@ -2326,7 +2326,7 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
     match t {
         ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
-        ast::Type::Mode { inner, .. } => type_head_name(inner),
+        ast::Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
     }
 }
 

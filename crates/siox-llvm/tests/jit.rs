@@ -898,14 +898,14 @@ fn bus_mode_agrees() {
     let d = lower(
         "module m;\n\
          struct Stream { valid: Bit, ready: Bit, data: uint[8], }\n\
-         view out Source for Stream { out valid; out data; in ready; }\n\
-         view in Sink for Stream { in valid; in data; out ready; }\n\
-         impl Source {\n\
+         view Source for Stream { out valid; out data; in ready; }\n\
+         view Sink for Stream { in valid; in data; out ready; }\n\
+         impl Source Stream {\n\
            fn drive(self, value: uint[8]) { self.valid = '1'; self.data = value; }\n\
          }\n\
-         entity Producer { bus: Source; in d: uint[8]; out canpush: Bit; }\n\
+         entity Producer { bus: Source Stream; in d: uint[8]; out canpush: Bit; }\n\
          impl Producer { bus.drive(d); canpush = bus.ready; }\n\
-         entity Consumer { bus: Sink; in accept: Bit; out got: uint[8]; }\n\
+         entity Consumer { bus: Sink Stream; in accept: Bit; out got: uint[8]; }\n\
          impl Consumer { bus.ready = accept; got = bus.data; }\n\
          #[top]\n\
          entity T { in d: uint[8]; in accept: Bit; out got: uint[8]; out canpush: Bit; }\n\

@@ -326,7 +326,7 @@ struct Lowering<'a> {
     /// Named, storage-free directional views.
     views: HashMap<String, &'a ast::ViewDecl>,
     /// View name -> per-leaf directions.
-    mode_dirs: HashMap<String, HashMap<String, ast::Direction>>,
+    view_dirs: HashMap<String, HashMap<String, ast::Direction>>,
     /// Enum name -> its bit width (repr, or bits for the variant count).
     enum_reprs: HashMap<String, u32>,
     /// Enum name -> base enum name (derivation chain, enums only).
@@ -456,7 +456,7 @@ impl<'a> Lowering<'a> {
             local_range: HashMap::new(),
             structs: HashMap::new(),
             views: HashMap::new(),
-            mode_dirs: HashMap::new(),
+            view_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
             op_impls: HashMap::new(),
@@ -506,9 +506,10 @@ impl<'a> Lowering<'a> {
                         self.structs.insert(s.name.text.clone(), s);
                     }
                     ast::Item::View(v) => {
-                        self.views.insert(v.name.text.clone(), v);
-                        self.mode_dirs.insert(
-                            v.name.text.clone(),
+                        let key = declared_view_key(v);
+                        self.views.insert(key.clone(), v);
+                        self.view_dirs.insert(
+                            key,
                             v.fields
                                 .iter()
                                 .map(|f| (f.name.text.clone(), f.dir))
@@ -540,10 +541,8 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
-                        if im.mode_dir.is_none() {
-                            if let Some(name) = type_head_name(&im.target) {
-                                self.impls.entry(name.to_string()).or_default().push(im);
-                            }
+                        if let Some(name) = type_head_name(&im.target) {
+                            self.impls.entry(name.to_string()).or_default().push(im);
                         }
                     }
                     // A trait impl's first fn is the operator body for
@@ -781,13 +780,13 @@ impl<'a> Lowering<'a> {
         for p in &edecl.ports {
             let dot = format!("{}.", p.name.text);
             let idx = format!("{}[", p.name.text);
-            // A bus-mode port (`bus: out Stream::Source`) gives each leaf its own
-            // direction from the mode impl (`out valid; in ready;`); a plain port
+            // An applied-view port (`bus: Source Stream`) gives each leaf its
+            // direction from the view (`out valid; in ready;`); a plain port
             // applies its single direction to every leaf.
-            let mode = self.view_of(&p.ty).and_then(|k| self.mode_dirs.get(&k));
+            let view = self.view_of(&p.ty).and_then(|k| self.view_dirs.get(&k));
             for (k, &id) in &self.locals {
                 if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
-                    let dir = match mode {
+                    let dir = match view {
                         Some(m) => k
                             .strip_prefix(&dot)
                             .and_then(|field| m.get(field).copied())
@@ -797,7 +796,7 @@ impl<'a> Lowering<'a> {
                     // A plain (non-bus-mode) `out` port must be driven inside the
                     // entity; record it for the undriven check. Bus-mode leaves
                     // and `inout` are excluded (their drive model differs).
-                    if !edecl.is_extern && mode.is_none() && dir == Some(ast::Direction::Out) {
+                    if !edecl.is_extern && view.is_none() && dir == Some(ast::Direction::Out) {
                         new_out_ports.push(id);
                     }
                     ports.insert(k.clone(), (id, dir));
@@ -1871,9 +1870,17 @@ impl<'a> Lowering<'a> {
         // with no fields (a derived vector like `struct Byte : Logic[8]`) is a
         // scalar leaf and takes its inherited width below.
         if let Some(fields) = self.struct_fields(ty).filter(|f| !f.is_empty()) {
-            if let ast::Type::Path(p) = ty {
-                self.local_struct
-                    .insert(name.to_string(), p.segments[0].text.clone());
+            match ty {
+                ast::Type::Path(p) => {
+                    self.local_struct
+                        .insert(name.to_string(), p.segments[0].text.clone());
+                }
+                ast::Type::View { view, .. } => {
+                    if let Some(role) = view.segments.last() {
+                        self.local_struct.insert(name.to_string(), role.text.clone());
+                    }
+                }
+                _ => {}
             }
             for (fname, fty) in fields {
                 self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
@@ -2048,31 +2055,6 @@ impl<'a> Lowering<'a> {
             // base struct's field types.
             ast::Type::Generic { base, args, .. } => {
                 let sname = type_head_name(base)?;
-                if let Some(v) = self.views.get(sname) {
-                    let mut subst = HashMap::new();
-                    for (param, arg) in v.params.params.iter().zip(args) {
-                        if let ast::GenericArg::Positional(e) = arg {
-                            if let Some(t) = expr_to_type(e) {
-                                subst.insert(param.name.text.clone(), t);
-                            }
-                        }
-                    }
-                    if let Some(target) = &v.target {
-                        let target = subst_type_params(target, &subst);
-                        return self.struct_fields(&target);
-                    }
-                    return Some(
-                        v.fields
-                            .iter()
-                            .filter_map(|f| {
-                                Some((
-                                    f.name.text.clone(),
-                                    subst_type_params(f.ty.as_ref()?, &subst),
-                                ))
-                            })
-                            .collect(),
-                    );
-                }
                 let s = self.structs.get(sname)?;
                 let mut subst: HashMap<String, ast::Type> = HashMap::new();
                 for (param, arg) in s.params.params.iter().zip(args) {
@@ -2090,29 +2072,11 @@ impl<'a> Lowering<'a> {
                         .collect(),
                 )
             }
-            // A bus-mode view reduces to its inner struct's fields — the inner
-            // is a generic application (`Stream<uint[8]>::Source`) or a plain
-            // `Struct::Mode` path.
-            ast::Type::Mode { inner, .. } => match inner.as_ref() {
-                ast::Type::Generic { .. } => self.struct_fields(inner),
-                ast::Type::Path(p) => self.raw_struct_fields(p.segments.first()?.text.as_str()),
-                _ => None,
-            },
+            // An applied view reuses the backing struct's representation.
+            ast::Type::View { target, .. } => self.struct_fields(target),
             ast::Type::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
-                if let Some(v) = self.views.get(name) {
-                    match &v.target {
-                        Some(target) => self.struct_fields(target),
-                        None => Some(
-                            v.fields
-                                .iter()
-                                .filter_map(|f| Some((f.name.text.clone(), f.ty.clone()?)))
-                                .collect(),
-                        ),
-                    }
-                } else {
-                    self.raw_struct_fields(name)
-                }
+                self.raw_struct_fields(name)
             }
             _ => None,
         }
@@ -2131,6 +2095,13 @@ impl<'a> Lowering<'a> {
     }
 
     fn view_of(&self, ty: &ast::Type) -> Option<String> {
+        if let ast::Type::View { view, target, .. } = ty {
+            return Some(format!(
+                "{}@{}",
+                view.segments.last()?.text,
+                type_head_name(target)?
+            ));
+        }
         let head = type_head_name(ty)?;
         self.views.contains_key(head).then(|| head.to_string())
     }
@@ -5259,7 +5230,7 @@ fn type_width(
                 .map(|v| v.max(0) as u32)
                 .unwrap_or(0),
         },
-        ast::Type::Generic { base, .. } | ast::Type::Mode { inner: base, .. } => {
+        ast::Type::Generic { base, .. } | ast::Type::View { target: base, .. } => {
             type_width(base, env, fns, structs)
         }
     }
@@ -5739,15 +5710,9 @@ fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast:
             args: args.clone(),
             span: *span,
         },
-        ast::Type::Mode {
-            dir,
-            inner,
-            mode,
-            span,
-        } => ast::Type::Mode {
-            dir: *dir,
-            inner: Box::new(subst_type_params(inner, subst)),
-            mode: mode.clone(),
+        ast::Type::View { view, target, span } => ast::Type::View {
+            view: view.clone(),
+            target: Box::new(subst_type_params(target, subst)),
             span: *span,
         },
         _ => ty.clone(),
@@ -6152,15 +6117,9 @@ fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
                 .collect(),
             span: *span,
         },
-        ast::Type::Mode {
-            dir,
-            inner,
-            mode,
-            span,
-        } => ast::Type::Mode {
-            dir: *dir,
-            inner: Box::new(subst_type(inner, var, val)),
-            mode: mode.clone(),
+        ast::Type::View { view, target, span } => ast::Type::View {
+            view: view.clone(),
+            target: Box::new(subst_type(target, var, val)),
             span: *span,
         },
         ast::Type::Path(_) => t.clone(),
@@ -6274,8 +6233,13 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
     match t {
         ast::Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
-        ast::Type::Mode { inner, .. } => type_head_name(inner),
+        ast::Type::View { view, .. } => view.segments.last().map(|s| s.text.as_str()),
     }
+}
+
+fn declared_view_key(view: &ast::ViewDecl) -> String {
+    let target = type_head_name(&view.target).unwrap_or("<error>");
+    format!("{}@{target}", view.name.text)
 }
 
 #[cfg(test)]
@@ -6332,12 +6296,13 @@ mod tests {
     }
 
     #[test]
-    fn standalone_view_declares_and_flattens_its_own_fields() {
+    fn applied_view_flattens_its_backing_struct_fields() {
         let d = lower_src(
             "module m;\n\
-             view out Handshake { out valid: Bit; in ready: Bit; }\n\
-             impl Handshake { fn assert_valid(self) { self.valid = '1'; } }\n\
-             #[top] entity Producer { bus: Handshake; out observed: Bit; }\n\
+             struct HandshakeBus { valid: Bit, ready: Bit }\n\
+             view Handshake for HandshakeBus { out valid; in ready; }\n\
+             impl Handshake HandshakeBus { fn assert_valid(self) { self.valid = '1'; } }\n\
+             #[top] entity Producer { bus: Handshake HandshakeBus; out observed: Bit; }\n\
              impl Producer { bus.assert_valid(); observed = bus.ready; }",
         );
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));

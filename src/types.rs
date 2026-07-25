@@ -115,7 +115,7 @@ struct PortInfo {
     ty: Ty,
     dir: Option<Direction>,
     /// Named directional view when this port is view-typed.
-    mode: Option<String>,
+    view: Option<String>,
 }
 
 /// The value type an attribute declaration expects (spec 3.5).
@@ -151,7 +151,7 @@ struct Checker<'a> {
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// View name -> underlying struct type.
-    views: HashMap<String, Option<Type>>,
+    views: HashMap<String, Type>,
     /// Struct name -> signedness, for structs carrying `#[vector]` (an
     /// array-derived numeric family). Membership is the attribute, not shape.
     vector_families: HashSet<String>,
@@ -172,7 +172,7 @@ struct Checker<'a> {
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
     /// Named view -> per-field directions.
-    mode_dirs: HashMap<String, HashMap<String, Direction>>,
+    view_dirs: HashMap<String, HashMap<String, Direction>>,
 }
 
 impl<'a> Checker<'a> {
@@ -242,7 +242,7 @@ impl<'a> Checker<'a> {
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
             methods: HashMap::new(),
-            mode_dirs: HashMap::new(),
+            view_dirs: HashMap::new(),
         }
     }
 
@@ -273,7 +273,7 @@ impl<'a> Checker<'a> {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
-                            mode: view_key(&p.ty, &self.views),
+                            view: view_key(&p.ty, &self.views),
                         })
                         .collect();
                     self.entities.insert(e.name.text.clone(), ports);
@@ -301,11 +301,11 @@ impl<'a> Checker<'a> {
             Item::Impl(im) => {
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
-                if let Some(ty) = type_head_name(&im.target) {
+                if let Some(ty) = type_identity(&im.target) {
                     for it in &im.items {
                         if let ImplItem::Fn(f) = it {
                             self.methods
-                                .insert((ty.to_string(), f.name.text.clone()), f.ret.clone());
+                                .insert((ty.clone(), f.name.text.clone()), f.ret.clone());
                         }
                     }
                 }
@@ -313,7 +313,7 @@ impl<'a> Checker<'a> {
                 // conditions) can ask "does T implement Trait?".
                 if let Some(tr) = &im.trait_ {
                     let trait_name = tr.segments.last().map(|s| s.text.clone());
-                    let target = type_head_name(&im.target).map(|s| s.to_string());
+                    let target = type_identity(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
                         // `impl Operator<"<sym>", Input, Output> for T`: the
                         // first trait argument is the operator symbol, which
@@ -485,13 +485,23 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::View(v) => {
-                self.views.insert(v.name.text.clone(), v.target.clone());
+                let key = declared_view_key(v);
+                if self.views.insert(key.clone(), v.target.clone()).is_some() {
+                    self.error(
+                        codes::DUPLICATE_ITEM,
+                        v.name.span,
+                        format!(
+                            "view `{}` is declared more than once for the same backing type",
+                            v.name.text
+                        ),
+                    );
+                }
                 let dirs = v
                     .fields
                     .iter()
                     .map(|f| (f.name.text.clone(), f.dir))
                     .collect();
-                self.mode_dirs.insert(v.name.text.clone(), dirs);
+                self.view_dirs.insert(key, dirs);
             }
             Item::Using(u) => {
                 if let UsingKind::Alias { name, ty } = &u.kind {
@@ -646,6 +656,9 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Entity(e) => {
+                for port in &e.ports {
+                    self.check_applied_view(&port.ty);
+                }
                 for a in &e.attrs {
                     self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
                     self.check_attr_value(a);
@@ -654,7 +667,10 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::Impl(im) => self.check_impl(im),
+            Item::Impl(im) => {
+                self.check_applied_view(&im.target);
+                self.check_impl(im);
+            }
             Item::Trait(t) => {
                 for f in &t.items {
                     if let Some(b) = &f.body {
@@ -679,27 +695,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_view(&mut self, view: &ViewDecl) {
-        if view.target.is_none() {
-            let mut seen = HashSet::new();
-            for f in &view.fields {
-                if f.ty.is_none() {
-                    self.error(
-                        codes::TYPE_MISMATCH,
-                        f.name.span,
-                        format!("standalone view field `{}` requires a type", f.name.text),
-                    );
-                }
-                if !seen.insert(f.name.text.clone()) {
-                    self.error(
-                        codes::DUPLICATE_ITEM,
-                        f.name.span,
-                        format!("view field `{}` is declared more than once", f.name.text),
-                    );
-                }
-            }
-            return;
-        }
-        let target_ty = view.target.as_ref().unwrap();
+        let target_ty = &view.target;
         let Some(target) = type_head_name(target_ty) else { return };
         if !self.structs.contains_key(target) {
             self.error(
@@ -715,13 +711,6 @@ impl<'a> Checker<'a> {
         let fields = self.base_struct_fields(target_ty);
         let mut seen = HashSet::new();
         for f in &view.fields {
-            if f.ty.is_some() {
-                self.error(
-                    codes::TYPE_MISMATCH,
-                    f.name.span,
-                    format!("attached view field `{}` inherits its type from `{target}`", f.name.text),
-                );
-            }
             if !fields.iter().any(|n| n == &f.name.text) {
                 self.error(
                     codes::TYPE_MISMATCH,
@@ -747,6 +736,20 @@ impl<'a> Checker<'a> {
                     ),
                 );
             }
+        }
+    }
+
+    fn check_applied_view(&mut self, ty: &Type) {
+        let Type::View { view, target, span } = ty else { return };
+        let Some(view_name) = view.segments.last().map(|i| i.text.as_str()) else { return };
+        let Some(target_name) = type_head_name(target) else { return };
+        let key = format!("{view_name}@{target_name}");
+        if !self.views.contains_key(&key) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!("view `{view_name}` is not declared for struct `{target_name}`"),
+            );
         }
     }
 
@@ -852,13 +855,13 @@ impl<'a> Checker<'a> {
                         illegal.insert(p.name.clone());
                         // A *plain* (non-bus-mode) `in` port has no writable
                         // parts: driving a field/index of it is illegal too.
-                        if p.mode.is_none() {
+                        if p.view.is_none() {
                             plain_in_roots.insert(p.name.clone());
                         }
                     }
                     // A bus-mode port contributes each `in` leaf (`bus.ready`),
                     // so driving it inside the entity is rejected (spec 3.19).
-                    if let Some(dirs) = p.mode.clone().and_then(|k| self.mode_dirs.get(&k)) {
+                    if let Some(dirs) = p.view.clone().and_then(|k| self.view_dirs.get(&k)) {
                         for (field, dir) in dirs {
                             if *dir == Direction::In {
                                 illegal.insert(format!("{}.{field}", p.name));
@@ -2138,7 +2141,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Generic { base, .. } => self.ast_ty(base),
-            Type::Mode { inner, .. } => self.ast_ty(inner),
+            Type::View { view, .. } => self.path_ty(view),
         }
     }
 
@@ -2243,7 +2246,7 @@ fn type_head_span(ty: &Type) -> Option<Span> {
     match ty {
         Type::Path(p) => p.segments.first().map(|s| s.span),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_span(base),
-        Type::Mode { inner, .. } => type_head_span(inner),
+        Type::View { view, .. } => Some(view.span),
     }
 }
 
@@ -2251,7 +2254,7 @@ fn type_head_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_name(base),
-        Type::Mode { inner, .. } => type_head_name(inner),
+        Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
     }
 }
 
@@ -2285,11 +2288,34 @@ struct PortDirs {
     plain_in_roots: HashSet<String>,
 }
 
-/// The `(struct, mode)` of a bus-mode type (`out Stream::Source` ->
-/// `("Stream", "Source")`), for looking up per-leaf directions.
-fn view_key(ty: &Type, views: &HashMap<String, Option<Type>>) -> Option<String> {
-    let head = type_head_name(ty)?;
-    views.contains_key(head).then(|| head.to_string())
+/// The view/backing pair of an applied view type, for looking up per-leaf
+/// directions.
+fn view_key(ty: &Type, views: &HashMap<String, Type>) -> Option<String> {
+    let key = match ty {
+        Type::View { view, target, .. } => format!(
+            "{}@{}",
+            view.segments.last()?.text,
+            type_head_name(target)?
+        ),
+        _ => type_head_name(ty)?.to_string(),
+    };
+    views.contains_key(&key).then_some(key)
+}
+
+fn declared_view_key(view: &ViewDecl) -> String {
+    let target = type_head_name(&view.target).unwrap_or("<error>");
+    format!("{}@{target}", view.name.text)
+}
+
+fn type_identity(ty: &Type) -> Option<String> {
+    match ty {
+        Type::View { view, target, .. } => Some(format!(
+            "{}@{}",
+            view.segments.last()?.text,
+            type_head_name(target)?
+        )),
+        _ => type_head_name(ty).map(str::to_string),
+    }
 }
 
 /// Width of a bracketed type index when it is a literal (`uint[8]` -> 8);
@@ -2476,8 +2502,8 @@ mod tests {
         let bad = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             view out Source for S { out valid; in ready; }\n\
-             entity P { bus: Source; }\n\
+             view Source for S { out valid; in ready; }\n\
+             entity P { bus: Source S; }\n\
              impl P { bus.valid = '1'; bus.ready = '1'; }\n",
         );
         assert_eq!(bad, 1, "driving the `in` leaf bus.ready must error");
@@ -2486,11 +2512,32 @@ mod tests {
         let ok = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             view out Source for S { out valid; in ready; }\n\
-             entity P { bus: Source; out r: Bit; }\n\
+             view Source for S { out valid; in ready; }\n\
+             entity P { bus: Source S; out r: Bit; }\n\
              impl P { bus.valid = '1'; r = bus.ready; }\n",
         );
         assert_eq!(ok, 0, "driving out leaves + reading in leaves is fine");
+    }
+
+    #[test]
+    fn views_overload_by_backing_struct_in_trait_impls() {
+        let errors = check_src(
+            "module m;\n\
+             trait Send<T> { fn send(self, value: T); }\n\
+             struct Stream { data: Bit, ready: Bit }\n\
+             struct Queue { data: Bit, full: Bit }\n\
+             view Source for Stream { out data; in ready; }\n\
+             view Source for Queue { out data; in full; }\n\
+             impl Send<Bit> for Source Stream {\n\
+               fn send(self, value: Bit) { self.data = value; }\n\
+             }\n\
+             impl Send<Bit> for Source Queue {\n\
+               fn send(self, value: Bit) { self.data = value; }\n\
+             }\n\
+             entity StreamProducer { bus: Source Stream; }\n\
+             entity QueueProducer { bus: Source Queue; }\n",
+        );
+        assert_eq!(errors, 0, "the view/backing pair is the nominal identity");
     }
 
     #[test]

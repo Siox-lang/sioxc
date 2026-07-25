@@ -144,7 +144,7 @@ fn type_head(t: &Type) -> Option<&str> {
     match t {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head(base),
-        Type::Mode { inner, .. } => type_head(inner),
+        Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
     }
 }
 
@@ -281,7 +281,17 @@ impl<'a> Resolver<'a> {
                 self.declare(&s.name.text, DefKind::Struct, s.is_pub, s.name.span);
             }
             Item::View(v) => {
-                self.declare(&v.name.text, DefKind::View, v.is_pub, v.name.span);
+                // Views overload by backing struct (`Source Stream`,
+                // `Source Queue`). Keep one name-resolution representative;
+                // type checking selects the declaration from the applied pair.
+                let id = self.add_def(
+                    v.name.text.clone(),
+                    DefKind::View,
+                    v.is_pub,
+                    Some(v.name.span),
+                    None,
+                );
+                self.globals.entry(v.name.text.clone()).or_insert(id);
             }
             Item::Enum(e) => {
                 let id = self.declare(&e.name.text, DefKind::Enum, e.is_pub, e.name.span);
@@ -539,14 +549,7 @@ impl<'a> Resolver<'a> {
             Item::View(v) => {
                 self.enter();
                 self.bind_params(&v.params, false);
-                if let Some(target) = &v.target {
-                    self.resolve_type(target);
-                }
-                for field in &v.fields {
-                    if let Some(ty) = &field.ty {
-                        self.resolve_type(ty);
-                    }
-                }
+                self.resolve_type(&v.target);
                 self.exit();
             }
             Item::Enum(e) => {
@@ -591,7 +594,15 @@ impl<'a> Resolver<'a> {
         // `impl Reg<T>` declares the type parameter `T` for the body (like
         // Rust's `impl<T> Reg<T>`): a bare single-name generic argument on the
         // target that isn't already a known type is a type parameter.
-        if let Type::Generic { args, .. } = &im.target {
+        let generic_target = match &im.target {
+            Type::Generic { args, .. } => Some(args),
+            Type::View { target, .. } => match target.as_ref() {
+                Type::Generic { args, .. } => Some(args),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(args) = generic_target {
             for a in args {
                 if let GenericArg::Positional(Expr::Path(p)) = a {
                     if p.segments.len() == 1 && self.lookup(&p.segments[0].text).is_none() {
@@ -789,7 +800,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
-            Type::Mode { inner, .. } => self.resolve_type(inner),
+            Type::View { view, target, .. } => {
+                self.resolve_type_path(view);
+                self.resolve_type(target);
+            }
         }
     }
 

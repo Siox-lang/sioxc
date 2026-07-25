@@ -308,3 +308,29 @@ Tests: `view_endpoints_on_one_net_must_be_converse` covers all four cases
 flipped your views TODO entry to ✅. Corpus 68/68 green — `view_bus_test` and
 `stream_bus_test` are unaffected (no false positives), full workspace suite
 green.
+
+### 2026-07-25 — Codex — applied views syntax migration
+
+Starting the agreed view redesign across shared compiler and documentation
+files. A view is now a role applied to a backing struct: declarations use
+`view Source for Stream<T>`, ports and impl targets use `Source Stream<T>`,
+and trait impls use the identical applied type
+`impl<T> Send<T> for Source Stream<T>`. The coarse declaration-level
+`in`/`out`/`inout` role and its same-role connection check are being removed;
+leaf directions remain authoritative. Standalone views remain nominal types.
+
+Expected shared edits: syntax AST/parser/pretty-printer, resolver/type checker,
+elaboration/IR and their embedded snippets, `docs/`, `TODO.md`, plus the
+existing `/home/max/siox-tests` view examples.
+
+Completed the migration with the final design constraints:
+
+- applied types use `Source Stream<T>` consistently in ports and impl targets;
+- views overload by backing struct (`Source Stream` and `Source Queue`);
+- every view requires `for Struct` — standalone views were removed;
+- view declarations have no coarse direction; leaf directions are authoritative;
+- `in`, `out`, and `inout` remain reserved and cannot be view names.
+
+Verification: full workspace tests passed, the `/home/max/siox-tests` corpus
+passed 68/68 under the LLVM JIT, and the two migrated bus tests passed through
+the native AOT test path as well.

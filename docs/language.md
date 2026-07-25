@@ -481,7 +481,7 @@ struct Packet<T> {
 }
 ```
 
-Directions are applied at entity ports or directional bus-mode implementations.
+Directions are applied at entity ports or on the fields of views.
 
 ---
 
@@ -1022,24 +1022,29 @@ Port direction is primarily compiler/type-checker information, not a normal user
 
 ---
 
-### 3.19 Bus modes are directional views over structs
+### 3.19 Views are directional roles over structs
 
-Structs do not contain direction. Directional modes define how a struct behaves at a boundary.
+Structs define layout and field types, but do not contain direction. A view
+defines a named protocol role such as `Source`, `Sink`, `Master`, or `Slave`.
+Direction belongs to each leaf of that role; there is no direction on the view
+declaration itself.
 
-The declaration's leading direction names the endpoint role: `view out` is a
-producer-facing implementation, `view in` is consumer-facing, and `view
-inout` is bidirectional. A view may project a reusable struct, or declare a
-small bus layout directly:
+A view always projects a reusable struct:
 
 ```siox
-view out Handshake {
-    out valid: Bit;
-    in ready: Bit;
+struct Handshake {
+    valid: Bit,
+    ready: Bit,
+}
+
+view Source for Handshake {
+    out valid;
+    in ready;
 }
 ```
 
-Standalone view fields carry types. Fields in a view declared `for` a struct
-inherit their types from that struct and therefore only name their directions.
+View fields inherit their types from the backing struct and therefore only
+name their directions.
 
 Example struct:
 
@@ -1053,10 +1058,10 @@ struct Stream<T> {
 }
 ```
 
-Source mode:
+Source role:
 
 ```siox
-view out StreamSource<T> for Stream<T> {
+view StreamSource<T> for Stream<T> {
     in clk;
     in rst;
     out valid;
@@ -1065,10 +1070,10 @@ view out StreamSource<T> for Stream<T> {
 }
 ```
 
-Sink mode:
+Sink role:
 
 ```siox
-view in StreamSink<T> for Stream<T> {
+view StreamSink<T> for Stream<T> {
     in clk;
     in rst;
     in valid;
@@ -1081,38 +1086,66 @@ Usage:
 
 ```siox
 entity Producer {
-    bus: StreamSource<uint[32]>;
+    bus: StreamSource Stream<uint[32]>;
 }
 
 entity Consumer {
-    bus: StreamSink<uint[32]>;
+    bus: StreamSink Stream<uint[32]>;
 }
 ```
 
-**Endpoints sharing a net must be converse.** The declaration role is checked
-at elaboration: a net wired to two `out` endpoints (or two `in` endpoints) is
-`E-P014`, because two producers collide on every output leaf and leave every
-input undriven.
+The applied type always writes the view first and its backing struct second:
+`<view> <struct>`. The same spelling is used for ports, inherent impls, and
+trait impls:
+
+```siox
+impl StreamSource Stream<T> {
+    fn can_send(self) -> Bit {
+        return self.ready;
+    }
+}
+
+impl Source<T> for StreamSource Stream<T> {
+    fn send(self, value: T) {
+        self.valid = '1';
+        self.data = value;
+    }
+}
+```
+
+Views overload by backing struct. Consequently, different protocols may reuse
+the same role name without creating a global-name collision:
+
+```siox
+view Source for Stream {
+    out valid;
+    out data;
+    in ready;
+}
+
+view Source for Queue {
+    out data;
+    in full;
+}
+
+impl Send<Byte> for Source Stream { /* ... */ }
+impl Send<Byte> for Source Queue  { /* ... */ }
+```
+
+The nominal identity is the pair `(view, backing struct)`. `Source Stream` and
+`Source Queue` are therefore distinct types even though both views are named
+`Source`.
 
 ```siox
 let wire: Stream<uint[32]>;
 let p: Producer = { .bus = wire };
-let c: Consumer = { .bus = wire };   // ok — one producer, one consumer
-// let p2: Producer = { .bus = wire };  // E-P014: two `out` endpoints
+let c: Consumer = { .bus = wire };
 ```
 
-An `inout` view is bidirectional and pairs with either role; its leaves are
-still subject to the ordinary driver rules (a real collision is still caught).
-
-If no custom named mode is used, direction may apply recursively to all leaves.
-
-Example:
-
-```siox
-bus: in Packet;
-```
-
-means all leaf fields are input/read-only inside the entity.
+Compatibility and driver checks operate on the backing struct and the leaf
+directions. For example, an implementation may write the `out` leaves of its
+port but not its `in` leaves. Two real drivers of one unresolved leaf remain a
+normal driver error.
 
 ---
 
@@ -1134,7 +1167,7 @@ trait Source<T> {
 Implementation:
 
 ```siox
-impl Source<T> for StreamSource<T> {
+impl Source<T> for StreamSource Stream<T> {
     fn send(self, value: T) {
         self.valid = '1';
         self.data = value;
@@ -2364,8 +2397,8 @@ error[E-P0XX]: cannot assign to input port `ready`
   --> stream.siox:42:9
    |
 42 |         self.ready = '1';
-   |         ^^^^^^^^^^ input fields are read-only in `out Stream<T>::Source`
-help: `ready` is declared as `in ready;` in this bus mode
+   |         ^^^^^^^^^^ input fields are read-only in `StreamSource Stream<T>`
+help: `ready` is declared as `in ready;` in this view
 ```
 
 ---
