@@ -283,6 +283,7 @@ pub fn lower_in(
     for name in &roots {
         l.lower_entity(name);
     }
+    l.report_depth_exceeded();
     l.lint_possible_latches();
     l.resolve_driver_contexts();
     l.propagate_metavalues();
@@ -342,6 +343,10 @@ struct Lowering<'a> {
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
+    /// Functions whose inlining hit the depth guard. Lowering runs behind
+    /// `&self`, so the diagnostic is recorded here and flushed by `lower`
+    /// instead of silently leaving an `Unknown` in the driver.
+    depth_exceeded: std::cell::RefCell<Vec<String>>,
     /// The receiver signal bound to `self` while inlining a method body, so a
     /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
@@ -467,6 +472,7 @@ impl<'a> Lowering<'a> {
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
+            depth_exceeded: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
@@ -1376,6 +1382,29 @@ impl<'a> Lowering<'a> {
                 ))
                 .with_code(crate::diag::codes::POSSIBLE_LATCH)
                 .help("give it an unconditional default assignment"),
+            );
+        }
+    }
+
+    /// Report any function whose inlining hit the depth guard. Recursion in
+    /// hardware has to terminate at elaboration — either the arguments
+    /// const-fold, or the recursion is unbounded and there is no finite circuit
+    /// for it. Without this the bail-out silently leaves `Unknown` mid-driver.
+    fn report_depth_exceeded(&mut self) {
+        let mut names = std::mem::take(&mut *self.depth_exceeded.borrow_mut());
+        names.sort();
+        names.dedup();
+        for name in names {
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "`{name}` recursed deeper than the inline limit, so it has no \
+                     finite hardware form"
+                ))
+                .with_code(crate::diag::codes::UNBOUNDED_RECURSION)
+                .help(
+                    "recursion must terminate at compile time — give it a \
+                     constant-foldable argument, or rewrite it as a loop",
+                ),
             );
         }
     }
@@ -3935,6 +3964,10 @@ impl<'a> Lowering<'a> {
         }
         // Dynamic arguments: inline the body as an expression tree.
         if self.inline_depth.get() > 16 {
+            // Bailing here leaves an `Unknown` in the middle of a driver, so
+            // record it — otherwise lowering "succeeds" and the design only
+            // fails much later with a generic engine message.
+            self.depth_exceeded.borrow_mut().push(name.to_string());
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -4018,6 +4051,9 @@ impl<'a> Lowering<'a> {
         let f = self.find_method(&ty, &field.text)?;
         let body = f.body.as_ref()?;
         if self.inline_depth.get() > 16 {
+            self.depth_exceeded
+                .borrow_mut()
+                .push(format!("{ty}.{}", field.text));
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);

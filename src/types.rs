@@ -1442,6 +1442,42 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A constant bit index or slice outside a packed vector's width has no
+    /// hardware meaning — it lowered to `Unknown` and surfaced much later as a
+    /// generic "no engine can run this design". Only *packed* vectors
+    /// (`Ty::Vector`, indices `0..width-1`) are checked: an array with a
+    /// declared range (`Logic[15..8]`) is indexed by its own bounds.
+    fn check_index_bounds(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
+        let Ty::Vector { width, .. } = self.type_of(base, sym) else { return };
+        if width == 0 {
+            return; // parametric width: not known yet
+        }
+        let mut check = |v: i64, e: &Expr| {
+            if v < 0 || v >= width as i64 {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(e),
+                    format!("bit {v} is outside `0..{}` of this {width}-bit vector", width - 1),
+                );
+            }
+        };
+        match index {
+            Expr::Range { lo, hi, .. } => {
+                if let Some(v) = Self::const_literal(lo) {
+                    check(v, lo);
+                }
+                if let Some(v) = Self::const_literal(hi) {
+                    check(v, hi);
+                }
+            }
+            _ => {
+                if let Some(v) = Self::const_literal(index) {
+                    check(v, index);
+                }
+            }
+        }
+    }
+
     /// `sig == 600` with `sig: uint[8]`: the comparison masks both sides to the
     /// operand width, so the literal silently becomes 88 and the guard fires on
     /// the wrong value. The masking is right for a *wrapped* expression
@@ -1561,6 +1597,7 @@ impl<'a> Checker<'a> {
             Expr::Index { base, index, .. } => {
                 self.check_expr(base, sym);
                 self.check_expr(index, sym);
+                self.check_index_bounds(base, index, sym);
             }
             Expr::Range { lo, hi, .. } => {
                 self.check_expr(lo, sym);
@@ -3118,6 +3155,20 @@ mod tests {
             1,
             "flagged from the left too"
         );
+    }
+
+    /// A constant bit index past the end of a packed vector lowered to
+    /// `Unknown` and only failed later with a generic engine message.
+    #[test]
+    fn out_of_bounds_constant_index_is_rejected() {
+        let ent = "module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = ";
+        assert_eq!(check_src(&format!("{ent}a[9]; }}\n")), 1, "bit 9 of a uint[8]");
+        assert_eq!(check_src(&format!("{ent}a[15..8]; }}\n")), 2, "both slice bounds");
+        assert_eq!(check_src(&format!("{ent}a[7]; }}\n")), 0, "the top bit is in range");
+        assert_eq!(check_src(&format!("{ent}a[7..0]; }}\n")), 0, "a full-width slice");
+        // A runtime index can't be checked statically and must stay allowed.
+        let dynamic = "module m;\nentity E { in a: uint[8]; in i: uint[8]; out y: uint[8]; }\nimpl E { y = a[i]; }\n";
+        assert_eq!(check_src(dynamic), 0);
     }
 
     /// Hardware has no divide-by-zero trap, so a constant zero divisor just

@@ -210,6 +210,10 @@ pub mod codes {
     /// `impl Resolve` to fold them (spec 3.14) — e.g. two producers wired to
     /// one bus net. A resolved type (`Logic`) folds instead.
     pub const CONFLICTING_DRIVERS: &str = "E-P014";
+    /// A function that recursed past the inline depth limit: hardware
+    /// recursion must terminate at elaboration, so this has no finite circuit.
+    pub const UNBOUNDED_RECURSION: &str = "E-P015";
+
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";
     pub const POSSIBLE_LATCH: &str = "W-P002";

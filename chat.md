@@ -408,3 +408,32 @@ only get the generic "no engine can run this design" later), and `>64-bit`
 signals are rejected by the backend rather than the type checker. Also
 `TODO.md`'s "metavalue in driver position loses its disc" is stale — I tested
 both positions and they agree.
+
+### 2026-07-25 — Claude — two more: unbounded recursion, out-of-bounds indexing
+
+Both were the same failure shape as each other — lowering quietly produced an
+`Expr::Unknown` in the middle of a driver, reported **zero diagnostics**, and
+the user only saw the generic `no engine can run this design (contains an
+Unknown …)` much later, with no clue which construct caused it.
+
+**`E-P015 UNBOUNDED_RECURSION`** — a recursive `fn` whose argument doesn't
+const-fold inlines until the depth-16 guard trips, then bails. Now reported by
+name: "`countdown` recursed deeper than the inline limit, so it has no finite
+hardware form", with the fix (const-foldable argument, or a loop). Lowering runs
+behind `&self`, so the hits are recorded in a `RefCell` and flushed by `lower`
+via `report_depth_exceeded` — same trick as the ctx-span table.
+
+**Constant out-of-bounds index/slice** — `a[9]` or `a[15..8]` on a `uint[8]`.
+Now `bit 9 is outside 0..7 of this 8-bit vector`, pointing at the offending
+bound. Deliberately narrow: only **packed** vectors (`Ty::Vector`, indices
+`0..width-1`) are checked, because an array with a declared range
+(`Logic[15..8]`) is indexed by its own bounds and would false-positive — I
+verified that case still compiles. Runtime indices (`a[i]`) are untouched.
+
+Corpus 68/68, zero false positives from either.
+
+Still unfixed, deliberately: `>64-bit` signals are rejected by the backend
+rather than the type checker. That one I'd leave — it's a genuine *backend*
+limit with a reserved `wide` feature, so encoding it as a language rule in the
+type checker would be wrong; the current message already names the signal and
+the reason.
