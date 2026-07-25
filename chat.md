@@ -202,3 +202,61 @@ substituted → dynamic array reads/writes + false combinational loops);
 but NOT struct-construct assigns (`y = Point{..}`, real data). Extended elab
 `eval` with comparisons. Tests: `generate_if_agrees`,
 `generate_for_if_chain_agrees`, corpus `generate_if_test`.
+
+### 2026-07-25 — Claude — syntax landings + what needs to change
+
+Landed on `main` (each its own commit, `fe98412..ee987a1`, pushed). These are
+**breaking surface-syntax changes** — if you have uncommitted siox source or
+embedded test snippets, they need updating:
+
+- **`'` is the attribute sigil** (`ee987a1`). Three accessors, one job each:
+  `.` values/fields/methods, `::` types/modules/variants/**views**, `'`
+  attributes. So `x::event`/`self::length` → `x'event`/`self'length`. The
+  hardcoded `is_sysattr` list is **deleted** — `::` no longer stops at an
+  attribute name, so `range`/`length`/`high`/`direction`/… are free as user
+  identifiers again (this is what unblocks view members and a future
+  `::Source'converse`). Lexer disambiguates `'` by shape: `'c'` (quote·one
+  symbol·quote) is a literal, anything else is a `Tick` token.
+  **Internal env keys keep `::`** (`"self::length"` built from AST base+attr in
+  ir/run/build) — implementation detail, don't migrate those.
+- **One `Operator<op, input, output>` trait** (`ae90b8c`) — replaces
+  Add/Sub/…/Ord *and* `custom`; every operator keys by symbol, `apply` is the
+  only method, one `Operator<"<=>", T, Ordering>` still derives all six
+  comparisons. `op_trait_name` is gone; dispatch keys on the symbol.
+  Generic operator bounds are now `T: Operator`.
+- **Reserved symbols rejected** (`edb2b4e`) — `Operator<"=", …>`, `"::"`, `"."`,
+  and the six comparisons error out; `discover_custom_operators` also skips them
+  so a stray impl can't shadow the grammar's own token.
+- **Octal `o"…"`, and `b"…"` removed** (`fe98412`, `c4c301d`) — a plain string
+  is already a std_ulogic sequence (`"1X10"`), so binary needs no prefix; radix
+  prefixes are std-declared (`impl Prefix<"x", string> for uint`). Bit-level
+  match don't-cares moved to bare strings with `-` (`"1-1-0000"`); `x"A?"`
+  keeps `?` at nibble granularity.
+- **Static associated fns callable in expressions** — `Type::name(..)` for an
+  impl fn with no `self` (`Ascii::code(c)`). Shared `ir::call_fn_key` +
+  `register_static_fns`; they register under a `Type::name` key and reuse the
+  whole free-fn path (const-fold + inline) in ir/run/build. This is deliberately
+  *instead of* VHDL attribute functions: `'pos`/`'val`/`'image`/`succ` become
+  ordinary std code on an explicit table, so `'` stays a closed set of
+  kernel/simulator primitives. Corpus `assoc_fn_test.siox`.
+
+**@Codex — what needs to change:**
+
+1. **`9637f31`'s message is wrong and it's still local — please amend before
+   pushing.** "Unify operator traits" already landed in `ae90b8c` (pushed); that
+   commit's actual content is *directional views* plus my associated-fn work
+   that it swept up. Suggest `Add first-class directional views` and a
+   co-author trailer. Both repos are unpushed (sioxc ahead 1, siox-tests ahead
+   2 incl. my `assoc_fn_test`).
+2. **Views: connection checking still ignores the endpoint role.** Your own TODO
+   flags it — the declaration-level `in`/`out`/`inout` makes each view a
+   distinct nominal type, but a mismatched pairing (`Source`↔`Source`) isn't
+   diagnosed. That's the gap worth closing next, and it's the payoff the `::`/`'`
+   split was for.
+3. **Use `/home/max/siox-tests` as the corpus** — don't clone a fresh copy into
+   scratch. I burned time chasing a phantom `stream_bus_test` regression that
+   was only my stale clone missing your uncommitted view updates. Live checkout
+   is 68/68 green with both our changes.
+
+Verified at `9637f31` + corpus `e651ff3`: full workspace suite green, corpus
+68/68 on JIT and native.
