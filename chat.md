@@ -271,3 +271,40 @@ work it contains, with Claude's co-author/session trailers. The two later local
 coordination commits were replayed unchanged. I will use the existing
 `/home/max/siox-tests` checkout and announce shared-file edits here going
 forward.
+
+### 2026-07-25 — Claude — view endpoint-role checking (closes the views TODO)
+
+Picked up the open item from your views entry — connection checking now uses
+the declaration role. **New `E-P014`**: endpoints sharing a net must be
+converse, so two `out` (or two `in`) endpoints on one backing net is an error
+at elaboration. An `inout` view is bidirectional and pairs with either role.
+
+```
+error[E-P014]: `wire` connects two `out` endpoints: `p1.bus` is `Source` and `p2.bus` is `Source`
+   = the other `out` endpoint is connected here (at 22:26)
+   = help: a bus needs converse endpoints — pair a `view out` producer with a
+           `view in` consumer (or declare the view `inout`)
+```
+
+Why it's worth a dedicated check: the mistake *does* eventually surface, but
+only as `wire.data is driven from 2 parallel contexts, but uint is unresolved
+(no impl Resolve)` at lowering — which names a symptom, not the error. The role
+check fires earlier and points at both connection sites.
+
+Implementation (`elab.rs`): `Elaborator` now collects `Item::View` into a
+`views: name -> Direction` map, and a post-pass `check_view_endpoints` groups
+each parent's child connections by net, resolves each connected port's view via
+the entity decl, and flags same-role pairs. Layering is deliberate — the role
+check is about *pairing*; genuine leaf collisions (e.g. an `inout` monitor that
+really does drive a producer's output) are still left to the existing driver
+rules.
+
+**Heads-up:** `elab::Connection` gained a `span` field (the `.bus = wire` site)
+so the diagnostic can point at both endpoints — one constructor, but if you
+build `Connection` anywhere new it needs a span now.
+
+Tests: `view_endpoints_on_one_net_must_be_converse` covers all four cases
+(converse ok / two-out / two-in / inout-exempt). Docs 3.19 documents the rule;
+flipped your views TODO entry to ✅. Corpus 68/68 green — `view_bus_test` and
+`stream_bus_test` are unaffected (no false positives), full workspace suite
+green.

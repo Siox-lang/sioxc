@@ -83,6 +83,8 @@ pub struct Connection {
     pub port: String,
     pub signal: String,
     pub ty: EType,
+    /// The connection site (`.bus = wire`), for diagnostics.
+    pub span: Span,
 }
 
 /// One node in the elaborated instance tree.
@@ -177,6 +179,7 @@ fn elaborate_roots(
         entities: HashMap::new(),
         impls: HashMap::new(),
         families: HashSet::new(),
+        views: HashMap::new(),
         out: Hierarchy::default(),
     };
     e.collect(modules);
@@ -198,6 +201,7 @@ fn elaborate_roots(
             }
         }
     }
+    e.check_view_endpoints();
     e.out
 }
 
@@ -208,6 +212,9 @@ struct Elaborator<'a> {
     impls: HashMap<String, Vec<&'a ImplDecl>>,
     /// Bit-vector families (`struct F : Logic[]`), for width-typing vectors.
     families: HashSet<String>,
+    /// View name -> its declared endpoint role (`view out Source` -> `Out`),
+    /// for checking that the endpoints sharing a net are converse (spec 3.19).
+    views: HashMap<String, Direction>,
     out: Hierarchy,
 }
 
@@ -232,6 +239,9 @@ impl<'a> Elaborator<'a> {
                         if is_vec {
                             self.families.insert(st.name.text.clone());
                         }
+                    }
+                    Item::View(v) => {
+                        self.views.insert(v.name.text.clone(), v.dir);
                     }
                     Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
@@ -544,6 +554,72 @@ impl<'a> Elaborator<'a> {
         out
     }
 
+    /// Endpoint-role check for directional views (spec 3.19). A view's
+    /// declaration role (`view out Source` / `view in Sink`) says which end of
+    /// the bus it implements, so the endpoints sharing one net must be
+    /// *converse*: two `out`s would collide on every output leaf and leave
+    /// every input undriven (the leaf-level driver checks can't see this,
+    /// because each endpoint drives through its own instance). An `inout` view
+    /// is bidirectional and pairs with anything.
+    fn check_view_endpoints(&mut self) {
+        use std::collections::BTreeMap;
+        // Gather first: the scan borrows the hierarchy, emitting needs `sink`.
+        let mut errors: Vec<(Span, String, Span, String)> = Vec::new();
+        for parent in &self.out.instances {
+            // net name -> endpoints connected to it
+            let mut nets: BTreeMap<&str, Vec<(&Instance, &Connection, Direction, &str)>> =
+                BTreeMap::new();
+            for &child_id in &parent.children {
+                let child = self.out.instance(child_id);
+                let Some(edecl) = self.entities.get(child.entity.as_str()) else { continue };
+                for c in &child.connections {
+                    let Some(port) = edecl.ports.iter().find(|p| p.name.text == c.port) else {
+                        continue;
+                    };
+                    let Some(view) = type_head_name(&port.ty) else { continue };
+                    let Some(&role) = self.views.get(view) else { continue };
+                    nets.entry(c.signal.as_str()).or_default().push((child, c, role, view));
+                }
+            }
+            for (net, eps) in nets {
+                for (i, (ai, ac, ar, av)) in eps.iter().enumerate() {
+                    for (bi, bc, br, bv) in eps.iter().skip(i + 1) {
+                        // A bidirectional endpoint pairs with either role.
+                        if *ar == Direction::Inout || *br == Direction::Inout || ar != br {
+                            continue;
+                        }
+                        errors.push((
+                            bc.span,
+                            format!(
+                                "`{net}` connects two `{}` endpoints: `{}.{}` is `{av}` and \
+                                 `{}.{}` is `{bv}`",
+                                dir_str(*ar),
+                                ai.name,
+                                ac.port,
+                                bi.name,
+                                bc.port,
+                            ),
+                            ac.span,
+                            format!("the other `{}` endpoint is connected here", dir_str(*ar)),
+                        ));
+                    }
+                }
+            }
+        }
+        for (span, message, other, label) in errors {
+            self.sink.emit(
+                Diagnostic::error(message)
+                    .with_code(codes::INCOMPATIBLE_VIEW_ENDPOINTS)
+                    .at(span)
+                    .label(other, label)
+                    .help(
+                        "a bus needs converse endpoints — pair a `view out` producer with a \
+                         `view in` consumer (or declare the view `inout`)",
+                    ),
+            );
+        }
+    }
+
     fn resolve_connections(
         &mut self,
         edecl: &EntityDecl,
@@ -595,7 +671,7 @@ impl<'a> Elaborator<'a> {
             let signal = render_signal(e, render_env);
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
-            conns.push(Connection { port, signal, ty });
+            conns.push(Connection { port, signal, ty, span: arg.span });
         }
 
         for p in &edecl.ports {
@@ -1239,5 +1315,51 @@ mod tests {
         let mem = hier.instance(root.children[0]);
         assert!(mem.is_extern);
         assert!(mem.children.is_empty());
+    }
+
+    /// Endpoints sharing a net must be converse (spec 3.19): two producers
+    /// collide on every output leaf, so the pairing is an error — but a
+    /// producer/consumer pair, and anything paired with an `inout` view, is
+    /// fine.
+    #[test]
+    fn view_endpoints_on_one_net_must_be_converse() {
+        let views = "module m;\n\
+            struct Stream { valid: Bit, data: uint[8] }\n\
+            view out Source for Stream { out valid; out data; }\n\
+            view in Sink for Stream { in valid; in data; }\n\
+            view inout Both for Stream { out valid; out data; }\n\
+            entity P { bus: Source; }\n\
+            impl P { bus.valid = '1'; }\n\
+            entity C { bus: Sink; out seen: Bit; }\n\
+            impl C { seen = bus.valid; }\n\
+            entity M { bus: Both; }\n\
+            impl M { bus.valid = '0'; }\n";
+        let link = |body: &str| {
+            format!("{views}#[top]\nentity Link {{}}\nimpl Link {{\n  let wire: Stream;\n{body}}}\n")
+        };
+
+        // Producer + consumer: the intended pairing.
+        let (_, errors) = elaborate_src(&link(
+            "  let a: P = { .bus = wire };\n  let b: C = { .bus = wire };\n",
+        ));
+        assert_eq!(errors, 0, "converse endpoints are fine");
+
+        // Two producers: same role on one net.
+        let (_, errors) = elaborate_src(&link(
+            "  let a: P = { .bus = wire };\n  let b: P = { .bus = wire };\n",
+        ));
+        assert_eq!(errors, 1, "two `out` endpoints are an error");
+
+        // Two consumers: likewise (nobody drives the outputs).
+        let (_, errors) = elaborate_src(&link(
+            "  let a: C = { .bus = wire };\n  let b: C = { .bus = wire };\n",
+        ));
+        assert_eq!(errors, 1, "two `in` endpoints are an error");
+
+        // An `inout` view is bidirectional — it pairs with either role.
+        let (_, errors) = elaborate_src(&link(
+            "  let a: P = { .bus = wire };\n  let b: M = { .bus = wire };\n",
+        ));
+        assert_eq!(errors, 0, "`inout` pairs with a producer");
     }
 }

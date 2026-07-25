@@ -206,6 +206,10 @@ pub mod codes {
     /// An entity instance declared with `const`. An entity is a hardware
     /// instance, not a compile-time value — declare it with `let`.
     pub const CONST_ENTITY_INSTANCE: &str = "E-P013";
+    /// Two endpoints sharing one net declare the same view role (spec 3.19):
+    /// a bus needs converse endpoints (one `out` producer, one `in` consumer),
+    /// otherwise every output collides and every input is undriven.
+    pub const INCOMPATIBLE_VIEW_ENDPOINTS: &str = "E-P014";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

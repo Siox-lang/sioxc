@@ -14,15 +14,16 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Language features
 
-- 🟡 **First-class directional views** — `view out|in|inout Name for Struct`
+- ✅ **First-class directional views** — `view out|in|inout Name for Struct`
   defines a nominal projection over a reusable layout; `view ... Name { ... }`
   defines a standalone typed bus. Views have their own inherent/trait impls,
   flatten onto the backing signals, preserve generic substitution, and enforce
   leaf permissions. Covered by parser/type/IR tests and the executable
-  `view_bus_test` / `stream_bus_test` corpus examples. Still open: the
-  declaration-level `in`/`out`/`inout` role is preserved and makes each view a
-  distinct nominal type, but connection checking does not yet use that role to
-  diagnose incompatible endpoint pairings.
+  `view_bus_test` / `stream_bus_test` corpus examples. Connection checking now
+  uses the declaration role: endpoints sharing a net must be converse, so two
+  `out` (or two `in`) endpoints are `E-P014` at elaboration — earlier and more
+  specific than the leaf-level driver collision it would otherwise surface as.
+  An `inout` view pairs with either role.
 - ✅ **Unified customisable operators** — all overloads use
   `Operator<"symbol", Input, Output>` and `apply`; `and`/`or`/`not` are core
   syntax but use the same type-directed contract. Library operators such as

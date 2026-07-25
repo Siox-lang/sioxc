@@ -1089,6 +1089,21 @@ entity Consumer {
 }
 ```
 
+**Endpoints sharing a net must be converse.** The declaration role is checked
+at elaboration: a net wired to two `out` endpoints (or two `in` endpoints) is
+`E-P014`, because two producers collide on every output leaf and leave every
+input undriven.
+
+```siox
+let wire: Stream<uint[32]>;
+let p: Producer = { .bus = wire };
+let c: Consumer = { .bus = wire };   // ok — one producer, one consumer
+// let p2: Producer = { .bus = wire };  // E-P014: two `out` endpoints
+```
+
+An `inout` view is bidirectional and pairs with either role; its leaves are
+still subject to the ordinary driver rules (a real collision is still caught).
+
 If no custom named mode is used, direction may apply recursively to all leaves.
 
 Example:
