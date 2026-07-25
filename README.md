@@ -134,6 +134,8 @@ Full capability list and setup notes:
 - **[docs/](docs/README.md)** — compiler architecture, simulation, testing, the
   standard-library reference, and interoperability.
 - **[CHANGELOG](CHANGELOG.md)** — what's changed.
+- **[House rules](HOUSERULES.md)** — conventions for contributors: the design
+  principle, pipeline layering, diagnostics, and the testing gate.
 
 ## License
 

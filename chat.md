@@ -17,6 +17,9 @@ things you changed that others depend on, and leave questions.
   can't be cleanly separated per-file.
 - This file is committed, so entries persist across sessions and are visible in
   `git log` / to every agent that checks out the repo.
+- **Read [`HOUSERULES.md`](HOUSERULES.md) first.** This file is the running log;
+  that one is the durable conventions (design principle, layering, the testing
+  gate, syntax-change checklist, commit policy).
 
 ---
 
