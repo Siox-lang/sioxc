@@ -160,6 +160,10 @@ struct Checker<'a> {
     /// Generic module fns: name -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
+    /// Declared free function -> its parameter count, for call-arity checking.
+    /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
+    /// functions (rand/fs) have no declaration and are not listed.
+    fn_arity: HashMap<String, usize>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -241,6 +245,7 @@ impl<'a> Checker<'a> {
             views: HashMap::new(),
             vector_families: HashSet::new(),
             generic_fns: HashMap::new(),
+            fn_arity: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -472,7 +477,15 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Item::ExternBlock { fns, .. } => {
+                for f in fns {
+                    self.fn_arity
+                        .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
+                }
+            }
             Item::Fn(f) if !f.generics.params.is_empty() => {
+                self.fn_arity
+                    .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
                 let vps = f
                     .params
                     .iter()
@@ -481,6 +494,10 @@ impl<'a> Checker<'a> {
                     .collect();
                 self.generic_fns
                     .insert(f.name.text.clone(), (f.generics.params.clone(), vps));
+            }
+            Item::Fn(f) => {
+                self.fn_arity
+                    .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
             }
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
@@ -1579,6 +1596,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A call to a *declared* function must pass one argument per parameter.
+    /// Nothing checked this: a short call left a parameter unbound, and a short
+    /// `extern "C"` call passed a garbage argument to real native code.
+    /// Conversions, method calls and runtime-provided std functions have no
+    /// declaration here and are skipped.
+    fn check_call_arity(&mut self, callee: &Expr, args: &[Expr]) {
+        let Expr::Path(p) = callee else { return };
+        let [name] = p.segments.as_slice() else { return };
+        let Some(&want) = self.fn_arity.get(&name.text) else { return };
+        if args.len() != want {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(callee),
+                format!(
+                    "`{}` takes {want} argument(s) but {} were given",
+                    name.text,
+                    args.len()
+                ),
+            );
+        }
+    }
+
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
     /// array, which is always declared with a plain element count.
     fn is_entity_ty(&self, t: &Ty) -> bool {
@@ -2081,6 +2120,7 @@ impl<'a> Checker<'a> {
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
                 self.check_generic_bounds(callee, args, sym);
+                self.check_call_arity(callee, args);
             }
             Expr::Construct { args, .. } => {
                 for c in args {
@@ -3518,6 +3558,23 @@ mod tests {
             "should name `Q`: {:?}",
             sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    /// Nothing checked call arity: a short call to a module `fn` left a
+    /// parameter unbound, and a wrong-arity `extern "C"` call handed garbage
+    /// to real native code.
+    #[test]
+    fn call_arity_must_match_the_declaration() {
+        let base = "module m;\nfn add2(a: integer, b: integer) -> integer { return a + b; }\n\
+                    extern \"C\" { fn ext(a: integer, b: integer) -> integer; }\n\
+                    entity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = ";
+        assert_eq!(check_src(&format!("{base}add2(a); }}\n")), 1, "too few");
+        assert_eq!(check_src(&format!("{base}add2(a, a, a); }}\n")), 1, "too many");
+        assert_eq!(check_src(&format!("{base}add2(a, a); }}\n")), 0, "exact");
+        assert_eq!(check_src(&format!("{base}ext(a); }}\n")), 1, "extern too few");
+        assert_eq!(check_src(&format!("{base}ext(a, a); }}\n")), 0, "extern exact");
+        // A conversion is a call shape but not a declared fn.
+        assert_eq!(check_src(&format!("{base}uint[8](a); }}\n")), 0, "conversion");
     }
 
     /// A miscounted `print!` silently rendered an empty slot or dropped an
