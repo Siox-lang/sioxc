@@ -2435,9 +2435,10 @@ impl<'a> Lowering<'a> {
                             ctx: self.cur_ctx,
                         });
                     }
-                } else if let ast::Expr::Concat { parts, .. } = target {
+                } else if let ast::Expr::Concat { parts, span: cspan } = target {
                     // `{hi, lo} = w;` unpacks the value MSB-first: each part
                     // takes its width's slice of the RHS.
+                    self.check_concat_target_width(parts, value, *cspan);
                     let v = self.lower_expr(value);
                     let mut off: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
                     for part in parts {
@@ -2732,9 +2733,10 @@ impl<'a> Lowering<'a> {
                             cond: cond.clone(),
                             expr,
                         });
-                    } else if let ast::Expr::Concat { parts, .. } = target {
+                    } else if let ast::Expr::Concat { parts, span: cspan } = target {
                         // `{hi, lo} = w;` in a clocked block: each part takes
                         // its width's slice of the RHS, MSB-first.
+                        self.check_concat_target_width(parts, value, *cspan);
                         let v = self.lower_expr(value);
                         let mut off: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
                         for part in parts {
@@ -3242,6 +3244,29 @@ impl<'a> Lowering<'a> {
     /// calls): those are exempt because operator results are not auto-widened
     /// (overflow wraps at the operand width; a different width is an explicit
     /// `resize`), so only signal-to-signal width equality is enforced.
+    /// A concat assignment target has an exact width (the sum of its parts),
+    /// so the source must match it — the same strict rule scalar targets
+    /// follow (spec 3.17). Without this the lowering just slices whatever it
+    /// is given: an 8-bit `{y, z}` fed 4 bits silently zero-filled `y`.
+    fn check_concat_target_width(&mut self, parts: &[ast::Expr], value: &ast::Expr, span: crate::diag::Span) {
+        let want: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
+        let Some(have) = self.ref_width(value) else { return };
+        if want > 0 && have > 0 && want != have {
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "width mismatch: this concatenation target is {want} bits but the \
+                     assigned value is {have} bits"
+                ))
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(span)
+                .help(
+                    "widths must match; use a conversion (`uint[N](x)` / \
+                     `resize(x, N)`) to change width",
+                ),
+            );
+        }
+    }
+
     fn ref_width(&self, e: &ast::Expr) -> Option<u32> {
         match e {
             ast::Expr::Path(_) | ast::Expr::Field { .. } => {
@@ -6462,6 +6487,30 @@ mod tests {
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    /// A concat target has an exact width, so the source must match it — the
+    /// lowering otherwise just sliced whatever it was given and zero-filled.
+    #[test]
+    fn concat_assignment_target_width_must_match() {
+        let src = |rhs: &str| {
+            format!(
+                "module m;\nentity E {{ in a: uint[8]; out y: uint[4]; out z: uint[4]; }}\n\
+                 impl E {{ {{y, z}} = {rhs}; }}\n\
+                 #[top] entity H {{ in a: uint[8]; out y: uint[4]; out z: uint[4]; }}\n\
+                 impl H {{ let d: E = {{ .a = a, .y = y, .z = z }}; }}\n"
+            )
+        };
+        let mismatched = lower_diags(&src("a[3..0]"));
+        assert!(
+            mismatched.iter().any(|d| d.contains("concatenation target is 8 bits")),
+            "expected a width mismatch, got: {mismatched:?}"
+        );
+        let exact = lower_diags(&src("a"));
+        assert!(
+            !exact.iter().any(|d| d.contains("concatenation target")),
+            "an exact-width source is fine: {exact:?}"
+        );
     }
 
     /// Two producers wired to one bus net is the classic miswiring. It must
