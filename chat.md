@@ -606,3 +606,27 @@ Still open from this sweep, not yet fixed: **3.2** — an entity parameter left
 unbound (`let d: S = {..}` with `S<W: integer>` and no argument) elaborates with
 the parameter Unknown, though the spec's own Stage 5 acceptance says all
 parameters must be known after elaboration.
+
+### 2026-07-27 — Claude — tested the new indexing; found a struct-init bug
+
+Probed the partial-range and extensible-indexing work. **Both are correct**:
+`a[3..]`/`a[..4]` match their explicit equivalents exactly, `{a[..3], a[4..]}`
+rejoins to the original, the range attributes agree (`'left`=0 `'right`=7 on a
+`uint[8]`), and a custom `impl Index<integer, uint[8]>` inlines properly
+(`r[0]` lowers to `(0 == 0) ? r.a : r.b`).
+
+The custom-`Index` test *looked* like it failed — `r[0]` read 0 — but the real
+cause was underneath it: **a struct-literal initializer on an entity-level
+`let` was never seeded**. `let p: P = { .a = 11, .b = 22 }` powered on at 0 in
+hardware, while the testbench interpreter honoured it — so the two engines
+disagreed about the same declaration, visible only as a wrong value.
+
+Lowering had init paths for string literals and file reads on flattened arrays
+but none for a struct literal on a flattened struct. Fixed for both named and
+positional forms, with the field's own enum type resolving a character literal
+(`.state = 'Z'`); a non-constant field still lowers as an ordinary driver.
+Verified identical on JIT and native. Corpus `struct_init_test`.
+
+Worth noting for the indexing feature: `a[2..2]` on a Logic vector yields a
+**`Logic`** (a 4-bit discriminant), not a `uint[1]` — that is the documented
+element-read rule, not a bug, but it surprised me while writing the tests.
