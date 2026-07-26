@@ -571,3 +571,38 @@ Validated the current compiler without finding a new failure.
   implementations, custom precedence validation, and constant index bounds.
 
 No compiler or corpus source files were changed.
+
+### 2026-07-26 — Claude — spec-driven sweep: 6 more (26 total)
+
+Walked `docs/language.md` section by section, writing a violation of each
+documented rule and checking it is caught. Most are (3.1, 3.3, 3.7 partly, 3.8,
+3.16, 3.18, 3.22, 3.23, 3.24, 3.25 all enforced). Six were not:
+
+- **3.26 ranged numerics, assignment form.** `y = 50` where `y: integer<0..10>`
+  was accepted, then silently wrong: the value wraps to the storage width
+  (50 -> 2), so the runtime range assert the spec promises saw an *in-range*
+  value and never fired. The `let` initializer form was already checked. Fixed
+  by checking assignments too — `declared_range` is now shared, `PortInfo`
+  carries the bounds (`Ty` cannot), and `impl_env` threads a name->bounds map.
+- **3.28 derivation base was never resolved.** `struct B : NoSuchType` passed
+  silently, while the same name in a port was `E-P001`. It was the one type
+  reference `resolve_item` skipped.
+- **3.20 trait contract unenforced.** `impl Tr for S` could omit a method
+  entirely. Traits now record their body-less (required) methods; a defaulted
+  method stays optional, which is exactly how `Operator`/`Prefix`/`Suffix`
+  permit an empty impl (covered by a test so the mechanism can't regress).
+- **Unknown struct field / unknown method.** Both lowered to `Unknown`;
+  `if clk.typo()` even produced an unknown *condition*, quietly making a
+  clocked block combinational. `E-P008` existed in the catalogue but had never
+  been emitted — it now is, listing the methods the receiver does have.
+
+Worth recording: the false positive in the field check (`s.ready()` reaches it,
+because a method call parses as a call over a *field* node) was caught by the
+**unit tests, not the corpus** — the corpus was green with the bug in. Both new
+checks are conservative: a receiver whose type this stage knows nothing about
+stays silent.
+
+Still open from this sweep, not yet fixed: **3.2** — an entity parameter left
+unbound (`let d: S = {..}` with `S<W: integer>` and no argument) elaborates with
+the parameter Unknown, though the spec's own Stage 5 acceptance says all
+parameters must be known after elaboration.
