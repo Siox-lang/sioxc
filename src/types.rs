@@ -116,6 +116,10 @@ struct PortInfo {
     dir: Option<Direction>,
     /// Named directional view when this port is view-typed.
     view: Option<String>,
+    /// Declared bounds of a ranged numeric (`integer<0..10>`); `Ty` does not
+    /// carry them, and an out-of-range constant otherwise wrapped at store
+    /// time so the runtime range assert could never see it.
+    range: Option<(i64, i64)>,
 }
 
 /// The value type an attribute declaration expects (spec 3.5).
@@ -282,6 +286,7 @@ impl<'a> Checker<'a> {
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
                             view: view_key(&p.ty, &self.views),
+                            range: self.declared_range(&p.ty),
                         })
                         .collect();
                     self.entities.insert(e.name.text.clone(), ports);
@@ -835,7 +840,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_impl(&mut self, im: &ImplDecl) {
-        let (dirs, sym) = self.impl_env(im);
+        let (dirs, sym, ranged) = self.impl_env(im);
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
             self.check_attr_value(a);
@@ -889,7 +894,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ImplItem::ModeField { .. } => {}
-                ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym),
+                ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym, &ranged),
             }
         }
         self.lint_dead_assignments(im.items.iter().filter_map(|it| match it {
@@ -900,14 +905,18 @@ impl<'a> Checker<'a> {
 
     /// Build the value environment for an impl body: the `in` ports (for the
     /// write check) and a name -> type table (ports + impl-level lets/consts).
-    fn impl_env(&self, im: &ImplDecl) -> (PortDirs, HashMap<String, Ty>) {
+    fn impl_env(&self, im: &ImplDecl) -> (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>) {
         let mut illegal = HashSet::new();
         let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();
+        let mut ranged: HashMap<String, (i64, i64)> = HashMap::new();
         if im.trait_.is_none() {
             if let Some(ports) = type_head_name(&im.target).and_then(|n| self.entities.get(n)) {
                 for p in ports {
                     sym.insert(p.name.clone(), p.ty.clone());
+                    if let Some(r) = p.range {
+                        ranged.insert(p.name.clone(), r);
+                    }
                     if p.dir == Some(Direction::In) {
                         illegal.insert(p.name.clone());
                         // A *plain* (non-bus-mode) `in` port has no writable
@@ -933,6 +942,9 @@ impl<'a> Checker<'a> {
                 ImplItem::Let(l) => {
                     let ty = l.ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error);
                     sym.insert(l.name.text.clone(), ty);
+                    if let Some(r) = l.ty.as_ref().and_then(|t| self.declared_range(t)) {
+                        ranged.insert(l.name.text.clone(), r);
+                    }
                 }
                 ImplItem::Const(c) => {
                     sym.insert(c.name.text.clone(), self.ast_ty(&c.ty));
@@ -946,6 +958,7 @@ impl<'a> Checker<'a> {
                 plain_in_roots,
             },
             sym,
+            ranged,
         )
     }
 
@@ -990,13 +1003,20 @@ impl<'a> Checker<'a> {
             },
             HashMap::new(),
         );
+        let ranged = HashMap::new();
         self.lint_dead_assignments(b.stmts.iter());
         for s in &b.stmts {
-            self.check_stmt(s, &dirs, &sym);
+            self.check_stmt(s, &dirs, &sym, &ranged);
         }
     }
 
-    fn check_stmt(&mut self, s: &Stmt, dirs: &PortDirs, sym: &HashMap<String, Ty>) {
+    fn check_stmt(
+        &mut self,
+        s: &Stmt,
+        dirs: &PortDirs,
+        sym: &HashMap<String, Ty>,
+        ranged: &HashMap<String, (i64, i64)>,
+    ) {
         match s {
             Stmt::Let(l) => {
                 self.require_let_annotation(l);
@@ -1007,6 +1027,7 @@ impl<'a> Checker<'a> {
             }
             Stmt::Assign { target, value, .. } => {
                 self.check_write_target(target, dirs);
+                self.check_assign_range(target, value, ranged);
                 let custom_index = self.check_index_assign(target, value, sym);
                 if !custom_index {
                     self.check_assignment(target, value, sym);
@@ -1026,21 +1047,21 @@ impl<'a> Checker<'a> {
                 }
                 self.check_expr(value, sym);
             }
-            Stmt::If(i) => self.check_if(i, dirs, sym),
+            Stmt::If(i) => self.check_if(i, dirs, sym, ranged),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
                 self.check_unreachable_arms(m);
                 self.check_expr(&m.scrutinee, sym);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
-                        self.check_stmt(s, dirs, sym);
+                        self.check_stmt(s, dirs, sym, ranged);
                     }
                 }
             }
             Stmt::For { range, body, .. } => {
                 self.check_expr(range, sym);
                 for s in &body.stmts {
-                    self.check_stmt(s, dirs, sym);
+                    self.check_stmt(s, dirs, sym, ranged);
                 }
             }
             Stmt::Expr(e) => self.check_expr(e, sym),
@@ -1052,19 +1073,25 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_if(&mut self, i: &IfStmt, dirs: &PortDirs, sym: &HashMap<String, Ty>) {
+    fn check_if(
+        &mut self,
+        i: &IfStmt,
+        dirs: &PortDirs,
+        sym: &HashMap<String, Ty>,
+        ranged: &HashMap<String, (i64, i64)>,
+    ) {
         self.check_condition(&i.cond, sym);
         self.check_expr(&i.cond, sym);
         for s in &i.then.stmts {
-            self.check_stmt(s, dirs, sym);
+            self.check_stmt(s, dirs, sym, ranged);
         }
         match i.else_.as_deref() {
             Some(ElseBranch::Block(b)) => {
                 for s in &b.stmts {
-                    self.check_stmt(s, dirs, sym);
+                    self.check_stmt(s, dirs, sym, ranged);
                 }
             }
-            Some(ElseBranch::If(inner)) => self.check_if(inner, dirs, sym),
+            Some(ElseBranch::If(inner)) => self.check_if(inner, dirs, sym, ranged),
             None => {}
         }
     }
@@ -2569,6 +2596,49 @@ impl<'a> Checker<'a> {
     /// A constant initializer must lie inside a value-range-constrained
     /// numeric type (`let b: integer<0..255> = 300;` is an error). Literal
     /// bounds only; named ranges and dynamic values are runtime checks later.
+    /// The declared bounds of a ranged numeric (`integer<lo..hi>`), resolving
+    /// one alias hop (`using Byte = integer<0..255>`). `None` for every other
+    /// type.
+    fn declared_range(&self, decl_ty: &Type) -> Option<(i64, i64)> {
+        let resolved;
+        let t = match decl_ty {
+            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
+                Some(a) => {
+                    resolved = a.clone();
+                    &resolved
+                }
+                None => decl_ty,
+            },
+            _ => decl_ty,
+        };
+        let Type::Generic { base, args, .. } = t else { return None };
+        let Type::Path(p) = base.as_ref() else { return None };
+        if p.segments.last().map(|s| s.text.as_str()) != Some("integer") {
+            return None;
+        }
+        let [GenericArg::Positional(Expr::Range { lo, hi, .. })] = args.as_slice() else {
+            return None;
+        };
+        Some((signed_lit(lo)?, signed_lit(hi)?))
+    }
+
+    /// `y = 50` where `y: integer<0..10>`. The initializer form was checked,
+    /// the assignment form was not — and the value wraps to the storage width
+    /// (50 -> 2), so the runtime range assert saw an in-range value and the
+    /// violation vanished.
+    fn check_assign_range(&mut self, target: &Expr, value: &Expr, ranged: &HashMap<String, (i64, i64)>) {
+        let Some(name) = target_root_name(target) else { return };
+        let Some(&(lo, hi)) = ranged.get(&name) else { return };
+        let Some(v) = Self::const_literal(value) else { return };
+        if v < lo || v > hi {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(value),
+                format!("value {v} is outside the range {lo}..{hi}"),
+            );
+        }
+    }
+
     fn check_value_range(&mut self, decl_ty: &Type, value: &Expr) {
         // Resolve one alias hop (`using Byte = integer<0..255>`).
         let resolved;
@@ -3558,6 +3628,22 @@ mod tests {
             "should name `Q`: {:?}",
             sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    /// A ranged numeric (spec 3.26) checked its `let` initializer but not an
+    /// assignment — and the value wraps to the storage width (50 -> 2), so the
+    /// runtime range assert saw an in-range value and the violation vanished.
+    #[test]
+    fn ranged_numeric_assignment_is_checked() {
+        let ent = "module m;\nentity E { out y: integer<0..10>; }\nimpl E { y = ";
+        assert_eq!(check_src(&format!("{ent}50; }}\n")), 1, "above the range");
+        assert_eq!(check_src(&format!("{ent}0 - 1; }}\n")), 1, "below the range");
+        assert_eq!(check_src(&format!("{ent}7; }}\n")), 0, "inside");
+        assert_eq!(check_src(&format!("{ent}10; }}\n")), 0, "the top bound");
+        // An impl-level ranged local is covered the same way.
+        let local = "module m;\nentity E { out y: integer<0..10>; }\n\
+                     impl E { let k: integer<0..10>; k = 99; y = k; }\n";
+        assert_eq!(check_src(local), 1);
     }
 
     /// Nothing checked call arity: a short call to a module `fn` left a
