@@ -1427,6 +1427,13 @@ impl<'a> Checker<'a> {
         self.check_fits_width(v, width as u32, expr_span(site));
     }
 
+    /// Whether `t` names an entity — i.e. an array of it is an *instance*
+    /// array, which is always declared with a plain element count.
+    fn is_entity_ty(&self, t: &Ty) -> bool {
+        matches!(t, Ty::Named(id)
+            if self.resolved.def(*id).map(|d| d.kind) == Some(DefKind::Entity))
+    }
+
     /// A constant that cannot be represented in `width` bits is an error
     /// wherever it meets a sized vector — a conversion or a comparison. No
     /// signedness: a literal fits an N-bit vector if it lands in the union of
@@ -1470,16 +1477,34 @@ impl<'a> Checker<'a> {
     /// (`Ty::Vector`, indices `0..width-1`) are checked: an array with a
     /// declared range (`Logic[15..8]`) is indexed by its own bounds.
     fn check_index_bounds(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
-        let Ty::Vector { width, .. } = self.type_of(base, sym) else { return };
-        if width == 0 {
-            return; // parametric width: not known yet
+        // What we can bound-check, and how to name it. A packed vector is
+        // indexed `0..width-1`. An *instance array* (`let s: Sub[4]`) is always
+        // declared with a plain count, so it is 0-based too — unlike a data
+        // array, which may carry a declared range (`Logic[15..8]`) and is
+        // therefore left alone.
+        let (len, noun) = match self.type_of(base, sym) {
+            Ty::Vector { width, .. } => (width, "bit"),
+            Ty::Array { elem, len } if self.is_entity_ty(&elem) => (len, "instance"),
+            _ => return,
+        };
+        if len == 0 {
+            return; // parametric: not known yet
         }
         let mut check = |v: i64, e: &Expr| {
-            if v < 0 || v >= width as i64 {
+            if v < 0 || v >= len as i64 {
                 self.error(
                     codes::TYPE_MISMATCH,
                     expr_span(e),
-                    format!("bit {v} is outside `0..{}` of this {width}-bit vector", width - 1),
+                    match noun {
+                        "bit" => format!(
+                            "bit {v} is outside `0..{}` of this {len}-bit vector",
+                            len - 1
+                        ),
+                        _ => format!(
+                            "instance {v} is outside `0..{}` of this {len}-instance array",
+                            len - 1
+                        ),
+                    },
                 );
             }
         };
@@ -3220,6 +3245,17 @@ mod tests {
         // A runtime index can't be checked statically and must stay allowed.
         let dynamic = "module m;\nentity E { in a: uint[8]; in i: uint[8]; out y: uint[8]; }\nimpl E { y = a[i]; }\n";
         assert_eq!(check_src(dynamic), 0);
+
+        // An instance array is declared with a plain count, so it is 0-based
+        // and checkable the same way.
+        let inst = |i: u32| {
+            format!(
+                "module m;\nentity Sub {{ in a: uint[8]; out y: uint[8]; }}\nimpl Sub {{ y = a; }}\n\
+                 entity E {{ in a: uint[8]; out y: uint[8]; }}\nimpl E {{ let s: Sub[4]; y = s[{i}].y; }}\n"
+            )
+        };
+        assert_eq!(check_src(&inst(9)), 1, "instance 9 of a Sub[4]");
+        assert_eq!(check_src(&inst(3)), 0, "the last instance is in range");
     }
 
     /// Hardware has no divide-by-zero trap, so a constant zero divisor just
