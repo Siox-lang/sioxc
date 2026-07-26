@@ -141,6 +141,8 @@ struct Checker<'a> {
     /// (operator trait, implementing type) -> (input type, output type).
     /// Multiple entries are overloads selected by the right operand.
     operator_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
+    /// (`Index`/`IndexAssign`, target) -> (index type, value/output type).
+    index_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
     operator_precedence: HashMap<String, (u8, Span)>,
     /// Enum name -> its EFFECTIVE variant names (inherited + own).
     enum_variants: HashMap<String, Vec<String>>,
@@ -230,6 +232,7 @@ impl<'a> Checker<'a> {
             attr_value_kinds,
             trait_impls,
             operator_sigs: HashMap::new(),
+            index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
             enum_variants: HashMap::new(),
             own_variants: HashMap::new(),
@@ -440,6 +443,20 @@ impl<'a> Checker<'a> {
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
                                 .push((input, output));
+                        }
+                        if matches!(t.as_str(), "Index" | "IndexAssign") {
+                            let arg_name = |index: usize| {
+                                im.trait_args.get(index).and_then(|a| match a {
+                                    GenericArg::Positional(Expr::Path(p)) => {
+                                        p.segments.last().map(|s| s.text.clone())
+                                    }
+                                    _ => None,
+                                })
+                            };
+                            self.index_sigs
+                                .entry((t.clone(), ty.clone()))
+                                .or_default()
+                                .push((arg_name(0), arg_name(1)));
                         }
                         self.trait_impls.entry(t).or_default().insert(ty);
                     }
@@ -973,8 +990,23 @@ impl<'a> Checker<'a> {
             }
             Stmt::Assign { target, value, .. } => {
                 self.check_write_target(target, dirs);
-                self.check_assignment(target, value, sym);
-                self.check_expr(target, sym);
+                let custom_index = self.check_index_assign(target, value, sym);
+                if !custom_index {
+                    self.check_assignment(target, value, sym);
+                    self.check_expr(target, sym);
+                } else if let Expr::Index { base, index, .. } = target {
+                    self.check_expr(base, sym);
+                    if let Expr::PartialRange { lo, hi, .. } = index.as_ref() {
+                        if let Some(lo) = lo {
+                            self.check_expr(lo, sym);
+                        }
+                        if let Some(hi) = hi {
+                            self.check_expr(hi, sym);
+                        }
+                    } else {
+                        self.check_expr(index, sym);
+                    }
+                }
                 self.check_expr(value, sym);
             }
             Stmt::If(i) => self.check_if(i, dirs, sym),
@@ -1189,6 +1221,63 @@ impl<'a> Checker<'a> {
                     .help("input ports are read-only inside the entity; drive it from the instantiating scope"),
             );
         }
+    }
+
+    /// Check a custom indexed write. Returns true when `target` is a
+    /// non-intrinsic index operation, so ordinary lvalue assignment checking
+    /// must not treat the `Index` read result as storage.
+    fn check_index_assign(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        let Expr::Index { base, index, span } = target else { return false };
+        let base_ty = self.type_of(base, sym);
+        if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
+            return false;
+        }
+        let Some(owner) = self.type_kind_name(&base_ty) else { return false };
+        if matches!(index.as_ref(), Expr::PartialRange { .. }) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `lo..hi` range"
+                ),
+            );
+            return true;
+        }
+        let input = if matches!(
+            index.as_ref(),
+            Expr::Range { .. } | Expr::PartialRange { .. }
+        ) {
+            Some("Range".to_string())
+        } else {
+            self.type_kind_name(&self.type_of(index, sym))
+        };
+        let value_ty = self.type_kind_name(&self.type_of(value, sym));
+        let found = self
+            .index_sigs
+            .get(&("IndexAssign".to_string(), owner.clone()))
+            .is_some_and(|sigs| {
+                sigs.iter().any(|(i, v)| {
+                    (i.is_none() || i.as_ref() == input.as_ref())
+                        && (v.is_none() || v.as_ref() == value_ty.as_ref())
+                })
+            });
+        if !found {
+            self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "indexed assignment on `{owner}` needs `impl IndexAssign<{}, {}> for {owner}`",
+                    input.as_deref().unwrap_or("_"),
+                    value_ty.as_deref().unwrap_or("_"),
+                ),
+            );
+        }
+        true
     }
 
     /// Spec 3.5: an attribute's value must match the type its declaration gives.
@@ -1580,11 +1669,63 @@ impl<'a> Checker<'a> {
                     check(v, hi);
                 }
             }
+            Expr::PartialRange { lo, hi, .. } => {
+                if let Some(lo) = lo {
+                    if let Some(v) = Self::const_literal(lo) {
+                        check(v, lo);
+                    }
+                }
+                if let Some(hi) = hi {
+                    if let Some(v) = Self::const_literal(hi) {
+                        check(v, hi);
+                    }
+                }
+            }
             _ => {
                 if let Some(v) = Self::const_literal(index) {
                     check(v, index);
                 }
             }
+        }
+    }
+
+    fn check_custom_index(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
+        let base_ty = self.type_of(base, sym);
+        if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
+            return;
+        }
+        let Some(owner) = self.type_kind_name(&base_ty) else { return };
+        if matches!(index, Expr::PartialRange { .. }) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(index),
+                format!(
+                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `lo..hi` range"
+                ),
+            );
+            return;
+        }
+        let input = if matches!(index, Expr::Range { .. } | Expr::PartialRange { .. }) {
+            Some("Range".to_string())
+        } else {
+            self.type_kind_name(&self.type_of(index, sym))
+        };
+        let found = self
+            .index_sigs
+            .get(&("Index".to_string(), owner.clone()))
+            .is_some_and(|sigs| {
+                sigs.iter()
+                    .any(|(i, _)| i.is_none() || i.as_ref() == input.as_ref())
+            });
+        if !found {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(index),
+                format!(
+                    "indexing `{owner}` needs `impl Index<{}, Output> for {owner}`",
+                    input.as_deref().unwrap_or("_"),
+                ),
+            );
         }
     }
 
@@ -1706,12 +1847,36 @@ impl<'a> Checker<'a> {
             Expr::Field { base, .. } => self.check_expr(base, sym),
             Expr::Index { base, index, .. } => {
                 self.check_expr(base, sym);
-                self.check_expr(index, sym);
+                match index.as_ref() {
+                    Expr::PartialRange { lo, hi, .. } => {
+                        if let Some(lo) = lo {
+                            self.check_expr(lo, sym);
+                        }
+                        if let Some(hi) = hi {
+                            self.check_expr(hi, sym);
+                        }
+                    }
+                    _ => self.check_expr(index, sym),
+                }
                 self.check_index_bounds(base, index, sym);
+                self.check_custom_index(base, index, sym);
             }
             Expr::Range { lo, hi, .. } => {
                 self.check_expr(lo, sym);
                 self.check_expr(hi, sym);
+            }
+            Expr::PartialRange { lo, hi, span } => {
+                if let Some(lo) = lo {
+                    self.check_expr(lo, sym);
+                }
+                if let Some(hi) = hi {
+                    self.check_expr(hi, sym);
+                }
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    *span,
+                    "a partial range needs an indexed value to supply its omitted bounds".to_string(),
+                );
             }
             Expr::Unary { op, rhs, span } => {
                 self.check_expr(rhs, sym);
@@ -2212,6 +2377,39 @@ impl<'a> Checker<'a> {
                     len: elems.len() as u32,
                 }
             }
+            Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
+            Expr::Index { base, index, .. } => {
+                let base_ty = self.type_of(base, sym);
+                let is_range =
+                    matches!(index.as_ref(), Expr::Range { .. } | Expr::PartialRange { .. });
+                match &base_ty {
+                    // Intrinsic indexing keeps its historical best-effort
+                    // typing; width/element checks happen in the dedicated
+                    // index and lowering paths.
+                    Ty::Vector { .. } | Ty::Array { .. } => Ty::Error,
+                    _ => {
+                        let Some(owner) = self.type_kind_name(&base_ty) else {
+                            return Ty::Error;
+                        };
+                        let input = if is_range {
+                            Some("Range".to_string())
+                        } else {
+                            self.type_kind_name(&self.type_of(index, sym))
+                        };
+                        let output = self
+                            .index_sigs
+                            .get(&("Index".to_string(), owner))
+                            .and_then(|sigs| {
+                                sigs.iter()
+                                    .find(|(i, _)| {
+                                        i.is_none() || i.as_ref() == input.as_ref()
+                                    })
+                                    .and_then(|(_, output)| output.as_deref())
+                            });
+                        output.map(|name| self.ty_from_head(name)).unwrap_or(Ty::Error)
+                    }
+                }
+            }
             // Conversion expressions type as their target (spec 3.17):
             // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call { callee, args, .. } => match callee.as_ref() {
@@ -2273,7 +2471,7 @@ impl<'a> Checker<'a> {
                 }
                 _ => Ty::Error,
             },
-            Expr::Field { .. } | Expr::Index { .. } | Expr::Range { .. } => Ty::Error,
+            Expr::Field { .. } => Ty::Error,
         }
     }
 

@@ -922,6 +922,89 @@ fn bus_mode_agrees() {
 }
 
 #[test]
+fn partial_ranges_use_declared_left_and_right_bounds() {
+    let d = lower(
+        "module m;\n\
+         #[top]\n\
+         entity PartialRange {\n\
+           in a: uint[7..0];\n\
+           in ascending: uint[0..7];\n\
+           out upper: uint[4];\n\
+           out lower: uint[4];\n\
+           out whole: uint[8];\n\
+           out prefix: uint[5];\n\
+         }\n\
+         impl PartialRange {\n\
+           upper = a[..4];\n\
+           lower = a[3..];\n\
+           whole = a[..];\n\
+           prefix = ascending[..4];\n\
+         }\n",
+    );
+    check(
+        &d,
+        &[("PartialRange.a", 0b1011_0110), ("PartialRange.ascending", 0b0001_0110)],
+        &[
+            ("PartialRange.upper", 0b1011),
+            ("PartialRange.lower", 0b0110),
+            ("PartialRange.whole", 0b1011_0110),
+            ("PartialRange.prefix", 0b0_1101),
+        ],
+    );
+}
+
+#[test]
+fn custom_index_and_index_assign_agree() {
+    let d = lower(
+        "module m;\n\
+         trait Index<I, O> { fn index(self, index: I) -> O; }\n\
+         trait IndexAssign<I, V> { fn index_assign(self, index: I, value: V); }\n\
+         struct Range { left: integer, right: integer }\n\
+         struct Pair { first: uint[8], second: uint[8] }\n\
+         impl Index<integer, uint> for Pair {\n\
+           fn index(self, index: integer) -> uint[8] {\n\
+             if index == 0 { return self.first; }\n\
+             return self.second;\n\
+           }\n\
+         }\n\
+         impl Index<Range, uint> for Pair {\n\
+           fn index(self, index: Range) -> uint[8] {\n\
+             if index.left == 0 and index.right == 0 { return self.first; }\n\
+             return self.second;\n\
+           }\n\
+         }\n\
+         impl IndexAssign<integer, uint> for Pair {\n\
+           fn index_assign(self, index: integer, value: uint[8]) {\n\
+             if index == 0 { self.first = value; }\n\
+             else { self.second = value; }\n\
+           }\n\
+         }\n\
+         #[top]\n\
+         entity IndexedPair {\n\
+           in a: uint[8]; in b: uint[8]; in select: uint[1];\n\
+           out selected: uint[8]; out ranged: uint[8];\n\
+         }\n\
+         impl IndexedPair {\n\
+           let pair: Pair;\n\
+           pair[0] = a;\n\
+           pair[1] = b;\n\
+           selected = pair[integer(select)];\n\
+           ranged = pair[0..0];\n\
+         }\n",
+    );
+    check(
+        &d,
+        &[("IndexedPair.a", 11), ("IndexedPair.b", 29), ("IndexedPair.select", 0)],
+        &[("IndexedPair.selected", 11), ("IndexedPair.ranged", 11)],
+    );
+    check(
+        &d,
+        &[("IndexedPair.a", 11), ("IndexedPair.b", 29), ("IndexedPair.select", 1)],
+        &[("IndexedPair.selected", 29), ("IndexedPair.ranged", 11)],
+    );
+}
+
+#[test]
 fn derived_vector_width_agrees() {
     // `struct Byte : Logic[8]` inherits width 8 from its base array, so a signal
     // of type `Byte` masks arithmetic at 2^8 — both engines must agree (a bug

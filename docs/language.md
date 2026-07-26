@@ -1181,6 +1181,30 @@ impl Source<T> for StreamSource Stream<T> {
 
 No `virtual`, no vtables, no dynamic dispatch in Phase 1.
 
+Indexing has two standard compile-time contracts. Built-in packed vectors and
+arrays use intrinsic lowering; other types fall back to these traits:
+
+```siox
+trait Index<I, Output> {
+    fn index(self, index: I) -> Output;
+}
+
+trait IndexAssign<I, Value> {
+    fn index_assign(self, index: I, value: Value);
+}
+```
+
+`value[index]` dispatches to `Index`, while `value[index] = next` dispatches
+to `IndexAssign`. An inclusive range index is passed as the standard
+`Range { left, right }` value, so integer and range indexing may be overloaded
+independently:
+
+```siox
+impl Index<integer, Byte> for RegisterFile { /* ... */ }
+impl Index<Range, Word> for RegisterFile { /* ... */ }
+impl IndexAssign<integer, Byte> for RegisterFile { /* ... */ }
+```
+
 ---
 
 ### 3.21 `override` is not needed for traits
@@ -1270,6 +1294,25 @@ keeps the top).
 elements 7 down to 0 (descending), `Bit[0..3]` ascending. Slices follow the
 written order too: `w[7..4]` extracts MSB-first (the natural bit order),
 while `w[4..7]` extracts the same bits with the order reversed.
+
+Ranges are inclusive, including partial ranges. An omitted bound comes from
+the indexed object's declared range:
+
+```siox
+let down: uint[7..0];
+down[..4]   // down'left..4  = 7..4
+down[3..]   // 3..down'right = 3..0
+down[..]    // down'left..down'right = 7..0
+
+let up: Bit[0..7];
+up[..4]     // 0..4
+```
+
+Because `..` is already inclusive, `..=` is invalid. Partial ranges require an
+indexed value that supplies `'left` and `'right`; a standalone `..4` or a
+partial range passed to a custom index type without declared bounds is an
+error. Full `lo..hi` ranges are ordinary `Range` values for custom `Index`
+implementations.
 
 **Unconstrained arrays.** Empty brackets leave the range to be set at use
 (VHDL's `range <>` box):

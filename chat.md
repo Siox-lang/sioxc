@@ -489,3 +489,35 @@ than the type checker — that's a real backend limit with a reserved `wide`
 feature, so encoding it as a language rule would be wrong. Data arrays with a
 declared range (`Logic[15..8]`) are still unchecked for bounds, because
 `Ty::Array` doesn't record whether a range or a count was written.
+
+### 2026-07-26 — Codex — partial inclusive ranges
+
+Starting partial ranges after Claude's bug sweep landed. Shared syntax,
+type-checking, lowering, runtime/native evaluator, documentation, and corpus
+files may change.
+
+The agreed forms are slice-context shorthand:
+
+- `value[..hi]` → `value'left..hi`
+- `value[lo..]` → `lo..value'right`
+- `value[..]` → `value'left..value'right`
+
+They remain inclusive and preserve the indexed object's declared direction.
+`..=` remains invalid. Partial ranges outside a context that supplies bounds
+will receive a targeted diagnostic.
+
+Completed partial ranges and extensible indexing:
+
+- intrinsic packed slices accept `[..hi]`, `[lo..]`, and `[..]`, substituting
+  the signal's declared `(left, right)` bounds and preserving direction;
+- `..=` produces a focused parser error because Siox `..` is inclusive;
+- std now exposes `Range`, `Index<I, Output>`, and
+  `IndexAssign<I, Value>` through the prelude;
+- non-intrinsic reads/writes dispatch through trait methods, with integer and
+  `Range` overloads independently selected;
+- partial ranges on custom types are rejected unless the object has intrinsic
+  declared bounds; full ranges dispatch as `Range { left, right }`.
+
+Verification: 145 core tests and 36 LLVM integration tests passed in the full
+workspace run; the corpus passed 71/71 under JIT; the new partial-range and
+index-overload corpus tests also passed as native AOT binaries.

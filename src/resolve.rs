@@ -915,6 +915,14 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(lo);
                 self.resolve_expr(hi);
             }
+            Expr::PartialRange { lo, hi, .. } => {
+                if let Some(lo) = lo {
+                    self.resolve_expr(lo);
+                }
+                if let Some(hi) = hi {
+                    self.resolve_expr(hi);
+                }
+            }
             Expr::Unary { rhs, .. } => self.resolve_expr(rhs),
             Expr::Binary { lhs, rhs, .. } => {
                 self.resolve_expr(lhs);

@@ -29,6 +29,24 @@ pub trait Suffix<char: string, T> {
     fn suffix(data: T) {}
 }
 
+// Inclusive index ranges are ordinary values when indexing is overloaded.
+// Partial source forms (`..hi`, `lo..`, `..`) are completed from the indexed
+// object's declared bounds before dispatch.
+pub struct Range {
+    left: integer,
+    right: integer,
+}
+
+// `value[index]` falls back to Index when `value` is not an intrinsic packed
+// vector or array. `value[index] = next` similarly uses IndexAssign.
+pub trait Index<I, Output> {
+    fn index(self, index: I) -> Output;
+}
+
+pub trait IndexAssign<I, Value> {
+    fn index_assign(self, index: I, value: Value);
+}
+
 // `and`/`or` have one type-directed meaning. For Bool-like operands they are
 // scalar boolean logic; for bit-derived operands they apply per bit.
 impl Operator<"and", Bool, Bool> for Bool {

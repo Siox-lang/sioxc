@@ -26,6 +26,10 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `Operator<"symbol", Input, Output>` and `apply`; `and`/`or`/`not` are core
   syntax but use the same type-directed contract. Library operators such as
   `xor`/`nand`/`nor` are ordinary implementations carrying `precedence`.
+- ✅ **Partial ranges and extensible indexing** — `[..hi]`, `[lo..]`, and
+  `[..]` inherit inclusive bounds from the indexed object's declared
+  `'left`/`'right`; `..=` is rejected. Non-intrinsic types may implement
+  `Index<I, Output>` and `IndexAssign<I, Value>`, including `Index<Range, _>`.
 
 - 🟢 **Nested generics** — nested generic **bounds** parse (`fn f<T: Bar<Bit>>`,
   `-> Bar<U>`; the `>>` token splits when closing angle levels). A nested

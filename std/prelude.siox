@@ -9,7 +9,7 @@ module std::prelude;
 
 pub using std::logic::{Bit, Logic, Bool};
 pub using std::bits::{uint, int};
-pub using std::ops::{Boolean, Ordering};
+pub using std::ops::{Boolean, Ordering, Range, Index, IndexAssign};
 pub using std::attrs::{precedence};
 pub using std::text::{string};
 pub using std::sim::{Time, Freq};

@@ -446,6 +446,14 @@ pub enum Expr {
         hi: Box<Expr>,
         span: Span,
     },
+    /// An inclusive range with an omitted bound: `..4`, `1..`, or `..`.
+    /// The surrounding indexing operation supplies omitted `left`/`right`
+    /// bounds; other contexts diagnose the missing bounds.
+    PartialRange {
+        lo: Option<Box<Expr>>,
+        hi: Option<Box<Expr>>,
+        span: Span,
+    },
     Unary {
         op: UnOp,
         rhs: Box<Expr>,
@@ -609,6 +617,7 @@ pub fn expr_span(e: &Expr) -> Span {
         | Expr::Match { span, .. }
         | Expr::Index { span, .. }
         | Expr::Range { span, .. }
+        | Expr::PartialRange { span, .. }
         | Expr::Unary { span, .. }
         | Expr::Binary { span, .. }
         | Expr::Call { span, .. }

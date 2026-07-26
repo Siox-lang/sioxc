@@ -2231,6 +2231,23 @@ impl<'a> Lowering<'a> {
                         .with_code(crate::diag::codes::TYPE_MISMATCH),
                     );
                 }
+                if let ast::Expr::Index { base, index, .. } = target {
+                    if expr_path(base)
+                        .as_deref()
+                        .is_some_and(|path| self.local_struct.contains_key(path))
+                    {
+                        if let Some(index) = self.index_argument(index) {
+                            if self.lower_method_stmt(
+                                base,
+                                "index_assign",
+                                &[index, value.clone()],
+                                cond.clone(),
+                            ) {
+                                return;
+                            }
+                        }
+                    }
+                }
                 // Strict assignment width: a scalar signal target and a direct
                 // signal-reference value must have equal, both-known widths
                 // (spec 3.17 — no implicit resize). Arithmetic and conversions
@@ -2866,7 +2883,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Index { base, index, .. } = target else {
             return None;
         };
-        let (a, b) = self.slice_bounds(index)?;
+        let (a, b) = self.slice_bounds(base, index)?;
         let sig = *self.locals.get(&expr_path(base)?)?;
         Some((sig, a.max(b) as u32, a.min(b) as u32))
     }
@@ -3061,8 +3078,10 @@ impl<'a> Lowering<'a> {
             // range constant). Direction follows the written order: `7..4`
             // (descending) extracts MSB-first — the natural bit order —
             // while `4..7` (ascending) extracts with the bit order reversed.
-            ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
-                let (a, b) = self.slice_bounds(index).unwrap();
+            ast::Expr::Index { base, index, .. }
+                if self.slice_bounds(base, index).is_some() =>
+            {
+                let (a, b) = self.slice_bounds(base, index).unwrap();
                 let lowered = self.lower_expr(base);
                 if a >= b {
                     Expr::Slice {
@@ -3106,6 +3125,9 @@ impl<'a> Lowering<'a> {
                     if let Some(v) = self.lower_dynamic_read(base, index) {
                         return v;
                     }
+                    if let Some(v) = self.lower_custom_index(base, index) {
+                        return v;
+                    }
                 }
                 Expr::Unknown
             }
@@ -3126,7 +3148,9 @@ impl<'a> Lowering<'a> {
                     // (their `not` is the impl above, or undefined).
                     let is_vector_ref = match rhs.as_ref() {
                         // A slice is always a bit vector.
-                        ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
+                        ast::Expr::Index { base, index, .. }
+                            if self.slice_bounds(base, index).is_some() =>
+                        {
                             true
                         }
                         ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
@@ -3226,8 +3250,10 @@ impl<'a> Lowering<'a> {
                     .get(&p)
                     .map(|&id| self.out.signals[id.0 as usize].width)
             }
-            ast::Expr::Index { base, index, .. } if self.slice_bounds(index).is_some() => {
-                let (a, b) = self.slice_bounds(index)?;
+            ast::Expr::Index { base, index, .. }
+                if self.slice_bounds(base, index).is_some() =>
+            {
+                let (a, b) = self.slice_bounds(base, index)?;
                 // A single element of a `Logic`-vector *is* a `Logic` — its
                 // width is the element's (a 4-bit disc), not one value bit — so
                 // `s: Logic = v[i]` matches, and a metavalue reconstructs.
@@ -3275,8 +3301,10 @@ impl<'a> Lowering<'a> {
                 _ => 64,
             },
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
-            ast::Expr::Index { index, .. } if self.slice_bounds(index).is_some() => {
-                let (a, b) = self.slice_bounds(index).unwrap();
+            ast::Expr::Index { base, index, .. }
+                if self.slice_bounds(base, index).is_some() =>
+            {
+                let (a, b) = self.slice_bounds(base, index).unwrap();
                 (a.max(b) - a.min(b) + 1) as u32
             }
             ast::Expr::Int { text, .. } => {
@@ -3379,17 +3407,76 @@ impl<'a> Lowering<'a> {
 
     /// The written (left, right) constant bounds of a slice index: a range
     /// expression with const-evaluable bounds, or a named range constant.
-    fn slice_bounds(&self, index: &ast::Expr) -> Option<(i64, i64)> {
+    fn slice_bounds(&self, base: &ast::Expr, index: &ast::Expr) -> Option<(i64, i64)> {
+        let path = expr_path(base)?;
+        let declared = self.local_range.get(&path).copied()?;
         match index {
             ast::Expr::Range { lo, hi, .. } => Some((
                 eval_const(lo, &self.cur_env)?,
                 eval_const(hi, &self.cur_env)?,
             )),
+            ast::Expr::PartialRange { lo, hi, .. } => {
+                let (left, right) = declared;
+                Some((
+                    match lo {
+                        Some(lo) => eval_const(lo, &self.cur_env)?,
+                        None => left,
+                    },
+                    match hi {
+                        Some(hi) => eval_const(hi, &self.cur_env)?,
+                        None => right,
+                    },
+                ))
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 self.const_ranges.get(&p.segments[0].text).copied()
             }
             _ => None,
         }
+    }
+
+    fn lower_custom_index(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
+        let arg = self.index_argument(index)?;
+        let span = ast::expr_span(index);
+        let callee = ast::Expr::Field {
+            base: Box::new(base.clone()),
+            field: ast::Ident {
+                text: "index".to_string(),
+                span,
+            },
+            span,
+        };
+        match self.lower_method_call(&callee, &[arg], &HashMap::new())? {
+            Val::Scalar(value) => Some(value),
+            Val::Fields(_) => None,
+        }
+    }
+
+    fn index_argument(&self, index: &ast::Expr) -> Option<ast::Expr> {
+        let ast::Expr::Range { lo, hi, span } = index else {
+            return (!matches!(index, ast::Expr::PartialRange { .. })).then(|| index.clone());
+        };
+        let path = ast::Path {
+            segments: vec![ast::Ident {
+                text: "Range".to_string(),
+                span: *span,
+            }],
+            span: *span,
+        };
+        let field = |name: &str, value: ast::Expr| ast::ConnectArg {
+            field: Some(ast::Ident {
+                text: name.to_string(),
+                span: *span,
+            }),
+            value: Some(value),
+            span: *span,
+        };
+        Some(ast::Expr::Construct {
+            ty: Some(ast::Type::Path(path)),
+            args: vec![field("left", lo.as_ref().clone()), field("right", hi.as_ref().clone())],
+            spread: None,
+            span: *span,
+        })
     }
 
     /// One alias hop, for inspecting a declared type's shape.
@@ -4011,7 +4098,12 @@ impl<'a> Lowering<'a> {
     /// (`impl T { fn name(self, ..) }`) or a trait-impl method
     /// (`impl Tr for T { fn name(self, ..) }`, held in `op_impls` keyed by
     /// trait+type). Inherent impls win; first match otherwise.
-    fn find_method(&self, ty: &str, name: &str) -> Option<&'a ast::FnDecl> {
+    fn find_method(
+        &self,
+        ty: &str,
+        name: &str,
+        input: Option<&str>,
+    ) -> Option<&'a ast::FnDecl> {
         if let Some(impls) = self.impls.get(ty) {
             for im in impls {
                 for it in &im.items {
@@ -4027,7 +4119,10 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|((_, t), _)| t == ty)
             .flat_map(|(_, fns)| fns.iter())
-            .find(|(f, _)| f.name.text == name)
+            .find(|(f, rhs)| {
+                f.name.text == name
+                    && input.is_none_or(|input| rhs.as_deref().is_none_or(|rhs| rhs == input))
+            })
             .map(|(f, _)| *f)
     }
 
@@ -4048,7 +4143,13 @@ impl<'a> Lowering<'a> {
             return None;
         };
         let ty = self.operand_type_name(base)?;
-        let f = self.find_method(&ty, &field.text)?;
+        let input = args.first().and_then(|arg| match arg {
+            ast::Expr::Construct {
+                ty: Some(ty), ..
+            } if type_head_name(ty) == Some("Range") => Some("Range".to_string()),
+            _ => self.operand_type_name(arg),
+        });
+        let f = self.find_method(&ty, &field.text, input.as_deref())?;
         let body = f.body.as_ref()?;
         if self.inline_depth.get() > 16 {
             self.depth_exceeded
@@ -4116,7 +4217,13 @@ impl<'a> Lowering<'a> {
         };
         // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
         // lowering calls below.
-        let Some(f) = self.find_method(&ty, method) else {
+        let input = args.first().and_then(|arg| match arg {
+            ast::Expr::Construct {
+                ty: Some(ty), ..
+            } if type_head_name(ty) == Some("Range") => Some("Range".to_string()),
+            _ => self.operand_type_name(arg),
+        });
+        let Some(f) = self.find_method(&ty, method, input.as_deref()) else {
             return false;
         };
         let Some(body) = f.body.as_ref() else {
@@ -5896,6 +6003,11 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
             hi: sub(hi),
             span: *span,
         },
+        Expr::PartialRange { lo, hi, span } => Expr::PartialRange {
+            lo: lo.as_deref().map(sub),
+            hi: hi.as_deref().map(sub),
+            span: *span,
+        },
         Expr::Unary { op, rhs, span } => Expr::Unary {
             op: *op,
             rhs: sub(rhs),
@@ -6064,6 +6176,11 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
         Expr::Range { lo, hi, span } => Expr::Range {
             lo: sub(lo),
             hi: sub(hi),
+            span: *span,
+        },
+        Expr::PartialRange { lo, hi, span } => Expr::PartialRange {
+            lo: lo.as_deref().map(sub),
+            hi: hi.as_deref().map(sub),
             span: *span,
         },
         // Fold constant arithmetic so a substituted index like `wires[i+1]`

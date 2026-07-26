@@ -545,6 +545,11 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             format!("{}..{}", expr_prec(lo, RANGE_PREC + 1), expr_prec(hi, RANGE_PREC + 1)),
             RANGE_PREC,
         ),
+        Expr::PartialRange { lo, hi, .. } => {
+            let lo = lo.as_deref().map(expr).unwrap_or_default();
+            let hi = hi.as_deref().map(expr).unwrap_or_default();
+            (format!("{lo}..{hi}"), RANGE_PREC)
+        }
         Expr::IfExpr { cond, then, els, .. } => {
             // An IfExpr in `els` prints as an `else if` chain.
             let e = match els.as_ref() {

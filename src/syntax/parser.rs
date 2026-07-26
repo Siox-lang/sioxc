@@ -1203,18 +1203,57 @@ impl<'a> Parser<'a> {
 
     fn parse_expr(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
+        if self.eat(TokenKind::DotDot) {
+            if self.eat(TokenKind::Eq) {
+                self.error_here("Siox ranges are already inclusive; use `..` instead of `..=`");
+            }
+            let hi = self
+                .range_bound_follows()
+                .then(|| Box::new(self.parse_bin(0, no_struct)));
+            return Expr::PartialRange {
+                lo: None,
+                hi,
+                span: start.to(self.prev_span()),
+            };
+        }
         let lhs = self.parse_bin(0, no_struct);
         if self.at(TokenKind::DotDot) {
             self.bump();
-            let hi = self.parse_bin(0, no_struct);
-            Expr::Range {
-                lo: Box::new(lhs),
-                hi: Box::new(hi),
-                span: start.to(self.prev_span()),
+            if self.eat(TokenKind::Eq) {
+                self.error_here("Siox ranges are already inclusive; use `..` instead of `..=`");
+            }
+            if self.range_bound_follows() {
+                let hi = self.parse_bin(0, no_struct);
+                Expr::Range {
+                    lo: Box::new(lhs),
+                    hi: Box::new(hi),
+                    span: start.to(self.prev_span()),
+                }
+            } else {
+                Expr::PartialRange {
+                    lo: Some(Box::new(lhs)),
+                    hi: None,
+                    span: start.to(self.prev_span()),
+                }
             }
         } else {
             lhs
         }
+    }
+
+    fn range_bound_follows(&self) -> bool {
+        !matches!(
+            self.kind(),
+            TokenKind::RBracket
+                | TokenKind::RParen
+                | TokenKind::RBrace
+                | TokenKind::LBrace
+                | TokenKind::Comma
+                | TokenKind::Semi
+                | TokenKind::Gt
+                | TokenKind::FatArrow
+                | TokenKind::Eof
+        )
     }
 
     fn parse_bin(&mut self, min_bp: u8, no_struct: bool) -> Expr {
@@ -2263,6 +2302,26 @@ mod tests {
                 "`{name}` must stay reserved for default port directions"
             );
         }
+    }
+
+    #[test]
+    fn partial_ranges_parse_and_inclusive_equals_is_rejected() {
+        let m = parse_ok(
+            "module m;\nimpl T { a = v[..4]; b = v[1..]; c = v[..]; }\n",
+        );
+        let Item::Impl(im) = &m.items[0] else { panic!() };
+        for item in &im.items {
+            let ImplItem::Stmt(Stmt::Assign {
+                value: Expr::Index { index, .. },
+                ..
+            }) = item
+            else {
+                panic!("expected indexed assignment value")
+            };
+            assert!(matches!(index.as_ref(), Expr::PartialRange { .. }));
+        }
+        let (_, errors) = parse("module m;\nimpl T { a = v[..=2]; }\n");
+        assert!(errors > 0, "`..=` is redundant because Siox ranges are inclusive");
     }
 
     #[test]
