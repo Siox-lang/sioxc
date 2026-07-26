@@ -908,6 +908,41 @@ impl<'a> Lowering<'a> {
                             }
                         }
                     }
+                    // A struct-literal initializer (`let p: P = { .a = 1 }`)
+                    // seeds each field signal. The testbench interpreter has
+                    // always honoured this; hardware lowering did not, so an
+                    // entity-level struct local silently powered on at 0.
+                    if let Some(ast::Expr::Construct { args, .. }) = &l.value {
+                        let fields: Vec<String> = l
+                            .ty
+                            .as_ref()
+                            .and_then(type_head_name)
+                            .and_then(|h| self.structs.get(h))
+                            .map(|sd| sd.fields.iter().map(|f| f.name.text.clone()).collect())
+                            .unwrap_or_default();
+                        for (i, arg) in args.iter().enumerate() {
+                            // Named (`.a = 1`) or positional (bound by order).
+                            let field = match &arg.field {
+                                Some(f) => Some(f.text.clone()),
+                                None => fields.get(i).cloned(),
+                            };
+                            let (Some(field), Some(value)) = (field, arg.value.as_ref()) else {
+                                continue;
+                            };
+                            // Only constants seed an init; anything else is an
+                            // ordinary driver and is lowered as one.
+                            let Some(&id) = self.locals.get(&format!("{}.{field}", l.name.text))
+                            else {
+                                continue;
+                            };
+                            // The field's own enum type resolves a character
+                            // literal (`.state = 'Z'`) to its variant.
+                            let en = self.out.signals[id.0 as usize].enum_type.clone();
+                            if let Some(v) = self.const_init_value(value, en.as_deref()) {
+                                self.out.signals[id.0 as usize].init = v;
+                            }
+                        }
+                    }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
                     // entities are excluded: a `#[test]` testbench's locals are
@@ -6487,6 +6522,29 @@ mod tests {
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    /// A struct-literal initializer on an entity-level `let` silently powered
+    /// on at 0 — the testbench interpreter honoured it, hardware lowering did
+    /// not, so the two engines disagreed about the same declaration.
+    #[test]
+    fn struct_literal_initializer_seeds_field_inits() {
+        let d = lower_src(
+            "module m; struct P { a: uint[8], b: uint[8] }\n\
+             entity E { out x: uint[8]; out y: uint[8]; }\n\
+             impl E { let p: P = { .a = 11, .b = 22 }; x = p.a; y = p.b; }\n\
+             #[top] entity H { out x: uint[8]; out y: uint[8]; }\n\
+             impl H { let d: E = { .x = x, .y = y }; }",
+        );
+        let init = |suffix: &str| {
+            d.signals
+                .iter()
+                .find(|s| s.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no signal {suffix}"))
+                .init
+        };
+        assert_eq!(init(".p.a"), 11);
+        assert_eq!(init(".p.b"), 22);
     }
 
     /// A concat target has an exact width, so the source must match it — the
