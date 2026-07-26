@@ -1268,8 +1268,8 @@ impl<'a> Checker<'a> {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(
                 "cannot initialize {} with {} without an explicit conversion",
-                ty_name(&lhs),
-                ty_name(&rhs)
+                self.ty_display(&lhs),
+                self.ty_display(&rhs)
             ))
             .with_code(codes::TYPE_MISMATCH)
             .at(expr_span(value));
@@ -1287,13 +1287,13 @@ impl<'a> Checker<'a> {
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
-                format!("wrap it in a conversion, e.g. `{}(...)`", ty_name(&lhs))
+                format!("wrap it in a conversion, e.g. `{}(...)`", self.ty_display(&lhs))
             });
             self.sink.emit(
                 Diagnostic::error(format!(
                     "cannot assign {} to {} without an explicit conversion",
-                    ty_name(&rhs),
-                    ty_name(&lhs)
+                    self.ty_display(&rhs),
+                    self.ty_display(&lhs)
                 ))
                 .with_code(codes::TYPE_MISMATCH)
                 .at(expr_span(value))
@@ -1341,7 +1341,7 @@ impl<'a> Checker<'a> {
                 .map(|a| self.type_of(a, sym));
             let Some(ty) = inferred else { continue };
             if !self.satisfies(&ty, trait_name) {
-                let name = ty_name(&ty);
+                let name = self.ty_display(&ty);
                 self.error(
                     codes::TYPE_MISMATCH,
                     expr_span(callee),
@@ -1453,6 +1453,21 @@ impl<'a> Checker<'a> {
                     "format string takes {want} argument(s) but {have} were given"
                 ),
             );
+        }
+    }
+
+    /// Render a type for a diagnostic, resolving a named struct/enum/entity to
+    /// its declared name. The free `ty_name` has no definition table, so it can
+    /// only say "a named type" — never show that to a user.
+    fn ty_display(&self, t: &Ty) -> String {
+        match t {
+            Ty::Named(id) => self
+                .resolved
+                .def(*id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| ty_name(t)),
+            Ty::Array { elem, len } => format!("{}[{len}]", self.ty_display(elem)),
+            _ => ty_name(t),
         }
     }
 
@@ -1690,7 +1705,7 @@ impl<'a> Checker<'a> {
                             *span,
                             format!(
                                 "`not` is a per-bit operator; `{}` is not a bit-derived type",
-                                ty_name(&t)
+                                self.ty_display(&t)
                             ),
                         );
                     }
@@ -1803,7 +1818,7 @@ impl<'a> Checker<'a> {
                                 *span,
                                 format!(
                                     "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/uint/int); `{}` is a number",
-                                    ty_name(&t)
+                                    self.ty_display(&t)
                                 ),
                             );
                             break;
@@ -1887,6 +1902,18 @@ impl<'a> Checker<'a> {
                 for c in args {
                     if let Some(v) = &c.value {
                         self.check_expr(v, sym);
+                    }
+                }
+                // `{ .a = '1', .a = '0' }` silently kept one of them.
+                let mut seen: HashSet<&str> = HashSet::new();
+                for c in args {
+                    let Some(f) = &c.field else { continue };
+                    if !seen.insert(f.text.as_str()) {
+                        self.error(
+                            codes::DUPLICATE_ITEM,
+                            f.span,
+                            format!("field `{}` is given twice in this literal", f.text),
+                        );
                     }
                 }
             }
@@ -3233,6 +3260,36 @@ mod tests {
             check_src(&format!("{ent}if 600 == q {{ 1 }} else {{ 0 }}; }}\n")),
             1,
             "flagged from the left too"
+        );
+    }
+
+    /// A repeated field in a struct/connection literal silently kept one of
+    /// the values; and a type in a diagnostic must be named, not described as
+    /// "a named type".
+    #[test]
+    fn duplicate_literal_field_and_named_type_rendering() {
+        let dup = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { out y: Bit; }\n\
+                   impl E { let q: P = { .a = '1', .a = '0' }; y = q.a; }\n";
+        assert_eq!(check_src(dup), 1);
+
+        let ok = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { out y: Bit; }\n\
+                  impl E { let q: P = { .a = '1', .b = '0' }; y = q.a; }\n";
+        assert_eq!(check_src(ok), 0);
+
+        // The bound diagnostic names the offending type.
+        let bound = "module m;\nfn f<T: Operator>(a: T) -> T { return a; }\n\
+                     struct Q { z: Bit }\nentity E { out y: Bit; }\n\
+                     impl E { let q: Q; y = f(q).z; }\n";
+        let mut sink = DiagnosticSink::new();
+        let src = format!("{bound}{VEC}");
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let modules = std::slice::from_ref(&module);
+        let resolved = crate::resolve::resolve(modules, &mut sink);
+        check(modules, &resolved, &mut sink);
+        assert!(
+            sink.diagnostics().iter().any(|d| d.message.contains("`Q` does not satisfy")),
+            "should name `Q`: {:?}",
+            sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
