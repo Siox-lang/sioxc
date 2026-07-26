@@ -293,6 +293,7 @@ impl<'a> Elaborator<'a> {
             if let Some(sub_decl) = self.entities.get(sub).copied() {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
+                self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
                 let cparams = eval_params(sub_decl, spec.ty, &env);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
@@ -545,6 +546,30 @@ impl<'a> Elaborator<'a> {
             }
         }
         out
+    }
+
+    /// A named generic argument must name a parameter the entity declares.
+    /// `S<W = 8, Z = 3>` used to bind `Z` into the instance's parameter list
+    /// and carry on, so a typo'd parameter silently did nothing.
+    fn check_generic_arg_names(&mut self, edecl: &EntityDecl, ty: &Type, site: Span) {
+        let Type::Generic { args, .. } = ty else { return };
+        for arg in args {
+            let GenericArg::Named { name, .. } = arg else { continue };
+            if !edecl.params.params.iter().any(|p| p.name.text == name.text) {
+                let known: Vec<&str> =
+                    edecl.params.params.iter().map(|p| p.name.text.as_str()).collect();
+                let mut d = Diagnostic::error(format!(
+                    "`{}` has no parameter `{}`",
+                    edecl.name.text, name.text
+                ))
+                .with_code(codes::UNKNOWN_NAME)
+                .at(site);
+                if !known.is_empty() {
+                    d = d.help(format!("it declares: {}", known.join(", ")));
+                }
+                self.sink.emit(d);
+            }
+        }
     }
 
     fn resolve_connections(
@@ -1216,6 +1241,23 @@ mod tests {
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
+    }
+
+    /// A named generic argument that matches no declared parameter used to be
+    /// bound anyway, so a typo silently did nothing.
+    #[test]
+    fn unknown_generic_argument_is_reported() {
+        let base = "module m;\nentity S<W: integer> { in a: uint[W]; out y: uint[W]; }\n\
+                    impl S<W: integer> { y = a; }\n#[top] entity E { in a: uint[8]; out y: uint[8]; }\n";
+        let (_, errs) = elaborate_src(&format!(
+            "{base}impl E {{ let d: S<W = 8, Z = 3> = {{ .a = a, .y = y }}; }}\n"
+        ));
+        assert_eq!(errs, 1, "`Z` is not a parameter of `S`");
+
+        let (_, errs) = elaborate_src(&format!(
+            "{base}impl E {{ let d: S<W = 8> = {{ .a = a, .y = y }}; }}\n"
+        ));
+        assert_eq!(errs, 0);
     }
 
     #[test]
