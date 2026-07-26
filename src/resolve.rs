@@ -328,6 +328,13 @@ impl<'a> Resolver<'a> {
             }
             Item::Entity(e) => {
                 self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);
+                // Two ports of one name leave the second unreachable and make
+                // a connection by name ambiguous.
+                self.check_duplicate_names(
+                    e.ports.iter().map(|p| (&p.name.text, p.name.span)),
+                    "port",
+                    &e.name.text,
+                );
             }
             Item::Trait(t) => {
                 self.declare(&t.name.text, DefKind::Trait, t.is_pub, t.name.span);
@@ -1217,10 +1224,16 @@ mod tests {
         let (_, errs) = resolve_src("module m;\nstruct P { x: Bit, x: Bit }\n");
         assert_eq!(errs, 1, "duplicate struct field");
 
+        let (_, errs) = resolve_src(
+            "module m;\nentity E { in a: Bit; in a: Bit; out y: Bit; }\n",
+        );
+        assert_eq!(errs, 1, "duplicate port");
+
         // Distinct members, and the same name in *different* declarations, are
         // both fine.
         let (_, errs) = resolve_src(
-            "module m;\nenum S { A, B }\nenum T { A, B }\nstruct P { x: Bit, y: Bit }\n",
+            "module m;\nenum S { A, B }\nenum T { A, B }\nstruct P { x: Bit, y: Bit }\n\
+             entity E { in a: Bit; out y: Bit; }\n",
         );
         assert_eq!(errs, 0);
     }

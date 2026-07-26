@@ -654,6 +654,25 @@ impl<'a> Checker<'a> {
                         self.check_expr(val, sym);
                     }
                 }
+                // Variants are values: two sharing a discriminant compare equal
+                // and are indistinguishable at runtime (and in a waveform).
+                // Only explicit constants are checked — implicit numbering
+                // cannot collide.
+                let mut seen: HashMap<i64, &str> = HashMap::new();
+                for v in &e.variants {
+                    let Some(val) = &v.value else { continue };
+                    let Some(n) = Self::const_literal(val) else { continue };
+                    if let Some(prev) = seen.insert(n, v.name.text.as_str()) {
+                        self.error(
+                            codes::DUPLICATE_ITEM,
+                            v.name.span,
+                            format!(
+                                "`{}::{}` and `{}::{prev}` both have the value {n}",
+                                e.name.text, v.name.text, e.name.text
+                            ),
+                        );
+                    }
+                }
             }
             Item::Entity(e) => {
                 for port in &e.ports {
@@ -3261,6 +3280,16 @@ mod tests {
             1,
             "flagged from the left too"
         );
+    }
+
+    /// Two variants with the same explicit value are indistinguishable at
+    /// runtime — `S::A == S::B` is true, and a waveform cannot tell them apart.
+    #[test]
+    fn colliding_enum_discriminants_are_reported() {
+        assert_eq!(check_src("module m;\nenum S { A = 5, B = 5 }\n"), 1);
+        assert_eq!(check_src("module m;\nenum S { A = 5, B = 6 }\n"), 0);
+        // Implicit numbering cannot collide.
+        assert_eq!(check_src("module m;\nenum S { A, B, C }\n"), 0);
     }
 
     /// A repeated field in a struct/connection literal silently kept one of
