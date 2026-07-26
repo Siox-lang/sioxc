@@ -142,6 +142,10 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<String, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// Trait name -> the methods an implementation must provide (those the
+    /// trait declares without a default body). Spec 3.20: a trait is a
+    /// compile-time contract, so a partial impl is an error.
+    trait_required: HashMap<String, Vec<String>>,
     /// (operator trait, implementing type) -> (input type, output type).
     /// Multiple entries are overloads selected by the right operand.
     operator_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
@@ -239,6 +243,7 @@ impl<'a> Checker<'a> {
             attr_targets,
             attr_value_kinds,
             trait_impls,
+            trait_required: HashMap::new(),
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
@@ -471,6 +476,15 @@ impl<'a> Checker<'a> {
                         self.trait_impls.entry(t).or_default().insert(ty);
                     }
                 }
+            }
+            Item::Trait(t) => {
+                let required = t
+                    .items
+                    .iter()
+                    .filter(|f| f.body.is_none())
+                    .map(|f| f.name.text.clone())
+                    .collect();
+                self.trait_required.insert(t.name.text.clone(), required);
             }
             Item::Enum(e) => {
                 let vars: Vec<String> = e.variants.iter().map(|v| v.name.text.clone()).collect();
@@ -839,7 +853,42 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Spec 3.20: a trait is a compile-time contract, so an implementation
+    /// must provide every method the trait declares without a default body.
+    /// A partial impl used to pass, leaving the missing method to fail much
+    /// later (or silently do nothing).
+    fn check_trait_contract(&mut self, im: &ImplDecl) {
+        let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) else { return };
+        let Some(required) = self.trait_required.get(&tr.text) else { return };
+        let provided: HashSet<&str> = im
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                ImplItem::Fn(f) => Some(f.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<String> = required
+            .iter()
+            .filter(|m| !provided.contains(m.as_str()))
+            .map(|m| format!("`{m}`"))
+            .collect();
+        if !missing.is_empty() {
+            let target = type_head_name(&im.target).unwrap_or("this type");
+            self.error(
+                codes::TYPE_MISMATCH,
+                im.span,
+                format!(
+                    "`impl {} for {target}` is missing {}",
+                    tr.text,
+                    missing.join(", ")
+                ),
+            );
+        }
+    }
+
     fn check_impl(&mut self, im: &ImplDecl) {
+        self.check_trait_contract(im);
         let (dirs, sym, ranged) = self.impl_env(im);
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
@@ -3628,6 +3677,32 @@ mod tests {
             "should name `Q`: {:?}",
             sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    /// Spec 3.20 calls a trait a compile-time contract, but a partial impl
+    /// used to pass. A method the trait gives a default body is optional —
+    /// that is how the compiler-recognized traits (`Operator`, `Prefix`,
+    /// `Suffix`) allow an empty impl.
+    #[test]
+    fn trait_impl_must_provide_the_required_methods() {
+        let base = "module m;\ntrait Tr { fn f(self) -> Bit; fn g(self) -> Bit; }\nstruct S { x: Bit }\n";
+        assert_eq!(
+            check_src(&format!("{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} }}\n")),
+            1,
+            "`g` is missing"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} \
+                 fn g(self) -> Bit {{ return self.x; }} }}\n"
+            )),
+            0,
+            "complete"
+        );
+        // A defaulted method is optional.
+        let defaulted = "module m;\ntrait D { fn f(self) -> Bit { return '0'; } }\n\
+                         struct S { x: Bit }\nimpl D for S {}\n";
+        assert_eq!(check_src(defaulted), 0);
     }
 
     /// A ranged numeric (spec 3.26) checked its `let` initializer but not an

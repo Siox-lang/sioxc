@@ -584,6 +584,12 @@ impl<'a> Resolver<'a> {
             Item::Struct(s) => {
                 self.enter();
                 self.bind_params(&s.params, false);
+                // The derivation base is a type reference like any other —
+                // it was the one spot that never got resolved, so
+                // `struct B : NoSuchType` passed silently.
+                if let Some(base) = &s.base {
+                    self.resolve_type(base);
+                }
                 for f in &s.fields {
                     self.resolve_type(&f.ty);
                 }
@@ -1219,6 +1225,17 @@ mod tests {
                 .any(|d| d.message.contains("quoted operator traits")),
             "expected the removal error"
         );
+    }
+
+    /// A derivation base is a type reference like any other, but it was the
+    /// one spot resolution skipped — `struct B : NoSuchType` passed silently
+    /// while the same name in a port was rejected.
+    #[test]
+    fn unknown_derivation_base_is_reported() {
+        let (_, errs) = resolve_src("module m;\nstruct B : NoSuchType { x: Bit }\n");
+        assert_eq!(errs, 1);
+        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
+        assert_eq!(errs, 0);
     }
 
     /// A repeated member name inside one declaration never reached the
