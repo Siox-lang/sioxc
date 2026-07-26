@@ -555,3 +555,19 @@ gained `check_generic_arg_names`.
 
 Noted, not fixed: a duplicate *port connection* now yields both `E-P002` and a
 downstream `E-P014` — correct but noisy; the first message is the clear one.
+
+### 2026-07-26 — Codex — compiler validation sweep
+
+Validated the current compiler without finding a new failure.
+
+- `cargo test --workspace --release --no-fail-fast`: green (148 core tests,
+  36 LLVM semantic-agreement tests, all CLI/native integration and doc tests).
+- `siox-llvm` with `bitpack` and `simd`: green, 36/36 integration tests each.
+- `/home/max/siox-tests`: 72/72 files passed through the LLVM JIT.
+- Native AOT binaries passed for custom indexing, partial ranges, view buses,
+  and the clocked counter.
+- Focused negative coverage passed for `..=` rejection, reserved view names,
+  input-view write rejection, view identity by backing struct, missing operator
+  implementations, custom precedence validation, and constant index bounds.
+
+No compiler or corpus source files were changed.
