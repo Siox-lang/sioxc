@@ -295,6 +295,7 @@ impl<'a> Elaborator<'a> {
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
                 let cparams = eval_params(sub_decl, spec.ty, &env);
+                self.check_params_bound(sub_decl, &cparams, spec.site);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
                 // count as connected for the missing-connection check.
@@ -546,6 +547,49 @@ impl<'a> Elaborator<'a> {
             }
         }
         out
+    }
+
+    /// Spec Stage 5 requires every entity parameter to be known after
+    /// elaboration. An instantiation that leaves one unbound produced a signal
+    /// of unknown width (`E.d.y : ?`) with no diagnostic, failing much later at
+    /// the engine. Roots are exempt — a top-level entity is never instantiated,
+    /// so its parameters are legitimately open.
+    fn check_params_bound(
+        &mut self,
+        edecl: &EntityDecl,
+        params: &[(String, ParamValue)],
+        site: Span,
+    ) {
+        let bound: HashMap<&str, ParamValue> =
+            params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+        let missing: Vec<String> = edecl
+            .params
+            .params
+            .iter()
+            // Only *value* parameters (`W: integer`) need a number. A type
+            // parameter (`Buf<T>`) is bound to a type, which has no
+            // `ParamValue`, so requiring one would reject every generic.
+            .filter(|p| {
+                p.bound
+                    .as_ref()
+                    .and_then(|t| type_head_name(t))
+                    .is_some_and(|b| b == "integer")
+            })
+            .map(|p| p.name.text.as_str())
+            .filter(|n| !matches!(bound.get(n), Some(ParamValue::Int(_))))
+            .map(|n| format!("`{n}`"))
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                codes::UNKNOWN_NAME,
+                site,
+                format!(
+                    "`{}` needs a value for {} — an entity parameter must be known at elaboration",
+                    edecl.name.text,
+                    missing.join(", ")
+                ),
+            );
+        }
     }
 
     /// A named generic argument must name a parameter the entity declares.
@@ -1241,6 +1285,30 @@ mod tests {
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1);
+    }
+
+    /// Stage 5 requires every entity parameter to be known after elaboration.
+    /// An unbound one produced a signal of unknown width with no diagnostic,
+    /// failing much later at the engine. Type parameters are exempt — they
+    /// bind to a type, not a number.
+    #[test]
+    fn value_parameters_must_be_bound_at_instantiation() {
+        let base = "module m;\nentity S<W: integer> { out y: uint[W]; }\nimpl S<W: integer> { y = 0; }\n\
+                    #[top] entity E { out y: uint[8]; }\n";
+        let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
+        assert_eq!(errs, 1, "`W` was never given a value");
+
+        let (_, errs) =
+            elaborate_src(&format!("{base}impl E {{ let d: S<W = 8> = {{ .y = y }}; }}\n"));
+        assert_eq!(errs, 0, "bound");
+
+        // A *type* parameter has no numeric value and must not be demanded.
+        let generic = "module m;\nentity Buf<T> { in a: T; out y: T; }\n\
+                       impl Buf<T> { y = a; }\n#[top] entity H {}\n\
+                       impl H { let a: uint[8]; let y: uint[8]; \
+                       let d: Buf<uint[8]> = { .a = a, .y = y }; }\n";
+        let (_, errs) = elaborate_src(generic);
+        assert_eq!(errs, 0, "a type parameter is not a value parameter");
     }
 
     /// A named generic argument that matches no declared parameter used to be
