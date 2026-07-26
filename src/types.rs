@@ -1071,6 +1071,8 @@ impl<'a> Checker<'a> {
     fn check_unreachable_arms(&mut self, m: &MatchStmt) {
         let mut after_wildcard = false;
         let mut seen: HashSet<String> = HashSet::new();
+        // Inclusive integer ranges already matched (a bare literal is lo==hi).
+        let mut ranges: Vec<(i64, i64)> = Vec::new();
         for arm in &m.arms {
             let reason = if after_wildcard {
                 Some("a previous `_` already matches everything".to_string())
@@ -1084,6 +1086,26 @@ impl<'a> Checker<'a> {
                         let var = p.segments[1].text.clone();
                         (!seen.insert(var.clone()))
                             .then(|| format!("`{var}` is already matched by an earlier arm"))
+                    }
+                    // A range (or bare literal) wholly inside one already
+                    // matched can never be reached — first match wins.
+                    Pattern::Range { lo, hi, .. } => {
+                        let (lo, hi) = (*lo.min(hi), *lo.max(hi));
+                        let covered = ranges.iter().find(|(a, b)| lo >= *a && hi <= *b).copied();
+                        ranges.push((lo, hi));
+                        covered.map(|(a, b)| {
+                            let this = if lo == hi {
+                                format!("`{lo}`")
+                            } else {
+                                format!("`{lo}..{hi}`")
+                            };
+                            let prev = if a == b {
+                                format!("`{a}`")
+                            } else {
+                                format!("`{a}..{b}`")
+                            };
+                            format!("{this} is already covered by the earlier arm {prev}")
+                        })
                     }
                     _ => None,
                 }
@@ -3154,6 +3176,35 @@ mod tests {
             check_src(&format!("{ent}if 600 == q {{ 1 }} else {{ 0 }}; }}\n")),
             1,
             "flagged from the left too"
+        );
+    }
+
+    /// A range arm wholly inside an earlier one can never match (first match
+    /// wins) — the enum and wildcard cases were caught, ranges were not.
+    #[test]
+    fn unreachable_range_arm_warns_only_when_fully_covered() {
+        let m = |arms: &str| {
+            format!("module m;\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+        };
+        assert_eq!(
+            warnings(&m("0..9 => { r = 1; } 2..5 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            1,
+            "fully covered"
+        );
+        assert_eq!(
+            warnings(&m("0..9 => { r = 1; } 5 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            1,
+            "a literal inside an earlier range"
+        );
+        assert_eq!(
+            warnings(&m("0..9 => { r = 1; } 5..15 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            0,
+            "a partial overlap is still reachable"
+        );
+        assert_eq!(
+            warnings(&m("0..9 => { r = 1; } 10..20 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            0,
+            "disjoint ranges"
         );
     }
 

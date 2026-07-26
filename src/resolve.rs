@@ -279,6 +279,13 @@ impl<'a> Resolver<'a> {
             }
             Item::Struct(s) => {
                 self.declare(&s.name.text, DefKind::Struct, s.is_pub, s.name.span);
+                // Two fields of one name give the struct two same-named leaf
+                // signals; every later reference silently picks one.
+                self.check_duplicate_names(
+                    s.fields.iter().map(|f| (&f.name.text, f.name.span)),
+                    "field",
+                    &s.name.text,
+                );
             }
             Item::View(v) => {
                 // Views overload by backing struct (`Source Stream`,
@@ -295,6 +302,11 @@ impl<'a> Resolver<'a> {
             }
             Item::Enum(e) => {
                 let id = self.declare(&e.name.text, DefKind::Enum, e.is_pub, e.name.span);
+                self.check_duplicate_names(
+                    e.variants.iter().map(|v| (&v.name.text, v.name.span)),
+                    "variant",
+                    &e.name.text,
+                );
                 let mut vars = HashMap::new();
                 for v in &e.variants {
                     let vid = self.add_def(
@@ -469,6 +481,30 @@ impl<'a> Resolver<'a> {
                     }
                     self.sink.emit(diag);
                 }
+            }
+        }
+    }
+
+    /// Report a repeated member name within one declaration (a struct's fields
+    /// or an enum's variants). Unlike a top-level clash these never reached
+    /// [`Self::declare`], so they used to pass silently — leaving an ambiguous
+    /// `S::A`, or a struct with two identically-named leaf signals.
+    fn check_duplicate_names<'n>(
+        &mut self,
+        names: impl Iterator<Item = (&'n String, Span)>,
+        what: &str,
+        owner: &str,
+    ) {
+        let mut seen: HashMap<&'n str, Span> = HashMap::new();
+        for (name, span) in names {
+            if let Some(prev) = seen.insert(name.as_str(), span) {
+                self.sink.emit(
+                    Diagnostic::error(format!("duplicate {what} `{name}` in `{owner}`"))
+                        .with_code(codes::DUPLICATE_ITEM)
+                        .at(span)
+                        .label(prev, format!("`{name}` first declared here"))
+                        .help("rename or remove one of them"),
+                );
             }
         }
     }
@@ -1168,6 +1204,25 @@ mod tests {
                 .any(|d| d.message.contains("quoted operator traits")),
             "expected the removal error"
         );
+    }
+
+    /// A repeated member name inside one declaration never reached the
+    /// top-level duplicate check: an enum got an ambiguous variant, and a
+    /// struct got two identically-named leaf signals.
+    #[test]
+    fn duplicate_members_within_a_declaration_are_reported() {
+        let (_, errs) = resolve_src("module m;\nenum S { A, B, A }\n");
+        assert_eq!(errs, 1, "duplicate enum variant");
+
+        let (_, errs) = resolve_src("module m;\nstruct P { x: Bit, x: Bit }\n");
+        assert_eq!(errs, 1, "duplicate struct field");
+
+        // Distinct members, and the same name in *different* declarations, are
+        // both fine.
+        let (_, errs) = resolve_src(
+            "module m;\nenum S { A, B }\nenum T { A, B }\nstruct P { x: Bit, y: Bit }\n",
+        );
+        assert_eq!(errs, 0);
     }
 
     #[test]
