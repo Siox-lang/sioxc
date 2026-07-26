@@ -6347,7 +6347,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
     /// Two producers wired to one bus net is the classic miswiring. It must
     /// name the conflict (not the missing `Resolve` impl it happens to hit),
     /// carry a code, and point at each contributing connection — this is the

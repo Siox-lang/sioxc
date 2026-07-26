@@ -1314,6 +1314,20 @@ impl<'a> Parser<'a> {
                 span: m.span,
             };
         }
+        // `!x` is what every C/Verilog/Rust habit reaches for, but `!` here
+        // only ever marks a macro call (`assert!`). Take it as negation and say
+        // so, instead of cascading "expected an expression" through the rest of
+        // the statement.
+        if self.at(TokenKind::Bang) && self.kind_at(self.pos + 1) != &TokenKind::LParen {
+            let bang = self.bump();
+            self.error_at(bang.span, "unary `!` is not an operator; use `not`");
+            let rhs = self.parse_unary(no_struct);
+            return Expr::Unary {
+                op: UnOp::Not,
+                rhs: Box::new(rhs),
+                span: start.to(self.prev_span()),
+            };
+        }
         let op = match self.kind() {
             TokenKind::Minus => Some(UnOp::Neg),
             // `not` is the textual logical-negation prefix operator.
@@ -2164,6 +2178,22 @@ mod tests {
         assert!(matches!(i.items[1], ImplItem::Let(_)));
         assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::If(_))));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
+    }
+
+    /// `!x` is the reflex from C/Verilog/Rust, but `!` here only marks a macro
+    /// call — it used to cascade four "expected an expression" errors through
+    /// the rest of the statement.
+    #[test]
+    fn unary_bang_suggests_not() {
+        let mut sink = DiagnosticSink::new();
+        let src = "module m;\nimpl M {\n  clk = !clk after 5ns;\n}\n";
+        crate::syntax::parse_module(FileId(0), src, &mut sink);
+        let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+        assert_eq!(msgs.len(), 1, "one clear error, not a cascade: {msgs:?}");
+        assert!(msgs[0].contains("use `not`"), "{msgs:?}");
+        // The macro form is untouched.
+        let (_, errors) = parse("module m;\n#[test] entity T {}\nimpl T { assert!(1 == 1, \"ok\"); }\n");
+        assert_eq!(errors, 0, "`assert!` still parses");
     }
 
     #[test]
