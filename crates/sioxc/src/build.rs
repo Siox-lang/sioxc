@@ -158,7 +158,7 @@ pub fn build(
     prog.push_str("extern void sx_set(uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
     prog.push_str("extern void sx_settle(void);\n");
-    prog.push_str("static const char *g_msg;\n");
+    prog.push_str("static const char *g_msg;\nstatic char g_msgbuf[512];\n");
     prog.push_str("static int g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
@@ -1264,6 +1264,81 @@ impl Ctx<'_> {
         Ok(())
     }
 
+
+    /// Expand a format string into a printf format plus argument expressions,
+    /// honouring `{{`/`}}` escapes and rendering enum/real/integer operands the
+    /// way `print!` does. Shared by `print!` and the `assert!`/`warn!` messages.
+    fn c_format(
+        &self,
+        text: &str,
+        args: &[ast::Expr],
+    ) -> Result<(String, Vec<String>), String> {
+        let mut cfmt = String::new();
+        let mut cargs = Vec::new();
+        let mut vals = args.iter();
+        for part in siox::run::format_parts(text) {
+            let a = match part {
+                siox::run::FormatPart::Text(t) => {
+                    cfmt.push_str(&c_escape(&t).replace('%', "%%"));
+                    continue;
+                }
+                siox::run::FormatPart::Placeholder => vals.next(),
+            };
+            let Some(a) = a else { continue };
+            let sig = expr_path(a)
+                .and_then(|p| self.map.get(&p))
+                .map(|id| &self.design.signals[id.0 as usize]);
+            let is_real = sig.map(|s| s.real).unwrap_or_else(
+                || matches!(a, ast::Expr::Int { text, .. } if text.contains('.')),
+            );
+            let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or_else(|| {
+                expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned())
+            });
+            let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
+            if let Some(syms) = enum_syms {
+                let mut tern = String::from("\"?\"");
+                for (disc, sym) in syms {
+                    let esc = c_escape(sym);
+                    tern = format!("(_v=={disc}?\"{esc}\":{tern})");
+                }
+                cfmt.push_str("%s");
+                cargs.push(format!(
+                    "({{ long long _v = (long long)({}); {tern}; }})",
+                    self.expr(a)?
+                ));
+            } else if is_real {
+                cfmt.push_str("%g");
+                cargs.push(format!("sx_f64({})", self.value_for_print(a)?));
+            } else {
+                cfmt.push_str("%llu");
+                cargs.push(format!("(unsigned long long)({})", self.expr(a)?));
+            }
+        }
+        Ok((cfmt, cargs))
+    }
+
+    /// The C expression that sets `g_msg` for an `assert!`/`warn!` message at
+    /// `args[at]`. With no format arguments this is a plain string literal;
+    /// with them it formats into a static buffer first.
+    fn c_message(&self, args: &[ast::Expr], at: usize, fallback: &str) -> Result<String, String> {
+        let Some(text) = args.get(at).and_then(str_lit) else {
+            return Ok(format!("g_msg = \"{}\";", c_escape(fallback)));
+        };
+        let rest = args.get(at + 1..).unwrap_or(&[]);
+        if rest.is_empty() {
+            return Ok(format!("g_msg = \"{}\";", c_escape(&text)));
+        }
+        let (cfmt, cargs) = self.c_format(&text, rest)?;
+        let list = if cargs.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", cargs.join(", "))
+        };
+        Ok(format!(
+            "snprintf(g_msgbuf, sizeof g_msgbuf, \"{cfmt}\"{list}); g_msg = g_msgbuf;"
+        ))
+    }
+
     fn call(
         &self,
         callee: &ast::Expr,
@@ -1303,55 +1378,7 @@ impl Ctx<'_> {
                 let Some(ast::Expr::StrLit { text, .. }) = args.first() else {
                     return Err("print! needs a format string".into());
                 };
-                let mut cfmt = String::new();
-                let mut cargs = Vec::new();
-                let mut vals = args[1..].iter();
-                for part in siox::run::format_parts(text) {
-                    let a = match part {
-                        siox::run::FormatPart::Text(t) => {
-                            cfmt.push_str(&c_escape(&t).replace('%', "%%"));
-                            continue;
-                        }
-                        siox::run::FormatPart::Placeholder => vals.next(),
-                    };
-                    if let Some(a) = a {
-                        let sig = expr_path(a)
-                            .and_then(|p| self.map.get(&p))
-                            .map(|id| &self.design.signals[id.0 as usize]);
-                        let is_real = sig.map(|s| s.real).unwrap_or_else(
-                            || matches!(a, ast::Expr::Int { text, .. } if text.contains('.')),
-                        );
-                        // An enum-typed signal prints its variant symbol via a
-                        // ternary over the value (a clang statement-expression
-                        // evaluates the operand once).
-                        // A signal's enum type, or an enum/Logic testbench
-                        // local's declared type, selects symbol rendering.
-                        let ety: Option<String> =
-                            sig.and_then(|s| s.enum_type.clone()).or_else(|| {
-                                expr_path(a)
-                                    .and_then(|p| self.local_types.borrow().get(&p).cloned())
-                            });
-                        let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
-                        if let Some(syms) = enum_syms {
-                            let mut tern = String::from("\"?\"");
-                            for (disc, sym) in syms {
-                                let esc = c_escape(sym);
-                                tern = format!("(_v=={disc}?\"{esc}\":{tern})");
-                            }
-                            cfmt.push_str("%s");
-                            cargs.push(format!(
-                                "({{ long long _v = (long long)({}); {tern}; }})",
-                                self.expr(a)?
-                            ));
-                        } else if is_real {
-                            cfmt.push_str("%g");
-                            cargs.push(format!("sx_f64({})", self.value_for_print(a)?));
-                        } else {
-                            cfmt.push_str("%llu");
-                            cargs.push(format!("(unsigned long long)({})", self.expr(a)?));
-                        }
-                    }
-                }
+                let (cfmt, cargs) = self.c_format(text, &args[1..])?;
                 let call_args = if cargs.is_empty() {
                     String::new()
                 } else {
@@ -1373,28 +1400,18 @@ impl Ctx<'_> {
             "assert" if bang => {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
-                let msg = args
-                    .get(1)
-                    .and_then(str_lit)
-                    .unwrap_or_else(|| "assertion failed".into());
-                let msg = c_escape(&msg);
+                let set = self.c_message(args, 1, "assertion failed")?;
                 // Record the failure message and fail this test; `main` prints
                 // the `test <name> ... FAILED` line and the message.
-                b.push_str(&format!(
-                    "{ind}if (!({c})) {{ g_msg = \"{msg}\"; return 1; }}\n"
-                ));
+                b.push_str(&format!("{ind}if (!({c})) {{ {set} return 1; }}\n"));
             }
             // warn!(cond, msg): non-fatal — report to stderr, keep running.
             "warn" if bang => {
                 let cond = args.first().ok_or("warn needs a condition")?;
                 let c = self.expr(cond)?;
-                let msg = args
-                    .get(1)
-                    .and_then(str_lit)
-                    .unwrap_or_else(|| "warning".into());
-                let msg = c_escape(&msg);
+                let set = self.c_message(args, 1, "warning")?;
                 b.push_str(&format!(
-                    "{ind}if (!({c})) {{ fprintf(stderr, \"warning: {msg}\\n\"); g_warnings++; }}\n"
+                    "{ind}if (!({c})) {{ {set} fprintf(stderr, \"warning: %s\\n\", g_msg); g_warnings++; }}\n"
                 ));
             }
             _ => {}

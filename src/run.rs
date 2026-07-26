@@ -1425,6 +1425,27 @@ impl Testbench<'_> {
         }
     }
 
+    /// Render a diagnostic message from `args[at]` (a format string) and the
+    /// arguments after it — the same substitution `print!` does, so a failing
+    /// `assert!(x == 9, "got {}", x)` reports the value instead of a literal
+    /// `{}`.
+    fn format_message(&self, args: &[ast::Expr], at: usize) -> Option<String> {
+        let text = args.get(at).and_then(str_lit)?;
+        let mut vals = args[(at + 1).min(args.len())..].iter();
+        let mut out = String::new();
+        for part in format_parts(&text) {
+            match part {
+                FormatPart::Text(t) => out.push_str(&t),
+                FormatPart::Placeholder => {
+                    if let Some(a) = vals.next() {
+                        out.push_str(&self.render_arg(a));
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
     fn exec_call(&mut self, callee: &ast::Expr, args: &[ast::Expr], bang: bool, span: Span) {
         let name = match callee {
             ast::Expr::Path(p) => p.segments.first().map(|s| s.text.as_str()).unwrap_or(""),
@@ -1491,9 +1512,8 @@ impl Testbench<'_> {
                     .map(|c| !self.eval(c).is_zero())
                     .unwrap_or(true);
                 if !ok {
-                    let msg = args
-                        .get(1)
-                        .and_then(str_lit)
+                    let msg = self
+                        .format_message(args, 1)
                         .unwrap_or_else(|| "assertion failed".to_string());
                     self.failure = Some((msg, span));
                 }
@@ -1506,9 +1526,8 @@ impl Testbench<'_> {
                     .map(|c| !self.eval(c).is_zero())
                     .unwrap_or(true);
                 if !ok {
-                    let msg = args
-                        .get(1)
-                        .and_then(str_lit)
+                    let msg = self
+                        .format_message(args, 1)
                         .unwrap_or_else(|| "warning".to_string());
                     self.warnings.push((msg, span));
                 }
