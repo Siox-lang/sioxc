@@ -1306,10 +1306,15 @@ impl Ctx<'_> {
                 let mut cfmt = String::new();
                 let mut cargs = Vec::new();
                 let mut vals = args[1..].iter();
-                let mut rest = text.as_str();
-                while let Some(i) = rest.find("{}") {
-                    cfmt.push_str(&c_escape(&rest[..i]).replace('%', "%%"));
-                    if let Some(a) = vals.next() {
+                for part in siox::run::format_parts(text) {
+                    let a = match part {
+                        siox::run::FormatPart::Text(t) => {
+                            cfmt.push_str(&c_escape(&t).replace('%', "%%"));
+                            continue;
+                        }
+                        siox::run::FormatPart::Placeholder => vals.next(),
+                    };
+                    if let Some(a) = a {
                         let sig = expr_path(a)
                             .and_then(|p| self.map.get(&p))
                             .map(|id| &self.design.signals[id.0 as usize]);
@@ -1346,9 +1351,7 @@ impl Ctx<'_> {
                             cargs.push(format!("(unsigned long long)({})", self.expr(a)?));
                         }
                     }
-                    rest = &rest[i + 2..];
                 }
-                cfmt.push_str(&c_escape(rest).replace('%', "%%"));
                 let call_args = if cargs.is_empty() {
                     String::new()
                 } else {

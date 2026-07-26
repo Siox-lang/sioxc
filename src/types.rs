@@ -1427,6 +1427,35 @@ impl<'a> Checker<'a> {
         self.check_fits_width(v, width as u32, expr_span(site));
     }
 
+    /// `print!("{} {}", x)` silently rendered an empty slot, and a spare
+    /// argument was silently dropped — in a testbench that is exactly where a
+    /// wrong value costs you debugging time. Both engines share the arity, so
+    /// checking it here covers them at once.
+    fn check_format_arity(&mut self, callee: &Expr, args: &[Expr]) {
+        let name = match callee {
+            Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            _ => return,
+        };
+        // `assert!(cond, "msg", args..)` puts the format string second.
+        let fmt_at = match name {
+            "print" => 0,
+            "assert" => 1,
+            _ => return,
+        };
+        let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else { return };
+        let want = crate::run::format_arity(text);
+        let have = args.len().saturating_sub(fmt_at + 1);
+        if want != have {
+            self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "format string takes {want} argument(s) but {have} were given"
+                ),
+            );
+        }
+    }
+
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
     /// array, which is always declared with a plain element count.
     fn is_entity_ty(&self, t: &Ty) -> bool {
@@ -1839,10 +1868,13 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, bang, .. } => {
                 self.check_expr(callee, sym);
                 for a in args {
                     self.check_expr(a, sym);
+                }
+                if *bang {
+                    self.check_format_arity(callee, args);
                 }
                 // A constant conversion argument must FIT the target
                 // (spec 3.17/3.26): `uint[4](300)` is a compile-time error,
@@ -3202,6 +3234,24 @@ mod tests {
             1,
             "flagged from the left too"
         );
+    }
+
+    /// A miscounted `print!` silently rendered an empty slot or dropped an
+    /// argument — the worst place for that is a testbench you are debugging.
+    #[test]
+    fn format_argument_count_must_match() {
+        let tb = |body: &str| {
+            format!("module m;\n#[test] entity T {{}}\nimpl T {{ let a: uint[8] = 1; {body} }}\n")
+        };
+        assert_eq!(check_src(&tb(r#"print!("{} {}", a);"#)), 1, "too few");
+        assert_eq!(check_src(&tb(r#"print!("{}", a, a);"#)), 1, "too many");
+        assert_eq!(check_src(&tb(r#"print!("none", a);"#)), 1, "no placeholders");
+        assert_eq!(check_src(&tb(r#"print!("{} {}", a, a);"#)), 0, "exact");
+        // `{{}}` is an escaped brace pair and consumes nothing.
+        assert_eq!(check_src(&tb(r#"print!("{{}} {}", a);"#)), 0, "escaped braces");
+        // `assert!` takes its format string second.
+        assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}", a);"#)), 0);
+        assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}");"#)), 1);
     }
 
     /// A range arm wholly inside an earlier one can never match (first match

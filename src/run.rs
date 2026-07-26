@@ -451,6 +451,57 @@ fn eval_tb_const(
     }
 }
 
+/// One piece of a `print!` format string.
+pub enum FormatPart {
+    /// Literal text (with `{{`/`}}` already reduced to `{`/`}`).
+    Text(String),
+    /// A `{}` placeholder, which consumes one argument.
+    Placeholder,
+}
+
+/// Split a `print!` format string into literal text and `{}` placeholders.
+///
+/// `{{` and `}}` are escaped braces: `"{{}}"` is the literal text `{}` and
+/// consumes **no** argument. Scanning for `"{}"` directly (as both engines
+/// used to) finds the inner `{}` of `{{}}` and substitutes into it.
+pub fn format_parts(fmt: &str) -> Vec<FormatPart> {
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                text.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                text.push('}');
+            }
+            '{' if chars.peek() == Some(&'}') => {
+                chars.next();
+                if !text.is_empty() {
+                    parts.push(FormatPart::Text(std::mem::take(&mut text)));
+                }
+                parts.push(FormatPart::Placeholder);
+            }
+            _ => text.push(c),
+        }
+    }
+    if !text.is_empty() {
+        parts.push(FormatPart::Text(text));
+    }
+    parts
+}
+
+/// How many arguments a format string consumes.
+pub fn format_arity(fmt: &str) -> usize {
+    format_parts(fmt)
+        .iter()
+        .filter(|p| matches!(p, FormatPart::Placeholder))
+        .count()
+}
+
 fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
     let mut out = HashMap::new();
     for m in modules {
@@ -1411,15 +1462,16 @@ impl Testbench<'_> {
                 };
                 let mut out = String::new();
                 let mut vals = args[1..].iter();
-                let mut rest = text.as_str();
-                while let Some(i) = rest.find("{}") {
-                    out.push_str(&rest[..i]);
-                    if let Some(a) = vals.next() {
-                        out.push_str(&self.render_arg(a));
+                for part in format_parts(text) {
+                    match part {
+                        FormatPart::Text(t) => out.push_str(&t),
+                        FormatPart::Placeholder => {
+                            if let Some(a) = vals.next() {
+                                out.push_str(&self.render_arg(a));
+                            }
+                        }
                     }
-                    rest = &rest[i + 2..];
                 }
-                out.push_str(rest);
                 println!("{out}");
             }
             // seed!(n): reseed the deterministic RNG.
