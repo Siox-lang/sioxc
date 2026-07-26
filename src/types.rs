@@ -853,6 +853,77 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `p.nosuch` on a struct: the field access lowered to `Unknown`, so the
+    /// driver silently carried no value. Only *plain struct* receivers are
+    /// checked — an instance port (`dut.y`), a view leaf and a derived
+    /// struct's inherited fields all reach here as field accesses too, so the
+    /// check walks the derivation chain and stays silent on anything else.
+    fn check_field_exists(&mut self, base: &Expr, field: &Ident, sym: &HashMap<String, Ty>) {
+        let Some(head) = self.ty_head(&self.type_of(base, sym)) else { return };
+        // `s.ready()` parses as a call over a *field* node, so a method name
+        // reaches here too — it is not a missing field.
+        if self.methods.contains_key(&(head.clone(), field.text.clone())) {
+            return;
+        }
+        // Walk `struct B : A` so an inherited field counts as present.
+        let mut seen = HashSet::new();
+        let mut cur = Some(head.clone());
+        while let Some(name) = cur {
+            if !seen.insert(name.clone()) {
+                return; // cyclic derivation: already diagnosed elsewhere
+            }
+            let Some((base_ty, fields)) = self.structs.get(&name) else { return };
+            if fields.iter().any(|f| *f == field.text) {
+                return;
+            }
+            cur = base_ty.as_ref().and_then(type_head_name).map(str::to_string);
+        }
+        let fields = self.structs.get(&head).map(|(_, f)| f.clone()).unwrap_or_default();
+        let mut d = Diagnostic::error(format!("`{head}` has no field `{}`", field.text))
+            .with_code(codes::UNKNOWN_NAME)
+            .at(field.span);
+        if !fields.is_empty() {
+            d = d.help(format!("it has: {}", fields.join(", ")));
+        }
+        self.sink.emit(d);
+    }
+
+    /// A method call whose name no impl provides for the receiver's type.
+    /// It used to lower to `Unknown` — silently producing a driver with an
+    /// unknown value, or (worse) an unknown *condition*, so an `if
+    /// clk.typo()` block quietly became combinational.
+    ///
+    /// Deliberately conservative: only a receiver whose type head is known
+    /// *and* which has at least one method recorded is checked, so a type
+    /// whose methods this stage never collected can't false-positive.
+    fn check_method_exists(&mut self, callee: &Expr, sym: &HashMap<String, Ty>) {
+        let Expr::Field { base, field, span } = callee else { return };
+        let _ = &base;
+        let recv = self.type_of(base, sym);
+        let Some(head) = self.ty_head(&recv) else { return };
+        if self.methods.contains_key(&(head.clone(), field.text.clone())) {
+            return;
+        }
+        // Only complain about a type we actually know methods for.
+        if !self.methods.keys().any(|(h, _)| *h == head) {
+            return;
+        }
+        let mut known: Vec<&str> = self
+            .methods
+            .keys()
+            .filter(|(h, _)| *h == head)
+            .map(|(_, m)| m.as_str())
+            .collect();
+        known.sort();
+        let mut d = Diagnostic::error(format!("`{head}` has no method `{}`", field.text))
+            .with_code(codes::INVALID_METHOD_CALL)
+            .at(*span);
+        if !known.is_empty() {
+            d = d.help(format!("it has: {}", known.join(", ")));
+        }
+        self.sink.emit(d);
+    }
+
     /// Spec 3.20: a trait is a compile-time contract, so an implementation
     /// must provide every method the trait declares without a default body.
     /// A partial impl used to pass, leaving the missing method to fail much
@@ -1959,7 +2030,10 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Field { base, .. } => self.check_expr(base, sym),
+            Expr::Field { base, field, .. } => {
+                self.check_expr(base, sym);
+                self.check_field_exists(base, field, sym);
+            }
             Expr::Index { base, index, .. } => {
                 self.check_expr(base, sym);
                 match index.as_ref() {
@@ -2183,12 +2257,20 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, bang, .. } => {
-                self.check_expr(callee, sym);
+                // A method callee is a `Field` node, but its name is a method,
+                // not a field — check the receiver and let `check_method_exists`
+                // judge the name, so one mistake yields one diagnostic.
+                match callee.as_ref() {
+                    Expr::Field { base, .. } => self.check_expr(base, sym),
+                    _ => self.check_expr(callee, sym),
+                }
                 for a in args {
                     self.check_expr(a, sym);
                 }
                 if *bang {
                     self.check_format_arity(callee, args);
+                } else if matches!(callee.as_ref(), Expr::Field { .. }) {
+                    self.check_method_exists(callee, sym);
                 }
                 // A constant conversion argument must FIT the target
                 // (spec 3.17/3.26): `uint[4](300)` is a compile-time error,
@@ -3677,6 +3759,25 @@ mod tests {
             "should name `Q`: {:?}",
             sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    /// An unknown field or method lowered to `Unknown`: the driver silently
+    /// carried no value, and `if clk.typo()` produced an unknown *condition*,
+    /// quietly turning a clocked block combinational.
+    #[test]
+    fn unknown_field_and_method_are_reported() {
+        let st = "module m;\nstruct P { a: Bit }\nimpl P { fn get(self) -> Bit { return self.a; } }\n\
+                  entity E { out y: Bit; }\nimpl E { let p: P; y = ";
+        assert_eq!(check_src(&format!("{st}p.nosuch; }}\n")), 1, "unknown field");
+        assert_eq!(check_src(&format!("{st}p.a; }}\n")), 0, "real field");
+        // A method name reaches the field check through the call's callee.
+        assert_eq!(check_src(&format!("{st}p.get(); }}\n")), 0, "method, not a field");
+        assert_eq!(check_src(&format!("{st}p.nomethod(); }}\n")), 1, "unknown method");
+
+        // An inherited field counts as present.
+        let derived = "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n\
+                       entity E { out o: Bit; }\nimpl E { let b: B; o = b.x; }\n";
+        assert_eq!(check_src(derived), 0, "inherited field");
     }
 
     /// Spec 3.20 calls a trait a compile-time contract, but a partial impl
