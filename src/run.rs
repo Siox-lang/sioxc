@@ -1473,7 +1473,7 @@ impl Testbench<'_> {
                 ));
             }
             // await <duration> | <edge> | <condition>.
-            "await" => self.do_await(args),
+            "await" => self.do_await(args, span),
             // print!("n={} at {}", n, t): simulation output. `{}` renders per
             // the argument's kind (real -> float, Char -> the character,
             // else decimal); auto-newline, like $display.
@@ -1538,7 +1538,7 @@ impl Testbench<'_> {
 
     /// `await <expr>`: dispatch on the argument shape — a duration advances
     /// time; `clk.rising()` waits for an edge; anything else is a condition.
-    fn do_await(&mut self, args: &[ast::Expr]) {
+    fn do_await(&mut self, args: &[ast::Expr], span: Span) {
         match args.first() {
             Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
                 let target = self.time_fs + duration_fs(args);
@@ -1552,7 +1552,7 @@ impl Testbench<'_> {
             }
             Some(ast::Expr::SysAttr { base, attr, .. }) => {
                 let id = self.signal_of(base);
-                self.await_edge(id, attr.text.as_str());
+                self.await_edge(id, attr.text.as_str(), span);
             }
             // `await clk.rising()` — a `ClockLike` edge method waits on the
             // same edge machinery as the `::rising` sysattr.
@@ -1562,12 +1562,12 @@ impl Testbench<'_> {
             {
                 if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
                     let id = self.signal_of(base);
-                    self.await_edge(id, &field.text);
+                    self.await_edge(id, &field.text, span);
                 }
             }
             Some(cond) => {
                 let cond = cond.clone();
-                self.await_cond(&cond);
+                self.await_cond(&cond, span);
             }
             None => {}
         }
@@ -1665,9 +1665,10 @@ impl Testbench<'_> {
 
     /// Wait for a `rising`/`falling`/`event` edge on `id`, driven by the
     /// background clocks. Bounded so a missing clock can't hang the run.
-    fn await_edge(&mut self, id: Option<SignalId>, kind: &str) {
+    fn await_edge(&mut self, id: Option<SignalId>, kind: &str, span: Span) {
         let Some(id) = id else { return };
         let mut prev = self.engine.read(id);
+        let mut seen = false;
         for _ in 0..1_000_000 {
             if !self.step_one_clock() {
                 break;
@@ -1680,14 +1681,19 @@ impl Testbench<'_> {
             };
             prev = cur;
             if hit {
+                seen = true;
                 break;
             }
+        }
+        if !seen {
+            let path = &self.engine.design().signals[id.0 as usize].path;
+            self.fail_await(format!("`await {path}.{kind}()` never happened"), span);
         }
     }
 
     /// Wait until `cond` holds, stepping the background clocks. Proceeds
     /// immediately if already true; bounded against a missing clock.
-    fn await_cond(&mut self, cond: &ast::Expr) {
+    fn await_cond(&mut self, cond: &ast::Expr, span: Span) {
         self.engine.settle();
         let mut guard = 0;
         while self.eval(cond).is_zero() && guard < 1_000_000 {
@@ -1695,6 +1701,30 @@ impl Testbench<'_> {
                 break;
             }
             guard += 1;
+        }
+        // Giving up used to be silent, so the testbench carried on as if the
+        // condition had held — every later assertion then ran against the
+        // wrong state, and a test that checked nothing still reported `ok`.
+        if self.eval(cond).is_zero() {
+            self.fail_await(
+                format!(
+                    "`await {}` never became true",
+                    crate::syntax::pretty::expr_string(cond)
+                ),
+                span,
+            );
+        }
+    }
+
+    /// Record an unmet `await` as a test failure (unless one is already
+    /// pending, so the first cause is the one reported).
+    fn fail_await(&mut self, msg: String, span: Span) {
+        if self.failure.is_none() {
+            self.failure = Some((
+                format!("{msg} — no clock advanced it, or the condition can never hold"),
+                span,
+            ));
+            self.halted = true;
         }
     }
 
