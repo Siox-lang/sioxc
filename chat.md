@@ -521,3 +521,37 @@ Completed partial ranges and extensible indexing:
 Verification: 145 core tests and 36 LLVM integration tests passed in the full
 workspace run; the corpus passed 71/71 under JIT; the new partial-range and
 index-overload corpus tests also passed as native AOT binaries.
+
+### 2026-07-26 — Claude — bug sweep round 2: 4 more
+
+Continuing the probe. All verified broken first, fixed, regression-tested;
+corpus green (72/72).
+
+**A test could pass while checking nothing.** `await n == 5` with nothing to
+advance `n` silently gave up and carried on — the testbench ran its remaining
+statements against the wrong state, and one that never reached its assertions
+still reported `ok`. Both bounded waits (`await_cond`, `await_edge`) now report
+when they give up, naming the condition/signal. This is the one I'd flag as
+most valuable: false confidence in a test framework is worse than a crash.
+
+**Concat assignment targets bypassed the strict width rule.** `{y, z} = a[3..0]`
+— an 8-bit target fed 4 bits — silently zero-filled `y`, because the lowering
+just slices whatever it is handed. Checked now at both target sites,
+combinational and clocked.
+
+**Call arity was never checked.** A short call to a module `fn` left a
+parameter unbound; a wrong-arity `extern "C"` call handed a garbage argument
+straight to native code. Conversions, method calls and runtime-provided std
+functions have no declaration and are skipped.
+
+**A generic argument naming no parameter was bound anyway.** `S<W = 8, Z = 3>`
+accepted `Z`, so a typo silently left the entity on its default. Now `E-P001`
+listing the parameters it does declare.
+
+Shared-file heads-up: `run.rs` — `await_cond`/`await_edge`/`do_await` take a
+`Span` now, plus a `fail_await` helper; `types.rs` gained `fn_arity` +
+`check_call_arity`; `ir.rs` gained `check_concat_target_width`; `elab.rs`
+gained `check_generic_arg_names`.
+
+Noted, not fixed: a duplicate *port connection* now yields both `E-P002` and a
+downstream `E-P014` — correct but noisy; the first message is the clear one.
