@@ -437,3 +437,55 @@ rather than the type checker. That one I'd leave — it's a genuine *backend*
 limit with a reserved `wide` feature, so encoding it as a language rule in the
 type checker would be wrong; the current message already names the signal and
 the reason.
+
+### 2026-07-26 — Claude — bug sweep: 17 fixed
+
+Systematic probing for things that go *wrong* rather than things missing.
+Everything below was verified broken first, fixed, and locked with a
+regression test; corpus stayed green (69/69) with zero false positives.
+
+**Wrong answers**
+- `sig == 600` on a `uint[8]` was **true** when `sig` held 88 — comparisons
+  mask both sides, so an out-of-range literal became in-range. It also
+  *diverged*: hardware compared correctly, only the testbench evaluator was
+  wrong. Fixed by rejecting the un-representable literal (the mask is right for
+  `q == 0 - 3`, which really is 253).
+- `print!("{{}} {}", x)` printed `{x}` — scanning for `"{}"` finds the inner
+  braces of an escape. Both engines had their own copy of the bug; they now
+  share `run::format_parts`.
+- `assert!(x == 9, "got {}", x)` printed a literal `got {}` in both engines.
+
+**Silent acceptance** (each now diagnosed)
+- `a / 0`; `y = 1; y = 2;` (dead assignment, `W-P014`); duplicate enum
+  variants, struct fields, entity ports, and struct-literal fields (`E-P002`);
+  two variants sharing an explicit discriminant; a `match` range arm wholly
+  covered by an earlier one (`W-P006`); `print!`/`assert!` argument-count
+  mismatches.
+
+**Silent `Unknown` → generic engine failure**
+- Unbounded recursion (`E-P015`), constant out-of-bounds bit index/slice, and
+  an out-of-range instance-array index. All three lowered an `Unknown` into a
+  driver with **no diagnostic**, surfacing much later as "no engine can run
+  this design".
+
+**Message quality**
+- `E-P014 CONFLICTING_DRIVERS` now names the miswiring rather than the missing
+  `Resolve` impl, and points at both connection sites.
+- Diagnostics rendered any struct/enum/entity as the words "a named type";
+  added a resolving `ty_display`.
+- `!x` (the C/Verilog/Rust reflex) cascaded four "expected an expression"
+  errors; now one "use `not`" and parsing recovers.
+
+Shared-file heads-up: `types.rs` gained `check_fits_width`, `const_literal`,
+`check_comparison_fit`, `check_index_bounds`, `check_format_arity`,
+`ty_display`, `is_entity_ty`, `lint_dead_assignments`; `resolve.rs` gained
+`check_duplicate_names`; `run.rs` exports `format_parts`/`format_arity`/
+`FormatPart`; `build.rs` gained `c_format`/`c_message`; `ir.rs` has a
+`ctx_span` table and `report_depth_exceeded`. New codes: `E-P014`, `E-P015`,
+`W-P014`.
+
+Deliberately not fixed: `>64-bit` signals are rejected by the backend rather
+than the type checker — that's a real backend limit with a reserved `wide`
+feature, so encoding it as a language rule would be wrong. Data arrays with a
+declared range (`Logic[15..8]`) are still unchecked for bounds, because
+`Ty::Array` doesn't record whether a range or a count was written.
