@@ -6455,8 +6455,11 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
     let enums = enum_index(modules);
     let mut out = HashMap::new();
     for (name, e) in &enums {
-        // A numeric `: repr` sets the width explicitly; otherwise the width
-        // covers the effective variant count (inherited + declared).
+        // A numeric `: repr` sets the width explicitly; otherwise the width is
+        // derived, and must hold every *value* the enum can take — not just
+        // one code per variant. An explicit discriminant can sit far above the
+        // ordinal range (`enum Code { Lo = 1, Hi = 9 }` is two variants but
+        // needs four bits), so the larger of the two bounds wins.
         let w = if e.repr.is_some() && enum_base_name(e, &enums).is_none() {
             type_width(
                 e.repr.as_ref().unwrap(),
@@ -6465,14 +6468,20 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
                 &HashMap::new(),
             )
         } else {
-            let n = effective_variants(name, &enums, &mut Vec::new())
-                .len()
-                .max(1) as u32;
-            if n <= 1 {
+            let variants = effective_variants(name, &enums, &mut Vec::new());
+            let n = variants.len().max(1) as u32;
+            let count_bits = if n <= 1 {
                 1
             } else {
                 u32::BITS - (n - 1).leading_zeros()
-            }
+            };
+            let max_disc = variants.iter().filter_map(|(_, d)| *d).max().unwrap_or(0);
+            let disc_bits = if max_disc <= 0 {
+                1
+            } else {
+                u64::BITS - (max_disc as u64).leading_zeros()
+            };
+            count_bits.max(disc_bits)
         };
         out.insert(name.clone(), w);
     }
@@ -7217,6 +7226,24 @@ mod tests {
             "slice write merges: {:?}",
             dr.expr
         );
+    }
+
+    /// A derived enum width has to hold every *value*, not one code per
+    /// variant. `Hi = 9` in a two-variant enum needs four bits; counting
+    /// variants alone gave one, silently truncating the value to 1. The old
+    /// `: uint[4]` repr annotation used to paper over this.
+    #[test]
+    fn enum_width_covers_explicit_discriminants() {
+        let d = lower_src(
+            "module m;\n\
+             enum Code { Lo = 1, Hi = 9 }\n\
+             entity E { out c: Code; }\n\
+             impl E { c = Code::Hi; }\n\
+             #[top] entity H {}\n\
+             impl H { let c: Code; let dut: E = { .c = c }; }\n",
+        );
+        let sig = d.signals.iter().find(|s| s.path == "H.dut.c").unwrap();
+        assert_eq!(sig.width, 4, "width must hold the largest discriminant");
     }
 
     #[test]

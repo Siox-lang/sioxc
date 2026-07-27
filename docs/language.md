@@ -502,10 +502,11 @@ enum State {
 }
 ```
 
-Enum with representation:
+Enum with explicit discriminants — the *values* are pinned, and the width
+follows from them (§3.28); an enum never declares a storage width of its own:
 
 ```siox
-enum State: uint[2] {
+enum State {
     Idle  = 0,
     Start = 1,
     Shift = 2,
@@ -1649,9 +1650,19 @@ never members, and never behaviour — **a base's trait impls do not descend to
 a derived type, and a derived type's impls do not leak to its base**. That is
 how `Logic : ULogic` gains `Resolve` while `ULogic` stays unresolved.
 
-An enum whose `: T` names something that is *not* an enum is unrelated to
-derivation: there `T` is the discriminant representation and the variants are
-the enum's own (`enum State : uint[2] { Idle = 0, Run = 1 }`).
+An enum's base must itself be an enum. **An enum does not declare a storage
+width.** Its width is derived, wide enough to hold every value it can take —
+the larger of what the variant count needs and what the biggest explicit
+discriminant needs (`enum Code { Lo = 1, Hi = 9 }` is two variants and four
+bits). Where a *particular* wire width matters, it belongs to the thing
+carrying the value — a port, a struct field, a function's return type — each
+of which already declares a type, so the encoding is an ordinary conversion at
+that boundary rather than a property of the enum:
+
+```siox
+enum State { Idle, Run, Done }
+fn encode(s: State) -> uint[8] { … }   // the return type sets the width
+```
 
 **Conversions follow from derivation.** `T(x)` (the only conversion syntax —
 no `as`, never implicit) is *auto-synthesized* along a derivation chain, where

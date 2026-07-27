@@ -598,24 +598,37 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Derived-enum validation (spec 3.28). The `: T` after an enum name has
-    /// two jobs, told apart by whether `T` names an enum:
+    /// Derived-enum validation (spec 3.28): `enum B : A;` is a newtype over
+    /// `A`'s variants, and `A` must be an enum. The two things this rejects:
     ///
-    /// - `enum B : A;` — `A` is an enum, so this is a newtype over its
-    ///   variants (`Logic : ULogic` gains `Resolve` without redeclaring them).
-    /// - `enum S : uint[2] { … }` — `T` is not an enum, so it is the
-    ///   discriminant representation and the variants are `S`'s own.
-    ///
-    /// Adding variants to an enum base is extension, which siox does not have:
-    /// a derived enum would hold values its base cannot name, so every method
-    /// written against the base would face variants it has no arm for.
+    /// - a base with a body — extension, which siox does not have. A derived
+    ///   enum would hold values its base cannot name, so every method written
+    ///   against the base would meet variants it has no arm for.
+    /// - a non-enum base — the old `enum S : uint[2]` storage annotation. An
+    ///   enum's width is derived from its variants and discriminants; a
+    ///   specific wire width belongs at the boundary that carries it (a port,
+    ///   a field, a function's return type), which already declares a type.
     fn check_enum(&mut self, e: &EnumDecl) {
         let Some(repr) = &e.repr else { return };
         let Some(head) = type_head_name(repr) else { return };
-        if e.variants.is_empty() || !self.own_variants.contains_key(head) {
+        let name = &e.name.text;
+        if !self.own_variants.contains_key(head) {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                e.name.span,
+                format!("`{head}` is not an enum, so `{name}` cannot derive from it"),
+                format!(
+                    "an enum's width is derived from its variants — write `enum {name} \
+                     {{ … }}` and, where a specific width is needed, declare it at the \
+                     boundary that carries the value (a port, a field, or a function's \
+                     return type) and convert there"
+                ),
+            );
             return;
         }
-        let name = &e.name.text;
+        if e.variants.is_empty() {
+            return;
+        }
         self.error_with_help(
             codes::TYPE_MISMATCH,
             e.name.span,
@@ -4193,10 +4206,12 @@ mod tests {
         assert_eq!(adding, 1, "a variant-adding body is extension");
         let newtype = check_src("module m;\nenum A { X, Y }\nenum B : A;\n");
         assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
-        // A non-enum base is the discriminant representation, not derivation,
-        // so its own variants are fine.
+        // A non-enum base was the old storage annotation. Width is derived
+        // now, so an enum only ever derives from an enum.
         let repr = check_src("module m;\nenum S : uint[2] { Idle = 0, Run = 1 }\n");
-        assert_eq!(repr, 0, "`: uint[2]` is a repr annotation");
+        assert_eq!(repr, 1, "a non-enum base is not a derivation");
+        let plain = check_src("module m;\nenum S { Idle = 0, Run = 1 }\n");
+        assert_eq!(plain, 0, "the width comes from the variants");
     }
 
     #[test]
