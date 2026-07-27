@@ -630,3 +630,36 @@ Verified identical on JIT and native. Corpus `struct_init_test`.
 Worth noting for the indexing feature: `a[2..2]` on a Logic vector yields a
 **`Logic`** (a 4-bit discriminant), not a `uint[1]` — that is the documented
 element-read rule, not a bug, but it surprised me while writing the tests.
+
+### 2026-07-27 — Claude — Stage 9 + std library sweep: 3 more (32 total)
+
+**VCD (`$dumpvars`).** The trace went straight from `$enddefinitions $end` to
+`#0` and a bare list of values. IEEE 1364 puts the initial state inside
+`$dumpvars ... $end`; without it a conforming reader has no declared starting
+state. siox already emitted every signal at time 0, so this only brackets what
+was there. Metavalue rendering checked out as-is (`b1x10` per bit, `U`/`W`
+folding to `x` — all VCD's four states allow).
+
+**Nullary calls returned 0 / refused to build.** Both engines assumed a call
+had a first argument to convert, so `rand()`, `uniform()` and every zero-arg
+user `fn` silently evaluated to **0** in the testbench evaluator — and the
+native emitter failed the build outright ("conversion needs an argument"). A
+nullary call is a function, not a conversion; both now route to the call path.
+
+**`uniform()` was missing from the native runtime entirely** — a documented std
+function that only worked on one engine. Added `sx_uniform()` using the
+runner's exact expression, so the sequences match. It also printed its f64
+*bit pattern* as an integer (a bare call has no signal to read a kind from);
+both engines now render it as a float.
+
+Verified-correct along the way, no changes needed: partial ranges and custom
+`Index` dispatch, `std::rand` determinism and reseeding, `std::numeric`
+aliases, `std::math` abs/min/max, VCD enum-symbol and metavalue rendering.
+
+One thing that cost me time and is worth recording: `seed(7)` then two draws
+into `uint[8]` locals gave 174 both times, which looked like a broken RNG. It
+was a genuine low-byte coincidence (11950 = 0x2EAE, 42670 = 0xA6AE). Widening
+the locals to `uint[16]` showed the sequence was correct all along — worth
+checking the mask before blaming the generator.
+
+Corpus `rand_test` pins determinism and the nullary shape on both engines.
