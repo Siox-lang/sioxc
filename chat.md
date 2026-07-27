@@ -815,3 +815,35 @@ Reproducing the native sweep, for whoever wants it:
       cargo run -q -p sioxc -- test $f --no-run --out /tmp/nat/$b &&
         (cd /home/max/siox-tests && /tmp/nat/$b)
     done
+
+### 2026-07-27 — Claude — fuzzing the front end; one cascade bug fixed
+
+Every input tested so far has been *well-formed*. This sweep did the opposite:
+1,725 malformed programs (825 truncations of every corpus file at twelfths,
+900 random byte substitutions/deletions/insertions drawn from a pool of
+structurally meaningful characters, seed 20260727).
+
+**No panics, no hangs, no core dumps** — through `check`, through `ir`
+lowering, and through the LLVM JIT for the 291 mutants that still typechecked.
+Given that a self-referential type could core-dump the compiler earlier this
+session, the front end holding up under that is worth recording.
+
+The one real bug came from the *control* case rather than the fuzzing.
+`entity E { in a: Bit; y = 1; }` — one stray statement — reported **14
+errors**, the same three messages repeating at successive columns. The port
+loop had a forward-progress guard but no panic-mode recovery, so every leftover
+token was retried as a fresh port. Now 3.
+
+Fixing it needed one piece of care worth writing down: recovery must **not**
+fire whenever a port errors, only when the port never reached its `;`. For
+`in a Bit;` (missing colon) the `;` is still consumed, so it is a clean
+boundary — skipping to the *next* `;` there would silently swallow the
+following port. `parse_port` now reports whether it was terminated, and
+`recovery_keeps_the_ports_after_a_bad_one` pins that the ports after a bad one
+survive.
+
+Comparative error counts for one stray token, for reference — the entity body
+was the outlier and the rest are in a sane range:
+
+    entity ports 14 -> 3 | struct fields 4 | enum variants 3
+    trait body 4 | fn block 6 | top-level items 4 (already had recovery)

@@ -504,7 +504,15 @@ impl<'a> Parser<'a> {
         let mut ports = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
-            ports.push(self.parse_port());
+            let (port, terminated) = self.parse_port();
+            ports.push(port);
+            // A port that never reached its `;` leaves the rest of the line in
+            // the stream, and each leftover token is then retried as a fresh
+            // port — repeating the same three diagnostics per token. Skip to
+            // the boundary so one malformed port reports once.
+            if !terminated {
+                self.recover_to_port_boundary();
+            }
             if self.pos == before {
                 self.bump();
             }
@@ -521,7 +529,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_port(&mut self) -> Port {
+    /// Parses one port. The flag reports whether it reached its terminating
+    /// `;` — a port that did is a clean stopping point even if it errored
+    /// earlier (`in a Bit;`), so the caller must not then skip the next port.
+    fn parse_port(&mut self) -> (Port, bool) {
         let start = self.span();
         // A leading direction keyword is the port direction (`in clk: Bit`).
         // Otherwise direction comes from the type's bus mode (`bus: in Packet`).
@@ -529,12 +540,24 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident();
         self.expect(TokenKind::Colon, "before a port type");
         let ty = self.parse_type();
-        self.expect(TokenKind::Semi, "after a port");
-        Port {
+        let terminated = self.expect(TokenKind::Semi, "after a port");
+        let port = Port {
             dir,
             name,
             ty,
             span: start.to(self.prev_span()),
+        };
+        (port, terminated)
+    }
+
+    /// Panic-mode recovery inside an entity body: consume through the next
+    /// `;` so the following port is parsed from a clean start.
+    fn recover_to_port_boundary(&mut self) {
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            if self.eat(TokenKind::Semi) {
+                return;
+            }
+            self.bump();
         }
     }
 
@@ -2161,6 +2184,25 @@ mod tests {
         let (m, errors) = parse(src);
         assert_eq!(errors, 0, "unexpected parse errors in:\n{src}");
         m
+    }
+
+    /// A stray statement in an entity body used to be retried as a fresh port
+    /// once per leftover token, repeating the same three diagnostics until the
+    /// body ran out (14 errors for one mistake). Recovery skips to the `;`.
+    #[test]
+    fn malformed_port_reports_once() {
+        let (_, errors) = parse("module m;\nentity E { in a: Bit; y = 1; }\n");
+        assert!(errors <= 3, "one bad port should not cascade, got {errors}");
+    }
+
+    /// Recovery must not overshoot: a port that errored but still reached its
+    /// `;` is a clean boundary, so the ports after it still parse.
+    #[test]
+    fn recovery_keeps_the_ports_after_a_bad_one() {
+        let (m, _) = parse("module m;\nentity E { in a Bit; in b: Bit; out c: Bit; }\n");
+        let Some(Item::Entity(e)) = m.items.first() else { panic!("expected an entity") };
+        let names: Vec<&str> = e.ports.iter().map(|p| p.name.text.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
     }
 
     #[test]
