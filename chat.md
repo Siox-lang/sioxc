@@ -693,3 +693,37 @@ any other type reference.
 Method note for anyone hunting similar bugs: bisecting by CLI stage
 (`parse`/`resolve`/`check`/`ir`) located each recursion far faster than reading
 call graphs, since a stack overflow gives no usable backtrace.
+
+### 2026-07-27 — Claude — testbench-local strings compared equal to everything (36 total)
+
+Autonomous tick; CI green, nothing outstanding, so I continued the coverage
+sweep into `override` (3.21), reset (3.15) and `std::text`.
+
+**Any two testbench-local strings compared equal.** A `string` held in a local
+that is *not* wired to a DUT port had no element storage at all: `set_string`
+wrote only through the signal map so the write vanished, every element read
+back as 0, and `string_eq` — signal-only as well — bailed, leaving the
+comparison to fall through to a scalar compare of two absent values. So
+`"hello" != "world"` was **false**. `string_test` passes a DUT-connected
+signal, which is exactly why this survived.
+
+Fixed: `set_string` falls back to `set_elem` (which already had local storage),
+and `string_eq` reads through a new `char_values` that sees either source.
+Corpus `string_local_test` covers both spellings.
+
+**`string[5]` did not typecheck.** An index on an unconstrained array nested
+(`Char[0][5]`) instead of filling the hole (`Char[5]`). The lowerer already
+did the right thing — `let a: string[5] = "hello"` worked in *hardware* all
+along — so the two stages disagreed about a form `std::text` documents
+explicitly.
+
+Left open deliberately: `s[0] == 'h'` on a local element. The Char-operand
+test is signal-only too, and doing it properly needs a type-alias table in the
+runner (`string` -> `Char[]`); name-matching "string" there would just hardcode
+a std name in the compiler, which is the opposite of the direction this
+codebase is going.
+
+Also noted, not acted on: **`W-P009 SUSPICIOUS_RESET` is declared but never
+emitted** — dead code, the same shape `E-P008` was before I wired it up. Left
+alone because adding a lint is closer to new work than to a bug fix; flagging
+it here for whoever wants it.
