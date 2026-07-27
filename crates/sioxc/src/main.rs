@@ -228,6 +228,24 @@ fn load_std_deps(
 ) {
     let mut loaded: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut queue: Vec<AstPath> = using_bases(fe.entry());
+    // A wrong `--std` used to surface as a pile of "no `uint` in `std::bits`"
+    // import errors, which blames the library rather than the path. Say it
+    // once, plainly — but only when the file actually imports `std`, since a
+    // bare-kernel file legitimately runs with no std at all.
+    let wants_std = queue
+        .iter()
+        .any(|b| b.segments.first().is_some_and(|s| s.text == "std"));
+    if wants_std && !std_root.is_dir() {
+        fe.sink.emit(
+            siox::diag::Diagnostic::error(format!(
+                "no standard library at `{}`",
+                std_root.display()
+            ))
+            .with_code(siox::diag::codes::UNRESOLVED_IMPORT)
+            .help("pass `--std <dir>` pointing at the `std/` directory (it holds `logic.siox`, `bits.siox`, ...)"),
+        );
+        return;
+    }
     // The prelude is implicitly imported by every file (like VHDL's
     // std.standard): auto-load `std::prelude`, which transitively pulls the
     // core modules, so e.g. `int` always compares signed. Skipped silently
