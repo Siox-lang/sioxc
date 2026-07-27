@@ -750,3 +750,30 @@ Worth knowing for anyone testing FFI: only symbols already in the process
 resolve (libc and friends). A user-supplied `.o` cannot be linked into the JIT
 today — my first attempt used a custom object and failed for that reason, not
 a bug. If linking user objects is wanted, that is a real feature, not a fix.
+
+### 2026-07-27 — Claude — CLI sweep (Stage 12): 38 total
+
+Autonomous tick; CI green, nothing outstanding. Swept the CLI surface, the last
+untested area.
+
+**Exit codes are all correct** — `check`/`ir`/`tree` and a failing `test`
+return non-zero; a parse error fails `parse`/`ast`; a *type* error correctly
+leaves those two passing, since they never reach that stage. No bug there.
+
+**A wrong `--std` blamed the library.** It surfaced as a pile of "no `uint` in
+`std::bits`" import errors rather than "that path has no standard library". Now
+one clear message with the fix in the help text — conditional on the file
+actually importing `std`, since a bare-kernel file that declares its own types
+legitimately compiles with no std at all (verified against a nonexistent root).
+
+Two non-bugs worth recording, so nobody re-files them:
+- `y = nosuch;` (an unknown *value* name) is not an error. Resolve documents
+  value identifiers as best-effort in Phase 1 — deliberate, not a hole.
+- A user-supplied `.o` cannot be linked into the JIT, so only symbols already
+  in the process (libc) resolve for FFI. A feature, not a fix.
+
+That closes the systematic pass over `docs/language.md` §3.1–3.29 and Stages
+9/12. Remaining known-open items are all recorded above: the local Char-element
+comparison (needs a runner alias table), `W-P009 SUSPICIOUS_RESET` declared but
+never emitted, `>64-bit` signals rejected by the backend rather than the type
+checker, and bounds-checking data arrays with declared ranges.
