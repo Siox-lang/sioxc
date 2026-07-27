@@ -88,9 +88,12 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
     writeln!(out, "$enddefinitions $end")?;
 
     // Value changes over time. Only emit signals whose value actually changed,
-    // and one `#time` marker per distinct time.
+    // and one `#time` marker per distinct time. The first block is every
+    // signal's initial value, so it is wrapped in `$dumpvars` as IEEE 1364
+    // expects — without it a reader has no declared starting state.
     let mut last: Vec<Option<u128>> = vec![None; design.signals.len()];
     let mut cur_time: Option<u64> = None;
+    let mut in_dumpvars = false;
     for sample in samples {
         let changes: Vec<(usize, u128)> = sample
             .values
@@ -103,7 +106,15 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
             continue;
         }
         if cur_time != Some(sample.time_fs) {
+            if in_dumpvars {
+                writeln!(out, "$end")?;
+                in_dumpvars = false;
+            }
             writeln!(out, "#{}", sample.time_fs)?;
+            if cur_time.is_none() {
+                writeln!(out, "$dumpvars")?;
+                in_dumpvars = true;
+            }
             cur_time = Some(sample.time_fs);
         }
         let mut rendered_meta = std::collections::HashSet::new();
@@ -139,6 +150,10 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
                 write_value(out, v, design.signals[i].width, &ids[i])?;
             }
         }
+    }
+    // A trace with only the initial block still has to close it.
+    if in_dumpvars {
+        writeln!(out, "$end")?;
     }
     Ok(())
 }
@@ -244,10 +259,17 @@ mod tests {
         assert!(vcd.contains("$var wire 1 v0 clk $end"));
         assert!(vcd.contains("$var wire 8 v1 count $end"));
         assert!(vcd.contains("$enddefinitions $end"));
-        // initial values at #0, the rising edge at #5, count == 3 at #10.
-        assert!(vcd.contains("#0\n0v0\nb0 v1"));
+        // Initial values at #0 are the `$dumpvars` block (IEEE 1364), then
+        // the rising edge at #5 and count == 3 at #10 are plain changes.
+        assert!(vcd.contains("#0\n$dumpvars\n0v0\nb0 v1"));
         assert!(vcd.contains("#5\n1v0"));
         assert!(vcd.contains("#10\n0v0\nb11 v1"));
+        // The dump block is opened once and closed before the next time.
+        assert_eq!(vcd.matches("$dumpvars").count(), 1);
+        let dump = vcd.split("$dumpvars").nth(1).unwrap();
+        let end = dump.find("$end").expect("`$dumpvars` is never closed");
+        let next_time = dump.find("\n#").unwrap_or(usize::MAX);
+        assert!(end < next_time, "`$end` must close the block before the next `#time`");
     }
 
     #[test]
