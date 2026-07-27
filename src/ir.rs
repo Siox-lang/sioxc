@@ -2664,14 +2664,36 @@ impl<'a> Lowering<'a> {
     /// `scrutinee == pattern` guard.
     fn lower_match_expr(&self, scrutinee: &ast::Expr, arms: &[ast::MatchArm]) -> Expr {
         let scrut = self.lower_expr(scrutinee);
+        // A match naming every variant of its scrutinee needs no `_`, and the
+        // last arm's guard is then redundant — one of them must hold. Without
+        // dropping it the chain bottoms out in `Unknown`, which no engine will
+        // run, so the exhaustive spelling (the one the non-exhaustive lint
+        // asks for) produced a design that could not execute at all.
+        let exhaustive = self
+            .operand_type_name(scrutinee)
+            .and_then(|t| self.enum_variants.get(&t))
+            .is_some_and(|vars| {
+                let covered: std::collections::HashSet<&str> = arms
+                    .iter()
+                    .filter_map(|a| match &a.pattern {
+                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
+                            Some(p.segments[1].text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                vars.keys().all(|v| covered.contains(v.as_str()))
+            });
         let mut result: Option<Expr> = None;
-        for arm in arms.iter().rev() {
+        for (i, arm) in arms.iter().enumerate().rev() {
             let val = arm
                 .value_expr()
                 .map(|v| self.lower_expr(v))
                 .unwrap_or(Expr::Unknown);
+            let last = i + 1 == arms.len();
             match self.arm_match_cond(&arm.pattern, &scrut) {
                 None => result = Some(val), // wildcard: the default branch
+                Some(_) if exhaustive && last => result = Some(val),
                 Some(cond) => {
                     let els = result.take().unwrap_or(Expr::Unknown);
                     result = Some(Expr::Select {
@@ -7303,6 +7325,36 @@ mod tests {
     /// `{ ..base, .z = 7 }` copied one value per *top-level* field, so a field
     /// holding a struct read as a scalar (Unknown) and every leaf under it was
     /// silently dropped — the spread carried over nothing nested.
+    /// A match naming every variant needs no `_`, but the Select chain still
+    /// bottomed out in `Unknown` — so the exhaustive spelling, the one the
+    /// non-exhaustive lint asks for, produced a design no engine would run.
+    #[test]
+    fn exhaustive_match_expression_needs_no_wildcard() {
+        let d = lower_src(
+            "module m;\n\
+             enum Base { A, B, C }\n\
+             entity E { in sel: Base; out y: unsigned[8]; }\n\
+             impl E { y = match sel { Base::A => 1, Base::B => 2, Base::C => 3 }; }\n\
+             #[top] entity H {}\n\
+             impl H { let sel: Base; let y: unsigned[8]; let e: E = { .sel = sel, .y = y }; }",
+        );
+        fn has_unknown(e: &Expr) -> bool {
+            match e {
+                Expr::Unknown => true,
+                Expr::Select { cond, then, els } => {
+                    has_unknown(cond) || has_unknown(then) || has_unknown(els)
+                }
+                Expr::Binary { lhs, rhs, .. } => has_unknown(lhs) || has_unknown(rhs),
+                Expr::Unary { rhs, .. } => has_unknown(rhs),
+                _ => false,
+            }
+        }
+        let dr = d.drivers.iter().find(|dr| {
+            d.signals[dr.target.0 as usize].path.ends_with(".y")
+        }).expect("driver for y");
+        assert!(!has_unknown(&dr.expr), "no Unknown left: {:?}", dr.expr);
+    }
+
     #[test]
     fn spread_copies_nested_leaves() {
         let d = lower_src(

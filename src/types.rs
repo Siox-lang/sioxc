@@ -1286,7 +1286,20 @@ impl<'a> Checker<'a> {
     /// Warn (spec Stage 10) when a `match` on an enum omits variants and has no
     /// `_` wildcard.
     fn check_match_exhaustive(&mut self, m: &MatchStmt, sym: &HashMap<String, Ty>) {
-        let Ty::Named(id) = self.type_of(&m.scrutinee, sym) else {
+        self.check_arms_exhaustive(&m.scrutinee, &m.arms, m.span, sym);
+    }
+
+    /// Shared by the statement and expression forms. A match *expression* was
+    /// not checked at all, so a missing variant drew no diagnostic and only
+    /// surfaced much later as a design no engine would run.
+    fn check_arms_exhaustive(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        span: Span,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let Ty::Named(id) = self.type_of(scrutinee, sym) else {
             return;
         };
         let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else {
@@ -1299,7 +1312,7 @@ impl<'a> Checker<'a> {
         // Collect the covered variant names, flattening or-patterns; a wildcard
         // (bare or inside an `|`) makes the match exhaustive.
         let mut covered: HashSet<String> = HashSet::new();
-        for a in &m.arms {
+        for a in arms {
             let (vars, wild) = pattern_covers(&a.pattern);
             if wild {
                 return;
@@ -1321,7 +1334,7 @@ impl<'a> Checker<'a> {
                     "non-exhaustive match on `{enum_name}`: missing {names}"
                 ))
                 .with_code(codes::NON_EXHAUSTIVE_MATCH)
-                .at(m.span)
+                .at(span)
                 .help("add the missing arms, or a `_` wildcard"),
             );
         }
@@ -2112,9 +2125,15 @@ impl<'a> Checker<'a> {
                 self.check_expr(base, sym);
             }
             Expr::Match {
-                scrutinee, arms, ..
+                scrutinee,
+                arms,
+                span,
             } => {
                 self.check_expr(scrutinee, sym);
+                // An expression must yield a value for every case it can meet,
+                // so a missing variant matters at least as much here as in a
+                // statement — and this form was not checked at all.
+                self.check_arms_exhaustive(scrutinee, arms, *span, sym);
                 for arm in arms {
                     self.check_pattern_form(&arm.pattern);
                     if let Some(v) = arm.value_expr() {
@@ -3996,6 +4015,31 @@ mod tests {
         // Still distinct types: the base's own variant needs a conversion.
         assert_eq!(check_src(&src("m = Base::B; t = Top::A;")), 1, "a newtype is not its base");
         assert_eq!(check_src(&src("m = Mid(Base::B); t = Top::A;")), 0, "conversion is explicit");
+    }
+
+    /// Exhaustiveness was only ever checked on match *statements*. In
+    /// expression position a missing variant means there is no value to
+    /// produce, yet it drew no diagnostic at all.
+    #[test]
+    fn match_expression_exhaustiveness_is_checked() {
+        let src = |arms: &str| {
+            format!("module m;\nenum Base {{ A, B, C }}\nentity E {{ in sel: Base; out y: unsigned[8]; }}\nimpl E {{ y = match sel {{ {arms} }}; }}\n")
+        };
+        assert_eq!(
+            warnings(&src("Base::A => 1, Base::B => 2"), codes::NON_EXHAUSTIVE_MATCH),
+            1,
+            "a missing variant in expression position"
+        );
+        assert_eq!(
+            warnings(&src("Base::A => 1, Base::B => 2, Base::C => 3"), codes::NON_EXHAUSTIVE_MATCH),
+            0,
+            "all variants named"
+        );
+        assert_eq!(
+            warnings(&src("Base::A => 1, _ => 9"), codes::NON_EXHAUSTIVE_MATCH),
+            0,
+            "a wildcard covers the rest"
+        );
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
