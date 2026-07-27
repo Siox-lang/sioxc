@@ -977,6 +977,28 @@ impl Testbench<'_> {
 
     /// Bind a struct literal's args to the local's flattened field signals:
     /// `.field = v` by name, a bare positional arg by `order[i]`.
+    /// Assign the fields of a struct literal to a flattened local
+    /// (`a = { .re = 3, .im = 4 };`). Named `.field = v` only — positional
+    /// needs a field order this path does not carry. A field whose value is
+    /// itself a struct literal recurses, so composition reaches its leaves
+    /// instead of writing one bogus scalar at the branch.
+    fn assign_struct_fields(&mut self, path: &str, args: &[ast::ConnectArg]) {
+        for arg in args {
+            let Some(f) = &arg.field else { continue };
+            let field = format!("{path}.{}", f.text);
+            if let Some(ast::Expr::Construct { args: nested, .. }) = &arg.value {
+                self.assign_struct_fields(&field, nested);
+                continue;
+            }
+            let v = arg
+                .value
+                .as_ref()
+                .map(|v| self.eval_for(&field, v))
+                .unwrap_or_else(|| u128::from_u64(0));
+            self.set_name(&field, v);
+        }
+    }
+
     fn init_struct_fields(&mut self, local: &str, order: &[String], args: &[ast::ConnectArg]) {
         for (i, a) in args.iter().enumerate() {
             let fname = match &a.field {
@@ -987,6 +1009,25 @@ impl Testbench<'_> {
                 },
             };
             let field = format!("{local}.{fname}");
+            // A field holding a struct of its own (composition) is stored as
+            // its leaves, the way the hardware side flattens it. Without
+            // recursing here, `loc.a.y` is never written and reads back 0
+            // while the scalar fields beside it are correct.
+            if let Some(ast::Expr::Construct {
+                ty: Some(t),
+                args: nested,
+                ..
+            }) = &a.value
+            {
+                let order = type_head_name(t)
+                    .and_then(|n| self.struct_fields.get(n))
+                    .filter(|f| !f.is_empty())
+                    .cloned();
+                if let Some(order) = order {
+                    self.init_struct_fields(&field, &order, nested);
+                    continue;
+                }
+            }
             let val = a
                 .value
                 .as_ref()
@@ -1360,18 +1401,7 @@ impl Testbench<'_> {
                     // A struct literal assigns each field of a flattened
                     // struct local (`a = { .re = 3, .im = 4 };`).
                     if let ast::Expr::Construct { args, .. } = value {
-                        for arg in args {
-                            // Named `.field = v` only (positional needs struct
-                            // field order the runner doesn't track).
-                            let Some(f) = &arg.field else { continue };
-                            let field = format!("{path}.{}", f.text);
-                            let v = arg
-                                .value
-                                .as_ref()
-                                .map(|v| self.eval_for(&field, v))
-                                .unwrap_or_else(|| u128::from_u64(0));
-                            self.set_name(&field, v);
-                        }
+                        self.assign_struct_fields(&path, args);
                     } else {
                         let v = self.eval_for(&path, value);
                         self.set_name(&path, v);

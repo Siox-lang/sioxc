@@ -2182,6 +2182,35 @@ impl<'a> Lowering<'a> {
     }
 
     /// The base-first field list of a struct named directly (no generics/mode).
+    /// Every leaf of a struct as a dotted path (`a.x`, `a.y`, `z`), descending
+    /// through fields that are themselves structs. Composition makes a struct
+    /// value a tree while the signal table holds only its leaves, so anything
+    /// copying a whole struct value has to work in these terms.
+    fn struct_leaf_names(&self, name: &str) -> Vec<String> {
+        self.struct_leaf_names_at(name, 0)
+    }
+
+    fn struct_leaf_names_at(&self, name: &str, depth: u32) -> Vec<String> {
+        if depth > 16 {
+            return Vec::new();
+        }
+        let Some(fields) = self.raw_struct_fields(name) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (f, ty) in fields {
+            let nested = type_head_name(&ty)
+                .map(|h| self.struct_leaf_names_at(h, depth + 1))
+                .unwrap_or_default();
+            if nested.is_empty() {
+                out.push(f);
+            } else {
+                out.extend(nested.into_iter().map(|n| format!("{f}.{n}")));
+            }
+        }
+        out
+    }
+
     fn raw_struct_fields(&self, name: &str) -> Option<Vec<(String, ast::Type)>> {
         let s = self.structs.get(name)?;
         // Derived struct: inherited base fields come first (spec: derivation).
@@ -4563,17 +4592,25 @@ impl<'a> Lowering<'a> {
                     .map(|fs| fs.into_iter().map(|(n, _)| n).collect());
                 let mut fields: Vec<(String, Expr)> = Vec::new();
                 // `{ ..base, .. }`: seed every field from `base` before overrides.
-                if let (Some(base), Some(order)) = (spread, &field_order) {
-                    for f in order {
-                        let fe = ast::Expr::Field {
-                            base: Box::new((**base).clone()),
-                            field: ast::Ident {
-                                text: f.clone(),
+                if let (Some(base), Some(sname)) = (spread, struct_name.as_deref()) {
+                    // Copy per *leaf*, not per top-level field: a field that is
+                    // itself a struct has no scalar form, so reading it whole
+                    // would yield `Unknown` and silently drop everything nested
+                    // that the spread was supposed to carry over.
+                    for leaf in self.struct_leaf_names(sname) {
+                        let mut fe = (**base).clone();
+                        for part in leaf.split('.') {
+                            fe = ast::Expr::Field {
+                                base: Box::new(fe),
+                                field: ast::Ident {
+                                    text: part.to_string(),
+                                    span: *span,
+                                },
                                 span: *span,
-                            },
-                            span: *span,
-                        };
-                        fields.push((f.clone(), self.lower_scalar_env(&fe, env)));
+                            };
+                        }
+                        let v = self.lower_scalar_env(&fe, env);
+                        fields.push((leaf, v));
                     }
                 }
                 for (i, a) in args.iter().enumerate() {
@@ -7261,6 +7298,38 @@ mod tests {
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
         assert_eq!(sig.width, 2, "the newtype carries the base's width");
+    }
+
+    /// `{ ..base, .z = 7 }` copied one value per *top-level* field, so a field
+    /// holding a struct read as a scalar (Unknown) and every leaf under it was
+    /// silently dropped — the spread carried over nothing nested.
+    #[test]
+    fn spread_copies_nested_leaves() {
+        let d = lower_src(
+            "module m;\n\
+             struct A { x: Bit, y: unsigned[4] }\n\
+             struct B { a: A, z: unsigned[4] }\n\
+             entity E { out oy: unsigned[4]; }\n\
+             impl E {\n\
+               let base: B;\n\
+               base = B { .a = A { .x = '1', .y = 9 }, .z = 2 };\n\
+               let upd: B;\n\
+               upd = B { ..base, .z = 7 };\n\
+               oy = upd.a.y;\n\
+             }\n\
+             #[top] entity H {}\n\
+             impl H { let oy: unsigned[4]; let e: E = { .oy = oy }; }",
+        );
+        let driven = |suffix: &str| {
+            d.signals
+                .iter()
+                .position(|s| s.path.ends_with(suffix))
+                .and_then(|i| d.drivers.iter().find(|dr| dr.target.0 as usize == i))
+                .is_some()
+        };
+        assert!(driven(".upd.a.y"), "the spread must carry nested leaves");
+        assert!(driven(".upd.a.x"), "every leaf, not just the read one");
+        assert!(driven(".upd.z"), "and the explicit override");
     }
 
     #[test]
