@@ -671,9 +671,9 @@ mod tests {
             "module m;\n\
              enum Bit { '0', '1' }\n\
              enum Logic : Bit;\n\
-             enum State : uint[2] { Idle = 0, Run = 1 }\n\
+             enum State : unsigned[2] { Idle = 0, Run = 1 }\n\
              struct Header { valid: Bit }\n\
-             struct Packet { header: Header, data: uint[8] }\n\
+             struct Packet { header: Header, data: unsigned[8] }\n\
              struct Word : Bit[];\n",
         );
     }
@@ -688,7 +688,7 @@ mod tests {
              enum Base { A }\n\
              enum Ext : Base { B }\n\
              struct Head { valid: Bit }\n\
-             struct Pkt : Head { data: uint[8] }\n",
+             struct Pkt : Head { data: unsigned[8] }\n",
         );
     }
 
@@ -738,7 +738,7 @@ mod tests {
     fn roundtrips_suffix_and_bitstring_literals() {
         roundtrip(
             "module m;\n\
-             entity E { out y: uint[8]; }\n\
+             entity E { out y: unsigned[8]; }\n\
              impl E {\n\
                let t = 10ns;\n\
                let f = 100MHz;\n\
@@ -762,7 +762,7 @@ mod tests {
     fn roundtrips_concat_and_nameless_struct_literal() {
         roundtrip(
             "module m;\n\
-             entity E { out y: uint[8]; }\n\
+             entity E { out y: unsigned[8]; }\n\
              impl E {\n\
                let p: Packet = { .valid = '1', .data = 5 };\n\
                y = {a, b, c};\n\
@@ -775,19 +775,19 @@ mod tests {
         roundtrip(
             "module demo::counter;\n\
              using std::logic::{Bit, Logic};\n\
-             using Word = uint[32];\n\
+             using Word = unsigned[32];\n\
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
-             enum State: uint[2] { Idle = 0, Start = 1, Done = 2 }\n\
+             enum State: unsigned[2] { Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Bit;\n\
-               bus: Source Stream<uint[32]>;\n\
-               out count: uint[W];\n\
+               bus: Source Stream<unsigned[32]>;\n\
+               out count: unsigned[W];\n\
              }\n\
              impl Counter<W: integer> {\n\
-               const MAX: uint[W] = (1 << W) - 1;\n\
-               let value: uint[W] = 0;\n\
+               const MAX: unsigned[W] = (1 << W) - 1;\n\
+               let value: unsigned[W] = 0;\n\
                if clk.rising() {\n\
                  if rst == '1' {\n\
                    value = 0;\n\

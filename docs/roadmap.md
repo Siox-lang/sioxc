@@ -72,7 +72,7 @@ entity Counter<W: integer> {
     in rst: Logic;
     in en: Bit;
 
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -81,7 +81,7 @@ No `const` fields inside entities.
 ```siox
 entity BadCounter {
     const W: integer;      // invalid
-    out count: uint[W];  // invalid because W changes interface shape
+    out count: unsigned[W];  // invalid because W changes interface shape
 }
 ```
 
@@ -89,7 +89,7 @@ Configuration values that affect shape or behavior go in the entity parameter li
 
 ```siox
 entity Counter<W: integer> {
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -108,8 +108,8 @@ This includes:
 Bit
 Logic
 Bool
-uint[N]
-int[N]
+unsigned[N]
+signed[N]
 enum
 structs containing only digital fields
 arrays/vectors of digital values
@@ -182,11 +182,11 @@ entity Counter<W: integer> {
     in rst: Logic;
     in en: Bit;
 
-    out count: uint[W];
+    out count: unsigned[W];
 }
 
 impl Counter<W: integer> {
-    let value: uint[W] = 0;
+    let value: unsigned[W] = 0;
 
     if clk.rising() {
         if rst == '1' {
@@ -648,7 +648,7 @@ design SensorFrontend {
     node gnd: Electrical<A>;
 
     signal clk: Bit;
-    signal code: uint[12];
+    signal code: unsigned[12];
 
     #[pos = {x = 100, y = 40}, symbol = "thermal_to_voltage"]
     S1: ThermalToVoltage<K = 0.01, A = A> temp ambient vin gnd;

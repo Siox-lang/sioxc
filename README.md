@@ -31,16 +31,16 @@ plus a testbench that drives it:
 ```siox
 module counter;
 
-using std::bits::uint;
+using std::bits::unsigned;
 
 entity Counter {
     in clk: Bit;
     in rst: Logic;
-    out count: uint[8];
+    out count: unsigned[8];
 }
 
 impl Counter {
-    let value: uint[8] = 0;
+    let value: unsigned[8] = 0;
 
     if clk.rising() {                // runs only on a rising clock edge
         if rst == '1' { value = 0; }
@@ -56,7 +56,7 @@ entity CounterTest {}
 impl CounterTest {
     let clk: Bit = '0';
     let rst: Logic = '1';
-    let count: uint[8];
+    let count: unsigned[8];
     let dut: Counter = { clk, rst, count };   // ports wired positionally
 
     clk = not clk after 5ns;         // free-running clock, 10 ns period

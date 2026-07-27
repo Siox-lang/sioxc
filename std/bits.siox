@@ -3,55 +3,56 @@ module std::bits;
 using std::logic::{Logic};
 using std::ops::{Ordering};
 
-// uint and int are ordinary library types, not compiler-magic names: an
-// array of Logic IS a bit vector, so deriving from `Logic[]` is all it takes.
-// There is no signed/unsigned marker — signedness is entirely defined by the
-// operator impls below (int's Ord is a signed compare, its Shr an arithmetic
-// shift, its Div a signed divide). The compiler tracks no signedness; it just
-// dispatches operators to whichever impls a type declares.
-pub struct uint : Logic[];
-pub struct int : Logic[];
-
-// Bit-vector numeric types (spec Stage 11, modelled on ieee.numeric_std,
-// where `unsigned`/`signed` are arrays of std_logic declared in library code).
+// `unsigned` and `signed` are ordinary library types, not compiler-magic
+// names: an array of Logic IS a bit vector, so deriving from `Logic[]` is all
+// it takes. The names come from ieee.numeric_std, where they are likewise
+// arrays of std_logic declared in library code.
 //
-//   uint[N]  unsigned, N bits, wrapping on overflow   (VHDL `unsigned`)
-//   int[N]   two's-complement signed, N bits          (VHDL `signed`)
+// The names are the only thing that says "signed": nothing in the compiler
+// tracks signedness. It is defined entirely by the operator impls below —
+// `signed`'s Ord is a signed compare, its Shr an arithmetic shift, its Div a
+// signed divide — and the compiler just dispatches to whichever impls a type
+// declares. A type named neither would behave the same as its impls say.
+pub struct unsigned : Logic[];
+pub struct signed : Logic[];
+
+//   unsigned[N]  N bits, wrapping on overflow           (VHDL `unsigned`)
+//   signed[N]    N bits, two's complement               (VHDL `signed`)
 //
-// These are *derived* types: a uint[N]/int[N] is a vector of Logic with a
-// numeric interpretation, and assignment accepts the kernel base type
-// `integer` (`let x: uint[8] = 42;`). Only the kernel types `integer` and
-// `real` have built-in operators; uint/int get theirs HERE, as Rust-style
-// trait impls (spec 3.25). Inside an operator impl the operands read as
-// kernel words, so `self + rhs` below is the built-in integer add — results
-// wrap to the target's width when stored, which is what makes uint[N]
-// modular. Comparisons on uint are the kernel's unsigned compare (no Ord
-// impl needed); int gets a sign-aware Ord below.
+// Both are newtypes over `Logic[]`: a vector of Logic with a numeric
+// interpretation, whose assignment accepts the kernel base type `integer`
+// (`let x: unsigned[8] = 42;`). Only the kernel types `integer` and `real`
+// have built-in operators; these get theirs HERE, as Rust-style trait impls
+// (spec 3.25). Inside an operator impl the operands read as kernel words, so
+// `self + rhs` below is the built-in integer add — results wrap to the
+// target's width when stored, which is what makes `unsigned[N]` modular.
+// Comparisons on `unsigned` are the kernel's unsigned compare (no Ord impl
+// needed); `signed` gets a sign-aware Ord below.
 
-// --- uint[N]: modular unsigned arithmetic ---------------------------------
+// --- unsigned[N]: modular unsigned arithmetic -------------------------------
 
-impl Operator<"+", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self + rhs; }
+impl Operator<"+", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self + rhs; }
 }
 
-impl Operator<"-", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self - rhs; }
+impl Operator<"-", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self - rhs; }
 }
 
-impl Operator<"*", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self * rhs; }
+impl Operator<"*", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self * rhs; }
 }
 
-impl Operator<"/", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self / rhs; }
+impl Operator<"/", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self / rhs; }
 }
 
-impl Operator<"<<", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self << rhs; }
+impl Operator<"<<", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self << rhs; }
 }
 
-impl Operator<">>", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self >> rhs; }
+impl Operator<">>", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self >> rhs; }
 }
 
 // Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
@@ -61,96 +62,96 @@ impl Operator<">>", uint, uint> for uint {
 // string operations land, so each impl inherits the empty default body. A
 // plain string of logic values (`"1X10"`) needs no prefix: it reads as a Logic
 // array by context.
-impl Prefix<"x", string> for uint {}
-impl Prefix<"o", string> for uint {}
+impl Prefix<"x", string> for unsigned {}
+impl Prefix<"o", string> for unsigned {}
 
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
 
-impl Operator<"and", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self and rhs; }
+impl Operator<"and", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self and rhs; }
 }
 
-impl Operator<"or", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return self or rhs; }
+impl Operator<"or", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return self or rhs; }
 }
 
-impl Operator<"not", uint, uint> for uint {
-    fn apply(self) -> uint { return ((1 << self'length) - 1) - self; }
+impl Operator<"not", unsigned, unsigned> for unsigned {
+    fn apply(self) -> unsigned { return ((1 << self'length) - 1) - self; }
 }
 
-impl Operator<"and", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self and rhs; }
+impl Operator<"and", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self and rhs; }
 }
 
-impl Operator<"or", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self or rhs; }
+impl Operator<"or", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self or rhs; }
 }
 
-impl Operator<"not", int, int> for int {
-    fn apply(self) -> int { return ((1 << self'length) - 1) - self; }
+impl Operator<"not", signed, signed> for signed {
+    fn apply(self) -> signed { return ((1 << self'length) - 1) - self; }
 }
 
 #[precedence = 35]
-impl Operator<"xor", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint { return (self or rhs) - (self and rhs); }
+impl Operator<"xor", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned { return (self or rhs) - (self and rhs); }
 }
 
 #[precedence = 40]
-impl Operator<"nand", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint {
+impl Operator<"nand", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
-impl Operator<"nor", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint {
+impl Operator<"nor", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
-impl Operator<"xnor", uint, uint> for uint {
-    fn apply(self, rhs: uint) -> uint {
+impl Operator<"xnor", unsigned, unsigned> for unsigned {
+    fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
 #[precedence = 35]
-impl Operator<"xor", int, int> for int {
-    fn apply(self, rhs: int) -> int { return (self or rhs) - (self and rhs); }
+impl Operator<"xor", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return (self or rhs) - (self and rhs); }
 }
 
 #[precedence = 40]
-impl Operator<"nand", int, int> for int {
-    fn apply(self, rhs: int) -> int {
+impl Operator<"nand", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
 #[precedence = 30]
-impl Operator<"nor", int, int> for int {
-    fn apply(self, rhs: int) -> int {
+impl Operator<"nor", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
 #[precedence = 35]
-impl Operator<"xnor", int, int> for int {
-    fn apply(self, rhs: int) -> int {
+impl Operator<"xnor", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
-// --- int[N]: two's-complement signed --------------------------------------
+// --- signed[N]: two's-complement signed --------------------------------------
 
 // Sign-extension is a library operation now that the compiler tracks no
 // signedness: `integer(x)` reads the raw (unsigned) bits, so `sext` recovers
 // the signed value by subtracting 2^width when the sign bit is set. Widen a
-// signed vector with `int[N](sext(x))`.
-pub fn sext(x: int) -> integer {
-    // Test the sign bit on the RAW value: `x >> ..` would use int's own
+// signed vector with `signed[N](sext(x))`.
+pub fn sext(x: signed) -> integer {
+    // Test the sign bit on the RAW value: `x >> ..` would use signed's own
     // (arithmetic) shift, but here we want the plain top bit.
     if (integer(x) >> (x'length - 1)) == 1 {
         return integer(x) - (1 << x'length);
@@ -159,16 +160,16 @@ pub fn sext(x: int) -> integer {
 }
 
 
-impl Operator<"+", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self + rhs; }
+impl Operator<"+", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self + rhs; }
 }
 
-impl Operator<"-", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self - rhs; }
+impl Operator<"-", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self - rhs; }
 }
 
-impl Operator<"*", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self * rhs; }
+impl Operator<"*", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self * rhs; }
 }
 
 // Signed division: divide the magnitudes with the kernel's unsigned divide,
@@ -176,8 +177,8 @@ impl Operator<"*", int, int> for int {
 // word-wrapping negate, truncated back to the operand's width); results
 // wrap to the target's width when stored, which re-encodes a negative
 // quotient as two's complement.
-impl Operator<"/", int, int> for int {
-    fn apply(self, rhs: int) -> int {
+impl Operator<"/", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed {
         if ((self >> (self'length - 1)) == 1) and ((rhs >> (rhs'length - 1)) == 1) {
             return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
         }
@@ -191,15 +192,15 @@ impl Operator<"/", int, int> for int {
     }
 }
 
-impl Operator<"<<", int, int> for int {
-    fn apply(self, rhs: int) -> int { return self << rhs; }
+impl Operator<"<<", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed { return self << rhs; }
 }
 
 // Arithmetic shift-right: replicate the sign into the vacated top bits.
 // `(1 << w) - (1 << (w - n))` is a mask of the top n bits (the shifted-in
 // positions); the shifted value's top bits are zero, so `+` sets them.
-impl Operator<">>", int, int> for int {
-    fn apply(self, rhs: int) -> int {
+impl Operator<">>", signed, signed> for signed {
+    fn apply(self, rhs: signed) -> signed {
         if (self >> (self'length - 1)) == 1 {
             return (self >> rhs) + ((1 << self'length) - (1 << (self'length - rhs)));
         }
@@ -211,8 +212,8 @@ impl Operator<">>", int, int> for int {
 // `self >> (self'length - 1)` is the sign bit. A negative orders below a
 // non-negative; same-sign two's-complement values order like their unsigned
 // words. One impl derives < <= > >= == != (spec 3.25).
-impl Operator<"<=>", int, Ordering> for int {
-    fn apply(self, rhs: int) -> Ordering {
+impl Operator<"<=>", signed, Ordering> for signed {
+    fn apply(self, rhs: signed) -> Ordering {
         if (self >> (self'length - 1)) > (rhs >> (rhs'length - 1)) {
             return Ordering::Less;
         }

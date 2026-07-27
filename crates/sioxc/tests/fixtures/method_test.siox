@@ -4,20 +4,20 @@ module examples::method_test;
 // testbench local. Exercises struct-field local writes (`p.a = ..`) and the
 // value-returning method inline (`p.sum()`), driving a DUT input.
 
-using std::bits::uint;
+using std::bits::unsigned;
 
-struct Pkt { a: uint[8], b: uint[8], }
+struct Pkt { a: unsigned[8], b: unsigned[8], }
 impl Pkt {
-    fn sum(self) -> uint[8] { return self.a + self.b; }
+    fn sum(self) -> unsigned[8] { return self.a + self.b; }
 }
 
-entity D { in x: uint[8]; out y: uint[8]; }
+entity D { in x: unsigned[8]; out y: unsigned[8]; }
 impl D { y = x; }
 
 #[test]
 entity MethodTest {}
 impl MethodTest {
-    let x: uint[8]; let y: uint[8];
+    let x: unsigned[8]; let y: unsigned[8];
     let dut: D = { .x = x, .y = y };
 
     let p: Pkt;
@@ -25,7 +25,7 @@ impl MethodTest {
     p.b = 20;
 
     // Copy through a scalar (a method call result driving stimulus).
-    let s: uint[8];
+    let s: unsigned[8];
     s = p.sum();
     assert!(s == 30, "method result read back");
 

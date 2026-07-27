@@ -119,7 +119,7 @@ extern void sx_reset(void);
 extern void sx_set(unsigned, unsigned long long);
 extern unsigned long long sx_read(unsigned);
 extern void sx_settle(void);
-int main(void) {
+signed main(void) {
     sx_reset();
     sx_set(0, 30); sx_set(1, 12); sx_settle();
     if (sx_read(2) != 42) return 1;

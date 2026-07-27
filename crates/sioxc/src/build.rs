@@ -151,7 +151,7 @@ pub fn build(
     let methods = collect_methods(modules);
     let derived_widths = siox::ir::derived_widths(modules);
 
-    // Header, one `int test_<name>(void)` per test, then a libtest-style main.
+    // Header, one `signed test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
     prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
     prog.push_str("extern void sx_reset(void);\n");
@@ -159,7 +159,7 @@ pub fn build(
     prog.push_str("extern uint64_t sx_read(uint32_t);\n");
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\nstatic char g_msgbuf[512];\n");
-    prog.push_str("static int g_warnings;\n");
+    prog.push_str("static signed g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
         "static uint64_t sx_b64(double d) { uint64_t b; memcpy(&b, &d, 8); return b; }\n",
@@ -180,16 +180,16 @@ pub fn build(
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
-        "static uint64_t sx_next_edge(const uint64_t *next, int n) {\n\
+        "static uint64_t sx_next_edge(const uint64_t *next, signed n) {\n\
          \x20   uint64_t t = UINT64_MAX;\n\
-         \x20   for (int i = 0; i < n; i++) if (next[i] < t) t = next[i];\n\
+         \x20   for (signed i = 0; i < n; i++) if (next[i] < t) t = next[i];\n\
          \x20   return t;\n}\n\
-         static int sx_step_clock(uint64_t *now, uint64_t *next, const uint32_t *cid,\n\
-         \x20                        const uint64_t *half, int n) {\n\
+         static signed sx_step_clock(uint64_t *now, uint64_t *next, const uint32_t *cid,\n\
+         \x20                        const uint64_t *half, signed n) {\n\
          \x20   uint64_t t = sx_next_edge(next, n);\n\
          \x20   if (t == UINT64_MAX) return 0;\n\
          \x20   if (t > *now) *now = t;\n\
-         \x20   for (int i = 0; i < n; i++)\n\
+         \x20   for (signed i = 0; i < n; i++)\n\
          \x20       if (next[i] == t) { sx_set(cid[i], !sx_read(cid[i])); next[i] += half[i]; }\n\
          \x20   sx_settle();\n\
          \x20   return 1;\n}\n\n",
@@ -204,7 +204,7 @@ pub fn build(
         .filter_map(|(i, s)| s.range.map(|_| (i as u32, s)))
         .collect();
     if !ranged.is_empty() {
-        prog.push_str("static int sx_check_ranges(void) {\n    int64_t v;\n");
+        prog.push_str("static signed sx_check_ranges(void) {\n    int64_t v;\n");
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
             let decode = if lo < 0 && sig.width > 0 && sig.width < 64 {
@@ -223,7 +223,7 @@ pub fn build(
         }
         prog.push_str("    return 0;\n}\n\n");
     } else {
-        prog.push_str("static int sx_check_ranges(void) { return 0; }\n\n");
+        prog.push_str("static signed sx_check_ranges(void) { return 0; }\n\n");
     }
 
     let mut names = Vec::new();
@@ -298,9 +298,9 @@ pub fn build(
 /// binary (`./testbin <filter>`).
 fn gen_main(names: &[String]) -> String {
     let mut m = String::new();
-    m.push_str("int main(int argc, char **argv) {\n");
+    m.push_str("signed main(signed argc, char **argv) {\n");
     m.push_str("    const char *filter = argc > 1 ? argv[1] : 0;\n");
-    m.push_str("    int failed = 0, ran = 0, filtered = 0;\n");
+    m.push_str("    signed failed = 0, ran = 0, filtered = 0;\n");
     // Count how many tests match, so the "running N tests" line is post-filter.
     for n in names {
         m.push_str(&format!(
@@ -337,10 +337,10 @@ struct Ctx<'a> {
     clocks: Vec<(u32, u64)>,
     /// Names currently bound as C locals (unconnected `let`s, loop variables).
     locals: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Declared bit width of a C local (`let c: uint[8]` -> 8): writes mask to
+    /// Declared bit width of a C local (`let c: unsigned[8]` -> 8): writes mask to
     /// it so arithmetic wraps exactly like the equivalent hardware signal.
     local_widths: std::cell::RefCell<HashMap<String, u32>>,
-    /// Declared vector family of a testbench name (`let a: int[8]` -> "int"),
+    /// Declared vector family of a testbench name (`let a: signed[8]` -> "signed"),
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
@@ -512,7 +512,7 @@ fn mask_c(e: &str, w: u32) -> String {
 
 impl Ctx<'_> {
     /// A testbench local initialized from a `std::fs` file read
-    /// (`let s: string = read_to_string("path")`, `let m: uint[8][N] = read(..)`).
+    /// (`let s: string = read_to_string("path")`, `let m: unsigned[8][N] = read(..)`).
     /// The file is read at **build time** (matching the corpus's stable fixtures)
     /// to size and fill the local: one `Char`/byte element per index. Returns
     /// `true` when handled. `read`/`read_to_string` in *initializer* position of
@@ -581,7 +581,7 @@ impl Ctx<'_> {
             return Ok(false);
         };
         // Only a genuine field-aggregate is expanded into per-field locals. A
-        // type that *inherits from an array* — `uint`/`int` (`struct uint :
+        // type that *inherits from an array* — `unsigned`/`signed` (`struct unsigned :
         // Logic[]`) or a user enum vector (`: SomeEnum[]`) — carries no named
         // fields, so it is a scalar/vector leaf and flows through the scalar
         // path (check the base: an array parent means "vector", not "struct").
@@ -645,7 +645,7 @@ impl Ctx<'_> {
         for (fname, fty) in fields {
             let key = format!("{prefix}.{fname}");
             // A nested *field-aggregate* field expands to its own leaves; a
-            // field that inherits from an array (a `uint`/`int`/enum vector,
+            // field that inherits from an array (a `unsigned`/`signed`/enum vector,
             // which has no fields) is a scalar leaf.
             let fhead = type_head_name(fty);
             if let Some(sub) = fhead
@@ -728,8 +728,8 @@ impl Ctx<'_> {
         }
     }
 
-    /// The declared `(family, width)` of a vector-family type (`int[8]` ->
-    /// ("int", 8)). Mirrors the runner's rule.
+    /// The declared `(family, width)` of a vector-family type (`signed[8]` ->
+    /// ("signed", 8)). Mirrors the runner's rule.
     fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
         if let ast::Type::Indexed {
             base,
@@ -924,7 +924,7 @@ impl Ctx<'_> {
         }))
     }
 
-    /// The declared bit width of a vector-family type: `uint[8]` -> 8 (and the
+    /// The declared bit width of a vector-family type: `unsigned[8]` -> 8 (and the
     /// element width of an array of one). Mirrors the runner's rule.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
         // A bare derived-vector type (`struct Byte : Logic[8]`) inherits its
@@ -959,12 +959,12 @@ impl Ctx<'_> {
         None
     }
 
-    /// `int test_<name>(void) { ... }` — 0 on pass, 1 on the first failed
+    /// `signed test_<name>(void) { ... }` — 0 on pass, 1 on the first failed
     /// assert (printing its message first, like a panic).
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "int test_{}(void) {{\n    sx_reset();\n",
+            "signed test_{}(void) {{\n    sx_reset();\n",
             self.name
         ));
 
@@ -975,7 +975,7 @@ impl Ctx<'_> {
         let cid: Vec<String> = self.clocks.iter().map(|(c, _)| c.to_string()).collect();
         let half: Vec<String> = self.clocks.iter().map(|(_, h)| format!("{h}ULL")).collect();
         b.push_str(&format!(
-            "    uint64_t _now = 0; (void)_now;\n             \x20   uint64_t _next[{n}] = {{{}}}; (void)_next;\n             \x20   static const uint32_t _cid[{n}] = {{{}}};\n             \x20   static const uint64_t _half[{n}] = {{{}}};\n             \x20   int _nclk = 0; (void)_nclk;\n",
+            "    uint64_t _now = 0; (void)_now;\n             \x20   uint64_t _next[{n}] = {{{}}}; (void)_next;\n             \x20   static const uint32_t _cid[{n}] = {{{}}};\n             \x20   static const uint64_t _half[{n}] = {{{}}};\n             \x20   signed _nclk = 0; (void)_nclk;\n",
             vec!["0"; n].join(", "),
             if cid.is_empty() { "0".to_string() } else { cid.join(", ") },
             if half.is_empty() { "0".to_string() } else { half.join(", ") },
@@ -1172,7 +1172,7 @@ impl Ctx<'_> {
                         .collect();
                     b.push_str(&format!(
                         "{ind}{{ static const uint32_t _a{k}[] = {{{}}};\n\
-                         {ind}for (int _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
+                         {ind}for (signed _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
                          uint64_t {v} = sx_read(_a{k}[_i{k}]);\n",
                         ids.join(", ")
                     ));
@@ -1198,7 +1198,7 @@ impl Ctx<'_> {
                 self.tmp.set(k + 1);
                 b.push_str(&format!(
                     "{ind}{{ int64_t _lo{k} = (int64_t)({lo}), _hi{k} = (int64_t)({hi});\n\
-                     {ind}int _st{k} = _lo{k} <= _hi{k} ? 1 : -1;\n\
+                     {ind}signed _st{k} = _lo{k} <= _hi{k} ? 1 : -1;\n\
                      {ind}for (int64_t _c{k} = _lo{k}; ; _c{k} += _st{k}) {{\n\
                      {ind}uint64_t {v} = (uint64_t)_c{k};\n"
                 ));
@@ -1611,7 +1611,7 @@ impl Ctx<'_> {
         };
         b.push_str(&format!(
             "{ind}{{ uint64_t _p = sx_read({id}); \
-             for (int _g = 0; _g < 1000000; _g++) {{ \
+             for (signed _g = 0; _g < 1000000; _g++) {{ \
              if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; \
              uint64_t _c = sx_read({id}); if ({hit}) break; _p = _c; }} }}\n"
         ));
@@ -1646,7 +1646,7 @@ impl Ctx<'_> {
             Some(cond) => {
                 let c = self.expr(cond)?;
                 b.push_str(&format!(
-                    "{ind}for (int _g = 0; _g < 1000000 && !({c}); _g++) {{ \
+                    "{ind}for (signed _g = 0; _g < 1000000 && !({c}); _g++) {{ \
                      if (!sx_step_clock(&_now, _next, _cid, _half, _nclk)) break; }}\n"
                 ));
             }
@@ -1761,7 +1761,7 @@ impl Ctx<'_> {
                         .replace('\\', "\\\\")
                         .replace('"', "\\\"");
                     Ok(format!(
-                        "({{ FILE *_f = fopen(\"{full}\", \"rb\"); int _e = _f != 0; if (_f) fclose(_f); _e; }})"
+                        "({{ FILE *_f = fopen(\"{full}\", \"rb\"); signed _e = _f != 0; if (_f) fclose(_f); _e; }})"
                     ))
                 }
                 "read" | "read_to_string" => Err(format!(
@@ -2122,7 +2122,7 @@ impl Ctx<'_> {
                 }
                 // A `real` operand switches to double semantics: reals read
                 // their bits as `double`, integer literals coerce (`z.re == 10`
-                // compares 10.0). A comparison yields an int; arithmetic yields
+                // compares 10.0). A comparison yields an signed; arithmetic yields
                 // the double's bit pattern (matching the runner).
                 if self.is_real_operand(lhs) || self.is_real_operand(rhs) {
                     let a = self.c_real_operand(lhs)?;
@@ -2143,7 +2143,7 @@ impl Ctx<'_> {
                         format!("sx_b64((double){e})")
                     });
                 }
-                // A typed operand inlines its family's operator impl (int's
+                // A typed operand inlines its family's operator impl (signed's
                 // signed Div/Ord), matching the runner.
                 if let Some(v) = self.c_dispatch_binop(op, lhs, rhs)? {
                     return Ok(v);

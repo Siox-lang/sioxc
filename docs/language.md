@@ -58,8 +58,8 @@ precise reference.
   scalar — so an enum array is written `{'a', 'b'}`, not `"ab"`. Bit vectors use
   a plain string `"0101"` (logic values by context) or a radix prefix `o"17"` /
   `x"AB"`.
-- **Numeric vectors.** `uint[N]` / `int[N]` are library types built on `Logic`
-  vectors; signedness lives in the operator impls (int's arithmetic shift,
+- **Numeric vectors.** `unsigned[N]` / `signed[N]` are library types built on `Logic`
+  vectors; signedness lives in the operator impls (signed's arithmetic shift,
   signed division and comparison), not in a type flag.
 - **Bit operations.** Slices (`a[7..4]`, direction-aware), concatenation
   (`{hi, lo}`, also as an assignment target), and bit-pattern `match`
@@ -186,8 +186,8 @@ declaration form for signals, locals, and instances alike; an instance's
 connections are a name-less block that takes its type from the annotation:
 
 ```siox
-let count: uint[8];                    // signal
-let value: uint[8] = 0;                // signal with reset value
+let count: unsigned[8];                    // signal
+let value: unsigned[8] = 0;                // signal with reset value
 let dut: Counter<W = 8> = { clk, rst, count };      // instance
 let dut: Counter<W = 8>;               // instance, ports wired after
 ```
@@ -232,7 +232,7 @@ entity Counter<W: integer> {
     in rst: Logic;
     in en: Bit;
 
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -241,10 +241,10 @@ Invalid:
 ```siox
 entity Counter {
     const W: integer;      // invalid in entity body
-    let value: uint[8];  // invalid in entity body
+    let value: unsigned[8];  // invalid in entity body
 
     in clk: Bit;
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -262,7 +262,7 @@ Valid:
 
 ```siox
 entity Counter<W: integer> {
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -309,7 +309,7 @@ Valid:
 const DEFAULT_WIDTH: integer = 8;
 
 entity Counter<W: integer> {
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -317,7 +317,7 @@ Valid inside implementation if used as a local compile-time value:
 
 ```siox
 impl Counter<W: integer> {
-    const MAX: uint[W] = (1 << W) - 1;
+    const MAX: unsigned[W] = (1 << W) - 1;
 }
 ```
 
@@ -326,7 +326,7 @@ Invalid:
 ```siox
 entity Counter {
     const W: integer;
-    out count: uint[W];
+    out count: unsigned[W];
 }
 ```
 
@@ -342,7 +342,7 @@ Valid:
 
 ```siox
 using std::logic::{Bit, Logic};
-using Word = uint[32];
+using Word = unsigned[32];
 ```
 
 Invalid:
@@ -409,16 +409,16 @@ means:
 ```
 
 **Bit vectors are recognized by shape.** A bodyless struct deriving from an
-array of a bit scalar — `struct uint : Logic[]` — *is* a packed bit vector
+array of a bit scalar — `struct unsigned : Logic[]` — *is* a packed bit vector
 (one N-bit signal); no annotation is needed, since an array of bits already
-says so. The compiler tracks **no signedness at all** — `uint` and `int` are the same
+says so. The compiler tracks **no signedness at all** — `unsigned` and `signed` are the same
 shape (`Logic[]`), and their difference is entirely their **operator impls**:
-`int` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
-`uint` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
+`signed` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
+`unsigned` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
 marker (attribute or trait) — signedness is behaviour, and behaviour lives in
 impls. The one thing that is not an operator — sign-extension when widening —
-is therefore a library function, `std::bits::sext`: `int[16](sext(x))` widens
-a signed vector, while a bare `int[16](x)` is a raw resize (zero-extend /
+is therefore a library function, `std::bits::sext`: `signed[16](sext(x))` widens
+a signed vector, while a bare `signed[16](x)` is a raw resize (zero-extend /
 truncate).
 
 **Type-targeted attributes.** A target may also be a *type name*, declaring
@@ -542,8 +542,8 @@ This includes:
 - `Bit`.
 - `Logic`.
 - `Bool`.
-- `uint[N]`.
-- `int[N]`.
+- `unsigned[N]`.
+- `signed[N]`.
 - Enums.
 - Arrays of digital values.
 - Structs whose fields are digital.
@@ -575,7 +575,7 @@ Struct example:
 ```siox
 struct Packet {
     valid: Bit,
-    data: uint[32],
+    data: unsigned[32],
 }
 
 let p: Packet;
@@ -604,7 +604,7 @@ annotation, a port, an assignment target, a comparison counterpart — overrides
 
 | literal | default | narrows to (with context) |
 | ------- | ------- | ------------------------- |
-| `42`      | `integer` | `uint[N]` / `int[N]` |
+| `42`      | `integer` | `unsigned[N]` / `signed[N]` |
 | `3.14`    | `real`    | — |
 | `'0'`     | `Char`    | `Bit` / `Logic` / any enum with that char variant |
 | `"abc"`   | `string` (`Char[3]`) | — |
@@ -612,7 +612,7 @@ annotation, a port, an assignment target, a comparison counterpart — overrides
 
 So `let i = '0';` is a `Char`, but `let i: Logic = '0';` is a `Logic` and
 `let b: Bit = '1';` a `Bit`; `let n = 42;` is an `integer`, but
-`let n: uint[8] = 42;` is a `uint[8]`. The context reaches through an
+`let n: unsigned[8] = 42;` is a `unsigned[8]`. The context reaches through an
 if-expression too: `b = if c { '1' } else { '0' };` with `b: Bit` types the
 branches as `Bit`. Char literals are ambiguous by nature because
 `Bit`/`Logic` are enums whose variants are *written* as char
@@ -622,7 +622,7 @@ Bits are concatenated with a brace list of positional values, most-significant
 first (distinguished from a struct literal by the absence of leading `.`):
 
 ```siox
-let byte: uint[8] = { hi_nibble, lo_nibble };  // hi occupies bits 7..4
+let byte: unsigned[8] = { hi_nibble, lo_nibble };  // hi occupies bits 7..4
 ```
 
 For structs:
@@ -734,7 +734,7 @@ Its meaning depends on context.
 Declaration initialization:
 
 ```siox
-let value: uint[8] = 0;
+let value: unsigned[8] = 0;
 ```
 
 Combinational assignment:
@@ -819,7 +819,7 @@ Local variables update immediately:
 
 ```siox
 if clk.rising() {
-    let tmp: uint[8] = a;
+    let tmp: unsigned[8] = a;
     a = b;
     b = tmp;
 }
@@ -967,7 +967,7 @@ Use constructors/casts:
 ```siox
 let b: Bit = Bit(x);
 let l: Logic = Logic(b);
-let u: uint[8] = uint[8](value);
+let u: unsigned[8] = unsigned[8](value);
 ```
 
 This is especially important for `Logic` to `Bit` because unknown/high-impedance states may need explicit handling.
@@ -979,19 +979,19 @@ This is especially important for `Logic` to `Bit` because unknown/high-impedance
 family-preserving `resize`:
 
 ```siox
-y = uint[16](a);      // widen: zero-extends (uint target)
-z = int[16](s);       // widen: sign-extends when the source is int
-n = uint[4](a);       // narrow: truncates
-k = integer(s);       // cross to the kernel word (sign-extending from int)
-r = resize(a, W + 1); // keeps uint/int-ness; width is const-evaluable
+y = unsigned[16](a);      // widen: zero-extends (unsigned target)
+z = signed[16](s);       // widen: sign-extends when the source is signed
+n = unsigned[4](a);       // narrow: truncates
+k = integer(s);       // cross to the kernel word (sign-extending from signed)
+r = resize(a, W + 1); // keeps unsigned/signed-ness; width is const-evaluable
 ```
 
 Extension comes from the source/target families; `resize(x, n)` takes its
 width as a value argument because the language is static — a const-evaluable
 value argument in width position *is* a generic argument.
 
-**Constant conversion arguments must fit the target**: `uint[4](300)` and
-`int[4](-9)` are compile-time errors (`-8..7` is int[4]'s domain), the same
+**Constant conversion arguments must fit the target**: `unsigned[4](300)` and
+`signed[4](-9)` are compile-time errors (`-8..7` is signed[4]'s domain), the same
 rule as ranged-numeric initialisers. Dynamic values get simulation-time
 range checks when the simulation-reporting machinery lands (with `assert`
 severity/`print!`).
@@ -1013,7 +1013,7 @@ Valid:
 
 ```siox
 entity Producer {
-    out data: uint[8];
+    out data: unsigned[8];
 }
 ```
 
@@ -1089,11 +1089,11 @@ Usage:
 
 ```siox
 entity Producer {
-    bus: StreamSource Stream<uint[32]>;
+    bus: StreamSource Stream<unsigned[32]>;
 }
 
 entity Consumer {
-    bus: StreamSink Stream<uint[32]>;
+    bus: StreamSink Stream<unsigned[32]>;
 }
 ```
 
@@ -1140,7 +1140,7 @@ The nominal identity is the pair `(view, backing struct)`. `Source Stream` and
 `Source`.
 
 ```siox
-let wire: Stream<uint[32]>;
+let wire: Stream<unsigned[32]>;
 let p: Producer = { .bus = wire };
 let c: Consumer = { .bus = wire };
 ```
@@ -1262,7 +1262,7 @@ glued to a string; the compiler lowers each arm to `(scrut & mask) == value`.
 A bit pattern is only meaningful in `match` position — it is not a value:
 
 ```siox
-let x: uint[4] = "10--";   // '-' here is the std_ulogic value, not a wildcard
+let x: unsigned[4] = "10--";   // '-' here is the std_ulogic value, not a wildcard
 ```
 
 ---
@@ -1302,7 +1302,7 @@ Ranges are inclusive, including partial ranges. An omitted bound comes from
 the indexed object's declared range:
 
 ```siox
-let down: uint[7..0];
+let down: unsigned[7..0];
 down[..4]   // down'left..4  = 7..4
 down[3..]   // 3..down'right = 3..0
 down[..]    // down'left..down'right = 7..0
@@ -1336,7 +1336,7 @@ length copies (`o = s`).
 element, most-significant/first element leftmost:
 
 ```siox
-let table: uint[8][4];
+let table: unsigned[8][4];
 table = [10, 20, 30, 40];   // four 8-bit elements
 y = table[sel];             // runtime index reads the lookup table
 ```
@@ -1426,22 +1426,22 @@ literal as `integer`) backs bare files that load no `Suffix` impls, e.g.
 `await 10ns` without imports.
 
 A one-letter prefix glued to a string is a bit-string literal (VHDL-style),
-a sized `uint` constant. Prefixes are *radix conversions* — the compiler names
+a sized `unsigned` constant. Prefixes are *radix conversions* — the compiler names
 the `Prefix` trait, but std owns which prefixes exist. Evaluation stays a
 compiler intrinsic until const string operations land, so the impls inherit
 the empty default body:
 
 ```siox
 // in std::bits
-impl Prefix<"x", string> for uint {}   // hex:   4 bits/digit
-impl Prefix<"o", string> for uint {}   // octal: 3 bits/digit
+impl Prefix<"x", string> for unsigned {}   // hex:   4 bits/digit
+impl Prefix<"o", string> for unsigned {}   // octal: 3 bits/digit
 ```
 
 ```siox
-let a: uint[8]  = x"AB";        // hex: width = 4 * digits
-let t: uint[6]  = o"17";        // octal: width = 3 * digits (= 15)
-let k: uint[24] = x"123ABC";
-let m: uint[8]  = "01010101";   // no prefix: a string of logic values
+let a: unsigned[8]  = x"AB";        // hex: width = 4 * digits
+let t: unsigned[6]  = o"17";        // octal: width = 3 * digits (= 15)
+let k: unsigned[24] = x"123ABC";
+let m: unsigned[8]  = "01010101";   // no prefix: a string of logic values
 ```
 
 `x"…"` and `o"…"` are 2-value radix expansions. A prefix that no `impl Prefix`
@@ -1510,14 +1510,14 @@ impl Operator<"<=>", Version, Ordering> for Version {
 // v1 < v2, v1 >= v2, v1 == v2, ... all work.
 ```
 
-The intrinsic numeric operators on `uint`/`int`/`integer` keep their built-in
+The intrinsic numeric operators on `unsigned`/`signed`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types
 (`Logic` truth tables, `Complex`, ...).
 
 **Boolean operators are boolean-per-bit.** `and`/`or`/`xor`/`nand`/`nor`/
 `xnor`/`not` are one family — there is no separate bitwise-vs-logical pair.
 Their meaning is fixed by the operand type: on a `Bool` they are plain
-boolean; on a **bit-derived type** (`Bit`, `Logic`, `uint`, `int`, any
+boolean; on a **bit-derived type** (`Bit`, `Logic`, `unsigned`, `signed`, any
 any bit-vector family) they apply **per bit and return the same bit array**, the
 way VHDL's `and`/`or` work on `std_logic_vector` (`"1010" and "0110"` =
 `"0010"`). Boolean is simply the one-bit case of boolean-per-bit. Because it
@@ -1629,8 +1629,8 @@ struct Meter : real;            // a newtype over a scalar
 or fields — it cannot add. To build a bigger type, use **composition**:
 
 ```siox
-struct Header { valid: Bit, kind: uint[4] }
-struct Packet { header: Header, data: uint[8] }   // holds one, not extends it
+struct Header { valid: Bit, kind: unsigned[4] }
+struct Packet { header: Header, data: unsigned[8] }   // holds one, not extends it
 ```
 
 and read through the field that holds it (`pkt.header.valid`). Nested struct
@@ -1661,7 +1661,7 @@ that boundary rather than a property of the enum:
 
 ```siox
 enum State { Idle, Run, Done }
-fn encode(s: State) -> uint[8] { … }   // the return type sets the width
+fn encode(s: State) -> unsigned[8] { … }   // the return type sets the width
 ```
 
 **Conversions follow from derivation.** `T(x)` (the only conversion syntax —
@@ -1681,7 +1681,7 @@ without an initializer takes its type's **default**, written `T::new()`:
 
 ```siox
 let p: Phase;          // == Phase::new(): the default Phase
-let n: uint[8];        // == 0
+let n: unsigned[8];        // == 0
 ```
 
 `new` is siox's default constructor — a `New` trait, `fn new() -> Self`. It is
@@ -1698,14 +1698,14 @@ trait (`From::from`, `Operator::apply`, `Boolean::as_bool`). A parameterized
 ```siox
 let p: Phase;          // implicit: the default Phase
 let p2 = Phase();      // explicit: the same default, written out
-let n = uint[8]();     // == 0
+let n = unsigned[8]();     // == 0
 ```
 
 **The derived default is structural** (VHDL's `T'LEFT`), applied recursively:
 
 - an **enum** → its **first variant** (§3.8) — so an enum whose first variant
   carries a non-zero `= n` still defaults to a valid member, not a bare `0`;
-- a `Logic`/`Bit` **vector** (`uint`/`int`) → every bit is `Logic`'s first
+- a `Logic`/`Bit` **vector** (`unsigned`/`signed`) → every bit is `Logic`'s first
   value `'0'` → the value `0`;
 - a **struct** → each field defaulted by its own type;
 - an **array** → each element defaulted.
@@ -1891,7 +1891,7 @@ using std::logic::{Bit, Logic};
 Aliases create local names:
 
 ```siox
-using Word = uint[32];
+using Word = unsigned[32];
 ```
 
 Fully-qualified paths remain valid:
@@ -1971,7 +1971,7 @@ The compiler can reject ill-typed programs before elaboration.
 
 ### Acceptance criteria
 
-- Cannot assign `uint[8]` to `uint[16]` without explicit conversion, unless widening rules are explicitly added.
+- Cannot assign `unsigned[8]` to `unsigned[16]` without explicit conversion, unless widening rules are explicitly added.
 - Cannot use undeclared attributes.
 - Cannot apply attributes to wrong targets.
 - Cannot write to `in` ports inside an entity.
@@ -2258,7 +2258,7 @@ fn maxi<T: Operator>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Oper
 ```
 
 Functions inline, so a call is its own monomorphization: the body dispatches
-operators on the caller's concrete type (`int`'s signed `<=>`, not the kernel
+operators on the caller's concrete type (`signed`'s signed `<=>`, not the kernel
 compare), and the bound is checked at the call site — a named struct/enum must
 carry an explicit `impl Tr`, while kernel scalars and vectors satisfy the
 built-in capabilities. `T: Operator` is the capability bound "supports operator
@@ -2280,7 +2280,7 @@ assert!(cond, "message");                     // macro: captures the source loca
 stop();                                       // function: halt (test passes so far)
 finish();                                     // function: end the simulation cleanly
 seed(42);                                     // functions: deterministic RNG
-let r: uint[8] = randint(10, 20);             //   (runtime-provided, std::rand)
+let r: unsigned[8] = randint(10, 20);             //   (runtime-provided, std::rand)
 ```
 
 `print!` auto-newlines (like `$display`); real values print as floats, `Char`
@@ -2316,7 +2316,7 @@ one meaning everywhere.) So an index loop over an `N`-element array runs to
 `N-1`:
 
 ```siox
-let acc: uint[8] = 0;
+let acc: unsigned[8] = 0;
 for x in xs { acc = acc + x; }          // element iteration (no bounds needed)
 for i in 0..xs::len - 1 { acc = acc + xs[i]; }   // 0,1,...,len-1
 for i in xs::len - 1..0 { acc = acc + xs[i]; }   // same, high index first
@@ -2349,7 +2349,7 @@ impl CounterTest {
     let clk: Bit = '0';
     let rst: Logic = '1';
     let en: Bit = '1';
-    let count: uint[8];
+    let count: unsigned[8];
 
     let dut: Counter<W = 8> = {
         .clk,
@@ -2521,7 +2521,7 @@ The language kernel provides exactly three base types:
   table; against `Bit`/`Logic`/an enum it reads as the matching variant
   (`'Z'` is the Logic value, not code point 90); against a future encoding
   type (`Ascii`) it reads through that table. A context that cannot read a
-  character — a numeric type — is an error: `n == 'c'` with `n: uint[8]`
+  character — a numeric type — is an error: `n == 'c'` with `n: unsigned[8]`
   does not compile; convert through a table instead. Any Unicode symbol is
   a valid literal (`'€'`).
 
@@ -2537,7 +2537,7 @@ Plus the type machinery: enums (including character-literal variants —
 symbol domains themselves), structs, arrays, ranges, value-range
 constraints (3.26), and events. Every other type is declared in `std/` as
 ordinary source, the way VHDL declares `bit`, `boolean` and `std_ulogic`
-in library code — `uint[N]`/`int[N]` derive from `Logic`, `std::numeric`
+in library code — `unsigned[N]`/`signed[N]` derive from `Logic`, `std::numeric`
 derives the C-style ranged integers, and `string` is `Char[N]` with its
 length fixed at elaboration from the initializer (pending
 unconstrained-array machinery). UTF-8 is a std encoding table applied at
@@ -2579,12 +2579,12 @@ detection is applied to it (`clk.rising()`, per 3.10).
 Contains the derived numeric vectors:
 
 ```siox
-uint[N]   // vector of Logic, unsigned interpretation  (VHDL `unsigned`)
-int[N]    // vector of Logic, two's-complement          (VHDL `signed`)
+unsigned[N]   // vector of Logic, unsigned interpretation  (VHDL `unsigned`)
+signed[N]    // vector of Logic, two's-complement          (VHDL `signed`)
 ```
 
 Both are derived from `Logic` but accept the kernel base type `integer` on
-assignment (`let x: uint[8] = 42;`), plus operations:
+assignment (`let x: unsigned[8] = 42;`), plus operations:
 
 - Arithmetic.
 - Bitwise logic.

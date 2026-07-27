@@ -813,7 +813,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "64-bit-word only")]
     fn rejects_signals_wider_than_64_bits() {
-        // A uint[128] signal would truncate in an i64 slot — reject it.
+        // A unsigned[128] signal would truncate in an i64 slot — reject it.
         let design = Design {
             signals: vec![sig("E.a", 128)],
             drivers: vec![Driver {

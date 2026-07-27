@@ -47,7 +47,7 @@ assertions, and VCD export — predates this changelog. See
   (`Bit`/`Logic`/`Bool` or a user `enum`) to a bare integer literal — `b == 1`
   instead of `b == '1'` — now warns: its values are written as char/variant
   literals, and an integer silently compares the raw discriminant. Numeric
-  vectors (`uint`/`int`) are excluded. (It caught a real `ok == 1` in the corpus.)
+  vectors (`unsigned`/`signed`) are excluded. (It caught a real `ok == 1` in the corpus.)
 - **`new` — uninitialized values have a defined default.** Every signal powers
   on to its type's structural default: an enum to its **first variant** (VHDL
   `T'LEFT`, so an enum with a non-zero-based first discriminant defaults to a
@@ -113,7 +113,7 @@ assertions, and VCD export — predates this changelog. See
 
 ### Changed
 - **Bit-vector types name their real family in diagnostics.** A width mismatch
-  on `int[8]` now says `int[8]` instead of a hardcoded `uint[8]` (both `EType`
+  on `signed[8]` now says `signed[8]` instead of a hardcoded `unsigned[8]` (both `EType`
   in elaboration and `Ty` in the checker carry the family for display).
 
 ### Fixed
@@ -131,7 +131,7 @@ assertions, and VCD export — predates this changelog. See
   accumulators. All work in hardware and testbench stimulus on every engine.
 - **Generics with type parameters.** A struct (`Pair<T>`), entity (`Reg<T>`,
   `Buf<T>`), or bus (`Stream<T>::Source`) parameterized by a *type* now
-  specializes to its type argument: `Reg<uint[16]>` gives its `T`-typed ports
+  specializes to its type argument: `Reg<unsigned[16]>` gives its `T`-typed ports
   and internal state width 16. Resolve binds the type parameter for the impl
   body, the checker treats it as opaque, and IR lowering substitutes it into
   each signal's type. Works on all three engines.
@@ -150,11 +150,11 @@ assertions, and VCD export — predates this changelog. See
   `struct Word : Logic[31..0]` is 32 — the width now flows to signals and
   testbench locals on all three engines (previously such a type was width 0,
   unmasked). Recognition is **transitive**: a field-less struct deriving from
-  another vector family (`struct Byte : uint[8]`) is itself a numeric vector,
+  another vector family (`struct Byte : unsigned[8]`) is itself a numeric vector,
   inheriting the base's width and operators.
 - **Strict assignment widths.** Assigning a signal to a target of a different
   width is now an error (`E-P003`) — including widths that only become concrete
-  after elaboration substitutes a parameter (`uint[W]`), which the type checker
+  after elaboration substitutes a parameter (`unsigned[W]`), which the type checker
   can't see. Only direct references (name/field/element/slice/concat) are
   checked; arithmetic is exempt (results are not auto-widened — overflow wraps,
   and a different width is an explicit `resize`), so `sum = a + b` still works.
@@ -253,7 +253,7 @@ interpreter that doubles as a differential oracle).
   lints and the existing unresolved-multiple-drivers error — surface at check
   time instead of only under `test`/`sim`.
 - **Struct/array-typed ports across instances** — a bundle port (`in s: Stream`,
-  `in v: uint[8][3]`) now wires leaf-by-leaf across an instance boundary
+  `in v: unsigned[8][3]`) now wires leaf-by-leaf across an instance boundary
   (`.s = link` connects `s.valid`<->`link.valid`, `s.data`<->`link.data`).
   Unblocks ready/valid handshakes and buses between blocks — the shape real
   multi-block designs are built from.
@@ -290,58 +290,58 @@ interpreter that doubles as a differential oracle).
   (`#[external_clock = true] let p = Pll { .. };`), validated (E-P006 on the
   wrong target, unknown names reported), and preserved through elaboration
   (shown in `sioxc tree`) for future export to external tools.
-- **Explicit conversions: `T(x)` and `resize(x, n)`** — `uint[16](a)`
-  zero-extends, `int[16](s)` sign-extends from an int source, `uint[4](a)`
+- **Explicit conversions: `T(x)` and `resize(x, n)`** — `unsigned[16](a)`
+  zero-extends, `signed[16](s)` sign-extends from an signed source, `unsigned[4](a)`
   truncates, `integer(s)` crosses to the kernel; `resize` keeps the family
   and takes its width as a const-evaluable value argument. Typed as their
   target (the E-P003 friction now has its answer); lowered in hardware
   (sign-extension included), masked in testbench evaluation and the native
   binary.
-- **Signed division and arithmetic shift-right for `int`** — now std source
+- **Signed division and arithmetic shift-right for `signed`** — now std source
   (`std/bits.siox`), built on `resize` and `self::width`: magnitude divide +
   sign restore; top-bit mask fill. `-20 / 3 = -6`, `-20 >> 1 = -10`, verified
   on interp, JIT, and native.
 - **`std::prelude`, auto-loaded** — `Bit`/`Logic`/`Bool`/`Clock`,
-  `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` are in scope in
+  `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` are in scope in
   every file with no `using` (like VHDL's implicit `std.standard`). Ends the
-  silent kernel-fallback: a bare file now gets signed `int` comparison and
+  silent kernel-fallback: a bare file now gets signed `signed` comparison and
   `10ns` out of the box. A std root without `prelude.siox` skips it silently.
 - **Signedness fully erased from the compiler's types** — the vestigial
   `signed` field on `Ty::Vector` / `EType::Vector` is gone (both are now just
   `{ width }`), `vector_families` is a membership set (not name->signed), the
   dead sign-extension path in lowering is removed, and the struct-attribute
   machinery (added only for `#[vector]`/`#[signed]`) is reverted — no struct
-  carries attributes. `int` and `uint` are now the *same* compiler type
+  carries attributes. `signed` and `unsigned` are now the *same* compiler type
   (a bit vector of width N), distinguished purely by their operator impls;
-  errors show both as `uint[N]`. All engines + differential green.
+  errors show both as `unsigned[N]`. All engines + differential green.
 - **No signedness marker at all — it lives in the operator impls** — the
-  `Signed` trait is gone too. `int` is signed purely because its `Ord`/`Shr`/
+  `Signed` trait is gone too. `signed` is signed purely because its `Ord`/`Shr`/
   `Div` impls are (signed compare, arithmetic shift, signed divide),
-  dispatched by type at lowering; `uint` uses the kernel's unsigned ops. The
+  dispatched by type at lowering; `unsigned` uses the kernel's unsigned ops. The
   compiler tracks no signedness. Sign-extension on widening — the one thing
   that isn't an operator — becomes the library `std::bits::sext`:
-  `int[16](sext(x))` for signed widening, bare `int[16](x)` is a raw resize.
+  `signed[16](sext(x))` for signed widening, bare `signed[16](x)` is a raw resize.
   All engines green.
 - **`#[signed]` removed — signedness is the `Signed` capability trait** —
   unlike `#[vector]` (structural, redundant with shape), signedness is a
   *capability* (it changes comparison, shift, division, widening), so it
-  belongs as a trait like int's other signed behaviours, not metadata.
-  `impl Signed for int {}` (std::ops) replaces `#[signed]`; the compiler reads
-  it only to sign-extend on widening (compare/shift/div are already int's own
+  belongs as a trait like signed's other signed behaviours, not metadata.
+  `impl Signed for signed {}` (std::ops) replaces `#[signed]`; the compiler reads
+  it only to sign-extend on widening (compare/shift/div are already signed's own
   impls). A user `struct MyWord : Logic[];` is unsigned; `impl Signed for
   MyWord {}` makes it signed (sign-extends on widen — verified). No struct
   carries a compiler attribute anymore.
 - **`#[vector]` removed — bit vectors are recognized by shape** — an array
   of bits *is* a vector, so a bodyless struct deriving from `Logic[]`/`Bit[]`
-  (`struct uint : Logic[]`) is a packed bit vector with no annotation needed;
+  (`struct unsigned : Logic[]`) is a packed bit vector with no annotation needed;
   the shape is the definition. Only `#[signed]` remains, for the one thing the
-  shape can't say (uint and int are both `Logic[]`). All three engines'
+  shape can't say (unsigned and signed are both `Logic[]`). All three engines'
   recognizers (types/elab/ir) switched from reading the attribute to the shape.
 - **Boolean operators are boolean-per-bit** — `and`/`or`/`xor`/`not` are one
   family (no bitwise-vs-logical pair): plain boolean on `Bool`, and per-bit
   on bit-derived types, returning the same bit array (VHDL logic-vector
-  style, `uint[32] and uint[32] -> uint[32]`). Intrinsic to bit types — no
-  per-type impl (the redundant uint impls were removed; Logic keeps its
+  style, `unsigned[32] and unsigned[32] -> unsigned[32]`). Intrinsic to bit types — no
+  per-type impl (the redundant unsigned impls were removed; Logic keeps its
   4-value truth table). Rejected on non-bit types (`real`/`Char`). Fixes the
   earlier logical-vs-bitwise confusion: the engines were logical on
   multi-bit words (`12 and 10` gave 1); now correctly per-bit (8) on all
@@ -353,28 +353,28 @@ interpreter that doubles as a differential oracle).
   explicit `impl Tr`; kernel scalars/vectors satisfy built-ins). Verified on
   interp/JIT/native (examples/generic_test.siox, where_test.siox). The
   `where`-clause proposal note is now implemented and removed.
-- **Built-in uint/int fully removed** — the compiler no longer has `UInt(w)`
-  / `Int(w)` types or any `uint`/`int` name-check. Its only numeric-vector
+- **Built-in unsigned/signed fully removed** — the compiler no longer has `UInt(w)`
+  / `Int(w)` types or any `unsigned`/`signed` name-check. Its only numeric-vector
   notion is a generic `Ty::Vector { width, signed }` / `EType::Vector` — a
   packed bit vector, the irreducible hardware fact. All recognition
   (array-vs-vector, conversion syntax, port width, signedness) flows through
-  the `#[vector]` family set. `uint`/`int` are purely std names; the strings
+  the `#[vector]` family set. `unsigned`/`signed` are purely std names; the strings
   survive in the compiler only as conventional display/trait-key output for
   an unsigned/signed vector. Suite (default + interp) + corpus green on all
   three engines.
 - **Representation attributes `#[vector]` / `#[signed]`** — the numeric-vector
   layout is now *declared by std*, not inferred by the compiler from the
-  `: Logic[]` shape. `std/bits.siox` marks `#[vector] struct uint` and
-  `#[vector] #[signed] struct int`; the compiler recognizes families by the
+  `: Logic[]` shape. `std/bits.siox` marks `#[vector] struct unsigned` and
+  `#[vector] #[signed] struct signed`; the compiler recognizes families by the
   attribute and drops the last name-recognition residuals (`is_int_type` is
   now `integer`-only). Attributes attach to struct declarations, validated
   against a `struct` target. Replaces the short-lived `Signed` marker trait.
-- **uint/int dropped as compiler-magic names** — they are now ordinary
-  `struct uint : Logic[]` / `struct int : Logic[]` declarations in
+- **unsigned/signed dropped as compiler-magic names** — they are now ordinary
+  `struct unsigned : Logic[]` / `struct signed : Logic[]` declarations in
   `std/bits.siox`, no longer seeded builtins. The compiler recognizes any
   array-derived Logic family (`struct F : Logic[]`) as a numeric vector and
   reads `impl Signed` (std::ops) for the interpretation — so a user
-  `struct Word : Logic[]` behaves exactly like uint, and fixed-point families
+  `struct Word : Logic[]` behaves exactly like unsigned, and fixed-point families
   follow the same path. Resolve seed + the `path_ty` name-mapping removed;
   the efficient `UInt(w)/Int(w)` encoding is now derived from the
   declaration. Whole suite (126 tests, incl. the JIT-vs-interp differential
@@ -428,7 +428,7 @@ interpreter that doubles as a differential oracle).
   initial values now actually apply (VHDL-style Signal.init in both engines'
   reset) instead of everything starting at zero.
 - **Conversion fit checking** — a constant conversion argument must be
-  representable in the target: `uint[4](300)` / `int[4](-9)` are
+  representable in the target: `unsigned[4](300)` / `signed[4](-9)` are
   compile-time errors (signed domains respected; simple const expressions
   fold). Dynamic range checks deferred to the simulation-reporting design.
 - **The `From` conversion trait** — `T(x)` on a named type dispatches to
@@ -441,7 +441,7 @@ interpreter that doubles as a differential oracle).
   testbenches; std::math is now literally an extern block over libm, and any
   C symbol works (`labs` from libc verified in hardware on JIT + native).
 - **Module-level functions** — `fn` is an item: inlined in hardware,
-  const-evaluated in width positions (`uint[clog2(DEPTH)]`), callable in
+  const-evaluated in width positions (`unsigned[clog2(DEPTH)]`), callable in
   testbenches. std gains `abs`/`min`/`max`, `clog2`.
 - **`std::math` real functions** — `sqrt`/`sin`/`cos`/`exp`/`log`/`pow`/
   `floor`/`ceil`/`round` as kernel externs (libm / LLVM intrinsics), plus
@@ -451,10 +451,10 @@ interpreter that doubles as a differential oracle).
   `impl Resolve` (`Logic` gets the std_logic table: tristate buses work,
   contention is 'X'); types without one error — the VHDL unresolved-type
   safety rule. `std::logic::unresolved::ULogic` is the checked mirror.
-- **uint/int operators moved to std** — only the kernel types (`integer`,
-  `real`) keep built-in operators; `uint[N]`/`int[N]` arithmetic and shifts
-  are now `impl Add for uint` etc. in `std/bits.siox`, and `int` gains
-  **signed comparison** via a sign-aware `impl Ord for int` (library source,
+- **unsigned/signed operators moved to std** — only the kernel types (`integer`,
+  `real`) keep built-in operators; `unsigned[N]`/`signed[N]` arithmetic and shifts
+  are now `impl Add for unsigned` etc. in `std/bits.siox`, and `signed` gains
+  **signed comparison** via a sign-aware `impl Ord for signed` (library source,
   not compiler code; `self::width` is available inside operator impls).
   Overload selection tightened: exact rhs match, then integer-literal
   coercion — a sole candidate is never taken on a known mismatch.
@@ -545,7 +545,7 @@ interpreter that doubles as a differential oracle).
   rejects malformed IR before codegen.
 
 ### Deferred / by design
-- **Signedness is not compiler-hardcoded.** `int[N]`/`uint[N]` operators — and
+- **Signedness is not compiler-hardcoded.** `signed[N]`/`unsigned[N]` operators — and
   signed compare/divide/arithmetic-shift — will live in `std` as operator-trait
   impls, deleting the last numeric shim (#37). The compiler already inlines such
   impls (`Complex` in `std/math.siox` is the proof).

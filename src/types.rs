@@ -1,7 +1,7 @@
 //! Type system and kind checking for siox Phase 1 (spec Stage 4).
 //!
 //! Checks primitive digital types (`Bit`, `Logic`, `Bool`), integer widths
-//! (`uint[N]`, `int[N]`), structs, enums, arrays/vectors, entity types,
+//! (`unsigned[N]`, `signed[N]`), structs, enums, arrays/vectors, entity types,
 //! directional views and bus modes, function/method signatures, trait bounds,
 //! attribute value typing, and pattern typing.
 //!
@@ -10,7 +10,7 @@
 //!   (spec 3.9), and range attributes `::length/::range/::high/::low/::left/
 //!   ::right/::direction` on range-like values (spec 3.23)
 //! - `::ddt` is rejected as Phase-2 analogue syntax (spec Stage 4)
-//! - no implicit broad conversions (spec 3.17): `uint[8]` !-> `uint[16]`
+//! - no implicit broad conversions (spec 3.17): `unsigned[8]` !-> `unsigned[16]`
 //! - cannot write to `in` ports inside an entity (spec 3.18 / code E-P004)
 //! - `Logic` is not a bare condition without comparison (spec 3.16)
 
@@ -29,22 +29,22 @@ pub enum Ty {
     Bool,
     /// The kernel base type `integer` — an unbounded mathematical number, NOT
     /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
-    /// comparison, but has NO per-bit boolean operators (unlike uint/int).
+    /// comparison, but has NO per-bit boolean operators (unlike unsigned/signed).
     Integer,
     /// The kernel base type `real` (f64 in simulation).
     Real,
     /// The kernel base type `Char`: a non-numeric character symbol.
     /// Equality is intrinsic; numbers only exist via std encoding tables.
     Char,
-    /// A packed bit vector — every `#[vector]` family (uint/int and user
+    /// A packed bit vector — every `#[vector]` family (unsigned/signed and user
     /// types). Width `0` means "not yet known" (parametric `F[W]`) or the
     /// unbounded kernel `integer`. `family` is the declared family name when
-    /// one is known (`uint`, `int`, a user `struct Byte : uint[8]`), carried
+    /// one is known (`unsigned`, `signed`, a user `struct Byte : unsigned[8]`), carried
     /// purely so diagnostics name the real type; it is `None` for anonymous
     /// vectors (bit-string literals, concatenations) that have no family.
     ///
-    /// The compiler still has NO *semantic* notion of `uint`/`int`: every
-    /// family shares one operator surface (keyed `uint` in [`Self::ty_head`]),
+    /// The compiler still has NO *semantic* notion of `unsigned`/`signed`: every
+    /// family shares one operator surface (keyed `unsigned` in [`Self::ty_head`]),
     /// and width comparison ignores `family` — `family` never gates a check,
     /// it only labels.
     Vector {
@@ -92,7 +92,7 @@ pub struct Typed {
 ///   declaration does not allow -> [`codes::INVALID_ATTR_TARGET`].
 ///
 /// Deferred to elaboration, where the needed information exists: width-level
-/// conversions (`uint[8]` !-> `uint[16]`) and method-call resolution.
+/// conversions (`unsigned[8]` !-> `unsigned[16]`) and method-call resolution.
 pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink) -> Typed {
     let mut checker = Checker::new(sink, resolved);
     checker.collect(modules);
@@ -271,7 +271,7 @@ impl<'a> Checker<'a> {
     fn collect(&mut self, modules: &[Module]) {
         // Two passes: gather type declarations (structs, enums, aliases,
         // attrs, impls) first, so entity-port typing below can already see
-        // e.g. `struct uint : Logic[]` regardless of module/item order.
+        // e.g. `struct unsigned : Logic[]` regardless of module/item order.
         for m in modules {
             for item in &m.items {
                 if matches!(item, Item::Entity(_)) {
@@ -281,7 +281,7 @@ impl<'a> Checker<'a> {
             }
         }
         // A field-less struct deriving from another vector family is itself one
-        // (`struct Byte : uint[8]`); resolve that transitively before typing
+        // (`struct Byte : unsigned[8]`); resolve that transitively before typing
         // ports, so such a type is treated as a numeric vector.
         self.resolve_transitive_vector_families();
         for m in modules {
@@ -528,7 +528,7 @@ impl<'a> Checker<'a> {
                 self.structs
                     .insert(st.name.text.clone(), (st.base.clone(), fields));
                 // A bodyless struct over an array of bit scalars is a bit
-                // vector by shape (`struct uint : Logic[]`); signedness comes
+                // vector by shape (`struct unsigned : Logic[]`); signedness comes
                 // from `impl Signed for T`, applied in a post-pass.
                 let is_vec = st.fields.is_empty()
                     && matches!(
@@ -604,7 +604,7 @@ impl<'a> Checker<'a> {
     /// - a base with a body — extension, which siox does not have. A derived
     ///   enum would hold values its base cannot name, so every method written
     ///   against the base would meet variants it has no arm for.
-    /// - a non-enum base — the old `enum S : uint[2]` storage annotation. An
+    /// - a non-enum base — the old `enum S : unsigned[2]` storage annotation. An
     ///   enum's width is derived from its variants and discriminants; a
     ///   specific wire width belongs at the boundary that carries it (a port,
     ///   a field, a function's return type), which already declares a type.
@@ -734,7 +734,7 @@ impl<'a> Checker<'a> {
 
     /// Fixpoint: a field-less struct whose base array element is a bit scalar
     /// or an already-known vector family is itself a vector family, so
-    /// `struct Byte : uint[8]` inherits uint's numeric nature.
+    /// `struct Byte : unsigned[8]` inherits unsigned's numeric nature.
     fn resolve_transitive_vector_families(&mut self) {
         loop {
             let mut changed = false;
@@ -1467,15 +1467,15 @@ impl<'a> Checker<'a> {
             .is_some_and(|set| set.contains(name))
     }
 
-    /// The name a type is keyed by in the trait-impl table (`uint[8]` and
-    /// `uint` share `uint`). `Error`/array types have no name.
+    /// The name a type is keyed by in the trait-impl table (`unsigned[8]` and
+    /// `unsigned` share `unsigned`). `Error`/array types have no name.
     fn type_kind_name(&self, t: &Ty) -> Option<String> {
         match t {
             Ty::Bit => Some("Bit".to_string()),
             Ty::Logic => Some("Logic".to_string()),
             Ty::Bool => Some("Bool".to_string()),
             Ty::Integer => Some("integer".to_string()),
-            Ty::Vector { .. } => Some("uint".to_string()),
+            Ty::Vector { .. } => Some("unsigned".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
@@ -1756,7 +1756,7 @@ impl<'a> Checker<'a> {
     /// must have an explicit `impl Tr for it`; kernel scalars and vectors are
     /// assumed to carry the built-in capabilities (arithmetic, comparison), so
     /// they are accepted leniently — this catches a custom type missing the
-    /// impl without false-flagging uint/int/etc.
+    /// impl without false-flagging unsigned/signed/etc.
     fn satisfies(&self, ty: &Ty, trait_name: &str) -> bool {
         match self.type_kind_name(ty) {
             Some(kind) => {
@@ -2041,7 +2041,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// `sig == 600` with `sig: uint[8]`: the comparison masks both sides to the
+    /// `sig == 600` with `sig: unsigned[8]`: the comparison masks both sides to the
     /// operand width, so the literal silently becomes 88 and the guard fires on
     /// the wrong value. The masking is right for a *wrapped* expression
     /// (`q == 0 - 3` really is 253), so reject the un-representable literal
@@ -2317,7 +2317,7 @@ impl<'a> Checker<'a> {
                                 codes::TYPE_MISMATCH,
                                 *span,
                                 format!(
-                                    "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/uint/int); `{}` is a number",
+                                    "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/unsigned/signed); `{}` is a number",
                                     self.ty_display(&t)
                                 ),
                             );
@@ -2330,7 +2330,7 @@ impl<'a> Checker<'a> {
                 // mistake: its values are written as char/variant literals
                 // (`'1'`, `Idle`), and an integer silently compares the raw
                 // discriminant (`b == 1` instead of `b == '1'`). Numeric
-                // vectors (`uint`/`int`) legitimately compare to integers, so
+                // vectors (`unsigned`/`signed`) legitimately compare to integers, so
                 // they are excluded. (W-P008)
                 if matches!(op_str, "==" | "!=") {
                     for (lit, other) in [(lhs, rhs), (rhs, lhs)] {
@@ -2400,7 +2400,7 @@ impl<'a> Checker<'a> {
                     self.check_method_exists(callee, sym);
                 }
                 // A constant conversion argument must FIT the target
-                // (spec 3.17/3.26): `uint[4](300)` is a compile-time error,
+                // (spec 3.17/3.26): `unsigned[4](300)` is a compile-time error,
                 // like `let b: Byte = 300`. Dynamic values get simulation
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
@@ -2639,8 +2639,8 @@ impl<'a> Checker<'a> {
                     return Ty::Error;
                 }
                 // An integer literal joins the other operand's numeric type
-                // (`100 / r` with r: int[8] is an int[8], via the std
-                // `impl Div<int> for integer`).
+                // (`100 / r` with r: signed[8] is an signed[8], via the std
+                // `impl Div<signed> for integer`).
                 if matches!(lhs_ty, Ty::Integer) {
                     if let r @ Ty::Vector { .. } = self.type_of(rhs, sym) {
                         return r;
@@ -2736,7 +2736,7 @@ impl<'a> Checker<'a> {
                 }
             }
             // Conversion expressions type as their target (spec 3.17):
-            // `uint[16](x)`, `int[8](x)`, `integer(x)`, `resize(x, n)`.
+            // `unsigned[16](x)`, `signed[8](x)`, `integer(x)`, `resize(x, n)`.
             Expr::Call { callee, args, .. } => match callee.as_ref() {
                 Expr::Index { base, index, .. } => {
                     let head = match base.as_ref() {
@@ -2801,7 +2801,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The type-head name used to key impl methods: a named type's def name,
-    /// a base type's spelling, or `uint` for a bit vector.
+    /// a base type's spelling, or `unsigned` for a bit vector.
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
             Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
@@ -2811,7 +2811,7 @@ impl<'a> Checker<'a> {
             Ty::Char => "Char".to_string(),
             Ty::Real => "real".to_string(),
             Ty::Integer => "integer".to_string(),
-            Ty::Vector { .. } => "uint".to_string(),
+            Ty::Vector { .. } => "unsigned".to_string(),
             _ => return None,
         })
     }
@@ -2935,7 +2935,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolve a type annotation to a [`Ty`]. Parametric widths (`uint[W]`)
+    /// Resolve a type annotation to a [`Ty`]. Parametric widths (`unsigned[W]`)
     /// become `Vector { width: 0, .. }` until elaboration fills them in.
     fn ast_ty(&self, t: &Type) -> Ty {
         match t {
@@ -2945,8 +2945,8 @@ impl<'a> Checker<'a> {
                 let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
                     // The *first* index on a vector family sets its width
-                    // (`uint[8]`). A *second* index makes an array of those
-                    // vectors (`uint[8][4]` = 4 elements, each 8 wide).
+                    // (`unsigned[8]`). A *second* index makes an array of those
+                    // vectors (`unsigned[8][4]` = 4 elements, each 8 wide).
                     Ty::Vector { family, width: 0 } => Ty::Vector { family, width },
                     v @ Ty::Vector { .. } => Ty::Array {
                         elem: Box::new(v),
@@ -2986,9 +2986,9 @@ impl<'a> Checker<'a> {
                 "Bit" => Ty::Bit,
                 "Logic" => Ty::Logic,
                 "Bool" => Ty::Bool,
-                // `integer` is the kernel word; `uint`/`int` are no longer
+                // `integer` is the kernel word; `unsigned`/`signed` are no longer
                 // names here — they resolve as array-derived Logic families
-                // (`struct uint : Logic[]` in std::bits) via the arm below.
+                // (`struct unsigned : Logic[]` in std::bits) via the arm below.
                 "integer" => Ty::Integer,
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
@@ -3040,7 +3040,7 @@ impl<'a> Checker<'a> {
 
     /// The enum name if `t` is a symbolic enum value (`Bit`/`Logic`/`Bool` or a
     /// user `enum`) — the types whose values are written as char/variant
-    /// literals, not numbers. `None` for numerics (`uint`/`int`/`integer`/
+    /// literals, not numbers. `None` for numerics (`unsigned`/`signed`/`integer`/
     /// `real`), `Char`, and non-enums.
     fn enum_operand_name(&self, t: &Ty) -> Option<String> {
         match t {
@@ -3154,7 +3154,7 @@ fn type_identity(ty: &Type) -> Option<String> {
     }
 }
 
-/// Width of a bracketed type index when it is a literal (`uint[8]` -> 8);
+/// Width of a bracketed type index when it is a literal (`unsigned[8]` -> 8);
 /// otherwise `0`, meaning "parametric / not yet known".
 fn width_of(index: &Expr) -> u32 {
     match index {
@@ -3181,11 +3181,11 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
     match (lhs, rhs) {
         (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
         // `integer` is the number kernel; it coerces to/from any bit vector
-        // (a uint[8] accepts `42`, and a vector's value is an integer).
+        // (a unsigned[8] accepts `42`, and a vector's value is an integer).
         (Integer, Integer) => true,
         (Integer, Vector { .. }) | (Vector { .. }, Integer) => true,
-        // Width-only: `family` never gates compatibility (`uint[8]` and
-        // `int[8]` are interchangeable — signedness lives in operator impls).
+        // Width-only: `family` never gates compatibility (`unsigned[8]` and
+        // `signed[8]` are interchangeable — signedness lives in operator impls).
         (Vector { width: a, .. }, Vector { width: b, .. }) => *a == 0 || *b == 0 || a == b,
         (Named(a), Named(b)) => a == b,
         // Whole-array copy: same element type, matching length (0 = unset).
@@ -3231,11 +3231,11 @@ fn ty_name(t: &Ty) -> String {
         Ty::Real => "real".to_string(),
         Ty::Char => "Char".to_string(),
         Ty::Integer => "integer".to_string(),
-        // Name the real family when one is known (`int[8]`, `Byte`), falling
-        // back to `uint` for anonymous vectors (bit-string literals, concats).
-        Ty::Vector { family, width: 0 } => family.clone().unwrap_or_else(|| "uint".to_string()),
+        // Name the real family when one is known (`signed[8]`, `Byte`), falling
+        // back to `unsigned` for anonymous vectors (bit-string literals, concats).
+        Ty::Vector { family, width: 0 } => family.clone().unwrap_or_else(|| "unsigned".to_string()),
         Ty::Vector { family, width: w } => {
-            format!("{}[{w}]", family.as_deref().unwrap_or("uint"))
+            format!("{}[{w}]", family.as_deref().unwrap_or("unsigned"))
         }
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array { .. } => "an array".to_string(),
@@ -3260,7 +3260,7 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
-    const VEC: &str = "\nstruct uint : Logic[];\nstruct int : Logic[];\n";
+    const VEC: &str = "\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");
@@ -3300,8 +3300,8 @@ mod tests {
         );
         // Numeric vector vs integer, and Bit vs a value literal → no warning.
         assert!(
-            !warns("module m;\nentity E { in a: uint[8]; out y: Bit; }\nimpl E { y = if a == 5 { '1' } else { '0' }; }\n"),
-            "uint == 5 must not warn"
+            !warns("module m;\nentity E { in a: unsigned[8]; out y: Bit; }\nimpl E { y = if a == 5 { '1' } else { '0' }; }\n"),
+            "unsigned == 5 must not warn"
         );
         assert!(
             !warns("module m;\nentity E { in b: Bit; out y: Bit; }\nimpl E { y = if b == '1' { '1' } else { '0' }; }\n"),
@@ -3412,12 +3412,12 @@ mod tests {
 
     #[test]
     fn vector_names_its_real_family() {
-        // A known family displays by name; anonymous vectors fall back to uint.
+        // A known family displays by name; anonymous vectors fall back to unsigned.
         let int8 = Ty::Vector {
-            family: Some("int".to_string()),
+            family: Some("signed".to_string()),
             width: 8,
         };
-        assert_eq!(ty_name(&int8), "int[8]");
+        assert_eq!(ty_name(&int8), "signed[8]");
         let byte = Ty::Vector {
             family: Some("Byte".to_string()),
             width: 0,
@@ -3427,8 +3427,8 @@ mod tests {
             family: None,
             width: 4,
         };
-        assert_eq!(ty_name(&anon), "uint[4]");
-        // Width still ignores the family: uint[8] and int[8] stay compatible.
+        assert_eq!(ty_name(&anon), "unsigned[4]");
+        // Width still ignores the family: unsigned[8] and signed[8] stay compatible.
         assert!(compatible(
             &int8,
             &Ty::Vector {
@@ -3599,9 +3599,9 @@ mod tests {
 
     #[test]
     fn integer_and_logic_literals_are_polymorphic() {
-        // int literal -> any uint; '1' -> Bit or Logic. No conversions needed.
+        // signed literal -> any unsigned; '1' -> Bit or Logic. No conversions needed.
         let errors = check_src(
-            "module m;\nentity E { out count: uint[8]; out q: Bit; out clk: Bit; }\nimpl E {\n  let value: uint[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
+            "module m;\nentity E { out count: unsigned[8]; out q: Bit; out clk: Bit; }\nimpl E {\n  let value: unsigned[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -3624,7 +3624,7 @@ mod tests {
 
     #[test]
     fn attribute_value_type_is_checked() {
-        // `name` expects a string; giving it an int is an error.
+        // `name` expects a string; giving it an signed is an error.
         let bad = check_src("module m;\n#[name = 5]\nentity E { out y: Bit; }\n");
         assert_eq!(bad, 1);
         let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
@@ -3648,7 +3648,7 @@ mod tests {
 
     #[test]
     fn suffix_traits_define_and_disambiguate_literals() {
-        let time = "struct Time { fs: uint[48] }\nimpl Suffix<\"s\", integer> for Time {}\n";
+        let time = "struct Time { fs: unsigned[48] }\nimpl Suffix<\"s\", integer> for Time {}\n";
         // A Suffix impl's symbol defines the literal's type: Time = 5s passes.
         assert_eq!(
             check_src(&format!(
@@ -3658,7 +3658,7 @@ mod tests {
         );
         // Two types defining the same suffix is an ambiguity error (the
         // cascading init mismatch is separate).
-        let score = "struct Score { p: uint[8] }\nimpl Suffix<\"s\", integer> for Score {}\n";
+        let score = "struct Score { p: unsigned[8] }\nimpl Suffix<\"s\", integer> for Score {}\n";
         let src = format!(
             "module m;\n{time}{score}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
         );
@@ -3670,7 +3670,7 @@ mod tests {
         // Known unit suffixes and valid bit-strings pass.
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
+                "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
             ),
             0
         );
@@ -3681,12 +3681,12 @@ mod tests {
         );
         // Bad digits for the base are an error (`G` is not a hex digit).
         assert_eq!(
-            check_src("module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"),
+            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"),
             1
         );
         // An unknown prefix (no `impl Prefix` declares `q`) is an error.
         assert_eq!(
-            check_src("module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"),
+            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"),
             1
         );
     }
@@ -3773,7 +3773,7 @@ mod tests {
             "`and` on real is rejected"
         );
         assert_eq!(
-            check_src("module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\nimpl E { y = a and b; }\n"),
+            check_src("module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a and b; }\n"),
             0,
             "`and` on a bit array is fine (per-bit, returns the array)"
         );
@@ -3785,13 +3785,13 @@ mod tests {
         );
         // ...but a literal mask coerces to the bit operand's width.
         assert_eq!(
-            check_src("module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = a and 15; }\n"),
+            check_src("module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a and 15; }\n"),
             0,
             "`b and 15` (literal mask) is fine"
         );
         // comparison results are Bool, so boolean ops chain them.
         assert_eq!(
-            check_src("module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: Bool; }\nimpl E { y = (a > b) and (a != b); }\n"),
+            check_src("module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: Bool; }\nimpl E { y = (a > b) and (a != b); }\n"),
             0,
             "boolean ops on comparison results are fine"
         );
@@ -3838,15 +3838,15 @@ mod tests {
     }
 
     /// A literal that cannot fit the operand width made the comparison mask it
-    /// (600 -> 88 on a `uint[8]`), so the guard compared the wrong value and
+    /// (600 -> 88 on a `unsigned[8]`), so the guard compared the wrong value and
     /// silently passed. The wrapped-expression case must still be allowed.
     #[test]
     fn out_of_range_comparison_literal_is_rejected() {
-        let ent = "module m;\nentity E { in q: uint[8]; out y: uint[8]; }\nimpl E { y = ";
+        let ent = "module m;\nentity E { in q: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
         assert_eq!(
             check_src(&format!("{ent}if q == 600 {{ 1 }} else {{ 0 }}; }}\n")),
             1,
-            "600 cannot be a uint[8]"
+            "600 cannot be a unsigned[8]"
         );
         assert_eq!(
             check_src(&format!("{ent}if q == 0 - 3 {{ 1 }} else {{ 0 }}; }}\n")),
@@ -3974,14 +3974,14 @@ mod tests {
     fn call_arity_must_match_the_declaration() {
         let base = "module m;\nfn add2(a: integer, b: integer) -> integer { return a + b; }\n\
                     extern \"C\" { fn ext(a: integer, b: integer) -> integer; }\n\
-                    entity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = ";
+                    entity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
         assert_eq!(check_src(&format!("{base}add2(a); }}\n")), 1, "too few");
         assert_eq!(check_src(&format!("{base}add2(a, a, a); }}\n")), 1, "too many");
         assert_eq!(check_src(&format!("{base}add2(a, a); }}\n")), 0, "exact");
         assert_eq!(check_src(&format!("{base}ext(a); }}\n")), 1, "extern too few");
         assert_eq!(check_src(&format!("{base}ext(a, a); }}\n")), 0, "extern exact");
         // A conversion is a call shape but not a declared fn.
-        assert_eq!(check_src(&format!("{base}uint[8](a); }}\n")), 0, "conversion");
+        assert_eq!(check_src(&format!("{base}unsigned[8](a); }}\n")), 0, "conversion");
     }
 
     /// A miscounted `print!` silently rendered an empty slot or dropped an
@@ -3989,7 +3989,7 @@ mod tests {
     #[test]
     fn format_argument_count_must_match() {
         let tb = |body: &str| {
-            format!("module m;\n#[test] entity T {{}}\nimpl T {{ let a: uint[8] = 1; {body} }}\n")
+            format!("module m;\n#[test] entity T {{}}\nimpl T {{ let a: unsigned[8] = 1; {body} }}\n")
         };
         assert_eq!(check_src(&tb(r#"print!("{} {}", a);"#)), 1, "too few");
         assert_eq!(check_src(&tb(r#"print!("{}", a, a);"#)), 1, "too many");
@@ -4009,7 +4009,7 @@ mod tests {
     #[test]
     fn bare_name_is_not_a_pattern() {
         let m = |arms: &str| {
-            format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} }} }}\n")
+            format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} }} }}\n")
         };
         assert_eq!(
             warnings(&m("Idle => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
@@ -4042,7 +4042,7 @@ mod tests {
     #[test]
     fn malformed_bit_pattern_is_rejected() {
         let m = |arms: &str| {
-            format!("module m;\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+            format!("module m;\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
         };
         for bad in ["\"2\"", "x\"G\"", "o\"8\""] {
             assert_eq!(
@@ -4065,7 +4065,7 @@ mod tests {
     #[test]
     fn unreachable_range_arm_warns_only_when_fully_covered() {
         let m = |arms: &str| {
-            format!("module m;\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+            format!("module m;\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
         };
         assert_eq!(
             warnings(&m("0..9 => { r = 1; } 2..5 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
@@ -4093,21 +4093,21 @@ mod tests {
     /// `Unknown` and only failed later with a generic engine message.
     #[test]
     fn out_of_bounds_constant_index_is_rejected() {
-        let ent = "module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = ";
-        assert_eq!(check_src(&format!("{ent}a[9]; }}\n")), 1, "bit 9 of a uint[8]");
+        let ent = "module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
+        assert_eq!(check_src(&format!("{ent}a[9]; }}\n")), 1, "bit 9 of a unsigned[8]");
         assert_eq!(check_src(&format!("{ent}a[15..8]; }}\n")), 2, "both slice bounds");
         assert_eq!(check_src(&format!("{ent}a[7]; }}\n")), 0, "the top bit is in range");
         assert_eq!(check_src(&format!("{ent}a[7..0]; }}\n")), 0, "a full-width slice");
         // A runtime index can't be checked statically and must stay allowed.
-        let dynamic = "module m;\nentity E { in a: uint[8]; in i: uint[8]; out y: uint[8]; }\nimpl E { y = a[i]; }\n";
+        let dynamic = "module m;\nentity E { in a: unsigned[8]; in i: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a[i]; }\n";
         assert_eq!(check_src(dynamic), 0);
 
         // An instance array is declared with a plain count, so it is 0-based
         // and checkable the same way.
         let inst = |i: u32| {
             format!(
-                "module m;\nentity Sub {{ in a: uint[8]; out y: uint[8]; }}\nimpl Sub {{ y = a; }}\n\
-                 entity E {{ in a: uint[8]; out y: uint[8]; }}\nimpl E {{ let s: Sub[4]; y = s[{i}].y; }}\n"
+                "module m;\nentity Sub {{ in a: unsigned[8]; out y: unsigned[8]; }}\nimpl Sub {{ y = a; }}\n\
+                 entity E {{ in a: unsigned[8]; out y: unsigned[8]; }}\nimpl E {{ let s: Sub[4]; y = s[{i}].y; }}\n"
             )
         };
         assert_eq!(check_src(&inst(9)), 1, "instance 9 of a Sub[4]");
@@ -4118,9 +4118,9 @@ mod tests {
     /// yielded 0 with no complaint.
     #[test]
     fn constant_zero_divisor_is_rejected() {
-        let src = "module m;\nentity E { in a: uint[8]; out y: uint[8]; }\nimpl E { y = a / 0; }\n";
+        let src = "module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a / 0; }\n";
         assert_eq!(check_src(src), 1);
-        let ok = "module m;\nentity E { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\nimpl E { y = a / b; }\n";
+        let ok = "module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a / b; }\n";
         assert_eq!(check_src(ok), 0, "a runtime divisor is fine");
     }
 
@@ -4128,15 +4128,15 @@ mod tests {
     /// later driver overrides within a context, so it silently did nothing.
     #[test]
     fn dead_assignment_warns_but_defaults_do_not() {
-        let dead = "module m;\nentity E { out y: uint[8]; }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
+        let dead = "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
         assert_eq!(warnings(dead, codes::DEAD_ASSIGNMENT), 1);
 
         // A conditional override is the normal `default then override` shape.
-        let guarded = "module m;\nentity E { in c: Bit; out y: uint[8]; }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
+        let guarded = "module m;\nentity E { in c: Bit; out y: unsigned[8]; }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
         assert_eq!(warnings(guarded, codes::DEAD_ASSIGNMENT), 0);
 
         // Distinct targets are unrelated.
-        let distinct = "module m;\nentity E { out y: uint[8]; out z: uint[8]; }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
+        let distinct = "module m;\nentity E { out y: unsigned[8]; out z: unsigned[8]; }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
         assert_eq!(warnings(distinct, codes::DEAD_ASSIGNMENT), 0);
     }
 
@@ -4208,7 +4208,7 @@ mod tests {
         assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
         // A non-enum base was the old storage annotation. Width is derived
         // now, so an enum only ever derives from an enum.
-        let repr = check_src("module m;\nenum S : uint[2] { Idle = 0, Run = 1 }\n");
+        let repr = check_src("module m;\nenum S : unsigned[2] { Idle = 0, Run = 1 }\n");
         assert_eq!(repr, 1, "a non-enum base is not a derivation");
         let plain = check_src("module m;\nenum S { Idle = 0, Run = 1 }\n");
         assert_eq!(plain, 0, "the width comes from the variants");

@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn floats_and_ranges_are_distinguished() {
         assert_eq!(kinds("1000.0"), vec![Float, Eof]);
-        // The `f`-style suffix is a separate identifier, mirroring int suffixes.
+        // The `f`-style suffix is a separate identifier, mirroring signed suffixes.
         assert_eq!(kinds("1000.0f"), vec![Float, Ident, Eof]);
         // A double dot is a range, never a float.
         assert_eq!(kinds("31..0"), vec![Int, DotDot, Int, Eof]);

@@ -85,7 +85,7 @@ signal's value changes with real timestamps.
 
 **How siox values appear:**
 
-- **Buses** (`uint[8]`, `int[16]`) are binary vectors.
+- **Buses** (`unsigned[8]`, `signed[16]`) are binary vectors.
 - **Four-value logic** (`Logic`, `Bit`) dumps as native VCD scalar states, so
   high-impedance shows as `z` and unknown as `x`, not a number.
 - **Named enums** — an FSM `State`, `Bool` — dump as VCD `string` variables, so

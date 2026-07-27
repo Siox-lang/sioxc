@@ -55,7 +55,7 @@ pub enum Item {
     AttrDecl(AttrDecl),
 }
 
-/// `using std::logic::{Bit, ...};` or `using Word = uint[32];` (spec 3.4).
+/// `using std::logic::{Bit, ...};` or `using Word = unsigned[32];` (spec 3.4).
 #[derive(Clone, Debug)]
 pub struct Using {
     pub kind: UsingKind,
@@ -66,7 +66,7 @@ pub struct Using {
 pub enum UsingKind {
     /// `using a::b::{c, d};`
     Import { base: Path, names: Vec<Ident> },
-    /// `using Word = uint[32];`
+    /// `using Word = unsigned[32];`
     Alias { name: Ident, ty: Type },
 }
 
@@ -138,14 +138,14 @@ pub struct Field {
     pub span: Span,
 }
 
-/// `enum State: uint[2] { Idle = 0, ... }` (spec 3.8). No payloads in Phase 1.
+/// `enum State: unsigned[2] { Idle = 0, ... }` (spec 3.8). No payloads in Phase 1.
 #[derive(Clone, Debug)]
 pub struct EnumDecl {
     pub is_pub: bool,
     pub name: Ident,
     /// The `: Type` after the name. When it resolves to an enum this is a
     /// nominal derivation BASE (`enum Logic : ULogic` inherits its variants);
-    /// when numeric it is the discriminant representation (`enum S : uint[2]`).
+    /// when numeric it is the discriminant representation (`enum S : unsigned[2]`).
     pub repr: Option<Type>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
@@ -158,7 +158,7 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-/// `entity Counter<W: integer> { in clk: Bit; out count: uint[W]; }`.
+/// `entity Counter<W: integer> { in clk: Bit; out count: unsigned[W]; }`.
 ///
 /// Entity bodies are interface-only (spec 3.1): ports and bus/interface
 /// fields, never state or behavior.
@@ -210,7 +210,7 @@ pub struct ImplDecl {
 #[derive(Clone, Debug)]
 pub enum ImplItem {
     Const(ConstDecl),
-    /// Persistent state / signal: `let value: uint[W] = 0;`
+    /// Persistent state / signal: `let value: unsigned[W] = 0;`
     Let(LetDecl),
     /// Method / function: `fn send(self, value: T) { ... }`
     Fn(FnDecl),
@@ -563,7 +563,7 @@ pub enum BinOp {
 pub enum Type {
     /// `Bit`, `Logic`, `State`, or a path like `std::logic::Bit`.
     Path(Path),
-    /// `uint[W]`, `int[8]` — a parameterized builtin width type.
+    /// `unsigned[W]`, `signed[8]` — a parameterized builtin width type.
     /// Also covers array/slice types `Logic[31..0]` (spec 3.23); the bracket
     /// content is an expression (a width or a range). `None` is the
     /// unconstrained form `Char[]` — the range is set at use (spec 3.23).
@@ -572,7 +572,7 @@ pub enum Type {
         index: Option<Box<Expr>>,
         span: Span,
     },
-    /// `Counter<W = 8>`, `Stream<uint[32]>` — generic application.
+    /// `Counter<W = 8>`, `Stream<unsigned[32]>` — generic application.
     Generic {
         base: Box<Type>,
         args: Vec<GenericArg>,

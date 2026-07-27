@@ -228,7 +228,7 @@ fn load_std_deps(
 ) {
     let mut loaded: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut queue: Vec<AstPath> = using_bases(fe.entry());
-    // A wrong `--std` used to surface as a pile of "no `uint` in `std::bits`"
+    // A wrong `--std` used to surface as a pile of "no `unsigned` in `std::bits`"
     // import errors, which blames the library rather than the path. Say it
     // once, plainly — but only when the file actually imports `std`, since a
     // bare-kernel file legitimately runs with no std at all.
@@ -248,7 +248,7 @@ fn load_std_deps(
     }
     // The prelude is implicitly imported by every file (like VHDL's
     // std.standard): auto-load `std::prelude`, which transitively pulls the
-    // core modules, so e.g. `int` always compares signed. Skipped silently
+    // core modules, so e.g. `signed` always compares signed. Skipped silently
     // when the std root has no prelude (bare-kernel test setups).
     if std_root.join("prelude.siox").exists() {
         let seg = |t: &str| siox::syntax::ast::Ident {

@@ -9,10 +9,10 @@ use siox::diag::{DiagnosticSink, FileId};
 use siox::ir::{Design, SignalId};
 
 fn lower(src: &str) -> Design {
-    // uint/int are library types now (not seeded); the sources are
+    // unsigned/signed are library types now (not seeded); the sources are
     // self-contained, so declare the vector families locally.
     let src = format!(
-        "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n\
+        "{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n\
          enum Bool {{ false, true }}\n\
          enum Bit {{ '0', '1' }}\n\
          enum ULogic {{ '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }}\n\
@@ -83,9 +83,9 @@ fn check_seq(design: &Design, steps: &[Step], golden: &[&[(&str, u64)]]) {
 fn counter_agrees_across_clock_edges() {
     let d = lower(
         "module m;\n\
-         entity Counter { in clk: Bit; in rst: Logic; in en: Bit; out count: uint[8]; }\n\
+         entity Counter { in clk: Bit; in rst: Logic; in en: Bit; out count: unsigned[8]; }\n\
          impl Counter {\n\
-           let value: uint[8] = 0;\n\
+           let value: unsigned[8] = 0;\n\
            if clk.rising() {\n\
              if rst == '1' { value = 0; } else if en { value = value + 1; }\n\
            }\n\
@@ -94,7 +94,7 @@ fn counter_agrees_across_clock_edges() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let clk: Bit; let rst: Logic; let en: Bit; let count: uint[8];\n\
+           let clk: Bit; let rst: Logic; let en: Bit; let count: unsigned[8];\n\
            let dut: Counter = { .clk = clk, .rst = rst, .en = en, .count = count };\n\
          }\n",
     );
@@ -136,16 +136,16 @@ fn register_agrees_across_clock_edges() {
     // A plain D flip-flop: unconditional next-state on the rising edge.
     let d = lower(
         "module m;\n\
-         entity Reg { in clk: Bit; in d: uint[8]; out q: uint[8]; }\n\
+         entity Reg { in clk: Bit; in d: unsigned[8]; out q: unsigned[8]; }\n\
          impl Reg {\n\
-           let s: uint[8] = 0;\n\
+           let s: unsigned[8] = 0;\n\
            if clk.rising() { s = d; }\n\
            q = s;\n\
          }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let clk: Bit; let d: uint[8]; let q: uint[8];\n\
+           let clk: Bit; let d: unsigned[8]; let q: unsigned[8];\n\
            let dut: Reg = { .clk = clk, .d = d, .q = q };\n\
          }\n",
     );
@@ -223,7 +223,7 @@ fn fsm_agrees_across_clock_edges() {
 fn mux_agrees() {
     let d = lower(
         "module m;\n\
-         entity Mux { in sel: Bit; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         entity Mux { in sel: Bit; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
          impl Mux {\n\
            y = b;\n\
            if sel { y = a; }\n\
@@ -231,7 +231,7 @@ fn mux_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let sel: Bit; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
            let dut: Mux = { .sel = sel, .a = a, .b = b, .y = y };\n\
          }\n",
     );
@@ -243,7 +243,7 @@ fn mux_agrees() {
 fn arithmetic_and_slice_agree() {
     let d = lower(
         "module m;\n\
-         entity Alu { in a: uint[8]; in b: uint[8]; out sum: uint[8]; out hi: uint[4]; }\n\
+         entity Alu { in a: unsigned[8]; in b: unsigned[8]; out sum: unsigned[8]; out hi: unsigned[4]; }\n\
          impl Alu {\n\
            sum = a + b;\n\
            hi = a[7..4];\n\
@@ -251,7 +251,7 @@ fn arithmetic_and_slice_agree() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[8]; let b: uint[8]; let sum: uint[8]; let hi: uint[4];\n\
+           let a: unsigned[8]; let b: unsigned[8]; let sum: unsigned[8]; let hi: unsigned[4];\n\
            let dut: Alu = { .a = a, .b = b, .sum = sum, .hi = hi };\n\
          }\n",
     );
@@ -266,12 +266,12 @@ fn concat_agrees() {
     // `{a, b}` -> shift/add tree in the IR.
     let d = lower(
         "module m;\n\
-         entity C { in a: uint[4]; in b: uint[4]; out y: uint[8]; }\n\
+         entity C { in a: unsigned[4]; in b: unsigned[4]; out y: unsigned[8]; }\n\
          impl C { y = {a, b}; }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[4]; let b: uint[4]; let y: uint[8];\n\
+           let a: unsigned[4]; let b: unsigned[4]; let y: unsigned[8];\n\
            let dut: C = { .a = a, .b = b, .y = y };\n\
          }\n",
     );
@@ -287,7 +287,7 @@ fn enum_match_agrees() {
     let d = lower(
         "module m;\n\
          enum Op { Add, Sub, Pass }\n\
-         entity Alu { in op: Op; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         entity Alu { in op: Op; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
          impl Alu {\n\
            match op {\n\
              Op::Add => { y = a + b; }\n\
@@ -298,7 +298,7 @@ fn enum_match_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let op: Op; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
            let dut: Alu = { .op = op, .a = a, .b = b, .y = y };\n\
          }\n",
     );
@@ -312,13 +312,13 @@ fn struct_field_agrees() {
     // Struct fields flatten to per-field signals (`S.p.lo`, `S.p.hi`).
     let d = lower(
         "module m;\n\
-         struct P { lo: uint[4], hi: uint[4] }\n\
-         entity S { in p: P; out y: uint[8]; }\n\
+         struct P { lo: unsigned[4], hi: unsigned[4] }\n\
+         entity S { in p: P; out y: unsigned[8]; }\n\
          impl S { y = {p.hi, p.lo}; }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let p: P; let y: uint[8];\n\
+           let p: P; let y: unsigned[8];\n\
            let dut: S = { .p = p, .y = y };\n\
          }\n",
     );
@@ -331,12 +331,12 @@ fn array_element_agrees() {
     // Array elements flatten to `A.v[0]`, `A.v[1]`.
     let d = lower(
         "module m;\n\
-         entity A { in v: uint[4][2]; out y: uint[8]; }\n\
+         entity A { in v: unsigned[4][2]; out y: unsigned[8]; }\n\
          impl A { y = {v[1], v[0]}; }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let v: uint[4][2]; let y: uint[8];\n\
+           let v: unsigned[4][2]; let y: unsigned[8];\n\
            let dut: A = { .v = v, .y = y };\n\
          }\n",
     );
@@ -367,10 +367,10 @@ fn char_compare_agrees() {
 fn combinational_chain_agrees() {
     let d = lower(
         "module m;\n\
-         entity Chain { in i: uint[8]; out o: uint[8]; }\n\
+         entity Chain { in i: unsigned[8]; out o: unsigned[8]; }\n\
          impl Chain {\n\
-           let x: uint[8];\n\
-           let y: uint[8];\n\
+           let x: unsigned[8];\n\
+           let y: unsigned[8];\n\
            o = y;\n\
            y = x + 1;\n\
            x = i + 1;\n\
@@ -378,7 +378,7 @@ fn combinational_chain_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let i: uint[8]; let o: uint[8];\n\
+           let i: unsigned[8]; let o: unsigned[8];\n\
            let dut: Chain = { .i = i, .o = o };\n\
          }\n",
     );
@@ -395,11 +395,11 @@ fn generate_loop_chain_agrees() {
     // must see the same lowered instance graph and agree signal-for-signal.
     let d = lower(
         "module m;\n\
-         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         entity Inc { in x: unsigned[8]; out y: unsigned[8]; }\n\
          impl Inc { y = x + 1; }\n\
-         entity Chain { in a: uint[8]; out b: uint[8]; }\n\
+         entity Chain { in a: unsigned[8]; out b: unsigned[8]; }\n\
          impl Chain {\n\
-           let wires: uint[8][4];\n\
+           let wires: unsigned[8][4];\n\
            wires[0] = a;\n\
            for i in 0..2 {\n\
              let inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
@@ -409,7 +409,7 @@ fn generate_loop_chain_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[8]; let b: uint[8];\n\
+           let a: unsigned[8]; let b: unsigned[8];\n\
            let dut: Chain = { .a = a, .b = b };\n\
          }\n",
     );
@@ -427,11 +427,11 @@ fn generate_loop_descending_agrees() {
     // lowered design — and thus both engines — must match the ascending build.
     let d = lower(
         "module m;\n\
-         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         entity Inc { in x: unsigned[8]; out y: unsigned[8]; }\n\
          impl Inc { y = x + 1; }\n\
-         entity Chain { in a: uint[8]; out b: uint[8]; }\n\
+         entity Chain { in a: unsigned[8]; out b: unsigned[8]; }\n\
          impl Chain {\n\
-           let wires: uint[8][4];\n\
+           let wires: unsigned[8][4];\n\
            wires[0] = a;\n\
            for i in 2..0 {\n\
              let inc: Inc = { .x = wires[i], .y = wires[i+1] };\n\
@@ -441,7 +441,7 @@ fn generate_loop_descending_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[8]; let b: uint[8];\n\
+           let a: unsigned[8]; let b: unsigned[8];\n\
            let dut: Chain = { .a = a, .b = b };\n\
          }\n",
     );
@@ -500,12 +500,12 @@ fn struct_port_across_instances_agrees() {
     let d = lower(
         "module m;\n\
          enum Logic { '0', '1' }\n\
-         struct Stream { valid: Logic, data: uint[8] }\n\
-         entity Producer { in vin: Logic; in din: uint[8]; out s: Stream; }\n\
+         struct Stream { valid: Logic, data: unsigned[8] }\n\
+         entity Producer { in vin: Logic; in din: unsigned[8]; out s: Stream; }\n\
          impl Producer { s.valid = vin; s.data = din; }\n\
-         entity Consumer { in s: Stream; out got: uint[8]; }\n\
+         entity Consumer { in s: Stream; out got: unsigned[8]; }\n\
          impl Consumer { got = if s.valid == '1' { s.data } else { 0 }; }\n\
-         entity Link { in vin: Logic; in din: uint[8]; out got: uint[8]; }\n\
+         entity Link { in vin: Logic; in din: unsigned[8]; out got: unsigned[8]; }\n\
          impl Link {\n\
            let wire: Stream;\n\
            let p: Producer = { .vin = vin, .din = din, .s = wire };\n\
@@ -514,7 +514,7 @@ fn struct_port_across_instances_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let vin: Logic; let din: uint[8]; let got: uint[8];\n\
+           let vin: Logic; let din: unsigned[8]; let got: unsigned[8];\n\
            let dut: Link = { .vin = vin, .din = din, .got = got };\n\
          }\n",
     );
@@ -531,7 +531,7 @@ fn bit_pattern_match_agrees() {
     // engines must classify every opcode identically.
     let d = lower(
         "module m;\n\
-         entity Dec { in op: uint[4]; out kind: uint[2]; }\n\
+         entity Dec { in op: unsigned[4]; out kind: unsigned[2]; }\n\
          impl Dec {\n\
            match op {\n\
              \"00--\" => { kind = 0; }\n\
@@ -543,7 +543,7 @@ fn bit_pattern_match_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let op: uint[4]; let kind: uint[2];\n\
+           let op: unsigned[4]; let kind: unsigned[2];\n\
            let dut: Dec = { .op = op, .kind = kind };\n\
          }\n",
     );
@@ -571,12 +571,12 @@ fn concat_assignment_target_agrees() {
     // the RHS, in combinational and clocked forms alike.
     let d = lower(
         "module m;\n\
-         entity Split { in w: uint[8]; out hi: uint[4]; out lo: uint[4]; }\n\
+         entity Split { in w: unsigned[8]; out hi: unsigned[4]; out lo: unsigned[4]; }\n\
          impl Split { {hi, lo} = w; }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let w: uint[8]; let hi: uint[4]; let lo: uint[4];\n\
+           let w: unsigned[8]; let hi: unsigned[4]; let lo: unsigned[4];\n\
            let dut: Split = { .w = w, .hi = hi, .lo = lo };\n\
          }\n",
     );
@@ -594,11 +594,11 @@ fn instance_array_agrees() {
     // outside the loop (`stage[1].y`). Both engines must match.
     let d = lower(
         "module m;\n\
-         entity Inc { in x: uint[8]; out y: uint[8]; }\n\
+         entity Inc { in x: unsigned[8]; out y: unsigned[8]; }\n\
          impl Inc { y = x + 1; }\n\
-         entity Chain { in a: uint[8]; out b: uint[8]; out mid: uint[8]; }\n\
+         entity Chain { in a: unsigned[8]; out b: unsigned[8]; out mid: unsigned[8]; }\n\
          impl Chain {\n\
-           let w: uint[8][4];\n\
+           let w: unsigned[8][4];\n\
            w[0] = a;\n\
            let stage: Inc[3];\n\
            for i in 0..2 { stage[i] = Inc { .x = w[i], .y = w[i+1] }; }\n\
@@ -608,7 +608,7 @@ fn instance_array_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[8]; let b: uint[8]; let mid: uint[8];\n\
+           let a: unsigned[8]; let b: unsigned[8]; let mid: unsigned[8];\n\
            let dut: Chain = { .a = a, .b = b, .mid = mid };\n\
          }\n",
     );
@@ -624,11 +624,11 @@ fn range_pattern_agrees() {
     // numeric scrutinee; both engines must agree across the boundaries.
     let d = lower(
         "module m;\n\
-         entity E { in a: uint[8]; out y: uint[8]; }\n\
+         entity E { in a: unsigned[8]; out y: unsigned[8]; }\n\
          impl E { y = match a { 0..9 => 1, 10..99 => 2, 100 => 3, _ => 4 }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let a: uint[8]; let y: uint[8]; let dut: E = { .a = a, .y = y }; }\n",
+         impl T { let a: unsigned[8]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
     );
     check(&d, &[("T.a", 0)], &[("T.a", 0), ("T.y", 1), ("T.dut.a", 0), ("T.dut.y", 1)]);
     check(&d, &[("T.a", 9)], &[("T.a", 9), ("T.y", 1), ("T.dut.a", 9), ("T.dut.y", 1)]);
@@ -646,11 +646,11 @@ fn or_pattern_agrees() {
     let d = lower(
         "module m;\n\
          enum S { A, B, C, D }\n\
-         entity E { in s: S; out y: uint[8]; }\n\
+         entity E { in s: S; out y: unsigned[8]; }\n\
          impl E { y = match s { S::A | S::B => 10, S::C => 20, _ => 30 }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let s: S; let y: uint[8]; let dut: E = { .s = s, .y = y }; }\n",
+         impl T { let s: S; let y: unsigned[8]; let dut: E = { .s = s, .y = y }; }\n",
     );
     check(&d, &[("T.s", 0)], &[("T.s", 0), ("T.y", 10), ("T.dut.s", 0), ("T.dut.y", 10)]);
     check(&d, &[("T.s", 1)], &[("T.s", 1), ("T.y", 10), ("T.dut.s", 1), ("T.dut.y", 10)]);
@@ -665,12 +665,12 @@ fn match_expression_agrees() {
     let d = lower(
         "module m;\n\
          enum Op { Add, Sub, Pass }\n\
-         entity E { in op: Op; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         entity E { in op: Op; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
          impl E { y = match op { Op::Add => a + b, Op::Sub => a - b, _ => a }; }\n\
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let op: Op; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+           let op: Op; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
            let dut: E = { .op = op, .a = a, .b = b, .y = y };\n\
          }\n",
     );
@@ -685,15 +685,15 @@ fn array_literal_agrees() {
     // index reads back a lookup table. Both engines must agree per element.
     let d = lower(
         "module m;\n\
-         entity E { in sel: uint[8]; out y: uint[8]; }\n\
+         entity E { in sel: unsigned[8]; out y: unsigned[8]; }\n\
          impl E {\n\
-           let table: uint[8][4];\n\
+           let table: unsigned[8][4];\n\
            table = [10, 20, 30, 40];\n\
            y = table[sel];\n\
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let sel: uint[8]; let y: uint[8]; let dut: E = { .sel = sel, .y = y }; }\n",
+         impl T { let sel: unsigned[8]; let y: unsigned[8]; let dut: E = { .sel = sel, .y = y }; }\n",
     );
     check(&d, &[("T.sel", 0)], &[("T.sel", 0), ("T.y", 10), ("T.dut.sel", 0), ("T.dut.y", 10), ("T.dut.table[0]", 10), ("T.dut.table[1]", 20), ("T.dut.table[2]", 30), ("T.dut.table[3]", 40)]);
     check(&d, &[("T.sel", 1)], &[("T.sel", 1), ("T.y", 20), ("T.dut.sel", 1), ("T.dut.y", 20), ("T.dut.table[0]", 10), ("T.dut.table[1]", 20), ("T.dut.table[2]", 30), ("T.dut.table[3]", 40)]);
@@ -707,13 +707,13 @@ fn positional_connection_agrees() {
     // engines must agree with the named form's behavior.
     let d = lower(
         "module m;\n\
-         entity Add { in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+         entity Add { in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
          impl Add { y = a + b; }\n\
-         entity E { in p: uint[8]; in q: uint[8]; out y: uint[8]; }\n\
+         entity E { in p: unsigned[8]; in q: unsigned[8]; out y: unsigned[8]; }\n\
          impl E { let s: Add = { p, q, y }; }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let p: uint[8]; let q: uint[8]; let y: uint[8]; let dut: E = { .p = p, .q = q, .y = y }; }\n",
+         impl T { let p: unsigned[8]; let q: unsigned[8]; let y: unsigned[8]; let dut: E = { .p = p, .q = q, .y = y }; }\n",
     );
     check(&d, &[("T.p", 3), ("T.q", 4)], &[("T.p", 3), ("T.q", 4), ("T.y", 7), ("T.dut.p", 3), ("T.dut.q", 4), ("T.dut.y", 7), ("T.dut.s.a", 3), ("T.dut.s.b", 4), ("T.dut.s.y", 7)]);
     check(&d, &[("T.p", 10), ("T.q", 20)], &[("T.p", 10), ("T.q", 20), ("T.y", 30), ("T.dut.p", 10), ("T.dut.q", 20), ("T.dut.y", 30), ("T.dut.s.a", 10), ("T.dut.s.b", 20), ("T.dut.s.y", 30)]);
@@ -726,9 +726,9 @@ fn post_decl_connection_agrees() {
     // through instance-qualified port assignments; both engines must agree.
     let d = lower(
         "module m;\n\
-         entity Inc { in a: uint[8]; out y: uint[8]; }\n\
+         entity Inc { in a: unsigned[8]; out y: unsigned[8]; }\n\
          impl Inc { y = a + 1; }\n\
-         entity E { in x: uint[8]; out z: uint[8]; }\n\
+         entity E { in x: unsigned[8]; out z: unsigned[8]; }\n\
          impl E {\n\
            let s1: Inc = {};\n\
            let s2: Inc = {};\n\
@@ -738,7 +738,7 @@ fn post_decl_connection_agrees() {
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let x: uint[8]; let z: uint[8]; let dut: E = { .x = x, .z = z }; }\n",
+         impl T { let x: unsigned[8]; let z: unsigned[8]; let dut: E = { .x = x, .z = z }; }\n",
     );
     check(&d, &[("T.x", 0)], &[("T.x", 0), ("T.z", 2), ("T.dut.x", 0), ("T.dut.z", 2), ("T.dut.s1.a", 0), ("T.dut.s1.y", 1), ("T.dut.s2.a", 1), ("T.dut.s2.y", 2)]);
     check(&d, &[("T.x", 5)], &[("T.x", 5), ("T.z", 7), ("T.dut.x", 5), ("T.dut.z", 7), ("T.dut.s1.a", 5), ("T.dut.s1.y", 6), ("T.dut.s2.a", 6), ("T.dut.s2.y", 7)]);
@@ -766,15 +766,15 @@ fn generate_if_agrees() {
     for &(en, scenarios) in cases {
         let d = lower(&format!(
             "module m;\n\
-             entity Inc {{ in a: uint[8]; out y: uint[8]; }}\n\
+             entity Inc {{ in a: unsigned[8]; out y: unsigned[8]; }}\n\
              impl Inc {{ y = a + 1; }}\n\
-             entity Top<EN: integer> {{ in a: uint[8]; out y: uint[8]; }}\n\
+             entity Top<EN: integer> {{ in a: unsigned[8]; out y: unsigned[8]; }}\n\
              impl Top<EN: integer> {{\n\
                if EN > 0 {{ let s: Inc = {{ .a = a, .y = y }}; }} else {{ y = a; }}\n\
              }}\n\
              #[top]\n\
              entity T {{}}\n\
-             impl T {{ let a: uint[8]; let y: uint[8]; let dut: Top<EN = {en}> = {{ .a = a, .y = y }}; }}\n"
+             impl T {{ let a: unsigned[8]; let y: unsigned[8]; let dut: Top<EN = {en}> = {{ .a = a, .y = y }}; }}\n"
         ));
         for &(a, expect) in scenarios {
             check(&d, &[("T.a", a)], expect);
@@ -812,11 +812,11 @@ fn generate_for_if_chain_agrees() {
     for &(n, scenarios) in cases {
         let d = lower(&format!(
             "module m;\n\
-             entity Inc {{ in a: uint[8]; out y: uint[8]; }}\n\
+             entity Inc {{ in a: unsigned[8]; out y: unsigned[8]; }}\n\
              impl Inc {{ y = a + 1; }}\n\
-             entity Chain<N: integer> {{ in a: uint[8]; out y: uint[8]; }}\n\
+             entity Chain<N: integer> {{ in a: unsigned[8]; out y: unsigned[8]; }}\n\
              impl Chain<N: integer> {{\n\
-               let w: uint[8][4];\n\
+               let w: unsigned[8][4];\n\
                let stage: Inc[3];\n\
                w[0] = a;\n\
                for i in 0..2 {{\n\
@@ -827,7 +827,7 @@ fn generate_for_if_chain_agrees() {
              }}\n\
              #[top]\n\
              entity T {{}}\n\
-             impl T {{ let a: uint[8]; let y: uint[8]; let dut: Chain<N = {n}> = {{ .a = a, .y = y }}; }}\n"
+             impl T {{ let a: unsigned[8]; let y: unsigned[8]; let dut: Chain<N = {n}> = {{ .a = a, .y = y }}; }}\n"
         ));
         for &(a, expect) in scenarios {
             check(&d, &[("T.a", a)], expect);
@@ -838,11 +838,11 @@ fn generate_for_if_chain_agrees() {
 #[test]
 fn generic_entity_agrees() {
     // A generic entity `Buf<T>` specializes its `T`-typed ports and internal
-    // state to the type argument (`Buf<uint[8]>`), so signals get the concrete
+    // state to the type argument (`Buf<unsigned[8]>`), so signals get the concrete
     // width. Both engines must agree.
     //
     // The top entity is deliberately named `T` — the same spelling as `Buf`'s
-    // type parameter. `let s: T` must resolve to the *parameter* (`uint[8]`, a
+    // type parameter. `let s: T` must resolve to the *parameter* (`unsigned[8]`, a
     // signal), not the entity `T` (which would make `s` a recursive instance
     // and loop forever). Keep the name collision: it guards that regression.
     let d = lower(
@@ -856,11 +856,11 @@ fn generic_entity_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
-           let dut: Buf<uint[8]> = { .a = a, .b = b, .y = y };\n\
+           let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
+           let dut: Buf<unsigned[8]> = { .a = a, .b = b, .y = y };\n\
          }\n",
     );
-    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Buf<uint[8]>.s is 8-bit");
+    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Buf<unsigned[8]>.s is 8-bit");
     check(&d, &[("T.a", 10), ("T.b", 20)], &[("T.a", 10), ("T.b", 20), ("T.y", 30), ("T.dut.a", 10), ("T.dut.b", 20), ("T.dut.y", 30), ("T.dut.s", 30)]);
     check(&d, &[("T.a", 200), ("T.b", 100)], &[("T.a", 200), ("T.b", 100), ("T.y", 44), ("T.dut.a", 200), ("T.dut.b", 100), ("T.dut.y", 44), ("T.dut.s", 44)]);
     check(&d, &[("T.a", 255), ("T.b", 1)], &[("T.a", 255), ("T.b", 1), ("T.y", 0), ("T.dut.a", 255), ("T.dut.b", 1), ("T.dut.y", 0), ("T.dut.s", 0)]);
@@ -868,26 +868,26 @@ fn generic_entity_agrees() {
 
 #[test]
 fn generic_struct_agrees() {
-    // A generic struct (`Pair<uint[8]>`) substitutes its type parameter into
+    // A generic struct (`Pair<unsigned[8]>`) substitutes its type parameter into
     // the field types, so `p.a`/`p.b` are 8-bit signals and arithmetic wraps.
     let d = lower(
         "module m;\n\
          struct Pair<T> { a: T, b: T, }\n\
-         entity E { in x: uint[8]; out sum: uint[8]; }\n\
+         entity E { in x: unsigned[8]; out sum: unsigned[8]; }\n\
          impl E {\n\
-           let p: Pair<uint[8]>;\n\
+           let p: Pair<unsigned[8]>;\n\
            p.a = x; p.b = x;\n\
            sum = p.a + p.b;\n\
          }\n\
          #[top]\n\
          entity T {}\n\
-         impl T { let x: uint[8]; let sum: uint[8]; let dut: E = { .x = x, .sum = sum }; }\n",
+         impl T { let x: unsigned[8]; let sum: unsigned[8]; let dut: E = { .x = x, .sum = sum }; }\n",
     );
     check(&d, &[("T.x", 10)], &[("T.x", 10), ("T.sum", 20), ("T.dut.x", 10), ("T.dut.sum", 20), ("T.dut.p.a", 10), ("T.dut.p.b", 10)]);
     check(&d, &[("T.x", 100)], &[("T.x", 100), ("T.sum", 200), ("T.dut.x", 100), ("T.dut.sum", 200), ("T.dut.p.a", 100), ("T.dut.p.b", 100)]);
     check(&d, &[("T.x", 200)], &[("T.x", 200), ("T.sum", 144), ("T.dut.x", 200), ("T.dut.sum", 144), ("T.dut.p.a", 200), ("T.dut.p.b", 200)]);
     check(&d, &[("T.x", 255)], &[("T.x", 255), ("T.sum", 254), ("T.dut.x", 255), ("T.dut.sum", 254), ("T.dut.p.a", 255), ("T.dut.p.b", 255)]);
-    assert_eq!(d.signals[id(&d, "T.dut.p.a").0 as usize].width, 8, "Pair<uint[8]>.a is 8-bit");
+    assert_eq!(d.signals[id(&d, "T.dut.p.a").0 as usize].width, 8, "Pair<unsigned[8]>.a is 8-bit");
 }
 
 #[test]
@@ -897,18 +897,18 @@ fn bus_mode_agrees() {
     // shared net. Both engines must agree.
     let d = lower(
         "module m;\n\
-         struct Stream { valid: Bit, ready: Bit, data: uint[8], }\n\
+         struct Stream { valid: Bit, ready: Bit, data: unsigned[8], }\n\
          view Source for Stream { out valid; out data; in ready; }\n\
          view Sink for Stream { in valid; in data; out ready; }\n\
          impl Source Stream {\n\
-           fn drive(self, value: uint[8]) { self.valid = '1'; self.data = value; }\n\
+           fn drive(self, value: unsigned[8]) { self.valid = '1'; self.data = value; }\n\
          }\n\
-         entity Producer { bus: Source Stream; in d: uint[8]; out canpush: Bit; }\n\
+         entity Producer { bus: Source Stream; in d: unsigned[8]; out canpush: Bit; }\n\
          impl Producer { bus.drive(d); canpush = bus.ready; }\n\
-         entity Consumer { bus: Sink Stream; in accept: Bit; out got: uint[8]; }\n\
+         entity Consumer { bus: Sink Stream; in accept: Bit; out got: unsigned[8]; }\n\
          impl Consumer { bus.ready = accept; got = bus.data; }\n\
          #[top]\n\
-         entity T { in d: uint[8]; in accept: Bit; out got: uint[8]; out canpush: Bit; }\n\
+         entity T { in d: unsigned[8]; in accept: Bit; out got: unsigned[8]; out canpush: Bit; }\n\
          impl T {\n\
            let link: Stream;\n\
            let p: Producer = { .bus = link, .d = d, .canpush = canpush };\n\
@@ -927,12 +927,12 @@ fn partial_ranges_use_declared_left_and_right_bounds() {
         "module m;\n\
          #[top]\n\
          entity PartialRange {\n\
-           in a: uint[7..0];\n\
-           in ascending: uint[0..7];\n\
-           out upper: uint[4];\n\
-           out lower: uint[4];\n\
-           out whole: uint[8];\n\
-           out prefix: uint[5];\n\
+           in a: unsigned[7..0];\n\
+           in ascending: unsigned[0..7];\n\
+           out upper: unsigned[4];\n\
+           out lower: unsigned[4];\n\
+           out whole: unsigned[8];\n\
+           out prefix: unsigned[5];\n\
          }\n\
          impl PartialRange {\n\
            upper = a[..4];\n\
@@ -960,29 +960,29 @@ fn custom_index_and_index_assign_agree() {
          trait Index<I, O> { fn index(self, index: I) -> O; }\n\
          trait IndexAssign<I, V> { fn index_assign(self, index: I, value: V); }\n\
          struct Range { left: integer, right: integer }\n\
-         struct Pair { first: uint[8], second: uint[8] }\n\
-         impl Index<integer, uint> for Pair {\n\
-           fn index(self, index: integer) -> uint[8] {\n\
+         struct Pair { first: unsigned[8], second: unsigned[8] }\n\
+         impl Index<integer, unsigned> for Pair {\n\
+           fn index(self, index: integer) -> unsigned[8] {\n\
              if index == 0 { return self.first; }\n\
              return self.second;\n\
            }\n\
          }\n\
-         impl Index<Range, uint> for Pair {\n\
-           fn index(self, index: Range) -> uint[8] {\n\
+         impl Index<Range, unsigned> for Pair {\n\
+           fn index(self, index: Range) -> unsigned[8] {\n\
              if index.left == 0 and index.right == 0 { return self.first; }\n\
              return self.second;\n\
            }\n\
          }\n\
-         impl IndexAssign<integer, uint> for Pair {\n\
-           fn index_assign(self, index: integer, value: uint[8]) {\n\
+         impl IndexAssign<integer, unsigned> for Pair {\n\
+           fn index_assign(self, index: integer, value: unsigned[8]) {\n\
              if index == 0 { self.first = value; }\n\
              else { self.second = value; }\n\
            }\n\
          }\n\
          #[top]\n\
          entity IndexedPair {\n\
-           in a: uint[8]; in b: uint[8]; in select: uint[1];\n\
-           out selected: uint[8]; out ranged: uint[8];\n\
+           in a: unsigned[8]; in b: unsigned[8]; in select: unsigned[1];\n\
+           out selected: unsigned[8]; out ranged: unsigned[8];\n\
          }\n\
          impl IndexedPair {\n\
            let pair: Pair;\n\
@@ -1031,12 +1031,12 @@ fn derived_vector_width_agrees() {
 
 #[test]
 fn transitive_vector_family_width_agrees() {
-    // A type deriving from *another* vector family (`struct Byte : uint[8]`)
-    // is itself a vector, inheriting width 8 (transitive recognition). `uint`
+    // A type deriving from *another* vector family (`struct Byte : unsigned[8]`)
+    // is itself a vector, inheriting width 8 (transitive recognition). `unsigned`
     // is appended by the `lower` harness.
     let d = lower(
         "module m;\n\
-         struct Byte : uint[8];\n\
+         struct Byte : unsigned[8];\n\
          entity A { in a: Byte; in b: Byte; out s: Byte; }\n\
          impl A { s = a + b; }\n\
          #[top]\n\
@@ -1046,7 +1046,7 @@ fn transitive_vector_family_width_agrees() {
            let dut: A = { .a = a, .b = b, .s = s };\n\
          }\n",
     );
-    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Byte : uint[8] must be width 8");
+    assert_eq!(d.signals[id(&d, "T.dut.s").0 as usize].width, 8, "Byte : unsigned[8] must be width 8");
     check(&d, &[("T.a", 200), ("T.b", 100)], &[("T.a", 200), ("T.b", 100), ("T.s", 44), ("T.dut.a", 200), ("T.dut.b", 100), ("T.dut.s", 44)]);
     check(&d, &[("T.a", 255), ("T.b", 1)], &[("T.a", 255), ("T.b", 1), ("T.s", 0), ("T.dut.a", 255), ("T.dut.b", 1), ("T.dut.s", 0)]);
 }
@@ -1059,15 +1059,15 @@ fn method_call_agrees() {
     // (`p.bigger(lim)`), and operator dispatch inside the body (`self.x + ..`).
     let d = lower(
         "module m;\n\
-         struct Pt { x: uint[8], y: uint[8], }\n\
+         struct Pt { x: unsigned[8], y: unsigned[8], }\n\
          impl Pt {\n\
-           fn sum(self) -> uint[8] { return self.x + self.y; }\n\
-           fn bigger(self, lim: uint[8]) -> uint[8] {\n\
+           fn sum(self) -> unsigned[8] { return self.x + self.y; }\n\
+           fn bigger(self, lim: unsigned[8]) -> unsigned[8] {\n\
              if self.x > lim { return self.x; }\n\
              return lim;\n\
            }\n\
          }\n\
-         entity D { in px: uint[8]; in py: uint[8]; in lim: uint[8]; out s: uint[8]; out bg: uint[8]; }\n\
+         entity D { in px: unsigned[8]; in py: unsigned[8]; in lim: unsigned[8]; out s: unsigned[8]; out bg: unsigned[8]; }\n\
          impl D {\n\
            let p: Pt;\n\
            p.x = px;\n\
@@ -1078,7 +1078,7 @@ fn method_call_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let px: uint[8]; let py: uint[8]; let lim: uint[8]; let s: uint[8]; let bg: uint[8];\n\
+           let px: unsigned[8]; let py: unsigned[8]; let lim: unsigned[8]; let s: unsigned[8]; let bg: unsigned[8];\n\
            let dut: D = { .px = px, .py = py, .lim = lim, .s = s, .bg = bg };\n\
          }\n",
     );
@@ -1095,12 +1095,12 @@ fn statement_method_agrees() {
     // parameter -> argument. The two branches cover both cases (no latch).
     let d = lower(
         "module m;\n\
-         struct Stream { valid: Logic, data: uint[8], }\n\
+         struct Stream { valid: Logic, data: unsigned[8], }\n\
          impl Stream {\n\
-           fn send(self, v: uint[8]) { self.valid = '1'; self.data = v; }\n\
+           fn send(self, v: unsigned[8]) { self.valid = '1'; self.data = v; }\n\
            fn clear(self) { self.valid = '0'; self.data = 0; }\n\
          }\n\
-         entity D { in go: Bit; in x: uint[8]; out ov: Logic; out od: uint[8]; }\n\
+         entity D { in go: Bit; in x: unsigned[8]; out ov: Logic; out od: unsigned[8]; }\n\
          impl D {\n\
            let s: Stream;\n\
            if go { s.send(x); } else { s.clear(); }\n\
@@ -1110,7 +1110,7 @@ fn statement_method_agrees() {
          #[top]\n\
          entity T {}\n\
          impl T {\n\
-           let go: Bit; let x: uint[8]; let ov: Logic; let od: uint[8];\n\
+           let go: Bit; let x: unsigned[8]; let ov: Logic; let od: unsigned[8];\n\
            let dut: D = { .go = go, .x = x, .ov = ov, .od = od };\n\
          }\n",
     );

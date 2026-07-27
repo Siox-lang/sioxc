@@ -123,7 +123,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   exhaustively (333/333 cells) against `nvc`**; `logic_ninevalue_test` guards
   it. (a) 🟢 **X/Z propagation through vectors** — **functionally complete**
   (design: [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)).
-  A `uint` is `Logic[]`, so a metavalue vector carries a per-element
+  A `unsigned` is `Logic[]`, so a metavalue vector carries a per-element
   discriminant **companion** (`$meta`, 4 bits/element, ≤16 elements), made only
   where a metavalue appears — metavalue-free designs stay bit-identical.
   **Working on JIT + native**, guarded by `xz_vector_test`/`xz_poison_test`/
@@ -134,7 +134,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   copies / port connections / muxes; **VCD** `x`/`z` rendering. **Minor
   follow-ons:** a metavalue literal in *driver* position (`out = "1X10"`) loses
   its disc in the IR `Const` (init-position and all propagation work); vectors
-  wider than 16 elements (array companion); width-1 vectors (`uint[1]`) element
+  wider than 16 elements (array companion); width-1 vectors (`unsigned[1]`) element
   typing. Logic-vector literals now use bare contextual strings (`"1X10"`);
   the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
   default to `'U'` through their std `New` implementations, while `Bit`
@@ -170,7 +170,7 @@ above — none of it blocks correctness, so it waits. (`bitpack`/`simd` and the
 opt-in and non-blocking.)
 
 Signal state is stored width-packed by default (a `Bit`/`Logic` takes one byte,
-not eight; `uint[32]` four, `uint[64]` eight), shared by the JIT and AOT.
+not eight; `unsigned[32]` four, `unsigned[64]` eight), shared by the JIT and AOT.
 Composites already flatten to per-leaf signals, each minimally sized (an enum is
 `⌈log2(variants)⌉` bits), so structs/arrays/enums pack for free under `bitpack`.
 
@@ -188,7 +188,7 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
   `-O2` vectorizer can use them for array/vector ops. Off by default the build
   targets a portable baseline (generic x86-64, SSE2 128-bit).
-- 🔴 **`wide`** — signals wider than 64 bits (`uint[128]` / `[256]` / `[512]`).
+- 🔴 **`wide`** — signals wider than 64 bits (`unsigned[128]` / `[256]` / `[512]`).
   Feature flag declared; the base compiler is hard-capped at 64-bit. Needs
   wide integers (`i128`/`iN`) threaded through `ir::Expr`/`Signal`, the three
   backends (sized loads/stores + masked arithmetic on the wide types), and VCD.

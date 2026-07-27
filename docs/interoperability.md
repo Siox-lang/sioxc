@@ -27,7 +27,7 @@ Testbenches can read fixtures from disk with `read`, `read_to_string`, and
 and its data travel together:
 
 ```siox
-let rom: uint[8][256] = read("rom.bin");     // sized by the file
+let rom: unsigned[8][256] = read("rom.bin");     // sized by the file
 let banner: string = read_to_string("banner.txt");
 ```
 

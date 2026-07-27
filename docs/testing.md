@@ -15,7 +15,7 @@ entity CounterTest {}
 impl CounterTest {
     let clk: Bit = '0';
     let rst: Logic = '1';
-    let count: uint[8];
+    let count: unsigned[8];
     let dut: Counter = { clk, rst, count };
 
     clk = not clk after 5ns;         // free-running clock, 10 ns period

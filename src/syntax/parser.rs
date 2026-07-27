@@ -291,7 +291,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RBrace, "to close an import list");
                 UsingKind::Import { base: path, names }
             } else if self.at(TokenKind::Eq) {
-                // `using Word = uint[32];`
+                // `using Word = unsigned[32];`
                 self.bump(); // `=`
                 let name = path.segments.last().cloned().unwrap_or_else(|| Ident {
                     text: String::new(),
@@ -2208,7 +2208,7 @@ mod tests {
     #[test]
     fn module_header_and_imports() {
         let m = parse_ok(
-            "module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = uint[32];\n",
+            "module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = unsigned[32];\n",
         );
         assert_eq!(m.path.segments.len(), 2);
         assert_eq!(m.path.segments[1].text, "logic");
@@ -2219,7 +2219,7 @@ mod tests {
     #[test]
     fn entity_with_params_and_ports() {
         let m = parse_ok(
-            "module m;\nentity Counter<W: integer> {\n  in clk: Bit;\n  in rst: Logic;\n  in en: Bit;\n  out count: uint[W];\n}\n",
+            "module m;\nentity Counter<W: integer> {\n  in clk: Bit;\n  in rst: Logic;\n  in en: Bit;\n  out count: unsigned[W];\n}\n",
         );
         let Item::Entity(e) = &m.items[0] else {
             panic!("expected entity")
@@ -2234,7 +2234,7 @@ mod tests {
     #[test]
     fn struct_enum_const() {
         let m = parse_ok(
-            "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State: uint[2] { Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
+            "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State: unsigned[2] { Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
         );
         assert_eq!(m.items.len(), 3);
         let Item::Enum(e) = &m.items[2] else {
@@ -2247,7 +2247,7 @@ mod tests {
     #[test]
     fn impl_with_state_and_sequential_block() {
         let m = parse_ok(
-            "module m;\nimpl Counter<W: integer> {\n  const MAX: uint[W] = (1 << W) - 1;\n  let value: uint[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl Counter<W: integer> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else {
             panic!("expected impl")
@@ -2330,7 +2330,7 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nimpl Source Stream<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source Stream<uint[32]>;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nimpl Source Stream<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source Stream<unsigned[32]>;\n}\n",
         );
         let Item::View(v) = &m.items[1] else {
             panic!("expected view")
@@ -2462,7 +2462,7 @@ mod tests {
     #[test]
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
-            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: integer> {\n  in a: uint[W];\n  out b: uint[W];\n}\n",
+            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: integer> {\n  in a: unsigned[W];\n  out b: unsigned[W];\n}\n",
         );
         let Item::AttrDecl(a) = &m.items[0] else {
             panic!("expected attr decl")

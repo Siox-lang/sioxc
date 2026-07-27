@@ -6,7 +6,7 @@ module std::fs;
 // loaders (hex images, CSV stimulus, ...) are parsing libraries, not std.
 //
 //   read(path)             file bytes fill the declared array
-//                          (`let rom: uint[8][256] = read("rom.bin");`
+//                          (`let rom: unsigned[8][256] = read("rom.bin");`
 //                          little-endian packing for wider elements; a
 //                          shorter file leaves the tail at 0, a longer one
 //                          errors). In initializer position the COMPILER

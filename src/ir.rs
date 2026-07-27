@@ -72,7 +72,7 @@ pub struct Signal {
     pub char: bool,
     /// A ranged numeric's value domain (`integer<lo..hi>`, spec 3.26): the
     /// simulation checks every settled value against it — a dynamic range
-    /// assert. Plain `uint[N]`/`int[N]` wrap instead (documented semantics).
+    /// assert. Plain `unsigned[N]`/`signed[N]` wrap instead (documented semantics).
     pub range: Option<(i64, i64)>,
     /// The declared initial value's bit pattern (`let v: T = 1;`): engines
     /// reset signals to it (VHDL-style initial values), not to zero.
@@ -252,7 +252,7 @@ pub fn lower_in(
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
-    // instance, so `uint[W]` lowers with the instance's concrete `W`.
+    // instance, so `unsigned[W]` lowers with the instance's concrete `W`.
     let mut seen = Vec::new();
     for inst in &hier.instances {
         if !seen.contains(&inst.entity) {
@@ -356,7 +356,7 @@ struct Lowering<'a> {
     self_signal: std::cell::Cell<Option<SignalId>>,
     /// Type-family of each generic-fn parameter during inlining (param name ->
     /// the concrete argument's family), so operator dispatch in the body uses
-    /// the caller's type (e.g. int's signed `Ord`, not the kernel compare).
+    /// the caller's type (e.g. signed's signed `Ord`, not the kernel compare).
     param_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
@@ -365,13 +365,13 @@ struct Lowering<'a> {
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
     /// (left, right) so direction is preserved.
     const_ranges: HashMap<String, (i64, i64)>,
-    /// Type aliases (`using Word = uint[32]`).
+    /// Type aliases (`using Word = unsigned[32]`).
     aliases: HashMap<String, ast::Type>,
     /// The active entity's width environment (consts + instance params),
     /// for const-evaluating slice bounds during expression lowering.
     cur_env: HashMap<String, i64>,
-    /// The active entity's type-parameter bindings (`T -> uint[8]` for a
-    /// generic entity `Buf<uint[8]>`), substituted into port/signal types.
+    /// The active entity's type-parameter bindings (`T -> unsigned[8]` for a
+    /// generic entity `Buf<unsigned[8]>`), substituted into port/signal types.
     cur_type_env: HashMap<String, ast::Type>,
     /// The stack of entity names currently being lowered (`lower_body`), so a
     /// sub-instance that would re-enter an entity already on the stack is
@@ -403,14 +403,14 @@ struct Lowering<'a> {
     /// value expression). Lets the conflicting-driver error point at each
     /// contributing connection instead of naming only the signal.
     ctx_span: HashMap<u32, crate::diag::Span>,
-    /// Signal -> declared type name (enum / uint / int), for Resolve lookup.
+    /// Signal -> declared type name (enum / unsigned / signed), for Resolve lookup.
     sig_type: HashMap<u32, String>,
     /// Array-derived Logic vector families (`struct F : Logic[]`) -> signed?.
-    /// uint/int are just the first two; the family set is read from the
+    /// unsigned/signed are just the first two; the family set is read from the
     /// declarations, not hardcoded.
     vector_families: std::collections::HashSet<String>,
     /// Numeric-vector locals -> the family name, for operator-impl dispatch
-    /// (kernel `integer`/`real` keep builtin operators; uint/int live in std).
+    /// (kernel `integer`/`real` keep builtin operators; unsigned/signed live in std).
     local_numeric: HashMap<String, String>,
 }
 
@@ -840,7 +840,7 @@ impl<'a> Lowering<'a> {
                     // `let s: Sub = { .. }` / `let s: Sub [= { .. }]`: a
                     // sub-instance, not a signal. A `let s: T` whose `T` is
                     // *this* entity's type parameter (bound to a concrete type,
-                    // e.g. `uint[8]`) is a signal even when some entity is also
+                    // e.g. `unsigned[8]`) is a signal even when some entity is also
                     // named `T` — let it fall through to the signal path, where
                     // `add_typed_signal` substitutes `T` via `cur_type_env`.
                     if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
@@ -975,7 +975,7 @@ impl<'a> Lowering<'a> {
                             .collect();
                         self.undriven_lets.extend(leaves);
                     }
-                    // `let rom: uint[8][N] = read("rom.bin");` — the compiler
+                    // `let rom: unsigned[8][N] = read("rom.bin");` — the compiler
                     // reads the file and bakes it into the element inits
                     // (little-endian packing for elements wider than a byte;
                     // a shorter file leaves the tail at 0; longer errors).
@@ -1242,8 +1242,8 @@ impl<'a> Lowering<'a> {
         out
     }
 
-    /// Type-parameter bindings for a generic entity instance (`Buf<uint[8]>` ->
-    /// `T -> uint[8]`): the entity's bare type params (bound `None`), matched to
+    /// Type-parameter bindings for a generic entity instance (`Buf<unsigned[8]>` ->
+    /// `T -> unsigned[8]`): the entity's bare type params (bound `None`), matched to
     /// the construct's generic args positionally or by name.
     fn construct_type_params(&self, ty: &ast::Type, ename: &str) -> HashMap<String, ast::Type> {
         let mut out = HashMap::new();
@@ -1606,7 +1606,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
                 self.enum_variant(&p.segments[0].text, &p.segments[1].text)
             }
-            // A radix bit-string initializer (`let v: uint[8] = x"AB"`) —
+            // A radix bit-string initializer (`let v: unsigned[8] = x"AB"`) —
             // its value bits (metavalue positions carried separately, stage 1b).
             ast::Expr::BitStrLit { base, digits, .. } => {
                 Some(self.decode_bit_string(*base, digits).0)
@@ -1890,7 +1890,7 @@ impl<'a> Lowering<'a> {
     /// Add a signal for `name: ty`, flattening composites into scalar leaves: a
     /// struct into one signal per field (`s.valid`), an array into one per
     /// element (`a[0]`). Nested composites recurse. An integer vector
-    /// (`uint[8]`) stays a single scalar signal.
+    /// (`unsigned[8]`) stays a single scalar signal.
     fn add_typed_signal(
         &mut self,
         entity: &str,
@@ -1898,7 +1898,7 @@ impl<'a> Lowering<'a> {
         ty: &ast::Type,
         env: &HashMap<String, i64>,
     ) {
-        // A generic entity's type parameters (`T -> uint[8]`) substitute first,
+        // A generic entity's type parameters (`T -> unsigned[8]`) substitute first,
         // so a port/signal typed `T` becomes its concrete type here.
         let subst_ty;
         let ty = if self.cur_type_env.is_empty() {
@@ -2033,7 +2033,7 @@ impl<'a> Lowering<'a> {
                 type_width(ty, env, &self.free_fns, &self.structs),
             );
             // A Logic-vector family `F[N]` dispatches its operators to
-            // `impl _ for F` (spec 3.25). uint/int are recognized the same way
+            // `impl _ for F` (spec 3.25). unsigned/signed are recognized the same way
             // as any user `struct F : Logic[]`.
             if let ast::Type::Indexed { base, .. } = ty {
                 if let ast::Type::Path(p) = base.as_ref() {
@@ -2123,8 +2123,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// The `(field name, field type)` list if `ty` names a known struct —
-    /// resolving generic applications (`Pair<uint[8]>`) and bus-mode views
-    /// (`Stream::Source`, `Stream<uint[8]>::Source`, spec 3.19).
+    /// resolving generic applications (`Pair<unsigned[8]>`) and bus-mode views
+    /// (`Stream::Source`, `Stream<unsigned[8]>::Source`, spec 3.19).
     /// Normalize an instance's connection args into `(port, value)` pairs:
     /// positional args (`Inv { a, b }`) bind by the sub-entity's port order,
     /// explicit args (`.clk = clk`) bind by name. Every arg carries a value, so
@@ -2331,7 +2331,7 @@ impl<'a> Lowering<'a> {
                                     .at(*span)
                                     .help(
                                         "widths must match; use a conversion \
-                                           (`uint[N](x)` / `resize(x, N)`) to change width",
+                                           (`unsigned[N](x)` / `resize(x, N)`) to change width",
                                     ),
                                 );
                             }
@@ -3308,7 +3308,7 @@ impl<'a> Lowering<'a> {
                 .with_code(crate::diag::codes::TYPE_MISMATCH)
                 .at(span)
                 .help(
-                    "widths must match; use a conversion (`uint[N](x)` / \
+                    "widths must match; use a conversion (`unsigned[N](x)` / \
                      `resize(x, N)`) to change width",
                 ),
             );
@@ -3422,7 +3422,7 @@ impl<'a> Lowering<'a> {
         // exact rhs match. Pass 2: an `integer` operand (a literal) coerces
         // to a Self-typed rhs (`a + 1`). A sole candidate is accepted only
         // when the rhs operand's type is unknown — never on a known mismatch
-        // (so `10 + x` with x: uint does not inline a Complex impl).
+        // (so `10 + x` with x: unsigned does not inline a Complex impl).
         let declared = |f: &ast::FnDecl, rhs_arg: &Option<String>| -> Option<String> {
             let d = rhs_arg.clone().or_else(|| {
                 f.params
@@ -3459,7 +3459,7 @@ impl<'a> Lowering<'a> {
 
         // Bind `self` to the left operand and the first named param to the
         // right — plus each operand's bit width, so a body can say
-        // `self::length` (needed for e.g. sign-aware `int` comparison).
+        // `self::length` (needed for e.g. sign-aware `signed` comparison).
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
         fenv.insert(
@@ -4057,7 +4057,7 @@ impl<'a> Lowering<'a> {
     /// A struct's derived default as flattened `(leaf-dotted-name, expr)` pairs
     /// (the shape `Val::Fields` assignment consumes), each field defaulted
     /// structurally and nested structs recursed. `None` for a non-aggregate (a
-    /// scalar newtype like `struct uint : Logic[]`, which has no fields).
+    /// scalar newtype like `struct unsigned : Logic[]`, which has no fields).
     fn struct_default_leaves(&self, sname: &str, prefix: &str) -> Option<Vec<(String, Expr)>> {
         let fields = self.raw_struct_fields(sname).filter(|f| !f.is_empty())?;
         let mut out = Vec::new();
@@ -4330,13 +4330,13 @@ impl<'a> Lowering<'a> {
         true
     }
 
-    /// Lower a conversion expression (spec 3.17): `uint[16](x)` resizes,
-    /// `int[8](x)` truncates, `integer(x)` crosses to the kernel word, and
+    /// Lower a conversion expression (spec 3.17): `unsigned[16](x)` resizes,
+    /// `signed[8](x)` truncates, `integer(x)` crosses to the kernel word, and
     /// `resize(x, n)` is the family-preserving spelling (n const-evaluable —
     /// the language is static, so a value argument in width position is a
-    /// generic argument). Semantics on the word IR: an `int`-family source
+    /// generic argument). Semantics on the word IR: an `signed`-family source
     /// sign-extends into the full word first (`v - 2^w` when the sign bit is
-    /// set); the target width truncates via a slice; widening to `uint`
+    /// set); the target width truncates via a slice; widening to `unsigned`
     /// zero-extends implicitly. `None` when `callee` is not a conversion.
     fn lower_conversion(
         &self,
@@ -4404,8 +4404,8 @@ impl<'a> Lowering<'a> {
                 .get(&suffix.text)
                 .map(|(ty, _)| ty.clone()),
             // A conversion expression `F[N](x)` / `F(x)` reads as its target
-            // family, so operators on it dispatch correctly (`int[32](a) < ..`
-            // uses int's signed Ord).
+            // family, so operators on it dispatch correctly (`signed[32](a) < ..`
+            // uses signed's signed Ord).
             ast::Expr::Call { callee, .. } => {
                 let head = match callee.as_ref() {
                     ast::Expr::Index { base, .. } => expr_path(base),
@@ -4413,7 +4413,7 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 }?;
                 // A conversion reads as its target: a vector family
-                // (`int[32](a)`) or an enum (`ULogic(b)` inside
+                // (`signed[32](a)`) or an enum (`ULogic(b)` inside
                 // `Logic(ULogic(b))`).
                 (self.vector_families.contains(&head) || self.enum_variants.contains_key(&head))
                     .then_some(head)
@@ -4709,7 +4709,7 @@ impl<'a> Lowering<'a> {
             {
                 self.const_ranges.get(&p.segments[0].text).copied()
             }
-            // A width-only index (`Bit[4]`, `uint[8]`) is ascending `0..N-1`.
+            // A width-only index (`Bit[4]`, `unsigned[8]`) is ascending `0..N-1`.
             _ => {
                 let n = eval_const(idx, env)?;
                 Some((0, (n - 1).max(0)))
@@ -5418,7 +5418,7 @@ fn parse_int(text: &str) -> Option<u64> {
 }
 
 /// Bit width from a type annotation, substituting parameters from `env` (so
-/// `uint[W]` with `W=8` is width 8). `0` means parametric / not yet known.
+/// `unsigned[W]` with `W=8` is width 8). `0` means parametric / not yet known.
 fn type_width(
     t: &ast::Type,
     env: &HashMap<String, i64>,
@@ -5448,7 +5448,7 @@ fn type_width_at(
             Some("real") => 64, // f64 bits
             Some("Char") => 32, // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
-            // : Logic[8]` is 8 bits, `struct Word : uint[16]` is 16 (spec:
+            // : Logic[8]` is 8 bits, `struct Word : unsigned[16]` is 16 (spec:
             // nominal derivation reuses the base representation).
             Some(name) => structs
                 .get(name)
@@ -5457,7 +5457,7 @@ fn type_width_at(
                 .unwrap_or(0),
             None => 0,
         },
-        // For `uint[8]` the index is the width; for `Logic[31..0]` it is the
+        // For `unsigned[8]` the index is the width; for `Logic[31..0]` it is the
         // span; unconstrained `T[]` stays width 0 ("set at use").
         ast::Type::Indexed { index: None, .. } => 0,
         ast::Type::Indexed {
@@ -5609,8 +5609,8 @@ pub fn eval_const_stmts(
 /// Index every enum declaration by name (for base-chain resolution).
 /// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
 /// -> signedness. A bodyless struct whose base is an array of a bit scalar
-/// (`struct uint : Logic[]`) IS a bit vector — no annotation needed, the shape
-/// says so. Signedness is the `Signed` capability. uint/int are just members.
+/// (`struct unsigned : Logic[]`) IS a bit vector — no annotation needed, the shape
+/// says so. Signedness is the `Signed` capability. unsigned/signed are just members.
 /// Every derived type's inherited width: `struct Byte : Logic[8]` -> 8,
 /// `struct Word : Byte` -> 8 (following the base chain). A derived type reuses
 /// its base array's size/range (spec: nominal derivation). Testbench evaluators
@@ -5641,7 +5641,7 @@ pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
 pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
     // The set of bit-vector families by shape. No signedness — that lives in
     // each type's operator impls. Computed to a fixpoint so a type deriving
-    // from *another* vector family (`struct Byte : uint[8]`) is recognized too.
+    // from *another* vector family (`struct Byte : unsigned[8]`) is recognized too.
     let structs: Vec<&ast::StructDecl> = modules
         .iter()
         .flat_map(|m| &m.items)
@@ -5668,7 +5668,7 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
 
 /// A bodyless struct deriving from an array whose element is a bit scalar
 /// (`struct F : Logic[]` / `: Bit[]`) or an already-known vector family
-/// (`struct Byte : uint[8]`) — a packed bit vector. This is what makes uint/int
+/// (`struct Byte : unsigned[8]`) — a packed bit vector. This is what makes unsigned/signed
 /// and user vectors; the shape (and its base) is the definition, not an
 /// attribute.
 fn is_bit_vector_struct(
@@ -5680,7 +5680,7 @@ fn is_bit_vector_struct(
     }
     let elem = match &st.base {
         Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
-        // A bare derived base (`struct Byte : uint`) reuses the base family.
+        // A bare derived base (`struct Byte : unsigned`) reuses the base family.
         Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
         _ => None,
     };
@@ -5923,9 +5923,9 @@ fn gather_generate(
 
 /// Substitute a bound integer for a single-segment path variable throughout a
 /// statement (used to unroll generate loops).
-/// Read a generic argument expression as a type: `uint[8]` (parsed as an index
-/// expression) becomes the type `uint[8]`, a bare name becomes a path type.
-/// Used to substitute a struct's type parameters (`Pair<uint[8]>`).
+/// Read a generic argument expression as a type: `unsigned[8]` (parsed as an index
+/// expression) becomes the type `unsigned[8]`, a bare name becomes a path type.
+/// Used to substitute a struct's type parameters (`Pair<unsigned[8]>`).
 fn expr_to_type(e: &ast::Expr) -> Option<ast::Type> {
     match e {
         ast::Expr::Path(p) => Some(ast::Type::Path(p.clone())),
@@ -5938,7 +5938,7 @@ fn expr_to_type(e: &ast::Expr) -> Option<ast::Type> {
     }
 }
 
-/// Substitute type parameters (`T -> uint[8]`) in a type, recursing through
+/// Substitute type parameters (`T -> unsigned[8]`) in a type, recursing through
 /// array/generic/mode wrappers.
 fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
     match ty {
@@ -6399,7 +6399,7 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
 }
 
 /// The `(element type, length)` if `ty` is an array — an `Indexed` type whose
-/// base is *not* an integer (`Bit[4]`), as opposed to a vector (`uint[8]`).
+/// base is *not* an integer (`Bit[4]`), as opposed to a vector (`unsigned[8]`).
 /// The element type and **ordered element indices** of an array type.
 /// A width-only index (`Bit[4]`) is ascending `0..=3`; a range keeps its
 /// written direction (`Logic[7..0]` yields 7,6,...,0). A single-segment path
@@ -6418,9 +6418,9 @@ fn array_of<'t>(
     else {
         return None;
     };
-    // A Logic-vector family (uint/int/user) `F[N]` is one N-bit signal, not an
-    // N-element array — but only when the base is DIRECTLY the family (`uint`),
-    // not when it is itself indexed (`uint[8][4]` is an array of vectors).
+    // A Logic-vector family (unsigned/signed/user) `F[N]` is one N-bit signal, not an
+    // N-element array — but only when the base is DIRECTLY the family (`unsigned`),
+    // not when it is itself indexed (`unsigned[8][4]` is an array of vectors).
     let base_is_family = matches!(base.as_ref(), ast::Type::Path(p)
         if p.segments.last().map(|s| s.text.as_str()).is_some_and(|h| families.contains(h)));
     if is_int_type(base) || base_is_family {
@@ -6441,14 +6441,14 @@ fn array_of<'t>(
     Some((base, indices))
 }
 
-/// The kernel `integer` scalar (a bare word). uint/int are NOT here — they
+/// The kernel `integer` scalar (a bare word). unsigned/signed are NOT here — they
 /// are `#[vector]` families recognized via the family set, not by name.
 fn is_int_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Path(p)
         if p.segments.last().map(|s| s.text.as_str()) == Some("integer"))
 }
 
-/// Build `enum name -> bit width`: the `repr` width if given (`enum S: uint[2]`),
+/// Build `enum name -> bit width`: the `repr` width if given (`enum S: unsigned[2]`),
 /// else the bits needed for the variant count.
 fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
     let empty = HashMap::new();
@@ -6517,8 +6517,8 @@ mod tests {
     const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
 
     fn lower_src(src: &str) -> Design {
-        // uint/int are library types (attribute-marked vectors), not seeded.
-        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
+        // unsigned/signed are library types (attribute-marked vectors), not seeded.
+        let src = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -6531,7 +6531,7 @@ mod tests {
     }
 
     fn lower_diags(src: &str) -> Vec<String> {
-        let src = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
+        let src = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         let modules = std::slice::from_ref(&module);
@@ -6551,10 +6551,10 @@ mod tests {
     #[test]
     fn struct_literal_initializer_seeds_field_inits() {
         let d = lower_src(
-            "module m; struct P { a: uint[8], b: uint[8] }\n\
-             entity E { out x: uint[8]; out y: uint[8]; }\n\
+            "module m; struct P { a: unsigned[8], b: unsigned[8] }\n\
+             entity E { out x: unsigned[8]; out y: unsigned[8]; }\n\
              impl E { let p: P = { .a = 11, .b = 22 }; x = p.a; y = p.b; }\n\
-             #[top] entity H { out x: uint[8]; out y: uint[8]; }\n\
+             #[top] entity H { out x: unsigned[8]; out y: unsigned[8]; }\n\
              impl H { let d: E = { .x = x, .y = y }; }",
         );
         let init = |suffix: &str| {
@@ -6574,9 +6574,9 @@ mod tests {
     fn concat_assignment_target_width_must_match() {
         let src = |rhs: &str| {
             format!(
-                "module m;\nentity E {{ in a: uint[8]; out y: uint[4]; out z: uint[4]; }}\n\
+                "module m;\nentity E {{ in a: unsigned[8]; out y: unsigned[4]; out z: unsigned[4]; }}\n\
                  impl E {{ {{y, z}} = {rhs}; }}\n\
-                 #[top] entity H {{ in a: uint[8]; out y: uint[4]; out z: uint[4]; }}\n\
+                 #[top] entity H {{ in a: unsigned[8]; out y: unsigned[4]; out z: unsigned[4]; }}\n\
                  impl H {{ let d: E = {{ .a = a, .y = y, .z = z }}; }}\n"
             )
         };
@@ -6599,19 +6599,19 @@ mod tests {
     #[test]
     fn conflicting_drivers_name_the_conflict_and_its_sites() {
         let src = "module m;\n\
-            struct Stream { valid: Bit, data: uint[8] }\n\
+            struct Stream { valid: Bit, data: unsigned[8] }\n\
             view Source for Stream { out valid; out data; }\n\
-            entity Producer { bus: Source Stream; in value: uint[8]; }\n\
+            entity Producer { bus: Source Stream; in value: unsigned[8]; }\n\
             impl Producer { bus.valid = '1'; bus.data = value; }\n\
             #[top]\n\
-            entity BadLink { in a: uint[8]; in b: uint[8]; }\n\
+            entity BadLink { in a: unsigned[8]; in b: unsigned[8]; }\n\
             impl BadLink {\n\
               let wire: Stream;\n\
               let p1: Producer = { .bus = wire, .value = a };\n\
               let p2: Producer = { .bus = wire, .value = b };\n\
             }\n";
         let mut sink = DiagnosticSink::new();
-        let full = format!("{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n{CLK_PRELUDE}");
+        let full = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
         let module = crate::syntax::parse_module(FileId(0), &full, &mut sink);
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
@@ -6717,8 +6717,8 @@ mod tests {
             "module m;\n\
              enum Phase { Idle = 2, Run = 3 }\n\
              #[top]\n\
-             entity E { out y: Phase; out z: uint[8]; }\n\
-             impl E { y = Phase(); z = uint[8](); }\n",
+             entity E { out y: Phase; out z: unsigned[8]; }\n\
+             impl E { y = Phase(); z = unsigned[8](); }\n",
         );
         let drv = |suffix: &str| -> u64 {
             let sig = d
@@ -6737,7 +6737,7 @@ mod tests {
             }
         };
         assert_eq!(drv(".y"), 2, "Phase() == first variant Idle = 2");
-        assert_eq!(drv(".z"), 0, "uint[8]() == 0");
+        assert_eq!(drv(".z"), 0, "unsigned[8]() == 0");
     }
 
     #[test]
@@ -6749,7 +6749,7 @@ mod tests {
             "module m;\n\
              enum Phase { Idle = 2, Run = 3 }\n\
              struct Header { flag: Bit, ph: Phase }\n\
-             struct Packet { header: Header, data: uint[8] }\n\
+             struct Packet { header: Header, data: unsigned[8] }\n\
              #[top]\n\
              entity E { out o: Packet; }\n\
              impl E { o = Packet(); }\n",
@@ -6783,9 +6783,9 @@ mod tests {
             "module m;\n\
              #[top]\n\
              entity E {\n\
-               in dn: uint[7..0]; in up: uint[8];\n\
-               out a: uint[8]; out b: uint[8]; out c: uint[8]; out e: uint[8];\n\
-               out f: uint[8]; out g: uint[8]; out h: uint[8];\n\
+               in dn: unsigned[7..0]; in up: unsigned[8];\n\
+               out a: unsigned[8]; out b: unsigned[8]; out c: unsigned[8]; out e: unsigned[8];\n\
+               out f: unsigned[8]; out g: unsigned[8]; out h: unsigned[8];\n\
              }\n\
              impl E {\n\
                a = dn'left; b = dn'right; c = dn'high; e = dn'low;\n\
@@ -6822,11 +6822,11 @@ mod tests {
         // `forgotten` is never assigned; `driven` is. Only the former warns.
         let diags = lower_diags(
             "module m;\n\
-             entity E { in a: uint[8]; out driven: uint[8]; out forgotten: uint[8]; }\n\
+             entity E { in a: unsigned[8]; out driven: unsigned[8]; out forgotten: unsigned[8]; }\n\
              impl E { driven = a + 1; }\n\
              #[top]\n\
              entity T {}\n\
-             impl T { let a: uint[8]; let d: uint[8]; let f: uint[8];\n\
+             impl T { let a: unsigned[8]; let d: unsigned[8]; let f: unsigned[8];\n\
                let dut: E = { .a = a, .driven = d, .forgotten = f }; }\n",
         );
         let undriven: Vec<&String> = diags.iter().filter(|d| d.contains("W-P011")).collect();
@@ -6847,12 +6847,12 @@ mod tests {
         // `konst` has an initializer, so neither does.
         let diags = lower_diags(
             "module m;\n\
-             entity E { in a: uint[8]; out y: uint[8]; }\n\
-             impl E {\n  let used: uint[8];\n  let dead: uint[8];\n  let konst: uint[8] = 5;\n\
+             entity E { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             impl E {\n  let used: unsigned[8];\n  let dead: unsigned[8];\n  let konst: unsigned[8] = 5;\n\
                used = a + 1;\n  y = used + konst;\n }\n\
              #[top]\n\
              entity T {}\n\
-             impl T { let a: uint[8]; let y: uint[8]; let dut: E = { .a = a, .y = y }; }\n",
+             impl T { let a: unsigned[8]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
         );
         let undriven: Vec<&String> = diags
             .iter()
@@ -6868,11 +6868,11 @@ mod tests {
         // no possible-latch warning — but one assigned only in the `if` is.
         let covered = lower_diags(
             "module m;\n\
-             entity M { in c: Bit; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+             entity M { in c: Bit; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
              impl M { if c { y = a; } else { y = b; } }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
-               let c: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+               let c: Bit; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
                let dut: M = { .c = c, .a = a, .b = b, .y = y };\n\
              }\n",
         );
@@ -6883,11 +6883,11 @@ mod tests {
 
         let latch = lower_diags(
             "module m;\n\
-             entity M { in c: Bit; in a: uint[8]; out y: uint[8]; }\n\
+             entity M { in c: Bit; in a: unsigned[8]; out y: unsigned[8]; }\n\
              impl M { if c { y = a; } }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
-               let c: Bit; let a: uint[8]; let y: uint[8];\n\
+               let c: Bit; let a: unsigned[8]; let y: unsigned[8];\n\
                let dut: M = { .c = c, .a = a, .y = y };\n\
              }\n",
         );
@@ -6899,16 +6899,16 @@ mod tests {
 
     #[test]
     fn strict_assignment_width_mismatch() {
-        // A parameterized width (`uint[W]`) the type checker can't see resolves
+        // A parameterized width (`unsigned[W]`) the type checker can't see resolves
         // at elaboration; assigning a 16-bit signal to an 8-bit target is then a
         // width mismatch surfaced by IR lowering.
         let bad = lower_diags(
             "module m;\n\
-             entity E { in b: uint[W]; out y: uint[8]; }\n\
+             entity E { in b: unsigned[W]; out y: unsigned[8]; }\n\
              impl E { y = b; }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
-               let b: uint[16]; let y: uint[8];\n\
+               let b: unsigned[16]; let y: unsigned[8];\n\
                let dut: E<W=16> = { .b = b, .y = y };\n\
              }\n",
         );
@@ -6918,11 +6918,11 @@ mod tests {
         // (8) equals the target (8).
         let ok = lower_diags(
             "module m;\n\
-             entity E { in b: uint[W]; out y: uint[8]; }\n\
+             entity E { in b: unsigned[W]; out y: unsigned[8]; }\n\
              impl E { y = b[7..0]; }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
-               let b: uint[16]; let y: uint[8];\n\
+               let b: unsigned[16]; let y: unsigned[8];\n\
                let dut: E<W=16> = { .b = b, .y = y };\n\
              }\n",
         );
@@ -6935,10 +6935,10 @@ mod tests {
         // (`y = x + 1`) is not.
         let diags = lower_diags(
             "module m;\n\
-             entity L { in a: uint[8]; out y: uint[8]; }\n\
-             impl L { let t: uint[8]; t = t + a; y = t; }\n\
+             entity L { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             impl L { let t: unsigned[8]; t = t + a; y = t; }\n\
              #[top] entity Top {}\n\
-             impl Top { let a: uint[8]; let y: uint[8]; let d: L = { .a = a, .y = y }; }\n",
+             impl Top { let a: unsigned[8]; let y: unsigned[8]; let d: L = { .a = a, .y = y }; }\n",
         );
         let loops: Vec<&String> = diags.iter().filter(|d| d.contains("W-P010")).collect();
         assert!(!loops.is_empty(), "self-cycle flagged: {diags:?}");
@@ -6946,10 +6946,10 @@ mod tests {
 
         let ok = lower_diags(
             "module m;\n\
-             entity C { in x: uint[8]; out y: uint[8]; }\n\
+             entity C { in x: unsigned[8]; out y: unsigned[8]; }\n\
              impl C { y = x + 1; }\n\
              #[top] entity Top {}\n\
-             impl Top { let x: uint[8]; let y: uint[8]; let d: C = { .x = x, .y = y }; }\n",
+             impl Top { let x: unsigned[8]; let y: unsigned[8]; let d: C = { .x = x, .y = y }; }\n",
         );
         assert!(
             !ok.iter().any(|d| d.contains("W-P010")),
@@ -6963,10 +6963,10 @@ mod tests {
         // unconditional default and must not be flagged.
         let diags = lower_diags(
             "module m;\n\
-             entity L { in c: Logic; in a: uint[8]; out y: uint[8]; out z: uint[8]; }\n\
+             entity L { in c: Logic; in a: unsigned[8]; out y: unsigned[8]; out z: unsigned[8]; }\n\
              impl L { if c == '1' { y = a; } z = a; }\n\
              #[top] entity Top {}\n\
-             impl Top { let c: Logic; let a: uint[8]; let y: uint[8]; let z: uint[8];\n\
+             impl Top { let c: Logic; let a: unsigned[8]; let y: unsigned[8]; let z: unsigned[8];\n\
                let d: L = { .c = c, .a = a, .y = y, .z = z }; }\n",
         );
         let latch: Vec<&String> = diags.iter().filter(|d| d.contains("W-P002")).collect();
@@ -7006,10 +7006,10 @@ mod tests {
           in clk: Bit;\n\
           in rst: Logic;\n\
           in en: Bit;\n\
-          out count: uint[W];\n\
+          out count: unsigned[W];\n\
         }\n\
         impl Counter<W: integer> {\n\
-          let value: uint[W] = 0;\n\
+          let value: unsigned[W] = 0;\n\
           if clk.rising() {\n\
             if rst == '1' {\n\
               value = 0;\n\
@@ -7025,7 +7025,7 @@ mod tests {
           let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
           let en: Bit = '1';\n\
-          let count: uint[8];\n\
+          let count: unsigned[8];\n\
           let dut: Counter<W = 8> = { .clk = clk, .rst = rst, .en = en, .count = count };\n\
         }\n";
 
@@ -7033,7 +7033,7 @@ mod tests {
     fn lowers_signals_driver_and_event_block() {
         let d = lower_src(COUNTER);
         // Counter signals: clk, rst, en, count, value. The instance's `W = 8`
-        // makes the parametric `uint[W]` widths concrete.
+        // makes the parametric `unsigned[W]` widths concrete.
         let count = d.signals.iter().find(|s| s.path == "H.dut.count").unwrap();
         assert_eq!(count.width, 8);
         assert!(d.signals.iter().any(|s| s.path == "H.dut.value"));
@@ -7049,18 +7049,18 @@ mod tests {
         // Add2 instantiates two Add1s wired through `mid`. Each instance must
         // get its own signals, and every port connection must become a driver.
         let src = "module m;\n\
-            entity Add1 { in a: uint[8]; out y: uint[8]; }\n\
+            entity Add1 { in a: unsigned[8]; out y: unsigned[8]; }\n\
             impl Add1 { y = a + 1; }\n\
-            entity Add2 { in a: uint[8]; out y: uint[8]; }\n\
+            entity Add2 { in a: unsigned[8]; out y: unsigned[8]; }\n\
             impl Add2 {\n\
-              let mid: uint[8];\n\
+              let mid: unsigned[8];\n\
               let s1: Add1 = { .a = a, .y = mid };\n\
               let s2: Add1 = { .a = mid, .y = y };\n\
             }\n\
             #[test] entity T {}\n\
             impl T {\n\
-              let a: uint[8] = 10;\n\
-              let y: uint[8];\n\
+              let a: unsigned[8] = 10;\n\
+              let y: unsigned[8];\n\
               let dut: Add2 = { .a = a, .y = y };\n\
             }\n";
         let d = lower_src(src);
@@ -7091,10 +7091,10 @@ mod tests {
     fn if_expression_lowers_to_select() {
         let d = lower_src(
             "module m;\n\
-             entity Mux { in sel: Bit; in a: uint[8]; in b: uint[8]; out y: uint[8]; }\n\
+             entity Mux { in sel: Bit; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
              impl Mux { y = if sel { a } else { b }; }\n\
              #[test] entity T {}\n\
-             impl T { let sel: Bit; let a: uint[8]; let b: uint[8]; let y: uint[8];\n\
+             impl T { let sel: Bit; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
                let dut: Mux = { .sel = sel, .a = a, .b = b, .y = y }; }\n",
         );
         let y = d
@@ -7189,8 +7189,8 @@ mod tests {
     fn composite_and_enum_signals_flatten_with_widths() {
         let d = lower_src(
             "module m;\n\
-             enum S: uint[2] { A, B, C }\n\
-             struct P { flag: Bit, val: uint[8] }\n\
+             enum S: unsigned[2] { A, B, C }\n\
+             struct P { flag: Bit, val: unsigned[8] }\n\
              entity E { in p: P; in a: Bit[3]; out s: S; }\n\
              impl E {}\n\
              #[top] entity H {}\n\
@@ -7209,10 +7209,10 @@ mod tests {
         // `y = 0; y[3..0] = a` merges: low nibble = a, high bits held from 0.
         let d = lower_src(
             "module m;\n\
-             entity E { in a: uint[4]; out y: uint[8]; }\n\
+             entity E { in a: unsigned[4]; out y: unsigned[8]; }\n\
              impl E { y = 0; y[3..0] = a; }\n\
              #[top] entity H {}\n\
-             impl H { let a: uint[4]; let y: uint[8]; let dut: E = { .a = a, .y = y }; }\n",
+             impl H { let a: unsigned[4]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
         );
         // The y driver should be a read-modify-write (an Or of a masked base
         // and a shifted value), not a bare assignment.
@@ -7231,7 +7231,7 @@ mod tests {
     /// A derived enum width has to hold every *value*, not one code per
     /// variant. `Hi = 9` in a two-variant enum needs four bits; counting
     /// variants alone gave one, silently truncating the value to 1. The old
-    /// `: uint[4]` repr annotation used to paper over this.
+    /// `: unsigned[4]` repr annotation used to paper over this.
     #[test]
     fn enum_width_covers_explicit_discriminants() {
         let d = lower_src(
@@ -7269,8 +7269,8 @@ mod tests {
         // another struct flattens to dotted leaf signals.
         let d = lower_src(
             "module m;\n\
-             struct Header { valid: Bit, kind: uint[4] }\n\
-             struct Packet { header: Header, data: uint[8] }\n\
+             struct Header { valid: Bit, kind: unsigned[4] }\n\
+             struct Packet { header: Header, data: unsigned[8] }\n\
              entity E { out p: Packet; }\n\
              impl E {}\n\
              #[top] entity H {}\n\
@@ -7304,10 +7304,10 @@ mod tests {
         // `std_ulogic` value bit (X = disc 3, low bit 1) instead of collapsing
         // to 0. `"1X10"` -> value bits 1110 = 14.
         let d = lower_src(
-            "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
+            "module m; entity E { out y: unsigned[4]; out z: unsigned[4]; }\n\
              impl E { y = \"1010\"; z = \"1X10\"; }\n\
              #[top] entity T {}\n\
-             impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
+             impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
         );
         let s = d.to_ir_string();
         assert!(s.contains("driver T.dut.y = 10"), "2-value unchanged:\n{s}");
@@ -7319,13 +7319,13 @@ mod tests {
 
     #[test]
     fn bit_string_initializer_sets_init() {
-        // `let v: uint[4] = "1010"` seeds the signal init to 10 (was 0 — no
+        // `let v: unsigned[4] = "1010"` seeds the signal init to 10 (was 0 — no
         // string-init arm in const_init_value).
         let d = lower_src(
-            "module m; entity E { out y: uint[4]; }\n\
-             impl E { let v: uint[4] = \"1010\"; y = v; }\n\
+            "module m; entity E { out y: unsigned[4]; }\n\
+             impl E { let v: unsigned[4] = \"1010\"; y = v; }\n\
              #[top] entity T {}\n\
-             impl T { let y: uint[4]; let dut: E = { .y = y }; }",
+             impl T { let y: unsigned[4]; let dut: E = { .y = y }; }",
         );
         let v = d
             .signals
@@ -7340,10 +7340,10 @@ mod tests {
         // A metavalue init spawns a `$meta` companion recording the X element;
         // a plain 2-value init does not.
         let d = lower_src(
-            "module m; entity E { out y: uint[4]; out z: uint[4]; }\n\
-             impl E { let v: uint[4] = \"1X10\"; let w: uint[4] = \"1010\"; y = v; z = w; }\n\
+            "module m; entity E { out y: unsigned[4]; out z: unsigned[4]; }\n\
+             impl E { let v: unsigned[4] = \"1X10\"; let w: unsigned[4] = \"1010\"; y = v; z = w; }\n\
              #[top] entity T {}\n\
-             impl T { let y: uint[4]; let z: uint[4]; let dut: E = { .y = y, .z = z }; }",
+             impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
         );
         let v = d
             .signals

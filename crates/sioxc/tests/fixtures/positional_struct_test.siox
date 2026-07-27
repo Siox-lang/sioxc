@@ -3,9 +3,9 @@
 // explicit and typed-positional forms must still agree.
 module positional_struct;
 
-using std::bits::uint;
+using std::bits::unsigned;
 
-struct Pkt { a: uint[8], b: uint[8] }
+struct Pkt { a: unsigned[8], b: unsigned[8] }
 
 #[test]
 entity PositionalStructTest {}

@@ -28,9 +28,9 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `uint`/`int`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
-| `std::bits`   | ieee.numeric_std                 | `uint[N]` / `int[N]` operators as `Operator` impls (incl. `int`'s signed `<=>`) |
+| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (incl. `signed`'s signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -68,19 +68,19 @@ detection is applied to it — `clk.rising()` / `clk.falling()` (the
 
 ## `std::bits`
 
-`uint[N]` (VHDL `unsigned`) and `int[N]` (`signed`) are *derived* Logic
+`unsigned[N]` (VHDL `unsigned`) and `signed[N]` (`signed`) are *derived* Logic
 vectors with numeric interpretation, and accept `integer` on assignment
-(`let x: uint[8] = 42;`). Only the kernel types (`integer`/`real`) have
-built-in operators; uint/int get theirs **here** as `Operator` impls:
+(`let x: unsigned[8] = 42;`). Only the kernel types (`integer`/`real`) have
+built-in operators; unsigned/signed get theirs **here** as `Operator` impls:
 `"+"`/`"-"`/`"*"`/`"/"`/`"<<"`/`">>"` over the kernel word operators (wrap at
-the stored width), and `int` gets a **sign-aware `Operator<"<=>", int, Ordering>`** — signed
-comparison is library source, not compiler code (`-1 < 1` on int[8], while
-uint compares unsigned). Inside an operator impl, operands read as kernel
+the stored width), and `signed` gets a **sign-aware `Operator<"<=>", signed, Ordering>`** — signed
+comparison is library source, not compiler code (`-1 < 1` on signed[8], while
+unsigned compares unsigned). Inside an operator impl, operands read as kernel
 words and `self'length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
 literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self'length`.
-Radix bit-string literals `x"AB"` / `o"17"` are sized `uint` constants,
-declared by `impl Prefix<"x", _> for uint` in `std::bits` (spec 3.24); a plain string
+Radix bit-string literals `x"AB"` / `o"17"` are sized `unsigned` constants,
+declared by `impl Prefix<"x", _> for unsigned` in `std::bits` (spec 3.24); a plain string
 `"0101"` covers the binary case with no prefix. A file that never imports
 `std::bits` falls back to kernel word semantics.
 
@@ -175,7 +175,7 @@ pub enum Severity { Note, Warning, Error, Failure }
   functions callable in expressions; today fns exist only as trait-impl
   bodies for inlining.
 - **X/Z propagation through vector arithmetic** — scalar `Logic` is now the
-  full 9-value `std_ulogic` (IEEE 1076-2019), but `uint`/`int` are stored as
+  full 9-value `std_ulogic` (IEEE 1076-2019), but `unsigned`/`signed` are stored as
   2-value words, so metavalues don't yet propagate through vector `+`/`-`/…
   (needs a per-bit metavalue representation in the engine). Tracked in TODO.
 

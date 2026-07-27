@@ -42,12 +42,12 @@ pub enum ParamValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EType {
     /// Any named type: an enum scalar (`Bit`/`Logic`/`Bool`), a struct, or a
-    /// bare bit-vector family (`uint`). No bit-vector width, so the width check
+    /// bare bit-vector family (`unsigned`). No bit-vector width, so the width check
     /// skips it.
     Named(String),
-    /// A sized array. A bit vector is just an array of bits: `uint[8]` is
-    /// `Array { elem: Named("uint"), len: 8 }` (element names the family so it
-    /// renders as `uint[8]`), the same encoding as `Bit[8]` or `Point[4]`.
+    /// A sized array. A bit vector is just an array of bits: `unsigned[8]` is
+    /// `Array { elem: Named("unsigned"), len: 8 }` (element names the family so it
+    /// renders as `unsigned[8]`), the same encoding as `Bit[8]` or `Point[4]`.
     /// Signedness/behaviour lives in the family's operator impls, not here.
     Array { elem: Box<EType>, len: Option<u32> },
     Other(String),
@@ -77,7 +77,7 @@ impl fmt::Display for EType {
 
 /// One resolved port connection: `port` of the instance is driven by / drives
 /// the local `signal` in the parent. `ty` is the port's type after parameter
-/// substitution (e.g. `uint[W]` with `W=8` becomes `uint[8]`).
+/// substitution (e.g. `unsigned[W]` with `W=8` becomes `unsigned[8]`).
 #[derive(Clone, Debug)]
 pub struct Connection {
     pub port: String,
@@ -222,7 +222,7 @@ impl<'a> Elaborator<'a> {
                         self.entities.insert(e.name.text.clone(), e);
                     }
                     Item::Struct(st) => {
-                        // Bit vector by shape (`struct uint : Logic[]`).
+                        // Bit vector by shape (`struct unsigned : Logic[]`).
                         let is_vec = st.fields.is_empty()
                             && matches!(
                                 st.base.as_ref().and_then(|b| match b {
@@ -346,7 +346,7 @@ impl<'a> Elaborator<'a> {
             return specs;
         }
         // This entity's bare type parameters (`Buf<T>`): a `let s: T` names data
-        // whose type is the bound argument (`uint[8]`), never an instance — even
+        // whose type is the bound argument (`unsigned[8]`), never an instance — even
         // when an entity happens to be named `T`.
         let tparams: HashSet<String> = self
             .entities
@@ -867,7 +867,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
 fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>) -> EType {
     match t {
-        // A bare type name — `integer`, a bit-vector family (`uint`), a scalar
+        // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
         // width check skips it).
         Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
@@ -876,10 +876,10 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
         },
         Type::Indexed { base, index, .. } => {
             let len = index.as_deref().and_then(|i| index_width(i, env));
-            // `uint[8]` — a bit-vector family indexed *directly* — is a packed
+            // `unsigned[8]` — a bit-vector family indexed *directly* — is a packed
             // array of that many bits, whose element names the family so it
-            // renders as `uint[8]`. Everything else (`Bit[8]`, `Point[4]`, or a
-            // nested `uint[8][4]`) is an array of its element type.
+            // renders as `unsigned[8]`. Everything else (`Bit[8]`, `Point[4]`, or a
+            // nested `unsigned[8][4]`) is an array of its element type.
             if let Type::Path(p) = base.as_ref() {
                 if let Some(name) = p.segments.last().map(|s| s.text.as_str()) {
                     if families.contains(name) {
@@ -899,7 +899,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
 }
 
 /// The bit width implied by a type index: a single value is the width itself
-/// (`uint[8]` -> 8); a descending/ascending range is its span (`[31..0]` -> 32).
+/// (`unsigned[8]` -> 8); a descending/ascending range is its span (`[31..0]` -> 32).
 fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
         if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
@@ -913,8 +913,8 @@ fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
     }
 }
 
-/// Render a port type with parameter widths substituted (`uint[W]` with `W=8`
-/// becomes `uint[8]`; unresolved widths keep their symbolic form).
+/// Render a port type with parameter widths substituted (`unsigned[W]` with `W=8`
+/// becomes `unsigned[8]`; unresolved widths keep their symbolic form).
 fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
     match t {
         Type::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
@@ -1076,9 +1076,9 @@ mod tests {
     use crate::diag::FileId;
 
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
-        // uint/int are `#[vector]` library types, not seeded.
+        // unsigned/signed are `#[vector]` library types, not seeded.
         let src = format!(
-            "{src}\nstruct uint : Logic[];\nstruct int : Logic[];\n"
+            "{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
@@ -1096,10 +1096,10 @@ mod tests {
         entity Counter<W: integer> {\n\
           in clk: Bit;\n\
           in rst: Logic;\n\
-          out count: uint[W];\n\
+          out count: unsigned[W];\n\
         }\n\
         impl Counter<W: integer> {\n\
-          let value: uint[W] = 0;\n\
+          let value: unsigned[W] = 0;\n\
           count = value;\n\
         }\n\
         #[top]\n\
@@ -1107,7 +1107,7 @@ mod tests {
         impl Harness {\n\
           let clk: Bit = '0';\n\
           let rst: Logic = '1';\n\
-          let count: uint[8];\n\
+          let count: unsigned[8];\n\
           let dut: Counter<W = 8> = {\n\
             .clk = clk,\n\
             .rst = rst,\n\
@@ -1153,7 +1153,7 @@ mod tests {
               let y: Bit;\n\
               let dut: Sub = { .a = a, .y = y };\n\
             }\n\
-            struct uint : Logic[];\nstruct int : Logic[];\n";
+            struct unsigned : Logic[];\nstruct signed : Logic[];\n";
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
         let modules = std::slice::from_ref(&module);
@@ -1171,7 +1171,7 @@ mod tests {
 
     #[test]
     fn type_param_named_like_an_entity_is_not_an_instance() {
-        // `Buf<T>`'s `let s: T` is data (the bound type `uint[8]`), even though
+        // `Buf<T>`'s `let s: T` is data (the bound type `unsigned[8]`), even though
         // the top entity is *also* named `T`. Previously the elaborator treated
         // `s` as an instance of entity `T`, reporting a spurious cyclic
         // instantiation (and IR lowering then recursed forever). `s` must be a
@@ -1186,8 +1186,8 @@ mod tests {
             #[top]\n\
             entity T {}\n\
             impl T {\n\
-              let a: uint[8]; let y: uint[8];\n\
-              let dut: Buf<uint[8]> = { .a = a, .y = y };\n\
+              let a: unsigned[8]; let y: unsigned[8];\n\
+              let dut: Buf<unsigned[8]> = { .a = a, .y = y };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0, "no cyclic-instantiation error");
@@ -1214,24 +1214,24 @@ mod tests {
         let (hier, _) = elaborate_src(HARNESS);
         let root = hier.instance(hier.roots[0]);
         let dut = hier.instance(root.children[0]);
-        // `count: uint[W]` with W=8 becomes `uint[8]` — a bit array (element
+        // `count: unsigned[W]` with W=8 becomes `unsigned[8]` — a bit array (element
         // names the family, length is the bit count).
         let count = dut.connections.iter().find(|c| c.port == "count").unwrap();
-        assert_eq!(count.ty.to_string(), "uint[8]");
+        assert_eq!(count.ty.to_string(), "unsigned[8]");
         assert_eq!(count.ty.width(), Some(8));
     }
 
     #[test]
     fn connection_width_mismatch_is_reported() {
-        // Port `a` is uint[8] (W=8) but the local signal `a` is uint[4].
+        // Port `a` is unsigned[8] (W=8) but the local signal `a` is unsigned[4].
         let src = "module m;\n\
-            entity Sub<W: integer> { in a: uint[W]; out b: uint[W]; }\n\
+            entity Sub<W: integer> { in a: unsigned[W]; out b: unsigned[W]; }\n\
             impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
-              let a: uint[4];\n\
-              let b: uint[8];\n\
+              let a: unsigned[4];\n\
+              let b: unsigned[8];\n\
               let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
@@ -1241,13 +1241,13 @@ mod tests {
     #[test]
     fn matching_widths_are_fine() {
         let src = "module m;\n\
-            entity Sub<W: integer> { in a: uint[W]; out b: uint[W]; }\n\
+            entity Sub<W: integer> { in a: unsigned[W]; out b: unsigned[W]; }\n\
             impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
-              let a: uint[8];\n\
-              let b: uint[8];\n\
+              let a: unsigned[8];\n\
+              let b: unsigned[8];\n\
               let dut: Sub<W = 8> = { .a = a, .b = b };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
@@ -1259,13 +1259,13 @@ mod tests {
         // `rst` is left unconnected — a warning (it holds its default), not an
         // error (§3.29). See `unconnected_input_warns_not_errors` for the code.
         let src = "module m;\n\
-            entity Counter<W: integer> { in clk: Bit; in rst: Logic; out count: uint[W]; }\n\
+            entity Counter<W: integer> { in clk: Bit; in rst: Logic; out count: unsigned[W]; }\n\
             impl Counter<W: integer> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
               let clk: Bit = '0';\n\
-              let count: uint[8];\n\
+              let count: unsigned[8];\n\
               let dut: Counter<W = 8> = { .clk = clk, .count = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
@@ -1275,12 +1275,12 @@ mod tests {
     #[test]
     fn unknown_port_is_reported() {
         let src = "module m;\n\
-            entity Counter { out count: uint[8]; }\n\
+            entity Counter { out count: unsigned[8]; }\n\
             impl Counter { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
-              let count: uint[8];\n\
+              let count: unsigned[8];\n\
               let dut: Counter = { .count = count, .nope = count };\n\
             }\n";
         let (_, errors) = elaborate_src(src);
@@ -1293,8 +1293,8 @@ mod tests {
     /// bind to a type, not a number.
     #[test]
     fn value_parameters_must_be_bound_at_instantiation() {
-        let base = "module m;\nentity S<W: integer> { out y: uint[W]; }\nimpl S<W: integer> { y = 0; }\n\
-                    #[top] entity E { out y: uint[8]; }\n";
+        let base = "module m;\nentity S<W: integer> { out y: unsigned[W]; }\nimpl S<W: integer> { y = 0; }\n\
+                    #[top] entity E { out y: unsigned[8]; }\n";
         let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
         assert_eq!(errs, 1, "`W` was never given a value");
 
@@ -1305,8 +1305,8 @@ mod tests {
         // A *type* parameter has no numeric value and must not be demanded.
         let generic = "module m;\nentity Buf<T> { in a: T; out y: T; }\n\
                        impl Buf<T> { y = a; }\n#[top] entity H {}\n\
-                       impl H { let a: uint[8]; let y: uint[8]; \
-                       let d: Buf<uint[8]> = { .a = a, .y = y }; }\n";
+                       impl H { let a: unsigned[8]; let y: unsigned[8]; \
+                       let d: Buf<unsigned[8]> = { .a = a, .y = y }; }\n";
         let (_, errs) = elaborate_src(generic);
         assert_eq!(errs, 0, "a type parameter is not a value parameter");
     }
@@ -1315,8 +1315,8 @@ mod tests {
     /// bound anyway, so a typo silently did nothing.
     #[test]
     fn unknown_generic_argument_is_reported() {
-        let base = "module m;\nentity S<W: integer> { in a: uint[W]; out y: uint[W]; }\n\
-                    impl S<W: integer> { y = a; }\n#[top] entity E { in a: uint[8]; out y: uint[8]; }\n";
+        let base = "module m;\nentity S<W: integer> { in a: unsigned[W]; out y: unsigned[W]; }\n\
+                    impl S<W: integer> { y = a; }\n#[top] entity E { in a: unsigned[8]; out y: unsigned[8]; }\n";
         let (_, errs) = elaborate_src(&format!(
             "{base}impl E {{ let d: S<W = 8, Z = 3> = {{ .a = a, .y = y }}; }}\n"
         ));
@@ -1331,12 +1331,12 @@ mod tests {
     #[test]
     fn extern_entity_is_a_black_box() {
         let src = "module m;\n\
-            extern entity Ram<W: integer> { in addr: uint[W]; out data: uint[8]; }\n\
+            extern entity Ram<W: integer> { in addr: unsigned[W]; out data: unsigned[8]; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
-              let addr: uint[4];\n\
-              let data: uint[8];\n\
+              let addr: unsigned[4];\n\
+              let data: unsigned[8];\n\
               let mem: Ram<W = 4> = { .addr = addr, .data = data };\n\
             }\n";
         let (hier, errors) = elaborate_src(src);

@@ -37,13 +37,13 @@ impl Operator<"^^", Flag, Bool> for Flag {
 }
 
 entity OperatorDut {
-    in a: uint[4];
-    in b: uint[4];
-    out xor_y: uint[4];
-    out nand_y: uint[4];
-    out nor_y: uint[4];
-    out xnor_y: uint[4];
-    out not_y: uint[4];
+    in a: unsigned[4];
+    in b: unsigned[4];
+    out xor_y: unsigned[4];
+    out nand_y: unsigned[4];
+    out nor_y: unsigned[4];
+    out xnor_y: unsigned[4];
+    out not_y: unsigned[4];
 }
 
 impl OperatorDut {
@@ -75,14 +75,14 @@ impl CustomOperatorTest {
     assert!(same == true, "punctuation custom operator should dispatch");
     assert!(mixed == true, "custom operator input template should select overload");
 
-    let a: uint[4] = 10;
-    let b: uint[4] = 12;
-    let xor_y: uint[4];
-    let nand_y: uint[4];
-    let nor_y: uint[4];
-    let xnor_y: uint[4];
-    let not_y: uint[4];
-    let local_not: uint[4];
+    let a: unsigned[4] = 10;
+    let b: unsigned[4] = 12;
+    let xor_y: unsigned[4];
+    let nand_y: unsigned[4];
+    let nor_y: unsigned[4];
+    let xnor_y: unsigned[4];
+    let not_y: unsigned[4];
+    let local_not: unsigned[4];
     let dut: OperatorDut = { .a = a, .b = b, .xor_y = xor_y, .nand_y = nand_y, .nor_y = nor_y, .xnor_y = xnor_y, .not_y = not_y };
     a = 10;
     b = 12;

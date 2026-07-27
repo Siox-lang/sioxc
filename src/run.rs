@@ -313,7 +313,7 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
 
 /// Module-level functions by name (testbench-callable).
 /// Operator-trait impls, `(trait, target type) -> first fn` (`impl Div for
-/// int` -> `div`). The testbench evaluator dispatches typed binary operators
+/// signed` -> `div`). The testbench evaluator dispatches typed binary operators
 /// through these, mirroring the IR's hardware inlining.
 fn collect_op_impls(
     modules: &[Module],
@@ -795,13 +795,13 @@ struct Testbench<'a> {
     /// Testbench-local scalar values: unconnected `let`s and `for` loop
     /// variables. Consulted before the signal map.
     locals: HashMap<String, u128>,
-    /// Declared bit width of a testbench local (`let c: uint[8]` -> 8), keyed
+    /// Declared bit width of a testbench local (`let c: unsigned[8]` -> 8), keyed
     /// by base name; writes to the local (or its `[i]` elements) mask to it so
     /// arithmetic wraps exactly like the equivalent hardware signal.
     local_widths: HashMap<String, u32>,
-    /// Declared vector family of a testbench name (`let a: int[8]` -> "int"),
+    /// Declared vector family of a testbench name (`let a: signed[8]` -> "signed"),
     /// connected or local — binary operators on it dispatch to the family's
-    /// operator impls (int's signed Div/Ord), mirroring hardware inlining.
+    /// operator impls (signed's signed Div/Ord), mirroring hardware inlining.
     local_families: HashMap<String, String>,
     /// Module-level functions callable from testbench expressions.
     fns: &'a HashMap<String, &'a ast::FnDecl>,
@@ -833,8 +833,8 @@ struct Testbench<'a> {
 }
 
 impl Testbench<'_> {
-    /// The declared `(family, width)` of a vector-family type: `int[8]` ->
-    /// ("int", 8), and the element of an array of one. None for enums,
+    /// The declared `(family, width)` of a vector-family type: `signed[8]` ->
+    /// ("signed", 8), and the element of an array of one. None for enums,
     /// kernel numerics, and structs.
     fn declared_family(&self, ty: &ast::Type) -> Option<(String, u32)> {
         if let ast::Type::Indexed {
@@ -860,8 +860,8 @@ impl Testbench<'_> {
         None
     }
 
-    /// The declared bit width of a vector-family type: `uint[8]` -> 8, and the
-    /// element width of an array of one (`uint[8][4]` -> 8). Anything else
+    /// The declared bit width of a vector-family type: `unsigned[8]` -> 8, and the
+    /// element width of an array of one (`unsigned[8][4]` -> 8). Anything else
     /// (enums, integer, real, structs) has no maskable width here.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
         // A bare derived-vector type (`struct Byte : Logic[8]`) inherits its
@@ -921,7 +921,7 @@ impl Testbench<'_> {
         self.engine.set(id, v);
     }
 
-    /// The element count of an array-of-vectors type: `uint[8][5]` -> 5.
+    /// The element count of an array-of-vectors type: `unsigned[8][5]` -> 5.
     fn declared_len(&self, ty: &ast::Type) -> Option<usize> {
         if let ast::Type::Indexed {
             base,
@@ -953,7 +953,7 @@ impl Testbench<'_> {
     /// Apply a `let` in statement order: DUT-connected names write signals;
     /// an unconnected scalar becomes a testbench local.
     /// Ordered field names of an aggregate struct (non-empty); `None` for an
-    /// entity, a vector family (`struct uint : Logic[]`, no fields), or unknown.
+    /// entity, a vector family (`struct unsigned : Logic[]`, no fields), or unknown.
     fn struct_order(&self, name: &str) -> Option<&Vec<String>> {
         self.struct_fields.get(name).filter(|f| !f.is_empty())
     }
@@ -1056,7 +1056,7 @@ impl Testbench<'_> {
             // A positional name-less struct literal `let p: Pkt = { 3, 4 }`
             // lexes as a brace concat; bind its parts to the declared struct's
             // fields by order. (Guarded on an aggregate struct so a real bit
-            // concat `let x: uint[8] = { hi, lo }` still falls through below.)
+            // concat `let x: unsigned[8] = { hi, lo }` still falls through below.)
             Some(ast::Expr::Concat { parts, .. })
                 if l.ty
                     .as_ref()
@@ -1274,7 +1274,7 @@ impl Testbench<'_> {
 
     /// The dynamic range assert (spec 3.26): after every settle, a ranged
     /// numeric's settled value must lie in its declared domain — leaving it
-    /// fails the test, like an assertion. Plain uint/int wrap instead.
+    /// fails the test, like an assertion. Plain unsigned/signed wrap instead.
     fn check_ranges(&mut self) {
         if self.failure.is_some() {
             return;
@@ -2304,7 +2304,7 @@ impl Testbench<'_> {
                     };
                 }
                 // A typed operand dispatches to its family's operator impl
-                // (int's signed Div/Ord), exactly like hardware inlining.
+                // (signed's signed Div/Ord), exactly like hardware inlining.
                 if let Some(v) = self.dispatch_binop(op, lhs, rhs, fenv) {
                     return v;
                 }
@@ -2316,7 +2316,7 @@ impl Testbench<'_> {
         }
     }
 
-    /// The declared family of a bare-name operand (`a` with `let a: int[8]`).
+    /// The declared family of a bare-name operand (`a` with `let a: signed[8]`).
     /// Compound expressions fall back to raw semantics, like impl bodies.
     fn operand_family(&self, e: &ast::Expr) -> Option<(String, String)> {
         if let ast::Expr::Path(p) = e {

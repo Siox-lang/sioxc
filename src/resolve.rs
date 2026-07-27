@@ -15,7 +15,7 @@
 //! Phase-1 scope notes (deliberate simplifications, to be tightened later):
 //! - The kernel base types (`integer`, `real`) are seeded as builtins, plus —
 //!   as a shim until operator overloading — the std type names the checker/IR
-//!   still special-case (`Bit`, `uint`, ...) and the `std::attrs` attributes.
+//!   still special-case (`Bit`, `unsigned`, ...) and the `std::attrs` attributes.
 //! - Type references, enum-variant paths, and attribute names are resolved
 //!   strictly (an unknown one is an error). Plain value identifiers (signals,
 //!   ports, locals) are resolved best-effort and never produce a false
@@ -46,7 +46,7 @@ pub struct DefId(pub u32);
 /// What kind of thing a [`DefId`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefKind {
-    /// Primitive type or seeded attribute (`Bit`, `uint`, `top`, ...).
+    /// Primitive type or seeded attribute (`Bit`, `unsigned`, `top`, ...).
     Builtin,
     Struct,
     View,
@@ -139,7 +139,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.out
 }
 
-/// The head identifier of a type expression (`uint[8]` -> `uint`), for
+/// The head identifier of a type expression (`unsigned[8]` -> `unsigned`), for
 /// derivation-base lookup.
 fn type_head(t: &Type) -> Option<&str> {
     match t {
@@ -192,7 +192,7 @@ impl<'a> Resolver<'a> {
         // The kernel's base types are `integer` and `real` (unconstrained,
         // VHDL-style); everything else is designed to live in `std/`:
         // Bit/Logic/Bool are enums in std/logic.siox, `Boolean` a trait
-        // in std/ops.siox, and uint[N]/int[N] are derived Logic vectors that
+        // in std/ops.siox, and unsigned[N]/signed[N] are derived Logic vectors that
         // accept `integer` on assignment. The rest of this list is the shim:
         // names the checker/IR still special-case until operator overloading
         // lets their semantics move to std as source.
@@ -1364,7 +1364,7 @@ mod tests {
     #[test]
     fn levenshtein_basics() {
         assert_eq!(levenshtein("Packe", "Packet"), 1);
-        assert_eq!(levenshtein("uint", "unit"), 2);
+        assert_eq!(levenshtein("signed", "singed"), 2);
         assert_eq!(levenshtein("abc", "abc"), 0);
     }
 
@@ -1385,15 +1385,15 @@ mod tests {
         let (_, errors) = resolve_src(
             "module m;\n\
              using std::logic::{Bit, Logic};\n\
-             struct uint : Logic[];\n\
+             struct unsigned : Logic[];\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Bit;\n\
                in rst: Logic;\n\
-               out count: uint[W];\n\
+               out count: unsigned[W];\n\
              }\n\
              impl Counter<W: integer> {\n\
-               let value: uint[W] = 0;\n\
+               let value: unsigned[W] = 0;\n\
                if clk.rising() {\n\
                  value = value + 1;\n\
                }\n\
