@@ -1045,6 +1045,19 @@ impl<'a> Resolver<'a> {
                     match self.variant(id, &var) {
                         Some(vid) => {
                             self.out.uses.insert(p.span, vid);
+                            // Record the qualifier too. A derived enum shares
+                            // its base's variant ids, so `Mid::B` and `Base::B`
+                            // resolve to the same def — only the name written
+                            // here says which type the value has. It also marks
+                            // the enum itself used, for the import lint.
+                            //
+                            // Skip it when the spans coincide: a desugared path
+                            // (`true` -> `Bool::true`) synthesizes a qualifier
+                            // over the whole path, and overwriting that entry
+                            // would lose the variant the path resolves to.
+                            if p.segments[0].span != p.span {
+                                self.out.uses.insert(p.segments[0].span, id);
+                            }
                         }
                         None => self.error(
                             codes::UNKNOWN_NAME,

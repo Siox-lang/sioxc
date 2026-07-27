@@ -2547,19 +2547,34 @@ impl<'a> Checker<'a> {
                         .resolved(p.span)
                         .and_then(|id| self.resolved.def(id))
                     {
-                        Some(d) if d.kind == DefKind::EnumVariant => match d.parent {
-                            Some(pid)
-                                if self
-                                    .resolved
-                                    .def(pid)
-                                    .map(|p| p.name == "Bool")
-                                    .unwrap_or(false) =>
-                            {
-                                Ty::Bool
+                        Some(d) if d.kind == DefKind::EnumVariant => {
+                            // The enum *named at the use site* decides the
+                            // type, not the one that declares the variant.
+                            // `enum Mid(Base)` inherits Base's variants, so
+                            // `Mid::B` resolves to Base's `B` — typing it as
+                            // `Base` would leave a newtype's own variants
+                            // impossible to assign to a value of that newtype.
+                            let qualifier = p
+                                .segments
+                                .first()
+                                .and_then(|s| self.resolved.resolved(s.span))
+                                .filter(|id| {
+                                    self.resolved.kind_of(*id) == Some(DefKind::Enum)
+                                });
+                            match qualifier.or(d.parent) {
+                                Some(pid)
+                                    if self
+                                        .resolved
+                                        .def(pid)
+                                        .map(|p| p.name == "Bool")
+                                        .unwrap_or(false) =>
+                                {
+                                    Ty::Bool
+                                }
+                                Some(pid) => Ty::Named(pid),
+                                None => Ty::Error,
                             }
-                            Some(pid) => Ty::Named(pid),
-                            None => Ty::Error,
-                        },
+                        }
                         _ => self.named_ty(p.span),
                     }
                 }
@@ -3965,6 +3980,22 @@ mod tests {
         // `assert!` takes its format string second.
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}", a);"#)), 0);
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}");"#)), 1);
+    }
+
+    /// A derived enum shares its base's variant *definitions*, so `Mid::B` and
+    /// `Base::B` resolve to the same def. Typing the value from the declaring
+    /// enum made a newtype's own variants unassignable to it — `m = Mid::B`
+    /// was rejected as "cannot assign Base to Mid". The name written at the
+    /// use site decides.
+    #[test]
+    fn newtype_variant_has_the_named_enums_type() {
+        let src = |body: &str| {
+            format!("module m;\nenum Base {{ A, B }}\nenum Mid(Base);\nenum Top(Mid);\nentity E {{ out m: Mid; out t: Top; }}\nimpl E {{ {body} }}\n")
+        };
+        assert_eq!(check_src(&src("m = Mid::B; t = Top::A;")), 0, "one and two hops");
+        // Still distinct types: the base's own variant needs a conversion.
+        assert_eq!(check_src(&src("m = Base::B; t = Top::A;")), 1, "a newtype is not its base");
+        assert_eq!(check_src(&src("m = Mid(Base::B); t = Top::A;")), 0, "conversion is explicit");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
