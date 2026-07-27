@@ -2876,6 +2876,11 @@ impl<'a> Checker<'a> {
                         elem: Box::new(v),
                         len: width,
                     },
+                    // An index on an *unconstrained* array fills its hole
+                    // rather than nesting: `string[5]` is `Char[5]`, not
+                    // `Char[0][5]` (`using string = Char[]`, std::text). The
+                    // lowerer already did this; the checker rejected the form.
+                    Ty::Array { elem, len: 0 } => Ty::Array { elem, len: width },
                     other => Ty::Array {
                         elem: Box::new(other),
                         len: width,

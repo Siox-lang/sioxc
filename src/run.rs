@@ -1188,6 +1188,16 @@ impl Testbench<'_> {
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(_, &id)| (id.0 as usize, id))
             .collect();
+        // A string local that is *not* connected to a DUT has no signals, so
+        // writing only through the signal map dropped it entirely: every
+        // element read back as 0 and whole-string comparison degenerated to
+        // always-true. `set_elem` falls back to testbench-local storage.
+        if ids.is_empty() {
+            for (i, c) in text.chars().enumerate() {
+                self.set_elem(path, i, c as u32 as u128);
+            }
+            return;
+        }
         ids.sort_by_key(|(i, _)| *i);
         for ((_, id), c) in ids.into_iter().zip(text.chars()) {
             self.engine.set(id, c as u32 as u128);
@@ -2404,6 +2414,29 @@ impl Testbench<'_> {
         Some(elems.into_iter().map(|(_, id)| id).collect())
     }
 
+    /// The character *values* of a Char array — from the signal map when the
+    /// array is DUT-connected, otherwise from testbench-local storage. The
+    /// signal-only [`Self::char_array`] returned `None` for an unconnected
+    /// local, which made `string_eq` bail and the comparison fall through to a
+    /// scalar compare of two absent values — always equal.
+    fn char_values(&self, e: &ast::Expr) -> Option<Vec<u128>> {
+        if let Some(ids) = self.char_array(e) {
+            return Some(ids.into_iter().map(|id| self.engine.read(id)).collect());
+        }
+        let path = expr_path(e)?;
+        let n = self.array_len(&path)?;
+        Some(
+            (0..n)
+                .map(|i| {
+                    self.locals
+                        .get(&format!("{path}[{i}]"))
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .collect(),
+        )
+    }
+
     /// Element-wise string equality when one side is a string literal (or
     /// both sides are Char arrays). `None` if this is not a string compare.
     fn string_eq(&self, lhs: &ast::Expr, rhs: &ast::Expr) -> Option<bool> {
@@ -2414,18 +2447,13 @@ impl Testbench<'_> {
         // literal vs array
         let (arr, chars) = match (lit(lhs), lit(rhs)) {
             (Some(_), Some(_)) => return None, // two literals: not our case
-            (None, Some(c)) => (self.char_array(lhs)?, c),
-            (Some(c), None) => (self.char_array(rhs)?, c),
+            (None, Some(c)) => (self.char_values(lhs)?, c),
+            (Some(c), None) => (self.char_values(rhs)?, c),
             (None, None) => {
                 // array vs array
-                let a = self.char_array(lhs)?;
-                let b = self.char_array(rhs)?;
-                return Some(
-                    a.len() == b.len()
-                        && a.iter()
-                            .zip(&b)
-                            .all(|(&x, &y)| self.engine.read(x) == self.engine.read(y)),
-                );
+                let a = self.char_values(lhs)?;
+                let b = self.char_values(rhs)?;
+                return Some(a.len() == b.len() && a == b);
             }
         };
         Some(
@@ -2433,7 +2461,7 @@ impl Testbench<'_> {
                 && arr
                     .iter()
                     .zip(&chars)
-                    .all(|(&id, &c)| self.engine.read(id) == c as u32 as u128),
+                    .all(|(&v, &c)| v == c as u32 as u128),
         )
     }
 
