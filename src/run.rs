@@ -510,6 +510,13 @@ fn collect_fns(modules: &[Module]) -> HashMap<String, &ast::FnDecl> {
                 ast::Item::Fn(f) => {
                     out.insert(f.name.text.clone(), f);
                 }
+                // `extern "C"` declarations: bodyless, so calling one from
+                // stimulus is reported rather than silently evaluating to 0.
+                ast::Item::ExternBlock { fns, .. } => {
+                    for f in fns {
+                        out.insert(f.name.text.clone(), f);
+                    }
+                }
                 // A *static* associated fn (no `self`) is callable in
                 // expressions as `Type::name(..)`, keyed like a module-level
                 // fn so one lookup serves both (spec 3.20).
@@ -688,6 +695,7 @@ fn run_one<'a>(
         struct_fields,
         halted: false,
         rand_state: std::cell::Cell::new(0x9E3779B97F4A7C15),
+        pending_extern: std::cell::RefCell::new(None),
         warnings: Vec::new(),
     };
 
@@ -698,7 +706,14 @@ fn run_one<'a>(
     'run: for im in body {
         for item in &im.items {
             match item {
-                ast::ImplItem::Let(l) => tb.apply_let(l),
+                ast::ImplItem::Let(l) => {
+                    tb.apply_let(l);
+                    // A `let` initializer can also attempt an `extern` call.
+                    tb.take_pending_extern();
+                    if tb.failure.is_some() {
+                        break 'run;
+                    }
+                }
                 ast::ImplItem::Stmt(s) => {
                     if !started {
                         tb.engine.settle();
@@ -812,6 +827,9 @@ struct Testbench<'a> {
     /// default seed so runs reproduce; `seed!(n)` reseeds. The native harness
     /// uses the same algorithm, so all three engines agree.
     rand_state: std::cell::Cell<u64>,
+    /// An `extern "C"` call attempted from stimulus. Evaluation runs behind
+    /// `&self`, so it is parked here and promoted to a failure by `exec`.
+    pending_extern: std::cell::RefCell<Option<String>>,
 }
 
 impl Testbench<'_> {
@@ -1315,6 +1333,11 @@ impl Testbench<'_> {
     }
 
     fn exec(&mut self, s: &ast::Stmt) {
+        self.exec_inner(s);
+        self.take_pending_extern();
+    }
+
+    fn exec_inner(&mut self, s: &ast::Stmt) {
         match s {
             ast::Stmt::Assign {
                 target,
@@ -1726,6 +1749,30 @@ impl Testbench<'_> {
         }
     }
 
+    /// Report an `extern "C"` call the interpreter cannot make. Recorded as a
+    /// test failure rather than silently yielding 0.
+    fn fail_extern(&self, name: &str) {
+        let mut slot = self.pending_extern.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(format!(
+                "`{name}` is an `extern \"C\"` function and cannot be called from \
+                 testbench stimulus — call it inside an entity, where the engine \
+                 resolves it"
+            ));
+        }
+    }
+
+    /// Promote a parked `extern` error into the test failure.
+    fn take_pending_extern(&mut self) {
+        let pending = self.pending_extern.borrow_mut().take();
+        if let Some(msg) = pending {
+            if self.failure.is_none() {
+                self.failure = Some((msg, Span::new(crate::diag::FileId(0), 0..0)));
+                self.halted = true;
+            }
+        }
+    }
+
     /// Record an unmet `await` as a test failure (unless one is already
     /// pending, so the first cause is the one reported).
     fn fail_await(&mut self, msg: String, span: Span) {
@@ -1868,7 +1915,14 @@ impl Testbench<'_> {
                 _ => u128::from_u64(0),
             };
         };
-        let Some(body) = &f.body else { return 0 };
+        // A bodyless declaration is an `extern "C"` function. The JIT resolves
+        // those against the process, so they work in *hardware*; the testbench
+        // interpreter is pure Rust and cannot call them — it used to return 0
+        // silently, so a stimulus expression quietly computed the wrong value.
+        let Some(body) = &f.body else {
+            self.fail_extern(name);
+            return 0;
+        };
         // Constant arguments: use the signed static evaluator (the dynamic
         // path below is unsigned words, which breaks e.g. `abs(0 - 5)`).
         let consts: Option<Vec<i64>> = args
