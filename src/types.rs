@@ -181,6 +181,9 @@ struct Checker<'a> {
     prefix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
+    /// Aliases currently being expanded, so a cycle (`using A = B; using B =
+    /// A`) is caught instead of recursing until the stack overflows.
+    expanding: std::cell::RefCell<HashSet<String>>,
     /// (type head, method name) -> the method's declared return type, for
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
@@ -258,6 +261,7 @@ impl<'a> Checker<'a> {
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
+            expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
             view_dirs: HashMap::new(),
         }
@@ -299,6 +303,7 @@ impl<'a> Checker<'a> {
             }
         }
         // (inherited enum variants are expanded in collect_decl's tail)
+        self.break_derivation_cycles();
         self.expand_inherited_variants();
     }
 
@@ -623,13 +628,59 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Drop the base of any struct that (transitively) derives from itself.
+    /// Resolve reports the cycle; this makes the table *acyclic* so the many
+    /// walkers over it — field collection, width, vector-family fixpoint —
+    /// terminate. Guarding each one individually was whack-a-mole: the crash
+    /// was a stack overflow that aborted the process, so any missed walker is
+    /// another core dump.
+    fn break_derivation_cycles(&mut self) {
+        let names: Vec<String> = self.structs.keys().cloned().collect();
+        let mut cyclic: Vec<String> = Vec::new();
+        for name in names {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut cur = name.clone();
+            while seen.insert(cur.clone()) {
+                let Some(next) = self
+                    .structs
+                    .get(&cur)
+                    .and_then(|(b, _)| b.as_ref())
+                    .and_then(type_head_name)
+                    .map(str::to_string)
+                else {
+                    break;
+                };
+                if next == name {
+                    cyclic.push(name.clone());
+                    break;
+                }
+                cur = next;
+            }
+        }
+        for name in cyclic {
+            if let Some((base, _)) = self.structs.get_mut(&name) {
+                *base = None;
+            }
+        }
+    }
+
     /// The (transitive) field names of a struct-shaped base type.
     fn base_struct_fields(&self, ty: &Type) -> Vec<String> {
+        self.base_struct_fields_at(ty, 0)
+    }
+
+    /// Depth-bounded: a cyclic derivation (`struct A : B` / `struct B : A`) is
+    /// reported by resolve, but checking continues (best-effort), so this walk
+    /// has to terminate rather than overflow the stack.
+    fn base_struct_fields_at(&self, ty: &Type, depth: u32) -> Vec<String> {
         let mut out = Vec::new();
+        if depth > 64 {
+            return out;
+        }
         if let Some(head) = type_head_name(ty) {
             if let Some((base, own)) = self.structs.get(head) {
                 if let Some(b) = base {
-                    out.extend(self.base_struct_fields(b));
+                    out.extend(self.base_struct_fields_at(b, depth + 1));
                 }
                 out.extend(own.iter().cloned());
             }
@@ -2864,7 +2915,15 @@ impl<'a> Checker<'a> {
                 // opaque to value checking.
                 "range" => Ty::Error,
                 name => match self.aliases.get(name) {
-                    Some(t) => self.ast_ty(&t.clone()),
+                    // A cyclic alias has no type; `Error` also suppresses the
+                    // follow-on diagnostics the cycle would otherwise cause.
+                    Some(_) if !self.expanding.borrow_mut().insert(name.to_string()) => Ty::Error,
+                    Some(t) => {
+                        let t = t.clone();
+                        let ty = self.ast_ty(&t);
+                        self.expanding.borrow_mut().remove(name);
+                        ty
+                    }
                     // A bit-vector family (`struct F : Logic[]`): width applies
                     // via `F[N]` (ast_ty's Indexed).
                     None if self.is_vector_family(name) => Ty::Vector {

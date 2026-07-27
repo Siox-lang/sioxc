@@ -23,7 +23,7 @@
 //! - All modules share one global namespace; cross-module visibility is not
 //!   yet enforced.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
@@ -114,6 +114,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.collect_item(item);
         }
     }
+    r.check_declaration_cycles(modules);
     r.inherit_enum_variants();
     for m in modules {
         for item in &m.items {
@@ -492,6 +493,54 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// A type declaration that reaches itself (`using A = B; using B = A`, or
+    /// `struct A : B` with `struct B : A`) made every later stage recurse
+    /// until the stack overflowed — the compiler aborted with a core dump.
+    /// Report it once, here, where the declarations are all in hand.
+    fn check_declaration_cycles(&mut self, modules: &[Module]) {
+        // name -> (what it points at, where it was declared, what to call it)
+        let mut edges: HashMap<&str, (&str, Span, &'static str)> = HashMap::new();
+        for m in modules {
+            for item in &m.items {
+                match item {
+                    Item::Using(u) => {
+                        if let UsingKind::Alias { name, ty } = &u.kind {
+                            if let Some(head) = type_head(ty) {
+                                edges.insert(name.text.as_str(), (head, name.span, "alias"));
+                            }
+                        }
+                    }
+                    Item::Struct(st) => {
+                        if let Some(head) = st.base.as_ref().and_then(type_head) {
+                            edges.insert(st.name.text.as_str(), (head, st.name.span, "type"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut reported: HashSet<&str> = HashSet::new();
+        for &start in edges.keys() {
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut cur = start;
+            while let Some(&(next, span, what)) = edges.get(cur) {
+                if !seen.insert(cur) {
+                    // Only the first name of each cycle reports it.
+                    if reported.insert(cur) {
+                        self.sink.emit(
+                            Diagnostic::error(format!("{what} `{cur}` is defined in terms of itself"))
+                                .with_code(codes::DUPLICATE_ITEM)
+                                .at(span)
+                                .help("break the cycle: a type cannot derive from itself"),
+                        );
+                    }
+                    break;
+                }
+                cur = next;
+            }
+        }
+    }
+
     /// Report a repeated member name within one declaration (a struct's fields
     /// or an enum's variants). Unlike a top-level clash these never reached
     /// [`Self::declare`], so they used to pass silently — leaving an ambiguous
@@ -560,7 +609,14 @@ impl<'a> Resolver<'a> {
 
     fn resolve_item(&mut self, item: &Item) {
         match item {
-            Item::Using(_) => {}
+            // An alias target is a type reference and must resolve — a
+            // `using Word = NoSuchType;` used to pass silently, leaving every
+            // signal typed through it at unknown width.
+            Item::Using(u) => {
+                if let UsingKind::Alias { ty, .. } = &u.kind {
+                    self.resolve_type(ty);
+                }
+            }
             Item::Fn(f) => {
                 // A generic fn's type params (`<T: Ord>`) scope over its
                 // signature, so `a: T` resolves.
@@ -1225,6 +1281,37 @@ mod tests {
                 .any(|d| d.message.contains("quoted operator traits")),
             "expected the removal error"
         );
+    }
+
+    /// A type defined in terms of itself made every later stage recurse until
+    /// the stack overflowed — the compiler aborted with a core dump on
+    /// perfectly ordinary bad input.
+    #[test]
+    fn declaration_cycles_are_reported_not_fatal() {
+        let (_, errs) = resolve_src("module m;\nusing A = B;\nusing B = A;\n");
+        assert!(errs >= 1, "alias cycle");
+
+        let (_, errs) = resolve_src("module m;\nstruct A : B { }\nstruct B : A { }\n");
+        assert!(errs >= 1, "derivation cycle");
+
+        // A self-reference is the one-step case.
+        let (_, errs) = resolve_src("module m;\nusing A = A;\n");
+        assert!(errs >= 1, "self-alias");
+
+        // Legitimate chains are untouched.
+        let (_, errs) = resolve_src(
+            "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\nusing C = B;\n",
+        );
+        assert_eq!(errs, 0);
+    }
+
+    /// An alias target is a type reference and must resolve.
+    #[test]
+    fn unknown_alias_target_is_reported() {
+        let (_, errs) = resolve_src("module m;\nusing Word = NoSuchType;\n");
+        assert_eq!(errs, 1);
+        let (_, errs) = resolve_src("module m;\nusing Word = Bit;\n");
+        assert_eq!(errs, 0);
     }
 
     /// A derivation base is a type reference like any other, but it was the

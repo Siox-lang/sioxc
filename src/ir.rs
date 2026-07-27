@@ -343,6 +343,9 @@ struct Lowering<'a> {
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
+    /// Structs whose fields are currently being expanded, so a cyclic
+    /// derivation terminates instead of overflowing the stack.
+    expanding_structs: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Functions whose inlining hit the depth guard. Lowering runs behind
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
@@ -472,6 +475,7 @@ impl<'a> Lowering<'a> {
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
+            expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
@@ -2181,8 +2185,17 @@ impl<'a> Lowering<'a> {
     fn raw_struct_fields(&self, name: &str) -> Option<Vec<(String, ast::Type)>> {
         let s = self.structs.get(name)?;
         // Derived struct: inherited base fields come first (spec: derivation).
+        // A cyclic derivation is reported by resolve, but lowering still runs
+        // (best-effort) — and `struct_fields` calls straight back here, so
+        // without this guard the pair recursed until the stack overflowed and
+        // the process aborted.
         let mut fields = match &s.base {
-            Some(b) => self.struct_fields(b).unwrap_or_default(),
+            Some(_) if !self.expanding_structs.borrow_mut().insert(name.to_string()) => Vec::new(),
+            Some(b) => {
+                let inherited = self.struct_fields(b).unwrap_or_default();
+                self.expanding_structs.borrow_mut().remove(name);
+                inherited
+            }
             None => Vec::new(),
         };
         fields.extend(s.fields.iter().map(|f| (f.name.text.clone(), f.ty.clone())));
@@ -3931,11 +3944,21 @@ impl<'a> Lowering<'a> {
 
     /// A struct type's full (inherited + own) field names, base chain first.
     fn struct_field_names(&self, name: &str) -> Vec<String> {
+        self.struct_field_names_at(name, 0)
+    }
+
+    /// Depth-bounded, like [`Self::struct_derives_from`]: a cyclic derivation
+    /// is reported by resolve, but lowering still runs (best-effort), so the
+    /// walk has to terminate rather than overflow the stack.
+    fn struct_field_names_at(&self, name: &str, depth: u32) -> Vec<String> {
+        if depth > 64 {
+            return Vec::new();
+        }
         let Some(s) = self.structs.get(name) else {
             return Vec::new();
         };
         let mut out = match s.base.as_ref().and_then(type_head_name) {
-            Some(b) => self.struct_field_names(b),
+            Some(b) => self.struct_field_names_at(b, depth + 1),
             None => Vec::new(),
         };
         out.extend(s.fields.iter().map(|f| f.name.text.clone()));
@@ -5430,6 +5453,23 @@ fn type_width(
     fns: &HashMap<String, &ast::FnDecl>,
     structs: &HashMap<String, &ast::StructDecl>,
 ) -> u32 {
+    type_width_at(t, env, fns, structs, 0)
+}
+
+/// `type_width` with a derivation-depth bound. A cyclic derivation
+/// (`struct A : B` / `struct B : A`) is reported by resolve, but lowering runs
+/// anyway (best-effort), so without this the recursion overflowed the stack and
+/// aborted the process.
+fn type_width_at(
+    t: &ast::Type,
+    env: &HashMap<String, i64>,
+    fns: &HashMap<String, &ast::FnDecl>,
+    structs: &HashMap<String, &ast::StructDecl>,
+    depth: u32,
+) -> u32 {
+    if depth > 64 {
+        return 0;
+    }
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Bool") => 1,
@@ -5441,7 +5481,7 @@ fn type_width(
             Some(name) => structs
                 .get(name)
                 .and_then(|s| s.base.as_ref())
-                .map(|b| type_width(b, env, fns, structs))
+                .map(|b| type_width_at(b, env, fns, structs, depth + 1))
                 .unwrap_or(0),
             None => 0,
         },
