@@ -1354,6 +1354,23 @@ impl<'a> Checker<'a> {
                         ),
                 );
             }
+            // A pattern whose text is not a well-formed mask (a digit outside
+            // the radix, or wider than 64 bits) is just as invisible: IR
+            // lowering wildcards it while the runner never matches it, so the
+            // engines disagree on top of it silently swallowing the arm.
+            Pattern::BitPattern { text, span }
+                if crate::syntax::bit_pattern_mask(text).is_none() =>
+            {
+                self.sink.emit(
+                    Diagnostic::error(format!("`{text}` is not a valid bit pattern"))
+                        .with_code(codes::INVALID_PATTERN)
+                        .at(*span)
+                        .help(
+                            "a bare string is per-bit with `-` as the don't-care (`\"01--\"`); \
+                             an `x`/`o` prefix takes hex/octal digits with `?` masking a group",
+                        ),
+                );
+            }
             Pattern::Or { alts, .. } => {
                 for a in alts {
                     self.check_pattern_form(a);
@@ -3984,6 +4001,31 @@ mod tests {
             1,
             "a bad alternative inside `|` is caught"
         );
+    }
+
+    /// A bit pattern whose text is not a well-formed mask was invisible: IR
+    /// lowering turned it into a wildcard (swallowing the arm and every arm
+    /// after it) while the runner never matched it — silently wrong, and
+    /// differently wrong per engine.
+    #[test]
+    fn malformed_bit_pattern_is_rejected() {
+        let m = |arms: &str| {
+            format!("module m;\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+        };
+        for bad in ["\"2\"", "x\"G\"", "o\"8\""] {
+            assert_eq!(
+                warnings(&m(&format!("{bad} => {{ r = 1; }}")), codes::INVALID_PATTERN),
+                1,
+                "{bad} should be rejected"
+            );
+        }
+        for good in ["\"01--\"", "x\"A?\"", "o\"7?\"", "\"0000_11--\""] {
+            assert_eq!(
+                warnings(&m(&format!("{good} => {{ r = 1; }}")), codes::INVALID_PATTERN),
+                0,
+                "{good} is a valid pattern"
+            );
+        }
     }
 
     /// A range arm wholly inside an earlier one can never match (first match

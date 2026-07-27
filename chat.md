@@ -914,3 +914,29 @@ in `ir.rs`, which already has the written set — cannot see the testbench:
 assertion or `print!` would therefore warn as unused, i.e. on most corpus
 programs. Doing it properly means deciding where a lint that must see both
 hardware *and* testbench reads lives — an architectural call, so it stays open.
+
+### 2026-07-27 — Claude — the second hole in the same function
+
+Last entry's `E-P009` fix closed one way for an arm to vanish. `arm_match_cond`
+had another: `bit_pattern_mask(text)?`. The `?` propagates `None`, and `None`
+is the "matches anything" signal, so a bit pattern whose text is not a
+well-formed mask became a catch-all too.
+
+    match c { "2" => 1, 99 => 2, _ => 3 }   // c = 99  ->  yields 1
+
+`"2"` is not a binary digit; `x"G"` and `o"8"` behave the same. Worse, the two
+evaluators disagreed: `ir.rs` wildcards a malformed pattern (always matches)
+while `run.rs` uses `is_some_and`, which never matches. Same program, opposite
+answers, no diagnostic from either.
+
+The type checker now rejects malformed patterns with `E-P009`.
+
+**Layering note.** The check belongs in `types` (stage 4) but `bit_pattern_mask`
+lived in `ir` (stage 6), and stage 4 may not reach down to stage 6. Rather than
+duplicate the parser, the function moved to `syntax` (stage 1–2) — it decodes a
+literal's *text*, which is a syntactic concern, and every later stage may use
+`syntax`. Callers in `ir`, `run` and the CLI's `build` were repointed; the
+`Option` contract is unchanged.
+
+The corpus (`match_pattern_test.siox` leans on these) stayed green, so no
+legitimate pattern was caught by the new check.

@@ -2036,7 +2036,7 @@ impl Testbench<'_> {
                     == scrut
             }
             ast::Pattern::BitPattern { text, .. } => {
-                crate::ir::bit_pattern_mask(text).is_some_and(|(m, v)| scrut & m == v)
+                crate::syntax::bit_pattern_mask(text).is_some_and(|(m, v)| scrut & m == v)
             }
             ast::Pattern::Or { alts, .. } => alts.iter().any(|a| self.pattern_hit(a, scrut)),
             ast::Pattern::Range { lo, hi, .. } => (*lo as u64) <= scrut && scrut <= (*hi as u64),

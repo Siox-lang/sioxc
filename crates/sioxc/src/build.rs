@@ -1849,7 +1849,7 @@ impl Ctx<'_> {
                 Some(format!("(({scrut}) == {d}ULL)"))
             }
             ast::Pattern::BitPattern { text, .. } => {
-                let (mask, value) = siox::ir::bit_pattern_mask(text)
+                let (mask, value) = siox::syntax::bit_pattern_mask(text)
                     .ok_or_else(|| format!("bad bit pattern `{text}`"))?;
                 Some(format!("((({scrut}) & {mask}ULL) == {value}ULL)"))
             }

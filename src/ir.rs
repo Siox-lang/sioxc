@@ -2668,7 +2668,7 @@ impl<'a> Lowering<'a> {
                 Some(eq(scrut.clone(), Expr::Const(disc)))
             }
             ast::Pattern::BitPattern { text, .. } => {
-                let (mask, value) = bit_pattern_mask(text)?;
+                let (mask, value) = crate::syntax::bit_pattern_mask(text)?;
                 Some(eq(
                     Expr::Binary {
                         op: BinOp::And,
@@ -5234,48 +5234,6 @@ impl Design {
 
 // --- expression builders ----------------------------------------------------
 
-/// Decode a bit-pattern literal (`"1-1-"` / `x"A?"`, spec 3.22) into a
-/// `(mask, value)` pair: an input matches when `input & mask == value`.
-/// A bare string (empty prefix) is per-bit, using `-` (the `std_ulogic`
-/// don't-care) as the wildcard; a radix prefix (`x`/`o`) uses `?` to mask its
-/// whole group (nibble/triad). `_` separators are ignored. `None` when the
-/// text isn't a well-formed pattern (an invalid digit, or wider than 64 bits).
-pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
-    let (base, digits) = match text.split_once('"') {
-        Some((b, rest)) => (b, rest.trim_end_matches('"')),
-        None => return None,
-    };
-    let per: u32 = match base {
-        "" => 1, // bare string, per-bit
-        "o" => 3,
-        "x" => 4,
-        _ => return None,
-    };
-    let radix = 1u32 << per; // 2, 8, or 16
-    let mut mask = 0u64;
-    let mut value = 0u64;
-    let mut bits = 0u32;
-    for c in digits.chars() {
-        if c == '_' {
-            continue;
-        }
-        bits += per;
-        if bits > 64 {
-            return None;
-        }
-        let (m, v) = match c {
-            '?' | '-' => (0, 0), // don't-care: `-` in bare strings, `?` in radix groups
-            _ => {
-                let d = c.to_digit(radix)? as u64;
-                (((1u64 << per) - 1), d)
-            }
-        };
-        mask = (mask << per) | m;
-        value = (value << per) | v;
-    }
-    Some((mask, value))
-}
-
 fn not(e: Expr) -> Expr {
     Expr::Unary {
         op: UnOp::Not,
@@ -6659,16 +6617,16 @@ mod tests {
     #[test]
     fn bit_pattern_masks() {
         // Bare strings are per-bit with `-` as the don't-care.
-        assert_eq!(bit_pattern_mask("\"01--\""), Some((0b1100, 0b0100)));
+        assert_eq!(crate::syntax::bit_pattern_mask("\"01--\""), Some((0b1100, 0b0100)));
         assert_eq!(
-            bit_pattern_mask("\"0000_11--\""),
+            crate::syntax::bit_pattern_mask("\"0000_11--\""),
             Some((0b11111100, 0b00001100))
         );
         // Radix prefixes mask a whole group with `?`.
-        assert_eq!(bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
-        assert_eq!(bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
-        assert_eq!(bit_pattern_mask("o\"7?\""), Some((0o70, 0o70)));
-        assert_eq!(bit_pattern_mask("\"2\""), None); // bad binary digit
+        assert_eq!(crate::syntax::bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
+        assert_eq!(crate::syntax::bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
+        assert_eq!(crate::syntax::bit_pattern_mask("o\"7?\""), Some((0o70, 0o70)));
+        assert_eq!(crate::syntax::bit_pattern_mask("\"2\""), None); // bad binary digit
     }
 
     #[test]
