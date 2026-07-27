@@ -670,11 +670,25 @@ mod tests {
         roundtrip(
             "module m;\n\
              enum Bit { '0', '1' }\n\
-             enum ULogic : Bit { 'Z', 'X' }\n\
-             enum Logic : ULogic;\n\
+             enum Logic : Bit;\n\
+             enum State : uint[2] { Idle = 0, Run = 1 }\n\
              struct Header { valid: Bit }\n\
-             struct Packet : Header { data: uint[8] }\n\
+             struct Packet { header: Header, data: uint[8] }\n\
              struct Word : Bit[];\n",
+        );
+    }
+
+    /// The grammar still accepts a base *and* a body — the type checker is
+    /// what rejects extension (§3.28), so the printer must still render it
+    /// for the best-effort AST that error path produces.
+    #[test]
+    fn roundtrips_a_base_with_a_body_even_though_typeck_rejects_it() {
+        roundtrip(
+            "module m;\n\
+             enum Base { A }\n\
+             enum Ext : Base { B }\n\
+             struct Head { valid: Bit }\n\
+             struct Pkt : Head { data: uint[8] }\n",
         );
     }
 

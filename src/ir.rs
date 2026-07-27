@@ -4586,13 +4586,27 @@ impl<'a> Lowering<'a> {
                     };
                     // Every field carries a value; a value-less arg only reaches
                     // here on parser recovery (already diagnosed).
-                    let v = match &a.value {
-                        Some(v) => self.lower_scalar_env(v, env),
-                        None => Expr::Unknown,
+                    // A field holding a struct of its own (composition:
+                    // `Outer { .inner = Inner { .a = v } }`) lowers to its own
+                    // `Fields`, which has no scalar form. Splice those in under
+                    // a dotted name so the flat map still addresses one leaf per
+                    // entry — `inner.a` then resolves against the flattened
+                    // signal `…o.inner.a` exactly as a top-level field does.
+                    let vals: Vec<(String, Expr)> = match &a.value {
+                        Some(v) => match self.lower_val_env(v, env) {
+                            Val::Scalar(e) => vec![(fname, e)],
+                            Val::Fields(inner) => inner
+                                .into_iter()
+                                .map(|(n, e)| (format!("{fname}.{n}"), e))
+                                .collect(),
+                        },
+                        None => vec![(fname, Expr::Unknown)],
                     };
-                    match fields.iter_mut().find(|(n, _)| *n == fname) {
-                        Some(slot) => slot.1 = v,
-                        None => fields.push((fname, v)),
+                    for (fname, v) in vals {
+                        match fields.iter_mut().find(|(n, _)| *n == fname) {
+                            Some(slot) => slot.1 = v,
+                            None => fields.push((fname, v)),
+                        }
                     }
                 }
                 Val::Fields(fields)
@@ -6491,7 +6505,7 @@ mod tests {
 
     /// A minimal `ClockLike` impl so self-contained test sources can use the
     /// `clk.rising()` edge methods (std provides these for real designs).
-    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic : Bit { 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
+    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
 
     fn lower_src(src: &str) -> Design {
         // uint/int are library types (attribute-marked vectors), not seeded.
@@ -6720,12 +6734,13 @@ mod tests {
     #[test]
     fn nullary_constructor_defaults_struct_fields() {
         // `S()` on a struct defaults each field structurally: an enum field to
-        // its first variant, a numeric field to 0 (inherited base fields too).
+        // its first variant, a numeric field to 0 — through a composed struct
+        // field as well as a direct one.
         let d = lower_src(
             "module m;\n\
              enum Phase { Idle = 2, Run = 3 }\n\
              struct Header { flag: Bit, ph: Phase }\n\
-             struct Packet : Header { data: uint[8] }\n\
+             struct Packet { header: Header, data: uint[8] }\n\
              #[top]\n\
              entity E { out o: Packet; }\n\
              impl E { o = Packet(); }\n",
@@ -6746,8 +6761,8 @@ mod tests {
                 other => panic!("{suffix} not a const: {other:?}"),
             }
         };
-        assert_eq!(drv(".o.ph"), 2, "enum field → first variant Idle = 2");
-        assert_eq!(drv(".o.flag"), 0, "inherited Bit field → 0");
+        assert_eq!(drv(".o.header.ph"), 2, "enum field → first variant Idle = 2");
+        assert_eq!(drv(".o.header.flag"), 0, "composed Bit field → 0");
         assert_eq!(drv(".o.data"), 0, "numeric field → 0");
     }
 
@@ -7205,36 +7220,38 @@ mod tests {
     }
 
     #[test]
-    fn derived_enum_width_covers_inherited_variants() {
-        // Ext has 4 effective variants (A, B inherited + C, D) -> 2 bits.
+    fn newtype_enum_takes_its_base_width() {
+        // A derived enum is a newtype (§3.28) — same variants, so the same
+        // width. Four variants in the base, two bits in the derived type.
         let d = lower_src(
             "module m;\n\
-             enum Base { A, B }\n\
-             enum Ext : Base { C, D }\n\
+             enum Base { A, B, C, D }\n\
+             enum Ext : Base;\n\
              entity E { out x: Ext; }\n\
              impl E { x = Ext::A; }\n\
              #[top] entity H {}\n\
              impl H { let x: Ext; let dut: E = { .x = x }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
-        assert_eq!(sig.width, 2, "inherited variants widen the enum");
+        assert_eq!(sig.width, 2, "the newtype carries the base's width");
     }
 
     #[test]
-    fn derived_struct_inherits_base_fields() {
-        // Packet flattens Header's fields (base-first) then its own.
+    fn composed_struct_flattens_nested_fields() {
+        // Composition replaced extension (§3.28): a struct field holding
+        // another struct flattens to dotted leaf signals.
         let d = lower_src(
             "module m;\n\
              struct Header { valid: Bit, kind: uint[4] }\n\
-             struct Packet : Header { data: uint[8] }\n\
+             struct Packet { header: Header, data: uint[8] }\n\
              entity E { out p: Packet; }\n\
              impl E {}\n\
              #[top] entity H {}\n\
              impl H { let p: Packet; let dut: E = { .p = p }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
-        assert_eq!(width("H.dut.p.valid"), Some(1), "inherited field");
-        assert_eq!(width("H.dut.p.kind"), Some(4), "inherited field");
+        assert_eq!(width("H.dut.p.header.valid"), Some(1), "nested field");
+        assert_eq!(width("H.dut.p.header.kind"), Some(4), "nested field");
         assert_eq!(width("H.dut.p.data"), Some(8), "own field");
     }
 

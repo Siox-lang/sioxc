@@ -33,9 +33,16 @@ pub enum Bit {
 // uninitialized `'U'`, weak unknown `'W'`, weak `'L'/'H'`, and don't-care `'-'`.
 // No `Resolve` impl — driving a ULogic from several contexts is an elaboration
 // error (the single-driver safety rule). No `Boolean` impl either; compare
-// explicitly. (Discriminant order here must match the `logic_value` shim in the
-// compiler backends.)
-pub enum ULogic : Bit {
+// explicitly.
+//
+// The full set is spelled out rather than derived from `Bit`: derivation makes
+// a newtype, not a subtype (§3.28), so an enum cannot add variants to its base.
+// `'0'`/`'1'` therefore lead, keeping their discriminants shared with `Bit` —
+// the order here must match the `logic_value` shim in the compiler backends,
+// and `From<Bit>` below depends on it too.
+pub enum ULogic {
+    '0',
+    '1',
     'Z',
     'X',
     'U',
@@ -43,6 +50,18 @@ pub enum ULogic : Bit {
     'L',
     'H',
     '-',
+}
+
+// `Bit` is a subset of `ULogic`'s value domain, so widening is total — but the
+// two are now unrelated nominal types, so the conversion is written out and
+// `ULogic(b)` dispatches to it.
+impl From<Bit> for ULogic {
+    fn from(v: Bit) -> ULogic {
+        if v == '1' {
+            return '1';
+        }
+        return '0';
+    }
 }
 
 // The resolved nine-valued scalar (VHDL `std_logic`): the same value domain as

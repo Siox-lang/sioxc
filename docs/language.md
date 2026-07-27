@@ -76,8 +76,10 @@ precise reference.
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
   receiver's fields.
-- **Derived nominal types** — `enum B : A` / `struct B : A`, with total
-  derivation conversions synthesised automatically.
+- **Newtypes** — `enum B : A;` / `struct B : A;` reuse a representation under a
+  new identity, with the derivation conversion synthesised automatically.
+  Derivation never adds members and never inherits behaviour; bigger types are
+  built by composition.
 - `#[…]` attributes, including type-targeted ones.
 - System attributes for metadata: `x'length`, range bounds `x'high`/`x'low`/`x'left`/`x'right`/`x'ascending`.
 
@@ -1613,30 +1615,52 @@ Phase 1 should be implemented in stages. Each stage must have a concrete endgoal
 ### 3.28 Nominal type derivation
 
 A new nominal type may derive from an existing one, reusing its representation
-while being a distinct type. `using` stays an exact alias; `:` derives:
+while being a distinct type. `using` stays an exact alias; `:` makes a
+**newtype**:
 
 ```siox
 enum Logic : ULogic;            // same variants, new type (gains its own impls)
-enum ULogic : Bit { 'Z', 'X' }  // inherit Bit's variants, add more
-struct Packet : Header { data: uint[8] }   // inherit Header's fields, add more
+struct Word : Bit[];            // a newtype over an array
 struct Meter : real;            // a newtype over a scalar
 ```
 
-Rules: an enum base must be an enum (its variants come first, so a
-same-variant derivation is representation-identical); a field-adding struct
-body needs a struct-shaped base — deriving fields over an *array* base is an
-error (index vs. field access would collide; use composition). Duplicate
-inherited variants/fields are errors. A derived type's own trait impls never
-leak to its base — this is how `Logic : ULogic` gains `Resolve` while
-`ULogic` stays unresolved.
+**Derivation never extends.** A derived type has exactly its base's variants
+or fields — it cannot add. To build a bigger type, use **composition**:
+
+```siox
+struct Header { valid: Bit, kind: uint[4] }
+struct Packet { header: Header, data: uint[8] }   // holds one, not extends it
+```
+
+and read through the field that holds it (`pkt.header.valid`). Nested struct
+fields flatten to dotted leaf signals, so composition costs nothing in
+hardware.
+
+The reason is that extension points opposite ways for the two kinds. Adding
+*fields* narrows a struct — every `Packet` is still a `Header`, so the child
+is a subtype. Adding *variants* widens an enum — every `Bit` is already a
+`ULogic`, so the child is a **supertype**. Under a single `:` those two would
+mean opposite things, and inherited behaviour would break differently in each:
+a struct method returning `Self` could not fill a child's new fields, while an
+enum method matching on `self` would meet variants it has no arm for. The
+second is unfixable and hits every method, since enum methods match on `self`.
+So siox has one rule instead: derivation shares representation and identity,
+never members, and never behaviour — **a base's trait impls do not descend to
+a derived type, and a derived type's impls do not leak to its base**. That is
+how `Logic : ULogic` gains `Resolve` while `ULogic` stays unresolved.
+
+An enum whose `: T` names something that is *not* an enum is unrelated to
+derivation: there `T` is the discriminant representation and the variants are
+the enum's own (`enum State : uint[2] { Idle = 0, Run = 1 }`).
 
 **Conversions follow from derivation.** `T(x)` (the only conversion syntax —
-no `as`, never implicit) is *auto-synthesized* when the derivation makes it
-total: a parent-struct projection (`Header(pkt)`) or an enum whose every
-source variant exists in the target (`Logic(u)`, `ULogic(bit)`). Non-total
-directions (adding fields, narrowing an enum) require an explicit
-`impl From<S> for T`, which `T(x)` also dispatches to. Because the mechanism
-is a constructor call, a conversion is always visible at the site.
+no `as`, never implicit) is *auto-synthesized* along a derivation chain, where
+it is always total because a newtype holds exactly its base's values
+(`Logic(u)` between `Logic : ULogic` and its base). Every other conversion —
+including between two unrelated types whose values happen to line up, such as
+`ULogic(bit)` — requires an explicit `impl From<S> for T`, which `T(x)` also
+dispatches to. Because the mechanism is a constructor call, a conversion is
+always visible at the site.
 ---
 
 ### 3.29 Uninitialized values (`new`)

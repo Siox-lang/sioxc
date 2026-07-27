@@ -598,33 +598,57 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Derived-struct validation (spec: nominal derivation): a field-adding
-    /// body requires a struct-shaped base (arrays reject fields — the
-    /// index/field access models would collide), and no field may collide
-    /// with an inherited one.
-    fn check_struct(&mut self, st: &StructDecl) {
-        let Some(base) = &st.base else { return };
-        // Array-shaped base + fields is rejected (after alias resolution).
-        if !st.fields.is_empty() && self.is_array_base(base) {
-            self.error(
-                codes::TYPE_MISMATCH,
-                st.name.span,
-                "cannot add fields when deriving from an array type; use the \
-                 bodyless form `struct B : A;` or explicit composition"
-                    .to_string(),
-            );
+    /// Derived-enum validation (spec 3.28). The `: T` after an enum name has
+    /// two jobs, told apart by whether `T` names an enum:
+    ///
+    /// - `enum B : A;` — `A` is an enum, so this is a newtype over its
+    ///   variants (`Logic : ULogic` gains `Resolve` without redeclaring them).
+    /// - `enum S : uint[2] { … }` — `T` is not an enum, so it is the
+    ///   discriminant representation and the variants are `S`'s own.
+    ///
+    /// Adding variants to an enum base is extension, which siox does not have:
+    /// a derived enum would hold values its base cannot name, so every method
+    /// written against the base would face variants it has no arm for.
+    fn check_enum(&mut self, e: &EnumDecl) {
+        let Some(repr) = &e.repr else { return };
+        let Some(head) = type_head_name(repr) else { return };
+        if e.variants.is_empty() || !self.own_variants.contains_key(head) {
             return;
         }
-        // Field-name collisions with the inherited base fields.
-        let inherited = self.base_struct_fields(base);
-        for f in &st.fields {
-            if inherited.iter().any(|n| n == &f.name.text) {
-                self.error(
-                    codes::DUPLICATE_ITEM,
-                    f.name.span,
-                    format!("field `{}` already exists in the base struct", f.name.text),
-                );
-            }
+        let name = &e.name.text;
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            e.name.span,
+            format!("`{name}` cannot add variants to the enum it derives from"),
+            format!(
+                "derivation makes a newtype, not a subtype — `{name}` would hold values \
+                 `{head}` cannot name. Write `enum {name} : {head};` to reuse the variants \
+                 unchanged, or declare `{name}` with its own full set of variants and an \
+                 `impl From<{head}> for {name}` to convert"
+            ),
+        );
+    }
+
+    /// Derived-struct validation (spec 3.28): `struct B : A;` is a newtype —
+    /// a distinct type over `A`'s representation. A base with a *body* would
+    /// be extension, which siox does not have: use composition (hold the base
+    /// as a field) so structure is expressed one way everywhere.
+    fn check_struct(&mut self, st: &StructDecl) {
+        let Some(base) = &st.base else { return };
+        if !st.fields.is_empty() {
+            let name = &st.name.text;
+            let base_name = type_head_name(base).unwrap_or("Base");
+            let field = base_name.to_ascii_lowercase();
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                st.name.span,
+                format!("`{name}` cannot add fields to the type it derives from"),
+                format!(
+                    "derivation makes a newtype, not a subtype — write `struct {name} : \
+                     {base_name};` for a distinct type over the same representation, or hold \
+                     the base as a field: `struct {name} {{ {field}: {base_name}, … }}`"
+                ),
+            );
         }
     }
 
@@ -732,17 +756,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether a base type resolves (through aliases) to an array shape.
-    fn is_array_base(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Indexed { .. } => true,
-            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
-                Some(t) => self.is_array_base(t),
-                None => false,
-            },
-            _ => false,
-        }
-    }
 
     fn check_item(&mut self, item: &Item) {
         let sym = HashMap::new();
@@ -753,6 +766,7 @@ impl<'a> Checker<'a> {
                 self.check_expr(&c.value, sym);
             }
             Item::Enum(e) => {
+                self.check_enum(e);
                 for v in &e.variants {
                     if let Some(val) = &v.value {
                         self.check_expr(val, sym);
@@ -2997,6 +3011,11 @@ impl<'a> Checker<'a> {
             .emit(Diagnostic::error(msg).with_code(code).at(span));
     }
 
+    fn error_with_help(&mut self, code: &'static str, span: Span, msg: String, help: String) {
+        self.sink
+            .emit(Diagnostic::error(msg).with_code(code).at(span).help(help));
+    }
+
     fn warn(&mut self, code: &'static str, span: Span, msg: String, help: &str) {
         self.sink.emit(
             Diagnostic::warning(msg)
@@ -3887,10 +3906,10 @@ mod tests {
         assert_eq!(check_src(&format!("{st}p.get(); }}\n")), 0, "method, not a field");
         assert_eq!(check_src(&format!("{st}p.nomethod(); }}\n")), 1, "unknown method");
 
-        // An inherited field counts as present.
-        let derived = "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n\
+        // A newtype's fields are its base's, so they count as present.
+        let derived = "module m;\nstruct A { x: Bit }\nstruct B : A;\n\
                        entity E { out o: Bit; }\nimpl E { let b: B; o = b.x; }\n";
-        assert_eq!(check_src(derived), 0, "inherited field");
+        assert_eq!(check_src(derived), 0, "newtype field");
     }
 
     /// Spec 3.20 calls a trait a compile-time contract, but a partial impl
@@ -4149,20 +4168,42 @@ mod tests {
         assert_eq!(check_src(&conflict), 1);
     }
 
+    /// Extension is gone (spec 3.28): derivation makes a newtype, so a base
+    /// plus a body is an error whatever the field names are — structure is
+    /// built by composition instead.
     #[test]
-    fn derived_struct_field_collision_errors() {
-        // A field re-declaring an inherited one is rejected.
-        let n = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n");
-        assert_eq!(n, 1, "duplicate inherited field");
-        // A fresh field name is fine.
-        let ok = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
-        assert_eq!(ok, 0);
+    fn struct_extension_is_rejected() {
+        let adding = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
+        assert_eq!(adding, 1, "a field-adding body is extension");
+        let colliding = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n");
+        assert_eq!(colliding, 1, "reusing the base's name is the same error");
+        let newtype = check_src("module m;\nstruct A { x: Bit }\nstruct B : A;\n");
+        assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
+        let composed =
+            check_src("module m;\nstruct A { x: Bit }\nstruct B { a: A, y: Bit }\n");
+        assert_eq!(composed, 0, "composition replaces it");
+    }
+
+    /// The enum half of the same rule: a derived enum would hold values its
+    /// base cannot name, so every method written against the base would meet
+    /// variants it has no arm for.
+    #[test]
+    fn enum_extension_is_rejected() {
+        let adding = check_src("module m;\nenum A { X, Y }\nenum B : A { Z }\n");
+        assert_eq!(adding, 1, "a variant-adding body is extension");
+        let newtype = check_src("module m;\nenum A { X, Y }\nenum B : A;\n");
+        assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
+        // A non-enum base is the discriminant representation, not derivation,
+        // so its own variants are fine.
+        let repr = check_src("module m;\nenum S : uint[2] { Idle = 0, Run = 1 }\n");
+        assert_eq!(repr, 0, "`: uint[2]` is a repr annotation");
     }
 
     #[test]
     fn field_adding_over_array_base_errors() {
-        // Deriving fields over an array-shaped base is rejected; the bodyless
-        // form is allowed.
+        // An array base is the case that most obviously cannot carry fields
+        // (index vs. field access would collide); it falls under the same
+        // no-extension rule, and the bodyless newtype stays allowed.
         let bad = check_src("module m;\nstruct Foo : Bit[] { parity: Bit }\n");
         assert_eq!(bad, 1, "fields over array base");
         let ok = check_src("module m;\nstruct Word : Bit[];\n");
