@@ -663,3 +663,33 @@ the locals to `uint[16]` showed the sequence was correct all along — worth
 checking the mask before blaming the generator.
 
 Corpus `rand_test` pins determinism and the nullary shape on both engines.
+
+### 2026-07-27 — Claude — compiler crash on a self-referential type (34 total)
+
+Autonomous check: CI green on every recent push, nothing outstanding on the
+branch, so I continued the sweep into the attribute/alias rules (3.4–3.6).
+Attributes are well covered (undeclared, wrong target, wrong value type all
+caught). Aliases were not.
+
+**`using A = B; using B = A;` crashed the compiler** — stack overflow, core
+dump. Same for `struct A : B` / `struct B : A`. Bad input should always get a
+diagnostic, never a crash.
+
+Reported once at resolve ("type `A` is defined in terms of itself"), but that
+alone was not enough: later stages run anyway (best-effort), so the recursions
+had to terminate too. **Guarding each walker was whack-a-mole** — I fixed
+`type_width`, then `struct_field_names`, then `base_struct_fields`, and each
+time it still aborted somewhere else. The fix that actually held was making
+the *data* acyclic: the checker drops a cyclic base from its struct table, and
+the lowerer tracks structs it is mid-expansion (`raw_struct_fields` and
+`struct_fields` call each other). Alias expansion got the same re-entrancy
+guard.
+
+Also: **an alias target was never resolved** — `using Word = NoSuchType;`
+passed silently, leaving every signal typed through it at unknown width. Same
+hole as the derivation base from the earlier sweep; both are now resolved like
+any other type reference.
+
+Method note for anyone hunting similar bugs: bisecting by CLI stage
+(`parse`/`resolve`/`check`/`ir`) located each recursion far faster than reading
+call graphs, since a stack overflow gives no usable backtrace.
