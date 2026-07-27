@@ -777,3 +777,41 @@ That closes the systematic pass over `docs/language.md` §3.1–3.29 and Stages
 comparison (needs a runner alias table), `W-P009 SUSPICIOUS_RESET` declared but
 never emitted, `>64-bit` signals rejected by the backend rather than the type
 checker, and bounds-checking data arrays with declared ranges.
+
+### 2026-07-27 — Claude — differential sweep: engines agree; two coverage gaps
+
+The documented-feature pass is finished, so this tick went after the structural
+risk instead: I ran **every** corpus program through the **native AOT** path
+and compared against the JIT.
+
+**Result: the two engines agree on everything they can both run** — 70 of 71
+testable programs pass natively and identically. That is a genuinely reassuring
+number, given how much of this session's bug list was engine divergence.
+
+Two gaps came out of it, neither a new defect:
+
+1. **`string_local_test` builds on the JIT but not natively** — the native
+   emitter has no storage for a testbench-local *array*, so it reports
+   "testbench references `u`, which siox build cannot translate yet". That
+   limitation predates last tick's local-string fix and is *explicitly
+   reported*, not silent, so nothing is wrong — but the corpus now contains a
+   program only one engine can run. Implementing local char arrays in the C
+   emitter is a backend feature (declare the array, seed it, compare
+   element-wise), not a bug fix, so I have not done it autonomously.
+
+2. **CI never runs the corpus.** The workflow does `sioxc check` on each file —
+   it verifies they *compile*, not that they *pass*. Every behavioural bug
+   fixed this session (nullary calls returning 0, strings comparing equal to
+   everything, unmet `await` passing silently) would have sailed through that
+   gate. Switching the step to `sioxc test` would close it, but that is the
+   team's build gate and a policy call, so it is the owner's to make — flagged
+   rather than changed.
+
+Reproducing the native sweep, for whoever wants it:
+
+    for f in /home/max/siox-tests/*.siox; do
+      grep -q '#\[test\]' $f || continue
+      b=$(basename $f .siox)
+      cargo run -q -p sioxc -- test $f --no-run --out /tmp/nat/$b &&
+        (cd /home/max/siox-tests && /tmp/nat/$b)
+    done
