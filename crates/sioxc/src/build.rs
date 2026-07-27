@@ -171,6 +171,12 @@ pub fn build(
          \x20   g_rand ^= g_rand >> 12; g_rand ^= g_rand << 25; g_rand ^= g_rand >> 27;\n\
          \x20   return g_rand * 0x2545F4914F6CDD1DULL;\n}\n",
     );
+    // `uniform()` — the runner's exact expression, so both engines agree.
+    prog.push_str(
+        "static uint64_t sx_uniform(void) {\n\
+         \x20   double d = (double)(sx_rand() >> 11) / (double)(1ULL << 53);\n\
+         \x20   return sx_b64(d);\n}\n",
+    );
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
@@ -1288,9 +1294,13 @@ impl Ctx<'_> {
             let sig = expr_path(a)
                 .and_then(|p| self.map.get(&p))
                 .map(|id| &self.design.signals[id.0 as usize]);
-            let is_real = sig.map(|s| s.real).unwrap_or_else(
-                || matches!(a, ast::Expr::Int { text, .. } if text.contains('.')),
-            );
+            let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
+                matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
+                    // `uniform()` returns a real but has no signal to ask.
+                    || matches!(a, ast::Expr::Call { callee, .. }
+                        if matches!(callee.as_ref(), ast::Expr::Path(p)
+                            if p.segments.len() == 1 && p.segments[0].text == "uniform"))
+            });
             let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or_else(|| {
                 expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned())
             });
@@ -1760,6 +1770,7 @@ impl Ctx<'_> {
                      or run with `sioxc test`"
                 )),
                 "rand" => Ok("sx_rand()".to_string()),
+                "uniform" => Ok("sx_uniform()".to_string()),
                 "randint" => {
                     let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;
                     let hi = self.expr(args.get(1).ok_or("randint needs bounds")?)?;
@@ -1915,13 +1926,20 @@ impl Ctx<'_> {
                 if p.segments.len() == 1 && {
                     let n = p.segments[0].text.as_str();
                     self.fns.contains_key(n)
-                        || matches!(n, "exists" | "rand" | "randint" | "read" | "read_to_string")
+                        || matches!(
+                            n,
+                            "exists" | "rand" | "randint" | "uniform" | "read" | "read_to_string"
+                        )
                 }) =>
             {
                 return self.c_fn_call(callee, args);
             }
             ast::Expr::Call { callee, args, .. } => {
-                let arg = args.first().ok_or("conversion needs an argument")?;
+                // A nullary call is a function, not a conversion — hand it to
+                // the call path rather than failing the build.
+                let Some(arg) = args.first() else {
+                    return self.c_fn_call(callee, args);
+                };
                 let v = self.expr(arg)?;
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }

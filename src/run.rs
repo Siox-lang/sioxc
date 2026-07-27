@@ -1741,6 +1741,15 @@ impl Testbench<'_> {
     /// Render one `print!` argument by its kind.
     fn render_arg(&self, a: &ast::Expr) -> String {
         let v = self.eval(a);
+        // `uniform()` yields a `real`, but a bare call has no signal to read a
+        // kind from, so it used to print the f64's bit pattern as an integer.
+        if let ast::Expr::Call { callee, .. } = a {
+            if matches!(callee.as_ref(), ast::Expr::Path(p)
+                if p.segments.len() == 1 && p.segments[0].text == "uniform")
+            {
+                return format!("{}", f64::from_bits(v.to_u64()));
+            }
+        }
         // A signal argument renders per its declared kind.
         if let Some(p) = expr_path(a) {
             if let Some(&id) = self.map.get(&p) {
@@ -2020,7 +2029,13 @@ impl Testbench<'_> {
                 if matches!(callee.as_ref(), ast::Expr::Field { .. }) {
                     return self.eval_free_call(callee, args, fenv);
                 }
-                let Some(arg) = args.first() else { return 0 };
+                // The conversion logic below needs a value to convert. A
+                // *nullary* call is not a conversion — it is a runtime
+                // function (`rand()`, `uniform()`) or a user `fn` — so hand it
+                // to the call path instead of yielding 0.
+                let Some(arg) = args.first() else {
+                    return self.eval_free_call(callee, args, fenv);
+                };
                 let v = self.eval_env(arg, fenv);
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }
