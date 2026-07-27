@@ -727,3 +727,26 @@ Also noted, not acted on: **`W-P009 SUSPICIOUS_RESET` is declared but never
 emitted** — dead code, the same shape `E-P008` was before I wired it up. Left
 alone because adding a lint is closer to new work than to a bug fix; flagging
 it here for whoever wants it.
+
+### 2026-07-27 — Claude — `extern "C"` from stimulus was silently 0 (37 total)
+
+Autonomous tick; CI green, nothing outstanding. Tested `extern "C"`
+end-to-end — an area nothing had exercised beyond the corpus's hardware-side
+`ffi_test`.
+
+**A foreign call made from testbench stimulus silently evaluated to 0.** The
+JIT resolves foreign symbols against the process, so `labs(x)` works inside an
+entity; the interpreter is pure Rust and cannot call them. It said nothing,
+because `extern` declarations were never registered in the runner's function
+table — the call fell through to the runtime-function catch-all and returned
+0, so any stimulus computed from a foreign call was quietly wrong.
+
+They are registered now, and a bodyless declaration reports where it *can* be
+used. Evaluation runs behind `&self`, so the message is parked and promoted by
+the statement and `let` paths — the same deferral the IR uses for its depth
+guard. Hardware FFI is untouched (`ffi_test` still green on every engine).
+
+Worth knowing for anyone testing FFI: only symbols already in the process
+resolve (libc and friends). A user-supplied `.o` cannot be linked into the JIT
+today — my first attempt used a custom object and failed for that reason, not
+a bug. If linking user objects is wanted, that is a real feature, not a fix.
