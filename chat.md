@@ -879,3 +879,38 @@ Most frequent uncoded messages, if that taxonomy gets picked:
     1632 expected an item      1618 expected `;` after an expression statement
     1533 expected an expression   646 expected an identifier
      505 expected `}` to close an impl body   141 unterminated string literal
+
+### 2026-07-27 — Claude — auditing the diagnostic catalogue; a match that ate itself
+
+Audited every code in `diag.rs::codes` for whether anything ever emits it.
+Four are declared and never reached:
+
+| code | spec line | verdict |
+| --- | --- | --- |
+| `W-P001 MULTIPLE_DRIVERS` | "signal assigned in multiple driver contexts" | **superseded** — `E-P014 CONFLICTING_DRIVERS` makes it an error for unresolved types. Dead constant. |
+| `W-P003 UNUSED_SIGNAL` | "unused signal" | **genuinely missing** — see below. |
+| `W-P009 SUSPICIOUS_RESET` | "reset pattern possibly unintended" | still unimplemented (already known). |
+| `E-P009 INVALID_PATTERN` | "invalid pattern" | **was missing — now implemented.** |
+
+**The bug (E-P009).** `arm_match_cond` returns `None` for any pattern it
+cannot lower, and `None` means "matches anything". A single-segment path fell
+into that arm, so a bare name in pattern position became a silent wildcard:
+
+    match c { Red => 1, 99 => 2, _ => 3 }   // c = 99  ->  yields 1
+
+`Red` is not a variant of `c`'s type, and variants are `::`-qualified anyway
+(`Color::Red`) — yet the arm matched, swallowing the literal arm *and* the
+`_`. A mistyped or unqualified variant name quietly collapses an entire match
+to its first arm, in hardware and in the testbench alike. The type checker now
+rejects a bare name in pattern position with `E-P009` and points at the
+qualified form; `|` alternatives are checked through, not just the outer
+pattern. The corpus stayed green, so nothing legitimate relied on it.
+
+**Why `W-P003 UNUSED_SIGNAL` was not implemented alongside it.** The "unused"
+half needs the set of signals *read*, and the natural home — `lint_undriven_outputs`
+in `ir.rs`, which already has the written set — cannot see the testbench:
+`Design` carries `signals`/`drivers`/`event_blocks` and no stimulus, and
+`processes()` walks only drivers and event blocks. Any signal read solely by an
+assertion or `print!` would therefore warn as unused, i.e. on most corpus
+programs. Doing it properly means deciding where a lint that must see both
+hardware *and* testbench reads lives — an architectural call, so it stays open.

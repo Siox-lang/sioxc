@@ -1222,6 +1222,9 @@ impl<'a> Checker<'a> {
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
                 self.check_unreachable_arms(m);
+                for arm in &m.arms {
+                    self.check_pattern_form(&arm.pattern);
+                }
                 self.check_expr(&m.scrutinee, sym);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
@@ -1329,6 +1332,34 @@ impl<'a> Checker<'a> {
                 .at(m.span)
                 .help("add the missing arms, or a `_` wildcard"),
             );
+        }
+    }
+
+    /// Reject a pattern shape the lowering cannot honour (spec Stage 10,
+    /// "invalid pattern"). Variants are `::`-qualified (`Color::Red`), so a
+    /// bare name matches nothing the compiler knows — and `arm_match_cond`
+    /// treats every pattern it cannot lower as a wildcard, which would make
+    /// such an arm silently swallow the whole match, `_` arms included.
+    fn check_pattern_form(&mut self, p: &Pattern) {
+        match p {
+            Pattern::Path(path) if path.segments.len() == 1 => {
+                let name = &path.segments[0].text;
+                self.sink.emit(
+                    Diagnostic::error(format!("`{name}` is not a valid pattern"))
+                        .with_code(codes::INVALID_PATTERN)
+                        .at(path.segments[0].span)
+                        .help(
+                            "enum patterns name their type (`Color::Red`); a bare name is not \
+                             a binding — use `_` to match anything",
+                        ),
+                );
+            }
+            Pattern::Or { alts, .. } => {
+                for a in alts {
+                    self.check_pattern_form(a);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2076,6 +2107,7 @@ impl<'a> Checker<'a> {
             } => {
                 self.check_expr(scrutinee, sym);
                 for arm in arms {
+                    self.check_pattern_form(&arm.pattern);
                     if let Some(v) = arm.value_expr() {
                         self.check_expr(v, sym);
                     }
@@ -3919,6 +3951,39 @@ mod tests {
         // `assert!` takes its format string second.
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}", a);"#)), 0);
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}");"#)), 1);
+    }
+
+    /// A bare name in pattern position lowered to a wildcard, because
+    /// `arm_match_cond` treats any pattern it cannot lower as "matches
+    /// anything". So `Idle => ...` (instead of `State::Idle`) silently
+    /// swallowed the entire match, `_` arms included, with no diagnostic.
+    #[test]
+    fn bare_name_is_not_a_pattern() {
+        let m = |arms: &str| {
+            format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ in v: uint[8]; out r: uint[8]; }}\nimpl E {{ match v {{ {arms} }} }}\n")
+        };
+        assert_eq!(
+            warnings(&m("Idle => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            1,
+            "a bare name is rejected, not treated as a catch-all"
+        );
+        // The forms the lowering does honour stay clean.
+        assert_eq!(
+            warnings(&m("State::Idle => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            0,
+            "a qualified variant is valid"
+        );
+        assert_eq!(
+            warnings(&m("0..9 => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            0,
+            "ranges are valid"
+        );
+        // `|` alternatives are checked through, not just the outer pattern.
+        assert_eq!(
+            warnings(&m("State::Idle | Run => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            1,
+            "a bad alternative inside `|` is caught"
+        );
     }
 
     /// A range arm wholly inside an earlier one can never match (first match
