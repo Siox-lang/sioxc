@@ -126,9 +126,9 @@ name-use site to the declaration it resolves to.
 The kernel's base types are **`integer` and `real`** only — and only they have
 built-in operators. `Bit`, `Logic`, `Bool` are canonical `enum`
 declarations in `std/logic.siox`; **`unsigned`/`signed` are ordinary `struct
-unsigned : Logic[]` / `struct signed : Logic[]` declarations in `std/bits.siox`** —
+unsigned : Logic[]` / `struct signed(Logic[])` declarations in `std/bits.siox`** —
 no longer seeded compiler names. The compiler recognizes any array-derived
-Logic family (`struct F : Logic[]`) as a numeric vector and reads
+Logic family (`struct F(Logic[])`) as a numeric vector and reads
 `impl Signed` for the interpretation, so unsigned/signed and future fixed-point
 families share one mechanism. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style

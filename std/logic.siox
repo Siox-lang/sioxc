@@ -67,7 +67,7 @@ impl From<Bit> for ULogic {
 // The resolved nine-valued scalar (VHDL `std_logic`): the same value domain as
 // ULogic, but a distinct nominal type that implements `Resolve`, so parallel
 // drivers fold instead of erroring.
-pub enum Logic : ULogic;
+pub enum Logic(ULogic);
 
 // Condition results and metadata values (VHDL `boolean`).
 pub enum Bool {

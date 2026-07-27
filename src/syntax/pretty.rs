@@ -99,16 +99,17 @@ impl Printer {
 
     fn struct_decl(&mut self, s: &StructDecl) {
         let kw = pub_kw(s.is_pub);
-        let base = match &s.base {
-            Some(t) => format!(" : {}", type_str(t)),
-            None => String::new(),
-        };
-        // Bodyless newtype: `struct B : A;`.
-        if s.base.is_some() && s.fields.is_empty() {
-            self.line(&format!("{kw}struct {}{}{base};", s.name.text, params(&s.params)));
+        // Newtype: `struct B(A);` — it never carries a body.
+        if let Some(t) = &s.base {
+            self.line(&format!(
+                "{kw}struct {}{}({});",
+                s.name.text,
+                params(&s.params),
+                type_str(t)
+            ));
             return;
         }
-        self.line(&format!("{kw}struct {}{}{base} {{", s.name.text, params(&s.params)));
+        self.line(&format!("{kw}struct {}{} {{", s.name.text, params(&s.params)));
         self.indent += 1;
         for f in &s.fields {
             self.line(&format!("{}: {},", f.name.text, type_str(&f.ty)));
@@ -136,15 +137,12 @@ impl Printer {
 
     fn enum_decl(&mut self, e: &EnumDecl) {
         let kw = pub_kw(e.is_pub);
-        let repr = match &e.repr {
-            Some(t) => format!(": {}", type_str(t)),
-            None => String::new(),
-        };
-        if e.repr.is_some() && e.variants.is_empty() {
-            self.line(&format!("{kw}enum {}{repr};", e.name.text));
+        // Newtype: `enum Logic(ULogic);` — it never carries a body.
+        if let Some(t) = &e.repr {
+            self.line(&format!("{kw}enum {}({});", e.name.text, type_str(t)));
             return;
         }
-        self.line(&format!("{kw}enum {}{repr} {{", e.name.text));
+        self.line(&format!("{kw}enum {} {{", e.name.text));
         self.indent += 1;
         for v in &e.variants {
             match &v.value {
@@ -670,27 +668,14 @@ mod tests {
         roundtrip(
             "module m;\n\
              enum Bit { '0', '1' }\n\
-             enum Logic : Bit;\n\
-             enum State : unsigned[2] { Idle = 0, Run = 1 }\n\
+             enum Logic(Bit);\n\
+             enum State { Idle = 0, Run = 1 }\n\
              struct Header { valid: Bit }\n\
              struct Packet { header: Header, data: unsigned[8] }\n\
-             struct Word : Bit[];\n",
+             struct Word(Bit[]);\n",
         );
     }
 
-    /// The grammar still accepts a base *and* a body — the type checker is
-    /// what rejects extension (§3.28), so the printer must still render it
-    /// for the best-effort AST that error path produces.
-    #[test]
-    fn roundtrips_a_base_with_a_body_even_though_typeck_rejects_it() {
-        roundtrip(
-            "module m;\n\
-             enum Base { A }\n\
-             enum Ext : Base { B }\n\
-             struct Head { valid: Bit }\n\
-             struct Pkt : Head { data: unsigned[8] }\n",
-        );
-    }
 
     #[test]
     fn roundtrips_trait_type_args() {
@@ -778,7 +763,7 @@ mod tests {
              using Word = unsigned[32];\n\
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
-             enum State: unsigned[2] { Idle = 0, Start = 1, Done = 2 }\n\
+             enum State {  Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Bit;\n\

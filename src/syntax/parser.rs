@@ -350,23 +350,27 @@ impl<'a> Parser<'a> {
         self.bump(); // `struct`
         let name = self.parse_ident();
         let params = self.parse_params_opt();
-        // Nominal derivation: `struct B : A` / `struct B : A { ... }`.
-        let base = if self.eat(TokenKind::Colon) {
-            Some(self.parse_type())
-        } else {
-            None
-        };
-        // A derived struct may be bodyless (`struct B : A;` newtype form).
-        if base.is_some() && self.eat(TokenKind::Semi) {
+        // Newtype: `struct B(A);` — a distinct type over `A`'s representation
+        // (spec 3.28). The form takes no body, so extension is not even
+        // expressible, and it mirrors the constructor it declares: `B(x)`.
+        let base = if self.eat(TokenKind::LParen) {
+            let base = self.parse_type();
+            self.expect(TokenKind::RParen, "to close a newtype base");
+            self.expect(TokenKind::Semi, "after a newtype declaration");
             return StructDecl {
                 is_pub,
                 name,
                 params,
-                base,
+                base: Some(base),
                 fields: Vec::new(),
                 span: start.to(self.prev_span()),
             };
-        }
+        } else {
+            // `struct B : A` was the newtype form until parens replaced it.
+            // Recognize it so the migration reads as one clear instruction
+            // rather than "expected `{`" three tokens later.
+            self.deprecated_colon_base("struct", &name.text)
+        };
         self.expect(TokenKind::LBrace, "to open a struct body");
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -437,22 +441,25 @@ impl<'a> Parser<'a> {
         let start = self.span();
         self.bump(); // `enum`
         let name = self.parse_ident();
-        let repr = if self.eat(TokenKind::Colon) {
-            Some(self.parse_type())
-        } else {
-            None
-        };
-        // A derived enum may be bodyless (`enum Logic : ULogic;` — same
-        // variants, new nominal type).
-        if repr.is_some() && self.eat(TokenKind::Semi) {
+        // Newtype: `enum Logic(ULogic);` — the same variants under a new
+        // nominal type (spec 3.28). Parenthesised like the struct form, and
+        // like it takes no body, so an enum can never extend its base. The
+        // parens sit on the enum's *name*, not on a variant, so there is no
+        // clash with a payload-carrying variant should those ever land.
+        let repr = if self.eat(TokenKind::LParen) {
+            let base = self.parse_type();
+            self.expect(TokenKind::RParen, "to close a newtype base");
+            self.expect(TokenKind::Semi, "after a newtype declaration");
             return EnumDecl {
                 is_pub,
                 name,
-                repr,
+                repr: Some(base),
                 variants: Vec::new(),
                 span: start.to(self.prev_span()),
             };
-        }
+        } else {
+            self.deprecated_colon_base("enum", &name.text)
+        };
         self.expect(TokenKind::LBrace, "to open an enum body");
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -2112,6 +2119,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `struct B : A` / `enum B : A` — the pre-paren newtype spelling, and the
+    /// shape an inheriting language would reach for. Report it precisely and
+    /// keep parsing the base so the rest of the declaration still yields a
+    /// usable AST (a body after it is extension, which typeck then names).
+    fn deprecated_colon_base(&mut self, kw: &str, name: &str) -> Option<Type> {
+        if !self.at(TokenKind::Colon) {
+            return None;
+        }
+        let span = self.span();
+        self.bump(); // `:`
+        let base = self.parse_type();
+        let base_txt = crate::syntax::pretty::type_str(&base);
+        self.sink.emit(
+            Diagnostic::error(format!("`{kw} {name} : {base_txt}` is not a declaration"))
+                .at(span)
+                .help(format!(
+                    "a newtype is written with parentheses: `{kw} {name}({base_txt});`. \
+                     To build a bigger type, hold this one as a field instead — \
+                     derivation never adds members"
+                )),
+        );
+        Some(base)
+    }
+
     fn expect(&mut self, k: TokenKind, ctx: &str) -> bool {
         if self.at(k.clone()) {
             self.bump();
@@ -2234,14 +2265,55 @@ mod tests {
     #[test]
     fn struct_enum_const() {
         let m = parse_ok(
-            "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State: unsigned[2] { Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
+            "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State {  Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
         );
         assert_eq!(m.items.len(), 3);
         let Item::Enum(e) = &m.items[2] else {
             panic!("expected enum")
         };
         assert_eq!(e.variants.len(), 4);
-        assert!(e.repr.is_some());
+        // A variant-carrying enum has no base: `repr` is only ever the newtype
+        // base now, and that form takes no body.
+        assert!(e.repr.is_none());
+    }
+
+    /// `struct B(A);` is the newtype form; a body is not part of it, so
+    /// extension cannot be written at all.
+    #[test]
+    fn newtype_is_parenthesised() {
+        let m =
+            parse_ok("module m;\nstruct A { x: Bit }\nstruct B(A);\nenum E { P }\nenum F(E);\n");
+        let Item::Struct(s) = &m.items[1] else { panic!("expected struct") };
+        assert!(s.base.is_some() && s.fields.is_empty(), "a newtype has a base and no fields");
+        let Item::Enum(e) = &m.items[3] else { panic!("expected enum") };
+        assert!(e.repr.is_some() && e.variants.is_empty(), "same for the enum form");
+    }
+
+    /// `struct B : A` was the newtype spelling before parens, and is the shape
+    /// an inheriting language would reach for. Report it with the migration in
+    /// the message rather than a bare "expected `{`" further along.
+    #[test]
+    fn colon_base_is_reported_with_the_new_spelling() {
+        for src in [
+            "module m;\nstruct A { x: Bit }\nstruct B : A;\n",
+            "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n",
+            "module m;\nenum A { X }\nenum B : A;\n",
+            "module m;\nenum A { X }\nenum B : A { Z }\n",
+        ] {
+            let mut sink = DiagnosticSink::new();
+            crate::syntax::parse_module(FileId(0), src, &mut sink);
+            let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+            assert!(
+                msgs.iter().any(|m| m.contains("is not a declaration")),
+                "want the migration message for:\n{src}\ngot {msgs:?}"
+            );
+            let helps: Vec<_> =
+                sink.diagnostics().iter().filter_map(|d| d.help.clone()).collect();
+            assert!(
+                helps.iter().any(|h| h.contains("parentheses")),
+                "the help should name the new spelling, got {helps:?}"
+            );
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ fn lower(src: &str) -> Design {
     // unsigned/signed are library types now (not seeded); the sources are
     // self-contained, so declare the vector families locally.
     let src = format!(
-        "{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n\
+        "{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n\
          enum Bool {{ false, true }}\n\
          enum Bit {{ '0', '1' }}\n\
          enum ULogic {{ '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }}\n\
@@ -1011,7 +1011,7 @@ fn derived_vector_width_agrees() {
     // would leave it width 0 = unmasked).
     let d = lower(
         "module m;\n\
-         struct Byte : Logic[8];\n\
+         struct Byte(Logic[8]);\n\
          entity A { in a: Byte; in b: Byte; out s: Byte; }\n\
          impl A { s = a + b; }\n\
          #[top]\n\
@@ -1036,7 +1036,7 @@ fn transitive_vector_family_width_agrees() {
     // is appended by the `lower` harness.
     let d = lower(
         "module m;\n\
-         struct Byte : unsigned[8];\n\
+         struct Byte(unsigned[8]);\n\
          entity A { in a: Byte; in b: Byte; out s: Byte; }\n\
          impl A { s = a + b; }\n\
          #[top]\n\

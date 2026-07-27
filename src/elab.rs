@@ -1078,7 +1078,7 @@ mod tests {
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // unsigned/signed are `#[vector]` library types, not seeded.
         let src = format!(
-            "{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n"
+            "{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n"
         );
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
@@ -1153,7 +1153,7 @@ mod tests {
               let y: Bit;\n\
               let dut: Sub = { .a = a, .y = y };\n\
             }\n\
-            struct unsigned : Logic[];\nstruct signed : Logic[];\n";
+            struct unsigned(Logic[]);\nstruct signed(Logic[]);\n";
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
         let modules = std::slice::from_ref(&module);

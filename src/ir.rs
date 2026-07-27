@@ -6518,7 +6518,7 @@ mod tests {
 
     fn lower_src(src: &str) -> Design {
         // unsigned/signed are library types (attribute-marked vectors), not seeded.
-        let src = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
+        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -6531,7 +6531,7 @@ mod tests {
     }
 
     fn lower_diags(src: &str) -> Vec<String> {
-        let src = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
+        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         let modules = std::slice::from_ref(&module);
@@ -6611,7 +6611,7 @@ mod tests {
               let p2: Producer = { .bus = wire, .value = b };\n\
             }\n";
         let mut sink = DiagnosticSink::new();
-        let full = format!("{src}\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n{CLK_PRELUDE}");
+        let full = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let module = crate::syntax::parse_module(FileId(0), &full, &mut sink);
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
@@ -7189,7 +7189,7 @@ mod tests {
     fn composite_and_enum_signals_flatten_with_widths() {
         let d = lower_src(
             "module m;\n\
-             enum S: unsigned[2] { A, B, C }\n\
+             enum S { A, B, C }\n\
              struct P { flag: Bit, val: unsigned[8] }\n\
              entity E { in p: P; in a: Bit[3]; out s: S; }\n\
              impl E {}\n\
@@ -7253,7 +7253,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Base { A, B, C, D }\n\
-             enum Ext : Base;\n\
+             enum Ext(Base);\n\
              entity E { out x: Ext; }\n\
              impl E { x = Ext::A; }\n\
              #[top] entity H {}\n\
@@ -7288,7 +7288,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Base { A, B, C }\n\
-             enum Alias : Base;\n\
+             enum Alias(Base);\n\
              entity E { out x: Alias; }\n\
              impl E { x = Alias::B; }\n\
              #[top] entity H {}\n\

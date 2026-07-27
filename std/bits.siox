@@ -13,8 +13,8 @@ using std::ops::{Ordering};
 // `signed`'s Ord is a signed compare, its Shr an arithmetic shift, its Div a
 // signed divide — and the compiler just dispatches to whichever impls a type
 // declares. A type named neither would behave the same as its impls say.
-pub struct unsigned : Logic[];
-pub struct signed : Logic[];
+pub struct unsigned(Logic[]);
+pub struct signed(Logic[]);
 
 //   unsigned[N]  N bits, wrapping on overflow           (VHDL `unsigned`)
 //   signed[N]    N bits, two's complement               (VHDL `signed`)

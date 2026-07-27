@@ -598,71 +598,34 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Derived-enum validation (spec 3.28): `enum B : A;` is a newtype over
-    /// `A`'s variants, and `A` must be an enum. The two things this rejects:
+    /// Derived-enum validation (spec 3.28): `enum B(A);` is a newtype over
+    /// `A`'s variants, so `A` must itself be an enum. An enum carries no
+    /// storage annotation — its width is derived from its variants and
+    /// discriminants, and a specific wire width belongs to whatever carries
+    /// the value (a port, a field, a function's return type), each of which
+    /// already declares a type.
     ///
-    /// - a base with a body — extension, which siox does not have. A derived
-    ///   enum would hold values its base cannot name, so every method written
-    ///   against the base would meet variants it has no arm for.
-    /// - a non-enum base — the old `enum S : unsigned[2]` storage annotation. An
-    ///   enum's width is derived from its variants and discriminants; a
-    ///   specific wire width belongs at the boundary that carries it (a port,
-    ///   a field, a function's return type), which already declares a type.
+    /// Extension needs no check: the newtype form takes no body, so adding
+    /// variants is not expressible. The older `enum B : A { … }` spelling is
+    /// reported by the parser, which owns that message.
     fn check_enum(&mut self, e: &EnumDecl) {
         let Some(repr) = &e.repr else { return };
         let Some(head) = type_head_name(repr) else { return };
+        if self.own_variants.contains_key(head) {
+            return;
+        }
         let name = &e.name.text;
-        if !self.own_variants.contains_key(head) {
-            self.error_with_help(
-                codes::TYPE_MISMATCH,
-                e.name.span,
-                format!("`{head}` is not an enum, so `{name}` cannot derive from it"),
-                format!(
-                    "an enum's width is derived from its variants — write `enum {name} \
-                     {{ … }}` and, where a specific width is needed, declare it at the \
-                     boundary that carries the value (a port, a field, or a function's \
-                     return type) and convert there"
-                ),
-            );
-            return;
-        }
-        if e.variants.is_empty() {
-            return;
-        }
         self.error_with_help(
             codes::TYPE_MISMATCH,
             e.name.span,
-            format!("`{name}` cannot add variants to the enum it derives from"),
+            format!("`{head}` is not an enum, so `{name}` cannot derive from it"),
             format!(
-                "derivation makes a newtype, not a subtype — `{name}` would hold values \
-                 `{head}` cannot name. Write `enum {name} : {head};` to reuse the variants \
-                 unchanged, or declare `{name}` with its own full set of variants and an \
-                 `impl From<{head}> for {name}` to convert"
+                "an enum's width is derived from its variants — write `enum {name} \
+                 {{ … }}` and, where a specific width is needed, declare it at the \
+                 boundary that carries the value (a port, a field, or a function's \
+                 return type) and convert there"
             ),
         );
-    }
-
-    /// Derived-struct validation (spec 3.28): `struct B : A;` is a newtype —
-    /// a distinct type over `A`'s representation. A base with a *body* would
-    /// be extension, which siox does not have: use composition (hold the base
-    /// as a field) so structure is expressed one way everywhere.
-    fn check_struct(&mut self, st: &StructDecl) {
-        let Some(base) = &st.base else { return };
-        if !st.fields.is_empty() {
-            let name = &st.name.text;
-            let base_name = type_head_name(base).unwrap_or("Base");
-            let field = base_name.to_ascii_lowercase();
-            self.error_with_help(
-                codes::TYPE_MISMATCH,
-                st.name.span,
-                format!("`{name}` cannot add fields to the type it derives from"),
-                format!(
-                    "derivation makes a newtype, not a subtype — write `struct {name} : \
-                     {base_name};` for a distinct type over the same representation, or hold \
-                     the base as a field: `struct {name} {{ {field}: {base_name}, … }}`"
-                ),
-            );
-        }
     }
 
     /// Drop the base of any struct that (transitively) derives from itself.
@@ -838,7 +801,9 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::Struct(st) => self.check_struct(st),
+            // A struct newtype needs no check of its own: the form carries no
+            // body, so there is nothing to validate past its base type.
+            Item::Struct(_) => {}
             Item::View(v) => self.check_view(v),
             Item::Using(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
         }
@@ -3260,7 +3225,7 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
-    const VEC: &str = "\nstruct unsigned : Logic[];\nstruct signed : Logic[];\n";
+    const VEC: &str = "\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");
@@ -3920,7 +3885,7 @@ mod tests {
         assert_eq!(check_src(&format!("{st}p.nomethod(); }}\n")), 1, "unknown method");
 
         // A newtype's fields are its base's, so they count as present.
-        let derived = "module m;\nstruct A { x: Bit }\nstruct B : A;\n\
+        let derived = "module m;\nstruct A { x: Bit }\nstruct B(A);\n\
                        entity E { out o: Bit; }\nimpl E { let b: B; o = b.x; }\n";
         assert_eq!(check_src(derived), 0, "newtype field");
     }
@@ -4181,47 +4146,29 @@ mod tests {
         assert_eq!(check_src(&conflict), 1);
     }
 
-    /// Extension is gone (spec 3.28): derivation makes a newtype, so a base
-    /// plus a body is an error whatever the field names are — structure is
-    /// built by composition instead.
+    /// The forms the newtype grammar admits. Extension is not among them —
+    /// `struct B(A)` has nowhere to put a body — so that is the parser's to
+    /// reject, not this stage's (see `syntax::parser`).
     #[test]
-    fn struct_extension_is_rejected() {
-        let adding = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
-        assert_eq!(adding, 1, "a field-adding body is extension");
-        let colliding = check_src("module m;\nstruct A { x: Bit }\nstruct B : A { x: Bit }\n");
-        assert_eq!(colliding, 1, "reusing the base's name is the same error");
-        let newtype = check_src("module m;\nstruct A { x: Bit }\nstruct B : A;\n");
-        assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
-        let composed =
-            check_src("module m;\nstruct A { x: Bit }\nstruct B { a: A, y: Bit }\n");
-        assert_eq!(composed, 0, "composition replaces it");
+    fn struct_newtype_and_composition_are_the_two_shapes() {
+        let newtype = check_src("module m;\nstruct A { x: Bit }\nstruct B(A);\n");
+        assert_eq!(newtype, 0, "a newtype over another struct");
+        let over_array = check_src("module m;\nstruct Word(Bit[]);\n");
+        assert_eq!(over_array, 0, "a newtype over an array");
+        let composed = check_src("module m;\nstruct A { x: Bit }\nstruct B { a: A, y: Bit }\n");
+        assert_eq!(composed, 0, "composition builds the bigger type");
     }
 
-    /// The enum half of the same rule: a derived enum would hold values its
-    /// base cannot name, so every method written against the base would meet
-    /// variants it has no arm for.
+    /// `enum B(A);` is a newtype over `A`'s variants, so `A` must be an enum.
+    /// The old `enum S : unsigned[2]` storage annotation is gone: an enum's
+    /// width is derived from its variants and discriminants.
     #[test]
-    fn enum_extension_is_rejected() {
-        let adding = check_src("module m;\nenum A { X, Y }\nenum B : A { Z }\n");
-        assert_eq!(adding, 1, "a variant-adding body is extension");
-        let newtype = check_src("module m;\nenum A { X, Y }\nenum B : A;\n");
-        assert_eq!(newtype, 0, "the bodyless newtype is the supported form");
-        // A non-enum base was the old storage annotation. Width is derived
-        // now, so an enum only ever derives from an enum.
-        let repr = check_src("module m;\nenum S : unsigned[2] { Idle = 0, Run = 1 }\n");
-        assert_eq!(repr, 1, "a non-enum base is not a derivation");
+    fn enum_newtype_base_must_be_an_enum() {
+        let newtype = check_src("module m;\nenum A { X, Y }\nenum B(A);\n");
+        assert_eq!(newtype, 0, "an enum base is a newtype");
+        let non_enum = check_src("module m;\nenum S(unsigned[2]);\n");
+        assert_eq!(non_enum, 1, "a non-enum base is not a derivation");
         let plain = check_src("module m;\nenum S { Idle = 0, Run = 1 }\n");
         assert_eq!(plain, 0, "the width comes from the variants");
-    }
-
-    #[test]
-    fn field_adding_over_array_base_errors() {
-        // An array base is the case that most obviously cannot carry fields
-        // (index vs. field access would collide); it falls under the same
-        // no-extension rule, and the bodyless newtype stays allowed.
-        let bad = check_src("module m;\nstruct Foo : Bit[] { parity: Bit }\n");
-        assert_eq!(bad, 1, "fields over array base");
-        let ok = check_src("module m;\nstruct Word : Bit[];\n");
-        assert_eq!(ok, 0, "bodyless array-derived is fine");
     }
 }

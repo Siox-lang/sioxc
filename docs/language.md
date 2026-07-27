@@ -76,7 +76,7 @@ precise reference.
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
   receiver's fields.
-- **Newtypes** — `enum B : A;` / `struct B : A;` reuse a representation under a
+- **Newtypes** — `enum B(A);` / `struct B(A);` reuse a representation under a
   new identity, with the derivation conversion synthesised automatically.
   Derivation never adds members and never inherits behaviour; bigger types are
   built by composition.
@@ -409,7 +409,7 @@ means:
 ```
 
 **Bit vectors are recognized by shape.** A bodyless struct deriving from an
-array of a bit scalar — `struct unsigned : Logic[]` — *is* a packed bit vector
+array of a bit scalar — `struct unsigned(Logic[])` — *is* a packed bit vector
 (one N-bit signal); no annotation is needed, since an array of bits already
 says so. The compiler tracks **no signedness at all** — `unsigned` and `signed` are the same
 shape (`Logic[]`), and their difference is entirely their **operator impls**:
@@ -1616,14 +1616,20 @@ Phase 1 should be implemented in stages. Each stage must have a concrete endgoal
 ### 3.28 Nominal type derivation
 
 A new nominal type may derive from an existing one, reusing its representation
-while being a distinct type. `using` stays an exact alias; `:` makes a
+while being a distinct type. `using` stays an exact alias; parentheses make a
 **newtype**:
 
 ```siox
-enum Logic : ULogic;            // same variants, new type (gains its own impls)
-struct Word : Bit[];            // a newtype over an array
-struct Meter : real;            // a newtype over a scalar
+enum Logic(ULogic);             // same variants, new type (gains its own impls)
+struct Word(Bit[]);             // a newtype over an array
+struct Meter(real);             // a newtype over a scalar
 ```
+
+The parentheses are the same ones the type's constructor takes: `struct
+Meter(real);` declares exactly the shape of `Meter(x)`, the conversion of the
+next paragraph. They also leave nowhere to put a body, so **extension is not
+expressible** — the rule below is enforced by the grammar, not by a check.
+`:` is then only ever type ascription (fields, parameters, trait bounds).
 
 **Derivation never extends.** A derived type has exactly its base's variants
 or fields — it cannot add. To build a bigger type, use **composition**:
@@ -1648,7 +1654,7 @@ second is unfixable and hits every method, since enum methods match on `self`.
 So siox has one rule instead: derivation shares representation and identity,
 never members, and never behaviour — **a base's trait impls do not descend to
 a derived type, and a derived type's impls do not leak to its base**. That is
-how `Logic : ULogic` gains `Resolve` while `ULogic` stays unresolved.
+how `Logic(ULogic)` gains `Resolve` while `ULogic` stays unresolved.
 
 An enum's base must itself be an enum. **An enum does not declare a storage
 width.** Its width is derived, wide enough to hold every value it can take —
@@ -1667,7 +1673,7 @@ fn encode(s: State) -> unsigned[8] { … }   // the return type sets the width
 **Conversions follow from derivation.** `T(x)` (the only conversion syntax —
 no `as`, never implicit) is *auto-synthesized* along a derivation chain, where
 it is always total because a newtype holds exactly its base's values
-(`Logic(u)` between `Logic : ULogic` and its base). Every other conversion —
+(`Logic(u)` between `Logic(ULogic)` and its base). Every other conversion —
 including between two unrelated types whose values happen to line up, such as
 `ULogic(bit)` — requires an explicit `impl From<S> for T`, which `T(x)` also
 dispatches to. Because the mechanism is a constructor call, a conversion is

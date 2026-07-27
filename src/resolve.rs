@@ -1291,7 +1291,7 @@ mod tests {
         let (_, errs) = resolve_src("module m;\nusing A = B;\nusing B = A;\n");
         assert!(errs >= 1, "alias cycle");
 
-        let (_, errs) = resolve_src("module m;\nstruct A : B { }\nstruct B : A { }\n");
+        let (_, errs) = resolve_src("module m;\nstruct A(B);\nstruct B(A);\n");
         assert!(errs >= 1, "derivation cycle");
 
         // A self-reference is the one-step case.
@@ -1300,7 +1300,7 @@ mod tests {
 
         // Legitimate chains are untouched.
         let (_, errs) = resolve_src(
-            "module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\nusing C = B;\n",
+            "module m;\nstruct A { x: Bit }\nstruct B(A);\nusing C = B;\n",
         );
         assert_eq!(errs, 0);
     }
@@ -1315,13 +1315,13 @@ mod tests {
     }
 
     /// A derivation base is a type reference like any other, but it was the
-    /// one spot resolution skipped — `struct B : NoSuchType` passed silently
+    /// one spot resolution skipped — `struct B(NoSuchType)` passed silently
     /// while the same name in a port was rejected.
     #[test]
     fn unknown_derivation_base_is_reported() {
-        let (_, errs) = resolve_src("module m;\nstruct B : NoSuchType { x: Bit }\n");
+        let (_, errs) = resolve_src("module m;\nstruct B(NoSuchType);\n");
         assert_eq!(errs, 1);
-        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B : A { y: Bit }\n");
+        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B(A);\n");
         assert_eq!(errs, 0);
     }
 
@@ -1385,7 +1385,7 @@ mod tests {
         let (_, errors) = resolve_src(
             "module m;\n\
              using std::logic::{Bit, Logic};\n\
-             struct unsigned : Logic[];\n\
+             struct unsigned(Logic[]);\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
                in clk: Bit;\n\
