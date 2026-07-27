@@ -847,3 +847,35 @@ was the outlier and the rest are in a sane range:
 
     entity ports 14 -> 3 | struct fields 4 | enum variants 3
     trait body 4 | fn block 6 | top-level items 4 (already had recovery)
+
+### 2026-07-27 — Claude — diagnostics: source spelling, not Rust variant names
+
+Reran the 1,725 malformed programs, this time reading the *messages* rather
+than watching for crashes. Two findings.
+
+**Fixed.** Every "expected X" message printed the Rust enum variant, because
+`expect` formatted the `TokenKind` with `{:?}`:
+
+    error: expected Semi after a port      ->  expected `;` after a port
+    error: expected RBrace to close ...    ->  expected `}` to close ...
+    error: expected Colon before ...       ->  expected `:` before ...
+
+`Semi`/`RBrace`/`LParen` are internal names; nobody writing siox has seen
+them. `TokenKind::describe()` now gives every kind a user-facing name —
+backticked source spelling for punctuation and keywords, prose for the
+abstract kinds ("an identifier", "end of input"). Sweeping the whole fuzz
+corpus afterwards finds zero remaining variant names in output.
+
+**Open, and a design call rather than a bug.** Of 9,068 diagnostics that
+corpus produces, **199 carry a stable code and 8,869 do not** — 98% uncoded,
+essentially every syntax error. `diag.rs` says Stage 10 requires every
+diagnostic to carry a code, so this is a real conformance gap, but closing it
+means choosing a taxonomy (one blanket `E-P0xx SYNTAX_ERROR`, or codes per
+shape: unexpected token / unterminated literal / missing delimiter). That
+choice is the owner's, so it is flagged rather than invented.
+
+Most frequent uncoded messages, if that taxonomy gets picked:
+
+    1632 expected an item      1618 expected `;` after an expression statement
+    1533 expected an expression   646 expected an identifier
+     505 expected `}` to close an impl body   141 unterminated string literal

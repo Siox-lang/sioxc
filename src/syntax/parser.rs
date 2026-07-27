@@ -2118,7 +2118,7 @@ impl<'a> Parser<'a> {
             true
         } else {
             let span = self.span();
-            self.error_at(span, format!("expected {:?} {}", k, ctx));
+            self.error_at(span, format!("expected {} {}", k.describe(), ctx));
             false
         }
     }
@@ -2263,6 +2263,18 @@ mod tests {
 
     /// `!x` is the reflex from C/Verilog/Rust, but `!` here only marks a macro
     /// call — it used to cascade four "expected an expression" errors through
+    /// Diagnostics name syntax the way a user types it. These used to render
+    /// the Rust variant ("expected Semi after a port"), which is meaningless
+    /// to a reader of siox source.
+    #[test]
+    fn expected_token_is_named_in_source_spelling() {
+        let mut sink = DiagnosticSink::new();
+        crate::syntax::parse_module(FileId(0), "module m;\nentity E { in a: Bit\n}\n", &mut sink);
+        let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+        assert!(msgs.iter().any(|m| m.contains("`;`")), "want a `;` spelling, got {msgs:?}");
+        assert!(!msgs.iter().any(|m| m.contains("Semi")), "leaked a variant name: {msgs:?}");
+    }
+
     /// the rest of the statement.
     #[test]
     fn unary_bang_suggests_not() {
