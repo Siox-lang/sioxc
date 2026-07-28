@@ -1820,7 +1820,17 @@ impl<'a> Checker<'a> {
                 if self
                     .trait_impls
                     .get(trait_name)
-                    .is_some_and(|s| s.contains(&kind))
+                    .is_some_and(|implementors| {
+                        implementors.contains(&kind)
+                            // Applied views are stored by their full nominal
+                            // identity (`Controller@Spi`), while expression
+                            // typing names the visible view (`Controller`).
+                            // Either matching applied identity satisfies a
+                            // capability bound on that view.
+                            || implementors
+                                .iter()
+                                .any(|name| name.starts_with(&format!("{kind}@")))
+                    })
                 {
                     return true;
                 }

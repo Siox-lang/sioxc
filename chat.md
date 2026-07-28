@@ -1198,3 +1198,11 @@ separate pull-low intents and verifies that both roles sample the same resolved
 line state. Fixed IR lowering so an applied view retains both its nominal view
 identity for method dispatch and its backing struct identity for field reads,
 then added unit and VCD waveform regressions.
+### 2026-07-28 — Codex — added generic protocol read/write helpers
+
+Added generic `read<Bus: Readable, Value>` and
+`write<Bus: Writable, Value>` functions to the SPI/I2C view-trait example and
+routed every protocol role through them. Implemented IR inlining for free
+functions called in statement position, allowing the generic `write` wrapper
+to lower its nested trait method into real signal drivers. Applied-view trait
+implementations now also satisfy generic capability bounds.

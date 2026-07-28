@@ -2733,6 +2733,12 @@ impl<'a> Lowering<'a> {
                     self.lower_method_stmt(base, &field.text, args, cond);
                 }
             }
+            // A free function used as a statement (`write(bus, value)`) may
+            // itself contain method calls or assignments. Inline its body with
+            // the concrete arguments just like a value-returning free call.
+            ast::Stmt::Expr(ast::Expr::Call { callee, args, .. }) => {
+                self.lower_free_stmt(callee, args, cond);
+            }
             // Other statement forms (for, let, expr, return) are not lowered yet.
             _ => {}
         }
@@ -4490,6 +4496,42 @@ impl<'a> Lowering<'a> {
             .collect();
         for s in &stmts {
             self.lower_stmt(s, cond.clone());
+        }
+        true
+    }
+
+    /// Inline a free function called in statement position. This is the
+    /// procedure-shaped counterpart of `lower_free_call`: parameters are
+    /// substituted with their concrete expressions, then assignments and
+    /// nested method calls are lowered as ordinary drivers.
+    fn lower_free_stmt(
+        &mut self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        cond: Option<Expr>,
+    ) -> bool {
+        let Some(name) = call_fn_key(callee) else {
+            return false;
+        };
+        let Some(f) = self.free_fns.get(&name).copied() else {
+            return false;
+        };
+        let Some(body) = f.body.as_ref() else {
+            return false;
+        };
+        let mut map: HashMap<String, ast::Expr> = HashMap::new();
+        for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
+            if let Some(name) = &param.name {
+                map.insert(name.text.clone(), arg.clone());
+            }
+        }
+        let stmts: Vec<ast::Stmt> = body
+            .stmts
+            .iter()
+            .map(|stmt| subst_stmt_paths(stmt, &map))
+            .collect();
+        for stmt in &stmts {
+            self.lower_stmt(stmt, cond.clone());
         }
         true
     }
@@ -6997,22 +7039,31 @@ mod tests {
     }
 
     #[test]
-    fn trait_method_can_read_an_applied_views_backing_fields() {
+    fn generic_trait_functions_access_applied_view_backing_fields() {
         let d = lower_src(
             "module m;\n\
              trait Readable<T> { fn read(self) -> T; }\n\
+             trait Writable<T> { fn write(self, value: T); }\n\
+             fn read<Bus: Readable, Value>(bus: Bus) -> Value { return bus.read(); }\n\
+             fn write<Bus: Writable, Value>(bus: Bus, value: Value) { bus.write(value); }\n\
              struct Spi { tx: unsigned[8], rx: unsigned[8] }\n\
              view Controller for Spi { out tx; in rx; }\n\
              impl Readable<unsigned[8]> for Controller Spi {\n\
                fn read(self) -> unsigned[8] { return self.rx; }\n\
              }\n\
-             entity Device { bus: Controller Spi; out sampled: unsigned[8]; }\n\
-             impl Device { sampled = bus.read(); }\n\
+             impl Writable<unsigned[8]> for Controller Spi {\n\
+               fn write(self, value: unsigned[8]) { self.tx = value; }\n\
+             }\n\
+             entity Device {\n\
+               bus: Controller Spi; in source: unsigned[8]; out sampled: unsigned[8];\n\
+             }\n\
+             impl Device { write(bus, source); sampled = read(bus); }\n\
              #[top] entity Link {}\n\
              impl Link {\n\
                let wire: Spi;\n\
+               let source: unsigned[8];\n\
                let sampled: unsigned[8];\n\
-               let device: Device = { .bus = wire, .sampled = sampled };\n\
+               let device: Device = { .bus = wire, .source = source, .sampled = sampled };\n\
              }",
         );
         assert!(
@@ -7033,6 +7084,17 @@ mod tests {
             matches!(driver.expr, Expr::Current(_)),
             "read() should lower to the selected backing signal: {:?}",
             driver.expr
+        );
+        let tx = d
+            .signals
+            .iter()
+            .position(|s| s.path.ends_with(".device.bus.tx"))
+            .expect("view tx signal");
+        assert!(
+            d.drivers
+                .iter()
+                .any(|driver| driver.target.0 as usize == tx),
+            "generic write() should inline its nested trait method as a driver"
         );
     }
 
