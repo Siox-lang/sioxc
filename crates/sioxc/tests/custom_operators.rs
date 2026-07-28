@@ -1,4 +1,4 @@
-//! End-to-end coverage for attributed custom operators in the JIT and native
+//! End-to-end coverage for attributed custom operators in the native
 //! test harness paths.
 
 use std::process::Command;
@@ -6,7 +6,7 @@ use std::process::Command;
 const FIXTURE: &str = "crates/sioxc/tests/fixtures/custom_operator_test.siox";
 
 #[test]
-fn custom_operators_run_on_jit() {
+fn custom_operators_run_via_native_cli() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let out = Command::new(siox)

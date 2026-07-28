@@ -15,10 +15,9 @@ Only the `"C"` ABI is supported. Type mapping: `real` is `double`; `integer` and
 the word-sized numeric types are 64-bit words. Calls are usable in hardware
 expressions and in testbenches.
 
-- On the **JIT**, symbols resolve from the running process.
-- In the **native binary**, they resolve at link time (the math library is
-  linked by default, so the `std::math` surface — `sin`, `sqrt`, … — works out
-  of the box).
+In the **native binary**, symbols resolve at link time. The math library is
+linked by default, so the `std::math` surface — `sin`, `sqrt`, … — works out of
+the box.
 
 ## File I/O
 

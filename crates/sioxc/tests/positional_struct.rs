@@ -1,12 +1,12 @@
 //! Positional name-less struct locals (`let p: Pkt = { 3, 4 }`) bind to fields
-//! by declaration order, on the JIT and the native test harness.
+//! by declaration order in the native test harness.
 
 use std::process::Command;
 
 const FIXTURE: &str = "crates/sioxc/tests/fixtures/positional_struct_test.siox";
 
 #[test]
-fn positional_struct_locals_run_on_jit() {
+fn positional_struct_locals_run_via_native_cli() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let out = Command::new(siox)

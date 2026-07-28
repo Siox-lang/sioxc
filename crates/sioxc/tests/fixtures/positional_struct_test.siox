@@ -1,5 +1,5 @@
-// Positional name-less struct locals in a testbench, on the JIT and the
-// native harness. `{ 3, 4 }` binds to fields by declaration order; the
+// Positional name-less struct locals in the native testbench harness.
+// `{ 3, 4 }` binds to fields by declaration order; the
 // explicit and typed-positional forms must still agree.
 module positional_struct;
 

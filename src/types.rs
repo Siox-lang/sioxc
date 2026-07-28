@@ -504,13 +504,17 @@ impl<'a> Checker<'a> {
             }
             Item::ExternBlock { fns, .. } => {
                 for f in fns {
-                    self.fn_arity
-                        .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
+                    self.fn_arity.insert(
+                        f.name.text.clone(),
+                        f.params.iter().filter(|p| !p.is_self).count(),
+                    );
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {
-                self.fn_arity
-                    .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
+                self.fn_arity.insert(
+                    f.name.text.clone(),
+                    f.params.iter().filter(|p| !p.is_self).count(),
+                );
                 let vps = f
                     .params
                     .iter()
@@ -521,8 +525,10 @@ impl<'a> Checker<'a> {
                     .insert(f.name.text.clone(), (f.generics.params.clone(), vps));
             }
             Item::Fn(f) => {
-                self.fn_arity
-                    .insert(f.name.text.clone(), f.params.iter().filter(|p| !p.is_self).count());
+                self.fn_arity.insert(
+                    f.name.text.clone(),
+                    f.params.iter().filter(|p| !p.is_self).count(),
+                );
             }
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
@@ -611,7 +617,9 @@ impl<'a> Checker<'a> {
     /// reported by the parser, which owns that message.
     fn check_enum(&mut self, e: &EnumDecl) {
         let Some(repr) = &e.repr else { return };
-        let Some(head) = type_head_name(repr) else { return };
+        let Some(head) = type_head_name(repr) else {
+            return;
+        };
         if self.own_variants.contains_key(head) {
             return;
         }
@@ -733,7 +741,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-
     fn check_item(&mut self, item: &Item) {
         let sym = HashMap::new();
         let sym = &sym;
@@ -756,7 +763,9 @@ impl<'a> Checker<'a> {
                 let mut seen: HashMap<i64, &str> = HashMap::new();
                 for v in &e.variants {
                     let Some(val) = &v.value else { continue };
-                    let Some(n) = Self::const_literal(val) else { continue };
+                    let Some(n) = Self::const_literal(val) else {
+                        continue;
+                    };
                     if let Some(prev) = seen.insert(n, v.name.text.as_str()) {
                         self.error(
                             codes::DUPLICATE_ITEM,
@@ -813,7 +822,9 @@ impl<'a> Checker<'a> {
 
     fn check_view(&mut self, view: &ViewDecl) {
         let target_ty = &view.target;
-        let Some(target) = type_head_name(target_ty) else { return };
+        let Some(target) = type_head_name(target_ty) else {
+            return;
+        };
         if !self.structs.contains_key(target) {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -857,9 +868,15 @@ impl<'a> Checker<'a> {
     }
 
     fn check_applied_view(&mut self, ty: &Type) {
-        let Type::View { view, target, span } = ty else { return };
-        let Some(view_name) = view.segments.last().map(|i| i.text.as_str()) else { return };
-        let Some(target_name) = type_head_name(target) else { return };
+        let Type::View { view, target, span } = ty else {
+            return;
+        };
+        let Some(view_name) = view.segments.last().map(|i| i.text.as_str()) else {
+            return;
+        };
+        let Some(target_name) = type_head_name(target) else {
+            return;
+        };
         let key = format!("{view_name}@{target_name}");
         if !self.views.contains_key(&key) {
             self.error(
@@ -904,10 +921,15 @@ impl<'a> Checker<'a> {
     /// struct's inherited fields all reach here as field accesses too, so the
     /// check walks the derivation chain and stays silent on anything else.
     fn check_field_exists(&mut self, base: &Expr, field: &Ident, sym: &HashMap<String, Ty>) {
-        let Some(head) = self.ty_head(&self.type_of(base, sym)) else { return };
+        let Some(head) = self.ty_head(&self.type_of(base, sym)) else {
+            return;
+        };
         // `s.ready()` parses as a call over a *field* node, so a method name
         // reaches here too — it is not a missing field.
-        if self.methods.contains_key(&(head.clone(), field.text.clone())) {
+        if self
+            .methods
+            .contains_key(&(head.clone(), field.text.clone()))
+        {
             return;
         }
         // Walk `struct B : A` so an inherited field counts as present.
@@ -917,13 +939,22 @@ impl<'a> Checker<'a> {
             if !seen.insert(name.clone()) {
                 return; // cyclic derivation: already diagnosed elsewhere
             }
-            let Some((base_ty, fields)) = self.structs.get(&name) else { return };
+            let Some((base_ty, fields)) = self.structs.get(&name) else {
+                return;
+            };
             if fields.iter().any(|f| *f == field.text) {
                 return;
             }
-            cur = base_ty.as_ref().and_then(type_head_name).map(str::to_string);
+            cur = base_ty
+                .as_ref()
+                .and_then(type_head_name)
+                .map(str::to_string);
         }
-        let fields = self.structs.get(&head).map(|(_, f)| f.clone()).unwrap_or_default();
+        let fields = self
+            .structs
+            .get(&head)
+            .map(|(_, f)| f.clone())
+            .unwrap_or_default();
         let mut d = Diagnostic::error(format!("`{head}` has no field `{}`", field.text))
             .with_code(codes::UNKNOWN_NAME)
             .at(field.span);
@@ -942,11 +973,18 @@ impl<'a> Checker<'a> {
     /// *and* which has at least one method recorded is checked, so a type
     /// whose methods this stage never collected can't false-positive.
     fn check_method_exists(&mut self, callee: &Expr, sym: &HashMap<String, Ty>) {
-        let Expr::Field { base, field, span } = callee else { return };
+        let Expr::Field { base, field, span } = callee else {
+            return;
+        };
         let _ = &base;
         let recv = self.type_of(base, sym);
-        let Some(head) = self.ty_head(&recv) else { return };
-        if self.methods.contains_key(&(head.clone(), field.text.clone())) {
+        let Some(head) = self.ty_head(&recv) else {
+            return;
+        };
+        if self
+            .methods
+            .contains_key(&(head.clone(), field.text.clone()))
+        {
             return;
         }
         // Only complain about a type we actually know methods for.
@@ -974,8 +1012,12 @@ impl<'a> Checker<'a> {
     /// A partial impl used to pass, leaving the missing method to fail much
     /// later (or silently do nothing).
     fn check_trait_contract(&mut self, im: &ImplDecl) {
-        let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) else { return };
-        let Some(required) = self.trait_required.get(&tr.text) else { return };
+        let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) else {
+            return;
+        };
+        let Some(required) = self.trait_required.get(&tr.text) else {
+            return;
+        };
         let provided: HashSet<&str> = im
             .items
             .iter()
@@ -1070,7 +1112,10 @@ impl<'a> Checker<'a> {
 
     /// Build the value environment for an impl body: the `in` ports (for the
     /// write check) and a name -> type table (ports + impl-level lets/consts).
-    fn impl_env(&self, im: &ImplDecl) -> (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>) {
+    fn impl_env(
+        &self,
+        im: &ImplDecl,
+    ) -> (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>) {
         let mut illegal = HashSet::new();
         let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();
@@ -1502,12 +1547,16 @@ impl<'a> Checker<'a> {
         value: &Expr,
         sym: &HashMap<String, Ty>,
     ) -> bool {
-        let Expr::Index { base, index, span } = target else { return false };
+        let Expr::Index { base, index, span } = target else {
+            return false;
+        };
         let base_ty = self.type_of(base, sym);
         if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
             return false;
         }
-        let Some(owner) = self.type_kind_name(&base_ty) else { return false };
+        let Some(owner) = self.type_kind_name(&base_ty) else {
+            return false;
+        };
         if matches!(index.as_ref(), Expr::PartialRange { .. }) {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -1665,7 +1714,10 @@ impl<'a> Checker<'a> {
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
-                format!("wrap it in a conversion, e.g. `{}(...)`", self.ty_display(&lhs))
+                format!(
+                    "wrap it in a conversion, e.g. `{}(...)`",
+                    self.ty_display(&lhs)
+                )
             });
             self.sink.emit(
                 Diagnostic::error(format!(
@@ -1820,16 +1872,16 @@ impl<'a> Checker<'a> {
             "assert" => 1,
             _ => return,
         };
-        let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else { return };
-        let want = crate::run::format_arity(text);
+        let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else {
+            return;
+        };
+        let want = crate::testbench::format_arity(text);
         let have = args.len().saturating_sub(fmt_at + 1);
         if want != have {
             self.error(
                 codes::TYPE_MISMATCH,
                 *span,
-                format!(
-                    "format string takes {want} argument(s) but {have} were given"
-                ),
+                format!("format string takes {want} argument(s) but {have} were given"),
             );
         }
     }
@@ -1856,8 +1908,12 @@ impl<'a> Checker<'a> {
     /// declaration here and are skipped.
     fn check_call_arity(&mut self, callee: &Expr, args: &[Expr]) {
         let Expr::Path(p) = callee else { return };
-        let [name] = p.segments.as_slice() else { return };
-        let Some(&want) = self.fn_arity.get(&name.text) else { return };
+        let [name] = p.segments.as_slice() else {
+            return;
+        };
+        let Some(&want) = self.fn_arity.get(&name.text) else {
+            return;
+        };
         if args.len() != want {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -1886,7 +1942,11 @@ impl<'a> Checker<'a> {
         if !(1..=64).contains(&width) {
             return;
         }
-        let hi = if width == 64 { i64::MAX } else { (1i64 << width) - 1 };
+        let hi = if width == 64 {
+            i64::MAX
+        } else {
+            (1i64 << width) - 1
+        };
         let lo = -(1i64 << (width - 1));
         if v < lo || v > hi {
             self.error(
@@ -1986,7 +2046,9 @@ impl<'a> Checker<'a> {
         if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
             return;
         }
-        let Some(owner) = self.type_kind_name(&base_ty) else { return };
+        let Some(owner) = self.type_kind_name(&base_ty) else {
+            return;
+        };
         if matches!(index, Expr::PartialRange { .. }) {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -2032,7 +2094,9 @@ impl<'a> Checker<'a> {
             if Self::const_literal(operand).is_some() {
                 continue;
             }
-            let Some(v) = Self::const_literal(lit) else { continue };
+            let Some(v) = Self::const_literal(lit) else {
+                continue;
+            };
             if let Ty::Vector { width, .. } = self.type_of(operand, sym) {
                 self.check_fits_width(v, width, expr_span(lit));
             }
@@ -2177,7 +2241,8 @@ impl<'a> Checker<'a> {
                 self.error(
                     codes::TYPE_MISMATCH,
                     *span,
-                    "a partial range needs an indexed value to supply its omitted bounds".to_string(),
+                    "a partial range needs an indexed value to supply its omitted bounds"
+                        .to_string(),
                 );
             }
             Expr::Unary { op, rhs, span } => {
@@ -2369,7 +2434,9 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Call { callee, args, bang, .. } => {
+            Expr::Call {
+                callee, args, bang, ..
+            } => {
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`
                 // judge the name, so one mistake yields one diagnostic.
@@ -2579,9 +2646,7 @@ impl<'a> Checker<'a> {
                                 .segments
                                 .first()
                                 .and_then(|s| self.resolved.resolved(s.span))
-                                .filter(|id| {
-                                    self.resolved.kind_of(*id) == Some(DefKind::Enum)
-                                });
+                                .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Enum));
                             match qualifier.or(d.parent) {
                                 Some(pid)
                                     if self
@@ -2706,8 +2771,10 @@ impl<'a> Checker<'a> {
             Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
             Expr::Index { base, index, .. } => {
                 let base_ty = self.type_of(base, sym);
-                let is_range =
-                    matches!(index.as_ref(), Expr::Range { .. } | Expr::PartialRange { .. });
+                let is_range = matches!(
+                    index.as_ref(),
+                    Expr::Range { .. } | Expr::PartialRange { .. }
+                );
                 match &base_ty {
                     // Intrinsic indexing keeps its historical best-effort
                     // typing; width/element checks happen in the dedicated
@@ -2722,17 +2789,17 @@ impl<'a> Checker<'a> {
                         } else {
                             self.type_kind_name(&self.type_of(index, sym))
                         };
-                        let output = self
-                            .index_sigs
-                            .get(&("Index".to_string(), owner))
-                            .and_then(|sigs| {
-                                sigs.iter()
-                                    .find(|(i, _)| {
-                                        i.is_none() || i.as_ref() == input.as_ref()
-                                    })
-                                    .and_then(|(_, output)| output.as_deref())
-                            });
-                        output.map(|name| self.ty_from_head(name)).unwrap_or(Ty::Error)
+                        let output =
+                            self.index_sigs
+                                .get(&("Index".to_string(), owner))
+                                .and_then(|sigs| {
+                                    sigs.iter()
+                                        .find(|(i, _)| i.is_none() || i.as_ref() == input.as_ref())
+                                        .and_then(|(_, output)| output.as_deref())
+                                });
+                        output
+                            .map(|name| self.ty_from_head(name))
+                            .unwrap_or(Ty::Error)
                     }
                 }
             }
@@ -2870,8 +2937,12 @@ impl<'a> Checker<'a> {
             },
             _ => decl_ty,
         };
-        let Type::Generic { base, args, .. } = t else { return None };
-        let Type::Path(p) = base.as_ref() else { return None };
+        let Type::Generic { base, args, .. } = t else {
+            return None;
+        };
+        let Type::Path(p) = base.as_ref() else {
+            return None;
+        };
         if p.segments.last().map(|s| s.text.as_str()) != Some("integer") {
             return None;
         }
@@ -2885,10 +2956,21 @@ impl<'a> Checker<'a> {
     /// the assignment form was not — and the value wraps to the storage width
     /// (50 -> 2), so the runtime range assert saw an in-range value and the
     /// violation vanished.
-    fn check_assign_range(&mut self, target: &Expr, value: &Expr, ranged: &HashMap<String, (i64, i64)>) {
-        let Some(name) = target_root_name(target) else { return };
-        let Some(&(lo, hi)) = ranged.get(&name) else { return };
-        let Some(v) = Self::const_literal(value) else { return };
+    fn check_assign_range(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        ranged: &HashMap<String, (i64, i64)>,
+    ) {
+        let Some(name) = target_root_name(target) else {
+            return;
+        };
+        let Some(&(lo, hi)) = ranged.get(&name) else {
+            return;
+        };
+        let Some(v) = Self::const_literal(value) else {
+            return;
+        };
         if v < lo || v > hi {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -3160,11 +3242,9 @@ struct PortDirs {
 /// directions.
 fn view_key(ty: &Type, views: &HashMap<String, Type>) -> Option<String> {
     let key = match ty {
-        Type::View { view, target, .. } => format!(
-            "{}@{}",
-            view.segments.last()?.text,
-            type_head_name(target)?
-        ),
+        Type::View { view, target, .. } => {
+            format!("{}@{}", view.segments.last()?.text, type_head_name(target)?)
+        }
         _ => type_head_name(ty)?.to_string(),
     };
     views.contains_key(&key).then_some(key)
@@ -3285,7 +3365,6 @@ fn signed_lit(e: &Expr) -> Option<i64> {
         _ => None,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -3718,7 +3797,9 @@ mod tests {
         );
         // An unknown prefix (no `impl Prefix` declares `q`) is an error.
         assert_eq!(
-            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"),
+            check_src(
+                "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"
+            ),
             1
         );
     }
@@ -3932,9 +4013,14 @@ mod tests {
         let resolved = crate::resolve::resolve(modules, &mut sink);
         check(modules, &resolved, &mut sink);
         assert!(
-            sink.diagnostics().iter().any(|d| d.message.contains("`Q` does not satisfy")),
+            sink.diagnostics()
+                .iter()
+                .any(|d| d.message.contains("`Q` does not satisfy")),
             "should name `Q`: {:?}",
-            sink.diagnostics().iter().map(|d| &d.message).collect::<Vec<_>>()
+            sink.diagnostics()
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3943,13 +4029,26 @@ mod tests {
     /// quietly turning a clocked block combinational.
     #[test]
     fn unknown_field_and_method_are_reported() {
-        let st = "module m;\nstruct P { a: Bit }\nimpl P { fn get(self) -> Bit { return self.a; } }\n\
+        let st =
+            "module m;\nstruct P { a: Bit }\nimpl P { fn get(self) -> Bit { return self.a; } }\n\
                   entity E { out y: Bit; }\nimpl E { let p: P; y = ";
-        assert_eq!(check_src(&format!("{st}p.nosuch; }}\n")), 1, "unknown field");
+        assert_eq!(
+            check_src(&format!("{st}p.nosuch; }}\n")),
+            1,
+            "unknown field"
+        );
         assert_eq!(check_src(&format!("{st}p.a; }}\n")), 0, "real field");
         // A method name reaches the field check through the call's callee.
-        assert_eq!(check_src(&format!("{st}p.get(); }}\n")), 0, "method, not a field");
-        assert_eq!(check_src(&format!("{st}p.nomethod(); }}\n")), 1, "unknown method");
+        assert_eq!(
+            check_src(&format!("{st}p.get(); }}\n")),
+            0,
+            "method, not a field"
+        );
+        assert_eq!(
+            check_src(&format!("{st}p.nomethod(); }}\n")),
+            1,
+            "unknown method"
+        );
 
         // A newtype's fields are its base's, so they count as present.
         let derived = "module m;\nstruct A { x: Bit }\nstruct B(A);\n\
@@ -3963,9 +4062,12 @@ mod tests {
     /// `Suffix`) allow an empty impl.
     #[test]
     fn trait_impl_must_provide_the_required_methods() {
-        let base = "module m;\ntrait Tr { fn f(self) -> Bit; fn g(self) -> Bit; }\nstruct S { x: Bit }\n";
+        let base =
+            "module m;\ntrait Tr { fn f(self) -> Bit; fn g(self) -> Bit; }\nstruct S { x: Bit }\n";
         assert_eq!(
-            check_src(&format!("{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} }}\n")),
+            check_src(&format!(
+                "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} }}\n"
+            )),
             1,
             "`g` is missing"
         );
@@ -3990,7 +4092,11 @@ mod tests {
     fn ranged_numeric_assignment_is_checked() {
         let ent = "module m;\nentity E { out y: integer<0..10>; }\nimpl E { y = ";
         assert_eq!(check_src(&format!("{ent}50; }}\n")), 1, "above the range");
-        assert_eq!(check_src(&format!("{ent}0 - 1; }}\n")), 1, "below the range");
+        assert_eq!(
+            check_src(&format!("{ent}0 - 1; }}\n")),
+            1,
+            "below the range"
+        );
         assert_eq!(check_src(&format!("{ent}7; }}\n")), 0, "inside");
         assert_eq!(check_src(&format!("{ent}10; }}\n")), 0, "the top bound");
         // An impl-level ranged local is covered the same way.
@@ -4008,12 +4114,28 @@ mod tests {
                     extern \"C\" { fn ext(a: integer, b: integer) -> integer; }\n\
                     entity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
         assert_eq!(check_src(&format!("{base}add2(a); }}\n")), 1, "too few");
-        assert_eq!(check_src(&format!("{base}add2(a, a, a); }}\n")), 1, "too many");
+        assert_eq!(
+            check_src(&format!("{base}add2(a, a, a); }}\n")),
+            1,
+            "too many"
+        );
         assert_eq!(check_src(&format!("{base}add2(a, a); }}\n")), 0, "exact");
-        assert_eq!(check_src(&format!("{base}ext(a); }}\n")), 1, "extern too few");
-        assert_eq!(check_src(&format!("{base}ext(a, a); }}\n")), 0, "extern exact");
+        assert_eq!(
+            check_src(&format!("{base}ext(a); }}\n")),
+            1,
+            "extern too few"
+        );
+        assert_eq!(
+            check_src(&format!("{base}ext(a, a); }}\n")),
+            0,
+            "extern exact"
+        );
         // A conversion is a call shape but not a declared fn.
-        assert_eq!(check_src(&format!("{base}unsigned[8](a); }}\n")), 0, "conversion");
+        assert_eq!(
+            check_src(&format!("{base}unsigned[8](a); }}\n")),
+            0,
+            "conversion"
+        );
     }
 
     /// A miscounted `print!` silently rendered an empty slot or dropped an
@@ -4021,14 +4143,24 @@ mod tests {
     #[test]
     fn format_argument_count_must_match() {
         let tb = |body: &str| {
-            format!("module m;\n#[test] entity T {{}}\nimpl T {{ let a: unsigned[8] = 1; {body} }}\n")
+            format!(
+                "module m;\n#[test] entity T {{}}\nimpl T {{ let a: unsigned[8] = 1; {body} }}\n"
+            )
         };
         assert_eq!(check_src(&tb(r#"print!("{} {}", a);"#)), 1, "too few");
         assert_eq!(check_src(&tb(r#"print!("{}", a, a);"#)), 1, "too many");
-        assert_eq!(check_src(&tb(r#"print!("none", a);"#)), 1, "no placeholders");
+        assert_eq!(
+            check_src(&tb(r#"print!("none", a);"#)),
+            1,
+            "no placeholders"
+        );
         assert_eq!(check_src(&tb(r#"print!("{} {}", a, a);"#)), 0, "exact");
         // `{{}}` is an escaped brace pair and consumes nothing.
-        assert_eq!(check_src(&tb(r#"print!("{{}} {}", a);"#)), 0, "escaped braces");
+        assert_eq!(
+            check_src(&tb(r#"print!("{{}} {}", a);"#)),
+            0,
+            "escaped braces"
+        );
         // `assert!` takes its format string second.
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}", a);"#)), 0);
         assert_eq!(check_src(&tb(r#"assert!(a == 1, "ok {}");"#)), 1);
@@ -4044,10 +4176,22 @@ mod tests {
         let src = |body: &str| {
             format!("module m;\nenum Base {{ A, B }}\nenum Mid(Base);\nenum Top(Mid);\nentity E {{ out m: Mid; out t: Top; }}\nimpl E {{ {body} }}\n")
         };
-        assert_eq!(check_src(&src("m = Mid::B; t = Top::A;")), 0, "one and two hops");
+        assert_eq!(
+            check_src(&src("m = Mid::B; t = Top::A;")),
+            0,
+            "one and two hops"
+        );
         // Still distinct types: the base's own variant needs a conversion.
-        assert_eq!(check_src(&src("m = Base::B; t = Top::A;")), 1, "a newtype is not its base");
-        assert_eq!(check_src(&src("m = Mid(Base::B); t = Top::A;")), 0, "conversion is explicit");
+        assert_eq!(
+            check_src(&src("m = Base::B; t = Top::A;")),
+            1,
+            "a newtype is not its base"
+        );
+        assert_eq!(
+            check_src(&src("m = Mid(Base::B); t = Top::A;")),
+            0,
+            "conversion is explicit"
+        );
     }
 
     /// Exhaustiveness was only ever checked on match *statements*. In
@@ -4059,12 +4203,18 @@ mod tests {
             format!("module m;\nenum Base {{ A, B, C }}\nentity E {{ in sel: Base; out y: unsigned[8]; }}\nimpl E {{ y = match sel {{ {arms} }}; }}\n")
         };
         assert_eq!(
-            warnings(&src("Base::A => 1, Base::B => 2"), codes::NON_EXHAUSTIVE_MATCH),
+            warnings(
+                &src("Base::A => 1, Base::B => 2"),
+                codes::NON_EXHAUSTIVE_MATCH
+            ),
             1,
             "a missing variant in expression position"
         );
         assert_eq!(
-            warnings(&src("Base::A => 1, Base::B => 2, Base::C => 3"), codes::NON_EXHAUSTIVE_MATCH),
+            warnings(
+                &src("Base::A => 1, Base::B => 2, Base::C => 3"),
+                codes::NON_EXHAUSTIVE_MATCH
+            ),
             0,
             "all variants named"
         );
@@ -4101,24 +4251,36 @@ mod tests {
             format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} }} }}\n")
         };
         assert_eq!(
-            warnings(&m("Idle => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            warnings(
+                &m("Idle => { r = 1; } _ => { r = 9; }"),
+                codes::INVALID_PATTERN
+            ),
             1,
             "a bare name is rejected, not treated as a catch-all"
         );
         // The forms the lowering does honour stay clean.
         assert_eq!(
-            warnings(&m("State::Idle => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            warnings(
+                &m("State::Idle => { r = 1; } _ => { r = 9; }"),
+                codes::INVALID_PATTERN
+            ),
             0,
             "a qualified variant is valid"
         );
         assert_eq!(
-            warnings(&m("0..9 => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            warnings(
+                &m("0..9 => { r = 1; } _ => { r = 9; }"),
+                codes::INVALID_PATTERN
+            ),
             0,
             "ranges are valid"
         );
         // `|` alternatives are checked through, not just the outer pattern.
         assert_eq!(
-            warnings(&m("State::Idle | Run => { r = 1; } _ => { r = 9; }"), codes::INVALID_PATTERN),
+            warnings(
+                &m("State::Idle | Run => { r = 1; } _ => { r = 9; }"),
+                codes::INVALID_PATTERN
+            ),
             1,
             "a bad alternative inside `|` is caught"
         );
@@ -4135,14 +4297,20 @@ mod tests {
         };
         for bad in ["\"2\"", "x\"G\"", "o\"8\""] {
             assert_eq!(
-                warnings(&m(&format!("{bad} => {{ r = 1; }}")), codes::INVALID_PATTERN),
+                warnings(
+                    &m(&format!("{bad} => {{ r = 1; }}")),
+                    codes::INVALID_PATTERN
+                ),
                 1,
                 "{bad} should be rejected"
             );
         }
         for good in ["\"01--\"", "x\"A?\"", "o\"7?\"", "\"0000_11--\""] {
             assert_eq!(
-                warnings(&m(&format!("{good} => {{ r = 1; }}")), codes::INVALID_PATTERN),
+                warnings(
+                    &m(&format!("{good} => {{ r = 1; }}")),
+                    codes::INVALID_PATTERN
+                ),
                 0,
                 "{good} is a valid pattern"
             );
@@ -4157,22 +4325,34 @@ mod tests {
             format!("module m;\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
         };
         assert_eq!(
-            warnings(&m("0..9 => { r = 1; } 2..5 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            warnings(
+                &m("0..9 => { r = 1; } 2..5 => { r = 2; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
             1,
             "fully covered"
         );
         assert_eq!(
-            warnings(&m("0..9 => { r = 1; } 5 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            warnings(
+                &m("0..9 => { r = 1; } 5 => { r = 2; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
             1,
             "a literal inside an earlier range"
         );
         assert_eq!(
-            warnings(&m("0..9 => { r = 1; } 5..15 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            warnings(
+                &m("0..9 => { r = 1; } 5..15 => { r = 2; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
             0,
             "a partial overlap is still reachable"
         );
         assert_eq!(
-            warnings(&m("0..9 => { r = 1; } 10..20 => { r = 2; }"), codes::UNREACHABLE_MATCH_ARM),
+            warnings(
+                &m("0..9 => { r = 1; } 10..20 => { r = 2; }"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
             0,
             "disjoint ranges"
         );
@@ -4183,10 +4363,26 @@ mod tests {
     #[test]
     fn out_of_bounds_constant_index_is_rejected() {
         let ent = "module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
-        assert_eq!(check_src(&format!("{ent}a[9]; }}\n")), 1, "bit 9 of a unsigned[8]");
-        assert_eq!(check_src(&format!("{ent}a[15..8]; }}\n")), 2, "both slice bounds");
-        assert_eq!(check_src(&format!("{ent}a[7]; }}\n")), 0, "the top bit is in range");
-        assert_eq!(check_src(&format!("{ent}a[7..0]; }}\n")), 0, "a full-width slice");
+        assert_eq!(
+            check_src(&format!("{ent}a[9]; }}\n")),
+            1,
+            "bit 9 of a unsigned[8]"
+        );
+        assert_eq!(
+            check_src(&format!("{ent}a[15..8]; }}\n")),
+            2,
+            "both slice bounds"
+        );
+        assert_eq!(
+            check_src(&format!("{ent}a[7]; }}\n")),
+            0,
+            "the top bit is in range"
+        );
+        assert_eq!(
+            check_src(&format!("{ent}a[7..0]; }}\n")),
+            0,
+            "a full-width slice"
+        );
         // A runtime index can't be checked statically and must stay allowed.
         let dynamic = "module m;\nentity E { in a: unsigned[8]; in i: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a[i]; }\n";
         assert_eq!(check_src(dynamic), 0);

@@ -28,12 +28,6 @@ pub fn build(
     design: &Design,
     out: &Path,
 ) -> Result<(), String> {
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
-        return Err(format!(
-            "signal `{}` is {} bits; siox build is 64-bit only",
-            s.path, s.width
-        ));
-    }
     let issues = design.validate();
     if !issues.is_empty() {
         return Err(issues.join("; "));
@@ -105,7 +99,9 @@ pub fn build(
                 // A *static* associated fn (no `self`) is callable as
                 // `Type::name(..)`, keyed like a module-level fn.
                 ast::Item::Impl(im) => {
-                    let Some(ty) = type_head_name(&im.target) else { continue };
+                    let Some(ty) = type_head_name(&im.target) else {
+                        continue;
+                    };
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
                             if !f.params.iter().any(|p| p.is_self) {
@@ -155,8 +151,26 @@ pub fn build(
     let mut prog = String::new();
     prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
     prog.push_str("extern void sx_reset(void);\n");
-    prog.push_str("extern void sx_set(uint32_t, uint64_t);\n");
-    prog.push_str("extern uint64_t sx_read(uint32_t);\n");
+    prog.push_str("extern void sx_set_word(uint32_t, uint32_t, uint64_t);\n");
+    prog.push_str("extern uint64_t sx_read_word(uint32_t, uint32_t);\n");
+    let abi_words = design
+        .signals
+        .iter()
+        .map(|signal| siox::target::words_for(signal.width).to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    prog.push_str(&format!(
+        "static const uint8_t sx_nwords[] = {{{abi_words}}};\n\
+         static void sx_set(uint32_t s, unsigned __int128 v) {{\n\
+         \x20   sx_set_word(s, 0, (uint64_t)v);\n\
+         \x20   if (sx_nwords[s] > 1) sx_set_word(s, 1, (uint64_t)(v >> 64));\n\
+         }}\n\
+         static unsigned __int128 sx_read(uint32_t s) {{\n\
+         \x20   unsigned __int128 v = sx_read_word(s, 0);\n\
+         \x20   if (sx_nwords[s] > 1) v |= (unsigned __int128)sx_read_word(s, 1) << 64;\n\
+         \x20   return v;\n\
+         }}\n"
+    ));
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\nstatic char g_msgbuf[512];\n");
     prog.push_str("static signed g_warnings;\n");
@@ -229,6 +243,7 @@ pub fn build(
     let mut names = Vec::new();
     for &root in &tests {
         let name = hier.instance(root).entity.clone();
+        let qualified = qualified_test_name(modules, &name);
         let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, &name);
         let clocks = scan_clocks(&items, &aliases);
@@ -261,7 +276,7 @@ pub fn build(
             instance_names,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
-        names.push(name);
+        names.push((name, qualified));
     }
     prog.push_str(&gen_main(&names));
 
@@ -296,23 +311,23 @@ pub fn build(
 /// The libtest-style `main` that runs each `test_<name>` and reports results.
 /// Takes an optional name-substring filter as `argv[1]`, like a rustc test
 /// binary (`./testbin <filter>`).
-fn gen_main(names: &[String]) -> String {
+fn gen_main(names: &[(String, String)]) -> String {
     let mut m = String::new();
     m.push_str("signed main(signed argc, char **argv) {\n");
     m.push_str("    const char *filter = argc > 1 ? argv[1] : 0;\n");
     m.push_str("    signed failed = 0, ran = 0, filtered = 0;\n");
     // Count how many tests match, so the "running N tests" line is post-filter.
-    for n in names {
+    for (_, display) in names {
         m.push_str(&format!(
-            "    if (!filter || strstr(\"{n}\", filter)) ran++; else filtered++;\n"
+            "    if (!filter || strstr(\"{display}\", filter)) ran++; else filtered++;\n"
         ));
     }
     m.push_str("    printf(\"\\nrunning %d test%s\\n\", ran, ran == 1 ? \"\" : \"s\");\n");
-    for n in names {
+    for (symbol, display) in names {
         m.push_str(&format!(
-            "    if (!filter || strstr(\"{n}\", filter)) {{ \
-             if (test_{n}()) {{ printf(\"test {n} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
-             else printf(\"test {n} ... ok\\n\"); }}\n"
+            "    if (!filter || strstr(\"{display}\", filter)) {{ \
+             if (test_{symbol}()) {{ printf(\"test {display} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
+             else printf(\"test {display} ... ok\\n\"); }}\n"
         ));
     }
     m.push_str(
@@ -323,6 +338,31 @@ fn gen_main(names: &[String]) -> String {
     );
     m.push_str("    return failed ? 1 : 0;\n}\n");
     m
+}
+
+fn qualified_test_name(modules: &[Module], entity: &str) -> String {
+    modules
+        .iter()
+        .find(|m| {
+            m.items
+                .iter()
+                .any(|item| matches!(item, ast::Item::Entity(e) if e.name.text == entity))
+        })
+        .map(|m| {
+            let module = m
+                .path
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if module.is_empty() {
+                entity.to_string()
+            } else {
+                format!("{module}::{entity}")
+            }
+        })
+        .unwrap_or_else(|| entity.to_string())
 }
 
 /// Translation context: the design, this test's name -> signal map, and enum
@@ -566,6 +606,53 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    fn try_declare_string_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
+        let Some(ty) = &l.ty else { return Ok(false) };
+        if type_head_name(ty) != Some("string") {
+            return Ok(false);
+        }
+        let literal = match &l.value {
+            Some(ast::Expr::StrLit { text, .. }) => Some(text.as_str()),
+            _ => None,
+        };
+        let declared_len = match ty {
+            ast::Type::Indexed {
+                index: Some(index), ..
+            } => match index.as_ref() {
+                ast::Expr::Int { text, .. } => text.parse().ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let len = declared_len
+            .or_else(|| literal.map(|text| text.chars().count()))
+            .unwrap_or(0);
+        self.local_types
+            .borrow_mut()
+            .insert(l.name.text.clone(), "string".into());
+        for i in 0..len {
+            let key = format!("{}[{i}]", l.name.text);
+            let value = literal
+                .and_then(|text| text.chars().nth(i))
+                .map(|ch| ch as u32)
+                .unwrap_or(0);
+            // Elaboration materializes a connected string as one signal per
+            // character. Seed those signals directly so the DUT connection
+            // sees the initializer; only genuinely unconnected strings need C
+            // locals.
+            if let Some(&id) = self.map.get(&key) {
+                b.push_str(&format!("    sx_set({}, {value}ULL);\n", id.0));
+            } else {
+                b.push_str(&format!(
+                    "    uint64_t {} = {value}ULL;\n",
+                    c_local_ident(&key)
+                ));
+                self.locals.borrow_mut().insert(key);
+            }
+        }
+        Ok(true)
+    }
+
     /// Emit writes for a composite value assigned to a connected name — a
     /// string literal (`s = "hi"` -> one `Char` element per index) or a struct
     /// literal (`a = { .re = 3 }` -> one field signal each). Returns `true`
@@ -708,21 +795,39 @@ impl Ctx<'_> {
                 Ok(true)
             }
             ast::Expr::Construct { args, .. } => {
+                let mut wrote = false;
                 for arg in args {
                     // Named `.field = v` only; positional needs struct field
                     // order (a follow-up). A value-less arg is parser recovery.
                     let Some(f) = &arg.field else { continue };
                     let field = format!("{name}.{}", f.text);
-                    let Some(&id) = self.map.get(&field) else {
-                        continue;
-                    };
-                    let e = match &arg.value {
-                        Some(v) => self.value_for(id, v)?,
-                        None => "0".to_string(),
-                    };
-                    b.push_str(&format!("{ind}sx_set({}, {e});\n", id.0));
+                    if let Some(v) = &arg.value {
+                        if self.write_composite(&field, v, b, ind)? {
+                            wrote = true;
+                            continue;
+                        }
+                    }
+                    if let Some(&id) = self.map.get(&field) {
+                        let e = match &arg.value {
+                            Some(v) => self.value_for(id, v)?,
+                            None => "0".to_string(),
+                        };
+                        b.push_str(&format!("{ind}sx_set({}, {e});\n", id.0));
+                        wrote = true;
+                    } else if self.locals.borrow().contains(&field) {
+                        let e = match &arg.value {
+                            Some(v) => self.expr(v)?,
+                            None => "0".to_string(),
+                        };
+                        let e = match self.local_widths.borrow().get(&field) {
+                            Some(&w) => mask_c(&e, w),
+                            None => e,
+                        };
+                        b.push_str(&format!("{ind}{} = {e};\n", c_local_ident(&field)));
+                        wrote = true;
+                    }
                 }
-                Ok(true)
+                Ok(wrote)
             }
             _ => Ok(false),
         }
@@ -991,6 +1096,7 @@ impl Ctx<'_> {
                 // elaboration; the testbench let emits nothing.
                 ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {}
                 ast::ImplItem::Let(l) if self.try_declare_fs_read_local(l, &mut b)? => {}
+                ast::ImplItem::Let(l) if self.try_declare_string_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
@@ -1024,7 +1130,7 @@ impl Ctx<'_> {
                             let e = match value {
                                 // A char literal on an enum-typed local resolves
                                 // by position in that enum (data-driven), like
-                                // the JIT + hardware paths.
+                                // the native harness + hardware paths.
                                 Some(v) => match l
                                     .ty
                                     .as_ref()
@@ -1035,7 +1141,7 @@ impl Ctx<'_> {
                                     None => self.expr(v)?,
                                 },
                                 // Uninitialized: the type's `new()` default
-                                // (`Logic` -> `'U'`), matching JIT + hardware.
+                                // (`Logic` -> `'U'`), matching native + hardware.
                                 None => {
                                     l.ty.as_ref()
                                         .and_then(type_head_name)
@@ -1270,25 +1376,20 @@ impl Ctx<'_> {
         Ok(())
     }
 
-
     /// Expand a format string into a printf format plus argument expressions,
     /// honouring `{{`/`}}` escapes and rendering enum/real/integer operands the
     /// way `print!` does. Shared by `print!` and the `assert!`/`warn!` messages.
-    fn c_format(
-        &self,
-        text: &str,
-        args: &[ast::Expr],
-    ) -> Result<(String, Vec<String>), String> {
+    fn c_format(&self, text: &str, args: &[ast::Expr]) -> Result<(String, Vec<String>), String> {
         let mut cfmt = String::new();
         let mut cargs = Vec::new();
         let mut vals = args.iter();
-        for part in siox::run::format_parts(text) {
+        for part in siox::testbench::format_parts(text) {
             let a = match part {
-                siox::run::FormatPart::Text(t) => {
+                siox::testbench::FormatPart::Text(t) => {
                     cfmt.push_str(&c_escape(&t).replace('%', "%%"));
                     continue;
                 }
-                siox::run::FormatPart::Placeholder => vals.next(),
+                siox::testbench::FormatPart::Placeholder => vals.next(),
             };
             let Some(a) = a else { continue };
             let sig = expr_path(a)
@@ -1301,9 +1402,9 @@ impl Ctx<'_> {
                         if matches!(callee.as_ref(), ast::Expr::Path(p)
                             if p.segments.len() == 1 && p.segments[0].text == "uniform"))
             });
-            let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or_else(|| {
-                expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned())
-            });
+            let ety: Option<String> = sig
+                .and_then(|s| s.enum_type.clone())
+                .or_else(|| expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned()));
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let Some(syms) = enum_syms {
                 let mut tern = String::from("\"?\"");
@@ -1560,13 +1661,38 @@ impl Ctx<'_> {
             ast::Expr::StrLit { text, .. } => Some(text.chars().collect::<Vec<char>>()),
             _ => None,
         };
+        let eq = matches!(op, ast::BinOp::Eq);
+        if lit(lhs).is_none() && lit(rhs).is_none() {
+            let (Some(left), Some(right)) = (self.c_string_elems(lhs), self.c_string_elems(rhs))
+            else {
+                return Ok(None);
+            };
+            if left.len() != right.len() {
+                return Ok(Some(if eq { "0".into() } else { "1".into() }));
+            }
+            let terms = left
+                .iter()
+                .zip(&right)
+                .map(|(a, b)| format!("({a} == {b})"))
+                .collect::<Vec<_>>();
+            let all = if terms.is_empty() {
+                "1".into()
+            } else {
+                terms.join(" && ")
+            };
+            return Ok(Some(if eq {
+                format!("({all})")
+            } else {
+                format!("(!({all}))")
+            }));
+        }
         let (elems, chars) = match (lit(lhs), lit(rhs)) {
-            (Some(_), Some(_)) | (None, None) => return Ok(None), // two literals / no literal
+            (Some(_), Some(_)) => return Ok(None),
             (None, Some(c)) => (self.c_string_elems(lhs), c),
             (Some(c), None) => (self.c_string_elems(rhs), c),
+            (None, None) => unreachable!(),
         };
         let Some(elems) = elems else { return Ok(None) };
-        let eq = matches!(op, ast::BinOp::Eq);
         // A length mismatch is unequal — a constant either way.
         if elems.len() != chars.len() {
             return Ok(Some(if eq { "0".into() } else { "1".into() }));
@@ -1907,6 +2033,15 @@ impl Ctx<'_> {
             }
             ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
+            ast::Expr::BitStrLit { base, digits, .. } => {
+                let radix = match *base {
+                    'x' => 16,
+                    'o' => 8,
+                    _ => 2,
+                };
+                let value = u64::from_str_radix(digits, radix).unwrap_or(0);
+                format!("{value}ULL")
+            }
             ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
             // A method call `recv.method(args)` (possibly nullary) inlines the
@@ -1985,7 +2120,9 @@ impl Ctx<'_> {
                     }
                     _ => return self.c_fn_call(callee, args),
                 };
-                if w == 0 || w >= 64 {
+                if w > 64 {
+                    format!("((unsigned __int128)({v}))")
+                } else if w == 0 || w == 64 {
                     format!("({v})")
                 } else {
                     format!("(({v}) & {}ULL)", (1u64 << w) - 1)

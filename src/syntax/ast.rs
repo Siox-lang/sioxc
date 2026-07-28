@@ -39,8 +39,7 @@ pub enum Item {
     Fn(FnDecl),
     /// `extern "C" { fn sqrt(x: real) -> real; ... }` — foreign C functions
     /// callable from siox: `real` maps to `double`, integer-shaped types to
-    /// 64-bit words. Engines call the named symbols (JIT: process symbols;
-    /// native: the linked libraries).
+    /// 64-bit words. Native binaries resolve the named symbols while linking.
     ExternBlock {
         abi: String,
         fns: Vec<FnDecl>,

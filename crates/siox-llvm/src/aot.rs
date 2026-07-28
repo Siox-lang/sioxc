@@ -1,15 +1,17 @@
 //! Ahead-of-time object emission (stage B5).
 //!
 //! Emits the design module as a native object file via `TargetMachine`. The
-//! object exports the same `sx_*` C ABI the JIT uses, so a runtime `main`
-//! (generated from the testbench, or hand-written) links against it to form a
+//! object exports the `sx_*` C ABI, so a runtime `main` (generated from the
+//! testbench, or hand-written) links against it to form a
 //! standalone native simulator. Compiling the testbench stimulus into that
 //! `main` is the follow-on increment.
 
 use std::path::Path;
 
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+};
 use inkwell::OptimizationLevel;
 
 use siox::ir::Design;
@@ -20,12 +22,18 @@ use crate::emit::build_module;
 /// feature it is the host's own CPU and native feature set — so the backend may
 /// use the widest vector registers the machine has (AVX / AVX-512 → 256 / 512-
 /// bit). Without it, a portable baseline (`generic` x86-64, SSE2 128-bit), so
-/// objects run anywhere and the JIT stays deterministic across machines.
+/// objects run anywhere.
 fn target_cpu_features() -> (String, String) {
     if cfg!(feature = "simd") {
         (
-            TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic").to_string(),
-            TargetMachine::get_host_cpu_features().to_str().unwrap_or("").to_string(),
+            TargetMachine::get_host_cpu_name()
+                .to_str()
+                .unwrap_or("generic")
+                .to_string(),
+            TargetMachine::get_host_cpu_features()
+                .to_str()
+                .unwrap_or("")
+                .to_string(),
         )
     } else {
         ("generic".to_string(), String::new())
@@ -33,8 +41,7 @@ fn target_cpu_features() -> (String, String) {
 }
 
 /// A `TargetMachine` for codegen, tuned per the `simd` feature (see
-/// [`target_cpu_features`]). Shared by the AOT object path and the JIT's
-/// optimization pass so both agree on the target.
+/// [`target_cpu_features`]).
 pub fn host_target_machine() -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("target init failed: {e}"))?;
@@ -71,7 +78,15 @@ mod tests {
     use std::process::Command;
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }
+        Signal {
+            path: path.into(),
+            width,
+            real: false,
+            char: false,
+            range: None,
+            init: 0,
+            enum_type: None,
+        }
     }
 
     /// Emit an adder to a native object, link a C `main` that drives it, and
@@ -110,7 +125,10 @@ mod tests {
         let bin = dir.join("sim");
 
         emit_object(&design, &obj).unwrap();
-        assert!(obj.exists() && std::fs::metadata(&obj).unwrap().len() > 0, "empty object");
+        assert!(
+            obj.exists() && std::fs::metadata(&obj).unwrap().len() > 0,
+            "empty object"
+        );
 
         std::fs::write(
             &main_c,
@@ -132,10 +150,19 @@ signed main(void) {
         .unwrap();
 
         let link = Command::new("clang")
-            .args([main_c.to_str().unwrap(), obj.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+            .args([
+                main_c.to_str().unwrap(),
+                obj.to_str().unwrap(),
+                "-o",
+                bin.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
-        assert!(link.status.success(), "link failed: {}", String::from_utf8_lossy(&link.stderr));
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
 
         let run = Command::new(&bin).status().unwrap();
         assert!(run.success(), "native sim returned {:?}", run.code());
@@ -198,10 +225,19 @@ signed main(void) {
         )
         .unwrap();
         let link = Command::new("clang")
-            .args([main_c.to_str().unwrap(), obj.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+            .args([
+                main_c.to_str().unwrap(),
+                obj.to_str().unwrap(),
+                "-o",
+                bin.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
-        assert!(link.status.success(), "link failed: {}", String::from_utf8_lossy(&link.stderr));
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
         let run = Command::new(&bin).status().unwrap();
         assert!(run.success(), "native wide sim returned {:?}", run.code());
         let _ = std::fs::remove_dir_all(&dir);

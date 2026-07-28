@@ -49,7 +49,10 @@ pub enum EType {
     /// `Array { elem: Named("unsigned"), len: 8 }` (element names the family so it
     /// renders as `unsigned[8]`), the same encoding as `Bit[8]` or `Point[4]`.
     /// Signedness/behaviour lives in the family's operator impls, not here.
-    Array { elem: Box<EType>, len: Option<u32> },
+    Array {
+        elem: Box<EType>,
+        len: Option<u32>,
+    },
     Other(String),
 }
 
@@ -144,7 +147,10 @@ impl Hierarchy {
         if is_root {
             out.push_str(&format!("{pad}{}{params}{tag}{attrs}\n", inst.entity));
         } else {
-            out.push_str(&format!("{pad}{}: {}{params}{tag}{attrs}\n", inst.name, inst.entity));
+            out.push_str(&format!(
+                "{pad}{}: {}{params}{tag}{attrs}\n",
+                inst.name, inst.entity
+            ));
         }
         for c in &inst.connections {
             out.push_str(&format!("{pad}  .{}: {} <- {}\n", c.port, c.ty, c.signal));
@@ -164,7 +170,12 @@ pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -
 /// one top-level module setup (not the testbenches). Lowering only lowers
 /// entities that appear in the hierarchy, so this yields just the top and its
 /// instantiated children. `roots` is empty if the entity isn't found.
-pub fn elaborate_top(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink, top: &str) -> Hierarchy {
+pub fn elaborate_top(
+    modules: &[Module],
+    typed: &Typed,
+    sink: &mut DiagnosticSink,
+    top: &str,
+) -> Hierarchy {
     elaborate_roots(modules, typed, sink, |ent| ent.name.text == top)
 }
 
@@ -194,7 +205,14 @@ fn elaborate_roots(
                         .iter()
                         .map(|p| (p.name.text.clone(), ParamValue::Unknown))
                         .collect();
-                    let id = e.build(&ent.name.text, &ent.name.text, params, Vec::new(), Vec::new(), &mut stack);
+                    let id = e.build(
+                        &ent.name.text,
+                        &ent.name.text,
+                        params,
+                        Vec::new(),
+                        Vec::new(),
+                        &mut stack,
+                    );
                     e.out.roots.push(id);
                 }
             }
@@ -277,7 +295,11 @@ impl<'a> Elaborator<'a> {
             });
         }
 
-        let is_extern = self.entities.get(entity_name).map(|e| e.is_extern).unwrap_or(true);
+        let is_extern = self
+            .entities
+            .get(entity_name)
+            .map(|e| e.is_extern)
+            .unwrap_or(true);
         let env = param_env(&params);
         let specs = self.gather_instances(entity_name, is_extern, &env);
         // This instance's own signals (ports + impl lets), for width-checking the
@@ -313,8 +335,16 @@ impl<'a> Elaborator<'a> {
                     .attrs
                     .iter()
                     .map(|a| {
-                        let name = a.name.segments.last().map(|s| s.text.clone()).unwrap_or_default();
-                        (name, a.value.as_ref().map(crate::syntax::pretty::expr_string))
+                        let name = a
+                            .name
+                            .segments
+                            .last()
+                            .map(|s| s.text.clone())
+                            .unwrap_or_default();
+                        (
+                            name,
+                            a.value.as_ref().map(crate::syntax::pretty::expr_string),
+                        )
                     })
                     .collect();
                 let child = self.build(&spec.name, sub, cparams, cconns, child_attrs, stack);
@@ -389,7 +419,13 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
     ) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
         // Old form: `= Entity { .. }`.
-        if let Some(Expr::Construct { ty: Some(ty), args, span, .. }) = &l.value {
+        if let Some(Expr::Construct {
+            ty: Some(ty),
+            args,
+            span,
+            ..
+        }) = &l.value
+        {
             return Some((ty, args.clone(), *span));
         }
         // New forms need a bare entity-typed annotation. An *array* of an
@@ -415,7 +451,11 @@ impl<'a> Elaborator<'a> {
             Some(Expr::Concat { parts, .. }) => {
                 let args = parts
                     .iter()
-                    .map(|p| ConnectArg { field: None, value: Some(p.clone()), span: l.span })
+                    .map(|p| ConnectArg {
+                        field: None,
+                        value: Some(p.clone()),
+                        span: l.span,
+                    })
                     .collect();
                 Some((ann, args, l.span))
             }
@@ -468,7 +508,17 @@ impl<'a> Elaborator<'a> {
             // Instance-array element construction: `stage[i] = Sub { .. }`. The
             // target renders to the element name (`stage[1]`) with the loop
             // index evaluated, so `stage[i].port` reads resolve to it.
-            Stmt::Assign { target, value: Expr::Construct { ty: Some(ty), args, span, .. }, .. } => {
+            Stmt::Assign {
+                target,
+                value:
+                    Expr::Construct {
+                        ty: Some(ty),
+                        args,
+                        span,
+                        ..
+                    },
+                ..
+            } => {
                 out.push(InstanceSpec {
                     name: render_signal(target, env),
                     ty,
@@ -478,10 +528,11 @@ impl<'a> Elaborator<'a> {
                     loop_env: env.clone(),
                 });
             }
-            Stmt::For { var, range, body, .. } => {
+            Stmt::For {
+                var, range, body, ..
+            } => {
                 if let Expr::Range { lo, hi, .. } = range {
-                    if let (ParamValue::Int(a), ParamValue::Int(b)) =
-                        (eval(lo, env), eval(hi, env))
+                    if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env))
                     {
                         // Inclusive, directional range (`0..2` -> 0,1,2;
                         // `2..0` -> 2,1,0), matching slices/array ranges.
@@ -596,12 +647,20 @@ impl<'a> Elaborator<'a> {
     /// `S<W = 8, Z = 3>` used to bind `Z` into the instance's parameter list
     /// and carry on, so a typo'd parameter silently did nothing.
     fn check_generic_arg_names(&mut self, edecl: &EntityDecl, ty: &Type, site: Span) {
-        let Type::Generic { args, .. } = ty else { return };
+        let Type::Generic { args, .. } = ty else {
+            return;
+        };
         for arg in args {
-            let GenericArg::Named { name, .. } = arg else { continue };
+            let GenericArg::Named { name, .. } = arg else {
+                continue;
+            };
             if !edecl.params.params.iter().any(|p| p.name.text == name.text) {
-                let known: Vec<&str> =
-                    edecl.params.params.iter().map(|p| p.name.text.as_str()).collect();
+                let known: Vec<&str> = edecl
+                    .params
+                    .params
+                    .iter()
+                    .map(|p| p.name.text.as_str())
+                    .collect();
                 let mut d = Diagnostic::error(format!(
                     "`{}` has no parameter `{}`",
                     edecl.name.text, name.text
@@ -625,8 +684,11 @@ impl<'a> Elaborator<'a> {
         render_env: &HashMap<String, i64>,
         driven: &HashSet<String>,
     ) -> Vec<Connection> {
-        let ports: HashMap<&str, &Type> =
-            edecl.ports.iter().map(|p| (p.name.text.as_str(), &p.ty)).collect();
+        let ports: HashMap<&str, &Type> = edecl
+            .ports
+            .iter()
+            .map(|p| (p.name.text.as_str(), &p.ty))
+            .collect();
         let mut conns = Vec::new();
         let mut connected: HashSet<String> = HashSet::new();
 
@@ -667,7 +729,12 @@ impl<'a> Elaborator<'a> {
             let signal = render_signal(e, render_env);
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
-            conns.push(Connection { port, signal, ty, span: arg.span });
+            conns.push(Connection {
+                port,
+                signal,
+                ty,
+                span: arg.span,
+            });
         }
 
         for p in &edecl.ports {
@@ -701,7 +768,11 @@ impl<'a> Elaborator<'a> {
     /// The concrete types of an entity's own signals (ports + impl-level lets)
     /// with `env` substituted, used to width-check the connections made to its
     /// child instances.
-    fn entity_signals(&self, entity_name: &str, env: &HashMap<String, i64>) -> HashMap<String, EType> {
+    fn entity_signals(
+        &self,
+        entity_name: &str,
+        env: &HashMap<String, i64>,
+    ) -> HashMap<String, EType> {
         let families = &self.families;
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.entities.get(entity_name) {
@@ -732,7 +803,9 @@ impl<'a> Elaborator<'a> {
         site: Span,
     ) {
         for c in conns {
-            let Some(sig) = parent_signals.get(&c.signal) else { continue };
+            let Some(sig) = parent_signals.get(&c.signal) else {
+                continue;
+            };
             if let (Some(pw), Some(sw)) = (c.ty.width(), sig.width()) {
                 if pw != sw {
                     self.error(
@@ -755,7 +828,8 @@ impl<'a> Elaborator<'a> {
     }
 
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
-        self.sink.emit(Diagnostic::error(msg).with_code(code).at(span));
+        self.sink
+            .emit(Diagnostic::error(msg).with_code(code).at(span));
     }
 }
 
@@ -773,7 +847,10 @@ struct InstanceSpec<'a> {
 
 fn is_root(e: &EntityDecl) -> bool {
     e.attrs.iter().any(|a| {
-        matches!(a.name.segments.last().map(|s| s.text.as_str()), Some("top") | Some("test"))
+        matches!(
+            a.name.segments.last().map(|s| s.text.as_str()),
+            Some("top") | Some("test")
+        )
     })
 }
 
@@ -790,7 +867,11 @@ fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
 
 /// Map the construct's generic arguments to the entity's parameter names,
 /// evaluating each in `env` (the instantiating scope's parameters).
-fn eval_params(edecl: &EntityDecl, ty: &Type, env: &HashMap<String, i64>) -> Vec<(String, ParamValue)> {
+fn eval_params(
+    edecl: &EntityDecl,
+    ty: &Type,
+    env: &HashMap<String, i64>,
+) -> Vec<(String, ParamValue)> {
     let args: &[GenericArg] = match ty {
         Type::Generic { args, .. } => args,
         _ => &[],
@@ -831,9 +912,11 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
     use ParamValue::{Int, Unknown};
     match e {
         Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
-        Expr::Path(p) if p.segments.len() == 1 => {
-            env.get(&p.segments[0].text).copied().map(Int).unwrap_or(Unknown)
-        }
+        Expr::Path(p) if p.segments.len() == 1 => env
+            .get(&p.segments[0].text)
+            .copied()
+            .map(Int)
+            .unwrap_or(Unknown),
         Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
             (UnOp::Neg, Int(v)) => Int(-v),
             (UnOp::Not, Int(v)) => Int(!v),
@@ -890,7 +973,10 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
                     }
                 }
             }
-            EType::Array { elem: Box::new(concrete_ty(base, env, families)), len }
+            EType::Array {
+                elem: Box::new(concrete_ty(base, env, families)),
+                len,
+            }
         }
         // Bus-mode and generic types don't carry a simple scalar width; keep a
         // rendered form for display and skip width checking on them.
@@ -917,10 +1003,19 @@ fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
 /// becomes `unsigned[8]`; unresolved widths keep their symbolic form).
 fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
     match t {
-        Type::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+        Type::Path(p) => p
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
         Type::Indexed { base, index, .. } => match index {
             Some(index) => {
-                format!("{}[{}]", render_concrete(base, env), render_index(index, env))
+                format!(
+                    "{}[{}]",
+                    render_concrete(base, env),
+                    render_index(index, env)
+                )
             }
             None => format!("{}[]", render_concrete(base, env)),
         },
@@ -939,7 +1034,11 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
         }
         Type::View { view, target, .. } => format!(
             "{} {}",
-            view.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+            view.segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::"),
             render_concrete(target, env)
         ),
     }
@@ -955,7 +1054,12 @@ fn render_index(e: &Expr, env: &HashMap<String, i64>) -> String {
 
 fn render_expr(e: &Expr) -> String {
     match e {
-        Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+        Expr::Path(p) => p
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
         Expr::Int { text, .. } => text.clone(),
         Expr::Range { lo, hi, .. } => format!("{}..{}", render_expr(lo), render_expr(hi)),
         Expr::Index { base, index, .. } => format!("{}[{}]", render_expr(base), render_expr(index)),
@@ -1030,7 +1134,12 @@ fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
 
 fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
-        Expr::Path(p) => p.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::"),
+        Expr::Path(p) => p
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
         Expr::Int { text, .. } => text.clone(),
         Expr::CharLit { ch, .. } => format!("'{ch}'"),
         // An indexed connection (`wires[i]`) names the flattened element
@@ -1077,9 +1186,7 @@ mod tests {
 
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // unsigned/signed are `#[vector]` library types, not seeded.
-        let src = format!(
-            "{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n"
-        );
+        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -1161,7 +1268,11 @@ mod tests {
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let before = sink.error_count();
         let _ = elaborate(modules, &typed, &mut sink);
-        assert_eq!(sink.error_count() - before, 0, "unconnected input must not error");
+        assert_eq!(
+            sink.error_count() - before,
+            0,
+            "unconnected input must not error"
+        );
         let warned = sink
             .diagnostics()
             .iter()
@@ -1197,7 +1308,10 @@ mod tests {
         assert_eq!(root.children.len(), 1);
         let dut = hier.instance(root.children[0]);
         assert_eq!(dut.entity, "Buf");
-        assert!(dut.children.is_empty(), "`let s: T` must be a signal, not an instance");
+        assert!(
+            dut.children.is_empty(),
+            "`let s: T` must be a signal, not an instance"
+        );
     }
 
     #[test]
@@ -1298,8 +1412,9 @@ mod tests {
         let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
         assert_eq!(errs, 1, "`W` was never given a value");
 
-        let (_, errs) =
-            elaborate_src(&format!("{base}impl E {{ let d: S<W = 8> = {{ .y = y }}; }}\n"));
+        let (_, errs) = elaborate_src(&format!(
+            "{base}impl E {{ let d: S<W = 8> = {{ .y = y }}; }}\n"
+        ));
         assert_eq!(errs, 0, "bound");
 
         // A *type* parameter has no numeric value and must not be demanded.
@@ -1346,5 +1461,4 @@ mod tests {
         assert!(mem.is_extern);
         assert!(mem.children.is_empty());
     }
-
 }

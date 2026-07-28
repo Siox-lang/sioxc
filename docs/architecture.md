@@ -4,12 +4,12 @@ The siox compiler is a small **workspace of four crates**. The root crate
 `siox` is the **backend-independent core**: the whole compiler pipeline as
 modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
 module consumes the output of the module above it, the only module everything
-may use is `diag` — plus the simulation kernel and waveform export. It links no
+may use is `diag` — plus shared testbench and waveform data. It links no
 LLVM toolchain. Around it:
 
 - **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
-  `elab` → `ir`, plus `run` and `wave`.
-- **`crates/siox-llvm`** — the LLVM JIT + native AOT **execution engine**
+  `elab` → `ir`, plus `testbench` and `wave`.
+- **`crates/siox-llvm`** — the LLVM native AOT backend
   (inkwell); depends on `siox`.
 - **`crates/sioxc`** — the compiler/simulator CLI; depends on `siox` + `siox-llvm`.
 - **`crates/siox-lsp`** — the language server; depends on **`siox` only**, so it
@@ -22,23 +22,21 @@ flowchart LR
             direction LR
             SY[syntax] --> RE[resolve] --> TY[types] --> EL[elab] --> IR[ir]
         end
-        IR --> RUN[run]
-        RUN --> WA[wave]
+        IR --> TB[testbench]
+        TB --> WA[wave]
         DIAG[diag] -. used by all .-> pipeline
     end
     IR --> LL[crate: siox-llvm]
-    LL -. Engine .-> RUN
     CLI[crate: sioxc] == drives ==> core
-    CLI == engine ==> LL
+    CLI == native backend ==> LL
     LSP[crate: siox-lsp] == frontend only ==> core
 ```
 
-`run` is the engine-agnostic **kernel**: it discovers `#[test]`s, runs the
-stimulus + `await`/`clock` scheduler, owns simulation time, and records
-waveforms — driving whatever `Engine` it's handed. `siox-llvm` is that `Engine`
-— it emits LLVM, JIT-runs, or AOT-compiles the `Design` to native code (`sioxc
-test` JIT-runs, `sim --wave` JIT-traces). It is the only engine, so *`sioxc`*
-needs an LLVM toolchain to build; the core and the language server do not.
+`siox-llvm` emits LLVM and compiles the `Design` ahead of time to native code.
+`sioxc` discovers `#[test]` entities and generates a C harness containing the
+stimulus, scheduler, assertions, and reporting; it links that harness with the
+native design object. Therefore *`sioxc`* needs an LLVM toolchain to build; the
+core and language server do not.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). Inside the `siox` crate the layering is a **convention** (the
@@ -59,14 +57,14 @@ The backend is `crates/siox-llvm/`, and the two binaries are `crates/sioxc/` and
 | `types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`'ddt`). Produces `Typed`. |
 | `elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
 | `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `'event`/`'old` become first-class IR ops. Produces `Design`. |
-| `run`     | 7–8  | The simulation **kernel / test runner** (engine-agnostic): the `Engine` trait, `#[test]` discovery, stimulus, the `await`/`clock` scheduler + event wheel, simulation time, assertions, waveform sample recording. Whatever supplies an `Engine` (the JIT) is driven by this. |
+| `testbench` | 7–8 | Shared testbench value/format definitions. Native test discovery, scheduling, and assertion emission live in `sioxc::build`. |
 | `wave`    | 9    | `Trace` recording + VCD export (FST later). |
 
 The three sibling crates:
 
 | Crate | Spec stage(s) | Role |
 | ----- | ------------- | ---- |
-| `siox-llvm` | B  | LLVM/inkwell backend (the only execution engine) — emit `.ll`, JIT-run, AOT native object. Consumes `siox::ir::Design`; driven by `siox::run`. |
+| `siox-llvm` | B  | LLVM/inkwell native backend — emit `.ll` or an AOT native object. Consumes `siox::ir::Design`. |
 | `sioxc`     | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the crate-local `build` module. Depends on `siox` + `siox-llvm`. |
 | `siox-lsp`  | — | The language server (skeleton). Depends on **`siox` only** — reaches at most the `ir` module for diagnostics, never the backend, so it builds without LLVM. |
 
@@ -84,8 +82,8 @@ flowchart TD
     C -->|siox-types| D["Typed<br/>expression / signal types"]
     D -->|siox-elab| E["Hierarchy<br/>instances + connections"]
     E -->|siox-ir| F["Design<br/>signals, drivers, event blocks"]
-    F -->|"siox-llvm + test runner"| G["TestResults / traced samples"]
-    G -->|siox-wave| H["VCD"]
+    F -->|"siox-llvm"| G["native object"]
+    G -->|"sioxc-generated harness"| H["native test executable"]
 ```
 
 `siox-diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
@@ -148,10 +146,9 @@ vector shapes).
 
 ## Signal widths
 
-The JIT engine represents each signal value in a 64-bit word, so a design is
-JIT-able only when every signal is ≤ 64 bits wide; a wider signal is a clean
-error rather than a silent truncation (`siox test` reports it and runs nothing).
-Widening the engine past 64 bits is future work.
+LLVM represents each value at its own semantic bit width. The native harness
+ABI exchanges wider values as low-word-first 64-bit chunks; `unsigned[128]`,
+for example, occupies two ABI words without widening unrelated values.
 
 Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —

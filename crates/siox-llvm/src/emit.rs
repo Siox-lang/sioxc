@@ -17,8 +17,7 @@ use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
 /// op bitcasts to `f64` and back, comparisons of constants stay unfolded, and
 /// each settle reloads signal globals. `-O2` folds the constants, eliminates
 /// the `i64`↔`f64` bitcast churn, GVNs redundant loads, and DCEs dead work,
-/// leaving the FPU/vector codegen to instruction selection. Shared by the JIT
-/// and AOT paths so both run identical, optimized code.
+/// leaving the FPU/vector codegen to instruction selection.
 pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String> {
     // Give the optimizer the target's data layout and triple so it sizes
     // pointers, aligns, and vectorizes for the real machine.
@@ -37,8 +36,7 @@ pub fn emit_module_ir(design: &Design) -> String {
     module.print_to_string().to_string()
 }
 
-/// Build and verify the LLVM module for `design` in `ctx`. Shared by the
-/// textual emitter and the JIT.
+/// Build and verify the LLVM module for `design` in `ctx`.
 pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<'ctx> {
     // Reject IR a backend can't compile (bad ids, Unknown, unknown widths)
     // with a clear message rather than emitting malformed LLVM (B0).
@@ -63,7 +61,11 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
             siox::target::MAX_SIGNAL_WIDTH,
             siox::target::MAX_WORDS,
             siox::target::WORD_BITS,
-            if siox::target::MAX_WORDS == 1 { "word" } else { "words" },
+            if siox::target::MAX_WORDS == 1 {
+                "word"
+            } else {
+                "words"
+            },
         );
     }
     #[cfg(feature = "bitpack")]
@@ -77,7 +79,11 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
-        panic!("emitted invalid LLVM module:\n{}\n--- IR ---\n{}", e, cg.module.print_to_string());
+        panic!(
+            "emitted invalid LLVM module:\n{}\n--- IR ---\n{}",
+            e,
+            cg.module.print_to_string()
+        );
     }
     cg.module
 }
@@ -157,8 +163,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let module = ctx.create_module("design");
         #[cfg(not(feature = "bitpack"))]
         let state_ty = {
-            let fields: Vec<_> =
-                design.signals.iter().map(|s| storage_int(ctx, s.width).into()).collect();
+            let fields: Vec<_> = design
+                .signals
+                .iter()
+                .map(|s| storage_int(ctx, s.width).into())
+                .collect();
             ctx.struct_type(&fields, true)
         };
         #[cfg(feature = "bitpack")]
@@ -238,7 +247,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     #[cfg(not(feature = "bitpack"))]
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
         let ty = self.slot_ty(id);
-        let v = self.builder.build_load(ty, self.slot_ptr(arr, id), "v").unwrap().into_int_value();
+        let v = self
+            .builder
+            .build_load(ty, self.slot_ptr(arr, id), "v")
+            .unwrap()
+            .into_int_value();
         self.fit(v, self.value_ty(self.design.signals[id.0 as usize].width))
     }
 
@@ -248,12 +261,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn fit(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
         let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
         match from.cmp(&to) {
-            std::cmp::Ordering::Less => {
-                self.builder.build_int_z_extend(v, ty, "zx").unwrap()
-            }
-            std::cmp::Ordering::Greater => {
-                self.builder.build_int_truncate(v, ty, "tr").unwrap()
-            }
+            std::cmp::Ordering::Less => self.builder.build_int_z_extend(v, ty, "zx").unwrap(),
+            std::cmp::Ordering::Greater => self.builder.build_int_truncate(v, ty, "tr").unwrap(),
             std::cmp::Ordering::Equal => v,
         }
     }
@@ -304,8 +313,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let (word, shift) = self.slots[id.0 as usize];
         let w = self.design.signals[id.0 as usize].width;
         let i64 = self.i64t();
-        let word_val =
-            self.builder.build_load(i64, self.word_ptr(arr, word), "w").unwrap().into_int_value();
+        let word_val = self
+            .builder
+            .build_load(i64, self.word_ptr(arr, word), "w")
+            .unwrap()
+            .into_int_value();
         let shifted = if shift > 0 {
             self.builder
                 .build_right_shift(word_val, i64.const_int(shift as u64, false), false, "sh")
@@ -313,8 +325,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         } else {
             word_val
         };
-        let field =
-            self.builder.build_and(shifted, i64.const_int(width_mask(w), false), "fld").unwrap();
+        let field = self
+            .builder
+            .build_and(shifted, i64.const_int(width_mask(w), false), "fld")
+            .unwrap();
         self.fit(field, self.value_ty(w))
     }
 
@@ -327,7 +341,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let i64 = self.i64t();
         let mask = width_mask(w);
         let v = self.fit(v, i64);
-        let field = self.builder.build_and(v, i64.const_int(mask, false), "m").unwrap();
+        let field = self
+            .builder
+            .build_and(v, i64.const_int(mask, false), "m")
+            .unwrap();
         let field = if shift > 0 {
             self.builder
                 .build_left_shift(field, i64.const_int(shift as u64, false), "fsh")
@@ -336,7 +353,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             field
         };
         let ptr = self.word_ptr(arr, word);
-        let cur = self.builder.build_load(i64, ptr, "w").unwrap().into_int_value();
+        let cur = self
+            .builder
+            .build_load(i64, ptr, "w")
+            .unwrap()
+            .into_int_value();
         let keep = i64.const_int(!(mask << shift), false);
         let cleared = self.builder.build_and(cur, keep, "clr").unwrap();
         let next = self.builder.build_or(cleared, field, "ins").unwrap();
@@ -356,8 +377,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
         // void sx_reset(void): signals take their declared initial values
         // (VHDL-style); events clear.
-        let f = self.module.add_function("sx_reset", void.fn_type(&[], false), None);
-        self.builder.position_at_end(self.ctx.append_basic_block(f, "e"));
+        let f = self
+            .module
+            .add_function("sx_reset", void.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
         for id in 0..self.n {
             let init = i64.const_int(self.design.signals[id as usize].init, false);
             self.store("cur", SignalId(id), init);
@@ -367,7 +391,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_return(None).unwrap();
 
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
-        let f = self.module.add_function("sx_set", void.fn_type(&[i32.into(), i64.into()], false), None);
+        let f = self.module.add_function(
+            "sx_set",
+            void.fn_type(&[i32.into(), i64.into()], false),
+            None,
+        );
         let entry = self.ctx.append_basic_block(f, "e");
         self.builder.position_at_end(entry);
         let sig = f.get_nth_param(0).unwrap().into_int_value();
@@ -400,18 +428,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_return(None).unwrap();
 
         // i64 sx_read(i32 sig).
-        let f = self.module.add_function("sx_read", i64.fn_type(&[i32.into()], false), None);
+        let f = self
+            .module
+            .add_function("sx_read", i64.fn_type(&[i32.into()], false), None);
         let entry = self.ctx.append_basic_block(f, "e");
         self.builder.position_at_end(entry);
         let sig = f.get_nth_param(0).unwrap().into_int_value();
         let ret = self.ctx.append_basic_block(f, "ret");
         let cases: Vec<_> = (0..self.n)
-            .map(|id| (i32.const_int(id as u64, false), self.ctx.append_basic_block(f, "r")))
+            .map(|id| {
+                (
+                    i32.const_int(id as u64, false),
+                    self.ctx.append_basic_block(f, "r"),
+                )
+            })
             .collect();
         self.builder.position_at_end(entry);
         self.builder.build_switch(sig, ret, &cases).unwrap();
         // Each case loads and jumps to ret; a phi selects the value.
-        let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+        let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
             let v = self.fit(self.load("cur", SignalId(id as u32)), i64);
@@ -426,7 +462,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for (v, bb) in &incoming {
             phi.add_incoming(&[(v as &dyn inkwell::values::BasicValue, *bb)]);
         }
-        self.builder.build_return(Some(&phi.as_basic_value().into_int_value())).unwrap();
+        self.builder
+            .build_return(Some(&phi.as_basic_value().into_int_value()))
+            .unwrap();
 
         self.word_accessors();
     }
@@ -457,7 +495,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let val = f.get_nth_param(2).unwrap().into_int_value();
         let done = self.ctx.append_basic_block(f, "done");
         let cases: Vec<_> = (0..self.n)
-            .map(|id| (i32.const_int(id as u64, false), self.ctx.append_basic_block(f, "s")))
+            .map(|id| {
+                (
+                    i32.const_int(id as u64, false),
+                    self.ctx.append_basic_block(f, "s"),
+                )
+            })
             .collect();
         self.builder.position_at_end(entry);
         self.builder.build_switch(sig, done, &cases).unwrap();
@@ -466,15 +509,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             let w = self.design.signals[id].width;
             let cty = self.value_ty(w);
             // shift = word * WORD_BITS, in the compute type.
-            let shift = self.builder
-                .build_int_mul(
-                    self.fit(word, cty),
-                    cty.const_int(bits as u64, false),
-                    "sh",
-                )
+            let shift = self
+                .builder
+                .build_int_mul(self.fit(word, cty), cty.const_int(bits as u64, false), "sh")
                 .unwrap();
             let word_mask = self.fit(i64.const_all_ones(), cty);
-            let field = self.builder.build_left_shift(word_mask, shift, "fm").unwrap();
+            let field = self
+                .builder
+                .build_left_shift(word_mask, shift, "fm")
+                .unwrap();
             let keep = self.builder.build_not(field, "nfm").unwrap();
             let old = self.load("cur", SignalId(id as u32));
             let cleared = self.builder.build_and(old, keep, "cl").unwrap();
@@ -503,23 +546,29 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let word = f.get_nth_param(1).unwrap().into_int_value();
         let ret = self.ctx.append_basic_block(f, "ret");
         let cases: Vec<_> = (0..self.n)
-            .map(|id| (i32.const_int(id as u64, false), self.ctx.append_basic_block(f, "r")))
+            .map(|id| {
+                (
+                    i32.const_int(id as u64, false),
+                    self.ctx.append_basic_block(f, "r"),
+                )
+            })
             .collect();
         self.builder.position_at_end(entry);
         self.builder.build_switch(sig, ret, &cases).unwrap();
-        let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+        let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
             let cty = self.value_ty(self.design.signals[id].width);
-            let shift = self.builder
-                .build_int_mul(
-                    self.fit(word, cty),
-                    cty.const_int(bits as u64, false),
-                    "sh",
-                )
+            let shift = self
+                .builder
+                .build_int_mul(self.fit(word, cty), cty.const_int(bits as u64, false), "sh")
                 .unwrap();
             let v = self.load("cur", SignalId(id as u32));
-            let down = self.builder.build_right_shift(v, shift, false, "dn").unwrap();
+            let down = self
+                .builder
+                .build_right_shift(v, shift, false, "dn")
+                .unwrap();
             incoming.push((self.fit(down, i64), *bb));
             self.builder.build_unconditional_branch(ret).unwrap();
         }
@@ -530,7 +579,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for (v, bb) in &incoming {
             phi.add_incoming(&[(v as &dyn inkwell::values::BasicValue, *bb)]);
         }
-        self.builder.build_return(Some(&phi.as_basic_value().into_int_value())).unwrap();
+        self.builder
+            .build_return(Some(&phi.as_basic_value().into_int_value()))
+            .unwrap();
     }
 
     /// Mask `v` to a signal's declared width, in type `ty`. A width equal to
@@ -547,7 +598,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let ones = ty.const_all_ones();
         let shift = ty.const_int((ty.get_bit_width() - width) as u64, false);
         // (all-ones >> (tybits - width)) is the low-`width` mask at any width.
-        let m = self.builder.build_right_shift(ones, shift, false, "wm").unwrap();
+        let m = self
+            .builder
+            .build_right_shift(ones, shift, false, "wm")
+            .unwrap();
         self.builder.build_and(v, m, "mw").unwrap()
     }
 
@@ -568,7 +622,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let void = self.ctx.void_type();
         let i64 = self.i64t();
         let i1 = self.ctx.bool_type();
-        let f = self.module.add_function("sx_settle", void.fn_type(&[], false), None);
+        let f = self
+            .module
+            .add_function("sx_settle", void.fn_type(&[], false), None);
         let entry = self.ctx.append_basic_block(f, "entry");
         let body = self.ctx.append_basic_block(f, "body");
         let done = self.ctx.append_basic_block(f, "done");
@@ -592,7 +648,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for i in 0..self.n {
             let id = SignalId(i);
             let cur = self.load("cur", id);
-            let ne = self.builder
+            let ne = self
+                .builder
                 .build_int_compare(IntPredicate::NE, cur, self.load("old", id), "ev")
                 .unwrap();
             self.store("event", id, self.zext(ne));
@@ -617,7 +674,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let committed = !staged.is_empty();
         for (target, guard, val) in staged {
             let prev = self.load("cur", target);
-            let next = self.builder.build_select(guard, val, prev, "next").unwrap().into_int_value();
+            let next = self
+                .builder
+                .build_select(guard, val, prev, "next")
+                .unwrap()
+                .into_int_value();
             self.store("cur", target, next);
             self.mark_event(target, prev, next);
         }
@@ -634,12 +695,24 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // Loop while this delta had events (there may be more to propagate) and
         // the delta cap — comfortably past any real cascade depth — is not hit.
         let cap = i64.const_int(self.n as u64 + 64, false);
-        let dc = self.builder.build_load(i64, dcount, "dc").unwrap().into_int_value();
-        let inc = self.builder.build_int_add(dc, i64.const_int(1, false), "inc").unwrap();
+        let dc = self
+            .builder
+            .build_load(i64, dcount, "dc")
+            .unwrap()
+            .into_int_value();
+        let inc = self
+            .builder
+            .build_int_add(dc, i64.const_int(1, false), "inc")
+            .unwrap();
         self.builder.build_store(dcount, inc).unwrap();
-        let under = self.builder.build_int_compare(IntPredicate::ULT, inc, cap, "under").unwrap();
+        let under = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, inc, cap, "under")
+            .unwrap();
         let cont = self.builder.build_and(any, under, "cont").unwrap();
-        self.builder.build_conditional_branch(cont, body, done).unwrap();
+        self.builder
+            .build_conditional_branch(cont, body, done)
+            .unwrap();
 
         // done: clear event flags and return.
         self.builder.position_at_end(done);
@@ -659,7 +732,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// `event[target] |= (next != prev)` — a change flags the signal.
     fn mark_event(&self, target: SignalId, prev: IntValue<'ctx>, next: IntValue<'ctx>) {
-        let ch = self.builder.build_int_compare(IntPredicate::NE, next, prev, "ch").unwrap();
+        let ch = self
+            .builder
+            .build_int_compare(IntPredicate::NE, next, prev, "ch")
+            .unwrap();
         let event = self.load("event", target);
         let changed = self.fit(ch, event.get_type());
         let ev = self.builder.build_or(event, changed, "ev2").unwrap();
@@ -748,7 +824,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             val = match &d.cond {
                 Some(c) => {
                     let cond = self.as_i1(c);
-                    self.builder.build_select(cond, e, val, "drv").unwrap().into_int_value()
+                    self.builder
+                        .build_select(cond, e, val, "drv")
+                        .unwrap()
+                        .into_int_value()
                 }
                 None => e,
             };
@@ -782,9 +861,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             Expr::Const(v) => (64 - v.leading_zeros()).max(1),
             Expr::Real(_) | Expr::CCall { .. } => 64,
             Expr::Logic(_) => 1,
-            Expr::Current(id) | Expr::Old(id) => {
-                self.design.signals[id.0 as usize].width.max(1)
-            }
+            Expr::Current(id) | Expr::Old(id) => self.design.signals[id.0 as usize].width.max(1),
             Expr::Event(_) => 1,
             Expr::Unary { rhs, .. } => self.expr_width(rhs),
             Expr::Binary { op, lhs, rhs } => {
@@ -833,7 +910,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// zext an `i1` back to the i64 word domain.
     fn zext(&self, b: IntValue<'ctx>) -> IntValue<'ctx> {
-        self.builder.build_int_z_extend(b, self.i64t(), "z").unwrap()
+        self.builder
+            .build_int_z_extend(b, self.i64t(), "z")
+            .unwrap()
     }
 
     fn emit(&self, e: &Expr) -> IntValue<'ctx> {
@@ -887,12 +966,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let c = self.as_i1(cond);
                 let t = self.emit_at(then, width);
                 let e = self.emit_at(els, width);
-                self.builder.build_select(c, t, e, "sel").unwrap().into_int_value()
+                self.builder
+                    .build_select(c, t, e, "sel")
+                    .unwrap()
+                    .into_int_value()
             }
-            Expr::CCall { name, args, f64_args, f64_ret } => {
+            Expr::CCall {
+                name,
+                args,
+                f64_args,
+                f64_ret,
+            } => {
                 // Foreign C call: `real` params are doubles (bit-cast from the
-                // word), everything else i64. JIT resolves the symbol from the
-                // process; native from the linked libraries.
+                // word), everything else i64. Native linking resolves symbols.
                 use inkwell::types::BasicMetadataTypeEnum as MT;
                 use inkwell::values::BasicMetadataValueEnum as MV;
                 let f64t = self.ctx.f64_type();
@@ -920,7 +1006,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     } else {
                         self.i64t().fn_type(&ptypes, false)
                     };
-                    self.module.add_function(name, fnty, Some(inkwell::module::Linkage::External))
+                    self.module
+                        .add_function(name, fnty, Some(inkwell::module::Linkage::External))
                 });
                 let r = match self
                     .builder
@@ -964,7 +1051,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 BinOp::FMul => self.builder.build_float_mul(a, b, "fmul").unwrap(),
                 _ => self.builder.build_float_div(a, b, "fdiv").unwrap(),
             };
-            return self.builder.build_bit_cast(r, self.value_ty(64), "fbits").unwrap().into_int_value();
+            return self
+                .builder
+                .build_bit_cast(r, self.value_ty(64), "fbits")
+                .unwrap()
+                .into_int_value();
         }
         // Float comparison: reinterpret the words as f64 and compare with
         // ordered predicates (NaN -> false, except `!=`), yielding a 0/1 word.
@@ -1019,10 +1110,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 // Match the interpreter: divide-by-zero yields 0 (B0 formalizes).
                 let zero = self.c_at(0, operand_width);
                 let one = self.c_at(1, operand_width);
-                let is0 = self.builder.build_int_compare(IntPredicate::EQ, b, zero, "d0").unwrap();
-                let safe = self.builder.build_select(is0, one, b, "den").unwrap().into_int_value();
+                let is0 = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, b, zero, "d0")
+                    .unwrap();
+                let safe = self
+                    .builder
+                    .build_select(is0, one, b, "den")
+                    .unwrap()
+                    .into_int_value();
                 let q = self.builder.build_int_unsigned_div(a, safe, "div").unwrap();
-                self.builder.build_select(is0, zero, q, "divz").unwrap().into_int_value()
+                self.builder
+                    .build_select(is0, zero, q, "divz")
+                    .unwrap()
+                    .into_int_value()
             }
             BinOp::Shl => self.builder.build_left_shift(a, b, "shl").unwrap(),
             BinOp::Shr => self.builder.build_right_shift(a, b, false, "shr").unwrap(),
@@ -1051,7 +1152,15 @@ mod tests {
     use siox::ir::{Design, Driver, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
-        Signal { path: path.into(), width, real: false, char: false, range: None, init: 0, enum_type: None }
+        Signal {
+            path: path.into(),
+            width,
+            real: false,
+            char: false,
+            range: None,
+            init: 0,
+            enum_type: None,
+        }
     }
 
     #[test]
@@ -1079,12 +1188,18 @@ mod tests {
         let ll = emit_module_ir(&design);
         // State layout, accessors, settle, and the add+mask are present. The
         // state is a width-packed struct: three 8-bit signals -> three `i8`s.
-        assert!(ll.contains("@cur = internal global <{ i8, i8, i8 }>"), "{ll}");
+        assert!(
+            ll.contains("@cur = internal global <{ i8, i8, i8 }>"),
+            "{ll}"
+        );
         assert!(ll.contains("define void @sx_settle()"), "{ll}");
         assert!(ll.contains("define void @sx_set(i32"), "{ll}");
         assert!(ll.contains("define i64 @sx_read(i32"), "{ll}");
         assert!(ll.contains("add i64"), "{ll}");
-        assert!(ll.contains("and i64") && ll.contains("255"), "mask to width 8:\n{ll}");
+        assert!(
+            ll.contains("and i64") && ll.contains("255"),
+            "mask to width 8:\n{ll}"
+        );
     }
 
     #[test]
@@ -1152,8 +1267,14 @@ mod tests {
             meta_of: Default::default(),
         };
         let ll = emit_module_ir(&design);
-        assert!(ll.contains("add i8"), "narrow operation was globally widened:\n{ll}");
-        assert!(ll.contains("add i128"), "wide operation lost its type width:\n{ll}");
+        assert!(
+            ll.contains("add i8"),
+            "narrow operation was globally widened:\n{ll}"
+        );
+        assert!(
+            ll.contains("add i128"),
+            "wide operation lost its type width:\n{ll}"
+        );
     }
 
     #[test]
@@ -1164,9 +1285,24 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.c", 8), sig("E.y", 8)],
             drivers: vec![
-                Driver { target: SignalId(3), cond: None, expr: Expr::Current(SignalId(2)), ctx: 0 }, // y=c
-                Driver { target: SignalId(2), cond: None, expr: Expr::Current(SignalId(1)), ctx: 0 }, // c=b
-                Driver { target: SignalId(1), cond: None, expr: Expr::Current(SignalId(0)), ctx: 0 }, // b=a
+                Driver {
+                    target: SignalId(3),
+                    cond: None,
+                    expr: Expr::Current(SignalId(2)),
+                    ctx: 0,
+                }, // y=c
+                Driver {
+                    target: SignalId(2),
+                    cond: None,
+                    expr: Expr::Current(SignalId(1)),
+                    ctx: 0,
+                }, // c=b
+                Driver {
+                    target: SignalId(1),
+                    cond: None,
+                    expr: Expr::Current(SignalId(0)),
+                    ctx: 0,
+                }, // b=a
             ],
             event_blocks: vec![],
             enum_syms: Default::default(),

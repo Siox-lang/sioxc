@@ -18,10 +18,10 @@ pub struct Token {
 pub enum TokenKind {
     // Literals & names
     Ident,
-    Int,        // 42, 0xFF, 0b1010 (numeric suffixes like 100n lex as a trailing ident)
-    Float,      // 1000.0  (the `f`-style suffix lexes as a trailing ident, like Int)
+    Int,          // 42, 0xFF, 0b1010 (numeric suffixes like 100n lex as a trailing ident)
+    Float,        // 1000.0  (the `f`-style suffix lexes as a trailing ident, like Int)
     CharacterLit, // a single character in single quotes: '0' '1' 'Z' 'X', 'a', '!'
-    StrLit,     // "work"  (prefixed strings like x"05AB" lex as Ident + StrLit)
+    StrLit,       // "work"  (prefixed strings like x"05AB" lex as Ident + StrLit)
 
     // Keywords (Phase 1)
     Module,
@@ -35,8 +35,8 @@ pub enum TokenKind {
     Trait,
     Attr,
     Const,
-    Let,        // signal / state / local binding: `let x: T = e;`
-    Fn,         // function / method declaration: `fn name(self) { ... }`
+    Let, // signal / state / local binding: `let x: T = e;`
+    Fn,  // function / method declaration: `fn name(self) { ... }`
     In,
     Out,
     Inout,
@@ -46,49 +46,49 @@ pub enum TokenKind {
     For,
     Return,
     Extern,
-    SelfKw,    // self (method receiver + `self'event`, spec 3.9/3.20); `true`/`false` stay idents (enum)
+    SelfKw, // self (method receiver + `self'event`, spec 3.9/3.20); `true`/`false` stay idents (enum)
 
     // Punctuation
-    LParen,    // (
-    RParen,    // )
-    LBrace,    // {
-    RBrace,    // }
-    LBracket,  // [
-    RBracket,  // ]
-    Lt,        // <
-    Gt,        // >
+    LParen,     // (
+    RParen,     // )
+    LBrace,     // {
+    RBrace,     // }
+    LBracket,   // [
+    RBracket,   // ]
+    Lt,         // <
+    Gt,         // >
     ColonColon, // ::
-    Colon,     // :
-    Semi,      // ;
-    Comma,     // ,
-    Dot,       // .
-    DotDot,    // ..  (ranges, spec 3.23)
-    Eq,        // =   (single operator, spec 3.12)
-    EqEq,      // ==
-    FatArrow,  // =>  (match arms)
-    Arrow,     // ->  (return type; NOTE: analogue path use is Phase 2)
-    Amp,       // &
-    Pipe,      // |
+    Colon,      // :
+    Semi,       // ;
+    Comma,      // ,
+    Dot,        // .
+    DotDot,     // ..  (ranges, spec 3.23)
+    Eq,         // =   (single operator, spec 3.12)
+    EqEq,       // ==
+    FatArrow,   // =>  (match arms)
+    Arrow,      // ->  (return type; NOTE: analogue path use is Phase 2)
+    Amp,        // &
+    Pipe,       // |
     Plus,
     Minus,
     Star,
     Slash,
-    PlusEq,    // +=
-    MinusEq,   // -=
-    StarEq,    // *=
-    SlashEq,   // /=
-    AmpEq,     // &=
-    PipeEq,    // |=
-    Shl,       // <<
-    Shr,       // >>
-    Bang,      // ! (assert!)
-    BangEq,    // !=
-    LtEq,      // <=
-    GtEq,      // >=
-    CustomOp,  // user-defined punctuation operator, e.g. %% or ^^
-    Pound,     // # (attribute application `#[...]`, spec 3.5/3.6)
-    Tick,      // ' (VHDL-style attribute accessor `sig'event`, spec 3.9); a
-               //   `'c'`-shaped run stays a CharacterLit — see the lexer.
+    PlusEq,   // +=
+    MinusEq,  // -=
+    StarEq,   // *=
+    SlashEq,  // /=
+    AmpEq,    // &=
+    PipeEq,   // |=
+    Shl,      // <<
+    Shr,      // >>
+    Bang,     // ! (assert!)
+    BangEq,   // !=
+    LtEq,     // <=
+    GtEq,     // >=
+    CustomOp, // user-defined punctuation operator, e.g. %% or ^^
+    Pound,    // # (attribute application `#[...]`, spec 3.5/3.6)
+    Tick,     // ' (VHDL-style attribute accessor `sig'event`, spec 3.9); a
+    //   `'c'`-shaped run stays a CharacterLit — see the lexer.
 
     // Trivia / control
     Comment,

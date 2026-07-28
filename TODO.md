@@ -1,8 +1,8 @@
 # TODO
 
 Outstanding work for siox Phase 1. The pipeline runs end to end (parse →
-resolve → type-check → elaborate → lower → run on the LLVM JIT or the native
-AOT binary, with assertions and VCD waveforms); what remains is filling gaps and
+resolve → type-check → elaborate → lower → compile and run as a native AOT
+binary, with assertions); what remains is filling gaps and
 deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
@@ -104,7 +104,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `compute_new_defaults` scans `op_impls[("New", T)]` and const-folds the nullary
   `new()` body to the `u64` `init` (no full trait resolution needed). std uses it
   for `New for Bit` → `'0'` and `New for Logic`/`ULogic` → `'U'`, so an undriven
-  `Logic` reads `'U'`; threaded to hardware signals + JIT/native testbench
+  `Logic` reads `'U'`; threaded to hardware signals + native testbench
   locals. Note
   in the docs that a type-level default is a *simulation* power-on value, not a
   synthesizable reset (real reset comes from reset logic). Relates to
@@ -126,7 +126,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   A `unsigned` is `Logic[]`, so a metavalue vector carries a per-element
   discriminant **companion** (`$meta`, 4 bits/element, ≤16 elements), made only
   where a metavalue appears — metavalue-free designs stay bit-identical.
-  **Working on JIT + native**, guarded by `xz_vector_test`/`xz_poison_test`/
+  **Working natively**, guarded by `xz_vector_test`/`xz_poison_test`/
   `xz_logical_test`: 9-value contextual bit strings (`"1X10"`); storage +
   per-element reconstruction (`v[i]` reads its `std_ulogic`); `numeric_std`
   **arithmetic** + **relational** poisoning; per-element `std_logic_1164`
@@ -147,14 +147,14 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   each edge firing exactly once. Comb settles *before* edge detection so a
   comb-driven clock (a port connection `C.clk <- T.clk`) updates first. Derived
   clocks, clock dividers, and ripple counters now simulate (`derived_clock_test`
-  in the corpus, JIT + native). One change in `siox-llvm/emit.rs` — both engines
-  call the same `sx_settle`. Bounded by a per-call delta cap.
+  in the corpus). `siox-llvm/emit.rs` emits the shared `sx_settle` delta loop,
+  bounded by a per-call delta cap.
 
-## Engines
+## Native execution
 
-The whole corpus runs on both the LLVM JIT and the **native** AOT binary —
-`real` / `Char` / `string` testbenches and `std::fs` reads are all emitted.
-Remaining engine-specific notes:
+The whole corpus runs as native AOT binaries — `real` / `Char` / `string`
+testbenches and `std::fs` reads are all emitted. Remaining backend-specific
+notes:
 
 - 🔴 **Native emitter — true runtime file read** — `read_to_string` is read at
   *build* time (fine for the stable fixtures) and baked in. A genuine runtime
@@ -170,7 +170,7 @@ above — none of it blocks correctness, so it waits. (`bitpack`/`simd` and the
 opt-in and non-blocking.)
 
 Signal state is stored width-packed by default (a `Bit`/`Logic` takes one byte,
-not eight; `unsigned[32]` four, `unsigned[64]` eight), shared by the JIT and AOT.
+not eight; `unsigned[32]` four, `unsigned[64]` eight).
 Composites already flatten to per-leaf signals, each minimally sized (an enum is
 `⌈log2(variants)⌉` bits), so structs/arrays/enums pack for free under `bitpack`.
 
@@ -184,7 +184,7 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   stores — a footprint win for huge designs; the default byte layout is faster
   for cache-resident ones. Correctness is covered by the packed/unpacked corpus
   differential.
-- ✅ **`simd`** — the JIT/AOT `TargetMachine` targets the host
+- ✅ **`simd`** — the AOT `TargetMachine` targets the host
   CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
   `-O2` vectorizer can use them for array/vector ops. Off by default the build
   targets a portable baseline (generic x86-64, SSE2 128-bit).
@@ -199,7 +199,7 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   and legalizes its arithmetic, while `sx_set_word`/`sx_read_word` split only
   the external ABI representation into low-word-first chunks. ✅ The first
   two-word increment supports `unsigned[128]`: per-expression LLVM widths,
-  word-indexed JIT exchange, cross-word carry, and linked native AOT are
+  word-indexed native harness exchange, cross-word carry, and linked AOT are
   covered. Remaining work: persist source type layouts in the IR instead of
   backend inference, apply recursive element sizing to non-flattened
   composites, define wide C-FFI and `bitpack` behavior, extend runner/waveform
@@ -226,6 +226,9 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
 
 ## Waveforms (Stage 9)
 
+- 🔴 **Native trace ABI** — restore `sioxc sim --wave` by streaming timestamped
+  low-word-first signal values from the native test executable to the VCD
+  writer. The former tracing path was removed with the JIT.
 - 🔴 **FST output** for large designs (VCD works today).
 
 ## Tooling & integration

@@ -528,10 +528,12 @@ impl<'a> Resolver<'a> {
                     // Only the first name of each cycle reports it.
                     if reported.insert(cur) {
                         self.sink.emit(
-                            Diagnostic::error(format!("{what} `{cur}` is defined in terms of itself"))
-                                .with_code(codes::DUPLICATE_ITEM)
-                                .at(span)
-                                .help("break the cycle: a type cannot derive from itself"),
+                            Diagnostic::error(format!(
+                                "{what} `{cur}` is defined in terms of itself"
+                            ))
+                            .with_code(codes::DUPLICATE_ITEM)
+                            .at(span)
+                            .help("break the cycle: a type cannot derive from itself"),
                         );
                     }
                     break;
@@ -1312,9 +1314,7 @@ mod tests {
         assert!(errs >= 1, "self-alias");
 
         // Legitimate chains are untouched.
-        let (_, errs) = resolve_src(
-            "module m;\nstruct A { x: Bit }\nstruct B(A);\nusing C = B;\n",
-        );
+        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B(A);\nusing C = B;\n");
         assert_eq!(errs, 0);
     }
 
@@ -1349,9 +1349,7 @@ mod tests {
         let (_, errs) = resolve_src("module m;\nstruct P { x: Bit, x: Bit }\n");
         assert_eq!(errs, 1, "duplicate struct field");
 
-        let (_, errs) = resolve_src(
-            "module m;\nentity E { in a: Bit; in a: Bit; out y: Bit; }\n",
-        );
+        let (_, errs) = resolve_src("module m;\nentity E { in a: Bit; in a: Bit; out y: Bit; }\n");
         assert_eq!(errs, 1, "duplicate port");
 
         // Distinct members, and the same name in *different* declarations, are

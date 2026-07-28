@@ -12,7 +12,10 @@ use crate::syntax::ast::*;
 
 /// Render a module back to canonical source text.
 pub fn print_module(module: &Module) -> String {
-    let mut p = Printer { out: String::new(), indent: 0 };
+    let mut p = Printer {
+        out: String::new(),
+        indent: 0,
+    };
     p.module(module);
     p.out
 }
@@ -74,8 +77,11 @@ impl Printer {
     fn using(&mut self, u: &Using) {
         let s = match &u.kind {
             UsingKind::Import { base, names } => {
-                let names =
-                    names.iter().map(|n| trait_name_str(&n.text)).collect::<Vec<_>>().join(", ");
+                let names = names
+                    .iter()
+                    .map(|n| trait_name_str(&n.text))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 if base.segments.is_empty() {
                     format!("using {names};")
                 } else {
@@ -109,7 +115,11 @@ impl Printer {
             ));
             return;
         }
-        self.line(&format!("{kw}struct {}{} {{", s.name.text, params(&s.params)));
+        self.line(&format!(
+            "{kw}struct {}{} {{",
+            s.name.text,
+            params(&s.params)
+        ));
         self.indent += 1;
         for f in &s.fields {
             self.line(&format!("{}: {},", f.name.text, type_str(&f.ty)));
@@ -196,8 +206,12 @@ impl Printer {
                 let args = if i.trait_args.is_empty() {
                     String::new()
                 } else {
-                    let list =
-                        i.trait_args.iter().map(generic_arg).collect::<Vec<_>>().join(", ");
+                    let list = i
+                        .trait_args
+                        .iter()
+                        .map(generic_arg)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     format!("<{list}>")
                 };
                 format!("impl {name}{args}{} for {} {{", params(&i.params), target)
@@ -227,7 +241,11 @@ impl Printer {
 
     fn trait_decl(&mut self, t: &TraitDecl) {
         let kw = pub_kw(t.is_pub);
-        self.line(&format!("{kw}trait {}{} {{", trait_name_str(&t.name.text), params(&t.params)));
+        self.line(&format!(
+            "{kw}trait {}{} {{",
+            trait_name_str(&t.name.text),
+            params(&t.params)
+        ));
         self.indent += 1;
         for f in &t.items {
             self.fn_decl(f);
@@ -238,8 +256,17 @@ impl Printer {
 
     fn attr_decl(&mut self, a: &AttrDecl) {
         let kw = pub_kw(a.is_pub);
-        let targets = a.targets.iter().map(|t| t.text.clone()).collect::<Vec<_>>().join(", ");
-        self.line(&format!("{kw}attr {}: {} for {targets};", a.name.text, type_str(&a.ty)));
+        let targets = a
+            .targets
+            .iter()
+            .map(|t| t.text.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.line(&format!(
+            "{kw}attr {}: {} for {targets};",
+            a.name.text,
+            type_str(&a.ty)
+        ));
     }
 
     fn fn_decl(&mut self, f: &FnDecl) {
@@ -250,7 +277,11 @@ impl Printer {
         };
         match &f.body {
             Some(body) => {
-                self.line(&format!("fn {}{}({ps}){ret} {{", f.name.text, params(&f.generics)));
+                self.line(&format!(
+                    "fn {}{}({ps}){ret} {{",
+                    f.name.text,
+                    params(&f.generics)
+                ));
                 self.indent += 1;
                 for s in &body.stmts {
                     self.stmt(s);
@@ -258,7 +289,11 @@ impl Printer {
                 self.indent -= 1;
                 self.line("}");
             }
-            None => self.line(&format!("fn {}{}({ps}){ret};", f.name.text, params(&f.generics))),
+            None => self.line(&format!(
+                "fn {}{}({ps}){ret};",
+                f.name.text,
+                params(&f.generics)
+            )),
         }
     }
 
@@ -267,13 +302,23 @@ impl Printer {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
-            Stmt::Assign { target, value, after, .. } => {
-                let delay = after.as_ref().map(|d| format!(" after {}", expr(d))).unwrap_or_default();
+            Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
+                let delay = after
+                    .as_ref()
+                    .map(|d| format!(" after {}", expr(d)))
+                    .unwrap_or_default();
                 self.line(&format!("{} = {}{delay};", expr(target), expr(value)));
             }
             Stmt::If(i) => self.if_stmt(i),
             Stmt::Match(m) => self.match_stmt(m),
-            Stmt::For { var, range, body, .. } => {
+            Stmt::For {
+                var, range, body, ..
+            } => {
                 self.line(&format!("for {} in {} {{", var.text, expr(range)));
                 self.block_body(body);
                 self.line("}");
@@ -346,12 +391,19 @@ fn dir_str(d: Direction) -> &'static str {
 }
 
 fn path(p: &Path) -> String {
-    p.segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("::")
+    p.segments
+        .iter()
+        .map(|s| s.text.clone())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 /// Operator traits (`trait "+"`) print their name quoted.
 fn trait_name_str(name: &str) -> String {
-    let is_ident = name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    let is_ident = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_');
     if is_ident {
         name.to_string()
     } else {
@@ -414,9 +466,7 @@ fn pattern(p: &Pattern) -> String {
         Pattern::Wildcard => "_".to_string(),
         Pattern::Path(p) => path(p),
         Pattern::BitPattern { text, .. } => text.clone(),
-        Pattern::Or { alts, .. } => {
-            alts.iter().map(pattern).collect::<Vec<_>>().join(" | ")
-        }
+        Pattern::Or { alts, .. } => alts.iter().map(pattern).collect::<Vec<_>>().join(" | "),
         Pattern::Range { lo, hi, .. } if lo == hi => lo.to_string(),
         Pattern::Range { lo, hi, .. } => format!("{lo}..{hi}"),
     }
@@ -530,17 +580,24 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             (p.segments[1].text.clone(), u8::MAX)
         }
         Expr::Path(p) => (path(p), u8::MAX),
-        Expr::Field { base, field, .. } => {
-            (format!("{}.{}", expr_prec(base, POSTFIX_PREC), field.text), POSTFIX_PREC)
-        }
-        Expr::SysAttr { base, attr, .. } => {
-            (format!("{}'{}", expr_prec(base, POSTFIX_PREC), attr.text), POSTFIX_PREC)
-        }
-        Expr::Index { base, index, .. } => {
-            (format!("{}[{}]", expr_prec(base, POSTFIX_PREC), expr(index)), POSTFIX_PREC)
-        }
+        Expr::Field { base, field, .. } => (
+            format!("{}.{}", expr_prec(base, POSTFIX_PREC), field.text),
+            POSTFIX_PREC,
+        ),
+        Expr::SysAttr { base, attr, .. } => (
+            format!("{}'{}", expr_prec(base, POSTFIX_PREC), attr.text),
+            POSTFIX_PREC,
+        ),
+        Expr::Index { base, index, .. } => (
+            format!("{}[{}]", expr_prec(base, POSTFIX_PREC), expr(index)),
+            POSTFIX_PREC,
+        ),
         Expr::Range { lo, hi, .. } => (
-            format!("{}..{}", expr_prec(lo, RANGE_PREC + 1), expr_prec(hi, RANGE_PREC + 1)),
+            format!(
+                "{}..{}",
+                expr_prec(lo, RANGE_PREC + 1),
+                expr_prec(hi, RANGE_PREC + 1)
+            ),
             RANGE_PREC,
         ),
         Expr::PartialRange { lo, hi, .. } => {
@@ -548,7 +605,9 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             let hi = hi.as_deref().map(expr).unwrap_or_default();
             (format!("{lo}..{hi}"), RANGE_PREC)
         }
-        Expr::IfExpr { cond, then, els, .. } => {
+        Expr::IfExpr {
+            cond, then, els, ..
+        } => {
             // An IfExpr in `els` prints as an `else if` chain.
             let e = match els.as_ref() {
                 Expr::IfExpr { .. } => format!("else {}", expr(els)),
@@ -556,7 +615,9 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             };
             (format!("if {} {{ {} }} {}", expr(cond), expr(then), e), 0)
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             let arms_str = arms
                 .iter()
                 .map(|a| {
@@ -571,22 +632,35 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                 .join(", ");
             (format!("match {} {{ {} }}", expr(scrutinee), arms_str), 0)
         }
-        Expr::Unary { op, rhs, .. } => {
-            (format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)), UNARY_PREC)
-        }
+        Expr::Unary { op, rhs, .. } => (
+            format!("{}{}", un_op(*op), expr_prec(rhs, UNARY_PREC)),
+            UNARY_PREC,
+        ),
         Expr::Binary { op, lhs, rhs, .. } => {
             let p = bin_prec(op);
             (
-                format!("{} {} {}", expr_prec(lhs, p), bin_op(op), expr_prec(rhs, p + 1)),
+                format!(
+                    "{} {} {}",
+                    expr_prec(lhs, p),
+                    bin_op(op),
+                    expr_prec(rhs, p + 1)
+                ),
                 p,
             )
         }
-        Expr::Call { callee, args, bang, .. } => {
+        Expr::Call {
+            callee, args, bang, ..
+        } => {
             let a = args.iter().map(expr).collect::<Vec<_>>().join(", ");
             let b = if *bang { "!" } else { "" };
-            (format!("{}{b}({a})", expr_prec(callee, POSTFIX_PREC)), POSTFIX_PREC)
+            (
+                format!("{}{b}({a})", expr_prec(callee, POSTFIX_PREC)),
+                POSTFIX_PREC,
+            )
         }
-        Expr::Construct { ty, args, spread, .. } => {
+        Expr::Construct {
+            ty, args, spread, ..
+        } => {
             // A leading `..base` spread, then the explicit/positional args.
             let spread_part = spread.iter().map(|b| format!("..{}", expr(b)));
             let a = spread_part
@@ -634,7 +708,11 @@ mod tests {
             0,
             "pretty-printed output did not re-parse:\n{printed}"
         );
-        assert_eq!(m1.items.len(), m2.items.len(), "item count changed:\n{printed}");
+        assert_eq!(
+            m1.items.len(),
+            m2.items.len(),
+            "item count changed:\n{printed}"
+        );
 
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
@@ -660,7 +738,10 @@ mod tests {
         );
         assert_eq!(sink.error_count(), 0);
         let printed = print_module(&m);
-        assert!(printed.contains("fn f<T: Ord>(a: T)"), "where should print inline:\n{printed}");
+        assert!(
+            printed.contains("fn f<T: Ord>(a: T)"),
+            "where should print inline:\n{printed}"
+        );
     }
 
     #[test]
@@ -675,7 +756,6 @@ mod tests {
              struct Word(Bit[]);\n",
         );
     }
-
 
     #[test]
     fn roundtrips_trait_type_args() {

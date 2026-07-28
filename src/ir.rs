@@ -153,8 +153,7 @@ pub enum Expr {
     },
     /// A foreign C call (`extern "C"` declarations, spec 3.27): `real`
     /// parameters/results are f64 (bit-pattern operands), everything else a
-    /// 64-bit word. Engines call the named symbol (JIT: process symbols;
-    /// native: linked libraries; the interpreter evaluates the libm set).
+    /// 64-bit word. Native linking resolves the named symbol.
     CCall {
         name: String,
         args: Vec<Expr>,
@@ -632,7 +631,9 @@ impl<'a> Lowering<'a> {
     /// in expressions through the same const-folding/inlining path as a
     /// module-level `fn`. Methods take `self` and dispatch via the receiver.
     fn register_static_fns(&mut self, im: &'a ast::ImplDecl) {
-        let Some(ty) = type_head_name(&im.target) else { return };
+        let Some(ty) = type_head_name(&im.target) else {
+            return;
+        };
         for it in &im.items {
             if let ast::ImplItem::Fn(f) = it {
                 if !f.params.iter().any(|p| p.is_self) {
@@ -917,13 +918,12 @@ impl<'a> Lowering<'a> {
                     // always honoured this; hardware lowering did not, so an
                     // entity-level struct local silently powered on at 0.
                     if let Some(ast::Expr::Construct { args, .. }) = &l.value {
-                        let fields: Vec<String> = l
-                            .ty
-                            .as_ref()
-                            .and_then(type_head_name)
-                            .and_then(|h| self.structs.get(h))
-                            .map(|sd| sd.fields.iter().map(|f| f.name.text.clone()).collect())
-                            .unwrap_or_default();
+                        let fields: Vec<String> =
+                            l.ty.as_ref()
+                                .and_then(type_head_name)
+                                .and_then(|h| self.structs.get(h))
+                                .map(|sd| sd.fields.iter().map(|f| f.name.text.clone()).collect())
+                                .unwrap_or_default();
                         for (i, arg) in args.iter().enumerate() {
                             // Named (`.a = 1`) or positional (bound by order).
                             let field = match &arg.field {
@@ -1479,8 +1479,10 @@ impl<'a> Lowering<'a> {
                 // not its symptom (a missing `Resolve` impl) — the usual cause
                 // is a miswired bus, e.g. two producers on one net. Point at
                 // each contributing connection when we know where it came from.
-                let sites: Vec<crate::diag::Span> =
-                    ctxs.keys().filter_map(|c| self.ctx_span.get(c).copied()).collect();
+                let sites: Vec<crate::diag::Span> = ctxs
+                    .keys()
+                    .filter_map(|c| self.ctx_span.get(c).copied())
+                    .collect();
                 let mut d = crate::diag::Diagnostic::error(format!(
                     "`{path}` is driven by {} conflicting sources",
                     ctxs.len()
@@ -1976,7 +1978,8 @@ impl<'a> Lowering<'a> {
                 }
                 ast::Type::View { view, .. } => {
                     if let Some(role) = view.segments.last() {
-                        self.local_struct.insert(name.to_string(), role.text.clone());
+                        self.local_struct
+                            .insert(name.to_string(), role.text.clone());
                     }
                 }
                 _ => {}
@@ -3179,9 +3182,7 @@ impl<'a> Lowering<'a> {
             // range constant). Direction follows the written order: `7..4`
             // (descending) extracts MSB-first — the natural bit order —
             // while `4..7` (ascending) extracts with the bit order reversed.
-            ast::Expr::Index { base, index, .. }
-                if self.slice_bounds(base, index).is_some() =>
-            {
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
                 let (a, b) = self.slice_bounds(base, index).unwrap();
                 let lowered = self.lower_expr(base);
                 if a >= b {
@@ -3347,9 +3348,16 @@ impl<'a> Lowering<'a> {
     /// so the source must match it — the same strict rule scalar targets
     /// follow (spec 3.17). Without this the lowering just slices whatever it
     /// is given: an 8-bit `{y, z}` fed 4 bits silently zero-filled `y`.
-    fn check_concat_target_width(&mut self, parts: &[ast::Expr], value: &ast::Expr, span: crate::diag::Span) {
+    fn check_concat_target_width(
+        &mut self,
+        parts: &[ast::Expr],
+        value: &ast::Expr,
+        span: crate::diag::Span,
+    ) {
         let want: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
-        let Some(have) = self.ref_width(value) else { return };
+        let Some(have) = self.ref_width(value) else {
+            return;
+        };
         if want > 0 && have > 0 && want != have {
             self.sink.emit(
                 crate::diag::Diagnostic::error(format!(
@@ -3374,9 +3382,7 @@ impl<'a> Lowering<'a> {
                     .get(&p)
                     .map(|&id| self.out.signals[id.0 as usize].width)
             }
-            ast::Expr::Index { base, index, .. }
-                if self.slice_bounds(base, index).is_some() =>
-            {
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
                 let (a, b) = self.slice_bounds(base, index)?;
                 // A single element of a `Logic`-vector *is* a `Logic` — its
                 // width is the element's (a 4-bit disc), not one value bit — so
@@ -3425,9 +3431,7 @@ impl<'a> Lowering<'a> {
                 _ => 64,
             },
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
-            ast::Expr::Index { base, index, .. }
-                if self.slice_bounds(base, index).is_some() =>
-            {
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
                 let (a, b) = self.slice_bounds(base, index).unwrap();
                 (a.max(b) - a.min(b) + 1) as u32
             }
@@ -3597,7 +3601,10 @@ impl<'a> Lowering<'a> {
         };
         Some(ast::Expr::Construct {
             ty: Some(ast::Type::Path(path)),
-            args: vec![field("left", lo.as_ref().clone()), field("right", hi.as_ref().clone())],
+            args: vec![
+                field("left", lo.as_ref().clone()),
+                field("right", hi.as_ref().clone()),
+            ],
             spread: None,
             span: *span,
         })
@@ -4232,12 +4239,7 @@ impl<'a> Lowering<'a> {
     /// (`impl T { fn name(self, ..) }`) or a trait-impl method
     /// (`impl Tr for T { fn name(self, ..) }`, held in `op_impls` keyed by
     /// trait+type). Inherent impls win; first match otherwise.
-    fn find_method(
-        &self,
-        ty: &str,
-        name: &str,
-        input: Option<&str>,
-    ) -> Option<&'a ast::FnDecl> {
+    fn find_method(&self, ty: &str, name: &str, input: Option<&str>) -> Option<&'a ast::FnDecl> {
         if let Some(impls) = self.impls.get(ty) {
             for im in impls {
                 for it in &im.items {
@@ -4278,9 +4280,9 @@ impl<'a> Lowering<'a> {
         };
         let ty = self.operand_type_name(base)?;
         let input = args.first().and_then(|arg| match arg {
-            ast::Expr::Construct {
-                ty: Some(ty), ..
-            } if type_head_name(ty) == Some("Range") => Some("Range".to_string()),
+            ast::Expr::Construct { ty: Some(ty), .. } if type_head_name(ty) == Some("Range") => {
+                Some("Range".to_string())
+            }
             _ => self.operand_type_name(arg),
         });
         let f = self.find_method(&ty, &field.text, input.as_deref())?;
@@ -4352,9 +4354,9 @@ impl<'a> Lowering<'a> {
         // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
         // lowering calls below.
         let input = args.first().and_then(|arg| match arg {
-            ast::Expr::Construct {
-                ty: Some(ty), ..
-            } if type_head_name(ty) == Some("Range") => Some("Range".to_string()),
+            ast::Expr::Construct { ty: Some(ty), .. } if type_head_name(ty) == Some("Range") => {
+                Some("Range".to_string())
+            }
             _ => self.operand_type_name(arg),
         });
         let Some(f) = self.find_method(&ty, method, input.as_deref()) else {
@@ -4990,7 +4992,9 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
 /// inlining/const-folding machinery serves both. `None` for anything else
 /// (deeper paths, non-path callees).
 pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
-    let ast::Expr::Path(p) = callee else { return None };
+    let ast::Expr::Path(p) = callee else {
+        return None;
+    };
     match p.segments.as_slice() {
         [f] => Some(f.text.clone()),
         [ty, f] => Some(format!("{}::{}", ty.text, f.text)),
@@ -6577,7 +6581,8 @@ mod tests {
 
     fn lower_src(src: &str) -> Design {
         // unsigned/signed are library types (attribute-marked vectors), not seeded.
-        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
+        let src =
+            format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let src = src.as_str();
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -6590,7 +6595,8 @@ mod tests {
     }
 
     fn lower_diags(src: &str) -> Vec<String> {
-        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
+        let src =
+            format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         let modules = std::slice::from_ref(&module);
@@ -6641,7 +6647,9 @@ mod tests {
         };
         let mismatched = lower_diags(&src("a[3..0]"));
         assert!(
-            mismatched.iter().any(|d| d.contains("concatenation target is 8 bits")),
+            mismatched
+                .iter()
+                .any(|d| d.contains("concatenation target is 8 bits")),
             "expected a width mismatch, got: {mismatched:?}"
         );
         let exact = lower_diags(&src("a"));
@@ -6670,7 +6678,8 @@ mod tests {
               let p2: Producer = { .bus = wire, .value = b };\n\
             }\n";
         let mut sink = DiagnosticSink::new();
-        let full = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
+        let full =
+            format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let module = crate::syntax::parse_module(FileId(0), &full, &mut sink);
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
@@ -6683,7 +6692,10 @@ mod tests {
             .iter()
             .filter(|d| d.code == Some(crate::diag::codes::CONFLICTING_DRIVERS))
             .collect();
-        assert!(!conflicts.is_empty(), "expected a conflicting-drivers error");
+        assert!(
+            !conflicts.is_empty(),
+            "expected a conflicting-drivers error"
+        );
         for d in &conflicts {
             assert!(
                 d.message.contains("conflicting sources"),
@@ -6699,15 +6711,27 @@ mod tests {
     #[test]
     fn bit_pattern_masks() {
         // Bare strings are per-bit with `-` as the don't-care.
-        assert_eq!(crate::syntax::bit_pattern_mask("\"01--\""), Some((0b1100, 0b0100)));
+        assert_eq!(
+            crate::syntax::bit_pattern_mask("\"01--\""),
+            Some((0b1100, 0b0100))
+        );
         assert_eq!(
             crate::syntax::bit_pattern_mask("\"0000_11--\""),
             Some((0b11111100, 0b00001100))
         );
         // Radix prefixes mask a whole group with `?`.
-        assert_eq!(crate::syntax::bit_pattern_mask("x\"A?\""), Some((0xF0, 0xA0)));
-        assert_eq!(crate::syntax::bit_pattern_mask("x\"?3\""), Some((0x0F, 0x03)));
-        assert_eq!(crate::syntax::bit_pattern_mask("o\"7?\""), Some((0o70, 0o70)));
+        assert_eq!(
+            crate::syntax::bit_pattern_mask("x\"A?\""),
+            Some((0xF0, 0xA0))
+        );
+        assert_eq!(
+            crate::syntax::bit_pattern_mask("x\"?3\""),
+            Some((0x0F, 0x03))
+        );
+        assert_eq!(
+            crate::syntax::bit_pattern_mask("o\"7?\""),
+            Some((0o70, 0o70))
+        );
         assert_eq!(crate::syntax::bit_pattern_mask("\"2\""), None); // bad binary digit
     }
 
@@ -6829,7 +6853,11 @@ mod tests {
                 other => panic!("{suffix} not a const: {other:?}"),
             }
         };
-        assert_eq!(drv(".o.header.ph"), 2, "enum field → first variant Idle = 2");
+        assert_eq!(
+            drv(".o.header.ph"),
+            2,
+            "enum field → first variant Idle = 2"
+        );
         assert_eq!(drv(".o.header.flag"), 0, "composed Bit field → 0");
         assert_eq!(drv(".o.data"), 0, "numeric field → 0");
     }
@@ -7349,9 +7377,11 @@ mod tests {
                 _ => false,
             }
         }
-        let dr = d.drivers.iter().find(|dr| {
-            d.signals[dr.target.0 as usize].path.ends_with(".y")
-        }).expect("driver for y");
+        let dr = d
+            .drivers
+            .iter()
+            .find(|dr| d.signals[dr.target.0 as usize].path.ends_with(".y"))
+            .expect("driver for y");
         assert!(!has_unknown(&dr.expr), "no Unknown left: {:?}", dr.expr);
     }
 

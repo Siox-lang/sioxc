@@ -13,7 +13,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | -------- | ---------- |
 | [language.md](language.md) | The **Phase 1 language specification** — an at-a-glance tour up front, then the authority for syntax and semantics. Kept current as the language evolves. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
-| [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, the JIT / native engines, simulation time and `await`, and VCD waveforms. |
+| [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD waveforms. |
 | [testing.md](testing.md) | **Testing** — `#[test]` testbenches, running them (`sioxc test`, `--no-run`), assertions, and how the compiler itself is tested. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
@@ -37,17 +37,14 @@ flowchart TD
     RES -->|siox-types| TY[Typed]
     TY -->|siox-elab| HIER[Hierarchy]
     HIER -->|siox-ir| IR[Design]
-    IR -->|siox-llvm| ENG["JIT / native object<br/>(execution engine)"]
-    ENG -->|test runner| OUT["#[test] results"]
-    ENG -->|"test runner + siox-wave"| VCD[VCD waveforms]
+    IR -->|siox-llvm| OBJ["native object"]
+    OBJ -->|generated native harness| OUT["#[test] executable + results"]
 ```
 
 `diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
 crate is the binary that wires them together per subcommand. **`siox-llvm` is
-the execution engine** — it JIT-runs or AOT-compiles the `Design` to native
-code; the engine-generic test runner drives it to produce `#[test]` results and
-traced waveforms. The `siox-lsp` crate needs only the core, so it builds without
-LLVM.
+the native backend**; `sioxc` generates and links the native `#[test]` harness.
+The `siox-lsp` crate needs only the core, so it builds without LLVM.
 
 ## Current status (summary)
 
@@ -58,11 +55,10 @@ entity may instantiate sub-entities, each instance lowering into its own signals
 with port connections wired as drivers.
 
 The **compiled LLVM backend** (`siox-llvm`, inkwell) is the default execution
-engine: `sioxc test` JIT-runs designs, `sioxc <file>` compiles the `#[top]`
-design to a native object, and `sioxc test --no-run` links a standalone native
-test binary. Simulation time is owned by the runner/kernel, so waveforms carry
-real timestamps and multiple clocks interleave on one event wheel. The
-conformance corpus runs through the compiled backend.
+backend: `sioxc test` builds and runs a temporary native test binary,
+`sioxc <file>` compiles the `#[top]` design to a native object, and `sioxc test
+--no-run` keeps a standalone native test binary. The conformance corpus runs
+through this compiled backend.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
 operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
@@ -76,7 +72,7 @@ cargo build                       # build the library + binaries (needs an LLVM 
 cargo test                        # run all tests
 
 cargo run -p sioxc -- <file>           # compile the #[top] design
-cargo run -p sioxc -- test <file>      # build + run #[test] entities (JIT)
+cargo run -p sioxc -- test <file>      # build + run native #[test] executable
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
@@ -87,8 +83,8 @@ matching local LLVM install (see `Cargo.toml` for the pinned version).
 | ------- | ---- |
 | `sioxc <file>` | compile the `#[top]` design to a native object (`--top` to pick) |
 | `check <file>` | parse → resolve → typecheck, report diagnostics |
-| `test <path> [--no-run]` | build + run `#[test]` entities (JIT); `--no-run` links a native test binary |
-| `sim <file> [--wave out.vcd]` | simulate; write a VCD waveform |
+| `test <path> [--no-run]` | build + run native `#[test]` executable; `--no-run` keeps it |
+| `sim <file> [--wave out.vcd]` | run tests; native VCD tracing is pending |
 | `ir` · `ast` · `tree` · `tokens` · `emit-llvm` | debug dumps of each stage |
 
 All commands take `--std <dir>` (default `./std`) for the standard library root.

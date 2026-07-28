@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "siox LLVM backend: JIT + native AOT over the siox IR"
+description = "siox LLVM backend: native AOT over the siox IR"
 
 [dependencies]
 siox.workspace = true
@@ -16,7 +16,7 @@ inkwell = { version = "0.9.0", default-features = false, features = ["llvm22-1",
 
 [features]
 default = []
-# Target the host's SIMD units: the JIT/AOT `TargetMachine` advertises the
+# Target the host's SIMD units: the AOT `TargetMachine` advertises the
 # host CPU's native features (AVX / AVX-512 -> 256 / 512-bit vector registers),
 # so the `-O2` vectorizer can use them for array/vector operations. Off by
 # default the build targets a portable baseline (generic x86-64, SSE2 128-bit).

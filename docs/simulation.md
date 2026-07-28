@@ -1,6 +1,6 @@
 # Simulation
 
-How siox runs a design: the delta-cycle model, the execution engines, simulation
+How siox runs a design: the delta-cycle model, native execution, simulation
 time, and waveform output. For the language semantics these implement see
 [language.md](language.md); for the compiler pipeline that produces the IR a
 simulation consumes, [architecture.md](architecture.md).
@@ -29,21 +29,17 @@ This is exact simulation: the value, the delta-cycle order, and every observed
 event are the semantic contract. Nothing about *how* a value is stored may
 change what is observed.
 
-## Engines
+## Native execution
 
-The simulation model is emitted once by `siox-ir`; the **LLVM backend**
-(`siox-llvm`) turns it into machine code, two ways:
+`siox-ir` emits the simulation model and the **LLVM backend** (`siox-llvm`)
+compiles it ahead of time to native machine code. `sioxc <file>` emits the
+`#[top]` design as an object. `sioxc test` generates a native testbench harness,
+links it with that object, and executes the resulting temporary binary;
+`--no-run -o <bin>` keeps the standalone binary instead.
 
-- **JIT (default).** `sioxc test` and `sioxc sim --wave` compile the design
-  in-process and run it. This is the engine.
-- **Native AOT.** `sioxc <file>` compiles the `#[top]` design to a native
-  object; `sioxc test --no-run -o <bin>` links a standalone native test binary
-  (its own C testbench harness, no runtime dependency).
-
-Both share the delta-cycle emitter, so JIT and native agree bit-for-bit. The
-engine works in 64-bit words: a signal wider than 64 bits is rejected rather
-than truncated. LLVM is the permanent backend, so building siox needs an LLVM
-toolchain.
+Signal values cross the harness ABI in low-word-first 64-bit words, so values
+such as `unsigned[128]` retain their per-type width. LLVM is the permanent
+backend, so building siox needs an LLVM toolchain.
 
 ## Simulation time and the event wheel
 
@@ -72,16 +68,14 @@ earliest pending event and advances to it:
 
 ## Waveforms
 
-`sioxc` records traces as [VCD](https://en.wikipedia.org/wiki/Value_change_dump)
+The waveform library records traces as [VCD](https://en.wikipedia.org/wiki/Value_change_dump)
 (Value Change Dump) — the format every digital waveform viewer reads. siox does
 not ship a viewer; it writes a VCD you open elsewhere.
 
-```bash
-sioxc sim counter.siox --wave counter.vcd
-```
-
-This elaborates the design, runs the first `#[test]` entity, and writes every
-signal's value changes with real timestamps.
+The former in-process tracing path was coupled to the removed JIT. The
+`sim --wave` command currently reports this limitation; restoring it requires
+a native trace ABI that streams timestamped signal words from the generated
+test executable into the VCD writer.
 
 **How siox values appear:**
 

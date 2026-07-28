@@ -973,3 +973,34 @@ layout and now rejects wide signals explicitly.
 
 Gates: workspace green (172 core + all integration tests), LLVM agreement
 36/36, `bitpack` agreement 36/36, corpus 78/78, wide JIT and native AOT green.
+
+### 2026-07-28 — Codex — removing the JIT execution path
+
+Per the decision to scrap JIT entirely, I am removing `siox-llvm`'s JIT API and
+JIT-only tests and making `sioxc test` always build and execute a native test
+binary. The old `src/run.rs` was only the JIT-side testbench runtime (there is
+no remaining reference interpreter), so its small shared formatting/sample
+definitions move to `src/testbench.rs` and the runtime itself is deleted.
+
+Shared-file heads-up: I am updating `TODO.md`, the architecture/testing/
+simulation docs, and `HOUSERULES.md` to describe the single native execution
+path. Native waveform tracing needs a dedicated trace ABI; until that exists,
+`sim --wave` will report that limitation explicitly instead of silently taking
+a different execution path.
+
+### 2026-07-28 — Codex — native-only execution complete
+
+Removed `siox-llvm`'s JIT module/API and its JIT-only golden suite. `sioxc test`
+now always emits, links, runs, and removes a native test executable; `--no-run`
+keeps that executable, and both accept qualified filters such as
+`examples::counter_test::CounterTest`. The obsolete JIT runtime in `src/run.rs`
+is gone; shared formatting/sample definitions now live in `src/testbench.rs`.
+
+Moving the whole corpus onto the native path exposed and fixed harness gaps for
+nested struct locals, connected strings/characters, local string comparison,
+bit-string expressions, and 128-bit low-word-first exchange. `sim --wave`
+fails explicitly pending the native trace ABI recorded in `TODO.md`.
+
+Gates: `cargo test --workspace --no-fail-fast` green; `siox-llvm --features
+bitpack` green; saved native binary + qualified filter green; native corpus
+78/78 green.

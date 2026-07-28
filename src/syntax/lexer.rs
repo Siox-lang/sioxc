@@ -23,8 +23,8 @@
 //! - Analogue keywords (`domain`, `across`, `through`) are deliberately not
 //!   recognised, so they lex as plain identifiers for a later Phase-2 rejection.
 
-use crate::syntax::token::{Token, TokenKind};
 use crate::diag::{Diagnostic, DiagnosticSink, FileId, Span};
+use crate::syntax::token::{Token, TokenKind};
 
 pub struct Lexer<'a> {
     file: FileId,
@@ -35,7 +35,12 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(file: FileId, src: &'a str) -> Self {
-        Lexer { file, src, bytes: src.as_bytes(), pos: 0 }
+        Lexer {
+            file,
+            src,
+            bytes: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     /// Lex the whole input into a token vector terminated by `Eof`.
@@ -48,7 +53,10 @@ impl<'a> Lexer<'a> {
             self.skip_whitespace();
             let start = self.pos;
             let Some(c) = self.peek() else {
-                tokens.push(Token { kind: TokenKind::Eof, span: self.span(start, start) });
+                tokens.push(Token {
+                    kind: TokenKind::Eof,
+                    span: self.span(start, start),
+                });
                 break;
             };
 
@@ -73,7 +81,10 @@ impl<'a> Lexer<'a> {
                 _ => self.punctuation(sink, start),
             };
 
-            tokens.push(Token { kind, span: self.span(start, self.pos) });
+            tokens.push(Token {
+                kind,
+                span: self.span(start, self.pos),
+            });
         }
         tokens
     }
@@ -129,19 +140,18 @@ impl<'a> Lexer<'a> {
         // Optional `0x` / `0b` radix prefix, otherwise plain decimal. Only
         // decimal numbers can carry a fractional part.
         let mut is_decimal = true;
-        let radix_digit: fn(u8) -> bool = if self.peek() == Some(b'0')
-            && matches!(self.peek_at(1), Some(b'x' | b'X'))
-        {
-            self.pos += 2;
-            is_decimal = false;
-            is_hex_digit
-        } else if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
-            self.pos += 2;
-            is_decimal = false;
-            is_bin_digit
-        } else {
-            is_dec_digit
-        };
+        let radix_digit: fn(u8) -> bool =
+            if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'x' | b'X')) {
+                self.pos += 2;
+                is_decimal = false;
+                is_hex_digit
+            } else if self.peek() == Some(b'0') && matches!(self.peek_at(1), Some(b'b' | b'B')) {
+                self.pos += 2;
+                is_decimal = false;
+                is_bin_digit
+            } else {
+                is_dec_digit
+            };
 
         let digits_start = self.pos;
         while self.peek().is_some_and(radix_digit) {
@@ -211,8 +221,7 @@ impl<'a> Lexer<'a> {
             );
         } else {
             sink.emit(
-                Diagnostic::error("unterminated character literal")
-                    .at(self.span(start, self.pos)),
+                Diagnostic::error("unterminated character literal").at(self.span(start, self.pos)),
             );
         }
         TokenKind::Unknown
@@ -423,7 +432,10 @@ mod tests {
     fn keywords_vs_identifiers() {
         assert_eq!(kinds("entity impl"), vec![Entity, Impl, Eof]);
         // Analogue keywords are not recognised in Phase 1: plain idents.
-        assert_eq!(kinds("domain across through"), vec![Ident, Ident, Ident, Eof]);
+        assert_eq!(
+            kinds("domain across through"),
+            vec![Ident, Ident, Ident, Eof]
+        );
         // `self` is a keyword; `true`/`false` are enum idents, not keywords.
         assert_eq!(kinds("self::Mode"), vec![SelfKw, ColonColon, Ident, Eof]);
         assert_eq!(kinds("true false"), vec![Ident, Ident, Eof]);
@@ -437,7 +449,10 @@ mod tests {
         assert_eq!(kinds("sig'event"), vec![Ident, Tick, Ident, Eof]);
         assert_eq!(kinds("self'length"), vec![SelfKw, Tick, Ident, Eof]);
         // The tricky mix: an attribute tick immediately before a char literal.
-        assert_eq!(kinds("q'old == '1'"), vec![Ident, Tick, Ident, EqEq, CharacterLit, Eof]);
+        assert_eq!(
+            kinds("q'old == '1'"),
+            vec![Ident, Tick, Ident, EqEq, CharacterLit, Eof]
+        );
     }
 
     #[test]
@@ -470,7 +485,10 @@ mod tests {
 
     #[test]
     fn logic_and_string_literals() {
-        assert_eq!(kinds("'0' '1' 'Z' 'X'"), vec![CharacterLit, CharacterLit, CharacterLit, CharacterLit, Eof]);
+        assert_eq!(
+            kinds("'0' '1' 'Z' 'X'"),
+            vec![CharacterLit, CharacterLit, CharacterLit, CharacterLit, Eof]
+        );
         assert_eq!(kinds("\"work\""), vec![StrLit, Eof]);
         // Prefixed strings are not special tokens: an ident glued to a string.
         // The prefix becomes a string overload later. `?` lives inside the
@@ -497,14 +515,20 @@ mod tests {
     #[test]
     fn comments_are_trivia_tokens() {
         assert_eq!(kinds("a // tail\nb"), vec![Ident, Comment, Ident, Eof]);
-        assert_eq!(kinds("a /* x /* nested */ y */ b"), vec![Ident, Comment, Ident, Eof]);
+        assert_eq!(
+            kinds("a /* x /* nested */ y */ b"),
+            vec![Ident, Comment, Ident, Eof]
+        );
     }
 
     #[test]
     fn assignment_line_lexes_cleanly() {
         let (ks, errors) = lex("let clk: Bit = '0';");
         assert_eq!(errors, 0);
-        assert_eq!(ks, vec![Let, Ident, Colon, Ident, Eq, CharacterLit, Semi, Eof]);
+        assert_eq!(
+            ks,
+            vec![Let, Ident, Colon, Ident, Eq, CharacterLit, Semi, Eof]
+        );
     }
 
     #[test]

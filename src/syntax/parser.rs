@@ -633,7 +633,10 @@ impl<'a> Parser<'a> {
                 Type::Path(p) => p,
                 _ => {
                     self.error_here("a view name before its backing type cannot have arguments");
-                    Path { segments: Vec::new(), span: head_span }
+                    Path {
+                        segments: Vec::new(),
+                        span: head_span,
+                    }
                 }
             };
             let backing = self.parse_type_core();
@@ -2231,7 +2234,9 @@ mod tests {
     #[test]
     fn recovery_keeps_the_ports_after_a_bad_one() {
         let (m, _) = parse("module m;\nentity E { in a Bit; in b: Bit; out c: Bit; }\n");
-        let Some(Item::Entity(e)) = m.items.first() else { panic!("expected an entity") };
+        let Some(Item::Entity(e)) = m.items.first() else {
+            panic!("expected an entity")
+        };
         let names: Vec<&str> = e.ports.iter().map(|p| p.name.text.as_str()).collect();
         assert_eq!(names, ["a", "b", "c"]);
     }
@@ -2283,10 +2288,20 @@ mod tests {
     fn newtype_is_parenthesised() {
         let m =
             parse_ok("module m;\nstruct A { x: Bit }\nstruct B(A);\nenum E { P }\nenum F(E);\n");
-        let Item::Struct(s) = &m.items[1] else { panic!("expected struct") };
-        assert!(s.base.is_some() && s.fields.is_empty(), "a newtype has a base and no fields");
-        let Item::Enum(e) = &m.items[3] else { panic!("expected enum") };
-        assert!(e.repr.is_some() && e.variants.is_empty(), "same for the enum form");
+        let Item::Struct(s) = &m.items[1] else {
+            panic!("expected struct")
+        };
+        assert!(
+            s.base.is_some() && s.fields.is_empty(),
+            "a newtype has a base and no fields"
+        );
+        let Item::Enum(e) = &m.items[3] else {
+            panic!("expected enum")
+        };
+        assert!(
+            e.repr.is_some() && e.variants.is_empty(),
+            "same for the enum form"
+        );
     }
 
     /// `struct B : A` was the newtype spelling before parens, and is the shape
@@ -2302,13 +2317,20 @@ mod tests {
         ] {
             let mut sink = DiagnosticSink::new();
             crate::syntax::parse_module(FileId(0), src, &mut sink);
-            let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+            let msgs: Vec<_> = sink
+                .diagnostics()
+                .iter()
+                .map(|d| d.message.clone())
+                .collect();
             assert!(
                 msgs.iter().any(|m| m.contains("is not a declaration")),
                 "want the migration message for:\n{src}\ngot {msgs:?}"
             );
-            let helps: Vec<_> =
-                sink.diagnostics().iter().filter_map(|d| d.help.clone()).collect();
+            let helps: Vec<_> = sink
+                .diagnostics()
+                .iter()
+                .filter_map(|d| d.help.clone())
+                .collect();
             assert!(
                 helps.iter().any(|h| h.contains("parentheses")),
                 "the help should name the new spelling, got {helps:?}"
@@ -2342,9 +2364,19 @@ mod tests {
     fn expected_token_is_named_in_source_spelling() {
         let mut sink = DiagnosticSink::new();
         crate::syntax::parse_module(FileId(0), "module m;\nentity E { in a: Bit\n}\n", &mut sink);
-        let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
-        assert!(msgs.iter().any(|m| m.contains("`;`")), "want a `;` spelling, got {msgs:?}");
-        assert!(!msgs.iter().any(|m| m.contains("Semi")), "leaked a variant name: {msgs:?}");
+        let msgs: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("`;`")),
+            "want a `;` spelling, got {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("Semi")),
+            "leaked a variant name: {msgs:?}"
+        );
     }
 
     /// the rest of the statement.
@@ -2353,11 +2385,16 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         let src = "module m;\nimpl M {\n  clk = !clk after 5ns;\n}\n";
         crate::syntax::parse_module(FileId(0), src, &mut sink);
-        let msgs: Vec<_> = sink.diagnostics().iter().map(|d| d.message.clone()).collect();
+        let msgs: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
         assert_eq!(msgs.len(), 1, "one clear error, not a cascade: {msgs:?}");
         assert!(msgs[0].contains("use `not`"), "{msgs:?}");
         // The macro form is untouched.
-        let (_, errors) = parse("module m;\n#[test] entity T {}\nimpl T { assert!(1 == 1, \"ok\"); }\n");
+        let (_, errors) =
+            parse("module m;\n#[test] entity T {}\nimpl T { assert!(1 == 1, \"ok\"); }\n");
         assert_eq!(errors, 0, "`assert!` still parses");
     }
 
@@ -2432,10 +2469,10 @@ mod tests {
 
     #[test]
     fn partial_ranges_parse_and_inclusive_equals_is_rejected() {
-        let m = parse_ok(
-            "module m;\nimpl T { a = v[..4]; b = v[1..]; c = v[..]; }\n",
-        );
-        let Item::Impl(im) = &m.items[0] else { panic!() };
+        let m = parse_ok("module m;\nimpl T { a = v[..4]; b = v[1..]; c = v[..]; }\n");
+        let Item::Impl(im) = &m.items[0] else {
+            panic!()
+        };
         for item in &im.items {
             let ImplItem::Stmt(Stmt::Assign {
                 value: Expr::Index { index, .. },
@@ -2447,7 +2484,10 @@ mod tests {
             assert!(matches!(index.as_ref(), Expr::PartialRange { .. }));
         }
         let (_, errors) = parse("module m;\nimpl T { a = v[..=2]; }\n");
-        assert!(errors > 0, "`..=` is redundant because Siox ranges are inclusive");
+        assert!(
+            errors > 0,
+            "`..=` is redundant because Siox ranges are inclusive"
+        );
     }
 
     #[test]

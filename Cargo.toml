@@ -16,7 +16,7 @@ siox-llvm = { path = "crates/siox-llvm" }
 clap = { version = "4", features = ["derive"] }
 
 # The root package is `siox`: the backend-independent compiler core (pipeline
-# through IR + the simulation kernel + waveform export). It links no LLVM
+# through IR + shared testbench definitions + waveform export). It links no LLVM
 # toolchain, so a frontend consumer (`siox-lsp`) can depend on it alone.
 [package]
 name = "siox"

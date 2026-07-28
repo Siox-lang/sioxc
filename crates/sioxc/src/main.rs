@@ -25,7 +25,7 @@ use std::process::ExitCode;
 mod build;
 
 use clap::{Parser, Subcommand};
-use siox::diag::{DiagnosticSink, Severity, SourceMap, Span};
+use siox::diag::{DiagnosticSink, Severity, SourceMap};
 use siox::syntax::ast::{Item, Module, Path as AstPath, UsingKind};
 use siox::syntax::token::{Token, TokenKind};
 use siox::syntax::{lexer::Lexer, parser, pretty};
@@ -139,7 +139,12 @@ fn main() -> ExitCode {
             Some(out) => cmd_wave(&file, &std_root, &out),
             None => cmd_test(&file, &std_root, None),
         },
-        Command::Test { path, filter, no_run, out } => {
+        Command::Test {
+            path,
+            filter,
+            no_run,
+            out,
+        } => {
             if no_run {
                 cmd_test_no_run(&path, &std_root, out.as_deref())
             } else {
@@ -200,7 +205,10 @@ fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, E
     let mut custom_operators = discover_std_operators(std_root);
     custom_operators.extend(parser::discover_custom_operators(&src, &tokens));
     if trace {
-        let trivia = tokens.iter().filter(|t| t.kind == TokenKind::Comment).count();
+        let trivia = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::Comment)
+            .count();
         eprintln!("   {} tokens ({} comment trivia)", tokens.len(), trivia);
         dump_tokens(&src, &tokens);
         eprintln!("\n== parse ==");
@@ -212,7 +220,11 @@ fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, E
         dump_items(&module);
     }
 
-    let mut fe = FrontendOut { sources, modules: vec![module], sink };
+    let mut fe = FrontendOut {
+        sources,
+        modules: vec![module],
+        sink,
+    };
     load_std_deps(&mut fe, std_root, trace, &custom_operators);
     Ok(fe)
 }
@@ -261,11 +273,15 @@ fn load_std_deps(
         });
     }
     while let Some(base) = queue.pop() {
-        let Some(file) = std_file(std_root, &base) else { continue };
+        let Some(file) = std_file(std_root, &base) else {
+            continue;
+        };
         if !loaded.insert(file.clone()) {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(&file) else { continue };
+        let Ok(src) = std::fs::read_to_string(&file) else {
+            continue;
+        };
         if trace {
             eprintln!("== load {} ==", file.display());
         }
@@ -284,13 +300,17 @@ fn load_std_deps(
 /// not report diagnostics; the full parse remains authoritative.
 fn discover_std_operators(std_root: &Path) -> std::collections::HashMap<String, u8> {
     fn visit(dir: &Path, out: &mut std::collections::HashMap<String, u8>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 visit(&path, out);
             } else if path.extension().is_some_and(|ext| ext == "siox") {
-                let Ok(src) = std::fs::read_to_string(&path) else { continue };
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
                 let mut sink = DiagnosticSink::new();
                 let tokens = Lexer::new(siox::diag::FileId(0), &src).tokenize(&mut sink);
                 out.extend(parser::discover_custom_operators(&src, &tokens));
@@ -361,7 +381,10 @@ fn run_semantic(path: &Path, std_root: &Path, trace: bool) -> Result<Semantic, E
 
     if fe.sink.has_errors() {
         render_diagnostics(&fe.sources, &fe.sink);
-        eprintln!("\nparse failed: {} error(s); later stages skipped", fe.sink.error_count());
+        eprintln!(
+            "\nparse failed: {} error(s); later stages skipped",
+            fe.sink.error_count()
+        );
         return Err(ExitCode::FAILURE);
     }
     eprintln!(
@@ -382,7 +405,10 @@ fn run_semantic(path: &Path, std_root: &Path, trace: bool) -> Result<Semantic, E
 
     let before = fe.sink.error_count();
     let typed = siox::types::check(modules, &resolved, &mut fe.sink);
-    eprintln!("== stage 4: typecheck == {} diagnostic(s)", fe.sink.error_count() - before);
+    eprintln!(
+        "== stage 4: typecheck == {} diagnostic(s)",
+        fe.sink.error_count() - before
+    );
 
     Ok(Semantic { fe, typed })
 }
@@ -399,7 +425,12 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     if !sem.fe.sink.has_errors() {
         let modules = sem.fe.modules.as_slice();
         let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-        let _ = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+        let _ = siox::ir::lower_in(
+            modules,
+            &hier,
+            &mut sem.fe.sink,
+            path.parent().unwrap_or_else(|| Path::new("")),
+        );
     }
     eprintln!();
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
@@ -434,12 +465,19 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         eprintln!("siox build: no entity named `{top}`");
         return ExitCode::FAILURE;
     }
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+    let design = siox::ir::lower_in(
+        modules,
+        &hier,
+        &mut sem.fe.sink,
+        path.parent().unwrap_or_else(|| Path::new("")),
+    );
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
-    let obj = out.map(|p| p.to_path_buf()).unwrap_or_else(|| path.with_extension("o"));
+    let obj = out
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| path.with_extension("o"));
     if let Some(s) = design.signals.iter().find(|s| s.width == 0) {
         eprintln!(
             "siox build: `{}` has an unresolved width — `{top}` is parametric; \
@@ -448,8 +486,10 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         );
         return ExitCode::FAILURE;
     }
-    if let Some(s) =
-        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    if let Some(s) = design
+        .signals
+        .iter()
+        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
     {
         eprintln!(
             "siox build: signal `{}` is {} bits; the LLVM backend supports at most {} bits",
@@ -461,7 +501,11 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
     }
     match siox_llvm::emit_object(&design, &obj) {
         Ok(()) => {
-            eprintln!("compiled `{top}` -> {} ({} signals)", obj.display(), design.signals.len());
+            eprintln!(
+                "compiled `{top}` -> {} ({} signals)",
+                obj.display(),
+                design.signals.len()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -482,9 +526,9 @@ fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Str
         .flat_map(|m| &m.items)
         .filter_map(|it| match it {
             Item::Entity(e)
-                if e.attrs.iter().any(|a| {
-                    a.name.segments.last().map(|s| s.text.as_str()) == Some("top")
-                }) =>
+                if e.attrs
+                    .iter()
+                    .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("top")) =>
             {
                 Some(e.name.text.as_str())
             }
@@ -494,7 +538,10 @@ fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Str
     match tops.as_slice() {
         [t] => Ok(t.to_string()),
         [] => Err("no #[top] entity; name one with --top <Entity>".into()),
-        _ => Err(format!("multiple #[top] entities ({}); pick one with --top", tops.join(", "))),
+        _ => Err(format!(
+            "multiple #[top] entities ({}); pick one with --top",
+            tops.join(", ")
+        )),
     }
 }
 
@@ -507,15 +554,25 @@ fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode
     };
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+    let design = siox::ir::lower_in(
+        modules,
+        &hier,
+        &mut sem.fe.sink,
+        path.parent().unwrap_or_else(|| Path::new("")),
+    );
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
-    let bin = out.map(|p| p.to_path_buf()).unwrap_or_else(|| path.with_extension("sim"));
+    let bin = out
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| path.with_extension("sim"));
     match build::build(modules, &hier, &design, &bin) {
         Ok(()) => {
-            eprintln!("built test binary {} (run it to execute the testbench)", bin.display());
+            eprintln!(
+                "built test binary {} (run it to execute the testbench)",
+                bin.display()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -534,7 +591,12 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     };
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+    let design = siox::ir::lower_in(
+        modules,
+        &hier,
+        &mut sem.fe.sink,
+        path.parent().unwrap_or_else(|| Path::new("")),
+    );
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
@@ -542,8 +604,10 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     // Report codegen-blocking IR (bad ids, Unknown, oversized signals) cleanly
     // rather than letting the emitter panic.
     let mut issues = design.validate();
-    if let Some(s) =
-        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    if let Some(s) = design
+        .signals
+        .iter()
+        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
     {
         issues.push(format!(
             "signal `{}` is {} bits; the LLVM backend supports at most {} ABI words ({} bits)",
@@ -603,10 +667,18 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
 
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    eprintln!("== stage 5: elaborate == {} instance(s)", hier.instances.len());
+    eprintln!(
+        "== stage 5: elaborate == {} instance(s)",
+        hier.instances.len()
+    );
 
     let before = sem.fe.sink.error_count();
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+    let design = siox::ir::lower_in(
+        modules,
+        &hier,
+        &mut sem.fe.sink,
+        path.parent().unwrap_or_else(|| Path::new("")),
+    );
     eprintln!(
         "== stage 6: lower == {} signal(s), {} driver(s), {} event block(s), {} diagnostic(s)",
         design.signals.len(),
@@ -623,73 +695,6 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
-    }
-}
-
-/// `siox test`: run the `#[test]` entities (optionally filtered by name)
-/// through the simulator and report pass/fail. Exits nonzero if any test fails
-/// (or the pipeline errored).
-/// Run the `#[test]` entities through the JIT-compiled backend, driving the
-/// same test runner with a JIT engine instead of the interpreter.
-fn run_tests_llvm(
-    modules: &[Module],
-    hier: &siox::elab::Hierarchy,
-    design: &siox::ir::Design,
-    filter: Option<&str>,
-) -> Result<Vec<siox::run::TestResult>, String> {
-    if let Some(s) =
-        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
-    {
-        return Err(format!(
-            "signal `{}` is {} bits; the LLVM backend supports at most {} bits",
-            s.path,
-            s.width,
-            siox::target::MAX_SIGNAL_WIDTH
-        ));
-    }
-    let issues = design.validate();
-    if !issues.is_empty() {
-        return Err(issues.join("; "));
-    }
-    eprintln!("backend: llvm (JIT)");
-    Ok(siox_llvm::with_jit(design, |jit| {
-        siox::run::run_tests_with_engine(modules, hier, design, filter, || {
-            jit.reset();
-            Box::new(JitEngine { jit, design }) as Box<dyn siox::run::Engine>
-        })
-    }))
-}
-
-/// Adapts a JIT-compiled design to the test runner's [`siox::run::Engine`].
-struct JitEngine<'a, 'ctx> {
-    jit: &'a siox_llvm::Jit<'ctx>,
-    design: &'a siox::ir::Design,
-}
-
-impl siox::run::Engine for JitEngine<'_, '_> {
-    fn set(&mut self, sig: siox::ir::SignalId, value: u128) {
-        let words = siox::target::words_for(self.design.signals[sig.0 as usize].width);
-        for word in 0..words {
-            self.jit.set_word(
-                sig.0,
-                word,
-                (value >> (word * siox::target::ABI_WORD_BITS)) as u64,
-            );
-        }
-    }
-    fn read(&self, sig: siox::ir::SignalId) -> u128 {
-        let words = siox::target::words_for(self.design.signals[sig.0 as usize].width);
-        (0..words).fold(0u128, |value, word| {
-            value
-                | ((self.jit.read_word(sig.0, word) as u128)
-                    << (word * siox::target::ABI_WORD_BITS))
-        })
-    }
-    fn settle(&mut self) {
-        self.jit.settle();
-    }
-    fn design(&self) -> &siox::ir::Design {
-        self.design
     }
 }
 
@@ -733,9 +738,17 @@ fn cmd_test_dir(dir: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
     eprintln!(
         "\n===== {ran} file{} tested; {} =====",
         if ran == 1 { "" } else { "s" },
-        if failed == 0 { "all passed".to_string() } else { format!("{failed} failed") }
+        if failed == 0 {
+            "all passed".to_string()
+        } else {
+            format!("{failed} failed")
+        }
     );
-    if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Whether any elaborated root instantiates a `#[test]` entity.
@@ -765,7 +778,12 @@ fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
 
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
+    let design = siox::ir::lower_in(
+        modules,
+        &hier,
+        &mut sem.fe.sink,
+        path.parent().unwrap_or_else(|| Path::new("")),
+    );
     render_diagnostics(&sem.fe.sources, &sem.fe.sink);
     if sem.fe.sink.has_errors() {
         return false;
@@ -779,126 +797,38 @@ fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
         return true;
     }
 
-    // The LLVM JIT is the only engine.
-    let results = match run_tests_llvm(modules, &hier, &design, filter) {
-        Ok(r) => r,
+    let bin = std::env::temp_dir().join(format!(
+        "siox-test-{}-{}",
+        std::process::id(),
+        path.file_stem().and_then(|s| s.to_str()).unwrap_or("suite")
+    ));
+    if let Err(e) = build::build(modules, &hier, &design, &bin) {
+        eprintln!("sioxc test: {e}");
+        return false;
+    }
+    eprintln!("backend: llvm (native AOT)");
+    let mut command = std::process::Command::new(&bin);
+    if let Some(filter) = filter {
+        command.arg(filter);
+    }
+    let status = command.status();
+    let _ = std::fs::remove_file(&bin);
+    match status {
+        Ok(status) => status.success(),
         Err(e) => {
-            // No engine can run this design: report it as a proper failed run,
-            // not just a stderr note — CI and humans both look for the
-            // `test result:` line.
-            eprintln!("backend: llvm unavailable: {e}");
-            println!("\nrunning 0 tests\n\ntest result: FAILED. no engine can run this design ({e})");
-            return false;
-        }
-    };
-    // libtest-style report (the rustc parallel).
-    println!("\nrunning {} test{}", results.len(), if results.len() == 1 { "" } else { "s" });
-    let mut failures: Vec<(&str, String)> = Vec::new();
-    let mut warn_count = 0usize;
-    let loc_of = |s: Span| {
-        let (line, col) = sem.fe.sources.line_col(s.file, s.start);
-        let name = sem.fe.sources.get(s.file).map(|f| f.name.as_str()).unwrap_or("?");
-        format!(" ({name}:{line}:{col})")
-    };
-    for r in &results {
-        for (msg, span) in &r.warnings {
-            warn_count += 1;
-            eprintln!("warning: {msg}{}", loc_of(*span));
-        }
-        if r.passed {
-            let tail = if r.warnings.is_empty() {
-                String::new()
-            } else {
-                format!(" ({} warning{})", r.warnings.len(), if r.warnings.len() == 1 { "" } else { "s" })
-            };
-            println!("test {} ... ok{tail}", r.name);
-        } else {
-            println!("test {} ... FAILED", r.name);
-            let loc = r.span.map(loc_of).unwrap_or_default();
-            let msg = r.failure.as_deref().unwrap_or("assertion failed");
-            failures.push((&r.name, format!("{msg}{loc}")));
+            eprintln!("failed to run {}: {e}", bin.display());
+            false
         }
     }
-    if !failures.is_empty() {
-        println!("\nfailures:");
-        for (name, why) in &failures {
-            println!("    {name}: {why}");
-        }
-    }
-    let failed = failures.len();
-    let passed = results.len() - failed;
-    let verdict = if failed == 0 { "ok" } else { "FAILED" };
-    let warn_tail = if warn_count > 0 {
-        format!("; {warn_count} warning{}", if warn_count == 1 { "" } else { "s" })
-    } else {
-        String::new()
-    };
-    println!("\ntest result: {verdict}. {passed} passed; {failed} failed{warn_tail}");
-    failed == 0
 }
 
-/// Trace the first `#[test]` for waveform export via the JIT.
-// Without the `llvm` feature the body is empty, so the inputs go unused.
-fn trace_first_test(
-    modules: &[Module],
-    hier: &siox::elab::Hierarchy,
-    design: &siox::ir::Design,
-) -> Option<(siox::run::TestResult, Vec<siox::run::Sample>)> {
-    {
-        let jittable = design.signals.iter().all(|s| s.width <= 64) && design.validate().is_empty();
-        if jittable {
-            return siox_llvm::with_jit(design, |jit| {
-                siox::run::run_test_traced_with_engine(modules, hier, design, None, || {
-                    jit.reset();
-                    Box::new(JitEngine { jit, design }) as Box<dyn siox::run::Engine>
-                })
-            });
-        }
-    }
-    #[allow(unreachable_code)]
-    None
-}
-
-/// `siox sim --wave <out.vcd>`: run the first test entity with tracing and write
-/// its waveform as VCD.
-fn cmd_wave(path: &Path, std_root: &Path, out: &Path) -> ExitCode {
-    let mut sem = match run_semantic(path, std_root, false) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let modules = sem.fe.modules.as_slice();
-    let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox::ir::lower_in(modules, &hier, &mut sem.fe.sink, path.parent().unwrap_or_else(|| Path::new("")));
-    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
-    if sem.fe.sink.has_errors() {
-        return ExitCode::FAILURE;
-    }
-
-    let Some((result, samples)) = trace_first_test(modules, &hier, &design) else {
-        eprintln!("no #[test] entity found to trace (or no backend can run it)");
-        return ExitCode::FAILURE;
-    };
-
-    let mut file = match std::fs::File::create(out) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("error: cannot write {}: {e}", out.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = siox::wave::write_vcd(&mut file, &design, &samples) {
-        eprintln!("error: writing VCD: {e}");
-        return ExitCode::FAILURE;
-    }
-
+/// Native waveform tracing needs an explicit trace ABI; it is not provided by
+/// the test executable yet.
+fn cmd_wave(_path: &Path, _std_root: &Path, _out: &Path) -> ExitCode {
     eprintln!(
-        "wrote {} ({} samples) for `{}` [{}]",
-        out.display(),
-        samples.len(),
-        result.name,
-        if result.passed { "pass" } else { "fail" }
+        "sioxc sim --wave is unavailable after JIT removal; native trace ABI support is required"
     );
-    ExitCode::SUCCESS
+    ExitCode::FAILURE
 }
 
 fn cmd_tokens(path: &Path) -> ExitCode {
@@ -938,7 +868,13 @@ fn dump_tokens(src: &str, tokens: &[Token]) {
 
 /// Print a one-line summary of each top-level item the parser produced.
 fn dump_items(m: &Module) {
-    let path = m.path.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("::");
+    let path = m
+        .path
+        .segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join("::");
     eprintln!("   module {path}");
     for item in &m.items {
         let (kind, name) = describe_item(item);
@@ -949,16 +885,21 @@ fn dump_items(m: &Module) {
 fn describe_item(item: &Item) -> (&'static str, String) {
     match item {
         Item::Fn(f) => ("fn", f.name.text.clone()),
-        Item::ExternBlock { abi, fns, .. } => {
-            ("extern", format!("\"{abi}\" ({} fns)", fns.len()))
-        }
+        Item::ExternBlock { abi, fns, .. } => ("extern", format!("\"{abi}\" ({} fns)", fns.len())),
         Item::Using(u) => {
             let name = match &u.kind {
                 UsingKind::Alias { name, .. } => name.text.clone(),
                 UsingKind::Import { base, names } => {
-                    let base = base.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>();
-                    let names =
-                        names.iter().map(|n| n.text.as_str()).collect::<Vec<_>>().join(", ");
+                    let base = base
+                        .segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>();
+                    let names = names
+                        .iter()
+                        .map(|n| n.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     if base.is_empty() {
                         names
                     } else {
@@ -980,7 +921,11 @@ fn describe_item(item: &Item) -> (&'static str, String) {
             let target = pretty::type_str(&i.target);
             let name = match &i.trait_ {
                 Some(tr) => {
-                    let tr = tr.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>();
+                    let tr = tr
+                        .segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>();
                     format!("{} for {target}", tr.join("::"))
                 }
                 None => target,
@@ -1008,7 +953,10 @@ fn render_diagnostics(sources: &SourceMap, sink: &DiagnosticSink) {
         }
         if let Some(span) = diag.primary {
             let (line, col) = sources.line_col(span.file, span.start);
-            let name = sources.get(span.file).map(|f| f.name.as_str()).unwrap_or("<unknown>");
+            let name = sources
+                .get(span.file)
+                .map(|f| f.name.as_str())
+                .unwrap_or("<unknown>");
             eprintln!("  --> {name}:{line}:{col}");
         }
         for label in &diag.labels {

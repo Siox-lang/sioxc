@@ -4,11 +4,11 @@
 //! (lexer/parser). The AST must be able to represent every item listed under
 //! "AST should represent" in Stage 2.
 
-pub mod token;
-pub mod lexer;
 pub mod ast;
+pub mod lexer;
 pub mod parser;
 pub mod pretty;
+pub mod token;
 
 pub use ast::Module;
 

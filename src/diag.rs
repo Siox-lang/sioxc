@@ -25,13 +25,21 @@ pub struct Span {
 
 impl Span {
     pub fn new(file: FileId, range: Range<u32>) -> Self {
-        Span { file, start: range.start, end: range.end }
+        Span {
+            file,
+            start: range.start,
+            end: range.end,
+        }
     }
 
     /// Smallest span covering both `self` and `other` (must share a file).
     pub fn to(self, other: Span) -> Span {
         debug_assert_eq!(self.file, other.file);
-        Span { file: self.file, start: self.start.min(other.start), end: self.end.max(other.end) }
+        Span {
+            file: self.file,
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
     }
 }
 
@@ -54,7 +62,10 @@ impl SourceMap {
     /// Registers a file's text and returns its id.
     pub fn add(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
         let id = FileId(self.files.len() as u32);
-        self.files.push(SourceFile { name: name.into(), text: text.into() });
+        self.files.push(SourceFile {
+            name: name.into(),
+            text: text.into(),
+        });
         id
     }
 
@@ -67,7 +78,9 @@ impl SourceMap {
     /// Columns count bytes within the line (good enough for ASCII source).
     /// Unknown files or out-of-range offsets clamp to `(1, 1)`.
     pub fn line_col(&self, file: FileId, offset: u32) -> (u32, u32) {
-        let Some(src) = self.get(file) else { return (1, 1) };
+        let Some(src) = self.get(file) else {
+            return (1, 1);
+        };
         let offset = (offset as usize).min(src.text.len());
         let mut line = 1u32;
         let mut col = 1u32;
@@ -129,7 +142,10 @@ impl Diagnostic {
     }
 
     pub fn warning(message: impl Into<String>) -> Self {
-        Diagnostic { severity: Severity::Warning, ..Diagnostic::error(message) }
+        Diagnostic {
+            severity: Severity::Warning,
+            ..Diagnostic::error(message)
+        }
     }
 
     pub fn with_code(mut self, code: &'static str) -> Self {
@@ -143,7 +159,10 @@ impl Diagnostic {
     }
 
     pub fn label(mut self, span: Span, message: impl Into<String>) -> Self {
-        self.labels.push(Label { span, message: message.into() });
+        self.labels.push(Label {
+            span,
+            message: message.into(),
+        });
         self
     }
 
@@ -174,11 +193,16 @@ impl DiagnosticSink {
     }
 
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == Severity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
     }
 
     pub fn error_count(&self) -> usize {
-        self.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count()
     }
 }
 

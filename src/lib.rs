@@ -19,17 +19,17 @@
 //! | [`types`]   | 4 | type & kind checking; Phase-2 syntax rejection |
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
 //! | [`ir`]      | 6 | lowering to the digital simulation IR |
-//! | [`run`]     | 7–8 | simulation kernel / `#[test]` runner (engine-agnostic) |
+//! | [`testbench`] | 7–8 | shared `#[test]` language runtime (engine-agnostic) |
 //! | [`wave`]    | 9 | `Trace` recording + VCD export |
 //!
-//! The LLVM JIT + native AOT backend is `siox-llvm` (stage 7), out of tree here.
+//! The native LLVM AOT backend is `siox-llvm` (stage 7), out of tree here.
 
 pub mod diag;
-pub mod target;
-pub mod syntax;
-pub mod resolve;
-pub mod types;
 pub mod elab;
 pub mod ir;
-pub mod run;
+pub mod resolve;
+pub mod syntax;
+pub mod target;
+pub mod testbench;
+pub mod types;
 pub mod wave;

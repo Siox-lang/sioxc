@@ -1,7 +1,7 @@
 //! Waveform / tracing output for siox Phase 1 (spec Stage 9).
 //!
-//! Takes the per-time [`Sample`]s recorded by a traced simulation run
-//! ([`crate::run::run_test_traced`]) and writes a VCD file: a `$timescale`, one
+//! Takes per-time [`Sample`]s recorded by a simulation runtime and writes a VCD
+//! file: a `$timescale`, one
 //! `$scope`/`$var` per signal (grouped by the `Entity.signal` path prefix), then
 //! `#time` value-change records. Enum symbolic names and FST are follow-ups.
 
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crate::ir::Design;
-use crate::run::Sample;
+use crate::testbench::Sample;
 
 /// Write the recorded samples for `design` as a VCD stream.
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {
@@ -18,11 +18,17 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
     // X/Z metavalue companions (`v$meta`): a `Logic`-vector's per-element
     // discriminant. They aren't dumped as their own vars — instead the vector
     // renders each bit as `x`/`z` where its companion says so.
-    let companion_of: Vec<Option<usize>> =
-        (0..design.signals.len()).map(|i| design.meta_of.get(&(i as u32)).map(|&c| c as usize)).collect();
-    let owner_of: HashMap<usize, usize> =
-        design.meta_of.iter().map(|(&o, &c)| (c as usize, o as usize)).collect();
-    let is_companion: Vec<bool> = (0..design.signals.len()).map(|i| owner_of.contains_key(&i)).collect();
+    let companion_of: Vec<Option<usize>> = (0..design.signals.len())
+        .map(|i| design.meta_of.get(&(i as u32)).map(|&c| c as usize))
+        .collect();
+    let owner_of: HashMap<usize, usize> = design
+        .meta_of
+        .iter()
+        .map(|(&o, &c)| (c as usize, o as usize))
+        .collect();
+    let is_companion: Vec<bool> = (0..design.signals.len())
+        .map(|i| owner_of.contains_key(&i))
+        .collect();
 
     // A logic-scalar enum (Bit/ULogic/Logic: every variant a quoted
     // logic character) dumps as a 1-bit VCD scalar with native 0/1/z/x states
@@ -79,7 +85,11 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
             if name_tables[i].is_some() {
                 writeln!(out, "$var string 1 {} {name} $end", ids[i])?;
             } else {
-                let w = if logic_tables[i].is_some() { 1 } else { vcd_width(design.signals[i].width) };
+                let w = if logic_tables[i].is_some() {
+                    1
+                } else {
+                    vcd_width(design.signals[i].width)
+                };
                 writeln!(out, "$var wire {w} {} {name} $end", ids[i])?;
             }
         }
@@ -231,8 +241,24 @@ mod tests {
     fn design() -> Design {
         Design {
             signals: vec![
-                Signal { path: "Counter.clk".into(), width: 1, real: false, char: false, range: None, init: 0, enum_type: None },
-                Signal { path: "Counter.count".into(), width: 8, real: false, char: false, range: None, init: 0, enum_type: None },
+                Signal {
+                    path: "Counter.clk".into(),
+                    width: 1,
+                    real: false,
+                    char: false,
+                    range: None,
+                    init: 0,
+                    enum_type: None,
+                },
+                Signal {
+                    path: "Counter.count".into(),
+                    width: 8,
+                    real: false,
+                    char: false,
+                    range: None,
+                    init: 0,
+                    enum_type: None,
+                },
             ],
             drivers: vec![],
             event_blocks: vec![],
@@ -246,9 +272,18 @@ mod tests {
     #[test]
     fn writes_a_valid_vcd() {
         let samples = vec![
-            Sample { time_fs: 0, values: vec![0, 0] },
-            Sample { time_fs: 5, values: vec![1, 0] }, // clk rises
-            Sample { time_fs: 10, values: vec![0, 3] }, // clk falls, count -> 3
+            Sample {
+                time_fs: 0,
+                values: vec![0, 0],
+            },
+            Sample {
+                time_fs: 5,
+                values: vec![1, 0],
+            }, // clk rises
+            Sample {
+                time_fs: 10,
+                values: vec![0, 3],
+            }, // clk falls, count -> 3
         ];
         let mut buf = Vec::new();
         write_vcd(&mut buf, &design(), &samples).unwrap();
@@ -269,7 +304,10 @@ mod tests {
         let dump = vcd.split("$dumpvars").nth(1).unwrap();
         let end = dump.find("$end").expect("`$dumpvars` is never closed");
         let next_time = dump.find("\n#").unwrap_or(usize::MAX);
-        assert!(end < next_time, "`$end` must close the block before the next `#time`");
+        assert!(
+            end < next_time,
+            "`$end` must close the block before the next `#time`"
+        );
     }
 
     #[test]
@@ -287,8 +325,24 @@ mod tests {
         );
         let design = Design {
             signals: vec![
-                Signal { path: "M.b".into(), width: 1, real: false, char: false, range: None, init: 0, enum_type: Some("Bit".into()) },
-                Signal { path: "M.st".into(), width: 2, real: false, char: false, range: None, init: 0, enum_type: Some("State".into()) },
+                Signal {
+                    path: "M.b".into(),
+                    width: 1,
+                    real: false,
+                    char: false,
+                    range: None,
+                    init: 0,
+                    enum_type: Some("Bit".into()),
+                },
+                Signal {
+                    path: "M.st".into(),
+                    width: 2,
+                    real: false,
+                    char: false,
+                    range: None,
+                    init: 0,
+                    enum_type: Some("State".into()),
+                },
             ],
             drivers: vec![],
             event_blocks: vec![],
@@ -298,15 +352,27 @@ mod tests {
             meta_of: Default::default(),
         };
         let samples = vec![
-            Sample { time_fs: 0, values: vec![0, 0] },
-            Sample { time_fs: 5, values: vec![1, 1] }, // b -> '1', st -> Run
-            Sample { time_fs: 10, values: vec![1, 2] }, // st -> Done
+            Sample {
+                time_fs: 0,
+                values: vec![0, 0],
+            },
+            Sample {
+                time_fs: 5,
+                values: vec![1, 1],
+            }, // b -> '1', st -> Run
+            Sample {
+                time_fs: 10,
+                values: vec![1, 2],
+            }, // st -> Done
         ];
         let mut buf = Vec::new();
         write_vcd(&mut buf, &design, &samples).unwrap();
         let vcd = String::from_utf8(buf).unwrap();
         assert!(vcd.contains("$var wire 1 v0 b $end"), "Bit is a 1-bit wire");
-        assert!(vcd.contains("$var string 1 v1 st $end"), "State is a string var");
+        assert!(
+            vcd.contains("$var string 1 v1 st $end"),
+            "State is a string var"
+        );
         assert!(vcd.contains("0v0"), "Bit dumps native 0/1");
         assert!(vcd.contains("sIdle v1"), "state 0 -> Idle");
         assert!(vcd.contains("sRun v1"), "state 1 -> Run");
@@ -316,8 +382,14 @@ mod tests {
     #[test]
     fn unchanged_signals_are_not_re_emitted() {
         let samples = vec![
-            Sample { time_fs: 0, values: vec![0, 0] },
-            Sample { time_fs: 5, values: vec![0, 0] }, // nothing changed
+            Sample {
+                time_fs: 0,
+                values: vec![0, 0],
+            },
+            Sample {
+                time_fs: 5,
+                values: vec![0, 0],
+            }, // nothing changed
         ];
         let mut buf = Vec::new();
         write_vcd(&mut buf, &design(), &samples).unwrap();

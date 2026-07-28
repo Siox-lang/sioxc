@@ -12,8 +12,6 @@
 
 mod aot;
 mod emit;
-mod jit;
 
 pub use aot::emit_object;
 pub use emit::emit_module_ir;
-pub use jit::{with_jit, Jit};

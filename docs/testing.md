@@ -41,19 +41,20 @@ a method result.
 
 ## Running
 
-`sioxc test` finds every `#[test]` entity, simulates it on the JIT, and reports
-pass/fail in libtest style — like `cargo test`:
+`sioxc test` finds every `#[test]` entity, compiles a native test executable,
+runs it, and reports pass/fail in libtest style — like `cargo test`:
 
 ```console
 $ sioxc test counter.siox
 running 1 test
-test CounterTest ... ok
+test counter::CounterTest ... ok
 
 test result: ok. 1 passed; 0 failed
 ```
 
-- **Filter by name:** `sioxc test counter.siox Counter` runs the matching
-  subset.
+- **Filter by qualified name:** `sioxc test counter.siox
+  counter::CounterTest` runs the matching subset. Partial names also work as
+  filters.
 - **A directory:** `sioxc test <dir>` runs every `.siox` file under it as its
   own module, then an aggregate result.
 - **Native binary:** `sioxc test <file> --no-run -o <bin>` builds a standalone
@@ -66,12 +67,8 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
 ## How the compiler is tested
 
 - **Per-crate unit tests** across the pipeline (`cargo test --workspace`).
-- **JIT behaviour tests** (`tests/jit.rs`) drive the JIT across
-  the whole expression surface — arithmetic, slices, concat, enum match,
-  struct/array signals, clocked designs — and assert golden signal values. Those
-  golden values were captured from the delta-cycle interpreter that used to be
-  the differential oracle, before that engine was removed, so coverage is
-  preserved exactly.
+- **Native backend tests** compile and link focused designs, then assert values
+  through the exported word ABI, including multi-word values.
 - **Conformance corpus.** The runnable `.siox` programs (counters, FSMs, a FIFO,
   SPI, RISC-V fragments, …) live in the
   [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) repo. CI checks
