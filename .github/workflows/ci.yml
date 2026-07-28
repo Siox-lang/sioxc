@@ -21,7 +21,7 @@ jobs:
     name: frontend only
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.90.0
@@ -42,10 +42,10 @@ jobs:
     env:
       LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check out runnable corpus
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: Siox-lang/siox-tests
           path: siox-tests

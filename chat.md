@@ -1096,3 +1096,5 @@ Updating GitHub Actions to stop invoking the removed workspace/package layout.
 CI will exercise formatting, the frontend-only dependency surface, the default
 LLVM/native suite, `bitpack`, and the full runnable sibling corpus through the
 same checked-in script used locally.
+The first live run also exposed GitHub's Node 20 deprecation annotation on
+`actions/checkout@v4`; switched both repository checkouts to v5.
