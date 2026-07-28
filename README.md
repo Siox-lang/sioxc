@@ -115,12 +115,13 @@ parse tree, lowered IR, and instance hierarchy.
 
 ## Editor support
 
-`siox-lsp` is a language server — live diagnostics, go-to-definition, hover,
-completion, rename, and more. Build it and point your editor at it:
+[`siox-lsp`](https://github.com/Siox-lang/siox-lsp) is maintained in its own
+repository and uses this compiler as a submodule. It provides live diagnostics,
+go-to-definition, hover, completion, rename, and more:
 
 ```bash
-cargo build -p siox-lsp
-target/debug/siox-lsp --stdio --std ./std
+git clone --recurse-submodules git@github.com:Siox-lang/siox-lsp.git
+cargo build --manifest-path siox-lsp/Cargo.toml
 ```
 
 Full capability list and setup notes:

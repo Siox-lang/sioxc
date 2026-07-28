@@ -1040,3 +1040,11 @@ later incremental query layer fit without leaking orchestration into `sioxc`.
 
 Gates: workspace green, sioxc integration tests green after the driver split,
 all emit modes smoke-tested, and the external corpus runner is 78/78.
+
+### 2026-07-28 — Codex — splitting siox-lsp into its own repository
+
+Preserved the LSP's directory history with `git subtree split` and created the
+standalone checkout at `/home/max/siox-lsp`. Removing `crates/siox-lsp` from
+this compiler workspace and updating compiler documentation to point at
+`Siox-lang/siox-lsp`. The standalone repository will include this repository at
+`siox/` as a submodule and depend only on its backend-independent root crate.

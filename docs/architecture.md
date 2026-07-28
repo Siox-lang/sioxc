@@ -1,6 +1,6 @@
 # Architecture
 
-The siox compiler is a small **workspace of four crates**. The root crate
+The siox compiler is a small **workspace of three crates**. The root crate
 `siox` is the **backend-independent core**: the whole compiler pipeline as
 modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
 module consumes the output of the module above it, the only module everything
@@ -11,9 +11,10 @@ LLVM toolchain. Around it:
   `elab` → `ir`, plus `testbench` and `wave`.
 - **`crates/siox-llvm`** — the LLVM native AOT backend
   (inkwell); depends on `siox`.
-- **`crates/sioxc`** — the compiler/simulator CLI; depends on `siox` + `siox-llvm`.
-- **`crates/siox-lsp`** — the language server; depends on **`siox` only**, so it
-  builds with no LLVM toolchain (it needs nothing below the `ir` module).
+- **`crates/sioxc`** — the compiler CLI; depends on `siox` + `siox-llvm`.
+
+The separate `Siox-lang/siox-lsp` repository includes this compiler repository
+as a submodule and depends only on the backend-independent `siox` crate.
 
 ```mermaid
 flowchart LR
@@ -29,7 +30,7 @@ flowchart LR
     IR --> LL[crate: siox-llvm]
     CLI[crate: sioxc] == drives ==> core
     CLI == native backend ==> LL
-    LSP[crate: siox-lsp] == frontend only ==> core
+    LSP[separate repo: siox-lsp] == submodule frontend only ==> core
 ```
 
 `siox-llvm` emits LLVM and compiles the `Design` ahead of time to native code.
@@ -46,8 +47,7 @@ depends on `siox`, never the reverse. Do not introduce upward or sideways `use`s
 ## Modules
 
 The core `siox` crate lives in `src/`, one file (or directory) per module below.
-The backend is `crates/siox-llvm/`, and the two binaries are `crates/sioxc/` and
-`crates/siox-lsp/`.
+The backend is `crates/siox-llvm/`, and the compiler binary is `crates/sioxc/`.
 
 | Module | Spec stage(s) | Role |
 | ------ | ------------- | ---- |
@@ -66,7 +66,6 @@ The three sibling crates:
 | ----- | ------------- | ---- |
 | `siox-llvm` | B  | LLVM/inkwell native backend — emit `.ll` or an AOT native object. Consumes `siox::ir::Design`. |
 | `sioxc`     | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the crate-local `build` module. Depends on `siox` + `siox-llvm`. |
-| `siox-lsp`  | — | The language server (skeleton). Depends on **`siox` only** — reaches at most the `ir` module for diagnostics, never the backend, so it builds without LLVM. |
 
 ## rustc-shaped compiler boundary
 

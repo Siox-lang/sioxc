@@ -238,10 +238,8 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   early spellings such as trait `let` methods and symbolic boolean `&`.
   Refresh or clearly label those sketches so they are not mistaken for
   accepted source.
-- 🔴 **LSP protocol server** — `siox-lsp` is currently only an argument-parsing
-  skeleton that links the frontend and exits with `EX_UNAVAILABLE`. Still
-  needed: JSON-RPC/stdio transport, document synchronization, diagnostics,
-  locations/hover/completion, and VS Code/Neovim integration tests.
+- ✅ **LSP repository split** — the working protocol server and editor tests now
+  live in `Siox-lang/siox-lsp`, with this compiler included as a submodule.
 - 🔴 **cocotb integration** — drive the compiled design via VPI/GPI (the runtime
   ABI is already VPI-shaped for this). Tracked as the main open runtime task.
 

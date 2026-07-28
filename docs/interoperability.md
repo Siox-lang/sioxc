@@ -36,12 +36,13 @@ and are baked into the binary (fine for stable fixtures); a genuine runtime
 
 ## Editor support (`siox-lsp`)
 
-siox ships a language server, `siox-lsp`, speaking LSP over stdin/stdout, so any
-LSP-capable editor can use it:
+The separate [`siox-lsp`](https://github.com/Siox-lang/siox-lsp) repository
+speaks LSP over stdin/stdout and includes `sioxc` as its `siox` submodule:
 
 ```bash
-cargo build -p siox-lsp
-target/debug/siox-lsp --stdio --std ./std
+git clone --recurse-submodules git@github.com:Siox-lang/siox-lsp.git
+cargo build --manifest-path siox-lsp/Cargo.toml
+siox-lsp/target/debug/siox-lsp --stdio --std siox-lsp/siox/std
 ```
 
 Point your editor at that command for the `siox` language; `--std <dir>` locates

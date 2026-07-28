@@ -243,13 +243,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "siox-lsp"
-version = "0.1.0"
-dependencies = [
- "siox",
-]
-
-[[package]]
 name = "sioxc"
 version = "0.1.0"
 dependencies = [

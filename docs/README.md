@@ -44,7 +44,8 @@ flowchart TD
 `diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
 crate is the binary that wires them together per subcommand. **`siox-llvm` is
 the native backend**; `sioxc` generates and links the native `#[test]` harness.
-The `siox-lsp` crate needs only the core, so it builds without LLVM.
+The separate `siox-lsp` repository uses this repository as a submodule and
+depends only on the core, so it builds without LLVM.
 
 ## Current status (summary)
 

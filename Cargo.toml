@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/siox-llvm", "crates/sioxc", "crates/siox-lsp"]
+members = ["crates/siox-llvm", "crates/sioxc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,7 +17,8 @@ clap = { version = "4", features = ["derive"] }
 
 # The root package is `siox`: the backend-independent compiler core (pipeline
 # through IR + shared testbench definitions + waveform export). It links no LLVM
-# toolchain, so a frontend consumer (`siox-lsp`) can depend on it alone.
+# toolchain, so frontend consumers such as the separate `siox-lsp` repository
+# can depend on it alone.
 [package]
 name = "siox"
 version.workspace = true
