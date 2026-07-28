@@ -9,11 +9,12 @@ authors = ["siox contributors"]
 description = "The siox compiler"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 inkwell = { version = "0.9.0", optional = true, default-features = false, features = ["llvm22-1", "target-x86"] }
 
 [features]
-default = ["llvm"]
+default = ["cli"]
+cli = ["dep:clap", "llvm"]
 llvm = ["dep:inkwell"]
 # Narrow the machine word the compiler lays signals out against (see
 # `src/target.rs`). Default is 64-bit words, matching the LLVM/native backends.
@@ -30,6 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "sioxc"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [profile.release]
 lto = "thin"
