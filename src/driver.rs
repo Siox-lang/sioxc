@@ -16,7 +16,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-#[path = "build.rs"]
 mod build;
 
 use clap::{Parser, ValueEnum};
@@ -446,7 +445,7 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         );
         return ExitCode::FAILURE;
     }
-    match siox_llvm::emit_object(&design, &obj) {
+    match siox::llvm::emit_object(&design, &obj) {
         Ok(()) => {
             eprintln!(
                 "compiled `{top}` -> {} ({} signals)",
@@ -571,7 +570,7 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    print!("{}", siox_llvm::emit_module_ir(&design));
+    print!("{}", siox::llvm::emit_module_ir(&design));
     ExitCode::SUCCESS
 }
 

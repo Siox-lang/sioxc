@@ -1,17 +1,15 @@
 # Architecture
 
-The siox compiler is a small **workspace of three crates**. The root crate
-`siox` is the **backend-independent core**: the whole compiler pipeline as
+The siox compiler is one regular Cargo package with a library target (`siox`)
+and compiler binary (`sioxc`). The library contains the compiler pipeline as
 modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
 module consumes the output of the module above it, the only module everything
-may use is `diag` — plus shared testbench and waveform data. It links no
-LLVM toolchain. Around it:
+may use is `diag` — plus the LLVM backend, shared testbench, and waveform data:
 
 - **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
   `elab` → `ir`, plus `testbench` and `wave`.
-- **`crates/siox-llvm`** — the LLVM native AOT backend
-  (inkwell); depends on `siox`.
-- **`crates/sioxc`** — the compiler CLI; depends on `siox` + `siox-llvm`.
+- **`siox::llvm`** — the LLVM native AOT backend (inkwell).
+- **`sioxc`** — the root package's compiler binary and driver.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
@@ -27,27 +25,27 @@ flowchart LR
         TB --> WA[wave]
         DIAG[diag] -. used by all .-> pipeline
     end
-    IR --> LL[crate: siox-llvm]
+    IR --> LL[module: llvm]
     CLI[crate: sioxc] == drives ==> core
     CLI == native backend ==> LL
     LSP[separate repo: siox-lsp] == Cargo Git frontend only ==> core
 ```
 
-`siox-llvm` emits LLVM and compiles the `Design` ahead of time to native code.
+`siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 `sioxc` discovers `#[test]` entities and generates a C harness containing the
 stimulus, scheduler, assertions, and reporting; it links that harness with the
 native design object. Therefore *`sioxc`* needs an LLVM toolchain to build; the
 core and language server do not.
 
 **Layering rule:** a module may use only the modules above it in this list
-(plus `diag`). Inside the `siox` crate the layering is a **convention** (the
-old per-stage crate boundaries are gone); across crates it is real — `siox-llvm`
-depends on `siox`, never the reverse. Do not introduce upward or sideways `use`s.
+(plus `diag`). The layering is a convention enforced by module discipline; do
+not introduce upward or sideways `use`s.
 
 ## Modules
 
 The core `siox` crate lives in `src/`, one file (or directory) per module below.
-The backend is `crates/siox-llvm/`, and the compiler binary is `crates/sioxc/`.
+The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
+`src/driver.rs`.
 
 | Module | Spec stage(s) | Role |
 | ------ | ------------- | ---- |
@@ -60,12 +58,12 @@ The backend is `crates/siox-llvm/`, and the compiler binary is `crates/sioxc/`.
 | `testbench` | 7–8 | Shared testbench value/format definitions. Native test discovery, scheduling, and assertion emission live in `sioxc::build`. |
 | `wave`    | 9    | `Trace` recording + VCD export (FST later). |
 
-The three sibling crates:
+Package components:
 
 | Crate | Spec stage(s) | Role |
 | ----- | ------------- | ---- |
-| `siox-llvm` | B  | LLVM/inkwell native backend — emit `.ll` or an AOT native object. Consumes `siox::ir::Design`. |
-| `sioxc`     | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the crate-local `build` module. Depends on `siox` + `siox-llvm`. |
+| `siox::llvm` | B  | LLVM/inkwell native backend — emit `.ll` or an AOT native object. |
+| `sioxc`     | 12 | The binary target; runs one compiler invocation and renders diagnostics. |
 
 ## rustc-shaped compiler boundary
 
@@ -76,7 +74,7 @@ The compiler follows rustc's separation of responsibilities:
 | `rustc` executable | `sioxc`'s minimal `main.rs`, which delegates one invocation |
 | `rustc_driver` / `rustc_interface` | `sioxc::driver`, which parses compiler options and composes the pipeline; extractable as a library crate when another tool needs to embed compilation |
 | frontend queries and MIR | `siox::{syntax, resolve, types, elab, ir}` |
-| codegen backend | `siox-llvm`, consuming only `siox::ir::Design` |
+| codegen backend | `siox::llvm`, consuming only `siox::ir::Design` |
 | synthesized libtest harness | `sioxc --test`, which emits a native executable |
 | Cargo | a future project tool for dependency graphs, caching, compiling many inputs, running tests, simulation, and waveform workflows |
 
@@ -96,7 +94,7 @@ calls without changing `sioxc` or the backend boundary.
 `src/lib.rs` opens with the module map, and each module's own file opens with a
 doc-comment summarising its responsibility and spec acceptance criteria — read
 it first when entering a module. Within the `siox` crate, refer to other modules
-as `crate::<module>`; the sibling crates use `siox::<module>` and `siox_llvm::`.
+as `crate::<module>`; the binary imports the library as `siox::<module>`.
 
 ## Data that flows between stages
 
@@ -107,7 +105,7 @@ flowchart TD
     C -->|siox-types| D["Typed<br/>expression / signal types"]
     D -->|siox-elab| E["Hierarchy<br/>instances + connections"]
     E -->|siox-ir| F["Design<br/>signals, drivers, event blocks"]
-    F -->|"siox-llvm"| G["native object"]
+    F -->|"siox::llvm"| G["native object"]
     G -->|"sioxc-generated harness"| H["native test executable"]
 ```
 
@@ -138,7 +136,7 @@ name-use site to the declaration it resolves to.
 - **The IR distinction is central.** Combinational `Driver(target, cond, expr)`
   and sequential `OnEvent(cond): next(target) = expr` are kept separate; e.g.
   `clk.rising()` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
-  Preserve this split when working in `siox-ir`/`siox-llvm`.
+  Preserve this split when working in `siox::ir`/`siox::llvm`.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
   `across`/`through`, `'ddt`, layout attrs) must produce errors

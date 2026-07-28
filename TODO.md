@@ -6,7 +6,7 @@ binary, with assertions); what remains is filling gaps and
 deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
-Status audited 2026-07-24 against the compiler, standard library, workspace
+Status audited 2026-07-24 against the compiler, standard library, package
 tests, and `siox-tests` corpus.
 
 Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known ·
@@ -147,7 +147,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   each edge firing exactly once. Comb settles *before* edge detection so a
   comb-driven clock (a port connection `C.clk <- T.clk`) updates first. Derived
   clocks, clock dividers, and ripple counters now simulate (`derived_clock_test`
-  in the corpus). `siox-llvm/emit.rs` emits the shared `sx_settle` delta loop,
+  in the corpus). `src/llvm/emit.rs` emits the shared `sx_settle` delta loop,
   bounded by a per-call delta cap.
 
 ## Native execution
@@ -164,7 +164,7 @@ notes:
 ## Optimizations (lower priority than semantics — finish those first)
 
 Codegen/footprint work, opt-in and Cargo-gated (see
-`crates/siox-llvm/Cargo.toml`). All lower priority than the semantics work
+`src/llvm/`). All lower priority than the semantics work
 above — none of it blocks correctness, so it waits. (`bitpack`/`simd` and the
 `event` bitset are pure speed/size; `wide`/`f128` add capability but are still
 opt-in and non-blocking.)

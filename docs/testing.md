@@ -65,7 +65,7 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
 
 ## How the compiler is tested
 
-- **Per-crate unit tests** across the pipeline (`cargo test --workspace`).
+- **Unit and integration tests** across the package (`cargo test`).
 - **Native backend tests** compile and link focused designs, then assert values
   through the exported word ABI, including multi-word values.
 - **Conformance corpus.** The runnable `.siox` programs (counters, FSMs, a FIFO,

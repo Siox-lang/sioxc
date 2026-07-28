@@ -1048,3 +1048,16 @@ standalone checkout at `/home/max/siox-lsp`. Removing `crates/siox-lsp` from
 this compiler workspace and updating compiler documentation to point at
 `Siox-lang/siox-lsp`. The standalone repository will include this repository at
 `siox/` as a submodule and depend only on its backend-independent root crate.
+
+### 2026-07-28 — Codex — flattening sioxc into one Cargo package
+
+The LSP dependency was corrected from a submodule to a Cargo Git dependency.
+Then the compiler workspace was flattened into a regular root package: the
+`sioxc` driver moved to `src/main.rs` + `src/driver/`, the LLVM backend moved to
+`src/llvm/`, and integration fixtures moved to root `tests/`. LLVM is an
+optional default feature, so `sioxc` builds normally while frontend consumers
+use `default-features = false` and require no LLVM installation.
+
+Gates: `cargo test` green (179 library/backend tests plus all CLI integration
+tests), frontend-only `cargo check --no-default-features --lib` green, and
+corpus 78/78.

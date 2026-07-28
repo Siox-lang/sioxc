@@ -1,10 +1,8 @@
 //! `siox` (silicon oxide) — a digital hardware description language and
-//! simulator. This crate is the **backend-independent core**: the whole
-//! compiler pipeline through IR lowering, plus the simulation kernel and
-//! waveform export — everything that needs no LLVM toolchain. The LLVM
-//! execution engine lives in the separate `siox-llvm` crate (which depends on
-//! this one), so a frontend consumer like `siox-lsp` can use the pipeline
-//! without linking LLVM.
+//! simulator. This library target contains the whole compiler pipeline through
+//! IR lowering, the native LLVM backend, shared testbench definitions, and
+//! waveform export. Frontend consumers can use the pipeline modules without
+//! invoking the backend.
 //!
 //! **The pipeline is a strict top-to-bottom stack** (each stage uses only the
 //! stages above it, plus [`diag`] which everything uses). The crate boundaries
@@ -22,11 +20,15 @@
 //! | [`testbench`] | 7–8 | shared `#[test]` language runtime (engine-agnostic) |
 //! | [`wave`]    | 9 | `Trace` recording + VCD export |
 //!
-//! The native LLVM AOT backend is `siox-llvm` (stage 7), out of tree here.
+//! The native LLVM AOT backend is the [`llvm`] module.
+
+extern crate self as siox;
 
 pub mod diag;
 pub mod elab;
 pub mod ir;
+#[cfg(feature = "llvm")]
+pub mod llvm;
 pub mod resolve;
 pub mod syntax;
 pub mod target;

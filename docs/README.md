@@ -1,7 +1,7 @@
 # siox documentation
 
 `siox` ("silicon oxide") is a digital hardware description language and an
-event-driven simulator for it, built as a Rust workspace. It is in **Phase 1:
+event-driven simulator for it, built as a regular Rust package. It is in **Phase 1:
 simulation-first** — the compiler parses, resolves, type-checks, elaborates,
 lowers to a digital IR, and runs a delta-cycle simulator with assertions and
 VCD waveform output. There is no analogue, schematic, or synthesis layer yet
@@ -27,8 +27,8 @@ language and [architecture.md](architecture.md) for the compiler.
 ## The compiler pipeline
 
 Source flows top-to-bottom through one linear pipeline. Each stage is a module
-of the backend-independent `siox` core crate; the LLVM engine is the separate
-`siox-llvm` crate (see [architecture.md](architecture.md)).
+of the `siox` library target; the LLVM engine is its `llvm` module (see
+[architecture.md](architecture.md)).
 
 ```mermaid
 flowchart TD
@@ -37,13 +37,13 @@ flowchart TD
     RES -->|siox-types| TY[Typed]
     TY -->|siox-elab| HIER[Hierarchy]
     HIER -->|siox-ir| IR[Design]
-    IR -->|siox-llvm| OBJ["native object"]
+    IR -->|siox::llvm| OBJ["native object"]
     OBJ -->|generated native harness| OUT["#[test] executable + results"]
 ```
 
 `diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
-crate is the binary that wires them together per subcommand. **`siox-llvm` is
-the native backend**; `sioxc` generates and links the native `#[test]` harness.
+binary target wires them together per invocation. **`siox::llvm` is the native
+backend**; `sioxc` generates and links the native `#[test]` harness.
 The separate `siox-lsp` repository uses the core through Cargo Git and therefore
 builds without LLVM.
 
@@ -55,7 +55,7 @@ timing, assertions, and VCD waveforms. Structural **hierarchy** works — an
 entity may instantiate sub-entities, each instance lowering into its own signals
 with port connections wired as drivers.
 
-The **compiled LLVM backend** (`siox-llvm`, inkwell) is the default execution
+The **compiled LLVM backend** (`siox::llvm`, inkwell) is the default execution
 backend: `sioxc --test <file>` compiles a native test executable and `sioxc
 <file>` compiles the `#[top]` design to a native object. Execution and corpus
 orchestration live outside the compiler.
@@ -71,8 +71,8 @@ left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 cargo build                       # build the library + binaries (needs an LLVM toolchain)
 cargo test                        # run all tests
 
-cargo run -p sioxc -- <file>           # compile the #[top] design
-cargo run -p sioxc -- --test <file> -o tests # compile native #[test] executable
+cargo run --bin sioxc -- <file>           # compile the #[top] design
+cargo run --bin sioxc -- --test <file> -o tests # compile native #[test] executable
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like

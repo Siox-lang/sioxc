@@ -1,4 +1,4 @@
-//! The inkwell emitter (behind the `llvm` feature).
+//! The inkwell emitter.
 
 use std::collections::HashMap;
 

@@ -16,7 +16,7 @@ use inkwell::OptimizationLevel;
 
 use siox::ir::Design;
 
-use crate::emit::build_module;
+use super::emit::build_module;
 
 /// The `(cpu, features)` the target machine is built for. With the `simd`
 /// feature it is the host's own CPU and native feature set — so the backend may
@@ -66,7 +66,7 @@ pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
     let tm = host_target_machine()?;
     let ctx = Context::create();
     let module = build_module(&ctx, design);
-    crate::emit::optimize_module(&module, &tm)?;
+    super::emit::optimize_module(&module, &tm)?;
     tm.write_to_file(&module, FileType::Object, path)
         .map_err(|e| format!("object emission failed: {e}"))
 }

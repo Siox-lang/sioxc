@@ -12,10 +12,10 @@ for source in "$corpus"/*.siox; do
     name=$(basename "${source%.siox}")
     binary="$tmp/$name"
     if grep -q '#\[test\]' "$source"; then
-        command=(cargo run -q --manifest-path "$root/Cargo.toml" -p sioxc --
+        command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
             --std "$root/std" --test "$source" -o "$binary")
     else
-        command=(cargo run -q --manifest-path "$root/Cargo.toml" -p sioxc --
+        command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
             "$source" --std "$root/std" --emit metadata)
     fi
     if "${command[@]}" && { [[ ! -e "$binary" ]] || "$binary"; }; then

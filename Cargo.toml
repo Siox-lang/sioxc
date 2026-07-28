@@ -1,42 +1,35 @@
-[workspace]
-members = ["crates/siox-llvm", "crates/sioxc"]
-
-[workspace.package]
+[package]
+name = "siox"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Siox-lang/sioxc"
 authors = ["siox contributors"]
+description = "The siox compiler"
 
-[workspace.dependencies]
-# The backend-independent core (this package) and the LLVM backend, as path deps.
-siox = { path = "." }
-siox-llvm = { path = "crates/siox-llvm" }
+[dependencies]
 clap = { version = "4", features = ["derive"] }
-
-# The root package is `siox`: the backend-independent compiler core (pipeline
-# through IR + shared testbench definitions + waveform export). It links no LLVM
-# toolchain, so frontend consumers such as the separate `siox-lsp` repository
-# can depend on it alone.
-[package]
-name = "siox"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
-description = "siox (silicon oxide): the backend-independent compiler core"
+inkwell = { version = "0.9.0", optional = true, default-features = false, features = ["llvm22-1", "target-x86"] }
 
 [features]
+default = ["llvm"]
+llvm = ["dep:inkwell"]
 # Narrow the machine word the compiler lays signals out against (see
 # `src/target.rs`). Default is 64-bit words, matching the LLVM/native backends.
 word32 = []
+simd = []
+wide = []
+f128 = []
+bitpack = []
 
 [lib]
 name = "siox"
 path = "src/lib.rs"
+
+[[bin]]
+name = "sioxc"
+path = "src/main.rs"
 
 [profile.release]
 lto = "thin"

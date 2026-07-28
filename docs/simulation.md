@@ -31,7 +31,7 @@ change what is observed.
 
 ## Native execution
 
-`siox-ir` emits the simulation model and the **LLVM backend** (`siox-llvm`)
+`siox-ir` emits the simulation model and the **LLVM backend** (`siox::llvm`)
 compiles it ahead of time to native machine code. `sioxc <file>` emits the
 `#[top]` design as an object. `sioxc --test` generates a native testbench
 harness and links it with that object. The compiler stops after producing the
