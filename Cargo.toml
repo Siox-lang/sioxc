@@ -28,6 +28,11 @@ repository.workspace = true
 authors.workspace = true
 description = "siox (silicon oxide): the backend-independent compiler core"
 
+[features]
+# Narrow the machine word the compiler lays signals out against (see
+# `src/target.rs`). Default is 64-bit words, matching the LLVM/native backends.
+word32 = []
+
 [lib]
 name = "siox"
 path = "src/lib.rs"

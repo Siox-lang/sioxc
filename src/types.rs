@@ -20,11 +20,7 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::resolve::{DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
-
-/// The widest signal the engines can hold: they are 64-bit-word based, and
-/// multi-word signals are not implemented. Declared here rather than in a
-/// backend so the limit is reported at the declaration.
-pub const MAX_SIGNAL_WIDTH: u32 = 64;
+use crate::target::{MAX_SIGNAL_WIDTH, WORD_BITS};
 
 /// A checked, interned type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2942,10 +2938,13 @@ impl<'a> Checker<'a> {
 
     /// Resolve a type annotation to a [`Ty`]. Parametric widths (`unsigned[W]`)
     /// become `Vector { width: 0, .. }` until elaboration fills them in.
-    /// Reject a declared width no engine can hold, at the declaration rather
-    /// than at run time. The engines are 64-bit-word based, so a wider signal
-    /// used to pass `check` and IR lowering and only fail when something tried
-    /// to execute it — long after the line that caused it scrolled away.
+    /// Reject a declared width the backend cannot store, at the declaration
+    /// rather than at run time — a wider signal used to pass `check` and IR
+    /// lowering and only fail when something tried to execute it, long after
+    /// the line that caused it scrolled away.
+    ///
+    /// The limit comes from [`crate::target`], so a backend with a different
+    /// word size (or multi-word storage) moves it without touching this check.
     ///
     /// Only literal widths are known here; a parametric `unsigned[W]` is
     /// resolved during elaboration, so the backends keep their own guard.
@@ -2958,12 +2957,14 @@ impl<'a> Checker<'a> {
                 codes::TYPE_MISMATCH,
                 span,
                 format!(
-                    "a {width}-bit signal is wider than the {MAX_SIGNAL_WIDTH}-bit \
-                     machine word the engines use"
+                    "a {width}-bit signal does not fit the {MAX_SIGNAL_WIDTH}-bit \
+                     storage the backend provides"
                 ),
-                "split it into several signals, or narrow the width — multi-word \
-                 signals are not implemented yet"
-                    .to_string(),
+                format!(
+                    "the machine word is {WORD_BITS} bits and a signal may occupy one \
+                     of them today — split it into several signals, or narrow the \
+                     width, until multi-word storage lands"
+                ),
             );
         }
     }
@@ -4079,10 +4080,15 @@ mod tests {
     /// the declaration that caused it. It is reported at the port now.
     #[test]
     fn oversized_signal_width_is_reported_at_the_declaration() {
-        let wide = check_src("module m;\nentity E { out y: unsigned[128]; }\nimpl E { y = 1; }\n");
-        assert_eq!(wide, 1, "wider than a machine word");
-        let ok = check_src("module m;\nentity E { out y: unsigned[64]; }\nimpl E { y = 1; }\n");
-        assert_eq!(ok, 0, "exactly a word is fine");
+        // Written against the target model, not a literal, so a narrower-word
+        // build (`word32`) exercises the same rule at its own boundary.
+        let at = |w: u32| {
+            check_src(&format!(
+                "module m;\nentity E {{ out y: unsigned[{w}]; }}\nimpl E {{ y = 1; }}\n"
+            ))
+        };
+        assert_eq!(at(MAX_SIGNAL_WIDTH), 0, "exactly the limit fits");
+        assert_eq!(at(MAX_SIGNAL_WIDTH + 1), 1, "one bit past it does not");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because

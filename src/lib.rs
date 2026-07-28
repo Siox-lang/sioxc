@@ -25,6 +25,7 @@
 //! The LLVM JIT + native AOT backend is `siox-llvm` (stage 7), out of tree here.
 
 pub mod diag;
+pub mod target;
 pub mod syntax;
 pub mod resolve;
 pub mod types;
