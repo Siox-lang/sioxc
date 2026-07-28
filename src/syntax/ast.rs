@@ -57,6 +57,7 @@ pub enum Item {
 /// `using std::logic::{Bit, ...};` or `using Word = unsigned[32];` (spec 3.4).
 #[derive(Clone, Debug)]
 pub struct Using {
+    pub is_pub: bool,
     pub kind: UsingKind,
     pub span: Span,
 }

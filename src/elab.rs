@@ -22,7 +22,7 @@ use std::fmt;
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
-use crate::types::Typed;
+use crate::types::{Ty, Typed};
 
 /// Index into [`Hierarchy::instances`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -115,6 +115,7 @@ pub struct Instance {
 pub struct Hierarchy {
     pub roots: Vec<InstanceId>,
     pub instances: Vec<Instance>,
+    pub(crate) expr_types: HashMap<Span, Ty>,
 }
 
 impl Hierarchy {
@@ -181,7 +182,7 @@ pub fn elaborate_top(
 
 fn elaborate_roots(
     modules: &[Module],
-    _typed: &Typed,
+    typed: &Typed,
     sink: &mut DiagnosticSink,
     is_selected: impl Fn(&EntityDecl) -> bool,
 ) -> Hierarchy {
@@ -192,6 +193,7 @@ fn elaborate_roots(
         families: HashSet::new(),
         out: Hierarchy::default(),
     };
+    e.out.expr_types = typed.expr_types().clone();
     e.collect(modules);
 
     let mut stack = Vec::new();

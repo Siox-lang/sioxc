@@ -1102,3 +1102,18 @@ The corpus checkout initially exposed that its remote `main` lagged the clean,
 locally validated corpus by 13 committed migrations; published those commits
 through `96af3e2` and reran the failed job. The live workflow then passed both
 jobs, including all 78 runnable corpus programs.
+
+### 2026-07-28 — Codex — completing Semantics & analysis
+
+Auditing every partial/open entry in the TODO section against current code.
+Starting with persistent Stage-4 type facts (`Typed` is still empty), then
+hard cross-module visibility (`pub using` currently loses its visibility bit),
+and finally the remaining Logic-vector literal/width-one gaps. Shared files in
+scope: `types.rs`, `resolve.rs`, `syntax/*`, `elab.rs`, `ir.rs`,
+`docs/language.md`, and `TODO.md`.
+Completed the Stage-4 expression-type table and threaded it through elaboration
+into IR width queries; width-one vector indexing is now covered. `pub using`
+round-trips and controls exported aliases, while imports and qualified paths
+reject cross-module private access with `E-P016`. Audited the Logic-vector
+entry: driver-position companions were already implemented; corrected the
+stale roadmap text and kept only wide initializers under the backend-wide task.

@@ -63,19 +63,37 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// Whether `::event` / `::old` apply (spec 3.9). True for all digital and
-    /// discrete values, structs of digital fields, arrays, and enums.
-    pub fn is_digital(&self) -> bool {
-        // TODO(stage-4): recurse into Named structs to confirm all-digital.
-        !matches!(self, Ty::Error)
+    /// Concrete storage width known at Stage 4. Named types need declaration
+    /// metadata and therefore return `None` here.
+    pub fn bit_width(&self) -> Option<u32> {
+        match self {
+            Ty::Bit | Ty::Bool => Some(1),
+            Ty::Logic => Some(4),
+            Ty::Integer | Ty::Real => Some(64),
+            Ty::Char => Some(32),
+            Ty::Vector { width, .. } => (*width != 0).then_some(*width),
+            Ty::Array { elem, len } => elem.bit_width()?.checked_mul(*len),
+            Ty::Named(_) | Ty::Error => None,
+        }
     }
 }
 
 /// Outcome of type checking: a type for every expression/signal, ready for the
 /// elaborator and IR lowering.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Typed {
-    // TODO(stage-4): expr -> Ty map, signal/port types, method resolution.
+    expr_types: HashMap<Span, Ty>,
+}
+
+impl Typed {
+    /// Checked type of the expression covering this exact source span.
+    pub fn expr_type(&self, span: Span) -> Option<&Ty> {
+        self.expr_types.get(&span)
+    }
+
+    pub fn expr_types(&self) -> &HashMap<Span, Ty> {
+        &self.expr_types
+    }
 }
 
 /// Type-check resolved modules.
@@ -101,7 +119,7 @@ pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink)
             checker.check_item(item);
         }
     }
-    Typed::default()
+    checker.finish()
 }
 
 /// Analogue (Phase-2) system attributes that must error rather than be silently
@@ -190,6 +208,8 @@ struct Checker<'a> {
     methods: HashMap<(String, String), Option<Type>>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
+    /// Persistent Stage-4 facts keyed by the AST expression's stable span.
+    expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
 }
 
 impl<'a> Checker<'a> {
@@ -264,6 +284,13 @@ impl<'a> Checker<'a> {
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
             view_dirs: HashMap::new(),
+            expr_types: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn finish(self) -> Typed {
+        Typed {
+            expr_types: self.expr_types.into_inner(),
         }
     }
 
@@ -2186,6 +2213,23 @@ impl<'a> Checker<'a> {
                         format!("unknown system attribute `::{}`", attr.text),
                     );
                 }
+                if matches!(attr.text.as_str(), "event" | "old") {
+                    let base_ty = self.type_of(base, sym);
+                    // An unresolved receiver (notably generic `self` in a
+                    // trait method) cannot be classified here; avoid a
+                    // cascading error and let its declaration/use checks speak.
+                    if base_ty != Ty::Error && !self.is_digital_ty(&base_ty) {
+                        self.error(
+                            codes::INVALID_ATTR_TARGET,
+                            *span,
+                            format!(
+                                "`::{}` requires a digital value, found {}",
+                                attr.text,
+                                ty_name(&base_ty)
+                            ),
+                        );
+                    }
+                }
                 self.check_expr(base, sym);
             }
             Expr::Match {
@@ -2559,12 +2603,35 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether a system event/history attribute can observe this type.
+    /// Named values are classified from their resolved declaration instead of
+    /// being accepted blindly (in particular, entity instances are not data).
+    fn is_digital_ty(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Error => false,
+            Ty::Named(id) => self
+                .resolved
+                .kind_of(*id)
+                .is_some_and(|kind| matches!(kind, DefKind::Struct | DefKind::Enum)),
+            Ty::Array { elem, .. } => self.is_digital_ty(elem),
+            _ => true,
+        }
+    }
+
     // --- type inference core ------------------------------------------------
 
     /// Best-effort type of an expression given the in-scope value table. Unknown
     /// or unsupported cases yield [`Ty::Error`], which suppresses dependent
     /// checks rather than producing a false positive.
     fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
+        let ty = self.infer_type_of(e, sym);
+        self.expr_types
+            .borrow_mut()
+            .insert(expr_span(e), ty.clone());
+        ty
+    }
+
+    fn infer_type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
             // A numeric literal is `integer`, or `real` when it has a point.
             Expr::Int { text, .. } if text.contains('.') => Ty::Real,
@@ -2774,10 +2841,37 @@ impl<'a> Checker<'a> {
                     Expr::Range { .. } | Expr::PartialRange { .. }
                 );
                 match &base_ty {
-                    // Intrinsic indexing keeps its historical best-effort
-                    // typing; width/element checks happen in the dedicated
-                    // index and lowering paths.
-                    Ty::Vector { .. } | Ty::Array { .. } => Ty::Error,
+                    Ty::Vector { family, .. } if is_range => {
+                        let width = explicit_range_len(index).unwrap_or(0);
+                        if width == 1 {
+                            Ty::Logic
+                        } else {
+                            Ty::Vector {
+                                family: family.clone(),
+                                width,
+                            }
+                        }
+                    }
+                    // Numeric vector families derive from Logic[], so one
+                    // indexed element is a Logic value even at vector width 1.
+                    Ty::Vector { width, .. } => {
+                        if signed_lit(index).is_some_and(|i| i < 0 || i as u64 >= *width as u64) {
+                            Ty::Error
+                        } else {
+                            Ty::Logic
+                        }
+                    }
+                    Ty::Array { elem, len } if !is_range => {
+                        if signed_lit(index).is_some_and(|i| i < 0 || i as u64 >= *len as u64) {
+                            Ty::Error
+                        } else {
+                            elem.as_ref().clone()
+                        }
+                    }
+                    Ty::Array { elem, .. } => Ty::Array {
+                        elem: elem.clone(),
+                        len: explicit_range_len(index).unwrap_or(0),
+                    },
                     _ => {
                         let Some(owner) = self.type_kind_name(&base_ty) else {
                             return Ty::Error;
@@ -3331,6 +3425,17 @@ fn signed_lit(e: &Expr) -> Option<i64> {
     }
 }
 
+fn explicit_range_len(e: &Expr) -> Option<u32> {
+    let Expr::Range { lo, hi, .. } = e else {
+        return None;
+    };
+    let lo = signed_lit(lo)?;
+    let hi = signed_lit(hi)?;
+    u32::try_from((i128::from(lo) - i128::from(hi)).unsigned_abs())
+        .ok()?
+        .checked_add(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3348,6 +3453,23 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    #[test]
+    fn typed_records_expression_types() {
+        let src = format!(
+            "module m;\nentity E {{ in a: unsigned[8]; out y: Logic; }}\n\
+             impl E {{ y = a[0]; }}\n{VEC}"
+        );
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+        let typed = check(std::slice::from_ref(&module), &resolved, &mut sink);
+        assert!(!sink.has_errors());
+        assert!(
+            typed.expr_types().values().any(|ty| *ty == Ty::Logic),
+            "the indexed vector element type is retained"
+        );
     }
 
     fn diag_codes(src: &str) -> Vec<String> {
@@ -4335,7 +4457,10 @@ mod tests {
             "both slice bounds"
         );
         assert_eq!(
-            check_src(&format!("{ent}a[7]; }}\n")),
+            check_src(
+                "module m;\nentity E { in a: unsigned[8]; out y: Logic; }\n\
+                 impl E { y = a[7]; }\n"
+            ),
             0,
             "the top bit is in range"
         );
@@ -4345,7 +4470,7 @@ mod tests {
             "a full-width slice"
         );
         // A runtime index can't be checked statically and must stay allowed.
-        let dynamic = "module m;\nentity E { in a: unsigned[8]; in i: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a[i]; }\n";
+        let dynamic = "module m;\nentity E { in a: unsigned[8]; in i: unsigned[8]; out y: Logic; }\nimpl E { y = a[i]; }\n";
         assert_eq!(check_src(dynamic), 0);
 
         // An instance array is declared with a plain count, so it is 0-based

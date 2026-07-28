@@ -77,9 +77,9 @@ mod tests {
 
     #[test]
     fn repeated_type_layout_uses_element_size() {
-        assert_eq!(layout_for(128, 1), Some((128, 2)));
-        assert_eq!(layout_for(4, 32), Some((128, 2)));
-        assert_eq!(layout_for(128, 4), Some((512, 8)));
+        assert_eq!(layout_for(128, 1), Some((128, words_for(128))));
+        assert_eq!(layout_for(4, 32), Some((128, words_for(128))));
+        assert_eq!(layout_for(128, 4), Some((512, words_for(512))));
         assert_eq!(layout_for(u32::MAX, 2), None);
     }
 

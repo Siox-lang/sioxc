@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
         }
 
         let item = match self.kind() {
-            TokenKind::Using => Item::Using(self.parse_using()),
+            TokenKind::Using => Item::Using(self.parse_using(is_pub)),
             TokenKind::Const => Item::Const(self.parse_const(is_pub)),
             TokenKind::Fn => {
                 let start = self.span();
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
 
     // --- using / const ------------------------------------------------------
 
-    fn parse_using(&mut self) -> Using {
+    fn parse_using(&mut self, is_pub: bool) -> Using {
         let start = self.span();
         self.bump(); // `using`
         let path = self.parse_path();
@@ -320,6 +320,7 @@ impl<'a> Parser<'a> {
             };
         self.expect(TokenKind::Semi, "after a `using`");
         Using {
+            is_pub,
             kind,
             span: start.to(self.prev_span()),
         }

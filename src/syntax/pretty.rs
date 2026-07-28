@@ -75,7 +75,7 @@ impl Printer {
     }
 
     fn using(&mut self, u: &Using) {
-        let s = match &u.kind {
+        let body = match &u.kind {
             UsingKind::Import { base, names } => {
                 let names = names
                     .iter()
@@ -90,7 +90,7 @@ impl Printer {
             }
             UsingKind::Alias { name, ty } => format!("using {} = {};", name.text, type_str(ty)),
         };
-        self.line(&s);
+        self.line(&format!("{}{body}", pub_kw(u.is_pub)));
     }
 
     fn const_decl(&mut self, c: &ConstDecl) {

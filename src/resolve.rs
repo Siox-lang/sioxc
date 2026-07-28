@@ -12,7 +12,7 @@
 //! - attribute usage fails if the attribute was not declared/imported
 //! - associated paths like `State::Idle` resolve correctly
 //!
-//! Phase-1 scope notes (deliberate simplifications, to be tightened later):
+//! Phase-1 scope notes:
 //! - The kernel base types (`integer`, `real`) are seeded as builtins, plus —
 //!   as a shim until operator overloading — the std type names the checker/IR
 //!   still special-case (`Bit`, `unsigned`, ...) and the `std::attrs` attributes.
@@ -20,8 +20,8 @@
 //!   strictly (an unknown one is an error). Plain value identifiers (signals,
 //!   ports, locals) are resolved best-effort and never produce a false
 //!   "unknown name" — full value/port/field scoping lands with type checking.
-//! - All modules share one global namespace; cross-module visibility is not
-//!   yet enforced.
+//! - Declarations still occupy one crate-wide namespace, but accesses from a
+//!   different source module must cross a `pub` boundary.
 
 use std::collections::{HashMap, HashSet};
 
@@ -267,7 +267,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Using(u) => match &u.kind {
                 UsingKind::Alias { name, .. } => {
-                    self.declare(&name.text, DefKind::TypeAlias, false, name.span);
+                    self.declare(&name.text, DefKind::TypeAlias, u.is_pub, name.span);
                 }
                 // Imports bind to declarations from other loaded modules, so
                 // they are validated after every module has been collected
@@ -362,27 +362,24 @@ impl<'a> Resolver<'a> {
     /// declaration is never referenced elsewhere in the same file. Usage is
     /// scoped by file (an import serves its own module), and the import's own
     /// name span is excluded so the binding doesn't count as a use of itself.
-    /// Warn (W-P013) when a `using` imports a non-`pub` item from another
-    /// module — reaching into its private surface. std's own files are exempt
-    /// (its imports serve the whole library). A soft rule for now; a future
-    /// hard error once std/user code is `pub`-clean.
-    fn lint_private_imports(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
+    /// Reject a `using` that imports a non-`pub` item from another module.
+    fn lint_private_imports(
+        &mut self,
+        _std_files: &std::collections::HashSet<crate::diag::FileId>,
+    ) {
         let sites = self.import_sites.clone();
         for (imp_span, id) in sites {
-            if std_files.contains(&imp_span.file) {
-                continue;
-            }
-            // Type aliases (`using X = T`) carry no visibility marker in the AST
-            // yet, so they're always exportable — don't flag imported aliases.
             let bad = self.out.def(id).map(|d| {
                 (
                     d.name.clone(),
-                    !d.is_pub && d.span.is_some() && d.kind != DefKind::TypeAlias,
+                    !d.is_pub
+                        && d.span
+                            .is_some_and(|decl_span| decl_span.file != imp_span.file),
                 )
             });
             if let Some((name, true)) = bad {
                 self.sink.emit(
-                    Diagnostic::warning(format!(
+                    Diagnostic::error(format!(
                         "`{name}` is not `pub`; importing a private item from another module"
                     ))
                     .with_code(codes::PRIVATE_IMPORT)
@@ -880,8 +877,7 @@ impl<'a> Resolver<'a> {
                 );
             }
         } else if let Some(id) = self.attrs.get(last).copied() {
-            // Qualified `std::attrs::top` — accept when the leaf is known.
-            self.out.uses.insert(a.name.span, id);
+            self.record_qualified_use(a.name.span, id);
         }
         if let Some(v) = &a.value {
             self.resolve_expr(v);
@@ -934,10 +930,9 @@ impl<'a> Resolver<'a> {
                 );
             }
         } else {
-            // Qualified path: lenient while cross-module `std::*` is absent.
             let last = p.segments.last().unwrap().text.clone();
             if let Some(id) = self.globals.get(&last).copied() {
-                self.out.uses.insert(p.span, id);
+                self.record_qualified_use(p.span, id);
             }
         }
     }
@@ -1069,11 +1064,40 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 self.out.uses.insert(p.segments[0].span, id);
+                return;
+            }
+            // A module-qualified declaration (`pkg::VALUE`). Modules are not
+            // definitions themselves yet, so resolve the exported leaf.
+            if let Some(last) = p.segments.last() {
+                if let Some(id) = self.globals.get(&last.text).copied() {
+                    self.record_qualified_use(p.span, id);
+                }
             }
         } else if let Some(name) = p.segments.first() {
             if let Some(id) = self.lookup(&name.text) {
                 self.out.uses.insert(p.span, id);
             }
+        }
+    }
+
+    fn record_qualified_use(&mut self, use_span: Span, id: DefId) {
+        let private = self.out.def(id).and_then(|d| {
+            d.span
+                .filter(|decl_span| !d.is_pub && decl_span.file != use_span.file)
+                .map(|decl_span| (d.name.clone(), decl_span))
+        });
+        if let Some((name, decl_span)) = private {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{name}` is private and cannot be accessed from another module"
+                ))
+                .with_code(codes::PRIVATE_IMPORT)
+                .at(use_span)
+                .label(decl_span, "declared private here")
+                .help("mark it `pub` in its module to export it"),
+            );
+        } else {
+            self.out.uses.insert(use_span, id);
         }
     }
 
@@ -1228,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn private_import_warns() {
+    fn private_import_is_rejected() {
         // A provider with a private and a `pub` item; a user imports both. Only
         // importing the non-`pub` one is a cross-module visibility violation.
         let mut sink = DiagnosticSink::new();
@@ -1243,20 +1267,63 @@ mod tests {
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
-        let priv_warns: Vec<&str> = sink
+        let private_errors: Vec<&str> = sink
             .diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::PRIVATE_IMPORT))
             .map(|d| d.message.as_str())
             .collect();
         assert_eq!(
-            priv_warns.len(),
+            private_errors.len(),
             1,
-            "one private-import warning: {priv_warns:?}"
+            "one private-import error: {private_errors:?}"
         );
         assert!(
-            priv_warns[0].contains("Secret"),
-            "flags Secret, not Public: {priv_warns:?}"
+            private_errors[0].contains("Secret"),
+            "flags Secret, not Public: {private_errors:?}"
+        );
+    }
+
+    #[test]
+    fn qualified_private_access_is_rejected() {
+        let mut sink = DiagnosticSink::new();
+        let provider = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\nenum Secret { A }\npub enum Public { B }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module m;\nentity E { in s: a::Secret; in p: a::Public; }\n",
+            &mut sink,
+        );
+        resolve(&[provider, user], &mut sink);
+        assert_eq!(
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::PRIVATE_IMPORT))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pub_using_alias_is_exported() {
+        let mut sink = DiagnosticSink::new();
+        let provider =
+            crate::syntax::parse_module(FileId(0), "module a;\npub using Word = Bit;\n", &mut sink);
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module m;\nusing a::Word;\nentity E { in w: Word; }\n",
+            &mut sink,
+        );
+        resolve(&[provider, user], &mut sink);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|d| d.code != Some(codes::PRIVATE_IMPORT)),
+            "{:?}",
+            sink.diagnostics()
         );
     }
 

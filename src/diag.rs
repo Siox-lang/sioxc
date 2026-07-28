@@ -237,6 +237,9 @@ pub mod codes {
     /// A function that recursed past the inline depth limit: hardware
     /// recursion must terminate at elaboration, so this has no finite circuit.
     pub const UNBOUNDED_RECURSION: &str = "E-P015";
+    /// A qualified path or `using` that accesses a private declaration from a
+    /// different source module.
+    pub const PRIVATE_IMPORT: &str = "E-P016";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";
@@ -258,7 +261,4 @@ pub mod codes {
     /// A signal assigned unconditionally twice in one block: the earlier
     /// assignment can never be observed (drivers in a context override).
     pub const DEAD_ASSIGNMENT: &str = "W-P014";
-    /// A `using` that imports a non-`pub` item from another module — reaching
-    /// into its private surface (cross-module visibility, §3.x).
-    pub const PRIVATE_IMPORT: &str = "W-P013";
 }

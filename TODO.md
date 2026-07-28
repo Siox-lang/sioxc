@@ -51,12 +51,13 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
 
 ## Semantics & analysis
 
-- 🟡 **Persistent typed IR from the checker** — `Typed` is still an empty
-  marker and later stages recompute type facts from the AST. Likewise,
-  `Ty::is_digital` currently treats every resolved named type as digital rather
-  than recursively checking a struct's fields. Correctness checks exist, but
-  retaining expression/signal/method types would simplify the LSP and remove
-  duplicated inference in elaboration/lowering.
+- ✅ **Persistent typed IR from the checker** — Stage 4 retains the inferred
+  type of every expression in `Typed`; elaboration carries those facts into
+  lowering, which consumes them for width-sensitive operations instead of
+  reconstructing the answer from syntax alone. This fixes scalar indexing of
+  width-one vectors and gives the LSP a stable semantic result to query.
+  System event/history attributes also classify resolved named declarations
+  rather than blindly treating entity instances as digital values.
 
 - 🟡 **Undriven signals** — **model: always initialized, may be undriven.** Every
   signal/port always holds a value (its `Init` value, see below); "undriven"
@@ -110,12 +111,11 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   synthesizable reset (real reset comes from reset logic). Relates to
   **Undriven signals** above (this defines the value; the `'U'`-style runtime
   *visibility* of undriven is a separate `Logic`-domain change).
-- 🟡 **Cross-module visibility** (resolve) — 🟢 **soft-enforced:** importing a
-  non-`pub` item from another module warns (`W-P013 PRIVATE_IMPORT`; std files
-  exempt; type aliases exempt until `pub using` carries visibility in the AST) —
-  0 corpus false positives. Resolution still uses one global namespace, so a
-  *qualified* cross-module reference isn't checked; promoting the import warning
-  to a hard error waits on a `pub using` visibility marker and a std `pub` audit.
+- ✅ **Cross-module visibility** (resolve) — imports and qualified paths may
+  cross a source-module boundary only for `pub` declarations (`E-P016`).
+  `pub using` visibility is retained in the AST and pretty-printer, including
+  exported type aliases. Private access within the declaration's own module
+  remains legal.
 - 🟡 **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
   the reference standard. (b) ✅ **Scalar `Logic` widened to the full 9-value
   `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
@@ -131,11 +131,11 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   per-element reconstruction (`v[i]` reads its `std_ulogic`); `numeric_std`
   **arithmetic** + **relational** poisoning; per-element `std_logic_1164`
   **logical** (`0 and X = 0`, `1 or X = 1`, `not X = X`); propagation through
-  copies / port connections / muxes; **VCD** `x`/`z` rendering. **Minor
-  follow-ons:** a metavalue literal in *driver* position (`out = "1X10"`) loses
-  its disc in the IR `Const` (init-position and all propagation work); wide
-  metavalue literal initialization still needs word-vector signal initializers;
-  width-1 vectors (`unsigned[1]`) element typing. Logic-vector literals now use
+  copies / port connections / muxes; **VCD** `x`/`z` rendering.
+  Driver-position literals carry their discriminant companion, and width-one
+  vector elements retain their scalar `Logic` type. Wide metavalue literal
+  initialization remains part of the backend word-vector initializer work
+  tracked under **wide** below. Logic-vector literals now use
   bare contextual strings (`"1X10"`);
   the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
   default to `'U'` through their std `New` implementations, while `Bit`

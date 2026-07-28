@@ -221,6 +221,7 @@ pub fn lower_in(
     base_dir: &std::path::Path,
 ) -> Design {
     let mut l = Lowering::new(sink);
+    l.expr_types = hier.expr_types.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
     l.collect(modules);
@@ -300,6 +301,7 @@ pub fn lower_in(
 
 struct Lowering<'a> {
     sink: &'a mut DiagnosticSink,
+    expr_types: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Root for relative compile-time file reads (the source directory).
     base_dir: std::path::PathBuf,
     /// Signals given a default by a match wildcard arm — excluded from the
@@ -458,6 +460,7 @@ impl<'a> Lowering<'a> {
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Lowering {
             sink,
+            expr_types: HashMap::new(),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),
             entities: HashMap::new(),
@@ -3381,6 +3384,19 @@ impl<'a> Lowering<'a> {
     }
 
     fn ref_width(&self, e: &ast::Expr) -> Option<u32> {
+        // Indexing is precisely where syntax-only lowering cannot distinguish
+        // a vector family from its scalar element. Literal and match types are
+        // intentionally contextual, so their best-effort Stage-4 default
+        // (`integer`) must not override the assignment target's width here.
+        if matches!(e, ast::Expr::Index { .. }) {
+            if let Some(width) = self
+                .expr_types
+                .get(&ast::expr_span(e))
+                .and_then(crate::types::Ty::bit_width)
+            {
+                return Some(width);
+            }
+        }
         match e {
             ast::Expr::Path(_) | ast::Expr::Field { .. } => {
                 let p = expr_path(e)?;
@@ -7102,6 +7118,15 @@ mod tests {
              }\n",
         );
         assert!(!ok.iter().any(|d| d.contains("width mismatch")), "{ok:?}");
+
+        // Indexing remains scalar even when the vector itself is one element
+        // wide. Retained checker types keep it distinct from the vector.
+        let one = lower_diags(
+            "module m;\n\
+             entity E { in b: unsigned[1]; out y: Logic; }\n\
+             impl E { y = b[0]; }\n",
+        );
+        assert!(!one.iter().any(|d| d.contains("width mismatch")), "{one:?}");
     }
 
     #[test]
