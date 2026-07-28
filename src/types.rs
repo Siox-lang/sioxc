@@ -21,6 +21,11 @@ use crate::resolve::{DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
+/// The widest signal the engines can hold: they are 64-bit-word based, and
+/// multi-word signals are not implemented. Declared here rather than in a
+/// backend so the limit is reported at the declaration.
+pub const MAX_SIGNAL_WIDTH: u32 = 64;
+
 /// A checked, interned type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ty {
@@ -771,6 +776,7 @@ impl<'a> Checker<'a> {
             Item::Entity(e) => {
                 for port in &e.ports {
                     self.check_applied_view(&port.ty);
+                    self.check_supported_width(&port.ty, port.name.span);
                 }
                 for a in &e.attrs {
                     self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
@@ -2936,6 +2942,32 @@ impl<'a> Checker<'a> {
 
     /// Resolve a type annotation to a [`Ty`]. Parametric widths (`unsigned[W]`)
     /// become `Vector { width: 0, .. }` until elaboration fills them in.
+    /// Reject a declared width no engine can hold, at the declaration rather
+    /// than at run time. The engines are 64-bit-word based, so a wider signal
+    /// used to pass `check` and IR lowering and only fail when something tried
+    /// to execute it — long after the line that caused it scrolled away.
+    ///
+    /// Only literal widths are known here; a parametric `unsigned[W]` is
+    /// resolved during elaboration, so the backends keep their own guard.
+    fn check_supported_width(&mut self, ty: &Type, span: Span) {
+        let Ty::Vector { width, .. } = self.ast_ty(ty) else {
+            return;
+        };
+        if width > MAX_SIGNAL_WIDTH {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "a {width}-bit signal is wider than the {MAX_SIGNAL_WIDTH}-bit \
+                     machine word the engines use"
+                ),
+                "split it into several signals, or narrow the width — multi-word \
+                 signals are not implemented yet"
+                    .to_string(),
+            );
+        }
+    }
+
     fn ast_ty(&self, t: &Type) -> Ty {
         match t {
             Type::Path(p) => self.path_ty(p),
@@ -4040,6 +4072,17 @@ mod tests {
             0,
             "a wildcard covers the rest"
         );
+    }
+
+    /// A signal wider than the engines' machine word used to pass `check` and
+    /// IR lowering and only fail when something tried to run it, long after
+    /// the declaration that caused it. It is reported at the port now.
+    #[test]
+    fn oversized_signal_width_is_reported_at_the_declaration() {
+        let wide = check_src("module m;\nentity E { out y: unsigned[128]; }\nimpl E { y = 1; }\n");
+        assert_eq!(wide, 1, "wider than a machine word");
+        let ok = check_src("module m;\nentity E { out y: unsigned[64]; }\nimpl E { y = 1; }\n");
+        assert_eq!(ok, 0, "exactly a word is fine");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
