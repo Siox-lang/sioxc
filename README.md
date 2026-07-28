@@ -92,12 +92,11 @@ to select a subset: `./counter-tests examples::counter::CounterTest`.
 
 ## See the waveforms
 
-To watch signals change over time, dump a VCD and open it in a waveform viewer
-([GTKWave](https://gtkwave.sourceforge.net/), [Surfer](https://surfer-project.org/), …):
-
-```bash
-sioxc sim counter.siox --wave counter.vcd
-```
+Generated VCD output is the next native-runtime milestone. The compiled test
+executable—not `sioxc`—will write the requested `.vcd` while it runs. The file
+can then be opened in a waveform viewer such as
+[GTKWave](https://gtkwave.sourceforge.net/) or
+[Surfer](https://surfer-project.org/).
 
 ## The commands you'll use
 
@@ -105,7 +104,6 @@ sioxc sim counter.siox --wave counter.vcd
 | --- | --- |
 | `sioxc file.siox --emit metadata` | type-check and elaborate without code generation |
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
-| `sioxc sim file.siox --wave out.vcd` | simulate and record a waveform |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it

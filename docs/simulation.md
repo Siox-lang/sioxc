@@ -68,13 +68,16 @@ earliest pending event and advances to it:
 
 ## Waveforms
 
-The waveform library records traces as [VCD](https://en.wikipedia.org/wiki/Value_change_dump)
-(Value Change Dump) — the format every digital waveform viewer reads. siox does
-not ship a viewer; it writes a VCD you open elsewhere.
+Waveform output will use
+[VCD](https://en.wikipedia.org/wiki/Value_change_dump) (Value Change Dump), the
+format every digital waveform viewer reads. The generated native test
+executable owns the file: while running its scheduler it opens the requested
+`.vcd` and writes declarations and timestamped value changes directly. `sioxc`
+does not receive samples back, and the compiler library does not retain a trace
+or waveform writer.
 
-The former in-process tracing path was coupled to the removed JIT. Restoring
-waveform capture requires a native trace ABI that streams timestamped signal
-words from the generated executable into the VCD writer or another tool.
+This generated VCD path is still outstanding. siox will not ship a viewer; the
+resulting file is opened in an external waveform application.
 
 **How siox values appear:**
 

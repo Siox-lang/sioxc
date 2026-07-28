@@ -3,8 +3,9 @@
 `siox` ("silicon oxide") is a digital hardware description language and an
 event-driven simulator for it, built as a regular Rust package. It is in **Phase 1:
 simulation-first** — the compiler parses, resolves, type-checks, elaborates,
-lowers to a digital IR, and runs a delta-cycle simulator with assertions and
-VCD waveform output. There is no analogue, schematic, or synthesis layer yet
+lowers to a digital IR, and emits native delta-cycle simulations with
+assertions. Generated VCD output is still being built. There is no analogue,
+schematic, or synthesis layer yet
 (those are Phase 2 and 3 — see [roadmap.md](roadmap.md)).
 
 ## Where to start
@@ -54,7 +55,7 @@ builds without LLVM.
 
 The whole pipeline runs **end to end**: source → parse → resolve → typecheck →
 elaborate → digital IR → simulation with `#[test]` discovery, `await`/`clock`
-timing, assertions, and VCD waveforms. Structural **hierarchy** works — an
+timing and assertions. Structural **hierarchy** works — an
 entity may instantiate sub-entities, each instance lowering into its own signals
 with port connections wired as drivers.
 

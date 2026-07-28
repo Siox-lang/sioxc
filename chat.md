@@ -1149,3 +1149,9 @@ roadmap, and proposal status; updated their Mermaid graphs to match the regular
 single-package compiler and native-output architecture. Marked the old
 twelve-stage language implementation plan as historical so the live work queue
 has one source of truth.
+### 2026-07-28 — Codex — removed the orphaned compiler-side waveform path
+
+Removed `src/wave.rs` and its private `Sample`/`SignalValue` buffer model.
+Waveform output belongs to the generated native executable: its scheduler will
+write the requested VCD directly instead of returning samples to `sioxc`.
+Updated the TODO and architecture/simulation/status documentation accordingly.

@@ -30,11 +30,12 @@ Implemented foundation:
 - nine-value IEEE 1076-2019 Logic, resolution, vector metavalues, and
   arbitrary-width numeric values;
 - standard-library source, native `#[test]` executables, assertions, timing,
-  fixture reads, diagnostics, VCD representation, LSP support, and CI corpus.
+  fixture reads, diagnostics, LSP support, and CI corpus.
 
 Phase-1 completion work is organized by AST/IR/LLVM/Output/API/std in
 [`TODO.md`](../TODO.md). The major remaining product capabilities are native
-waveform streaming, a stable embedding/scheduler API, cocotb integration,
+generated executable waveform output, a stable embedding/scheduler API,
+cocotb integration,
 multi-file project tooling, and broader reusable std models.
 
 ## Phase 2 — analogue and mixed signal

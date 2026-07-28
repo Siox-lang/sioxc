@@ -2415,9 +2415,9 @@ Export simulation traces for debugging.
 
 ### Example CLI
 
-```bash
-siox sim counter_test.siox --wave counter.vcd
-```
+The original `siox sim ...` sketch is obsolete: `sioxc` has no `sim` command.
+The generated native test executable will own the VCD option and write the file
+directly.
 
 ### Endgoal
 

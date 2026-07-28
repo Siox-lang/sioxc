@@ -70,7 +70,7 @@ Remaining:
   `count × element_layout` recursively, with checked arithmetic and cycle
   detection.
 - 🟡 **Arbitrary-width constant evaluation.** IR literals, patterns,
-  initializers, wave samples, and native values are word vectors; module
+  initializers, waveform values, and native values are word vectors; module
   constant evaluation still has a `u128` ceiling. Move the shared evaluator to
   the same low-word-first representation.
 - 🟡 **Instance-array build facts.** See the AST item above: carry declared
@@ -109,7 +109,7 @@ Remaining:
 
 Owns compiler artifacts and generated native harnesses: objects, metadata,
 source/AST/tree/IR/LLVM dumps, test executables, diagnostics, and waveforms.
-Code: `src/driver/`, `src/testbench.rs`, `src/wave.rs`.
+Code: `src/driver/`, `src/testbench.rs`.
 
 Current baseline:
 
@@ -118,15 +118,16 @@ Current baseline:
 - ✅ Native tests support filtering, assertions, timing/`await`, multiple
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
   reporting.
-- ✅ VCD data structures support wide values, Logic x/z, and symbolic enums.
 
 Remaining:
 
-- 🔴 **Native trace ABI.** Stream timestamped low-word-first values from a
-  compiled executable to `wave::Trace` (or an external waveform process). The
-  old in-process JIT trace path has been removed.
+- 🔴 **Generated VCD output.** Generate a VCD writer into the native test
+  executable. Its scheduler should open the requested `.vcd`, declare the
+  elaborated hierarchy, and emit changed low-word-first signal values at each
+  timestamp directly; do not buffer a compiler-side trace or route values back
+  through `sioxc`.
 - 🔴 **FST output.** Add compressed waveform output for large simulations after
-  the native trace ABI supplies events.
+  the generated waveform path is established.
 - 🔴 **Runtime file reads.** `read`/`read_to_string` fixtures are currently read
   while building a test executable and baked into it. Add runtime
   `fopen`/`fread` plus dynamic-length string/array ownership.

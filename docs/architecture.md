@@ -4,10 +4,10 @@ The siox compiler is one regular Cargo package with a library target (`siox`)
 and compiler binary (`sioxc`). The library contains the compiler pipeline as
 modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
 module consumes the output of the module above it, the only module everything
-may use is `diag` — plus the LLVM backend, shared testbench, and waveform data:
+may use is `diag` — plus the LLVM backend and shared testbench support:
 
 - **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
-  `elab` → `ir`, plus `testbench` and `wave`.
+  `elab` → `ir`, plus `testbench`.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
 - **`sioxc`** — the root package's compiler binary and driver.
 
@@ -61,8 +61,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, and `Hierarchy`. |
 | `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
-| `testbench` | Output | Shared native-test value and formatting definitions. |
-| `wave` | Output | Word-vector trace representation and VCD serialization. |
+| `testbench` | Output | Shared native-test formatting definitions. |
 
 Package components:
 
@@ -186,9 +185,10 @@ without widening unrelated values.
 Integer literals and match-pattern masks use the same low-word-first
 arbitrary-width representation. The native test harness chooses its C
 `_BitInt` width from the widest type in that design and exchanges every ABI
-word; waveform samples likewise store a word vector rather than a host
-`u64`/`u128`. Structural inheritance walks terminate by detecting actual
-cycles, so a valid deep type hierarchy is not rejected at an arbitrary depth.
+word. Generated native test executables will write waveform changes directly
+while scheduling; waveform values do not round-trip through the compiler.
+Structural inheritance walks terminate by detecting actual cycles, so a valid
+deep type hierarchy is not rejected at an arbitrary depth.
 
 Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —
