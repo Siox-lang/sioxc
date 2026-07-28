@@ -6,8 +6,8 @@ binary, with assertions); what remains is filling gaps and
 deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
 per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
 
-Status audited 2026-07-24 against the compiler, standard library, package
-tests, and `siox-tests` corpus.
+Status audited 2026-07-28 against the compiler, standard library, package
+tests, `siox-tests` corpus, and GitHub Actions.
 
 Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known ·
 ✅ implemented and covered.
@@ -124,7 +124,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   it. (a) 🟢 **X/Z propagation through vectors** — **functionally complete**
   (design: [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)).
   A `unsigned` is `Logic[]`, so a metavalue vector carries a per-element
-  discriminant **companion** (`$meta`, 4 bits/element, ≤16 elements), made only
+  discriminant **companion** (`$meta`, 4 bits/element), made only
   where a metavalue appears — metavalue-free designs stay bit-identical.
   **Working natively**, guarded by `xz_vector_test`/`xz_poison_test`/
   `xz_logical_test`: 9-value contextual bit strings (`"1X10"`); storage +
@@ -133,9 +133,10 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   **logical** (`0 and X = 0`, `1 or X = 1`, `not X = X`); propagation through
   copies / port connections / muxes; **VCD** `x`/`z` rendering. **Minor
   follow-ons:** a metavalue literal in *driver* position (`out = "1X10"`) loses
-  its disc in the IR `Const` (init-position and all propagation work); vectors
-  wider than 16 elements (array companion); width-1 vectors (`unsigned[1]`) element
-  typing. Logic-vector literals now use bare contextual strings (`"1X10"`);
+  its disc in the IR `Const` (init-position and all propagation work); wide
+  metavalue literal initialization still needs word-vector signal initializers;
+  width-1 vectors (`unsigned[1]`) element typing. Logic-vector literals now use
+  bare contextual strings (`"1X10"`);
   the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
   default to `'U'` through their std `New` implementations, while `Bit`
   defaults to `'0'`.
@@ -203,7 +204,7 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   cross-word carry and `i512` lowering are covered. Remaining work: persist
   source type layouts in the IR instead of
   backend inference, apply recursive element sizing to non-flattened
-  composites, define wide C-FFI and `bitpack` behavior, extend runner/waveform
+  composites, define wide C-FFI and `bitpack` behavior, extend
   module-constant evaluation beyond `u128`, wide Logic literal initialization,
   and add borrows, cross-word shifts/slices, comparisons, and high-word-only
   event coverage. LLVM literals, pattern masks, native testbench values, and
@@ -245,6 +246,10 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
 - ✅ **LSP repository split** — the working protocol server and editor tests now
   live in `Siox-lang/siox-lsp`, with this compiler referenced as a Cargo Git
   dependency.
+- ✅ **CI matches the standalone compiler package** — GitHub Actions pins Rust
+  1.90 and LLVM/Clang 22, checks formatting and the frontend-only dependency
+  surface, runs the default and `bitpack` suites, and compiles/runs the complete
+  sibling `siox-tests` corpus through `scripts/test-corpus.sh`.
 - 🔴 **cocotb integration** — drive the compiled design via VPI/GPI (the runtime
   ABI is already VPI-shaped for this). Tracked as the main open runtime task.
 

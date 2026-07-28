@@ -1098,3 +1098,7 @@ LLVM/native suite, `bitpack`, and the full runnable sibling corpus through the
 same checked-in script used locally.
 The first live run also exposed GitHub's Node 20 deprecation annotation on
 `actions/checkout@v4`; switched both repository checkouts to v5.
+The corpus checkout initially exposed that its remote `main` lagged the clean,
+locally validated corpus by 13 committed migrations; published those commits
+through `96af3e2` and reran the failed job. The live workflow then passed both
+jobs, including all 78 runnable corpus programs.
