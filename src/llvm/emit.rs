@@ -28,6 +28,39 @@ pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String
         .map_err(|e| format!("LLVM optimization failed: {e}"))
 }
 
+#[cfg(all(test, feature = "bitpack"))]
+mod bitpack_tests {
+    use super::*;
+    use siox::ir::Signal;
+
+    #[test]
+    fn events_use_one_bit_per_signal() {
+        let signal = |index| Signal {
+            path: format!("s{index}"),
+            width: 32,
+            real: false,
+            char: false,
+            range: None,
+            init: vec![0],
+            enum_type: None,
+        };
+        let design = Design {
+            signals: (0..65).map(signal).collect(),
+            drivers: vec![],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+        let llvm = emit_module_ir(&design);
+        assert!(
+            llvm.contains("@event = internal global [2 x i64]"),
+            "65 event flags need exactly two words:\n{llvm}"
+        );
+    }
+}
+
 /// Build the LLVM module for `design` and return its textual IR (`.ll`).
 /// This is what `siox build --emit-llvm` prints and what golden tests diff.
 pub fn emit_module_ir(design: &Design) -> String {
@@ -75,6 +108,9 @@ struct Codegen<'ctx, 'd> {
     slots: Vec<(u32, u32)>,
     #[cfg(feature = "bitpack")]
     words: u32,
+    /// Dedicated one-bit-per-signal event storage.
+    #[cfg(feature = "bitpack")]
+    event_words: u32,
 }
 
 /// The smallest machine integer that holds `width` bits. Sub-byte widths (a
@@ -162,6 +198,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             slots,
             #[cfg(feature = "bitpack")]
             words,
+            #[cfg(feature = "bitpack")]
+            event_words: (design.signals.len() as u32).div_ceil(64).max(1),
         }
     }
 
@@ -262,21 +300,30 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // words (see `pack_layout`). `snap` holds each delta's entry values so
         // `old` can advance and internally-generated edges fire next delta.
         let arr = self.i64t().array_type(self.words);
-        for name in ["cur", "old", "event", "snap"] {
+        for name in ["cur", "old", "snap"] {
             let g = self.module.add_global(arr, None, name);
             g.set_initializer(&arr.const_zero());
             g.set_linkage(Linkage::Internal);
         }
+        let events = self.i64t().array_type(self.event_words);
+        let g = self.module.add_global(events, None, "event");
+        g.set_initializer(&events.const_zero());
+        g.set_linkage(Linkage::Internal);
     }
 
     /// Pointer to `@<arr>`'s `word`-th `i64`.
     #[cfg(feature = "bitpack")]
     fn word_ptr(&self, arr: &str, word: u32) -> PointerValue<'ctx> {
         let i64 = self.i64t();
+        let words = if arr == "event" {
+            self.event_words
+        } else {
+            self.words
+        };
         unsafe {
             self.builder
                 .build_in_bounds_gep(
-                    i64.array_type(self.words),
+                    i64.array_type(words),
                     self.array_ptr(arr),
                     &[i64.const_zero(), i64.const_int(word as u64, false)],
                     "wp",
@@ -288,8 +335,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Load signal `id`: read its word, shift its field down, mask to width.
     #[cfg(feature = "bitpack")]
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
-        let (word, shift) = self.slots[id.0 as usize];
-        let w = self.design.signals[id.0 as usize].width;
+        let (word, shift, w) = if arr == "event" {
+            (id.0 / 64, id.0 % 64, 1)
+        } else {
+            let (word, shift) = self.slots[id.0 as usize];
+            (word, shift, self.design.signals[id.0 as usize].width)
+        };
         let i64 = self.i64t();
         if w > 64 {
             let ty = self.value_ty(w);
@@ -335,8 +386,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// OR in the masked, shifted value.
     #[cfg(feature = "bitpack")]
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
-        let (word, shift) = self.slots[id.0 as usize];
-        let w = self.design.signals[id.0 as usize].width;
+        let (word, shift, w) = if arr == "event" {
+            (id.0 / 64, id.0 % 64, 1)
+        } else {
+            let (word, shift) = self.slots[id.0 as usize];
+            (word, shift, self.design.signals[id.0 as usize].width)
+        };
         let i64 = self.i64t();
         if w > 64 {
             let ty = self.value_ty(w);

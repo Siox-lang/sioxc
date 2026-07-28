@@ -1128,3 +1128,15 @@ initializers from one `u64` to arbitrary low-word-first vectors. Logic
 companions now initialize and drive beyond 16 elements; `bitpack` reserves,
 loads, and stores consecutive words for wide values. Added compiler and
 executable-corpus coverage with metavalues crossing the first ABI word.
+
+### 2026-07-28 — Codex — optimization and Stage-10 lint pass
+
+Implemented the last `bitpack` density item: event flags now have their own
+one-bit-per-signal array instead of consuming each signal's value width.
+Completed W-P003 internal unused-signal tracking while excluding test/top
+runner-observed locals, unified generic parameter usage across declarations and
+their separate impl scopes for W-P004, and added the conservative W-P009 reset
+edge-detection lint. Extended the wide executable test across subtraction
+borrow, shifts, comparisons, dynamic high-word writes, and high-word events;
+fixed native stimulus assignments to retain `sx_value` rather than truncating
+through `uint64_t`.

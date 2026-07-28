@@ -176,10 +176,10 @@ not eight; `unsigned[32]` four, `unsigned[64]` eight).
 Composites already flatten to per-leaf signals, each minimally sized (an enum is
 `⌈log2(variants)⌉` bits), so structs/arrays/enums pack for free under `bitpack`.
 
-- 🔴 **`event` bitset** — under `bitpack` the `event`/changed-flags array still
-  gives each signal a full-width slot for a 1-bit flag. Pack it as a dedicated
-  1-bit-per-signal bitset (`⌈N/8⌉` bytes, independent of signal widths) — the
-  last real density win. Its own layout since flags are always 1 bit.
+- ✅ **`event` bitset** — under `bitpack`, event/changed flags use a dedicated
+  one-bit-per-signal layout (`⌈N/64⌉` ABI words), independent of each signal's
+  value width. Wide values continue to reserve consecutive words only in the
+  value-state arrays.
 - ✅ **`bitpack`** — pack many small signals into shared 64-bit
   words (a `Bit` takes 1 bit, a nibble `Logic` 4), instead of a byte each. Up to
   ~8× smaller state for `Bit`-heavy designs, at the cost of read-modify-write
@@ -204,10 +204,11 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   derives the required storage from every type's width. `unsigned[128]`
   cross-word carry and `i512` lowering are covered. Remaining work: persist
   source type layouts in the IR instead of backend inference, apply recursive
-  element sizing to non-flattened composites, extend module-constant evaluation
-  beyond `u128`, and add borrows, cross-word shifts/slices, comparisons, and
-  high-word-only event coverage. Wide state and initializers also work under
-  `bitpack`; LLVM literals, pattern masks, native testbench values, and
+  element sizing to non-flattened composites and extend module-constant
+  evaluation beyond `u128`. Cross-word add/subtract (including borrow), shifts,
+  comparisons, high-word-only events, and dynamic native-testbench writes are
+  covered. Wide state and initializers also work under `bitpack`; LLVM
+  literals, pattern masks, native testbench values, and
   waveform samples are word-vector/arbitrary-width. Structural type walks use
   cycle detection rather than fixed nesting limits.
 - 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
@@ -216,18 +217,18 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
 
 ## Diagnostics & lints (Stage 10)
 
-- 🟡 **Unused signal / parameter** warnings — **fn generic params** warn today
-  (`W-P004`). Still open: **unused signals** (needs use-tracking that spans the
-  runner — the IR can't see a testbench's reads) and **entity/struct/trait
-  generic params** (their decl and `impl` declare the param separately, so a
-  param used only in the impl body reads as unused; needs decl↔impl
-  unification).
-- 🟡 **Suspicious `Logic` compare / reset** lint. ✅ **Compare done** (`W-P008`):
+- ✅ **Unused signal / parameter warnings** — `W-P003` reports driven internal
+  component locals that no process reads; test/top locals are excluded because
+  the native runner observes them outside hardware IR. `W-P004` covers function,
+  entity, struct, view, and trait generics, merging a declaration parameter with
+  uses from its separately scoped implementation.
+- ✅ **Suspicious `Logic` compare / reset lint.** Compare (`W-P008`):
   comparing an enum-valued operand (`Bit`/`Logic`/`Bool`/user `enum`) to a bare
   integer literal (`b == 1` instead of `b == '1'`) warns — numeric vectors are
   excluded; 0 corpus false positives (it caught one real `ok == 1` in the
-  corpus). Still open: the **reset** lint (`W-P009`) — needs a false-positive-safe
-  definition (reset polarity / edge-detecting a level-sensitive reset).
+  corpus). Reset (`W-P009`) conservatively warns only when a conventionally
+  named `reset`/`rst` signal is edge-detected; normal level-sensitive reset
+  checks inside a clocked block are untouched.
 
 ## Waveforms (Stage 9)
 

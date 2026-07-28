@@ -170,6 +170,11 @@ struct Resolver<'a> {
     /// trait/fn), for the unused-parameter lint. Impl params are excluded — a
     /// type parameter used only in the impl target reads as used.
     param_sites: Vec<(Span, DefId)>,
+    /// Declaration generic `(owner, name)` -> its definition, used to merge
+    /// uses from a separate `impl Owner<T>` parameter scope.
+    decl_params: HashMap<(String, String), DefId>,
+    impl_used_decl_params: HashSet<DefId>,
+    current_impl_owner: Option<String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -185,6 +190,9 @@ impl<'a> Resolver<'a> {
             scopes: Vec::new(),
             import_sites: Vec::new(),
             param_sites: Vec::new(),
+            decl_params: HashMap::new(),
+            impl_used_decl_params: HashSet::new(),
+            current_impl_owner: None,
         }
     }
 
@@ -413,21 +421,21 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Warn about a generic parameter that is never referenced. Only `fn`
-    /// generics are checked: an entity/struct/trait declares its type params
-    /// separately from its `impl`, so a param used only in the impl body would
-    /// read as unused here — that case needs decl↔impl unification first.
+    /// Warn about a generic parameter that is never referenced. Declaration
+    /// parameters are unified with their separately scoped implementation
+    /// parameters through `decl_params`/`impl_used_decl_params`.
     fn lint_unused_params(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
         let sites = std::mem::take(&mut self.param_sites);
         for (span, id) in sites {
             if std_files.contains(&span.file) {
                 continue;
             }
-            let used = self
-                .out
-                .uses
-                .iter()
-                .any(|(s, d)| *d == id && s.file == span.file && *s != span);
+            let used = self.impl_used_decl_params.contains(&id)
+                || self
+                    .out
+                    .uses
+                    .iter()
+                    .any(|(s, d)| *d == id && s.file == span.file && *s != span);
             if !used {
                 let name = self.out.def(id).map(|d| d.name.clone()).unwrap_or_default();
                 self.sink.emit(
@@ -619,7 +627,7 @@ impl<'a> Resolver<'a> {
                 // A generic fn's type params (`<T: Ord>`) scope over its
                 // signature, so `a: T` resolves.
                 self.enter();
-                self.bind_params(&f.generics, true);
+                self.bind_params(&f.generics, true, None);
                 for p in &f.params {
                     if let Some(t) = &p.ty {
                         self.resolve_type(t);
@@ -637,7 +645,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Struct(s) => {
                 self.enter();
-                self.bind_params(&s.params, false);
+                self.bind_params(&s.params, true, Some(&s.name.text));
                 // The derivation base is a type reference like any other —
                 // it was the one spot that never got resolved, so
                 // `struct B : NoSuchType` passed silently.
@@ -651,7 +659,7 @@ impl<'a> Resolver<'a> {
             }
             Item::View(v) => {
                 self.enter();
-                self.bind_params(&v.params, false);
+                self.bind_params(&v.params, true, Some(&v.name.text));
                 self.resolve_type(&v.target);
                 self.exit();
             }
@@ -667,7 +675,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Entity(e) => {
                 self.enter();
-                self.bind_params(&e.params, false);
+                self.bind_params(&e.params, true, Some(&e.name.text));
                 for a in &e.attrs {
                     self.resolve_attr(a);
                 }
@@ -679,7 +687,7 @@ impl<'a> Resolver<'a> {
             Item::Impl(im) => self.resolve_impl(im),
             Item::Trait(t) => {
                 self.enter();
-                self.bind_params(&t.params, false);
+                self.bind_params(&t.params, true, Some(&t.name.text));
                 // `Self` refers to the implementing type inside a trait body.
                 self.bind_local("Self");
                 for f in &t.items {
@@ -693,7 +701,7 @@ impl<'a> Resolver<'a> {
 
     fn resolve_impl(&mut self, im: &ImplDecl) {
         self.enter();
-        self.bind_params(&im.params, false);
+        self.bind_params(&im.params, false, None);
         // `impl Reg<T>` declares the type parameter `T` for the body (like
         // Rust's `impl<T> Reg<T>`): a bare single-name generic argument on the
         // target that isn't already a known type is a type parameter.
@@ -748,8 +756,44 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+        // The impl target necessarily mentions its parameters (`Owner<T>`);
+        // that alone does not make the declaration's `T` meaningful. Snapshot
+        // use counts here, then only merge parameters referenced by an impl
+        // item/body into the owning declaration's lint facts.
+        let impl_params: Vec<(String, DefId, usize)> = self
+            .scopes
+            .last()
+            .into_iter()
+            .flat_map(|scope| scope.iter())
+            .filter_map(|(name, &id)| {
+                (self.out.kind_of(id) == Some(DefKind::Param)).then(|| {
+                    let uses = self.out.uses.values().filter(|&&used| used == id).count();
+                    (name.clone(), id, uses)
+                })
+            })
+            .collect();
+        let saved_impl_owner = self
+            .current_impl_owner
+            .replace(type_head(&im.target).unwrap_or_default().to_string());
         for it in &im.items {
             self.resolve_impl_item(it);
+        }
+        self.current_impl_owner = saved_impl_owner;
+        if let Some(owner) = type_head(&im.target) {
+            for (name, impl_id, before) in impl_params {
+                let after = self
+                    .out
+                    .uses
+                    .values()
+                    .filter(|&&used| used == impl_id)
+                    .count();
+                if after > before {
+                    if let Some(&decl_id) = self.decl_params.get(&(owner.to_string(), name.clone()))
+                    {
+                        self.impl_used_decl_params.insert(decl_id);
+                    }
+                }
+            }
         }
         self.exit();
     }
@@ -917,6 +961,7 @@ impl<'a> Resolver<'a> {
             let name = p.segments[0].text.clone();
             if let Some(id) = self.lookup(&name) {
                 self.out.uses.insert(p.span, id);
+                self.mark_impl_param_use(id);
             } else {
                 let help = match self.suggest(&name) {
                     Some(s) => format!("did you mean `{s}`?"),
@@ -1076,7 +1121,23 @@ impl<'a> Resolver<'a> {
         } else if let Some(name) = p.segments.first() {
             if let Some(id) = self.lookup(&name.text) {
                 self.out.uses.insert(p.span, id);
+                self.mark_impl_param_use(id);
             }
+        }
+    }
+
+    fn mark_impl_param_use(&mut self, id: DefId) {
+        if self.out.kind_of(id) != Some(DefKind::Param) {
+            return;
+        }
+        let Some(owner) = self.current_impl_owner.as_deref() else {
+            return;
+        };
+        let Some(name) = self.out.def(id).map(|def| def.name.clone()) else {
+            return;
+        };
+        if let Some(&decl_id) = self.decl_params.get(&(owner.to_string(), name)) {
+            self.impl_used_decl_params.insert(decl_id);
         }
     }
 
@@ -1114,7 +1175,7 @@ impl<'a> Resolver<'a> {
     /// `lint`: record each param for the unused-parameter lint (true for a
     /// declaration's generics, false for an impl's — an impl type param used
     /// only in the target would otherwise read as unused).
-    fn bind_params(&mut self, params: &Params, lint: bool) {
+    fn bind_params(&mut self, params: &Params, lint: bool, owner: Option<&str>) {
         for p in &params.params {
             let id = self.add_def(
                 p.name.text.clone(),
@@ -1126,6 +1187,10 @@ impl<'a> Resolver<'a> {
             self.bind(&p.name.text, id);
             if lint {
                 self.param_sites.push((p.name.span, id));
+                if let Some(owner) = owner {
+                    self.decl_params
+                        .insert((owner.to_string(), p.name.text.clone()), id);
+                }
             }
             if let Some(bound) = &p.bound {
                 self.resolve_type(bound);
@@ -1344,6 +1409,31 @@ mod tests {
             .collect();
         assert_eq!(unused.len(), 1, "one unused-param warning: {unused:?}");
         assert!(unused[0].contains("`T`"), "flags the dead T: {unused:?}");
+    }
+
+    #[test]
+    fn declaration_params_merge_uses_from_impls() {
+        let sink = diagnostics(
+            "module m;\n\
+             entity E<T, U> { out value: T; }\n\
+             impl E<T, U> { let cached: T; }\n\
+             struct Pair<A, B> { first: A }\n\
+             trait Convert<X, Y> { fn apply(self, value: X) -> X; }\n",
+        );
+        let unused: Vec<&str> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::UNUSED_PARAM))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            unused.len(),
+            3,
+            "U, Pair::B, and Convert::Y are unused: {unused:?}"
+        );
+        assert_eq!(unused.iter().filter(|m| m.contains("`U`")).count(), 1);
+        assert_eq!(unused.iter().filter(|m| m.contains("`B`")).count(), 1);
+        assert_eq!(unused.iter().filter(|m| m.contains("`Y`")).count(), 1);
     }
 
     #[test]

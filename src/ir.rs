@@ -294,6 +294,7 @@ pub fn lower_in(
     l.reconstruct_reads();
     l.lint_combinational_loops();
     l.lint_undriven_outputs();
+    l.lint_unused_signals();
     // Resolve any logic literal that no typed context claimed to its position
     // in std's default logic type, so the IR the backends consume carries only
     // `Const`s — no raw chars, no compiler-side value table.
@@ -390,6 +391,9 @@ struct Lowering<'a> {
     /// Internal `let` signals with no initializer, in a non-`#[test]` entity —
     /// they must be driven, so an undriven one is a forgotten assignment.
     undriven_lets: Vec<SignalId>,
+    /// Internal component locals eligible for W-P003. Test/top locals are
+    /// externally observed by the runner and deliberately excluded.
+    unused_lets: Vec<SignalId>,
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -494,6 +498,7 @@ impl<'a> Lowering<'a> {
             lower_stack: Vec::new(),
             plain_out_ports: Vec::new(),
             undriven_lets: Vec::new(),
+            unused_lets: Vec::new(),
             out: Design::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
@@ -983,6 +988,18 @@ impl<'a> Lowering<'a> {
                             .collect();
                         self.undriven_lets.extend(leaves);
                     }
+                    if !is_instance_array && !has_attr(edecl, "test") && !has_attr(edecl, "top") {
+                        let dot = format!("{}.", l.name.text);
+                        let idx = format!("{}[", l.name.text);
+                        self.unused_lets.extend(
+                            self.locals
+                                .iter()
+                                .filter(|(k, _)| {
+                                    **k == l.name.text || k.starts_with(&dot) || k.starts_with(&idx)
+                                })
+                                .map(|(_, &id)| id),
+                        );
+                    }
                     // `let rom: unsigned[8][N] = read("rom.bin");` — the compiler
                     // reads the file and bakes it into the element inits
                     // (little-endian packing for elements wider than a byte;
@@ -1389,6 +1406,42 @@ impl<'a> Lowering<'a> {
                 crate::diag::Diagnostic::warning(format!("signal `{path}` is never driven"))
                     .with_code(crate::diag::codes::UNDRIVEN_OUTPUT)
                     .help("assign it, give it an initial value, or remove it"),
+            );
+        }
+    }
+
+    /// Unused-signal lint (W-P003): an internal component local that no
+    /// combinational or sequential process reads contributes no observable
+    /// behavior. Root test/top locals are excluded because the native runner
+    /// reads them outside the hardware IR.
+    fn lint_unused_signals(&mut self) {
+        let processes = self.out.processes();
+        let read: std::collections::HashSet<u32> = processes
+            .iter()
+            .flat_map(|process| process.reads.iter().map(|id| id.0))
+            .collect();
+        let driven: std::collections::HashSet<u32> = self
+            .out
+            .drivers
+            .iter()
+            .map(|driver| driver.target.0)
+            .chain(
+                self.out
+                    .event_blocks
+                    .iter()
+                    .flat_map(|block| block.updates.iter().map(|update| update.target.0)),
+            )
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for signal in std::mem::take(&mut self.unused_lets) {
+            if !seen.insert(signal.0) || read.contains(&signal.0) || !driven.contains(&signal.0) {
+                continue;
+            }
+            let path = self.out.signals[signal.0 as usize].path.clone();
+            self.sink.emit(
+                crate::diag::Diagnostic::warning(format!("signal `{path}` is never read"))
+                    .with_code(crate::diag::codes::UNUSED_SIGNAL)
+                    .help("remove it, or use its value in observable logic"),
             );
         }
     }
@@ -7079,6 +7132,21 @@ mod tests {
             .collect();
         assert_eq!(undriven.len(), 1, "one undriven signal: {undriven:?}");
         assert!(undriven[0].contains("dead"), "flags dead: {undriven:?}");
+    }
+
+    #[test]
+    fn unused_internal_signal_warns_without_runner_false_positives() {
+        let diags = lower_diags(
+            "module m;\n\
+             entity E { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             impl E { let dead: unsigned[8]; dead = a + 1; y = a; }\n\
+             #[test] entity T {}\n\
+             impl T { let a: unsigned[8]; let observed: unsigned[8];\n\
+               let dut: E = { .a = a, .y = observed }; assert!(observed == a); }\n",
+        );
+        let unused: Vec<&String> = diags.iter().filter(|d| d.contains("W-P003")).collect();
+        assert_eq!(unused.len(), 1, "one unused internal signal: {unused:?}");
+        assert!(unused[0].contains("dead"), "flags dead: {unused:?}");
     }
 
     #[test]

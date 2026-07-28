@@ -2477,7 +2477,10 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call {
-                callee, args, bang, ..
+                callee,
+                args,
+                bang,
+                span,
             } => {
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`
@@ -2493,6 +2496,29 @@ impl<'a> Checker<'a> {
                     self.check_format_arity(callee, args);
                 } else if matches!(callee.as_ref(), Expr::Field { .. }) {
                     self.check_method_exists(callee, sym);
+                }
+                // Reset assertion is normally level-sensitive inside the
+                // design clock's event block. Edge-detecting a conventionally
+                // named reset creates an accidental second clock domain.
+                if let Expr::Field { base, field, .. } = callee.as_ref() {
+                    let reset_name = path_string(base).is_some_and(|name| {
+                        let leaf = name.rsplit('.').next().unwrap_or(&name);
+                        leaf.eq_ignore_ascii_case("rst")
+                            || leaf.eq_ignore_ascii_case("reset")
+                            || leaf.ends_with("_rst")
+                            || leaf.ends_with("_reset")
+                    });
+                    if reset_name && matches!(field.text.as_str(), "rising" | "falling" | "edge") {
+                        self.sink.emit(
+                            Diagnostic::warning(format!(
+                                "reset signal is edge-detected with `.{}`",
+                                field.text
+                            ))
+                            .with_code(codes::SUSPICIOUS_RESET)
+                            .at(*span)
+                            .help("test the reset level inside the design's clocked block instead"),
+                        );
+                    }
                 }
                 // A constant conversion argument must FIT the target
                 // (spec 3.17/3.26): `unsigned[4](300)` is a compile-time error,
@@ -3729,6 +3755,17 @@ mod tests {
             "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk.rising() {\n    q = clk'old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn edge_detected_reset_warns() {
+        let src = "module m;\nentity E { in reset: Bit; out q: Bit; }\n\
+                   impl E { if reset.rising() { q = '0'; } }\n";
+        assert_eq!(warnings(src, codes::SUSPICIOUS_RESET), 1);
+
+        let level = "module m;\nentity E { in clk: Bit; in reset: Bit; out q: Bit; }\n\
+                     impl E { if clk.rising() { if reset { q = '0'; } } }\n";
+        assert_eq!(warnings(level, codes::SUSPICIOUS_RESET), 0);
     }
 
     #[test]

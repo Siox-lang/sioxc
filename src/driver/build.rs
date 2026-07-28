@@ -1407,7 +1407,7 @@ impl Ctx<'_> {
                 let e = self.value_for(id, value)?;
                 // Drive every port this name connects to (sx_set masks to each
                 // signal's width).
-                b.push_str(&format!("{ind}{{ uint64_t _v = {e};"));
+                b.push_str(&format!("{ind}{{ sx_value _v = {e};"));
                 for a in self.aliases.get(&name).map(|v| v.as_slice()).unwrap_or(&[]) {
                     b.push_str(&format!(" sx_set({}, _v);", a.0));
                 }
