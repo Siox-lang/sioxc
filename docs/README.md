@@ -18,7 +18,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
-| [proposals/](proposals/) | Forward-looking proposals not yet implemented: signal container sizing, the cocotb ABI, and the std library build-out. |
+| [proposals/](proposals/) | Design records and forward-looking proposals. Each document states which parts are implemented and which remain. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
@@ -26,19 +26,22 @@ language and [architecture.md](architecture.md) for the compiler.
 
 ## The compiler pipeline
 
-Source flows top-to-bottom through one linear pipeline. Each stage is a module
-of the `siox` library target; the LLVM engine is its `llvm` module (see
-[architecture.md](architecture.md)).
+Source flows through explicit frontend products, a normalized digital IR, and
+the LLVM/output layers. The standard library is parsed as ordinary source; API
+consumers use frontend products without needing LLVM.
 
 ```mermaid
-flowchart TD
-    SRC([".siox source"]) -->|siox-syntax| AST[AST]
-    AST -->|siox-resolve| RES[Resolved]
-    RES -->|siox-types| TY[Typed]
-    TY -->|siox-elab| HIER[Hierarchy]
-    HIER -->|siox-ir| IR[Design]
-    IR -->|siox::llvm| OBJ["native object"]
-    OBJ -->|generated native harness| OUT["#[test] executable + results"]
+flowchart LR
+    SRC([".siox source"]) --> AST["AST<br/>syntax"]
+    STD["std/*.siox"] --> AST
+    AST --> SEM["Resolved + Typed"]
+    SEM --> HIER["Hierarchy"]
+    HIER --> IR["Digital IR<br/>Design"]
+    IR --> LLVM["LLVM backend"]
+    LLVM --> OUT["object / test executable"]
+    IR --> DUMP["IR + metadata output"]
+    AST --> API["compiler API / LSP"]
+    SEM --> API
 ```
 
 `diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
@@ -61,7 +64,7 @@ backend: `sioxc --test <file>` compiles a native test executable and `sioxc
 orchestration live outside the compiler.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
-operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
+operator overloading, literal suffixes (`10ns`, `5i`), and nine-value `Logic`
 truth tables defined as library code. See [../TODO.md](../TODO.md) for what's
 left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 
@@ -82,9 +85,9 @@ matching local LLVM install (see `Cargo.toml` for the pinned version).
 | Command | Does |
 | ------- | ---- |
 | `sioxc <file>` | compile the `#[top]` design to a native object (`--top` to pick) |
-| `check <file>` | parse → resolve → typecheck, report diagnostics |
-| `--test <file> [-o bin]` | compile a native `#[test]` executable |
-| `ir` · `ast` · `tree` · `tokens` · `emit-llvm` | debug dumps of each stage |
+| `sioxc <file> --emit metadata` | parse → resolve → typecheck/elaborate, report diagnostics |
+| `sioxc --test <file> [-o bin]` | compile a native `#[test]` executable |
+| `--emit source\|tokens\|ast\|tree\|ir\|llvm-ir` | inspect a compiler artifact |
 
 All commands take `--std <dir>` (default `./std`) for the standard library root.
 Runnable example programs live in the

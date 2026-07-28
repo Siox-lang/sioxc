@@ -1140,3 +1140,12 @@ edge-detection lint. Extended the wide executable test across subtraction
 borrow, shifts, comparisons, dynamic high-word writes, and high-word events;
 fixed native stimulus assignments to retain `sx_value` rather than truncating
 through `uint64_t`.
+### 2026-07-28 — Codex — reorganized TODO and documentation by compiler layer
+
+Replaced the numbered work-area TODO with explicit AST, IR, LLVM, Output, API,
+and std ownership, separating the implemented baseline from remaining work.
+Refreshed the documentation index, architecture, simulation, std reference,
+roadmap, and proposal status; updated their Mermaid graphs to match the regular
+single-package compiler and native-output architecture. Marked the old
+twelve-stage language implementation plan as historical so the live work queue
+has one source of truth.

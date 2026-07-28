@@ -7,7 +7,7 @@ simulation consumes, [architecture.md](architecture.md).
 
 ## The model: delta-cycle, event-driven
 
-A design lowers (in `siox-ir`) to two kinds of process, kept strictly apart:
+A design lowers (in `ir`) to two kinds of process, kept strictly apart:
 
 - **Combinational `Driver`s** — a continuous assignment (`count = value;`), a
   wire that always equals its expression.
@@ -17,13 +17,13 @@ A design lowers (in `siox-ir`) to two kinds of process, kept strictly apart:
 A **settle** evaluates one delta cycle over the signal state (`cur`, `old`, and
 per-signal `event` flags):
 
-1. Mark `event[i]` for every signal whose stimulus changed it (`cur != old`).
-2. Evaluate combinational drivers to a **fixpoint** (re-run until nothing
+1. Evaluate combinational drivers to a **fixpoint** (re-run until nothing
    changes; a non-converging loop is caught and warned, not hung).
-3. Fire event blocks — each computes its next state from the **pre-commit**
+2. Snapshot the settled values and mark `event[i]` where `cur != old`.
+3. Fire event blocks—each computes its next state from the **pre-commit**
    values (so `x'old` and same-cycle reads see the value before the edge).
-4. Commit those next-state writes, then re-settle combinational logic.
-5. Roll `old <- cur` and clear the event flags.
+4. Commit next-state writes, advance `old` to the snapshot, and start another
+   delta if the commit or a derived connection changed anything.
 
 This is exact simulation: the value, the delta-cycle order, and every observed
 event are the semantic contract. Nothing about *how* a value is stored may
@@ -31,7 +31,7 @@ change what is observed.
 
 ## Native execution
 
-`siox-ir` emits the simulation model and the **LLVM backend** (`siox::llvm`)
+The `ir` layer emits the simulation model and the **LLVM backend** (`siox::llvm`)
 compiles it ahead of time to native machine code. `sioxc <file>` emits the
 `#[top]` design as an object. `sioxc --test` generates a native testbench
 harness and links it with that object. The compiler stops after producing the
@@ -79,8 +79,9 @@ words from the generated executable into the VCD writer or another tool.
 **How siox values appear:**
 
 - **Buses** (`unsigned[8]`, `signed[16]`) are binary vectors.
-- **Four-value logic** (`Logic`, `Bit`) dumps as native VCD scalar states, so
-  high-impedance shows as `z` and unknown as `x`, not a number.
+- **Nine-value `Logic`** retains the IEEE discriminant internally. VCD maps
+  high-impedance states to `z`, unknown-like metavalues to `x`, and ordinary
+  binary elements to `0`/`1`; `Bit` remains two-value.
 - **Named enums** — an FSM `State`, `Bool` — dump as VCD `string` variables, so
   the viewer shows `Idle`/`Run`/`Done`/`true`/`false` instead of a raw
   discriminant (the de-facto VCD string extension Surfer and GTKWave both read).

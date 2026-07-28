@@ -15,20 +15,26 @@ The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
 
 ```mermaid
-flowchart LR
-    subgraph core [crate: siox — backend-independent core]
-        subgraph pipeline [pipeline modules]
-            direction LR
-            SY[syntax] --> RE[resolve] --> TY[types] --> EL[elab] --> IR[ir]
-        end
-        IR --> TB[testbench]
-        TB --> WA[wave]
-        DIAG[diag] -. used by all .-> pipeline
+flowchart TB
+    subgraph ASTL["AST layer"]
+        SY["syntax"] --> RE["resolve"] --> TY["types"] --> EL["elab"]
+        DIAG["diag"] -. spans + diagnostics .-> SY
+        DIAG -.-> RE
+        DIAG -.-> TY
+        DIAG -.-> EL
     end
-    IR --> LL[module: llvm]
-    CLI[crate: sioxc] == drives ==> core
-    CLI == native backend ==> LL
-    LSP[separate repo: siox-lsp] == Cargo Git frontend only ==> core
+    EL --> IR["IR layer<br/>Design"]
+    IR --> LL["LLVM layer<br/>native state + codegen"]
+    LL --> OUT["Output layer<br/>object / native tests"]
+    IR --> OUT
+    SY --> API["API consumers"]
+    RE --> API
+    TY --> API
+    LSP["siox-lsp"] --> API
+    STD["std source"] --> SY
+    CLI["sioxc driver"] ==> SY
+    CLI ==> LL
+    CLI ==> OUT
 ```
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
@@ -45,25 +51,25 @@ not introduce upward or sideways `use`s.
 
 The core `siox` crate lives in `src/`, one file (or directory) per module below.
 The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
-`src/driver.rs`.
+`src/driver/`.
 
-| Module | Spec stage(s) | Role |
-| ------ | ------------- | ---- |
-| `diag`    | 10   | Foundation: `Span`, `SourceMap`, `Diagnostic`, `DiagnosticSink`, and the stable error/warning code catalogue (`codes`). |
-| `syntax`  | 1–2  | Lexer, tokens, AST, recursive-descent + Pratt parser, pretty-printer. `parse_module` is the entry point. |
-| `resolve` | 3    | Name resolution: top-level definitions and `DefId`s, `using` imports/aliases, `::` paths, enum-associated items, attribute names. Produces `Resolved` (definition table + use-site → `DefId` map). |
-| `types`   | 4    | Type and kind checking; a light type-inference core (annotation → `Ty`, per-impl symbol table, `type_of`); rejects Phase-2 syntax (`'ddt`). Produces `Typed`. |
-| `elab`    | 5    | Elaboration: const-evaluate parameters, build the instance hierarchy from `#[top]`/`#[test]` roots, resolve port connections, expand bus modes. Produces `Hierarchy`. |
-| `ir`      | 6    | Lowers to digital simulation IR: combinational `Driver`s vs. sequential `EventBlock`s; `'event`/`'old` become first-class IR ops. Produces `Design`. |
-| `testbench` | 7–8 | Shared testbench value/format definitions. Native test discovery, scheduling, and assertion emission live in `sioxc::build`. |
-| `wave`    | 9    | `Trace` recording + VCD export (FST later). |
+| Module | Layer | Role |
+| ------ | ----- | ---- |
+| `diag` | shared | `Span`, `SourceMap`, diagnostics, and stable codes. |
+| `syntax` | AST | Lexer, tokens, AST, parser, and canonical printer. |
+| `resolve` | AST | Definitions, visibility, imports, paths, and use-site → `DefId`. |
+| `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
+| `elab` | AST | Parameters, roots, instances, connections, and `Hierarchy`. |
+| `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
+| `testbench` | Output | Shared native-test value and formatting definitions. |
+| `wave` | Output | Word-vector trace representation and VCD serialization. |
 
 Package components:
 
-| Crate | Spec stage(s) | Role |
-| ----- | ------------- | ---- |
-| `siox::llvm` | B  | LLVM/inkwell native backend — emit `.ll` or an AOT native object. |
-| `sioxc`     | 12 | The binary target; runs one compiler invocation and renders diagnostics. |
+| Component | Layer | Role |
+| --------- | ----- | ---- |
+| `siox::llvm` | LLVM | LLVM lowering, optimization, native state, and word ABI. |
+| `sioxc` | Output/API driver | One compiler invocation and artifact/diagnostic production. |
 
 ## rustc-shaped compiler boundary
 
@@ -85,11 +91,9 @@ artifact into a test executable. The compiler never executes that artifact.
 
 SIOX remains pass-oriented today. Rustc's memoized, demand-driven query system
 is a useful direction once incremental compilation or multiple consumers need
-it, but copying that machinery before persistent typed results exist would add
-coordination cost without improving semantics. The immediate architectural
-step is to keep phase products explicit and make the driver depend only on
-stable compiler interfaces; query caching can then replace individual phase
-calls without changing `sioxc` or the backend boundary.
+it. Persistent resolved and typed products now provide the right boundary; the
+remaining API work is to expose stable queries and cache them without changing
+`sioxc` or the backend boundary.
 
 `src/lib.rs` opens with the module map, and each module's own file opens with a
 doc-comment summarising its responsibility and spec acceptance criteria — read
@@ -99,28 +103,31 @@ as `crate::<module>`; the binary imports the library as `siox::<module>`.
 ## Data that flows between stages
 
 ```mermaid
-flowchart TD
-    A["&str (source)"] -->|siox-syntax| B["ast::Module"]
-    B -->|siox-resolve| C["Resolved<br/>defs + use-site → DefId"]
-    C -->|siox-types| D["Typed<br/>expression / signal types"]
-    D -->|siox-elab| E["Hierarchy<br/>instances + connections"]
-    E -->|siox-ir| F["Design<br/>signals, drivers, event blocks"]
-    F -->|"siox::llvm"| G["native object"]
-    G -->|"sioxc-generated harness"| H["native test executable"]
+flowchart LR
+    A["source text"] --> B["ast::Module"]
+    B --> C["Resolved"]
+    C --> D["Typed"]
+    D --> E["Hierarchy"]
+    E --> F["Design"]
+    F --> G["LLVM module"]
+    G --> H["native object"]
+    F --> I["metadata / IR output"]
+    H --> J["linked test executable"]
 ```
 
-`siox-diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
+`diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
 later-stage data, and is used both for diagnostics and as the key that links a
 name-use site to the declaration it resolves to.
 
 ## Cross-cutting conventions
 
-- **Spans everywhere.** Every AST node — and most later-stage data — carries a
-  `siox_diag::Span`. New node/data types should too; diagnostics depend on it.
+- **Spans everywhere.** Every AST node—and increasingly later-stage
+  metadata—carries a `diag::Span`. New semantic data should retain its source
+  span so IR/output diagnostics can point back to code.
 
 - **Diagnostics flow through `DiagnosticSink`.** Stages take `&mut
   DiagnosticSink`, `emit` into it, and the CLI renders/counts at the end. Use
-  the stable codes in `siox_diag::codes` (e.g. `WRITE_TO_INPUT_PORT`); add new
+  the stable codes in `diag::codes` (e.g. `WRITE_TO_INPUT_PORT`); add new
   codes to that catalogue rather than scattering string literals.
 
 - **Best-effort, keep going.** A stage returns a usable result even on error
@@ -158,7 +165,8 @@ families share one mechanism. They accept `integer` on assignment (spec,
 code). The CLI loads `std::` modules transitively from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
 compile, so the core types always carry their std semantics — the kernel
-word fallback only applies when the std root has no prelude at all. `siox-resolve` still seeds the scalar names (`Bit`, `Logic`, `integer`,
+word fallback only applies when the std root has no prelude at all. `resolve`
+still seeds the scalar names (`Bit`, `Logic`, `integer`,
 ...), but **not `unsigned`/`signed`** — those come from their std declarations. The
 efficient internal `UInt(w)/Int(w)` encoding remains, but it is now populated
 from the declaration (family shape + `Signed`), not triggered by a magic

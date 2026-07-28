@@ -1,773 +1,98 @@
-# siox Three-Phase Roadmap
+# siox roadmap
 
-This document splits siox development into three major phases:
+This is the long-range product roadmap. Accepted syntax and semantics live in
+[`language.md`](language.md); concrete open compiler work lives in
+[`TODO.md`](../TODO.md).
 
-1. **Digital**
-2. **Analogue**
-3. **Design**
-
-The main rule is:
-
-```text
-Digital and analogue define components.
-Design connects components.
+```mermaid
+flowchart LR
+    P1["Phase 1<br/>Digital simulation"] --> P2["Phase 2<br/>Analogue + mixed signal"]
+    P1 --> P3["Phase 3<br/>Design + synthesis integration"]
+    P2 --> P3
 ```
 
-The digital and analogue layers are the **logic/modeling language**. The design layer is the **schematic/netlist/composition language** that can also support graphical design interfaces.
+The organizing rule is:
 
----
+> Digital and analogue define components. Design connects and realizes them.
 
-## Phase 1 — Digital Language
+## Phase 1 — digital simulation
 
-### Goal
+Goal: a strict digital HDL that compiles to deterministic native simulation.
 
-Build the core HDL language and event-driven simulator.
+Implemented foundation:
 
-This phase defines the digital semantics of siox: entities, implementations, structs, enums, traits, ports, assignments, event handling, and tests.
+- entities, structs, enums, traits, applied views, implementations, and custom
+  operators;
+- typed ports and generics, elaborated hierarchy, instances, arrays, and
+  generate-time control;
+- combinational drivers and event-driven state with `event`, `old`, clock
+  helpers, delta cycles, and simulation time;
+- nine-value IEEE 1076-2019 Logic, resolution, vector metavalues, and
+  arbitrary-width numeric values;
+- standard-library source, native `#[test]` executables, assertions, timing,
+  fixture reads, diagnostics, VCD representation, LSP support, and CI corpus.
 
-### Core Concepts
+Phase-1 completion work is organized by AST/IR/LLVM/Output/API/std in
+[`TODO.md`](../TODO.md). The major remaining product capabilities are native
+waveform streaming, a stable embedding/scheduler API, cocotb integration,
+multi-file project tooling, and broader reusable std models.
 
-```text
-entity
-    hardware boundary / interface declaration
+## Phase 2 — analogue and mixed signal
 
-impl
-    implementation/body of an entity or type
+Goal: add continuous quantities without weakening the digital model.
 
-struct
-    ordinary data bundle / digital structure
+Planned concepts:
 
-enum
-    finite discrete state/value domain
+- analogue domains and quantities;
+- `across`/`through` relationships;
+- derivatives/integrals such as `::ddt`;
+- equation systems and solver selection;
+- digital/analogue bridges with explicit conversion and event rules;
+- tolerances, convergence diagnostics, and mixed-signal time coordination.
 
-trait
-    compile-time behavior contract
+Phase 2 must use its own IR and solver boundary. Digital IR remains exact and
+event-driven; analogue syntax must not be silently accepted by the Phase-1
+compiler.
 
-using
-    import / type alias
+Acceptance direction:
 
-attr
-    declaration of metadata attributes usable in #[...]
+- solve small linear and nonlinear networks;
+- co-simulate a digital controller with an analogue plant;
+- deterministic bridge/event ordering;
+- solver failures point to source equations and domains.
 
-#[...]
-    declared metadata attributes for compiler/tool/backend use
+## Phase 3 — design, foreign HDL, and synthesis
 
-in / out / inout
-    digital port direction / permission semantics
+Goal: turn component models into tool-consumable designs.
 
-'event
-    true when a digital/discrete value changed this simulation step
+Planned concepts:
 
-'old
-    previous value of a digital/discrete value
-```
+- project/package graph and reusable libraries;
+- language-neutral `use <library>` discovery;
+- VHDL/Verilog/vendor-library metadata and linking;
+- schematic/netlist composition and graphical tooling;
+- constraints, clocks, pins, placement/layout attributes;
+- vendor-neutral synthesis-facing output plus adapters for Vivado, Quartus,
+  and other tools;
+- optional internal foreign-HDL compilation only if existing compiled formats
+  cannot supply the required semantic model.
 
-### Entity Rules
+The language should name libraries and entities without encoding whether their
+implementation came from siox, VHDL, Verilog, or a vendor database. That choice
+belongs to the project/backend API.
 
-Entity bodies are interface-only.
+Acceptance direction:
 
-```siox
-entity Counter<W: integer> {
-    in clk: Bit;
-    in rst: Logic;
-    in en: Bit;
+- elaborate a design containing siox and foreign components;
+- emit a stable vendor-neutral artifact;
+- preserve hierarchy, names, widths, directions, clocks, and constraints;
+- hand the artifact to at least two synthesis ecosystems;
+- round-trip enough metadata for diagnostics and waveform/debug correlation.
 
-    out count: unsigned[W];
-}
-```
+## Non-goals
 
-No `const` fields inside entities.
-
-```siox
-entity BadCounter {
-    const W: integer;      // invalid
-    out count: unsigned[W];  // invalid because W changes interface shape
-}
-```
-
-Configuration values that affect shape or behavior go in the entity parameter list:
-
-```siox
-entity Counter<W: integer> {
-    out count: unsigned[W];
-}
-```
-
-### Digital System Attributes
-
-All digital/discrete values get:
-
-```siox
-x'event
-x'old
-```
-
-This includes:
-
-```text
-Bit
-Logic
-Bool
-unsigned[N]
-signed[N]
-enum
-structs containing only digital fields
-arrays/vectors of digital values
-```
-
-Example with an enum:
-
-```siox
-enum State {
-    Idle,
-    Start,
-    Shift,
-    Done,
-}
-
-impl Controller {
-    let state: State = State::Idle;
-
-    if state'event {
-        changed = '1';
-    }
-
-    if state'old == State::Idle & state == State::Start {
-        started = '1';
-    }
-}
-```
-
-### Clock/Event Logic
-
-Clock edges can be expressed as derived attributes over `'event` and `'old`.
-
-```siox
-trait ClockLike {
-    let rising(self);
-    let falling(self);
-    let edge(self);
-}
-
-impl ClockLike for Logic {
-    let rising(self) {
-        self'event & self'old == '0' & self == '1'
-    }
-
-    let falling(self) {
-        self'event & self'old == '1' & self == '0'
-    }
-
-    let edge(self) {
-        self'event
-    }
-}
-```
-
-Usage:
-
-```siox
-if clk.rising() {
-    q = d;
-}
-```
-
-The scheduler can infer that this block is event-controlled because the condition depends on `clk'event` through `clk.rising()`.
-
-### Example: Counter
-
-```siox
-entity Counter<W: integer> {
-    in clk: Bit;
-    in rst: Logic;
-    in en: Bit;
-
-    out count: unsigned[W];
-}
-
-impl Counter<W: integer> {
-    let value: unsigned[W] = 0;
-
-    if clk.rising() {
-        if rst == '1' {
-            value = 0;
-        } else if en {
-            value = value + 1;
-        }
-    }
-
-    count = value;
-}
-```
-
-### Phase 1 Deliverables
-
-```text
-lexer/parser
-AST
-name resolution
-type checker
-entity/impl elaboration
-digital event scheduler
-combinational assignment semantics
-sequential assignment semantics
-system attributes: 'event, 'old
-traits for derived digital attributes
-basic test runner
-VCD/FST waveform output
-core diagnostics
-```
-
----
-
-## Phase 2 — Analogue / Mixed-Signal Language
-
-### Goal
-
-Add physical domains, continuous equations, derivative semantics, and mixed-signal bridges.
-
-A `domain` marks an analogue terminal type. Regular `struct`s and ordinary datatypes are digital/discrete unless explicitly bridged.
-
-### Core Concepts
-
-```text
-domain
-    analogue/conservative terminal type
-
-across
-    quantity measured between two terminals
-
-through
-    conserved quantity flowing through a directed path
-
-let path = a -> b
-    create a directed analogue path between compatible domain terminals
-
-path.<across>
-    across quantity from a to b
-
-path.<through>
-    through quantity from a to b
-
-'ddt
-    derivative of an analogue/domain quantity
-```
-
-### Domain Rule
-
-If a type is declared with `domain`, it is analogue.
-
-If a type is declared with `struct`, it is ordinary/digital data unless explicitly used through a bridge.
-
-```siox
-domain Electrical<A: Analysis> {
-    across v: Voltage<A>;
-    through i: Current<A>;
-}
-```
-
-This means:
-
-```text
-Electrical<A>
-    analogue terminal type
-
-p -> n
-    creates a directed electrical path
-
-path.v
-    voltage from p to n
-
-path.i
-    current from p to n
-
-path.v'ddt
-    derivative of voltage
-
-path.i'ddt
-    derivative of current
-```
-
-The terminal itself does not store `v` or `i`. The quantities appear when two compatible terminals are combined into a directed path.
-
-### Analysis Domains
-
-Analysis/math representations can be ordinary types implementing traits.
-
-```siox
-trait Analysis {
-    using Scalar;
-}
-
-struct Time;
-
-impl Analysis for Time {
-    using Scalar = real;
-}
-
-struct Phasor<F: Hertz>;
-
-impl Analysis for Phasor<F: Hertz> {
-    using Scalar = complex;
-}
-
-using Voltage<A: Analysis> = A::Scalar;
-using Current<A: Analysis> = A::Scalar;
-```
-
-The same component equations can be lowered differently depending on the analysis domain:
-
-```text
-Time:
-    x'ddt -> dx/dt
-
-DiscreteTime:
-    x'ddt -> finite difference / solver companion model
-
-Phasor<F>:
-    x'ddt -> jωx
-
-Laplace:
-    x'ddt -> sx
-
-DC:
-    x'ddt -> 0
-```
-
-### Example: Resistor
-
-```siox
-entity Resistor<R: Ohm, A: Analysis> {
-    p: Electrical<A>;
-    n: Electrical<A>;
-}
-
-impl Resistor<R: Ohm, A: Analysis> {
-    let path = p -> n;
-
-    path.i = path.v / R;
-}
-```
-
-### Example: Capacitor
-
-```siox
-entity Capacitor<C: Farad, A: Analysis> {
-    p: Electrical<A>;
-    n: Electrical<A>;
-}
-
-impl Capacitor<C: Farad, A: Analysis> {
-    let path = p -> n;
-
-    path.i = C * path.v'ddt;
-}
-```
-
-### Example: Inductor
-
-```siox
-entity Inductor<L: Henry, A: Analysis> {
-    p: Electrical<A>;
-    n: Electrical<A>;
-}
-
-impl Inductor<L: Henry, A: Analysis> {
-    let path = p -> n;
-
-    path.v = L * path.i'ddt;
-}
-```
-
-### Other Possible Domains
-
-The same `domain` pattern can define other physical systems.
-
-#### Thermal
-
-```siox
-domain Thermal<A: Analysis> {
-    across temp: Temperature<A>;
-    through q: HeatFlow<A>;
-}
-```
-
-#### Mechanical Translational
-
-```siox
-domain Translational<A: Analysis> {
-    across x: Position<A>;
-    through f: Force<A>;
-}
-```
-
-#### Mechanical Rotational
-
-```siox
-domain Rotational<A: Analysis> {
-    across theta: Angle<A>;
-    through tau: Torque<A>;
-}
-```
-
-#### Hydraulic
-
-```siox
-domain Hydraulic<A: Analysis> {
-    across p: Pressure<A>;
-    through q: VolumeFlow<A>;
-}
-```
-
-#### Pneumatic
-
-```siox
-domain Pneumatic<A: Analysis> {
-    across p: Pressure<A>;
-    through m: MassFlow<A>;
-}
-```
-
-#### Magnetic
-
-```siox
-domain Magnetic<A: Analysis> {
-    across mmf: MagnetomotiveForce<A>;
-    through phi: MagneticFlux<A>;
-}
-```
-
-#### Acoustic
-
-```siox
-domain Acoustic<A: Analysis> {
-    across p: SoundPressure<A>;
-    through u: VolumeVelocity<A>;
-}
-```
-
-#### Chemical
-
-```siox
-domain Chemical<A: Analysis> {
-    across c: Concentration<A>;
-    through j: MolarFlow<A>;
-}
-```
-
-#### Electrochemical
-
-```siox
-domain Electrochemical<A: Analysis> {
-    across mu: ElectrochemicalPotential<A>;
-    through j: IonicCurrent<A>;
-}
-```
-
-### Mixed-Signal Bridges
-
-Analogue and digital values should not silently mix.
-
-Use explicit bridges:
-
-```siox
-sample(x)     // analogue -> digital sampled value
-hold(x)       // digital -> analogue piecewise-constant value
-cross(x, dir) // analogue threshold crossing -> digital event
-quantize(...) // analogue value -> digital code
-```
-
-Example sampled comparator:
-
-```siox
-entity SampledComparator {
-    in clk: Bit;
-
-    p: Electrical<Time>;
-    n: Electrical<Time>;
-
-    out y: Bit;
-}
-
-impl SampledComparator {
-    let input = p -> n;
-
-    if clk.rising() {
-        if sample(input.v) > 0.0 {
-            y = '1';
-        } else {
-            y = '0';
-        }
-    }
-}
-```
-
-### Phase 2 Deliverables
-
-```text
-domain parser/type checker
-across/through semantics
-analogue path elaboration: a -> b
-domain quantity system attributes: 'ddt
-equation IR
-conservation equation generation
-analysis-domain trait system
-DC lowering
-phasor lowering
-basic transient solver interface
-mixed-signal bridges: sample, hold, cross, quantize
-analogue/digital co-simulation scheduling
-```
-
----
-
-## Phase 3 — Design Language
-
-### Goal
-
-Create a schematic/netlist-oriented layer for system composition and graphical design interfaces.
-
-The design language should be easier to read and write than the full logic/modeling language. It should instantiate components, connect nodes/signals, set parameters, declare simulation setup, and store schematic layout metadata.
-
-### Core Concepts
-
-```text
-design
-    schematic/netlist/topology container
-
-node
-    analogue domain connection point
-
-signal
-    digital/discrete connection point
-
-instance
-    named component instantiation
-
-param
-    design-level constant / alias
-
-sim
-    simulation setup block
-
-probe
-    selected value to record/plot
-
-#[pos = ...]
-    layout metadata for schematic GUI
-```
-
-### Layout Metadata
-
-Layout can live in the same file using declared attributes.
-
-```siox
-pub attr pos: Point2D for instance, node, signal;
-pub attr rot: Angle for instance;
-pub attr symbol: string for instance;
-pub attr label: string for instance, node, signal;
-pub attr color: string for instance, node, signal;
-```
-
-Layout attributes are non-semantic metadata.
-
-They may affect:
-
-```text
-schematic display
-GUI placement
-symbol selection
-labels
-colors
-```
-
-They may not affect:
-
-```text
-simulation
-elaboration
-type checking
-generated equations
-```
-
-### Example: RC Low-Pass Design
-
-```siox
-design RcLowPass {
-    using std::analysis::Time;
-
-    param A = Time;
-
-    #[pos = {x = 0, y = 0}, label = "VIN"]
-    node vin: Electrical<A>;
-
-    #[pos = {x = 200, y = 0}, label = "VOUT"]
-    node vout: Electrical<A>;
-
-    #[pos = {x = 200, y = 120}, label = "GND"]
-    node gnd: Electrical<A>;
-
-    #[pos = {x = 60, y = 0}, symbol = "voltage_source"]
-    V1: VoltageSource<V = 3.3, A = A> vin gnd;
-
-    #[pos = {x = 140, y = 0}, symbol = "resistor_eu"]
-    R1: Resistor<R = 10k, A = A> vin vout;
-
-    #[pos = {x = 200, y = 60}, rot = 90.deg, symbol = "capacitor"]
-    C1: Capacitor<C = 100n, A = A> vout gnd;
-
-    sim {
-        run 10.ms;
-        probe vout;
-    }
-}
-```
-
-### Example: Sensor Frontend Design
-
-```siox
-design SensorFrontend {
-    using std::analysis::Time;
-
-    param A = Time;
-    param VREF = 3.3;
-
-    #[pos = {x = 0, y = 0}, label = "TEMP"]
-    node temp: Thermal<A>;
-
-    #[pos = {x = 0, y = 120}, label = "AMBIENT"]
-    node ambient: Thermal<A>;
-
-    #[pos = {x = 200, y = 0}, label = "VIN"]
-    node vin: Electrical<A>;
-
-    #[pos = {x = 360, y = 0}, label = "VFILT"]
-    node vfilt: Electrical<A>;
-
-    #[pos = {x = 360, y = 120}, label = "GND"]
-    node gnd: Electrical<A>;
-
-    signal clk: Bit;
-    signal code: unsigned[12];
-
-    #[pos = {x = 100, y = 40}, symbol = "thermal_to_voltage"]
-    S1: ThermalToVoltage<K = 0.01, A = A> temp ambient vin gnd;
-
-    #[pos = {x = 280, y = 0}, symbol = "resistor_eu"]
-    R1: Resistor<R = 10k, A = A> vin vfilt;
-
-    #[pos = {x = 360, y = 60}, rot = 90.deg, symbol = "capacitor"]
-    C1: Capacitor<C = 100n, A = A> vfilt gnd;
-
-    #[pos = {x = 520, y = 0}, symbol = "adc"]
-    ADC1: IdealAdc<W = 12, VREF = VREF> {
-        .clk = clk,
-        .p = vfilt,
-        .n = gnd,
-        .code = code,
-    }
-
-    sim {
-        tick clk every 10.us;
-        run 10.ms;
-
-        probe temp;
-        probe vfilt;
-        probe code;
-    }
-}
-```
-
-### Phase 3 Deliverables
-
-```text
-design/netlist parser
-design AST
-node/signal declarations
-compact component instantiation syntax
-named-field component instantiation syntax
-layout attributes
-schematic-compatible metadata model
-design-to-siox elaboration
-simulation setup handling
-probe/check/assert support
-GUI round-trip support
-```
-
-### FPGA synthesis and vendor export
-
-Once digital entities and design-level composition elaborate into a stable
-netlist, siox should be able to export the synthesizable subset for existing
-FPGA toolchains. The first backend should be vendor-neutral rather than tying
-the language directly to one proprietary API:
-
-```text
-siox source
-    -> resolved/elaborated digital design
-    -> synthesizable SystemVerilog or VHDL
-    -> Vivado, Quartus, Yosys, Radiant, Libero, and similar tools
-```
-
-The export boundary should preserve:
-
-```text
-module/entity hierarchy
-parameters and concrete widths
-ports, directional views, and flattened bus leaves
-combinational and clocked processes
-resets and initial values where the target supports them
-black-box/vendor IP declarations
-source locations and stable generated names
-```
-
-Timing and pin constraints need a separate portable model. SDC is the common
-baseline; thin adapters can emit Xilinx XDC, Intel QSF/SDC, and other
-vendor-specific project fragments. Vendor attributes should remain declared
-metadata, interpreted only by the selected export adapter.
-
-Directly invoking Vivado or Quartus is a later integration layer. The core
-deliverable is deterministic HDL/netlist and constraint output that users can
-inspect, version, and feed into those tools independently.
-
-Additional roadmap deliverables:
-
-```text
-synthesizable-subset validation and diagnostics
-SystemVerilog/VHDL emitter
-portable clock/pin/timing constraint model
-XDC and QSF/SDC adapters
-black-box and vendor-IP mapping
-Yosys-based open-source regression flow
-Vivado/Quartus smoke-test projects
-post-elaboration source/name map
-```
-
----
-
-## Dependency Order
-
-```text
-Phase 1: Digital
-    needed for clocks, logic, events, tests, scheduler, waveforms
-
-Phase 2: Analogue
-    builds on entities, impls, attributes, tests, and simulator infrastructure
-
-Phase 3: Design
-    builds on digital + analogue components and provides composition/layout
-```
-
-## Final Layering
-
-```text
-Digital language
-    event-driven HDL modeling
-
-Analogue language
-    physical domains and continuous/mixed-signal modeling
-
-Design language
-    schematic/netlist composition and GUI-friendly layout
-```
-
-The design language should lower into normal siox elaboration. It is a friendlier frontend for composition, not a separate semantic universe.
+- `sioxc` will not become the package manager or test runner; it remains one
+  compiler invocation, like `rustc`.
+- Phase-1 digital semantics will not depend on an analogue solver.
+- Vendor-specific primitives will not become compiler keywords.
+- Foreign HDL syntax will not be embedded into ordinary siox source.

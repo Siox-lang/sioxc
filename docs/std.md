@@ -167,17 +167,21 @@ argument:
 pub enum Severity { Note, Warning, Error, Failure }
 ```
 
-## What is deliberately absent (and why)
+## Current boundaries
 
-- **`textio` / file IO** — no string/file model in the Phase 1 simulator.
-- **`math_real`** — needs `real` arithmetic; Phase 2 (analogue) territory.
-- **`resize` / `to_integer` conversions** — need free or associated
-  functions callable in expressions; today fns exist only as trait-impl
-  bodies for inlining.
-- **X/Z propagation through vector arithmetic** — scalar `Logic` is now the
-  full 9-value `std_ulogic` (IEEE 1076-2019), but `unsigned`/`signed` are stored as
-  2-value words, so metavalues don't yet propagate through vector `+`/`-`/…
-  (needs a per-bit metavalue representation in the engine). Tracked in TODO.
+- **File services exist**, but `read`/`read_to_string` fixtures are consumed
+  while building a native test executable and baked into it. Runtime mutable
+  file I/O still needs owned dynamic strings/arrays.
+- **Real math exists** through `std::math` and the native C math ABI. `real`
+  remains IEEE binary64; quad precision is a separate LLVM/runtime feature.
+- **Conversions and resize exist** for the numeric families used by the
+  corpus.
+- **Vector metavalues propagate** through storage, logical operations,
+  arithmetic poisoning, comparisons, port connections, and wide values. The
+  companion representation scales beyond one ABI word.
+- **Reusable hardware models remain intentionally small.** Counters,
+  synchronizers, memories, FIFOs, and stream adapters are the next library
+  build-out, tracked under the `std` heading in [`TODO.md`](../TODO.md).
 
 Examples exercising the library through real imports: `std_test.siox`
 (every module), `logic_test.siox` (X-propagation), `complex_test.siox`

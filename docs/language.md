@@ -2,7 +2,7 @@
 
 This document defines Phase 1 of siox: the digital HDL layer — a usable digital
 language with a parser, type checker, elaborator, event-driven simulator, test
-runner, and waveform output. Analogue domains and schematic/design syntax are
+native test output, and waveform output. Analogue domains and schematic/design syntax are
 left for later phases ([roadmap.md](roadmap.md)). It is the authority for exact
 syntax and semantics; for how the pipeline is built see
 [architecture.md](architecture.md), and for the library [std.md](std.md).
@@ -1523,7 +1523,7 @@ way VHDL's `and`/`or` work on `std_logic_vector` (`"1010" and "0110"` =
 `"0010"`). Boolean is simply the one-bit case of boolean-per-bit. Because it
 is intrinsic to being bits, no per-type `impl` is needed — the kernel
 provides it for every bit-derived type; only `Logic` overrides it, for its
-four-value `'X'`/`'Z'` truth table. These operators are **rejected on the number kernels** `integer` and `real`
+nine-value `'X'`/`'Z'` truth table. These operators are **rejected on the number kernels** `integer` and `real`
 (and on `Char`): a number is not a bit collection, so per-bit boolean has no
 meaning — `intA and intB` is an error. A literal is exempt (it is a bit-mask
 that takes the other operand's width: `b and 0xFF`). Comparison operators
@@ -1607,9 +1607,15 @@ The native binary resolves symbols at link time (the math library is linked by
 default). Only the `"C"` ABI is supported.
 
 
-## 4. Phase 1 implementation stages
+## 4. Historical Phase 1 implementation plan
 
-Phase 1 should be implemented in stages. Each stage must have a concrete endgoal and acceptance tests.
+> **Status:** This section records the order used to bootstrap the compiler. It
+> is not the active work queue. Implemented items remain useful as acceptance
+> criteria, but current gaps and ownership live in [the layer-based
+> TODO](../TODO.md), under AST, IR, LLVM, Output, API, and std.
+
+Phase 1 was originally planned in stages, each with a concrete end goal and
+acceptance tests.
 
 
 ### 3.28 Nominal type derivation
@@ -1736,7 +1742,7 @@ valid starting value; it does not substitute for a reset.
 
 ---
 
-## Stage 1 — Syntax freeze and examples
+## Historical Stage 1 — Syntax freeze and examples
 
 ### Goal
 
@@ -1798,7 +1804,7 @@ The following examples must have final Phase 1 syntax:
 
 ---
 
-## Stage 2 — Lexer and parser
+## Historical Stage 2 — Lexer and parser
 
 ### Goal
 
@@ -1864,7 +1870,7 @@ and print a stable AST or pretty-printed source.
 
 ---
 
-## Stage 3 — Name resolution and module system
+## Historical Stage 3 — Name resolution and module system
 
 ### Goal
 
@@ -1919,7 +1925,7 @@ The compiler can say exactly what declaration every identifier refers to.
 
 ---
 
-## Stage 4 — Type system and kind checking
+## Historical Stage 4 — Type system and kind checking
 
 ### Goal
 
@@ -1986,7 +1992,7 @@ The compiler can reject ill-typed programs before elaboration.
 
 ---
 
-## Stage 5 — Entity specialization and elaboration
+## Historical Stage 5 — Entity specialization and elaboration
 
 ### Goal
 
@@ -2045,7 +2051,7 @@ The compiler can produce a concrete instance graph.
 
 ---
 
-## Stage 6 — Digital IR generation
+## Historical Stage 6 — Digital IR generation
 
 ### Goal
 
@@ -2119,7 +2125,7 @@ The compiler can print a normalized digital IR.
 
 ---
 
-## Stage 7 — Event-driven simulator core
+## Historical Stage 7 — Event-driven simulator core
 
 ### Goal
 
@@ -2204,7 +2210,7 @@ Must simulate correctly:
 
 ---
 
-## Stage 8 — Test entities, assertions, and stimulus
+## Historical Stage 8 — Test entities, assertions, and stimulus
 
 ### Goal
 
@@ -2392,7 +2398,7 @@ executable. The compiler does not run it.
 
 ---
 
-## Stage 9 — Waveform and tracing output
+## Historical Stage 9 — Waveform and tracing output
 
 ### Goal
 
@@ -2426,7 +2432,7 @@ The user can open a waveform file in GTKWave or another viewer.
 
 ---
 
-## Stage 10 — Diagnostics and lint rules
+## Historical Stage 10 — Diagnostics and lint rules
 
 ### Goal
 
@@ -2486,7 +2492,7 @@ help: `ready` is declared as `in ready;` in this view
 
 ---
 
-## Stage 11 — Minimal digital standard library
+## Historical Stage 11 — Minimal digital standard library
 
 ### Goal
 
@@ -2634,7 +2640,7 @@ Examples should not need private compiler magic except for primitive types and s
 
 ---
 
-## Stage 12 — CLI and project workflow
+## Historical Stage 12 — CLI and project workflow
 
 ### Goal
 
@@ -2716,7 +2722,7 @@ At that point, siox has a real digital HDL foundation. Phase 2 can then add anal
 
 ---
 
-## 7. Recommended Phase 1 implementation order
+## 7. Historical Phase 1 implementation order
 
 The shortest practical path is:
 

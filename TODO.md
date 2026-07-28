@@ -1,268 +1,205 @@
 # TODO
 
-Outstanding work for siox Phase 1. The pipeline runs end to end (parse →
-resolve → type-check → elaborate → lower → compile and run as a native AOT
-binary, with assertions); what remains is filling gaps and
-deepening coverage. See [`docs/architecture.md`](docs/architecture.md) and the CHANGELOG for
-per-stage status and [`docs/roadmap.md`](docs/roadmap.md) for Phase 2+.
+Outstanding work for the simulation-first siox compiler, organized by the
+layer that owns each change. The compiler is one regular Rust package:
 
-Status audited 2026-07-28 against the compiler, standard library, package
-tests, `siox-tests` corpus, and GitHub Actions.
+`source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known ·
-✅ implemented and covered.
+Status audited 2026-07-28 against the compiler, standard library, documentation,
+the `siox-tests` corpus, and CI.
 
-## Language features
+Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
 
-- ✅ **First-class applied views** — `view Name for Struct`, used as
-  `Name Struct`; directions live on view fields
-  defines a nominal projection over a reusable layout. Views have their own
-  inherent/trait impls, flatten onto the backing signals, preserve generic
-  substitution, and enforce leaf permissions. Covered by parser/type/IR tests
-  and the executable
-  `view_bus_test` / `stream_bus_test` corpus examples. Applied views overload
-  by backing struct, so `Source Stream` and `Source Queue` are distinct types.
-- ✅ **Unified customisable operators** — all overloads use
-  `Operator<"symbol", Input, Output>` and `apply`; `and`/`or`/`not` are core
-  syntax but use the same type-directed contract. Library operators such as
-  `xor`/`nand`/`nor` are ordinary implementations carrying `precedence`.
-- ✅ **Partial ranges and extensible indexing** — `[..hi]`, `[lo..]`, and
-  `[..]` inherit inclusive bounds from the indexed object's declared
-  `'left`/`'right`; `..=` is rejected. Non-intrinsic types may implement
-  `Index<I, Output>` and `IndexAssign<I, Value>`, including `Index<Range, _>`.
+## AST
 
-- 🟢 **Nested generics** — nested generic **bounds** parse (`fn f<T: Bar<Bit>>`,
-  `-> Bar<U>`; the `>>` token splits when closing angle levels). A nested
-  generic **type argument** written inline (`Box<Box<T>>`) is the one remaining
-  gap and is a **deliberate limitation**: a generic arg is parsed as an
-  expression with no node for a nested generic application (supporting it means a
-  `GenericArg::Type` variant threaded through ~8 consumers plus `<` type-vs-
-  comparison disambiguation — wide for a shape hardware rarely uses). **Workaround:
-  a type alias** — `using BoxT = Box<T>; ... Box<BoxT>` compiles cleanly.
-- 🟢 **Partial instance arrays** — conditionally-built instance arrays
-  (`let stage: Inc[3]` with a generate-`if` building a subset) work when the
-  unbuilt elements aren't read. Reading an *unbuilt* slot (`stage[2].y` when only
-  `stage[0]` was built) lowers to `Expr::Unknown` and surfaces as a confusing
-  downstream error rather than a clear "element not built" diagnostic. Left as a
-  **deliberate limitation**: a clear message needs instance-array metadata
-  (declared size + built slots) threaded into expression lowering, and warning at
-  *build* time would false-positive on the intentional generate-`if` subset — the
-  program already fails to compile, only the message is unhelpful.
+Owns source syntax, tokens, parsing, formatting, names, types, and elaborated
+hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, `src/elab.rs`.
 
-## Semantics & analysis
+Current baseline:
 
-- ✅ **Persistent typed IR from the checker** — Stage 4 retains the inferred
-  type of every expression in `Typed`; elaboration carries those facts into
-  lowering, which consumes them for width-sensitive operations instead of
-  reconstructing the answer from syntax alone. This fixes scalar indexing of
-  width-one vectors and gives the LSP a stable semantic result to query.
-  System event/history attributes also classify resolved named declarations
-  rather than blindly treating entity instances as digital values.
+- ✅ Partial ranges, custom operators/indexing, applied views, generics,
+  visibility, persistent expression types, direction checks, and frontend
+  diagnostics are implemented.
+- ✅ Imports and qualified paths enforce `pub`; `pub using` aliases retain
+  visibility.
+- ✅ Entity, struct, view, trait, and function generic parameters participate
+  in unused-parameter analysis, including uses in a separate `impl`.
 
-- ✅ **Undriven signals** — **model: always initialized, may be undriven.** Every
-  signal/port always holds a value (its `Init` value, see below); "undriven"
-  means nothing drives over it, so it keeps that value forever — deterministic,
-  never an undefined/error state. Undriven is therefore always a **warning**,
-  never an error, and there is **no runtime `'X'` from undriven-ness**: a signal
-  undriven on only *some* paths simply holds its init value there (the hold/latch
-  case, already `W-P002 POSSIBLE_LATCH`); `'X'`/`'Z'` come only from real
-  unknowns. Statically warned today (`W-P011`, 0 corpus false positives) for a
-  never-driven **`out` port** and a never-driven **value-less internal `let`** in
-  a component entity (excludes `#[test]`/`#[top]` harnesses, instance arrays, and
-  initialized `let x = ..` constants). ✅ **Reconciled with the model:** a
-  structurally unconnected *sub-instance* input is now a **warning** (`W-P012`,
-  "holds its default value"), not the old hard error `E-P005` (retired) — an
-  unconnected input is just undriven → reads its init value (§3.29). Top-level
-  primary inputs are unaffected (they aren't instantiated).
-- ✅ **Full direction analysis** — writing an `in` port is now caught in all
-  shapes (bare `a = ..`, an `in` view leaf, and a field/index of a plain
-  `in` port `a[3] = ..`/`p.f = ..`, `E-P004`), and a never-driven `out` port now
-  warns (`W-P011`). Still open: reading your own `out` port from within the
-  entity. ✅ **Resolved: keep it allowed** — IEEE 1076-2019 (VHDL-2008) permits
-  reading an `out` port; only pre-2008 VHDL forbade it, and we align with the
-  2019 reference, so no lint. Direction analysis is otherwise complete.
-- ✅ **`new` — uninitialized value semantics** — model the default value of an
-  undriven signal as the type's nullary constructor `T::new()`, not a hardcoded
-  `0`. Naming it `new` (a `New` trait, `fn new() -> Self`) folds "default value"
-  and "construction" into one concept rather than a separate `Default`/`Init`;
-  the **nullary** `new()` is the value a signal falls back to, while any
-  parameterized `new(args)` stays *explicit* construction. Written either
-  `T::new()` or **`T()`** — the zero-argument member of the same `T(...)` family
-  whose one-argument form `T(x)` is the conversion (§3.28); `T(...)` names the
-  *constructor* (a function), not the inert data, consistent with
-  `From::from`/`Operator::apply`/`Boolean::as_bool`. `T()` is implemented (`lower_new`:
-  enum → first variant, numeric/vector/`Char`/`real`/`integer` → 0, struct →
-  field-wise `Val::Fields`). The *derived default*
-  is structural — an enum yields its **first variant** (VHDL `T'LEFT`), a
-  `Logic`/`Bit` vector yields all-`'0'` → `0`, a struct/array defaults
-  field/element-wise — which unifies "0 for numerics" and "first variant for
-  enums" under one recursive rule and fixes undriven enums with a
-  **non-zero-based first discriminant** (today they read `0`, not a valid
-  variant). Two stages: (1) ✅ **derived default landed** (siox-ir sets an enum
-  signal's `init` to its first-variant discriminant via `enum_first_discriminants`;
-  non-enum stays `0`; explicit `let x = V` still wins; `language.md` §3.29; 0
-  corpus regressions); (2) ✅ **`impl New for T` overrides landed** — `ir`'s
-  `compute_new_defaults` scans `op_impls[("New", T)]` and const-folds the nullary
-  `new()` body into the signal's word-vector initializer (no full trait
-  resolution needed). std uses it
-  for `New for Bit` → `'0'` and `New for Logic`/`ULogic` → `'U'`, so an undriven
-  `Logic` reads `'U'`; threaded to hardware signals + native testbench
-  locals. Note
-  in the docs that a type-level default is a *simulation* power-on value, not a
-  synthesizable reset (real reset comes from reset logic). Relates to
-  **Undriven signals** above (this defines the value; the `'U'`-style runtime
-  *visibility* of undriven is a separate `Logic`-domain change).
-- ✅ **Cross-module visibility** (resolve) — imports and qualified paths may
-  cross a source-module boundary only for `pub` declarations (`E-P016`).
-  `pub using` visibility is retained in the AST and pretty-printer, including
-  exported type aliases. Private access within the declaration's own module
-  remains legal.
-- ✅ **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
-  the reference standard. (b) ✅ **Scalar `Logic` widened to the full 9-value
-  `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
-  `std_logic_1164` operator tables + `resolved` resolution — **verified
-  exhaustively (333/333 cells) against `nvc`**; `logic_ninevalue_test` guards
-  it. (a) 🟢 **X/Z propagation through vectors** — **functionally complete**
-  (design: [`docs/proposals/xz-vector-propagation.md`](proposals/xz-vector-propagation.md)).
-  A `unsigned` is `Logic[]`, so a metavalue vector carries a per-element
-  discriminant **companion** (`$meta`, 4 bits/element), made only
-  where a metavalue appears — metavalue-free designs stay bit-identical.
-  **Working natively**, guarded by `xz_vector_test`/`xz_poison_test`/
-  `xz_logical_test`: 9-value contextual bit strings (`"1X10"`); storage +
-  per-element reconstruction (`v[i]` reads its `std_ulogic`); `numeric_std`
-  **arithmetic** + **relational** poisoning; per-element `std_logic_1164`
-  **logical** (`0 and X = 0`, `1 or X = 1`, `not X = X`); propagation through
-  copies / port connections / muxes; **VCD** `x`/`z` rendering.
-  Driver-position literals carry their discriminant companion, width-one
-  vector elements retain their scalar `Logic` type, and arbitrary-width
-  word-vector initializers preserve metavalues beyond one ABI word in both
-  normal and `bitpack` storage. Logic-vector literals now use
-  bare contextual strings (`"1X10"`);
-  the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
-  default to `'U'` through their std `New` implementations, while `Bit`
-  defaults to `'0'`.
-- ✅ **Cascaded event domains — a register clocked by a derived clock.**
-  ✅ **Fixed 2026-07-22.** `sx_settle` is now a bounded **delta-cycle loop**:
-  each delta settles combinational logic, computes `event[i] = cur[i] != old[i]`
-  (and a `snap`), runs the event blocks with next-state staging, then advances
-  `old <- snap` so a change made *in* one delta becomes an edge in the *next* —
-  each edge firing exactly once. Comb settles *before* edge detection so a
-  comb-driven clock (a port connection `C.clk <- T.clk`) updates first. Derived
-  clocks, clock dividers, and ripple counters now simulate (`derived_clock_test`
-  in the corpus). `src/llvm/emit.rs` emits the shared `sx_settle` delta loop,
-  bounded by a per-call delta cap.
+Remaining:
 
-## Native execution
+- 🟡 **Nested generic type arguments.** Nested bounds and return types parse,
+  but an inline argument such as `Box<Box<T>>` needs a typed
+  `GenericArg::Type` node and `<` expression/type disambiguation. A type alias
+  is the current workaround.
+- 🟡 **Partial instance-array diagnostics.** Conditionally elaborated arrays
+  work, but reading an element that was not built reaches a downstream unknown
+  rather than a direct “instance element was not elaborated” diagnostic. Carry
+  declared/built slot metadata in `Hierarchy`.
+- 🔴 **Comment-preserving formatting.** The canonical printer intentionally
+  declines LSP formatting when comments are present because comment trivia is
+  not attached to AST nodes. Preserve trivia and anchor comments before
+  enabling those edits.
+- 🔴 **Incremental/query interface.** Phase products are explicit and stable,
+  but compilation is pass-oriented. Add demand-driven caching only when the
+  LSP or a future project tool needs incremental multi-file recomputation.
 
-The whole corpus runs as native AOT binaries — `real` / `Char` / `string`
-testbenches and `std::fs` reads are all emitted. Remaining backend-specific
-notes:
+## IR
 
-- 🔴 **Native emitter — true runtime file read** — `read_to_string` is read at
-  *build* time (fine for the stable fixtures) and baked in. A genuine runtime
-  `fopen`/`fread`, for a file that changes between build and run, is a possible
-  follow-up; it needs a dynamic-length string local in C.
+Owns the elaborated digital model: signals, processes, drivers, events,
+initializers, type/enum metadata, and semantic lints. Code: `src/ir.rs`,
+`src/target.rs`.
 
-## Optimizations (lower priority than semantics — finish those first)
+Current baseline:
 
-Codegen/footprint work, opt-in and Cargo-gated (see
-`src/llvm/`). All lower priority than the semantics work
-above — none of it blocks correctness, so it waits. (`bitpack`/`simd` and the
-`event` bitset are pure speed/size; `wide`/`f128` add capability but are still
-opt-in and non-blocking.)
+- ✅ Combinational and event-driven processes are distinct; delta cycles,
+  derived clocks, initialized/undriven behavior, Logic metavalue companions,
+  arbitrary-width initializers, and per-type word counts are covered.
+- ✅ W-P003 unused internal signals, W-P010 combinational loops, W-P011
+  undriven outputs/signals, W-P012 unconnected inputs, latch and driver lints
+  operate on the normalized design.
+- ✅ Scalar and vector IEEE 1076-2019 Logic behavior is represented, including
+  wide X/Z storage and propagation.
 
-Signal state is stored width-packed by default (a `Bit`/`Logic` takes one byte,
-not eight; `unsigned[32]` four, `unsigned[64]` eight).
-Composites already flatten to per-leaf signals, each minimally sized (an enum is
-`⌈log2(variants)⌉` bits), so structs/arrays/enums pack for free under `bitpack`.
+Remaining:
 
-- ✅ **`event` bitset** — under `bitpack`, event/changed flags use a dedicated
-  one-bit-per-signal layout (`⌈N/64⌉` ABI words), independent of each signal's
-  value width. Wide values continue to reserve consecutive words only in the
-  value-state arrays.
-- ✅ **`bitpack`** — pack many small signals into shared 64-bit
-  words (a `Bit` takes 1 bit, a nibble `Logic` 4), instead of a byte each. Up to
-  ~8× smaller state for `Bit`-heavy designs, at the cost of read-modify-write
-  stores — a footprint win for huge designs; the default byte layout is faster
-  for cache-resident ones. Correctness is covered by the packed/unpacked corpus
-  differential.
-- ✅ **`simd`** — the AOT `TargetMachine` targets the host
-  CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
-  `-O2` vectorizer can use them for array/vector ops. Off by default the build
-  targets a portable baseline (generic x86-64, SSE2 128-bit).
-- 🟡 **`wide` — per-type multi-word values** — signals wider than one ABI word
-  (`unsigned[128]` / `[256]` / `[512]`). A value's semantic width belongs to
-  its own type; the backend must not widen every expression to the widest
-  signal in the design. For a repeated/array type, calculate
-  `total_bits = element_count * element_type_size_bits`, then allocate
-  `ceil(total_bits / largest_ABI_word_bits)` words (with checked arithmetic).
-  Struct/array layouts apply this recursively; a view uses its backing
-  struct's layout. LLVM carries each logical value as its corresponding `iN`
-  and legalizes its arithmetic, while `sx_set_word`/`sx_read_word` split only
-  the external ABI representation into low-word-first chunks. ✅ The first
-  LLVM and the word ABI now impose no global word-count limit: `words_for`
-  derives the required storage from every type's width. `unsigned[128]`
-  cross-word carry and `i512` lowering are covered. Remaining work: persist
-  source type layouts in the IR instead of backend inference, apply recursive
-  element sizing to non-flattened composites and extend module-constant
-  evaluation beyond `u128`. Cross-word add/subtract (including borrow), shifts,
-  comparisons, high-word-only events, and dynamic native-testbench writes are
-  covered. Wide state and initializers also work under `bitpack`; LLVM
-  literals, pattern masks, native testbench values, and
-  waveform samples are word-vector/arbitrary-width. Structural type walks use
-  cycle detection rather than fixed nesting limits.
-- 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
-  needs `make_binary`/`emit` to carry `fp128` and a soft-float path for the
-  runner (no native Rust `f128`).
+- 🟡 **Persist complete source layouts.** Expression types reach lowering, but
+  named/repeated/composite layout is still partly reconstructed from
+  declarations. Store recursive source layouts directly in IR metadata.
+- 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
+  leaves today. Any future aggregate IR value must calculate
+  `count × element_layout` recursively, with checked arithmetic and cycle
+  detection.
+- 🟡 **Arbitrary-width constant evaluation.** IR literals, patterns,
+  initializers, wave samples, and native values are word vectors; module
+  constant evaluation still has a `u128` ceiling. Move the shared evaluator to
+  the same low-word-first representation.
+- 🟡 **Instance-array build facts.** See the AST item above: carry declared
+  bounds and built slots into lowering so an unbuilt read has a precise source
+  diagnostic.
 
-## Diagnostics & lints (Stage 10)
+## LLVM
 
-- ✅ **Unused signal / parameter warnings** — `W-P003` reports driven internal
-  component locals that no process reads; test/top locals are excluded because
-  the native runner observes them outside hardware IR. `W-P004` covers function,
-  entity, struct, view, and trait generics, merging a declaration parameter with
-  uses from its separately scoped implementation.
-- ✅ **Suspicious `Logic` compare / reset lint.** Compare (`W-P008`):
-  comparing an enum-valued operand (`Bit`/`Logic`/`Bool`/user `enum`) to a bare
-  integer literal (`b == 1` instead of `b == '1'`) warns — numeric vectors are
-  excluded; 0 corpus false positives (it caught one real `ok == 1` in the
-  corpus). Reset (`W-P009`) conservatively warns only when a conventionally
-  named `reset`/`rst` signal is edge-detected; normal level-sensitive reset
-  checks inside a clocked block are untouched.
+Owns native lowering, state layout, optimization, and the word ABI. Code:
+`src/llvm/`.
 
-## Waveforms (Stage 9)
+Current baseline:
 
-- 🔴 **Native trace ABI** — enable a separate waveform tool by streaming timestamped
-  low-word-first signal values from the native test executable to the VCD
-  writer. The former tracing path was removed with the JIT.
-- 🔴 **FST output** for large designs (VCD works today).
+- ✅ LLVM uses each value’s semantic `iN`; unrelated expressions are not widened
+  to the design maximum.
+- ✅ Default storage is width-sized. The optional `bitpack` layout packs small
+  values, reserves consecutive words for wide values, and stores event flags in
+  a dedicated one-bit-per-signal bitset.
+- ✅ Native target optimization uses LLVM’s `default<O2>` pipeline and optional
+  host SIMD features.
+- ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
+  events, and the unbounded low-word-first ABI are covered.
 
-## Tooling & integration
+Remaining:
 
-- 🟡 **Documentation/spec synchronization** — `docs/language.md` tracks the
-  current grammar, but the Phase-1 examples in `docs/roadmap.md` still contain
-  early spellings such as trait `let` methods and symbolic boolean `&`.
-  Refresh or clearly label those sketches so they are not mistaken for
-  accepted source.
-- ✅ **LSP repository split** — the working protocol server and editor tests now
-  live in `Siox-lang/siox-lsp`, with this compiler referenced as a Cargo Git
-  dependency.
-- ✅ **CI matches the standalone compiler package** — GitHub Actions pins Rust
-  1.90 and LLVM/Clang 22, checks formatting and the frontend-only dependency
-  surface, runs the default and `bitpack` suites, and compiles/runs the complete
-  sibling `siox-tests` corpus through `scripts/test-corpus.sh`.
-- 🔴 **cocotb integration** — drive the compiled design via VPI/GPI (the runtime
-  ABI is already VPI-shaped for this). Tracked as the main open runtime task.
+- 🔴 **`f128`.** The feature is declared but not implemented. Add LLVM `fp128`
+  expression lowering, constants/conversions, ABI rules, formatting, and a
+  software-runtime path for hosts without scalar quad precision.
+- 🟡 **Aggregate layouts.** Consume the persistent recursive IR layouts once
+  the IR item above lands; do not infer source aggregate sizing in the backend.
+- 🔴 **Optimization measurements.** Add repeatable size/runtime benchmarks for
+  default, `bitpack`, and host-SIMD builds so optimizations are justified by
+  data rather than only structural tests.
 
-## Standard library (Stage 11)
+## Output
 
-- 🟡 **Fill out `std/`** — `std::logic`, `std::bits`, `std::attrs`, `std::sim`,
-  `std::assert`, `std::math`, `std::text`, `std::fs` exist but want more
-  coverage and the canonical example programs. The `.siox` conformance corpus
-  lives in [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests).
+Owns compiler artifacts and generated native harnesses: objects, metadata,
+source/AST/tree/IR/LLVM dumps, test executables, diagnostics, and waveforms.
+Code: `src/driver/`, `src/testbench.rs`, `src/wave.rs`.
 
-## Out of scope (Phase 2+, see roadmap)
+Current baseline:
 
-- Analogue `domain`, `across`/`through`, `::ddt`, solvers, mixed-signal bridges.
-- Schematic / design language, layout attributes.
-- Synthesis backend.
+- ✅ `sioxc` is compiler-only: one input produces an object, metadata/dump, or
+  native `#[test]` executable. It never executes the artifact.
+- ✅ Native tests support filtering, assertions, timing/`await`, multiple
+  clocks, arbitrary-width stimulus, symbolic values, and deterministic
+  reporting.
+- ✅ VCD data structures support wide values, Logic x/z, and symbolic enums.
+
+Remaining:
+
+- 🔴 **Native trace ABI.** Stream timestamped low-word-first values from a
+  compiled executable to `wave::Trace` (or an external waveform process). The
+  old in-process JIT trace path has been removed.
+- 🔴 **FST output.** Add compressed waveform output for large simulations after
+  the native trace ABI supplies events.
+- 🔴 **Runtime file reads.** `read`/`read_to_string` fixtures are currently read
+  while building a test executable and baked into it. Add runtime
+  `fopen`/`fread` plus dynamic-length string/array ownership.
+- 🟡 **Diagnostic source coverage.** Frontend diagnostics carry spans and stable
+  codes. Continue threading declaration/source spans into IR-only warnings so
+  every late diagnostic can highlight its origin.
+- 🔴 **Synthesis-facing artifacts (Phase 3).** Vendor-neutral netlist/HDL output
+  for Vivado, Quartus, and other synthesis tools belongs here, but is not a
+  current simulation milestone.
+
+## API
+
+Owns stable programmatic boundaries used by editors, project tools, simulators,
+and foreign integrations.
+
+Current baseline:
+
+- ✅ `siox-lsp` lives in its own repository and consumes this compiler through
+  a Cargo Git dependency without depending on LLVM.
+- ✅ The native design ABI exposes reset, settle, and low-word-first signal
+  get/set operations.
+- ✅ `sioxc` keeps rustc-like scope: project graphs, execution, dependency
+  management, and directory-wide testing remain outside the compiler.
+
+Remaining:
+
+- 🔴 **Compiler embedding API.** Stabilize an options/result interface above the
+  current driver so an LSP or future Cargo-like tool does not compose internal
+  passes itself.
+- 🔴 **Multi-file user crates.** Standard-library modules load transitively,
+  while user compilation still starts from one source entry. Define module
+  discovery and crate boundaries in the future project tool, then expose the
+  loaded source set through the compiler API.
+- 🔴 **cocotb/VPI-GPI integration.** Build name→handle lookup,
+  get/put/force/release, timed callbacks, value-change callbacks, and
+  read-write/read-only phase callbacks over the native scheduler ABI.
+- 🔴 **Project/test tool.** A future Cargo-like executable should discover
+  packages, cache builds, compile directories, run/filter generated tests, and
+  coordinate waveform output. None of this belongs in `sioxc`.
+- 🟡 **External HDL libraries (Phase 3).** `use <library>` should remain
+  language-neutral. A project/backend layer can locate precompiled VHDL,
+  Verilog, or vendor libraries; compiling VHDL internally is deferred.
+
+## std
+
+Owns user-visible types, traits, operators, attributes, simulation helpers,
+math/text/file services, and reusable hardware models. Code: `std/`.
+
+Current baseline:
+
+- ✅ `std::logic`, `bits`, `ops`, `attrs`, `sim`, `assert`, `math`, `text`,
+  `fs`, and the prelude are real siox source.
+- ✅ Logic resolution/truth tables, numeric operators, custom operator
+  precedence, literal hooks, `New`, conversions, and clock helpers are visible
+  as library traits/implementations rather than hidden compiler-only surfaces.
+- ✅ The runnable conformance suite lives in
+  [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) and is checked
+  by CI.
+
+Remaining:
+
+- 🟡 **Library build-out.** Add canonical reusable counters, synchronizers,
+  memories, FIFOs, stream adapters, and fixed-point families with executable
+  conformance tests.
+- 🟡 **API reference.** Keep [`docs/std.md`](docs/std.md) synchronized with each
+  exported declaration and clearly label compiler/runtime intrinsics.
+- 🔴 **Foreign HDL packages (Phase 3).** Map external library names and entity
+  metadata without baking VHDL/Verilog syntax into the siox language.
+
+## Out of scope for the current compiler
+
+- Analogue domains, `across`/`through`, `::ddt`, solvers, and mixed-signal
+  bridges.
+- Schematic/layout design and place-and-route attributes.
+- Vendor synthesis backends and foreign HDL compilation.
+- A project/package manager inside `sioxc`.
