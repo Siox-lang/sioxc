@@ -400,7 +400,13 @@ struct Lowering<'a> {
     /// Local name -> its enum type name (operator-impl operands).
     local_enum: HashMap<String, String>,
     /// Local name -> its struct type name (multi-signal operands/targets).
+    /// Applied views store the view name here so method dispatch uses the
+    /// view's nominal interface rather than the backing struct.
     local_struct: HashMap<String, String>,
+    /// Local name -> its backing struct representation. This differs from
+    /// `local_struct` for an applied view (`Controller Bus`): methods dispatch
+    /// on `Controller`, while reads of the aggregate bind all fields of `Bus`.
+    local_struct_repr: HashMap<String, String>,
     /// Locals of the symbol base type `Char`.
     local_char: std::collections::HashSet<String>,
     /// Array-typed locals -> their ordered element indices (whole-array
@@ -503,6 +509,7 @@ impl<'a> Lowering<'a> {
             locals: HashMap::new(),
             local_enum: HashMap::new(),
             local_struct: HashMap::new(),
+            local_struct_repr: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
             local_numeric: HashMap::new(),
@@ -773,6 +780,7 @@ impl<'a> Lowering<'a> {
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_enum = std::mem::take(&mut self.local_enum);
         let saved_struct = std::mem::take(&mut self.local_struct);
+        let saved_struct_repr = std::mem::take(&mut self.local_struct_repr);
         let saved_char = std::mem::take(&mut self.local_char);
         let saved_array = std::mem::take(&mut self.local_array);
         let saved_numeric = std::mem::take(&mut self.local_numeric);
@@ -1247,6 +1255,7 @@ impl<'a> Lowering<'a> {
         self.locals = saved_locals;
         self.local_enum = saved_enum;
         self.local_struct = saved_struct;
+        self.local_struct_repr = saved_struct_repr;
         self.local_char = saved_char;
         self.local_array = saved_array;
         self.local_numeric = saved_numeric;
@@ -2033,11 +2042,17 @@ impl<'a> Lowering<'a> {
                 ast::Type::Path(p) => {
                     self.local_struct
                         .insert(name.to_string(), p.segments[0].text.clone());
+                    self.local_struct_repr
+                        .insert(name.to_string(), p.segments[0].text.clone());
                 }
-                ast::Type::View { view, .. } => {
+                ast::Type::View { view, target, .. } => {
                     if let Some(role) = view.segments.last() {
                         self.local_struct
                             .insert(name.to_string(), role.text.clone());
+                    }
+                    if let Some(backing) = type_head_name(target) {
+                        self.local_struct_repr
+                            .insert(name.to_string(), backing.to_string());
                     }
                 }
                 _ => {}
@@ -4722,7 +4737,7 @@ impl<'a> Lowering<'a> {
                         spread
                             .as_ref()
                             .and_then(|b| expr_path(b))
-                            .and_then(|p| self.local_struct.get(&p).cloned())
+                            .and_then(|p| self.local_struct_repr.get(&p).cloned())
                     });
                 let field_order: Option<Vec<String>> = struct_name
                     .as_deref()
@@ -4847,7 +4862,7 @@ impl<'a> Lowering<'a> {
 
     /// The per-field value of a struct-typed local (`p` -> `p.re`, `p.im`).
     fn struct_local_val(&self, name: &str) -> Option<Val> {
-        let sname = self.local_struct.get(name)?;
+        let sname = self.local_struct_repr.get(name)?;
         let s = self.structs.get(sname)?;
         Some(Val::Fields(
             s.fields
@@ -6979,6 +6994,46 @@ mod tests {
         );
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.ready")));
+    }
+
+    #[test]
+    fn trait_method_can_read_an_applied_views_backing_fields() {
+        let d = lower_src(
+            "module m;\n\
+             trait Readable<T> { fn read(self) -> T; }\n\
+             struct Spi { tx: unsigned[8], rx: unsigned[8] }\n\
+             view Controller for Spi { out tx; in rx; }\n\
+             impl Readable<unsigned[8]> for Controller Spi {\n\
+               fn read(self) -> unsigned[8] { return self.rx; }\n\
+             }\n\
+             entity Device { bus: Controller Spi; out sampled: unsigned[8]; }\n\
+             impl Device { sampled = bus.read(); }\n\
+             #[top] entity Link {}\n\
+             impl Link {\n\
+               let wire: Spi;\n\
+               let sampled: unsigned[8];\n\
+               let device: Device = { .bus = wire, .sampled = sampled };\n\
+             }",
+        );
+        assert!(
+            d.validate().is_empty(),
+            "a view method must bind `self` to the backing struct fields"
+        );
+        let sampled = d
+            .signals
+            .iter()
+            .position(|s| s.path.ends_with(".device.sampled"))
+            .expect("sampled signal");
+        let driver = d
+            .drivers
+            .iter()
+            .find(|driver| driver.target.0 as usize == sampled)
+            .expect("sampled driver");
+        assert!(
+            matches!(driver.expr, Expr::Current(_)),
+            "read() should lower to the selected backing signal: {:?}",
+            driver.expr
+        );
     }
 
     #[test]

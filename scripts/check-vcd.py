@@ -80,6 +80,30 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         assert values(changes, "StreamTest.dut.got") == ["00101010"]
         assert values(changes, "StreamTest.dut.wire.valid") == ["1"]
         assert values(changes, "StreamTest.dut.wire.data") == ["00101010"]
+    elif profile == "protocol_view_traits_test":
+        assert values(changes, "ProtocolViewTraitsTest.spi.controller_rx") == [
+            "00000000",
+            "00111100",
+            "11100111",
+        ]
+        assert values(changes, "ProtocolViewTraitsTest.spi.peripheral_rx") == [
+            "00000000",
+            "10100101",
+            "00010010",
+        ]
+        assert values(changes, "ProtocolViewTraitsTest.spi.selected") == ["0", "1", "0"]
+        assert values(changes, "ProtocolViewTraitsTest.i2c.controller_sample") == [
+            "1",
+            "0",
+            "1",
+            "0",
+        ]
+        assert values(changes, "ProtocolViewTraitsTest.i2c.target_sample") == [
+            "1",
+            "0",
+            "1",
+            "0",
+        ]
 
 
 def main() -> None:

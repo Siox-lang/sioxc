@@ -1189,3 +1189,12 @@ validates a VCD. Added semantic waveform profiles for the FIFO, register file,
 SPI loopback, and struct stream: they check FIFO occupancy/data order, dynamic
 memory write/read, eight-bit SPI completion, busy timing, and hierarchical
 bundle propagation rather than relying only on final test assertions.
+### 2026-07-28 — Codex — tested protocol views through shared traits
+
+Added an executable conformance design that implements generic `Readable` and
+`Writable` traits for SPI controller/peripheral and I2C controller/target
+views. SPI verifies both directional byte lanes; I2C models open-drain SDA as
+separate pull-low intents and verifies that both roles sample the same resolved
+line state. Fixed IR lowering so an applied view retains both its nominal view
+identity for method dispatch and its backing struct identity for field reads,
+then added unit and VCD waveform regressions.
