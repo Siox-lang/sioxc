@@ -46,8 +46,8 @@ pub fn parse_module_with_operators(
 /// A bare string (empty prefix) is per-bit, using `-` (the `std_ulogic`
 /// don't-care) as the wildcard; a radix prefix (`x`/`o`) uses `?` to mask its
 /// whole group (nibble/triad). `_` separators are ignored. `None` when the
-/// text isn't a well-formed pattern (an invalid digit, or wider than 64 bits).
-pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
+/// text isn't a well-formed pattern. Words are low-word first.
+pub fn bit_pattern_mask(text: &str) -> Option<(Vec<u64>, Vec<u64>)> {
     let (base, digits) = match text.split_once('"') {
         Some((b, rest)) => (b, rest.trim_end_matches('"')),
         None => return None,
@@ -59,16 +59,11 @@ pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
         _ => return None,
     };
     let radix = 1u32 << per; // 2, 8, or 16
-    let mut mask = 0u64;
-    let mut value = 0u64;
-    let mut bits = 0u32;
+    let mut mask = Vec::new();
+    let mut value = Vec::new();
     for c in digits.chars() {
         if c == '_' {
             continue;
-        }
-        bits += per;
-        if bits > 64 {
-            return None;
         }
         let (m, v) = match c {
             '?' | '-' => (0, 0), // don't-care: `-` in bare strings, `?` in radix groups
@@ -77,8 +72,20 @@ pub fn bit_pattern_mask(text: &str) -> Option<(u64, u64)> {
                 (((1u64 << per) - 1), d)
             }
         };
-        mask = (mask << per) | m;
-        value = (value << per) | v;
+        push_group(&mut mask, per, m);
+        push_group(&mut value, per, v);
     }
     Some((mask, value))
+}
+
+fn push_group(words: &mut Vec<u64>, bits: u32, value: u64) {
+    let mut carry = value;
+    for word in words.iter_mut() {
+        let next = *word >> (64 - bits);
+        *word = (*word << bits) | carry;
+        carry = next;
+    }
+    if carry != 0 || words.is_empty() {
+        words.push(carry);
+    }
 }

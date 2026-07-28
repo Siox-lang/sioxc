@@ -159,15 +159,25 @@ pub fn build(
         .map(|signal| siox::target::words_for(signal.width).to_string())
         .collect::<Vec<_>>()
         .join(", ");
+    let value_bits = design
+        .signals
+        .iter()
+        .map(|signal| signal.width)
+        .max()
+        .unwrap_or(1)
+        .max(max_literal_type_width(modules, &derived_widths))
+        .max(siox::target::ABI_WORD_BITS);
     prog.push_str(&format!(
-        "static const uint32_t sx_nwords[] = {{{abi_words}}};\n\
-         static void sx_set(uint32_t s, unsigned __int128 v) {{\n\
-         \x20   sx_set_word(s, 0, (uint64_t)v);\n\
-         \x20   if (sx_nwords[s] > 1) sx_set_word(s, 1, (uint64_t)(v >> 64));\n\
+        "typedef unsigned _BitInt({value_bits}) sx_value;\n\
+         static const uint32_t sx_nwords[] = {{{abi_words}}};\n\
+         static void sx_set(uint32_t s, sx_value v) {{\n\
+         \x20   for (uint32_t i = 0; i < sx_nwords[s]; ++i)\n\
+         \x20       sx_set_word(s, i, (uint64_t)(v >> (i * 64)));\n\
          }}\n\
-         static unsigned __int128 sx_read(uint32_t s) {{\n\
-         \x20   unsigned __int128 v = sx_read_word(s, 0);\n\
-         \x20   if (sx_nwords[s] > 1) v |= (unsigned __int128)sx_read_word(s, 1) << 64;\n\
+         static sx_value sx_read(uint32_t s) {{\n\
+         \x20   sx_value v = 0;\n\
+         \x20   for (uint32_t i = 0; i < sx_nwords[s]; ++i)\n\
+         \x20       v |= (sx_value)sx_read_word(s, i) << (i * 64);\n\
          \x20   return v;\n\
          }}\n"
     ));
@@ -433,22 +443,112 @@ fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type
     fn flat(
         name: &str,
         raw: &HashMap<String, (Option<String>, Vec<(String, ast::Type)>)>,
-        depth: usize,
+        seen: &mut std::collections::HashSet<String>,
     ) -> Vec<(String, ast::Type)> {
-        if depth > 32 {
+        if !seen.insert(name.to_string()) {
             return Vec::new();
         }
         let Some((base, own)) = raw.get(name) else {
             return Vec::new();
         };
         let mut out = match base {
-            Some(b) => flat(b, raw, depth + 1),
+            Some(b) => flat(b, raw, seen),
             None => Vec::new(),
         };
         out.extend(own.iter().cloned());
+        seen.remove(name);
         out
     }
-    raw.keys().map(|k| (k.clone(), flat(k, &raw, 0))).collect()
+    raw.keys()
+        .map(|k| {
+            (
+                k.clone(),
+                flat(k, &raw, &mut std::collections::HashSet::new()),
+            )
+        })
+        .collect()
+}
+
+fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) -> u32 {
+    fn width(ty: &ast::Type, derived: &HashMap<String, u32>) -> u32 {
+        match ty {
+            ast::Type::Path(p) => p
+                .segments
+                .last()
+                .and_then(|s| derived.get(&s.text))
+                .copied()
+                .unwrap_or(0),
+            ast::Type::Indexed { base, index, .. } => {
+                let own = index
+                    .as_deref()
+                    .and_then(|e| match e {
+                        ast::Expr::Int { text, .. } => text.parse().ok(),
+                        ast::Expr::Range { lo, hi, .. } => {
+                            let ast::Expr::Int { text: lo, .. } = lo.as_ref() else {
+                                return None;
+                            };
+                            let ast::Expr::Int { text: hi, .. } = hi.as_ref() else {
+                                return None;
+                            };
+                            Some(
+                                (lo.parse::<i64>().ok()? - hi.parse::<i64>().ok()?).unsigned_abs()
+                                    as u32
+                                    + 1,
+                            )
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                own.max(width(base, derived))
+            }
+            ast::Type::Generic { base, .. } | ast::Type::View { target: base, .. } => {
+                width(base, derived)
+            }
+        }
+    }
+    let mut widths = Vec::new();
+    for module in modules {
+        for item in &module.items {
+            match item {
+                ast::Item::Entity(e) => {
+                    widths.extend(e.ports.iter().map(|p| width(&p.ty, derived)))
+                }
+                ast::Item::Struct(s) => {
+                    widths.extend(s.fields.iter().map(|f| width(&f.ty, derived)))
+                }
+                ast::Item::Fn(f) => {
+                    widths.extend(
+                        f.params
+                            .iter()
+                            .filter_map(|p| p.ty.as_ref())
+                            .map(|t| width(t, derived)),
+                    );
+                    widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                }
+                ast::Item::Impl(im) => {
+                    for item in &im.items {
+                        match item {
+                            ast::ImplItem::Let(l) => {
+                                widths.extend(l.ty.as_ref().map(|t| width(t, derived)));
+                            }
+                            ast::ImplItem::Fn(f) => {
+                                widths.extend(
+                                    f.params
+                                        .iter()
+                                        .filter_map(|p| p.ty.as_ref())
+                                        .map(|t| width(t, derived)),
+                                );
+                                widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    widths.into_iter().max().unwrap_or(0)
 }
 
 /// Every impl method by `(type head, method name)`, inherent and trait impls,
@@ -548,6 +648,56 @@ fn mask_c(e: &str, w: u32) -> String {
     } else {
         e.to_string()
     }
+}
+
+fn c_word_literal(words: &[u64]) -> String {
+    let parts = words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| **word != 0)
+        .map(|(i, word)| {
+            if i == 0 {
+                format!("((sx_value){word}ULL)")
+            } else {
+                format!("(((sx_value){word}ULL) << {})", i * 64)
+            }
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "((sx_value)0)".to_string()
+    } else {
+        format!("({})", parts.join(" | "))
+    }
+}
+
+fn parse_word_literal(text: &str) -> Vec<u64> {
+    let text = text.trim().replace('_', "");
+    if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        parse_digits_words(digits, 16)
+    } else if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        parse_digits_words(digits, 2)
+    } else {
+        parse_digits_words(&text, 10)
+    }
+}
+
+fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
+    let mut words = Vec::<u64>::new();
+    for digit in digits.chars().filter(|c| *c != '_') {
+        let Some(digit) = digit.to_digit(radix) else {
+            return vec![0];
+        };
+        let mut carry = digit as u128;
+        for word in &mut words {
+            let next = (*word as u128) * radix as u128 + carry;
+            *word = next as u64;
+            carry = next >> 64;
+        }
+        if carry != 0 || words.is_empty() {
+            words.push(carry as u64);
+        }
+    }
+    words
 }
 
 impl Ctx<'_> {
@@ -1152,7 +1302,8 @@ impl Ctx<'_> {
                             };
                             // A vector-family local wraps at its declared
                             // width, like the equivalent hardware signal.
-                            let e = match l.ty.as_ref().and_then(|t| self.declared_width(t)) {
+                            let declared_width = l.ty.as_ref().and_then(|t| self.declared_width(t));
+                            let e = match declared_width {
                                 Some(w) => {
                                     self.local_widths
                                         .borrow_mut()
@@ -1161,7 +1312,12 @@ impl Ctx<'_> {
                                 }
                                 None => e,
                             };
-                            b.push_str(&format!("    uint64_t {} = {e};\n", l.name.text));
+                            let c_ty = if declared_width.is_some_and(|w| w > 64) {
+                                "sx_value"
+                            } else {
+                                "uint64_t"
+                            };
+                            b.push_str(&format!("    {c_ty} {} = {e};\n", l.name.text));
                             self.locals.borrow_mut().insert(l.name.text.clone());
                             // Record an enum/Logic local's type so `print!`
                             // renders its symbol, not the raw discriminant.
@@ -1977,7 +2133,11 @@ impl Ctx<'_> {
             ast::Pattern::BitPattern { text, .. } => {
                 let (mask, value) = siox::syntax::bit_pattern_mask(text)
                     .ok_or_else(|| format!("bad bit pattern `{text}`"))?;
-                Some(format!("((({scrut}) & {mask}ULL) == {value}ULL)"))
+                Some(format!(
+                    "((({scrut}) & {}) == {})",
+                    c_word_literal(&mask),
+                    c_word_literal(&value)
+                ))
             }
             ast::Pattern::Or { alts, .. } => {
                 let mut parts = Vec::new();
@@ -2031,7 +2191,7 @@ impl Ctx<'_> {
                 }
                 out
             }
-            ast::Expr::Int { text, .. } => format!("{}ULL", parse_u64(text)),
+            ast::Expr::Int { text, .. } => c_word_literal(&parse_word_literal(text)),
             ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
             ast::Expr::BitStrLit { base, digits, .. } => {
                 let radix = match *base {
@@ -2039,8 +2199,7 @@ impl Ctx<'_> {
                     'o' => 8,
                     _ => 2,
                 };
-                let value = u64::from_str_radix(digits, radix).unwrap_or(0);
-                format!("{value}ULL")
+                c_word_literal(&parse_digits_words(digits, radix))
             }
             ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
@@ -2121,7 +2280,7 @@ impl Ctx<'_> {
                     _ => return self.c_fn_call(callee, args),
                 };
                 if w > 64 {
-                    format!("((unsigned __int128)({v}))")
+                    format!("((sx_value)({v}))")
                 } else if w == 0 || w == 64 {
                     format!("({v})")
                 } else {

@@ -835,6 +835,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn expr_width(&self, e: &Expr) -> u32 {
         match e {
             Expr::Const(v) => (64 - v.leading_zeros()).max(1),
+            Expr::WideConst(words) => {
+                let high = words.last().copied().unwrap_or(0);
+                ((words.len().saturating_sub(1) as u32) * 64 + (64 - high.leading_zeros())).max(1)
+            }
             Expr::Real(_) | Expr::CCall { .. } => 64,
             Expr::Logic(_) => 1,
             Expr::Current(id) | Expr::Old(id) => self.design.signals[id.0 as usize].width.max(1),
@@ -897,6 +901,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
             Expr::Const(v) => self.c_at(*v, width),
+            Expr::WideConst(words) => self.value_ty(width).const_int_arbitrary_precision(words),
             Expr::Real(x) => self.c_at(x.to_bits(), 64),
             // IR lowering resolves every logic literal to a `Const` (its
             // position in std's logic type), so none reach the backend.
@@ -1195,6 +1200,29 @@ mod tests {
         let ll = emit_module_ir(&design);
         assert!(ll.contains("i512"), "{ll}");
         assert_eq!(siox::target::words_for(512), 8);
+    }
+
+    #[test]
+    fn emits_constants_wider_than_one_word() {
+        let design = Design {
+            signals: vec![sig("E.y", 192)],
+            drivers: vec![Driver {
+                ctx: 0,
+                target: SignalId(0),
+                cond: None,
+                expr: Expr::WideConst(vec![1, 2, 3]),
+            }],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+        let ll = emit_module_ir(&design);
+        assert!(
+            ll.contains("1020847100762815390427017310442723737601"),
+            "{ll}"
+        );
     }
 
     #[test]

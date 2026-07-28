@@ -204,8 +204,11 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   source type layouts in the IR instead of
   backend inference, apply recursive element sizing to non-flattened
   composites, define wide C-FFI and `bitpack` behavior, extend runner/waveform
-  testbench/waveform values beyond `u128`, and add borrows, cross-word
-  shifts/slices, comparisons, and high-word-only event coverage.
+  module-constant evaluation beyond `u128`, wide Logic literal initialization,
+  and add borrows, cross-word shifts/slices, comparisons, and high-word-only
+  event coverage. LLVM literals, pattern masks, native testbench values, and
+  waveform samples are word-vector/arbitrary-width. Structural type walks use
+  cycle detection rather than fixed nesting limits.
 - 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
   needs `make_binary`/`emit` to carry `fp128` and a soft-float path for the
   runner (no native Rust `f128`).

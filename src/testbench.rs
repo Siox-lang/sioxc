@@ -7,7 +7,46 @@
 /// A snapshot of every signal at one simulation time.
 pub struct Sample {
     pub time_fs: u64,
-    pub values: Vec<u128>,
+    pub values: Vec<SignalValue>,
+}
+
+/// An arbitrary-width signal value in low-word-first ABI order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignalValue {
+    pub words: Vec<u64>,
+}
+
+impl SignalValue {
+    pub fn new(mut words: Vec<u64>) -> Self {
+        while words.last() == Some(&0) {
+            words.pop();
+        }
+        Self { words }
+    }
+
+    pub fn word(&self, index: usize) -> u64 {
+        self.words.get(index).copied().unwrap_or(0)
+    }
+
+    pub fn bit(&self, index: u32) -> bool {
+        self.word(index as usize / 64) & (1u64 << (index % 64)) != 0
+    }
+
+    pub fn low_u64(&self) -> u64 {
+        self.word(0)
+    }
+}
+
+impl From<u64> for SignalValue {
+    fn from(value: u64) -> Self {
+        Self::new(vec![value])
+    }
+}
+
+impl From<u128> for SignalValue {
+    fn from(value: u128) -> Self {
+        Self::new(vec![value as u64, (value >> 64) as u64])
+    }
 }
 
 /// One piece of a `print!` format string.

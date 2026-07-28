@@ -22,7 +22,7 @@
 //! with the entity's declared (possibly parametric) widths. Per-instance width
 //! specialization and cross-instance flattening/connection are follow-ups.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::diag::DiagnosticSink;
 use crate::elab::Hierarchy;
@@ -123,6 +123,8 @@ pub const DEFAULT_LOGIC_TYPE: &str = "ULogic";
 #[derive(Clone, Debug)]
 pub enum Expr {
     Const(u64),
+    /// An integer constant wider than one ABI word, low-word first.
+    WideConst(Vec<u64>),
     /// A `real` constant; evaluates to its f64 bit pattern.
     Real(f64),
     Logic(char),
@@ -1770,10 +1772,13 @@ impl<'a> Lowering<'a> {
                     lhs: Box::new(a),
                     rhs: Box::new(b),
                 })?;
-                let all_x = (0..width).fold(0u64, |p, i| p | (self.x_disc() << (4 * i)));
+                let mut all_x = vec![0u64; (width as usize).div_ceil(16)];
+                for i in 0..width {
+                    all_x[i as usize / 16] |= self.x_disc() << (4 * (i % 16));
+                }
                 Some(Expr::Select {
                     cond: Box::new(cond),
-                    then: Box::new(Expr::Const(all_x)),
+                    then: Box::new(words_const(all_x)),
                     els: Box::new(Expr::Const(0)),
                 })
             }
@@ -1810,7 +1815,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// The metavalue companion of a per-element logical op (`std_logic_1164`),
-    /// unrolled per element (≤16): a result element is `'X'` when an operand is
+    /// unrolled per element: a result element is `'X'` when an operand is
     /// a metavalue *and* no operand forces the output — `0 and X = 0`,
     /// `1 or X = 1`, `X xor _ = X`.
     fn logical_meta(&self, op: BinOp, lhs: &Expr, rhs: &Expr, width: u32) -> Option<Expr> {
@@ -1848,7 +1853,7 @@ impl<'a> Lowering<'a> {
         let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
         for d in &self.out.drivers {
             let n = self.out.signals[d.target.0 as usize].width;
-            if n == 0 || n > 16 {
+            if n == 0 {
                 continue;
             }
             if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
@@ -2190,11 +2195,11 @@ impl<'a> Lowering<'a> {
     /// value a tree while the signal table holds only its leaves, so anything
     /// copying a whole struct value has to work in these terms.
     fn struct_leaf_names(&self, name: &str) -> Vec<String> {
-        self.struct_leaf_names_at(name, 0)
+        self.struct_leaf_names_at(name, &mut HashSet::new())
     }
 
-    fn struct_leaf_names_at(&self, name: &str, depth: u32) -> Vec<String> {
-        if depth > 16 {
+    fn struct_leaf_names_at(&self, name: &str, seen: &mut HashSet<String>) -> Vec<String> {
+        if !seen.insert(name.to_string()) {
             return Vec::new();
         }
         let Some(fields) = self.raw_struct_fields(name) else {
@@ -2203,7 +2208,7 @@ impl<'a> Lowering<'a> {
         let mut out = Vec::new();
         for (f, ty) in fields {
             let nested = type_head_name(&ty)
-                .map(|h| self.struct_leaf_names_at(h, depth + 1))
+                .map(|h| self.struct_leaf_names_at(h, seen))
                 .unwrap_or_default();
             if nested.is_empty() {
                 out.push(f);
@@ -2211,6 +2216,7 @@ impl<'a> Lowering<'a> {
                 out.extend(nested.into_iter().map(|n| format!("{f}.{n}")));
             }
         }
+        seen.remove(name);
         out
     }
 
@@ -2727,9 +2733,9 @@ impl<'a> Lowering<'a> {
                     Expr::Binary {
                         op: BinOp::And,
                         lhs: Box::new(scrut.clone()),
-                        rhs: Box::new(Expr::Const(mask)),
+                        rhs: Box::new(words_const(mask)),
                     },
-                    Expr::Const(value),
+                    words_const(value),
                 ))
             }
             // `A | B`: matches if any alternative matches (their conditions
@@ -3134,7 +3140,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Int { text, .. } if text.contains('.') => {
                 Expr::Real(text.parse().unwrap_or(0.0))
             }
-            ast::Expr::Int { text, .. } => Expr::Const(parse_int(text).unwrap_or(0)),
+            ast::Expr::Int { text, .. } => integer_const(text).unwrap_or(Expr::Const(0)),
             // A suffix with an `impl Suffix` fn inlines it (scalar results
             // only here; struct results flow through `lower_val_env`).
             // Otherwise `1ns` / `10MHz` scale by the fixed fs/Hz table.
@@ -3966,16 +3972,15 @@ impl<'a> Lowering<'a> {
     /// Whether `anc` is a (transitive) enum-derivation ancestor of `name`.
     fn enum_ancestor(&self, anc: &str, name: &str) -> bool {
         let mut cur = name.to_string();
-        let mut guard = 0;
+        let mut seen = HashSet::new();
         while let Some(b) = self.enum_bases.get(&cur) {
+            if !seen.insert(cur.clone()) {
+                break;
+            }
             if b == anc {
                 return true;
             }
             cur = b.clone();
-            guard += 1;
-            if guard > 64 {
-                break;
-            }
         }
         false
     }
@@ -3983,8 +3988,11 @@ impl<'a> Lowering<'a> {
     /// Whether struct `name` derives (transitively) from struct `base`.
     fn struct_derives_from(&self, name: &str, base: &str) -> bool {
         let mut cur = name.to_string();
-        let mut guard = 0;
+        let mut seen = HashSet::new();
         while let Some(s) = self.structs.get(&cur) {
+            if !seen.insert(cur.clone()) {
+                break;
+            }
             let Some(b) = s.base.as_ref().and_then(type_head_name) else {
                 return false;
             };
@@ -3992,34 +4000,30 @@ impl<'a> Lowering<'a> {
                 return true;
             }
             cur = b.to_string();
-            guard += 1;
-            if guard > 64 {
-                break;
-            }
         }
         false
     }
 
     /// A struct type's full (inherited + own) field names, base chain first.
     fn struct_field_names(&self, name: &str) -> Vec<String> {
-        self.struct_field_names_at(name, 0)
+        self.struct_field_names_at(name, &mut HashSet::new())
     }
 
-    /// Depth-bounded, like [`Self::struct_derives_from`]: a cyclic derivation
-    /// is reported by resolve, but lowering still runs (best-effort), so the
-    /// walk has to terminate rather than overflow the stack.
-    fn struct_field_names_at(&self, name: &str, depth: u32) -> Vec<String> {
-        if depth > 64 {
+    /// Cycle-safe, like [`Self::struct_derives_from`]: a cyclic derivation is
+    /// reported by resolve, but lowering still runs best-effort.
+    fn struct_field_names_at(&self, name: &str, seen: &mut HashSet<String>) -> Vec<String> {
+        if !seen.insert(name.to_string()) {
             return Vec::new();
         }
         let Some(s) = self.structs.get(name) else {
             return Vec::new();
         };
         let mut out = match s.base.as_ref().and_then(type_head_name) {
-            Some(b) => self.struct_field_names_at(b, depth + 1),
+            Some(b) => self.struct_field_names_at(b, seen),
             None => Vec::new(),
         };
         out.extend(s.fields.iter().map(|f| f.name.text.clone()));
+        seen.remove(name);
         out
     }
 
@@ -4859,7 +4863,7 @@ pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
             read_set(then, out);
             read_set(els, out);
         }
-        Expr::Const(_) | Expr::Real(_) | Expr::Logic(_) | Expr::Unknown => {}
+        Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) | Expr::Unknown => {}
     }
 }
 
@@ -4887,6 +4891,7 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
             }
         }
         Expr::Const(_)
+        | Expr::WideConst(_)
         | Expr::Real(_)
         | Expr::Current(_)
         | Expr::Old(_)
@@ -5110,7 +5115,7 @@ fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
             check_expr(then, n, issues, ctx);
             check_expr(els, n, issues, ctx);
         }
-        Expr::Const(_) | Expr::Real(_) | Expr::Logic(_) => {}
+        Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) => {}
     }
 }
 
@@ -5351,6 +5356,14 @@ fn render(e: &Expr, d: &Design) -> String {
             format!("{name}({a})")
         }
         Expr::Const(v) => v.to_string(),
+        Expr::WideConst(words) => {
+            let mut parts = words.iter().rev();
+            let mut text = format!("0x{:x}", parts.next().copied().unwrap_or(0));
+            for word in parts {
+                text.push_str(&format!("{word:016x}"));
+            }
+            text
+        }
         Expr::Real(x) => format!("{x}"),
         Expr::Logic(c) => format!("'{c}'"),
         Expr::Current(id) => d.signals[id.0 as usize].path.clone(),
@@ -5480,6 +5493,46 @@ fn parse_int(text: &str) -> Option<u64> {
     }
 }
 
+fn integer_const(text: &str) -> Option<Expr> {
+    let text = text.trim().replace('_', "");
+    let (radix, digits) =
+        if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            (16, digits)
+        } else if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+            (2, digits)
+        } else {
+            (10, text.as_str())
+        };
+    let mut words = Vec::<u64>::new();
+    for digit in digits.chars() {
+        let digit = digit.to_digit(radix)? as u64;
+        let mut carry = digit as u128;
+        for word in &mut words {
+            let next = (*word as u128) * radix as u128 + carry;
+            *word = next as u64;
+            carry = next >> 64;
+        }
+        if carry != 0 || words.is_empty() {
+            words.push(carry as u64);
+        }
+    }
+    while words.last() == Some(&0) && words.len() > 1 {
+        words.pop();
+    }
+    Some(words_const(words))
+}
+
+fn words_const(mut words: Vec<u64>) -> Expr {
+    while words.last() == Some(&0) && words.len() > 1 {
+        words.pop();
+    }
+    match words.as_slice() {
+        [] => Expr::Const(0),
+        [word] => Expr::Const(*word),
+        _ => Expr::WideConst(words),
+    }
+}
+
 /// Bit width from a type annotation, substituting parameters from `env` (so
 /// `unsigned[W]` with `W=8` is width 8). `0` means parametric / not yet known.
 fn type_width(
@@ -5488,23 +5541,19 @@ fn type_width(
     fns: &HashMap<String, &ast::FnDecl>,
     structs: &HashMap<String, &ast::StructDecl>,
 ) -> u32 {
-    type_width_at(t, env, fns, structs, 0)
+    type_width_at(t, env, fns, structs, &mut HashSet::new())
 }
 
-/// `type_width` with a derivation-depth bound. A cyclic derivation
+/// `type_width` with cycle detection. A cyclic derivation
 /// (`struct A : B` / `struct B : A`) is reported by resolve, but lowering runs
-/// anyway (best-effort), so without this the recursion overflowed the stack and
-/// aborted the process.
+/// anyway best-effort.
 fn type_width_at(
     t: &ast::Type,
     env: &HashMap<String, i64>,
     fns: &HashMap<String, &ast::FnDecl>,
     structs: &HashMap<String, &ast::StructDecl>,
-    depth: u32,
+    seen: &mut HashSet<String>,
 ) -> u32 {
-    if depth > 64 {
-        return 0;
-    }
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Bool") => 1,
@@ -5513,11 +5562,18 @@ fn type_width_at(
             // A derived type inherits its base array's size/range: `struct Byte
             // : Logic[8]` is 8 bits, `struct Word : unsigned[16]` is 16 (spec:
             // nominal derivation reuses the base representation).
-            Some(name) => structs
-                .get(name)
-                .and_then(|s| s.base.as_ref())
-                .map(|b| type_width_at(b, env, fns, structs, depth + 1))
-                .unwrap_or(0),
+            Some(name) => {
+                if !seen.insert(name.to_string()) {
+                    return 0;
+                }
+                let width = structs
+                    .get(name)
+                    .and_then(|s| s.base.as_ref())
+                    .map(|b| type_width_at(b, env, fns, structs, seen))
+                    .unwrap_or(0);
+                seen.remove(name);
+                width
+            }
             None => 0,
         },
         // For `unsigned[8]` the index is the width; for `Logic[31..0]` it is the
@@ -6610,6 +6666,33 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn integer_literals_keep_all_words() {
+        let d = lower_src(
+            "module m;
+             #[top] entity E { out y: unsigned[192]; }
+             impl E { y = 1020847100762815390427017310442723737601; }",
+        );
+        assert!(matches!(
+            &d.drivers[0].expr,
+            Expr::WideConst(words) if words == &[1, 2, 3]
+        ));
+    }
+
+    #[test]
+    fn deep_acyclic_type_derivation_has_no_magic_depth_limit() {
+        let mut src = String::from("module m;\nstruct S0(Bit);\n");
+        for i in 1..80 {
+            src.push_str(&format!("struct S{i}(S{});\n", i - 1));
+        }
+        src.push_str(
+            "#[top] entity E { out y: S79; }
+             impl E { y = S79(); }",
+        );
+        let d = lower_src(&src);
+        assert_eq!(d.signals.iter().find(|s| s.path == "E.y").unwrap().width, 1);
+    }
+
     /// A struct-literal initializer on an entity-level `let` silently powered
     /// on at 0 — the testbench interpreter honoured it, hardware lowering did
     /// not, so the two engines disagreed about the same declaration.
@@ -6713,24 +6796,29 @@ mod tests {
         // Bare strings are per-bit with `-` as the don't-care.
         assert_eq!(
             crate::syntax::bit_pattern_mask("\"01--\""),
-            Some((0b1100, 0b0100))
+            Some((vec![0b1100], vec![0b0100]))
         );
         assert_eq!(
             crate::syntax::bit_pattern_mask("\"0000_11--\""),
-            Some((0b11111100, 0b00001100))
+            Some((vec![0b11111100], vec![0b00001100]))
         );
         // Radix prefixes mask a whole group with `?`.
         assert_eq!(
             crate::syntax::bit_pattern_mask("x\"A?\""),
-            Some((0xF0, 0xA0))
+            Some((vec![0xF0], vec![0xA0]))
         );
         assert_eq!(
             crate::syntax::bit_pattern_mask("x\"?3\""),
-            Some((0x0F, 0x03))
+            Some((vec![0x0F], vec![0x03]))
         );
         assert_eq!(
             crate::syntax::bit_pattern_mask("o\"7?\""),
-            Some((0o70, 0o70))
+            Some((vec![0o70], vec![0o70]))
+        );
+        let wide = format!("\"1{}\"", "-".repeat(128));
+        assert_eq!(
+            crate::syntax::bit_pattern_mask(&wide),
+            Some((vec![0, 0, 1], vec![0, 0, 1]))
         );
         assert_eq!(crate::syntax::bit_pattern_mask("\"2\""), None); // bad binary digit
     }

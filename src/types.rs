@@ -674,24 +674,24 @@ impl<'a> Checker<'a> {
 
     /// The (transitive) field names of a struct-shaped base type.
     fn base_struct_fields(&self, ty: &Type) -> Vec<String> {
-        self.base_struct_fields_at(ty, 0)
+        self.base_struct_fields_at(ty, &mut HashSet::new())
     }
 
-    /// Depth-bounded: a cyclic derivation (`struct A : B` / `struct B : A`) is
-    /// reported by resolve, but checking continues (best-effort), so this walk
-    /// has to terminate rather than overflow the stack.
-    fn base_struct_fields_at(&self, ty: &Type, depth: u32) -> Vec<String> {
+    /// Cycle-safe because resolution reports cyclic derivation but checking
+    /// continues best-effort.
+    fn base_struct_fields_at(&self, ty: &Type, seen: &mut HashSet<String>) -> Vec<String> {
         let mut out = Vec::new();
-        if depth > 64 {
-            return out;
-        }
         if let Some(head) = type_head_name(ty) {
+            if !seen.insert(head.to_string()) {
+                return out;
+            }
             if let Some((base, own)) = self.structs.get(head) {
                 if let Some(b) = base {
-                    out.extend(self.base_struct_fields_at(b, depth + 1));
+                    out.extend(self.base_struct_fields_at(b, seen));
                 }
                 out.extend(own.iter().cloned());
             }
+            seen.remove(head);
         }
         out
     }
@@ -1405,7 +1405,7 @@ impl<'a> Checker<'a> {
                 );
             }
             // A pattern whose text is not a well-formed mask (a digit outside
-            // the radix, or wider than 64 bits) is just as invisible: IR
+            // the radix) is just as invisible: IR
             // lowering wildcards it while the runner never matches it, so the
             // engines disagree on top of it silently swallowing the arm.
             Pattern::BitPattern { text, span }

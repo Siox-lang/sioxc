@@ -1071,3 +1071,21 @@ source types at 129/512/4096 bits, LLVM `i512`, and a linked eight-word native
 carry from ABI word 6 into word 7. The native testbench expression layer and
 waveform sample representation still use `u128`; those are representation
 follow-ups, not compiler/type-width ceilings.
+
+### 2026-07-28 — Codex — auditing and removing accidental hardcoded limits
+
+Working through the remaining implementation ceilings after the global ABI
+limit removal. Scope includes fixed traversal-depth cutoffs, wide literal and
+pattern representation, Logic metavalue companions, and native
+testbench/waveform values. Semantic representation choices (`real = f64`,
+Unicode `Char`, and the target ABI word size) remain intentional.
+
+Implemented arbitrary-width integer literals (`Expr::WideConst`), arbitrary
+bit-pattern masks, word-vector waveform samples, and a native harness whose
+C `_BitInt` width is derived from the design and whose ABI helpers exchange all
+words. Replaced fixed structural inheritance/flattening depths with cycle
+detection, and VCD now rejects unresolved widths instead of inventing 32.
+Metavalue propagation itself no longer stops at 16 elements; wide metavalue
+*literal initialization* still needs signal initializers to become word
+vectors. Module-constant evaluation remains `u128` and is logged in TODO as
+the remaining shared constant-evaluator migration.

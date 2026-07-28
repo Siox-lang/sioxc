@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crate::ir::Design;
-use crate::testbench::Sample;
+use crate::testbench::{Sample, SignalValue};
 
 /// Write the recorded samples for `design` as a VCD stream.
 pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> io::Result<()> {
@@ -88,7 +88,7 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
                 let w = if logic_tables[i].is_some() {
                     1
                 } else {
-                    vcd_width(design.signals[i].width)
+                    vcd_width(design.signals[i].width)?
                 };
                 writeln!(out, "$var wire {w} {} {name} $end", ids[i])?;
             }
@@ -101,16 +101,15 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
     // and one `#time` marker per distinct time. The first block is every
     // signal's initial value, so it is wrapped in `$dumpvars` as IEEE 1364
     // expects — without it a reader has no declared starting state.
-    let mut last: Vec<Option<u128>> = vec![None; design.signals.len()];
+    let mut last: Vec<Option<SignalValue>> = vec![None; design.signals.len()];
     let mut cur_time: Option<u64> = None;
     let mut in_dumpvars = false;
     for sample in samples {
-        let changes: Vec<(usize, u128)> = sample
+        let changes: Vec<(usize, &SignalValue)> = sample
             .values
             .iter()
             .enumerate()
-            .filter(|(i, &v)| last[*i] != Some(v))
-            .map(|(i, &v)| (i, v))
+            .filter(|(i, v)| last[*i].as_ref() != Some(*v))
             .collect();
         if changes.is_empty() {
             continue;
@@ -129,7 +128,7 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
         }
         let mut rendered_meta = std::collections::HashSet::new();
         for (i, v) in changes {
-            last[i] = Some(v);
+            last[i] = Some(v.clone());
             // A metavalue vector (or its companion changing) re-renders the
             // vector with per-bit `x`/`z`, once per time.
             let owner = if is_companion[i] { owner_of[&i] } else { i };
@@ -137,8 +136,8 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
                 if rendered_meta.insert(owner) {
                     write_metavalue(
                         out,
-                        sample.values[owner],
-                        sample.values[cid],
+                        &sample.values[owner],
+                        &sample.values[cid],
                         design.signals[owner].width,
                         &ids[owner],
                         &meta_table,
@@ -147,14 +146,14 @@ pub fn write_vcd<W: Write>(out: &mut W, design: &Design, samples: &[Sample]) -> 
                 continue;
             }
             if let Some(table) = &logic_tables[i] {
-                let ch = table.get(v as usize).copied().unwrap_or('x');
+                let ch = table.get(v.low_u64() as usize).copied().unwrap_or('x');
                 writeln!(out, "{ch}{}", ids[i])?;
             } else if let Some(names) = name_tables[i] {
                 // A `string` value change: `s<symbol> <id>` (unknown
                 // discriminants — never expected — fall back to the number).
-                match names.get(&(v as u64)) {
+                match names.get(&v.low_u64()) {
                     Some(sym) => writeln!(out, "s{sym} {}", ids[i])?,
-                    None => writeln!(out, "s{v} {}", ids[i])?,
+                    None => writeln!(out, "s{} {}", v.low_u64(), ids[i])?,
                 }
             } else {
                 write_value(out, v, design.signals[i].width, &ids[i])?;
@@ -174,19 +173,27 @@ fn split_path(path: &str) -> (&str, &str) {
     path.split_once('.').unwrap_or(("top", path))
 }
 
-/// VCD requires a concrete width; a parametric/unknown `0` is shown as 32 bits.
-fn vcd_width(width: u32) -> u32 {
-    match width {
-        0 => 32,
-        w => w,
-    }
+/// VCD requires a concrete width. Reaching output with an unresolved
+/// parametric width is an elaboration error; inventing a width would produce a
+/// plausible-looking but incorrect trace.
+fn vcd_width(width: u32) -> io::Result<u32> {
+    (width != 0).then_some(width).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot write an unresolved zero-width signal to VCD",
+        )
+    })
 }
 
-fn write_value<W: Write>(out: &mut W, value: u128, width: u32, id: &str) -> io::Result<()> {
+fn write_value<W: Write>(out: &mut W, value: &SignalValue, width: u32, id: &str) -> io::Result<()> {
     if width == 1 {
-        writeln!(out, "{}{id}", value & 1)
+        writeln!(out, "{}{id}", u8::from(value.bit(0)))
     } else {
-        writeln!(out, "b{value:b} {id}")
+        write!(out, "b")?;
+        for bit in (0..width).rev() {
+            write!(out, "{}", u8::from(value.bit(bit)))?;
+        }
+        writeln!(out, " {id}")
     }
 }
 
@@ -214,20 +221,23 @@ fn logic_vcd_table(syms: &HashMap<u64, String>) -> Option<Vec<char>> {
 /// otherwise the element takes its plain value bit. MSB-first, VCD binary.
 fn write_metavalue<W: Write>(
     out: &mut W,
-    value: u128,
-    meta: u128,
+    value: &SignalValue,
+    meta: &SignalValue,
     width: u32,
     id: &str,
     table: &[char],
 ) -> io::Result<()> {
     let mut bits = String::with_capacity(width as usize);
     for j in (0..width).rev() {
-        let disc = ((meta >> (4 * j)) & 0xF) as usize;
+        let nibble = 4 * j;
+        let disc = (0..4).fold(0usize, |v, bit| {
+            v | (usize::from(meta.bit(nibble + bit)) << bit)
+        });
         let sym = table.get(disc).copied().unwrap_or('x');
         bits.push(if sym == 'x' || sym == 'z' {
             sym
         } else {
-            char::from(b'0' + ((value >> j) & 1) as u8)
+            char::from(b'0' + u8::from(value.bit(j)))
         });
     }
     writeln!(out, "b{bits} {id}")
@@ -237,6 +247,10 @@ fn write_metavalue<W: Write>(
 mod tests {
     use super::*;
     use crate::ir::Signal;
+
+    fn values(values: &[u64]) -> Vec<SignalValue> {
+        values.iter().copied().map(Into::into).collect()
+    }
 
     fn design() -> Design {
         Design {
@@ -274,15 +288,15 @@ mod tests {
         let samples = vec![
             Sample {
                 time_fs: 0,
-                values: vec![0, 0],
+                values: values(&[0, 0]),
             },
             Sample {
                 time_fs: 5,
-                values: vec![1, 0],
+                values: values(&[1, 0]),
             }, // clk rises
             Sample {
                 time_fs: 10,
-                values: vec![0, 3],
+                values: values(&[0, 3]),
             }, // clk falls, count -> 3
         ];
         let mut buf = Vec::new();
@@ -296,9 +310,9 @@ mod tests {
         assert!(vcd.contains("$enddefinitions $end"));
         // Initial values at #0 are the `$dumpvars` block (IEEE 1364), then
         // the rising edge at #5 and count == 3 at #10 are plain changes.
-        assert!(vcd.contains("#0\n$dumpvars\n0v0\nb0 v1"));
+        assert!(vcd.contains("#0\n$dumpvars\n0v0\nb00000000 v1"));
         assert!(vcd.contains("#5\n1v0"));
-        assert!(vcd.contains("#10\n0v0\nb11 v1"));
+        assert!(vcd.contains("#10\n0v0\nb00000011 v1"));
         // The dump block is opened once and closed before the next time.
         assert_eq!(vcd.matches("$dumpvars").count(), 1);
         let dump = vcd.split("$dumpvars").nth(1).unwrap();
@@ -354,15 +368,15 @@ mod tests {
         let samples = vec![
             Sample {
                 time_fs: 0,
-                values: vec![0, 0],
+                values: values(&[0, 0]),
             },
             Sample {
                 time_fs: 5,
-                values: vec![1, 1],
+                values: values(&[1, 1]),
             }, // b -> '1', st -> Run
             Sample {
                 time_fs: 10,
-                values: vec![1, 2],
+                values: values(&[1, 2]),
             }, // st -> Done
         ];
         let mut buf = Vec::new();
@@ -384,11 +398,11 @@ mod tests {
         let samples = vec![
             Sample {
                 time_fs: 0,
-                values: vec![0, 0],
+                values: values(&[0, 0]),
             },
             Sample {
                 time_fs: 5,
-                values: vec![0, 0],
+                values: values(&[0, 0]),
             }, // nothing changed
         ];
         let mut buf = Vec::new();
@@ -397,5 +411,21 @@ mod tests {
         // Only the #0 sample produces a time marker.
         assert!(vcd.contains("#0"));
         assert!(!vcd.contains("#5"));
+    }
+
+    #[test]
+    fn values_wider_than_u128_dump_all_words() {
+        let mut design = design();
+        design.signals.truncate(1);
+        design.signals[0].width = 192;
+        let samples = [Sample {
+            time_fs: 0,
+            values: vec![SignalValue::new(vec![1, 0, 1u64 << 63])],
+        }];
+        let mut buf = Vec::new();
+        write_vcd(&mut buf, &design, &samples).unwrap();
+        let vcd = String::from_utf8(buf).unwrap();
+        let bits = format!("1{}1", "0".repeat(190));
+        assert!(vcd.contains(&format!("b{bits} v0")), "{vcd}");
     }
 }

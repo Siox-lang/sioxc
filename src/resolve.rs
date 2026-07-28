@@ -226,8 +226,11 @@ impl<'a> Resolver<'a> {
             // variant maps of every ancestor enum.
             let mut inherited: Vec<HashMap<String, DefId>> = Vec::new();
             let mut cur = name.clone();
-            let mut guard = 0;
+            let mut seen = HashSet::new();
             while let Some(base) = self.enum_derives.get(&cur).cloned() {
+                if !seen.insert(cur.clone()) {
+                    break;
+                }
                 let Some(&bid) = self.enum_ids.get(&base) else {
                     break;
                 };
@@ -235,10 +238,6 @@ impl<'a> Resolver<'a> {
                     inherited.push(m.clone());
                 }
                 cur = base;
-                guard += 1;
-                if guard > 64 {
-                    break;
-                }
             }
             if inherited.is_empty() {
                 continue;

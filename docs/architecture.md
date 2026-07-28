@@ -175,6 +175,13 @@ count derived from that type. There is no global maximum word count:
 `unsigned[128]` uses two 64-bit ABI words and `unsigned[512]` uses eight,
 without widening unrelated values.
 
+Integer literals and match-pattern masks use the same low-word-first
+arbitrary-width representation. The native test harness chooses its C
+`_BitInt` width from the widest type in that design and exchanges every ABI
+word; waveform samples likewise store a word vector rather than a host
+`u64`/`u128`. Structural inheritance walks terminate by detecting actual
+cycles, so a valid deep type hierarchy is not rejected at an arbitrary depth.
+
 Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —
 deferred until something needs precision beyond f64.
