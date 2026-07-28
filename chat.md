@@ -1117,3 +1117,14 @@ round-trips and controls exported aliases, while imports and qualified paths
 reject cross-module private access with `E-P016`. Audited the Logic-vector
 entry: driver-position companions were already implemented; corrected the
 stale roadmap text and kept only wide initializers under the backend-wide task.
+
+### 2026-07-28 — Codex — completing undriven and IEEE semantics
+
+Following up on the two remaining yellow semantics entries rather than merely
+relabeling them. Undriven behavior was already coherent and fully covered:
+signals always reset to their declared/derived `new` value, and missing drives
+remain warnings. Removed the real IEEE/vector blocker by migrating `Signal`
+initializers from one `u64` to arbitrary low-word-first vectors. Logic
+companions now initialize and drive beyond 16 elements; `bitpack` reserves,
+loads, and stores consecutive words for wide values. Added compiler and
+executable-corpus coverage with metavalues crossing the first ABI word.

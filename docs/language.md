@@ -48,8 +48,9 @@ precise reference.
   `and`/`or`/`not`/`xor`/… truth tables and `resolved` parallel-driver
   resolution (verified cell-for-cell against a reference simulator). `Bit` is
   the two-value scalar. Vector metavalues propagate through storage, copies,
-  arithmetic, comparisons, and logical operators. There is no dedicated clock
-  type — any `Logic`/`Bit` signal is a clock when edge detection
+  arithmetic, comparisons, and logical operators, including vectors whose
+  value/discriminant storage crosses machine-word boundaries. There is no
+  dedicated clock type — any `Logic`/`Bit` signal is a clock when edge detection
   (`clk.rising()`/`clk.falling()`) is applied to it.
 - **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
   an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a

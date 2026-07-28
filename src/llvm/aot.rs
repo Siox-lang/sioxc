@@ -84,7 +84,7 @@ mod tests {
             real: false,
             char: false,
             range: None,
-            init: 0,
+            init: vec![0],
             enum_type: None,
         }
     }

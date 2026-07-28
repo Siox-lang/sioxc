@@ -74,9 +74,11 @@ pub struct Signal {
     /// simulation checks every settled value against it — a dynamic range
     /// assert. Plain `unsigned[N]`/`signed[N]` wrap instead (documented semantics).
     pub range: Option<(i64, i64)>,
-    /// The declared initial value's bit pattern (`let v: T = 1;`): engines
-    /// reset signals to it (VHDL-style initial values), not to zero.
-    pub init: u64,
+    /// The declared initial value's bit pattern (`let v: T = 1;`), stored as
+    /// low-word-first 64-bit chunks. Engines reset signals to it (VHDL-style
+    /// initial values), not to zero. The vector grows with the signal width;
+    /// there is no initializer-width ceiling.
+    pub init: Vec<u64>,
     /// The enum type name, when this signal holds an enum value (`Logic`,
     /// `Bit`, a user FSM `State`). Lets consumers render the stored
     /// discriminant as its variant symbol (`'X'`, `Idle`) instead of a number.
@@ -885,7 +887,8 @@ impl<'a> Lowering<'a> {
                                         if let Some(&id) =
                                             self.locals.get(&format!("{}[{i}]", l.name.text))
                                         {
-                                            self.out.signals[id.0 as usize].init = *c as u32 as u64;
+                                            self.out.signals[id.0 as usize].init =
+                                                vec![*c as u32 as u64];
                                         }
                                     }
                                 }
@@ -913,7 +916,7 @@ impl<'a> Lowering<'a> {
                                     let v = en
                                         .and_then(|e| self.char_disc(c, &e))
                                         .unwrap_or(c as u32 as u64);
-                                    self.out.signals[id.0 as usize].init = v;
+                                    self.out.signals[id.0 as usize].init = vec![v];
                                 }
                             }
                         }
@@ -948,7 +951,7 @@ impl<'a> Lowering<'a> {
                             // literal (`.state = 'Z'`) to its variant.
                             let en = self.out.signals[id.0 as usize].enum_type.clone();
                             if let Some(v) = self.const_init_value(value, en.as_deref()) {
-                                self.out.signals[id.0 as usize].init = v;
+                                self.out.signals[id.0 as usize].init = vec![v];
                             }
                         }
                     }
@@ -1021,7 +1024,7 @@ impl<'a> Lowering<'a> {
                                             } else {
                                                 v
                                             };
-                                            self.out.signals[id.0 as usize].init = masked;
+                                            self.out.signals[id.0 as usize].init = vec![masked];
                                         }
                                     }
                                 }
@@ -1042,14 +1045,17 @@ impl<'a> Lowering<'a> {
                             } else {
                                 bits
                             };
-                            self.out.signals[id.0 as usize].init = masked;
+                            self.out.signals[id.0 as usize].init = vec![masked];
                         }
                         // A metavalue-carrying string init (`"01X0"`) needs a
                         // companion signal to record which elements are `'X'`/… —
                         // the storage half of X/Z vector propagation (stage 1c).
                         if let Some((base, digits)) = Self::bit_string_parts(v) {
-                            let (_, discs) = self.decode_bit_string(base, digits);
-                            if discs & Self::META_MASK != 0 {
+                            let (value_words, discs) = self.decode_bit_string_words(base, digits);
+                            if value_words.len() > 1 {
+                                self.out.signals[id.0 as usize].init = value_words;
+                            }
+                            if Self::has_metavalue(&discs) {
                                 self.ensure_meta_companion(id, discs);
                             }
                         }
@@ -1678,7 +1684,7 @@ impl<'a> Lowering<'a> {
             real: false,
             char: false,
             range: None,
-            init: 0,
+            init: vec![0],
             enum_type: None,
         });
         self.locals.insert(name.to_string(), id);
@@ -1689,24 +1695,15 @@ impl<'a> Lowering<'a> {
     /// discriminant (nibble *i* = element *i*'s 9-value), so a read reconstructs
     /// the exact value (`'X'` vs `'Z'` vs …). The companion is a normal signal,
     /// so the engines store/reset it for free. Created only where a metavalue
-    /// appears, so metavalue-free designs are untouched. Capped at 16 elements
-    /// (4×16 = 64 bits); wider metavalue vectors need the array companion (a
-    /// later widening) and warn rather than silently drop the metavalue.
-    fn ensure_meta_companion(&mut self, id: SignalId, discs: u64) {
+    /// appears, so metavalue-free designs are untouched. Initial discriminants
+    /// are arbitrary-width word vectors, so the companion scales with the
+    /// source vector rather than stopping at one ABI word.
+    fn ensure_meta_companion(&mut self, id: SignalId, discs: Vec<u64>) {
         if let Some(&cid) = self.out.meta_of.get(&id.0) {
             self.out.signals[cid as usize].init = discs;
             return;
         }
         let sig = &self.out.signals[id.0 as usize];
-        if sig.width > 16 {
-            let path = sig.path.clone();
-            self.sink.emit(crate::diag::Diagnostic::warning(format!(
-                "metavalue in `{path}` ({} elements): X/Z is not yet tracked for \
-                 vectors wider than 16 elements; it reads as its value bit",
-                sig.width
-            )));
-            return;
-        }
         let companion = Signal {
             path: format!("{}$meta", sig.path),
             width: sig.width * 4,
@@ -1734,7 +1731,7 @@ impl<'a> Lowering<'a> {
             real: false,
             char: false,
             range: None,
-            init: 0,
+            init: vec![0],
             enum_type: None,
         };
         let cid = self.out.signals.len() as u32;
@@ -2023,7 +2020,7 @@ impl<'a> Lowering<'a> {
                     .get(name)
                     .or_else(|| self.enum_first_disc.get(name))
                 {
-                    self.out.signals[id.0 as usize].init = d;
+                    self.out.signals[id.0 as usize].init = vec![d];
                 }
             }
         } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
@@ -2349,13 +2346,17 @@ impl<'a> Lowering<'a> {
                         // bits, so give the target a companion and drive its
                         // discriminant array (the disc is lost in the IR `Const`).
                         if let Some((base, digits)) = Self::bit_string_parts(value) {
-                            let (_, discs) = self.decode_bit_string(base, digits);
-                            if discs & Self::META_MASK != 0 {
+                            let (_, discs) = self.decode_bit_string_words(base, digits);
+                            if Self::has_metavalue(&discs) {
                                 let cid = self.driven_companion(tid);
                                 self.out.drivers.push(Driver {
                                     target: SignalId(cid),
                                     cond: cond.clone(),
-                                    expr: Expr::Const(discs),
+                                    expr: if discs.len() == 1 {
+                                        Expr::Const(discs[0])
+                                    } else {
+                                        Expr::WideConst(discs)
+                                    },
                                     ctx: self.cur_ctx,
                                 });
                             }
@@ -3695,28 +3696,45 @@ impl<'a> Lowering<'a> {
     /// `docs/proposals/xz-vector-propagation.md`); `discs` is stored in the
     /// element-container companion.
     fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
+        let (value, discs) = self.decode_bit_string_words(base, digits);
+        (
+            value.first().copied().unwrap_or(0),
+            discs.first().copied().unwrap_or(0),
+        )
+    }
+
+    /// Arbitrary-width counterpart of [`Self::decode_bit_string`]. Both
+    /// results are low-word-first, with one value bit and one discriminant
+    /// nibble per source element respectively.
+    fn decode_bit_string_words(&self, base: char, digits: &str) -> (Vec<u64>, Vec<u64>) {
         // Radix-expanded 2-value strings: hex is 4 bits/digit, octal 3.
-        if let Some((radix, bits)) = match base {
-            'x' => Some((16, 4u32)),
-            'o' => Some((8, 3)),
+        if let Some(bits) = match base {
+            'x' => Some(4usize),
+            'o' => Some(3),
             _ => None,
         } {
-            let v = u64::from_str_radix(digits, radix).unwrap_or(0);
-            let mut discs = 0u64;
-            for i in 0..(digits.len() as u32 * bits).min(16) {
-                discs |= ((v >> i) & 1) << (4 * i);
+            let width = digits.len().saturating_mul(bits);
+            let mut value = vec![0u64; width.div_ceil(64).max(1)];
+            let mut discs = vec![0u64; width.saturating_mul(4).div_ceil(64).max(1)];
+            for (digit_index, ch) in digits.chars().rev().enumerate() {
+                let digit = ch.to_digit(if base == 'x' { 16 } else { 8 }).unwrap_or(0);
+                for bit in 0..bits {
+                    let pos = digit_index * bits + bit;
+                    let value_bit = u64::from((digit & (1 << bit)) != 0);
+                    value[pos / 64] |= value_bit << (pos % 64);
+                    discs[(4 * pos) / 64] |= value_bit << ((4 * pos) % 64);
+                }
             }
-            return (v, discs);
+            return (value, discs);
         }
         let n = digits.len();
-        let (mut value, mut discs) = (0u64, 0u64);
+        let mut value = vec![0u64; n.div_ceil(64).max(1)];
+        let mut discs = vec![0u64; n.saturating_mul(4).div_ceil(64).max(1)];
         for (i, ch) in digits.chars().enumerate() {
-            let pos = (n - 1 - i) as u32; // MSB-first: first digit is the top bit
+            let pos = n - 1 - i; // MSB-first: first digit is the top bit
             let disc = self.char_disc(ch, DEFAULT_LOGIC_TYPE).unwrap_or(0);
-            value |= (disc & 1) << pos;
-            if 4 * pos < 64 {
-                discs |= (disc & 0xF) << (4 * pos);
-            }
+            value[pos / 64] |= (disc & 1) << (pos % 64);
+            discs[(4 * pos) / 64] |= (disc & 0xF) << ((4 * pos) % 64);
         }
         (value, discs)
     }
@@ -3737,6 +3755,10 @@ impl<'a> Lowering<'a> {
     /// `Bit`-first `ULogic`, everything above is a metavalue).
     /// `discs & META_MASK != 0` ⇔ "has a metavalue".
     const META_MASK: u64 = 0xEEEE_EEEE_EEEE_EEEE;
+
+    fn has_metavalue(discs: &[u64]) -> bool {
+        discs.iter().any(|word| word & Self::META_MASK != 0)
+    }
 
     /// `'X'`'s discriminant, from std's logic enum (not a baked-in `3`), so the
     /// poison value tracks the declaration.
@@ -6727,6 +6749,9 @@ mod tests {
                 .find(|s| s.path.ends_with(suffix))
                 .unwrap_or_else(|| panic!("no signal {suffix}"))
                 .init
+                .first()
+                .copied()
+                .unwrap_or(0)
         };
         assert_eq!(init(".p.a"), 11);
         assert_eq!(init(".p.b"), 22);
@@ -6872,6 +6897,9 @@ mod tests {
                 .find(|s| s.path.ends_with(suffix))
                 .unwrap_or_else(|| panic!("no {suffix}"))
                 .init
+                .first()
+                .copied()
+                .unwrap_or(0)
         };
         assert_eq!(init(".p"), 2, "Phase defaults to Idle = 2, not 0");
         assert_eq!(init(".s"), 0, "0-based Step still defaults to A = 0");
@@ -6892,7 +6920,7 @@ mod tests {
             .iter()
             .find(|s| s.path.ends_with(".p"))
             .expect("no .p");
-        assert_eq!(p.init, 3, "explicit initializer Run = 3 wins");
+        assert_eq!(p.init, vec![3], "explicit initializer Run = 3 wins");
     }
 
     #[test]
@@ -7321,7 +7349,7 @@ mod tests {
             real: false,
             char: false,
             range: None,
-            init: 0,
+            init: vec![0],
             enum_type: None,
         };
         // Out-of-range signal id, an Unknown, a bad slice, and a width-0 signal.
@@ -7596,7 +7624,7 @@ mod tests {
             .iter()
             .find(|s| s.path.ends_with(".v"))
             .expect("no .v");
-        assert_eq!(v.init, 10, "b\"1010\" -> init 10");
+        assert_eq!(v.init, vec![10], "b\"1010\" -> init 10");
     }
 
     #[test]
@@ -7623,12 +7651,45 @@ mod tests {
         // "1X10": per-element discs, nibble i = element i. pos3=1, pos2=X(3),
         // pos1=1, pos0=0 -> 0x1310. Companion is 4 bits/element wide.
         assert_eq!(
-            d.signals[cid as usize].init, 0x1310,
+            d.signals[cid as usize].init,
+            vec![0x1310],
             "full per-element discs"
         );
         assert_eq!(d.signals[cid as usize].width, 16, "4 bits x 4 elements");
         assert!(d.signals[cid as usize].path.ends_with(".v$meta"));
         assert!(!d.meta_of.contains_key(&w), "clean init gets no companion");
+    }
+
+    #[test]
+    fn wide_metavalue_initializers_have_no_element_limit() {
+        let d = lower_src(
+            "module m;\n\
+             #[top] entity T {}\n\
+             impl T { let v: unsigned[17] = \"X0000000000000000\"; }\n",
+        );
+        let v = d
+            .signals
+            .iter()
+            .position(|s| s.path.ends_with(".v"))
+            .expect("v signal");
+        let cid = *d.meta_of.get(&(v as u32)).expect("wide companion");
+        assert_eq!(d.signals[cid as usize].width, 68);
+        assert_eq!(
+            d.signals[cid as usize].init,
+            vec![0, 3],
+            "the top element's discriminant crosses the first ABI word"
+        );
+
+        let driven = lower_src(
+            "module m;\n\
+             #[top] entity E { out v: unsigned[17]; }\n\
+             impl E { v = \"X0000000000000000\"; }\n",
+        );
+        let cid = *driven.meta_of.values().next().expect("driven companion");
+        assert!(driven.drivers.iter().any(|driver| {
+            driver.target == SignalId(cid)
+                && matches!(&driver.expr, Expr::WideConst(words) if words == &[0, 3])
+        }));
     }
 
     #[test]

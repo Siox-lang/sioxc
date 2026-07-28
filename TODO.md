@@ -59,7 +59,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   System event/history attributes also classify resolved named declarations
   rather than blindly treating entity instances as digital values.
 
-- 🟡 **Undriven signals** — **model: always initialized, may be undriven.** Every
+- ✅ **Undriven signals** — **model: always initialized, may be undriven.** Every
   signal/port always holds a value (its `Init` value, see below); "undriven"
   means nothing drives over it, so it keeps that value forever — deterministic,
   never an undefined/error state. Undriven is therefore always a **warning**,
@@ -103,7 +103,8 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   non-enum stays `0`; explicit `let x = V` still wins; `language.md` §3.29; 0
   corpus regressions); (2) ✅ **`impl New for T` overrides landed** — `ir`'s
   `compute_new_defaults` scans `op_impls[("New", T)]` and const-folds the nullary
-  `new()` body to the `u64` `init` (no full trait resolution needed). std uses it
+  `new()` body into the signal's word-vector initializer (no full trait
+  resolution needed). std uses it
   for `New for Bit` → `'0'` and `New for Logic`/`ULogic` → `'U'`, so an undriven
   `Logic` reads `'U'`; threaded to hardware signals + native testbench
   locals. Note
@@ -116,7 +117,7 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   `pub using` visibility is retained in the AST and pretty-printer, including
   exported type aliases. Private access within the declaration's own module
   remains legal.
-- 🟡 **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
+- ✅ **Align the logic/value system with IEEE 1076-2019** (`std_logic_1164`) —
   the reference standard. (b) ✅ **Scalar `Logic` widened to the full 9-value
   `std_ulogic`** (`'U','X','0','1','Z','W','L','H','-'`) with the complete
   `std_logic_1164` operator tables + `resolved` resolution — **verified
@@ -132,10 +133,10 @@ Legend: 🔴 not started · 🟡 partial / has a workaround · 🟢 design known
   **arithmetic** + **relational** poisoning; per-element `std_logic_1164`
   **logical** (`0 and X = 0`, `1 or X = 1`, `not X = X`); propagation through
   copies / port connections / muxes; **VCD** `x`/`z` rendering.
-  Driver-position literals carry their discriminant companion, and width-one
-  vector elements retain their scalar `Logic` type. Wide metavalue literal
-  initialization remains part of the backend word-vector initializer work
-  tracked under **wide** below. Logic-vector literals now use
+  Driver-position literals carry their discriminant companion, width-one
+  vector elements retain their scalar `Logic` type, and arbitrary-width
+  word-vector initializers preserve metavalues beyond one ABI word in both
+  normal and `bitpack` storage. Logic-vector literals now use
   bare contextual strings (`"1X10"`);
   the removed `b"..."` spelling is no longer accepted. `Logic`/`ULogic`
   default to `'U'` through their std `New` implementations, while `Bit`
@@ -202,12 +203,11 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   LLVM and the word ABI now impose no global word-count limit: `words_for`
   derives the required storage from every type's width. `unsigned[128]`
   cross-word carry and `i512` lowering are covered. Remaining work: persist
-  source type layouts in the IR instead of
-  backend inference, apply recursive element sizing to non-flattened
-  composites, define wide C-FFI and `bitpack` behavior, extend
-  module-constant evaluation beyond `u128`, wide Logic literal initialization,
-  and add borrows, cross-word shifts/slices, comparisons, and high-word-only
-  event coverage. LLVM literals, pattern masks, native testbench values, and
+  source type layouts in the IR instead of backend inference, apply recursive
+  element sizing to non-flattened composites, extend module-constant evaluation
+  beyond `u128`, and add borrows, cross-word shifts/slices, comparisons, and
+  high-word-only event coverage. Wide state and initializers also work under
+  `bitpack`; LLVM literals, pattern masks, native testbench values, and
   waveform samples are word-vector/arbitrary-width. Structural type walks use
   cycle detection rather than fixed nesting limits.
 - 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;

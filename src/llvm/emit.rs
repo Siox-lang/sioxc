@@ -44,13 +44,6 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     if !issues.is_empty() {
         panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
     }
-    #[cfg(feature = "bitpack")]
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
-        panic!(
-            "signal `{}` is {} bits wide; the bitpack layout does not yet span ABI words",
-            s.path, s.width
-        );
-    }
     let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
@@ -114,15 +107,24 @@ fn width_mask(w: u32) -> u64 {
     }
 }
 
-/// Assign each signal a `(word, shift)` so its `width` bits sit within one
-/// 64-bit word (a field never straddles a word boundary — no multi-word
-/// access). Returns the per-signal slots and the number of words.
+/// Assign each signal a `(word, shift)`. Sub-word values share a word without
+/// straddling it; wider values start at a word boundary and reserve as many
+/// consecutive words as their own width requires.
 #[cfg(feature = "bitpack")]
 fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
     let mut slots = Vec::with_capacity(design.signals.len());
     let (mut word, mut bit) = (0u32, 0u32);
     for s in &design.signals {
-        let w = s.width.min(64).max(1);
+        let w = s.width.max(1);
+        if w > 64 {
+            if bit != 0 {
+                word += 1;
+                bit = 0;
+            }
+            slots.push((word, 0));
+            word += w.div_ceil(64);
+            continue;
+        }
         if bit + w > 64 {
             word += 1;
             bit = 0;
@@ -130,7 +132,7 @@ fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
         slots.push((word, bit));
         bit += w;
     }
-    let words = (word + 1).max(1);
+    let words = (word + u32::from(bit != 0)).max(1);
     (slots, words)
 }
 
@@ -289,6 +291,27 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let (word, shift) = self.slots[id.0 as usize];
         let w = self.design.signals[id.0 as usize].width;
         let i64 = self.i64t();
+        if w > 64 {
+            let ty = self.value_ty(w);
+            let mut value = ty.const_zero();
+            for chunk in 0..w.div_ceil(64) {
+                let part = self
+                    .builder
+                    .build_load(i64, self.word_ptr(arr, word + chunk), "w")
+                    .unwrap()
+                    .into_int_value();
+                let part = self.fit(part, ty);
+                let part = if chunk == 0 {
+                    part
+                } else {
+                    self.builder
+                        .build_left_shift(part, ty.const_int(u64::from(chunk) * 64, false), "sh")
+                        .unwrap()
+                };
+                value = self.builder.build_or(value, part, "join").unwrap();
+            }
+            return value;
+        }
         let word_val = self
             .builder
             .build_load(i64, self.word_ptr(arr, word), "w")
@@ -315,6 +338,28 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let (word, shift) = self.slots[id.0 as usize];
         let w = self.design.signals[id.0 as usize].width;
         let i64 = self.i64t();
+        if w > 64 {
+            let ty = self.value_ty(w);
+            let value = self.fit(v, ty);
+            for chunk in 0..w.div_ceil(64) {
+                let part = if chunk == 0 {
+                    value
+                } else {
+                    self.builder
+                        .build_right_shift(
+                            value,
+                            ty.const_int(u64::from(chunk) * 64, false),
+                            false,
+                            "sh",
+                        )
+                        .unwrap()
+                };
+                self.builder
+                    .build_store(self.word_ptr(arr, word + chunk), self.fit(part, i64))
+                    .unwrap();
+            }
+            return;
+        }
         let mask = width_mask(w);
         let v = self.fit(v, i64);
         let field = self
@@ -359,7 +404,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder
             .position_at_end(self.ctx.append_basic_block(f, "e"));
         for id in 0..self.n {
-            let init = i64.const_int(self.design.signals[id as usize].init, false);
+            let signal = &self.design.signals[id as usize];
+            let init = self
+                .value_ty(signal.width)
+                .const_int_arbitrary_precision(&signal.init);
             self.store("cur", SignalId(id), init);
             self.store("old", SignalId(id), init);
             self.store("event", SignalId(id), i64.const_zero());
@@ -1138,7 +1186,7 @@ mod tests {
             real: false,
             char: false,
             range: None,
-            init: 0,
+            init: vec![0],
             enum_type: None,
         }
     }
