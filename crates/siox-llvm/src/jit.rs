@@ -17,6 +17,8 @@ type ResetFn = unsafe extern "C" fn();
 type SetFn = unsafe extern "C" fn(u32, u64);
 type ReadFn = unsafe extern "C" fn(u32) -> u64;
 type SettleFn = unsafe extern "C" fn();
+type SetWordFn = unsafe extern "C" fn(u32, u32, u64);
+type ReadWordFn = unsafe extern "C" fn(u32, u32) -> u64;
 
 /// A JIT-compiled design. Drive it like the interpreter: `set` inputs,
 /// `settle`, `read` outputs.
@@ -25,6 +27,8 @@ pub struct Jit<'ctx> {
     set: JitFunction<'ctx, SetFn>,
     read: JitFunction<'ctx, ReadFn>,
     settle: JitFunction<'ctx, SettleFn>,
+    set_word: JitFunction<'ctx, SetWordFn>,
+    read_word: JitFunction<'ctx, ReadWordFn>,
 }
 
 impl Jit<'_> {
@@ -39,6 +43,16 @@ impl Jit<'_> {
     }
     pub fn settle(&self) {
         unsafe { self.settle.call() }
+    }
+    /// Write one machine word of a signal — bits
+    /// `[word*WORD_BITS, (word+1)*WORD_BITS)`. How a value too wide for `u64`
+    /// crosses the ABI; other words are left alone.
+    pub fn set_word(&self, sig: u32, word: u32, value: u64) {
+        unsafe { self.set_word.call(sig, word, value) }
+    }
+    /// Read one machine word of a signal. See [`Jit::set_word`].
+    pub fn read_word(&self, sig: u32, word: u32) -> u64 {
+        unsafe { self.read_word.call(sig, word) }
     }
 }
 
@@ -63,6 +77,8 @@ pub fn with_jit<R>(design: &Design, f: impl FnOnce(&Jit) -> R) -> R {
             set: ee.get_function("sx_set").unwrap(),
             read: ee.get_function("sx_read").unwrap(),
             settle: ee.get_function("sx_settle").unwrap(),
+            set_word: ee.get_function("sx_set_word").unwrap(),
+            read_word: ee.get_function("sx_read_word").unwrap(),
         }
     };
     jit.reset();
@@ -108,6 +124,39 @@ mod tests {
             jit.set(1, 100);
             jit.settle();
             assert_eq!(jit.read(2), (300 % 256), "wraps at width 8");
+        });
+    }
+
+    /// The word-indexed accessors are how a value too wide for `u64` crosses
+    /// the ABI. At one word they must agree exactly with `set`/`read`, and a
+    /// write to one word must leave the others alone — the property multi-word
+    /// storage depends on.
+    #[test]
+    fn word_accessors_round_trip() {
+        let design = Design {
+            signals: vec![sig("E.a", 64), sig("E.b", 8)],
+            drivers: vec![],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+        with_jit(&design, |jit| {
+            // Word 0 is the whole value at these widths.
+            jit.set_word(0, 0, 0xDEAD_BEEF_CAFE_F00D);
+            assert_eq!(jit.read_word(0, 0), 0xDEAD_BEEF_CAFE_F00D);
+            assert_eq!(jit.read(0), 0xDEAD_BEEF_CAFE_F00D, "agrees with sx_read");
+
+            // set/read and the word pair are the same storage.
+            jit.set(0, 42);
+            assert_eq!(jit.read_word(0, 0), 42);
+
+            // A neighbouring signal is untouched, and narrow signals still
+            // mask to their declared width.
+            jit.set_word(1, 0, 0x1FF);
+            assert_eq!(jit.read_word(1, 0), 0xFF, "masked to 8 bits");
+            assert_eq!(jit.read_word(0, 0), 42, "neighbour untouched");
         });
     }
 }

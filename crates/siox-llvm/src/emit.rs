@@ -46,14 +46,24 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     if !issues.is_empty() {
         panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
     }
-    // This backend is i64-word-based; signals wider than 64 bits would silently
-    // truncate, so reject them rather than miscompile. Wide-word codegen lands
-    // with the type-narrowing work.
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+    // A signal wider than the target's storage would silently truncate, so
+    // reject it rather than miscompile. The type checker reports the same limit
+    // at the declaration; this is the backstop for widths only elaboration
+    // knows (a parametric `unsigned[W]`).
+    if let Some(s) = design
+        .signals
+        .iter()
+        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    {
         panic!(
-            "signal `{}` is {} bits wide; the LLVM backend is 64-bit-word only \
-             (wide-word codegen is not yet implemented)",
-            s.path, s.width
+            "signal `{}` is {} bits wide; this backend stores at most {} bits \
+             ({} x {}-bit {})",
+            s.path,
+            s.width,
+            siox::target::MAX_SIGNAL_WIDTH,
+            siox::target::MAX_WORDS,
+            siox::target::WORD_BITS,
+            if siox::target::MAX_WORDS == 1 { "word" } else { "words" },
         );
     }
     let cg = Codegen::new(ctx, design);
@@ -83,6 +93,8 @@ struct Codegen<'ctx, 'd> {
     slots: Vec<(u32, u32)>,
     #[cfg(feature = "bitpack")]
     words: u32,
+    /// Bit width of the integer computed values are carried in.
+    compute_bits: u32,
 }
 
 /// The smallest machine integer that holds `width` bits. Sub-byte widths (a
@@ -93,7 +105,15 @@ fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
         0..=8 => ctx.i8_type(),
         9..=16 => ctx.i16_type(),
         17..=32 => ctx.i32_type(),
-        _ => ctx.i64_type(),
+        0..=64 => ctx.i64_type(),
+        // Past one machine word LLVM still has a native integer: it legalizes
+        // `iN` into word-sized pieces with the right carries and shifts, so a
+        // multi-word signal needs no hand-written word juggling here.
+        w => ctx
+            .custom_width_int_type(
+                std::num::NonZeroU32::new(w.next_power_of_two()).expect("non-zero width"),
+            )
+            .expect("LLVM supports the width"),
     }
 }
 
@@ -130,6 +150,10 @@ fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
 impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn new(ctx: &'ctx Context, design: &'d Design) -> Self {
         let module = ctx.create_module("design");
+        // One compute type for the whole design, wide enough for its widest
+        // signal (a power of two so LLVM legalizes it cleanly).
+        let widest = design.signals.iter().map(|s| s.width).max().unwrap_or(64).max(64);
+        let compute_bits = widest.next_power_of_two();
         #[cfg(not(feature = "bitpack"))]
         let state_ty = {
             let fields: Vec<_> =
@@ -144,6 +168,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             builder: ctx.create_builder(),
             design,
             n: design.signals.len() as u32,
+            compute_bits,
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -153,8 +178,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// The integer every computed value is carried in. One machine word
+    /// normally; widened to hold the design's widest signal when something
+    /// exceeds that, so operands never need re-extending mid-expression.
+    ///
+    /// Named `i64t` for the common case, which it still is.
     fn i64t(&self) -> inkwell::types::IntType<'ctx> {
-        self.ctx.i64_type()
+        match self.compute_bits {
+            64 => self.ctx.i64_type(),
+            w => self
+                .ctx
+                .custom_width_int_type(std::num::NonZeroU32::new(w).expect("non-zero width"))
+                .expect("LLVM supports the width"),
+        }
     }
 
     /// The storage integer type of signal `id` (a field of [`Codegen::state_ty`]).
@@ -202,10 +238,22 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
         let ty = self.slot_ty(id);
         let v = self.builder.build_load(ty, self.slot_ptr(arr, id), "v").unwrap().into_int_value();
-        if ty.get_bit_width() < 64 {
-            self.builder.build_int_z_extend(v, self.i64t(), "vz").unwrap()
-        } else {
-            v
+        self.fit(v, self.i64t())
+    }
+
+    /// Zero-extend or truncate `v` to `ty`. Storage, compute and ABI widths all
+    /// differ once a design holds a multi-word signal, so every crossing goes
+    /// through here rather than comparing against a hardcoded 64.
+    fn fit(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
+        let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
+        match from.cmp(&to) {
+            std::cmp::Ordering::Less => {
+                self.builder.build_int_z_extend(v, ty, "zx").unwrap()
+            }
+            std::cmp::Ordering::Greater => {
+                self.builder.build_int_truncate(v, ty, "tr").unwrap()
+            }
+            std::cmp::Ordering::Equal => v,
         }
     }
 
@@ -214,11 +262,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     #[cfg(not(feature = "bitpack"))]
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
         let ty = self.slot_ty(id);
-        let v = if ty.get_bit_width() < 64 {
-            self.builder.build_int_truncate(v, ty, "vt").unwrap()
-        } else {
-            v
-        };
+        let v = self.fit(v, ty);
         self.builder.build_store(self.slot_ptr(arr, id), v).unwrap();
     }
 
@@ -298,7 +342,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     // --- accessors: sx_set / sx_read / sx_reset ---------------------------
 
     fn accessors(&self) {
-        let i64 = self.i64t();
+        // The compute type follows the design's widest signal, but the ABI
+        // must not: `sx_set`/`sx_read` are declared `u64` on the Rust side.
+        // Multi-word values cross the boundary a word at a time through
+        // `sx_set_word`/`sx_read_word` instead.
+        let i64 = self.ctx.i64_type();
         let i32 = self.ctx.i32_type();
         let void = self.ctx.void_type();
 
@@ -375,6 +423,128 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             phi.add_incoming(&[(v as &dyn inkwell::values::BasicValue, *bb)]);
         }
         self.builder.build_return(Some(&phi.as_basic_value().into_int_value())).unwrap();
+
+        self.word_accessors();
+    }
+
+    /// `sx_set_word` / `sx_read_word`: move one machine word of a signal across
+    /// the ABI, so a value too wide for `u64` crosses a word at a time.
+    ///
+    /// Word `k` of a signal is bits `[k*WORD_BITS, (k+1)*WORD_BITS)`. Reading
+    /// shifts that field down and truncates; writing clears the field and ORs
+    /// the new word in, leaving the other words untouched. Widths within one
+    /// word behave exactly like `sx_set`/`sx_read` at word 0.
+    fn word_accessors(&self) {
+        let i64 = self.ctx.i64_type();
+        let i32 = self.ctx.i32_type();
+        let void = self.ctx.void_type();
+        let bits = siox::target::WORD_BITS;
+
+        // void sx_set_word(i32 sig, i32 word, i64 val)
+        let f = self.module.add_function(
+            "sx_set_word",
+            void.fn_type(&[i32.into(), i32.into(), i64.into()], false),
+            None,
+        );
+        let entry = self.ctx.append_basic_block(f, "e");
+        self.builder.position_at_end(entry);
+        let sig = f.get_nth_param(0).unwrap().into_int_value();
+        let word = f.get_nth_param(1).unwrap().into_int_value();
+        let val = f.get_nth_param(2).unwrap().into_int_value();
+        let done = self.ctx.append_basic_block(f, "done");
+        let cases: Vec<_> = (0..self.n)
+            .map(|id| (i32.const_int(id as u64, false), self.ctx.append_basic_block(f, "s")))
+            .collect();
+        self.builder.position_at_end(entry);
+        self.builder.build_switch(sig, done, &cases).unwrap();
+        for (id, (_, bb)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*bb);
+            let cty = self.i64t();
+            let w = self.design.signals[id].width;
+            // shift = word * WORD_BITS, in the compute type.
+            let shift = self.builder
+                .build_int_mul(
+                    self.fit(word, cty),
+                    cty.const_int(bits as u64, false),
+                    "sh",
+                )
+                .unwrap();
+            let word_mask = self.fit(i64.const_all_ones(), cty);
+            let field = self.builder.build_left_shift(word_mask, shift, "fm").unwrap();
+            let keep = self.builder.build_not(field, "nfm").unwrap();
+            let old = self.load("cur", SignalId(id as u32));
+            let cleared = self.builder.build_and(old, keep, "cl").unwrap();
+            let placed = self
+                .builder
+                .build_left_shift(self.fit(val, cty), shift, "pl")
+                .unwrap();
+            let merged = self.builder.build_or(cleared, placed, "mg").unwrap();
+            // Keep the signal's own width authoritative, as `sx_set` does.
+            let stored = self.mask_to_width(merged, w, cty);
+            self.store("cur", SignalId(id as u32), stored);
+            self.builder.build_unconditional_branch(done).unwrap();
+        }
+        self.builder.position_at_end(done);
+        self.builder.build_return(None).unwrap();
+
+        // i64 sx_read_word(i32 sig, i32 word)
+        let f = self.module.add_function(
+            "sx_read_word",
+            i64.fn_type(&[i32.into(), i32.into()], false),
+            None,
+        );
+        let entry = self.ctx.append_basic_block(f, "e");
+        self.builder.position_at_end(entry);
+        let sig = f.get_nth_param(0).unwrap().into_int_value();
+        let word = f.get_nth_param(1).unwrap().into_int_value();
+        let ret = self.ctx.append_basic_block(f, "ret");
+        let cases: Vec<_> = (0..self.n)
+            .map(|id| (i32.const_int(id as u64, false), self.ctx.append_basic_block(f, "r")))
+            .collect();
+        self.builder.position_at_end(entry);
+        self.builder.build_switch(sig, ret, &cases).unwrap();
+        let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+        for (id, (_, bb)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*bb);
+            let cty = self.i64t();
+            let shift = self.builder
+                .build_int_mul(
+                    self.fit(word, cty),
+                    cty.const_int(bits as u64, false),
+                    "sh",
+                )
+                .unwrap();
+            let v = self.load("cur", SignalId(id as u32));
+            let down = self.builder.build_right_shift(v, shift, false, "dn").unwrap();
+            incoming.push((self.fit(down, i64), *bb));
+            self.builder.build_unconditional_branch(ret).unwrap();
+        }
+        self.builder.position_at_end(ret);
+        let phi = self.builder.build_phi(i64, "v").unwrap();
+        let zero = i64.const_zero();
+        phi.add_incoming(&[(&zero, entry)]);
+        for (v, bb) in &incoming {
+            phi.add_incoming(&[(v as &dyn inkwell::values::BasicValue, *bb)]);
+        }
+        self.builder.build_return(Some(&phi.as_basic_value().into_int_value())).unwrap();
+    }
+
+    /// Mask `v` to a signal's declared width, in type `ty`. A width equal to
+    /// (or wider than) the type needs no mask.
+    fn mask_to_width(
+        &self,
+        v: IntValue<'ctx>,
+        width: u32,
+        ty: inkwell::types::IntType<'ctx>,
+    ) -> IntValue<'ctx> {
+        if width == 0 || width >= ty.get_bit_width() {
+            return v;
+        }
+        let ones = ty.const_all_ones();
+        let shift = ty.const_int((ty.get_bit_width() - width) as u64, false);
+        // (all-ones >> (tybits - width)) is the low-`width` mask at any width.
+        let m = self.builder.build_right_shift(ones, shift, false, "wm").unwrap();
+        self.builder.build_and(v, m, "mw").unwrap()
     }
 
     // --- sx_settle: combinational processes in dependency order -----------
@@ -811,9 +981,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "64-bit-word only")]
-    fn rejects_signals_wider_than_64_bits() {
-        // A unsigned[128] signal would truncate in an i64 slot — reject it.
+    #[should_panic(expected = "bits wide; this backend stores at most")]
+    fn rejects_signals_wider_than_the_target_can_store() {
+        // Wider than `target::MAX_SIGNAL_WIDTH` would truncate in its slot —
+        // reject it rather than miscompile. The type checker reports the same
+        // limit at the declaration; this is the backstop for a width only
+        // elaboration knows.
         let design = Design {
             signals: vec![sig("E.a", 128)],
             drivers: vec![Driver {
