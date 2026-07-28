@@ -28,5 +28,4 @@ pub mod ir;
 pub mod llvm;
 pub mod resolve;
 pub mod syntax;
-pub mod target;
 pub mod types;

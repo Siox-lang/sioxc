@@ -1161,3 +1161,9 @@ Removed `src/testbench.rs`: the generated executable owns the test runtime, so
 there is no compiler-library testbench abstraction. Moved the only reusable
 piece, `print!`-style format parsing, into `syntax::format`, where semantic
 arity checking and native harness generation can share it.
+### 2026-07-28 — Codex — collapsed target.rs into the native ABI owner
+
+Removed `src/target.rs` and the inconsistent `word32` feature. The module was
+only used by LLVM and its generated C harness, whose ABI is explicitly
+low-word-first 64-bit chunks. `llvm` now owns `ABI_WORD_BITS` and `words_for`;
+unused generic repeated-layout helpers were removed.

@@ -551,7 +551,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// `sx_set_word` / `sx_read_word`: move one machine word of a signal across
     /// the ABI, so a value too wide for `u64` crosses a word at a time.
     ///
-    /// Word `k` of a signal is bits `[k*WORD_BITS, (k+1)*WORD_BITS)`. Reading
+    /// Word `k` of a signal is bits `[k*64, (k+1)*64)`. Reading
     /// shifts that field down and truncates; writing clears the field and ORs
     /// the new word in, leaving the other words untouched. Widths within one
     /// word behave exactly like `sx_set`/`sx_read` at word 0.
@@ -559,7 +559,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let i64 = self.ctx.i64_type();
         let i32 = self.ctx.i32_type();
         let void = self.ctx.void_type();
-        let bits = siox::target::WORD_BITS;
+        let bits = super::ABI_WORD_BITS;
 
         // void sx_set_word(i32 sig, i32 word, i64 val)
         let f = self.module.add_function(
@@ -587,7 +587,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.builder.position_at_end(*bb);
             let w = self.design.signals[id].width;
             let cty = self.value_ty(w);
-            // shift = word * WORD_BITS, in the compute type.
+            // shift = word * ABI_WORD_BITS, in the compute type.
             let shift = self
                 .builder
                 .build_int_mul(self.fit(word, cty), cty.const_int(bits as u64, false), "sh")
@@ -1302,7 +1302,7 @@ mod tests {
         };
         let ll = emit_module_ir(&design);
         assert!(ll.contains("i512"), "{ll}");
-        assert_eq!(siox::target::words_for(512), 8);
+        assert_eq!(crate::llvm::words_for(512), 8);
     }
 
     #[test]

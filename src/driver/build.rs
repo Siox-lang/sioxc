@@ -156,7 +156,7 @@ pub fn build(
     let abi_words = design
         .signals
         .iter()
-        .map(|signal| siox::target::words_for(signal.width).to_string())
+        .map(|signal| siox::llvm::words_for(signal.width).to_string())
         .collect::<Vec<_>>()
         .join(", ");
     let value_bits = design
@@ -166,7 +166,7 @@ pub fn build(
         .max()
         .unwrap_or(1)
         .max(max_literal_type_width(modules, &derived_widths))
-        .max(siox::target::ABI_WORD_BITS);
+        .max(siox::llvm::ABI_WORD_BITS);
     prog.push_str(&format!(
         "typedef unsigned _BitInt({value_bits}) sx_value;\n\
          static const uint32_t sx_nwords[] = {{{abi_words}}};\n\

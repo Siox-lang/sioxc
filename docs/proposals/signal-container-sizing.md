@@ -3,7 +3,7 @@
 Status: **implemented design record**.
 
 This proposal is complete. The current implementation lives in `src/ir.rs`,
-`src/target.rs`, and `src/llvm/emit.rs`; active follow-ups are tracked under
+`src/llvm/mod.rs` and `src/llvm/emit.rs`; active follow-ups are tracked under
 the IR and LLVM headings in [`TODO.md`](../../TODO.md).
 
 ## Implemented layout

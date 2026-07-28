@@ -47,7 +47,7 @@ Remaining:
 
 Owns the elaborated digital model: signals, processes, drivers, events,
 initializers, type/enum metadata, and semantic lints. Code: `src/ir.rs`,
-`src/target.rs`.
+`src/ir.rs`.
 
 Current baseline:
 
