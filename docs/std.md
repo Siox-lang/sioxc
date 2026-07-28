@@ -28,14 +28,14 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `Time`/`Freq` |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `time`/`frequency` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (incl. `signed`'s signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
 | `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables (`Unicode`/`Ascii`) planned |
-| `std::sim`    | std.standard `time`              | `Time`, `Freq` + unit suffixes; FS..MS constants |
+| `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
 
@@ -104,7 +104,7 @@ at lowering as pure expression trees; mixed operand types overload by the
 `Input` parameter type, and `impl Operator<"+", Complex, _> for integer`
 catches literal left operands (`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
 by its symbol argument, its `suffix` method inlined at the use site (`10ns` →
-a `Time`); two loaded types defining one suffix is an ambiguity error. See
+a `time`); two loaded types defining one suffix is an ambiguity error. See
 spec 3.24/3.25.
 
 ## `std::math`
@@ -121,12 +121,14 @@ literals coerce (`.re = 10` stores 10.0).
 ## `std::sim`
 
 ```siox
-pub struct Time { fs: integer }   // 10ns  -> Time { .fs = 10_000_000 }
-pub struct Freq { hz: integer }   // 100MHz -> Freq { .hz = 100_000_000 }
+pub struct time(integer);     // nominal integer, stored in femtoseconds
+pub struct frequency(real);   // nominal real, stored in hertz
 ```
 
-Unit suffixes `fs ps ns us ms` and `Hz kHz MHz GHz` on the 1 fs base tick
-(the VCD timescale), plus raw `FS..MS` integer multipliers. `wait`/`tick`
+Unit suffixes `fs ps ns us ms` construct `time`; `Hz kHz MHz GHz` construct
+`frequency`, including fractional values such as `2.5MHz`. The simulator uses
+the 1 fs base tick (also the VCD timescale), and `FS..MS` remain raw integer
+multipliers. `wait`/`tick`
 stimulus control is built-in simulator syntax; `wait 10ns` also works in
 bare files through a fixed fallback table typed as `integer`.
 

@@ -1174,3 +1174,11 @@ scheduler writes hierarchy, 1fs timestamps, change-only arbitrary-width values,
 Logic x/z, real values, and symbolic enums without a compiler-side trace
 buffer. Added native integration coverage for timing, hierarchy, same-time
 coalescing, metavalues, and enum symbols; updated TODO and user documentation.
+### 2026-07-28 — Codex — made time/frequency nominal kernel newtypes
+
+Changed `std::sim` to `struct time(integer)` and
+`struct frequency(real)`, with time suffixes producing femtoseconds and
+frequency suffixes supporting fractional real-valued hertz. Generalized IR
+width, scalar-constructor, and real-storage handling for field-less kernel
+newtypes, updated native suffix evaluation, documentation, integration tests,
+and added `time_frequency_test.siox` to the conformance corpus.

@@ -12,4 +12,4 @@ pub using std::bits::{unsigned, signed};
 pub using std::ops::{Boolean, Ordering, Range, Index, IndexAssign};
 pub using std::attrs::{precedence};
 pub using std::text::{string};
-pub using std::sim::{Time, Freq};
+pub using std::sim::{time, frequency};

@@ -1404,8 +1404,8 @@ Both may use the English word “direction”, but they are different concepts.
 A numeric literal may carry an adjacent identifier suffix (no space):
 
 ```siox
-let t: Time = 10ns;      // std::sim::Time, via impl Suffix<"ns", _> for Time
-let f: Freq = 100MHz;    // std::sim::Freq
+let t: time = 10ns;           // std::sim::time(integer)
+let f: frequency = 100MHz;    // std::sim::frequency(real)
 let z: Complex = 5i;     // std::math::Complex
 ```
 
@@ -1415,8 +1415,8 @@ target type is what the literal produces. `Suffix`'s `suffix` method builds the
 value and is inlined at lowering, so the scale lives in std source:
 
 ```siox
-impl Suffix<"ns", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
+impl Suffix<"ns", integer> for time {
+    fn suffix(v: integer) -> time { return time(v * 1000000); }
 }
 ```
 

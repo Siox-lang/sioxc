@@ -1982,6 +1982,12 @@ impl Ctx<'_> {
     fn c_real_operand(&self, e: &ast::Expr) -> Result<String, String> {
         match e {
             ast::Expr::Int { text, .. } => Ok(format!("((double){text})")),
+            ast::Expr::SuffixLit { text, suffix, .. }
+                if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
+            {
+                let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
+                Ok(format!("((double)({text}) * {scale}.0)"))
+            }
             _ if self.is_real_operand(e) => {
                 let path = expr_path(e).ok_or("real operand must be a signal")?;
                 let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
@@ -2404,7 +2410,14 @@ impl Ctx<'_> {
                 out
             }
             ast::Expr::Int { text, .. } => c_word_literal(&parse_word_literal(text)),
-            ast::Expr::SuffixLit { text, .. } => format!("{}ULL", parse_u64(text)),
+            ast::Expr::SuffixLit { text, suffix, .. } => {
+                let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
+                if suffix.text == "Hz" || suffix.text.ends_with("Hz") {
+                    format!("sx_b64((double)({text}) * {scale}.0)")
+                } else {
+                    format!("((uint64_t)({text}) * {scale}ULL)")
+                }
+            }
             ast::Expr::BitStrLit { base, digits, .. } => {
                 let radix = match *base {
                     'x' => 16,

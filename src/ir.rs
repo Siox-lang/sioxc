@@ -2113,13 +2113,14 @@ impl<'a> Lowering<'a> {
             if let ast::Type::Path(p) = ty {
                 if p.segments.len() == 1 {
                     if let Some(&id) = self.locals.get(name) {
-                        match p.segments[0].text.as_str() {
-                            "real" => self.out.signals[id.0 as usize].real = true,
-                            "Char" => {
-                                self.out.signals[id.0 as usize].char = true;
-                                self.local_char.insert(name.to_string());
-                            }
-                            _ => {}
+                        let head = p.segments[0].text.as_str();
+                        if head == "real" || struct_derives_kernel(head, "real", &self.structs) {
+                            self.out.signals[id.0 as usize].real = true;
+                        } else if head == "Char"
+                            || struct_derives_kernel(head, "Char", &self.structs)
+                        {
+                            self.out.signals[id.0 as usize].char = true;
+                            self.local_char.insert(name.to_string());
                         }
                     }
                 }
@@ -4492,6 +4493,24 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
+        // A field-less struct derived from a scalar kernel type is a nominal
+        // newtype with the same representation. Its constructor is therefore
+        // value-transparent (`time(v)`, `frequency(v)`), just as derivation is;
+        // the target signal supplies any required real coercion.
+        if let ast::Expr::Path(p) = callee {
+            if p.segments.len() == 1 {
+                let target = p.segments[0].text.as_str();
+                let scalar_newtype = self.structs.get(target).is_some_and(|s| {
+                    s.fields.is_empty()
+                        && ["integer", "real", "Char"]
+                            .iter()
+                            .any(|kernel| struct_derives_kernel(target, kernel, &self.structs))
+                });
+                if scalar_newtype {
+                    return Some(self.lower_scalar_env(args.first()?, env));
+                }
+            }
+        }
         // Target: (is_resize, family, width). Width None = kernel integer.
         let head = |e: &ast::Expr| match e {
             ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
@@ -5648,8 +5667,8 @@ fn type_width_at(
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
             Some("Bit") | Some("Logic") | Some("Bool") => 1,
-            Some("real") => 64, // f64 bits
-            Some("Char") => 32, // symbol storage (implementation detail)
+            Some("integer") | Some("real") => 64, // native kernel word / f64 bits
+            Some("Char") => 32,                   // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
             // : Logic[8]` is 8 bits, `struct Word : unsigned[16]` is 16 (spec:
             // nominal derivation reuses the base representation).
@@ -5690,6 +5709,37 @@ fn type_width_at(
             type_width(base, env, fns, structs)
         }
     }
+}
+
+/// Whether a field-less nominal struct ultimately derives from `kernel`.
+/// Representation follows the declared base chain; names such as `time` and
+/// `frequency` are not special to the compiler.
+fn struct_derives_kernel(
+    name: &str,
+    kernel: &str,
+    structs: &HashMap<String, &ast::StructDecl>,
+) -> bool {
+    if name == kernel {
+        return true;
+    }
+    let mut current = name;
+    let mut seen = HashSet::new();
+    while seen.insert(current.to_string()) {
+        let Some(st) = structs.get(current) else {
+            return false;
+        };
+        if !st.fields.is_empty() {
+            return false;
+        }
+        let Some(base) = st.base.as_ref().and_then(type_head_name) else {
+            return false;
+        };
+        if base == kernel {
+            return true;
+        }
+        current = base;
+    }
+    false
 }
 
 /// Const-evaluate a width expression against a parameter environment.

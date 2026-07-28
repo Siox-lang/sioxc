@@ -1,50 +1,47 @@
 module std::sim;
 
-// Simulation time and frequency (spec Stage 11, modelled on VHDL's `time`
-// physical type). The simulator's base tick is 1 fs (the VCD timescale).
+// Simulation time and frequency (modelled on VHDL physical quantities). `time`
+// is a nominal integer measured in femtoseconds; frequency is a nominal real
+// measured in hertz.
 //
 // `wait`/`tick`/`run` stimulus control is built-in simulator syntax for now
 // (spec Stage 11 allows this).
 
-pub struct Time {
-    fs: integer,
-}
+pub struct time(integer);
 
-// Time-unit literal suffixes: `10ns` is a `Time`. The symbol parameterizes the
+// Time-unit literal suffixes: `10ns` is a `time`. The symbol parameterizes the
 // `Suffix` trait; the `suffix` method builds the value (inlined at the use
 // site), so the fs scale per unit lives here in std source.
-impl Suffix<"fs", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v }; }
+impl Suffix<"fs", integer> for time {
+    fn suffix(v: integer) -> time { return time(v); }
 }
-impl Suffix<"ps", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000 }; }
+impl Suffix<"ps", integer> for time {
+    fn suffix(v: integer) -> time { return time(v * 1000); }
 }
-impl Suffix<"ns", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000 }; }
+impl Suffix<"ns", integer> for time {
+    fn suffix(v: integer) -> time { return time(v * 1000000); }
 }
-impl Suffix<"us", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000000 }; }
+impl Suffix<"us", integer> for time {
+    fn suffix(v: integer) -> time { return time(v * 1000000000); }
 }
-impl Suffix<"ms", integer> for Time {
-    fn suffix(v: integer) -> Time { return Time { .fs = v * 1000000000000 }; }
-}
-
-pub struct Freq {
-    hz: integer,
+impl Suffix<"ms", integer> for time {
+    fn suffix(v: integer) -> time { return time(v * 1000000000000); }
 }
 
-// Frequency literal suffixes: `100MHz` is a `Freq`.
-impl Suffix<"Hz", integer> for Freq {
-    fn suffix(v: integer) -> Freq { return Freq { .hz = v }; }
+pub struct frequency(real);
+
+// Frequency literal suffixes: `100MHz` is a real-backed `frequency`.
+impl Suffix<"Hz", real> for frequency {
+    fn suffix(v: real) -> frequency { return frequency(v); }
 }
-impl Suffix<"kHz", integer> for Freq {
-    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000 }; }
+impl Suffix<"kHz", real> for frequency {
+    fn suffix(v: real) -> frequency { return frequency(v * 1000.0); }
 }
-impl Suffix<"MHz", integer> for Freq {
-    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000000 }; }
+impl Suffix<"MHz", real> for frequency {
+    fn suffix(v: real) -> frequency { return frequency(v * 1000000.0); }
 }
-impl Suffix<"GHz", integer> for Freq {
-    fn suffix(v: integer) -> Freq { return Freq { .hz = v * 1000000000 }; }
+impl Suffix<"GHz", real> for frequency {
+    fn suffix(v: real) -> frequency { return frequency(v * 1000000000.0); }
 }
 
 // Raw femtosecond multipliers, for integer time arithmetic.

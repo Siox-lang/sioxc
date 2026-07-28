@@ -593,11 +593,10 @@ pub enum GenericArg {
     Named { name: Ident, value: Expr },
 }
 
-/// Scale factor for a numeric literal suffix: femtoseconds for time units,
-/// hertz for frequency units. `1ns` scales to 1_000_000 (fs), `10MHz` to
-/// 10_000_000 (Hz).
-// ponytail: fixed table — becomes std-defined suffix declarations (Time/Freq/
-// Complex types) when literal-suffix overloading lands.
+/// Native scheduler scale for the std-defined physical suffixes:
+/// femtoseconds for time units and hertz for frequency units. Expression
+/// typing and value construction come from `std::sim`'s `Suffix` impls; this
+/// table converts durations at the generated scheduler boundary.
 /// Rust-style operator-trait names (spec 3.25): `a + b` dispatches to an
 /// `impl Add for <type of a>` with a method selected by the rhs type. Names
 /// follow Rust's `std::ops` where that matches the language. Siox uses one

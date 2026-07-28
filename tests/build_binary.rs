@@ -171,3 +171,55 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     let _ = std::fs::remove_file(out);
     let _ = std::fs::remove_file(vcd);
 }
+
+#[test]
+fn nominal_time_and_real_frequency_run_natively() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_units_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let out = std::env::temp_dir().join(&stem);
+    let vcd = out.with_extension("vcd");
+    std::fs::write(
+        &source,
+        "module units;
+         entity Units { out t: time; out f: frequency; }
+         impl Units { t = 2ns; f = 2.5MHz; }
+         #[test] entity UnitTest {}
+         impl UnitTest {
+             let t: time;
+             let f: frequency;
+             let dut: Units = { .t = t, .f = f, };
+             assert!(t == 2ns, \"integer-backed time\");
+             assert!(f == 2.5MHz, \"real-backed frequency\");
+         }",
+    )
+    .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "time/frequency fixture failed to compile");
+    let run = Command::new(&out)
+        .args(["--vcd", vcd.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(run.success(), "time/frequency fixture failed to run");
+    let trace = std::fs::read_to_string(&vcd).unwrap();
+    assert!(
+        trace.lines().any(|line| line.starts_with("$var real 64")),
+        "frequency did not retain real representation:\n{trace}"
+    );
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_file(vcd);
+}
