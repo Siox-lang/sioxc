@@ -239,7 +239,8 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   Refresh or clearly label those sketches so they are not mistaken for
   accepted source.
 - ✅ **LSP repository split** — the working protocol server and editor tests now
-  live in `Siox-lang/siox-lsp`, with this compiler included as a submodule.
+  live in `Siox-lang/siox-lsp`, with this compiler referenced as a Cargo Git
+  dependency.
 - 🔴 **cocotb integration** — drive the compiled design via VPI/GPI (the runtime
   ABI is already VPI-shaped for this). Tracked as the main open runtime task.
 

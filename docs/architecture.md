@@ -13,9 +13,8 @@ LLVM toolchain. Around it:
   (inkwell); depends on `siox`.
 - **`crates/sioxc`** — the compiler CLI; depends on `siox` + `siox-llvm`.
 
-The separate `Siox-lang/siox-lsp` repository includes this compiler repository
-as its `sioxc` submodule and depends only on the backend-independent `siox`
-crate.
+The separate `Siox-lang/siox-lsp` repository references this compiler through
+Cargo Git and depends only on the backend-independent `siox` crate.
 
 ```mermaid
 flowchart LR
@@ -31,7 +30,7 @@ flowchart LR
     IR --> LL[crate: siox-llvm]
     CLI[crate: sioxc] == drives ==> core
     CLI == native backend ==> LL
-    LSP[separate repo: siox-lsp] == submodule frontend only ==> core
+    LSP[separate repo: siox-lsp] == Cargo Git frontend only ==> core
 ```
 
 `siox-llvm` emits LLVM and compiles the `Design` ahead of time to native code.

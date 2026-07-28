@@ -116,11 +116,11 @@ parse tree, lowered IR, and instance hierarchy.
 ## Editor support
 
 [`siox-lsp`](https://github.com/Siox-lang/siox-lsp) is maintained in its own
-repository and uses this compiler as its `sioxc` submodule. It provides live diagnostics,
+repository and depends on this compiler through Cargo Git. It provides live diagnostics,
 go-to-definition, hover, completion, rename, and more:
 
 ```bash
-git clone --recurse-submodules git@github.com:Siox-lang/siox-lsp.git
+git clone git@github.com:Siox-lang/siox-lsp.git
 cargo build --manifest-path siox-lsp/Cargo.toml
 ```
 
