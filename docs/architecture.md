@@ -4,10 +4,10 @@ The siox compiler is one regular Cargo package with a library target (`siox`)
 and compiler binary (`sioxc`). The library contains the compiler pipeline as
 modules (`src/*.rs`) forming **one strict top-to-bottom pipeline** — each
 module consumes the output of the module above it, the only module everything
-may use is `diag` — plus the LLVM backend and shared testbench support:
+may use is `diag` — plus the LLVM backend:
 
 - **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
-  `elab` → `ir`, plus `testbench`.
+  `elab` → `ir`.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
 - **`sioxc`** — the root package's compiler binary and driver.
 
@@ -61,7 +61,6 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, and `Hierarchy`. |
 | `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
-| `testbench` | Output | Shared native-test formatting definitions. |
 
 Package components:
 

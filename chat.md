@@ -1155,3 +1155,9 @@ Removed `src/wave.rs` and its private `Sample`/`SignalValue` buffer model.
 Waveform output belongs to the generated native executable: its scheduler will
 write the requested VCD directly instead of returning samples to `sioxc`.
 Updated the TODO and architecture/simulation/status documentation accordingly.
+### 2026-07-28 — Codex — removed the top-level testbench module
+
+Removed `src/testbench.rs`: the generated executable owns the test runtime, so
+there is no compiler-library testbench abstraction. Moved the only reusable
+piece, `print!`-style format parsing, into `syntax::format`, where semantic
+arity checking and native harness generation can share it.

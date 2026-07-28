@@ -109,7 +109,7 @@ Remaining:
 
 Owns compiler artifacts and generated native harnesses: objects, metadata,
 source/AST/tree/IR/LLVM dumps, test executables, diagnostics, and waveforms.
-Code: `src/driver/`, `src/testbench.rs`.
+Code: `src/driver/`.
 
 Current baseline:
 

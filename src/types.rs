@@ -1900,7 +1900,7 @@ impl<'a> Checker<'a> {
         let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else {
             return;
         };
-        let want = crate::testbench::format_arity(text);
+        let want = crate::syntax::format::arity(text);
         let have = args.len().saturating_sub(fmt_at + 1);
         if want != have {
             self.error(

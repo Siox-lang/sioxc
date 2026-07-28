@@ -1539,13 +1539,13 @@ impl Ctx<'_> {
         let mut cfmt = String::new();
         let mut cargs = Vec::new();
         let mut vals = args.iter();
-        for part in siox::testbench::format_parts(text) {
+        for part in siox::syntax::format::parts(text) {
             let a = match part {
-                siox::testbench::FormatPart::Text(t) => {
+                siox::syntax::format::FormatPart::Text(t) => {
                     cfmt.push_str(&c_escape(&t).replace('%', "%%"));
                     continue;
                 }
-                siox::testbench::FormatPart::Placeholder => vals.next(),
+                siox::syntax::format::FormatPart::Placeholder => vals.next(),
             };
             let Some(a) = a else { continue };
             let sig = expr_path(a)
