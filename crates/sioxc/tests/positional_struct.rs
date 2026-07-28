@@ -11,7 +11,8 @@ fn positional_struct_locals_run_via_native_cli() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let out = Command::new(siox)
         .current_dir(root)
-        .args(["test", FIXTURE, "--std", "std"])
+        .args(["--test", FIXTURE, "--std", "std", "-o"])
+        .arg(std::env::temp_dir().join(format!("siox_positional_cli_{}", std::process::id())))
         .output()
         .unwrap();
     assert!(
@@ -33,7 +34,7 @@ fn positional_struct_locals_run_in_native_harness() {
     let bin = std::env::temp_dir().join(format!("siox_pos_struct_{}", std::process::id()));
     let build = Command::new(siox)
         .current_dir(root)
-        .args(["test", FIXTURE, "--std", "std", "--no-run", "-o"])
+        .args(["--test", FIXTURE, "--std", "std", "-o"])
         .arg(&bin)
         .output()
         .unwrap();

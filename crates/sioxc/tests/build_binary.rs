@@ -19,10 +19,10 @@ fn test_no_run_builds_a_runnable_binary() {
     let fixture = "crates/sioxc/tests/fixtures/counter_test.siox";
     let status = Command::new(siox)
         .current_dir(root)
-        .args(["test", fixture, "--no-run", "-o", out.to_str().unwrap()])
+        .args(["--test", fixture, "-o", out.to_str().unwrap()])
         .status()
         .unwrap();
-    assert!(status.success(), "siox test --no-run failed");
+    assert!(status.success(), "sioxc --test failed");
     assert!(out.exists(), "no binary produced");
 
     // The binary runs the testbench and exits 0 on PASS.

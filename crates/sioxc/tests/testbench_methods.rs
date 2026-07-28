@@ -12,18 +12,15 @@ fn testbench_method_call_runs_via_native_cli() {
     let fixture = "crates/sioxc/tests/fixtures/method_test.siox";
     let out = Command::new(siox)
         .current_dir(root)
-        .args(["test", fixture, "--std", "std"])
+        .args(["--test", fixture, "--std", "std", "-o"])
+        .arg(std::env::temp_dir().join(format!("siox_method_cli_{}", std::process::id())))
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
-        "sioxc test failed:\n{stdout}\n{}",
+        "sioxc --test failed:\n{stdout}\n{}",
         String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        stdout.contains("test result: ok"),
-        "testbench did not pass:\n{stdout}"
     );
 }
 
@@ -45,11 +42,10 @@ fn testbench_method_call_runs_native() {
     let build = Command::new(siox)
         .current_dir(root)
         .args([
-            "test",
+            "--test",
             fixture,
             "--std",
             "std",
-            "--no-run",
             "-o",
             bin.to_str().unwrap(),
         ])

@@ -41,26 +41,25 @@ a method result.
 
 ## Running
 
-`sioxc test` finds every `#[test]` entity, compiles a native test executable,
-runs it, and reports pass/fail in libtest style — like `cargo test`:
+`sioxc --test` finds every `#[test]` entity and compiles a native test
+executable. `sioxc` is only the compiler; run the executable to execute or
+filter tests:
 
 ```console
-$ sioxc test counter.siox
+$ sioxc --test counter.siox -o counter-tests
+$ ./counter-tests
 running 1 test
 test counter::CounterTest ... ok
 
 test result: ok. 1 passed; 0 failed
 ```
 
-- **Filter by qualified name:** `sioxc test counter.siox
-  counter::CounterTest` runs the matching subset. Partial names also work as
-  filters.
-- **A directory:** `sioxc test <dir>` runs every `.siox` file under it as its
-  own module, then an aggregate result.
-- **Native binary:** `sioxc test <file> --no-run -o <bin>` builds a standalone
-  native test binary (the compiled testbench harness) that exits 0 on pass — for
-  CI without the toolchain in the loop, or handing a design off to run
-  elsewhere.
+- **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
+  matching subset. Partial names also work as filters.
+- **A directory:** corpus orchestration belongs to the build/test tooling, not
+  the compiler. `scripts/test-corpus.sh` compiles and runs each `.siox` file.
+- **Native binary:** `sioxc --test <file> -o <bin>` builds a standalone test
+  executable that exits 0 on pass.
 
 A file with no `#[test]` entity reports zero tests rather than erroring.
 

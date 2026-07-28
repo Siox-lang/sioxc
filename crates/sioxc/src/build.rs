@@ -1213,7 +1213,7 @@ impl Ctx<'_> {
                     // `clk = !clk after d;` registers on the event wheel; other
                     // delayed writes aren't compiled yet.
                     let (path, _) = after_toggle(target, value, after)
-                        .ok_or("only the `clk = not clk after d` form of `after` is supported in the native binary yet (use `sioxc test`)")?;
+                        .ok_or("only the `clk = not clk after d` form of `after` is supported in a native test executable")?;
                     if !self.map.contains_key(&path) {
                         return Err(format!("unknown signal `{path}`"));
                     }
@@ -1893,7 +1893,7 @@ impl Ctx<'_> {
                 "read" | "read_to_string" => Err(format!(
                     "runtime `{name}()` is not compiled into the native binary yet; \
                      use it in initializer position (`let x: T[N] = {name}(..);`) \
-                     or run with `sioxc test`"
+                     or compile a test executable with `sioxc --test`"
                 )),
                 "rand" => Ok("sx_rand()".to_string()),
                 "uniform" => Ok("sx_uniform()".to_string()),
@@ -2306,7 +2306,7 @@ impl Ctx<'_> {
         if s.real {
             return Err(format!(
                 "signal `{}` is real; siox build does not support real testbenches \
-                 yet (use `siox test`)",
+                 yet (compile with `sioxc --test`)",
                 s.path
             ));
         }

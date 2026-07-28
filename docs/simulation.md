@@ -33,9 +33,9 @@ change what is observed.
 
 `siox-ir` emits the simulation model and the **LLVM backend** (`siox-llvm`)
 compiles it ahead of time to native machine code. `sioxc <file>` emits the
-`#[top]` design as an object. `sioxc test` generates a native testbench harness,
-links it with that object, and executes the resulting temporary binary;
-`--no-run -o <bin>` keeps the standalone binary instead.
+`#[top]` design as an object. `sioxc --test` generates a native testbench
+harness and links it with that object. The compiler stops after producing the
+executable; running and filtering it are separate operations.
 
 Signal values cross the harness ABI in low-word-first 64-bit words, so values
 such as `unsigned[128]` retain their per-type width. LLVM is the permanent
@@ -72,10 +72,9 @@ The waveform library records traces as [VCD](https://en.wikipedia.org/wiki/Value
 (Value Change Dump) — the format every digital waveform viewer reads. siox does
 not ship a viewer; it writes a VCD you open elsewhere.
 
-The former in-process tracing path was coupled to the removed JIT. The
-`sim --wave` command currently reports this limitation; restoring it requires
-a native trace ABI that streams timestamped signal words from the generated
-test executable into the VCD writer.
+The former in-process tracing path was coupled to the removed JIT. Restoring
+waveform capture requires a native trace ABI that streams timestamped signal
+words from the generated executable into the VCD writer or another tool.
 
 **How siox values appear:**
 

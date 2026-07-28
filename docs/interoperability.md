@@ -30,7 +30,7 @@ let rom: unsigned[8][256] = read("rom.bin");     // sized by the file
 let banner: string = read_to_string("banner.txt");
 ```
 
-In the native `--no-run` binary these reads currently happen at **build time**
+In a native `--test` binary these reads currently happen at **build time**
 and are baked into the binary (fine for stable fixtures); a genuine runtime
 `fopen`/`fread` is a possible follow-up.
 

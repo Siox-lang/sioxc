@@ -2379,7 +2379,8 @@ Exact test-time syntax can be simplified for MVP.
 
 ### Endgoal
 
-`siox test` can discover and run `#[test]` entities.
+`sioxc --test` discovers `#[test]` entities and compiles a native test
+executable. The compiler does not run it.
 
 ### Acceptance criteria
 
@@ -2646,8 +2647,8 @@ Minimum commands:
 ```bash
 siox check <file>
 siox parse <file>
-siox sim <file>
-siox test <path>
+sioxc <file>
+sioxc --test <file> -o <test-executable>
 ```
 
 Useful debug commands:
@@ -2665,9 +2666,11 @@ A user can write examples, check them, run simulations, and inspect output.
 ### Acceptance criteria
 
 - `siox check counter.siox` reports success.
-- `siox sim counter_test.siox --wave counter.vcd` produces a waveform.
-- `siox test <dir>` runs all tests.
-- Compiler exits nonzero on failed checks/tests.
+- `sioxc --test counter_test.siox -o counter-tests` produces a runnable test
+  executable.
+- The produced executable accepts a qualified test-name filter.
+- Compiler exits nonzero on compilation failure; the test executable exits
+  nonzero on test failure.
 
 ---
 

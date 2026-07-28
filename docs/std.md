@@ -151,7 +151,7 @@ by a compiler seed so bare files keep working:
 
 ```siox
 pub attr top: Bool for entity;      // elaboration root
-pub attr test: Bool for entity;     // discovered by `siox test`
+pub attr test: Bool for entity;     // discovered by `sioxc --test`
 pub attr keep: Bool for let, port;  // keep through optimization
 pub attr library: string for entity;
 pub attr name: string for entity;

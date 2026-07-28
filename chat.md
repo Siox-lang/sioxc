@@ -1004,3 +1004,22 @@ fails explicitly pending the native trace ABI recorded in `TODO.md`.
 Gates: `cargo test --workspace --no-fail-fast` green; `siox-llvm --features
 bitpack` green; saved native binary + qualified filter green; native corpus
 78/78 green.
+
+### 2026-07-28 — Codex — making sioxc compiler-only
+
+Removing the `sioxc test` runner/subcommand and the obsolete `sim` subcommand.
+The rustc-shaped interface is `sioxc --test file.siox -o test-bin`: compilation
+stops after producing the native executable, and that executable owns test
+listing, filtering (`module::test`), reporting, and execution. Updating shared
+CLI documentation and test gates accordingly.
+
+### 2026-07-28 — Codex — compiler-only test mode complete
+
+`sioxc test` and `sioxc sim` are removed, including their directory traversal,
+temporary-binary execution, and waveform-command remnants. `sioxc --test
+file.siox -o bin` only compiles; `bin [module::test]` runs and filters. Corpus
+orchestration now lives in `scripts/test-corpus.sh`, outside the compiler.
+
+Workspace tests pass. All 74 corpus files containing testbenches compile and
+run through their emitted executables; the four source-only/top files pass
+`sioxc check`, for 78/78 total.

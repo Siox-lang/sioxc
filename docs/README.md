@@ -14,7 +14,7 @@ VCD waveform output. There is no analogue, schematic, or synthesis layer yet
 | [language.md](language.md) | The **Phase 1 language specification** — an at-a-glance tour up front, then the authority for syntax and semantics. Kept current as the language evolves. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
 | [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD waveforms. |
-| [testing.md](testing.md) | **Testing** — `#[test]` testbenches, running them (`sioxc test`, `--no-run`), assertions, and how the compiler itself is tested. |
+| [testing.md](testing.md) | **Testing** — compiling `#[test]` testbenches with `sioxc --test`, running the resulting executable, assertions, and compiler tests. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
@@ -55,10 +55,9 @@ entity may instantiate sub-entities, each instance lowering into its own signals
 with port connections wired as drivers.
 
 The **compiled LLVM backend** (`siox-llvm`, inkwell) is the default execution
-backend: `sioxc test` builds and runs a temporary native test binary,
-`sioxc <file>` compiles the `#[top]` design to a native object, and `sioxc test
---no-run` keeps a standalone native test binary. The conformance corpus runs
-through this compiled backend.
+backend: `sioxc --test <file>` compiles a native test executable and `sioxc
+<file>` compiles the `#[top]` design to a native object. Execution and corpus
+orchestration live outside the compiler.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
 operator overloading, literal suffixes (`10ns`, `5i`), and four-value `Logic`
@@ -72,7 +71,7 @@ cargo build                       # build the library + binaries (needs an LLVM 
 cargo test                        # run all tests
 
 cargo run -p sioxc -- <file>           # compile the #[top] design
-cargo run -p sioxc -- test <file>      # build + run native #[test] executable
+cargo run -p sioxc -- --test <file> -o tests # compile native #[test] executable
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
@@ -83,8 +82,7 @@ matching local LLVM install (see `Cargo.toml` for the pinned version).
 | ------- | ---- |
 | `sioxc <file>` | compile the `#[top]` design to a native object (`--top` to pick) |
 | `check <file>` | parse → resolve → typecheck, report diagnostics |
-| `test <path> [--no-run]` | build + run native `#[test]` executable; `--no-run` keeps it |
-| `sim <file> [--wave out.vcd]` | run tests; native VCD tracing is pending |
+| `--test <file> [-o bin]` | compile a native `#[test]` executable |
 | `ir` · `ast` · `tree` · `tokens` · `emit-llvm` | debug dumps of each stage |
 
 All commands take `--std <dir>` (default `./std`) for the standard library root.

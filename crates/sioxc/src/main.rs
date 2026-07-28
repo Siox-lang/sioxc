@@ -10,14 +10,13 @@
 //! sioxc <file>            # compile the #[top] design to a native object
 //! sioxc check  <file>     # parse + resolve + typecheck, report success/errors
 //! sioxc parse  <file>     # parse, print canonical source
-//! sioxc sim    <file>     # elaborate + lower + simulate (--wave <out.vcd>)
-//! sioxc test   <path>     # build and run #[test] entities (--no-run to just build)
+//! sioxc --test <file>     # compile #[test] entities to a native executable
 //! sioxc ast    <file>     # debug: pretty-printed AST
 //! sioxc ir     <file>     # debug: normalized digital IR
 //! sioxc tree   <file>     # debug: elaborated instance hierarchy
 //! sioxc tokens <file>     # debug: raw lexer token stream
 //! ```
-//! Exit code is nonzero on failed checks/tests.
+//! Exit code is nonzero on compilation failure.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -43,6 +42,9 @@ struct Cli {
     /// Output object path for a bare build (default: `<file>.o`).
     #[arg(short, long)]
     out: Option<PathBuf>,
+    /// Compile `#[test]` entities into a native test executable.
+    #[arg(long)]
+    test: bool,
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]
     std: PathBuf,
@@ -63,25 +65,6 @@ enum Command {
         file: PathBuf,
         #[arg(short, long)]
         verbose: bool,
-    },
-    /// Elaborate and simulate a design.
-    Sim {
-        file: PathBuf,
-        /// Write a VCD waveform to this path.
-        #[arg(long)]
-        wave: Option<PathBuf>,
-    },
-    /// Build and run `#[test]` entities (optionally filtered by name).
-    Test {
-        path: PathBuf,
-        /// Run only test entities whose name contains this string.
-        filter: Option<String>,
-        /// Compile the test into a native binary but do not run it.
-        #[arg(long)]
-        no_run: bool,
-        /// Output path for `--no-run` (default: `<file>.sim`).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
     },
     /// Debug: print the pretty-printed AST.
     Ast {
@@ -108,6 +91,7 @@ fn main() -> ExitCode {
         Some(c) => c,
         None => {
             return match cli.file {
+                Some(f) if cli.test => cmd_build_test(&f, &std_root, cli.out.as_deref()),
                 Some(f) => cmd_build(&f, &std_root, cli.top.as_deref(), cli.out.as_deref()),
                 None => {
                     use clap::CommandFactory;
@@ -135,22 +119,6 @@ fn main() -> ExitCode {
             Err(code) => code,
         },
         Command::Check { file, verbose } => cmd_check(&file, &std_root, verbose),
-        Command::Sim { file, wave } => match wave {
-            Some(out) => cmd_wave(&file, &std_root, &out),
-            None => cmd_test(&file, &std_root, None),
-        },
-        Command::Test {
-            path,
-            filter,
-            no_run,
-            out,
-        } => {
-            if no_run {
-                cmd_test_no_run(&path, &std_root, out.as_deref())
-            } else {
-                cmd_test(&path, &std_root, filter.as_deref())
-            }
-        }
         Command::Ir { file } => cmd_ir(&file, &std_root),
         Command::EmitLlvm { file } => cmd_emit_llvm(&file, &std_root),
         Command::Tree { file } => cmd_tree(&file, &std_root),
@@ -180,7 +148,7 @@ fn lex_parse(path: &Path, std_root: &Path, trace: bool) -> Result<FrontendOut, E
     if path.is_dir() {
         eprintln!(
             "error: {} is a directory; running a whole directory is not supported yet — \
-             pass one .siox file (e.g. `sioxc test {}/<file>.siox`)",
+             pass one .siox file (e.g. `sioxc --test {}/<file>.siox`)",
             path.display(),
             path.display()
         );
@@ -545,9 +513,9 @@ fn resolve_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Str
     }
 }
 
-/// `siox test --no-run`: compile the `#[test]` stimulus into a standalone
-/// native simulator binary, but do not run it. Like `cargo test --no-run`.
-fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
+/// `sioxc --test`: compile `#[test]` stimulus into a standalone native test
+/// executable. The compiler never runs the produced program.
+fn cmd_build_test(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, false) {
         Ok(s) => s,
         Err(code) => return code,
@@ -566,7 +534,7 @@ fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode
     }
     let bin = out
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| path.with_extension("sim"));
+        .unwrap_or_else(|| path.with_extension("test"));
     match build::build(modules, &hier, &design, &bin) {
         Ok(()) => {
             eprintln!(
@@ -576,7 +544,7 @@ fn cmd_test_no_run(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("siox test --no-run: {e}");
+            eprintln!("sioxc --test: {e}");
             ExitCode::FAILURE
         }
     }
@@ -696,139 +664,6 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
-}
-
-fn cmd_test(path: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
-    if path.is_dir() {
-        return cmd_test_dir(path, std_root, filter);
-    }
-    if test_file(path, std_root, filter) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
-/// Run every `.siox` file in a directory (non-recursively, sorted) as its own
-/// test module, printing each file's report under a header, then an aggregate.
-fn cmd_test_dir(dir: &Path, std_root: &Path, filter: Option<&str>) -> ExitCode {
-    let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "siox"))
-            .collect(),
-        Err(e) => {
-            eprintln!("error: cannot read directory {}: {e}", dir.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    files.sort();
-    if files.is_empty() {
-        eprintln!("error: no .siox files in {}", dir.display());
-        return ExitCode::FAILURE;
-    }
-    let (mut ran, mut failed) = (0usize, 0usize);
-    for f in &files {
-        eprintln!("\n===== {} =====", f.display());
-        ran += 1;
-        if !test_file(f, std_root, filter) {
-            failed += 1;
-        }
-    }
-    eprintln!(
-        "\n===== {ran} file{} tested; {} =====",
-        if ran == 1 { "" } else { "s" },
-        if failed == 0 {
-            "all passed".to_string()
-        } else {
-            format!("{failed} failed")
-        }
-    );
-    if failed == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
-/// Whether any elaborated root instantiates a `#[test]` entity.
-fn has_test_entity(modules: &[Module], hier: &siox::elab::Hierarchy) -> bool {
-    hier.roots.iter().any(|&r| {
-        let entity = &hier.instance(r).entity;
-        modules.iter().flat_map(|m| &m.items).any(|it| {
-            matches!(it, Item::Entity(e)
-                if &e.name.text == entity
-                    && e.attrs.iter().any(|a|
-                        a.name.segments.last().map(|s| s.text.as_str()) == Some("test")))
-        })
-    })
-}
-
-/// Compile and run one file's `#[test]` entities. Returns `true` when the file
-/// compiled and every test passed.
-fn test_file(path: &Path, std_root: &Path, filter: Option<&str>) -> bool {
-    let mut sem = match run_semantic(path, std_root, false) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    if sem.fe.sink.has_errors() {
-        render_diagnostics(&sem.fe.sources, &sem.fe.sink);
-        return false;
-    }
-
-    let modules = sem.fe.modules.as_slice();
-    let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
-    let design = siox::ir::lower_in(
-        modules,
-        &hier,
-        &mut sem.fe.sink,
-        path.parent().unwrap_or_else(|| Path::new("")),
-    );
-    render_diagnostics(&sem.fe.sources, &sem.fe.sink);
-    if sem.fe.sink.has_errors() {
-        return false;
-    }
-
-    // A file with no `#[test]` entity has nothing to run — report zero tests
-    // rather than trying (and failing) to build an engine for a bare library
-    // module (which may be parametric, so not lowerable on its own).
-    if !has_test_entity(modules, &hier) {
-        println!("\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed");
-        return true;
-    }
-
-    let bin = std::env::temp_dir().join(format!(
-        "siox-test-{}-{}",
-        std::process::id(),
-        path.file_stem().and_then(|s| s.to_str()).unwrap_or("suite")
-    ));
-    if let Err(e) = build::build(modules, &hier, &design, &bin) {
-        eprintln!("sioxc test: {e}");
-        return false;
-    }
-    eprintln!("backend: llvm (native AOT)");
-    let mut command = std::process::Command::new(&bin);
-    if let Some(filter) = filter {
-        command.arg(filter);
-    }
-    let status = command.status();
-    let _ = std::fs::remove_file(&bin);
-    match status {
-        Ok(status) => status.success(),
-        Err(e) => {
-            eprintln!("failed to run {}: {e}", bin.display());
-            false
-        }
-    }
-}
-
-/// Native waveform tracing needs an explicit trace ABI; it is not provided by
-/// the test executable yet.
-fn cmd_wave(_path: &Path, _std_root: &Path, _out: &Path) -> ExitCode {
-    eprintln!(
-        "sioxc sim --wave is unavailable after JIT removal; native trace ABI support is required"
-    );
-    ExitCode::FAILURE
 }
 
 fn cmd_tokens(path: &Path) -> ExitCode {

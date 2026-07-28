@@ -77,7 +77,8 @@ updates on the edge).
 The `#[test]` entity is a testbench. Run every testbench in a file with:
 
 ```console
-$ sioxc test counter.siox
+$ sioxc --test counter.siox -o counter-tests
+$ ./counter-tests
 
 running 1 test
 test CounterTest ... ok
@@ -85,8 +86,9 @@ test CounterTest ... ok
 test result: ok. 1 passed; 0 failed
 ```
 
-It works like `cargo test`: `sioxc test` finds each `#[test]`, simulates it, and
-reports pass/fail. Pass a name to run a subset — `sioxc test Counter`.
+It works like `rustc --test`: `sioxc --test` compiles each `#[test]` into a
+native test executable. Run that executable normally, or pass a qualified name
+to select a subset: `./counter-tests examples::counter::CounterTest`.
 
 ## See the waveforms
 
@@ -102,9 +104,8 @@ sioxc sim counter.siox --wave counter.vcd
 | Command | What it does |
 | --- | --- |
 | `sioxc check file.siox` | type-check and validate — no simulation |
-| `sioxc test file.siox [name]` | run the `#[test]` testbenches |
+| `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
 | `sioxc sim file.siox --wave out.vcd` | simulate and record a waveform |
-| `sioxc test file.siox --no-run -o bench` | build a standalone native test binary |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it

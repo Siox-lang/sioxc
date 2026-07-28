@@ -226,7 +226,7 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
 
 ## Waveforms (Stage 9)
 
-- 🔴 **Native trace ABI** — restore `sioxc sim --wave` by streaming timestamped
+- 🔴 **Native trace ABI** — enable a separate waveform tool by streaming timestamped
   low-word-first signal values from the native test executable to the VCD
   writer. The former tracing path was removed with the JIT.
 - 🔴 **FST output** for large designs (VCD works today).

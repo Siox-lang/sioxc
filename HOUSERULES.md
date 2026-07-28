@@ -66,12 +66,12 @@ Before you commit, all three must be green:
 
 ```bash
 cargo test --workspace                       # unit + integration
-cargo run -q -p sioxc -- test /home/max/siox-tests    # the .siox corpus
+./scripts/test-corpus.sh /home/max/siox-tests          # compile + run corpus
 ```
 
 Anything touching lowering or codegen must also exercise the emitted native
-binary directly (`sioxc test <file> --no-run --out <bin>`, then run the binary),
-in addition to the ordinary `sioxc test` corpus gate.
+binary directly (`sioxc --test <file> --out <bin>`, then run the binary), in
+addition to the corpus gate.
 
 **The corpus lives in a sibling repo** (`Siox-lang/siox-tests`, checked out at
 `/home/max/siox-tests`). Two consequences:
