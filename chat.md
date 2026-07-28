@@ -1089,3 +1089,10 @@ Metavalue propagation itself no longer stops at 16 elements; wide metavalue
 *literal initialization* still needs signal initializers to become word
 vectors. Module-constant evaluation remains `u128` and is logged in TODO as
 the remaining shared constant-evaluator migration.
+
+### 2026-07-28 — Codex — CI after package flattening and wide-value work
+
+Updating GitHub Actions to stop invoking the removed workspace/package layout.
+CI will exercise formatting, the frontend-only dependency surface, the default
+LLVM/native suite, `bitpack`, and the full runnable sibling corpus through the
+same checked-in script used locally.
