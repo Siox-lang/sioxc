@@ -172,14 +172,14 @@ signed main(void) {
 
     #[test]
     #[cfg(not(feature = "bitpack"))]
-    fn multiword_object_links_and_carries() {
+    fn eight_word_object_links_and_carries() {
         if Command::new("clang").arg("--version").output().is_err() {
-            eprintln!("skipping multiword_object_links_and_carries: clang not found");
+            eprintln!("skipping eight_word_object_links_and_carries: clang not found");
             return;
         }
 
         let design = Design {
-            signals: vec![sig("E.a", 128), sig("E.b", 128), sig("E.y", 128)],
+            signals: vec![sig("E.a", 512), sig("E.b", 512), sig("E.y", 512)],
             drivers: vec![Driver {
                 ctx: 0,
                 target: SignalId(2),
@@ -212,13 +212,12 @@ extern unsigned long long sx_read_word(unsigned, unsigned);
 extern void sx_settle(void);
 signed main(void) {
     sx_reset();
-    sx_set_word(0, 0, ~0ULL);
-    sx_set_word(0, 1, 0x0123456789abcdefULL);
-    sx_set_word(1, 0, 1);
-    sx_set_word(1, 1, 0);
+    sx_set_word(0, 6, ~0ULL);
+    sx_set_word(0, 7, 0x0123456789abcdefULL);
+    sx_set_word(1, 6, 1);
     sx_settle();
-    if (sx_read_word(2, 0) != 0) return 1;
-    if (sx_read_word(2, 1) != 0x0123456789abcdf0ULL) return 2;
+    if (sx_read_word(2, 6) != 0) return 1;
+    if (sx_read_word(2, 7) != 0x0123456789abcdf0ULL) return 2;
     return 0;
 }
 "#,

@@ -1,14 +1,11 @@
 //! The machine model the compiler lowers against.
 //!
 //! A signal is stored in one or more machine **words**. How wide a word is, and
-//! how many of them a backend can address, is a property of that backend — not
-//! of the language — so every stage that reasons about storage asks here rather
-//! than assuming 64.
+//! how many are needed for a type is derived from its width — never a global
+//! language or backend limit.
 //!
 //! This sits at foundation level (beside [`crate::diag`]) because both the type
-//! checker (stage 4, which reports an unsupportable width at its declaration)
-//! and lowering (stage 6, which lays signals out) need it, and stage 4 may not
-//! depend on stage 6.
+//! lowering and ABI generation need the same layout calculation.
 //!
 //! Selecting a word size:
 //!
@@ -62,14 +59,6 @@ pub const fn layout_for(elements: u32, element_bits: u32) -> Option<(u32, u32)> 
 pub const fn is_multiword(bits: u32) -> bool {
     bits > ABI_WORD_BITS
 }
-
-/// The widest signal the engines can currently hold, derived from the ABI word
-/// and the number of words the host-side runner can exchange.
-pub const MAX_SIGNAL_WIDTH: u32 = ABI_WORD_BITS * MAX_WORDS;
-
-/// ABI words a single signal may occupy. Start with the width representable by
-/// the runner's `u128`; the word-based ABI itself is not limited to two.
-pub const MAX_WORDS: u32 = 2;
 
 #[cfg(test)]
 mod tests {

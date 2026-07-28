@@ -169,9 +169,11 @@ vector shapes).
 
 ## Signal widths
 
-LLVM represents each value at its own semantic bit width. The native harness
-ABI exchanges wider values as low-word-first 64-bit chunks; `unsigned[128]`,
-for example, occupies two ABI words without widening unrelated values.
+LLVM represents each value at its own semantic bit width. The ABI exchanges
+wider values as low-word-first machine-word chunks, with the required word
+count derived from that type. There is no global maximum word count:
+`unsigned[128]` uses two 64-bit ABI words and `unsigned[512]` uses eight,
+without widening unrelated values.
 
 Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —

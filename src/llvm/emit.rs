@@ -44,30 +44,6 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
     if !issues.is_empty() {
         panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
     }
-    // A signal wider than the target's storage would silently truncate, so
-    // reject it rather than miscompile. The type checker reports the same limit
-    // at the declaration; this is the backstop for widths only elaboration
-    // knows (a parametric `unsigned[W]`).
-    if let Some(s) = design
-        .signals
-        .iter()
-        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
-    {
-        panic!(
-            "signal `{}` is {} bits wide; this backend stores at most {} bits \
-             ({} x {}-bit {})",
-            s.path,
-            s.width,
-            siox::target::MAX_SIGNAL_WIDTH,
-            siox::target::MAX_WORDS,
-            siox::target::WORD_BITS,
-            if siox::target::MAX_WORDS == 1 {
-                "word"
-            } else {
-                "words"
-            },
-        );
-    }
     #[cfg(feature = "bitpack")]
     if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
         panic!(
@@ -886,8 +862,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     match rhs.as_ref() {
                         Expr::Const(shift) => lhs_width
                             .checked_add((*shift).try_into().unwrap_or(u32::MAX))
-                            .unwrap_or(u32::MAX)
-                            .min(siox::target::MAX_SIGNAL_WIDTH),
+                            .unwrap_or(u32::MAX),
                         _ => lhs_width,
                     }
                 } else {
@@ -1146,7 +1121,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "bitpack")))]
 mod tests {
     use super::*;
     use siox::ir::{Design, Driver, Signal};
@@ -1164,7 +1139,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "bitpack"))] // asserts the default byte-struct layout
     fn emits_combinational_adder() {
         // y (id 2) = a (0) + b (1), width 8.
         let design = Design {
@@ -1203,14 +1177,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "bits wide; this backend stores at most")]
-    fn rejects_signals_wider_than_the_target_can_store() {
-        // Wider than `target::MAX_SIGNAL_WIDTH` would truncate in its slot —
-        // reject it rather than miscompile. The type checker reports the same
-        // limit at the declaration; this is the backstop for a width only
-        // elaboration knows.
+    fn accepts_arbitrarily_many_abi_words() {
         let design = Design {
-            signals: vec![sig("E.a", siox::target::MAX_SIGNAL_WIDTH + 1)],
+            signals: vec![sig("E.a", 512)],
             drivers: vec![Driver {
                 ctx: 0,
                 target: SignalId(0),
@@ -1223,11 +1192,12 @@ mod tests {
             base_dir: Default::default(),
             meta_of: Default::default(),
         };
-        emit_module_ir(&design);
+        let ll = emit_module_ir(&design);
+        assert!(ll.contains("i512"), "{ll}");
+        assert_eq!(siox::target::words_for(512), 8);
     }
 
     #[test]
-    #[cfg(not(feature = "bitpack"))]
     fn expressions_keep_their_own_type_width() {
         let design = Design {
             signals: vec![
@@ -1278,7 +1248,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "bitpack"))] // asserts the default struct-GEP slots
     fn topo_orders_a_chain() {
         // Drivers declared out of dependency order: y=c, c=b, b=a. The emitted
         // settle must compute b, then c, then y (each after its input).

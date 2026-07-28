@@ -1061,3 +1061,13 @@ use `default-features = false` and require no LLVM installation.
 Gates: `cargo test` green (179 library/backend tests plus all CLI integration
 tests), frontend-only `cargo check --no-default-features --lib` green, and
 corpus 78/78.
+
+### 2026-07-28 — Codex — removing the global ABI word limit
+
+Deleting `MAX_WORDS` and `MAX_SIGNAL_WIDTH`. Type checking, the compiler driver,
+and LLVM codegen no longer reject widths at a global boundary; every signal's
+ABI word count comes from `words_for(type_width)`. Coverage now includes
+source types at 129/512/4096 bits, LLVM `i512`, and a linked eight-word native
+carry from ABI word 6 into word 7. The native testbench expression layer and
+waveform sample representation still use `u128`; those are representation
+follow-ups, not compiler/type-width ceilings.

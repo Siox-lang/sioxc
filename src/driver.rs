@@ -432,19 +432,6 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         );
         return ExitCode::FAILURE;
     }
-    if let Some(s) = design
-        .signals
-        .iter()
-        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
-    {
-        eprintln!(
-            "siox build: signal `{}` is {} bits; the LLVM backend supports at most {} bits",
-            s.path,
-            s.width,
-            siox::target::MAX_SIGNAL_WIDTH
-        );
-        return ExitCode::FAILURE;
-    }
     match siox::llvm::emit_object(&design, &obj) {
         Ok(()) => {
             eprintln!(
@@ -547,22 +534,9 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
-    // Report codegen-blocking IR (bad ids, Unknown, oversized signals) cleanly
+    // Report codegen-blocking IR (bad ids and Unknown values) cleanly
     // rather than letting the emitter panic.
-    let mut issues = design.validate();
-    if let Some(s) = design
-        .signals
-        .iter()
-        .find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
-    {
-        issues.push(format!(
-            "signal `{}` is {} bits; the LLVM backend supports at most {} ABI words ({} bits)",
-            s.path,
-            s.width,
-            siox::target::MAX_WORDS,
-            siox::target::MAX_SIGNAL_WIDTH,
-        ));
-    }
+    let issues = design.validate();
     if !issues.is_empty() {
         eprintln!("cannot emit LLVM:");
         for i in &issues {

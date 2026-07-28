@@ -20,7 +20,6 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::resolve::{DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
-use crate::target::{MAX_SIGNAL_WIDTH, MAX_WORDS, WORD_BITS};
 
 /// A checked, interned type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -781,7 +780,6 @@ impl<'a> Checker<'a> {
             Item::Entity(e) => {
                 for port in &e.ports {
                     self.check_applied_view(&port.ty);
-                    self.check_supported_width(&port.ty, port.name.span);
                 }
                 for a in &e.attrs {
                     self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
@@ -3018,39 +3016,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolve a type annotation to a [`Ty`]. Parametric widths (`unsigned[W]`)
-    /// become `Vector { width: 0, .. }` until elaboration fills them in.
-    /// Reject a declared width the backend cannot store, at the declaration
-    /// rather than at run time — a wider signal used to pass `check` and IR
-    /// lowering and only fail when something tried to execute it, long after
-    /// the line that caused it scrolled away.
-    ///
-    /// The limit comes from [`crate::target`], so a backend with a different
-    /// word size (or multi-word storage) moves it without touching this check.
-    ///
-    /// Only literal widths are known here; a parametric `unsigned[W]` is
-    /// resolved during elaboration, so the backends keep their own guard.
-    fn check_supported_width(&mut self, ty: &Type, span: Span) {
-        let Ty::Vector { width, .. } = self.ast_ty(ty) else {
-            return;
-        };
-        if width > MAX_SIGNAL_WIDTH {
-            self.error_with_help(
-                codes::TYPE_MISMATCH,
-                span,
-                format!(
-                    "a {width}-bit signal does not fit the {MAX_SIGNAL_WIDTH}-bit \
-                     storage the backend provides"
-                ),
-                format!(
-                    "the machine word is {WORD_BITS} bits and this backend currently \
-                     allows {MAX_WORDS} words per signal — split it into several \
-                     signals or narrow the width"
-                ),
-            );
-        }
-    }
-
     fn ast_ty(&self, t: &Type) -> Ty {
         match t {
             Type::Path(p) => self.path_ty(p),
@@ -4225,20 +4190,16 @@ mod tests {
         );
     }
 
-    /// A signal wider than the engines' machine word used to pass `check` and
-    /// IR lowering and only fail when something tried to run it, long after
-    /// the declaration that caused it. It is reported at the port now.
     #[test]
-    fn oversized_signal_width_is_reported_at_the_declaration() {
-        // Written against the target model, not a literal, so a narrower-word
-        // build (`word32`) exercises the same rule at its own boundary.
+    fn signal_width_has_no_global_word_limit() {
         let at = |w: u32| {
             check_src(&format!(
                 "module m;\nentity E {{ out y: unsigned[{w}]; }}\nimpl E {{ y = 1; }}\n"
             ))
         };
-        assert_eq!(at(MAX_SIGNAL_WIDTH), 0, "exactly the limit fits");
-        assert_eq!(at(MAX_SIGNAL_WIDTH + 1), 1, "one bit past it does not");
+        assert_eq!(at(129), 0);
+        assert_eq!(at(512), 0);
+        assert_eq!(at(4096), 0);
     }
 
     /// A bare name in pattern position lowered to a wildcard, because

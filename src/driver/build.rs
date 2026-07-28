@@ -160,7 +160,7 @@ pub fn build(
         .collect::<Vec<_>>()
         .join(", ");
     prog.push_str(&format!(
-        "static const uint8_t sx_nwords[] = {{{abi_words}}};\n\
+        "static const uint32_t sx_nwords[] = {{{abi_words}}};\n\
          static void sx_set(uint32_t s, unsigned __int128 v) {{\n\
          \x20   sx_set_word(s, 0, (uint64_t)v);\n\
          \x20   if (sx_nwords[s] > 1) sx_set_word(s, 1, (uint64_t)(v >> 64));\n\

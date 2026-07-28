@@ -198,13 +198,14 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   struct's layout. LLVM carries each logical value as its corresponding `iN`
   and legalizes its arithmetic, while `sx_set_word`/`sx_read_word` split only
   the external ABI representation into low-word-first chunks. ✅ The first
-  two-word increment supports `unsigned[128]`: per-expression LLVM widths,
-  word-indexed native harness exchange, cross-word carry, and linked AOT are
-  covered. Remaining work: persist source type layouts in the IR instead of
+  LLVM and the word ABI now impose no global word-count limit: `words_for`
+  derives the required storage from every type's width. `unsigned[128]`
+  cross-word carry and `i512` lowering are covered. Remaining work: persist
+  source type layouts in the IR instead of
   backend inference, apply recursive element sizing to non-flattened
   composites, define wide C-FFI and `bitpack` behavior, extend runner/waveform
-  values beyond `u128`, and add borrows, cross-word shifts/slices, comparisons,
-  and high-word-only event coverage before raising the two-word limit.
+  testbench/waveform values beyond `u128`, and add borrows, cross-word
+  shifts/slices, comparisons, and high-word-only event coverage.
 - 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
   needs `make_binary`/`emit` to carry `fp128` and a soft-float path for the
   runner (no native Rust `f128`).
