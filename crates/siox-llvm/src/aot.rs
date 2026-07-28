@@ -142,4 +142,68 @@ signed main(void) {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    #[cfg(not(feature = "bitpack"))]
+    fn multiword_object_links_and_carries() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!("skipping multiword_object_links_and_carries: clang not found");
+            return;
+        }
+
+        let design = Design {
+            signals: vec![sig("E.a", 128), sig("E.b", 128), sig("E.y", 128)],
+            drivers: vec![Driver {
+                ctx: 0,
+                target: SignalId(2),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Current(SignalId(0))),
+                    rhs: Box::new(Expr::Current(SignalId(1))),
+                },
+            }],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+
+        let dir = std::env::temp_dir().join(format!("siox_aot_wide_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let obj = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let bin = dir.join("sim");
+        emit_object(&design, &obj).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern void sx_set_word(unsigned, unsigned, unsigned long long);
+extern unsigned long long sx_read_word(unsigned, unsigned);
+extern void sx_settle(void);
+signed main(void) {
+    sx_reset();
+    sx_set_word(0, 0, ~0ULL);
+    sx_set_word(0, 1, 0x0123456789abcdefULL);
+    sx_set_word(1, 0, 1);
+    sx_set_word(1, 1, 0);
+    sx_settle();
+    if (sx_read_word(2, 0) != 0) return 1;
+    if (sx_read_word(2, 1) != 0x0123456789abcdf0ULL) return 2;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([main_c.to_str().unwrap(), obj.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(link.status.success(), "link failed: {}", String::from_utf8_lossy(&link.stderr));
+        let run = Command::new(&bin).status().unwrap();
+        assert!(run.success(), "native wide sim returned {:?}", run.code());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

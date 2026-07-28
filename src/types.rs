@@ -20,7 +20,7 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::resolve::{DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
-use crate::target::{MAX_SIGNAL_WIDTH, WORD_BITS};
+use crate::target::{MAX_SIGNAL_WIDTH, MAX_WORDS, WORD_BITS};
 
 /// A checked, interned type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2961,9 +2961,9 @@ impl<'a> Checker<'a> {
                      storage the backend provides"
                 ),
                 format!(
-                    "the machine word is {WORD_BITS} bits and a signal may occupy one \
-                     of them today — split it into several signals, or narrow the \
-                     width, until multi-word storage lands"
+                    "the machine word is {WORD_BITS} bits and this backend currently \
+                     allows {MAX_WORDS} words per signal — split it into several \
+                     signals or narrow the width"
                 ),
             );
         }

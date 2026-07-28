@@ -448,8 +448,15 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         );
         return ExitCode::FAILURE;
     }
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
-        eprintln!("siox build: signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width);
+    if let Some(s) =
+        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    {
+        eprintln!(
+            "siox build: signal `{}` is {} bits; the LLVM backend supports at most {} bits",
+            s.path,
+            s.width,
+            siox::target::MAX_SIGNAL_WIDTH
+        );
         return ExitCode::FAILURE;
     }
     match siox_llvm::emit_object(&design, &obj) {
@@ -532,13 +539,18 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
     if sem.fe.sink.has_errors() {
         return ExitCode::FAILURE;
     }
-    // Report codegen-blocking IR (bad ids, Unknown, wide signals) cleanly
+    // Report codegen-blocking IR (bad ids, Unknown, oversized signals) cleanly
     // rather than letting the emitter panic.
     let mut issues = design.validate();
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+    if let Some(s) =
+        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    {
         issues.push(format!(
-            "signal `{}` is {} bits; the LLVM backend is 64-bit-word only",
-            s.path, s.width
+            "signal `{}` is {} bits; the LLVM backend supports at most {} ABI words ({} bits)",
+            s.path,
+            s.width,
+            siox::target::MAX_WORDS,
+            siox::target::MAX_SIGNAL_WIDTH,
         ));
     }
     if !issues.is_empty() {
@@ -625,10 +637,15 @@ fn run_tests_llvm(
     design: &siox::ir::Design,
     filter: Option<&str>,
 ) -> Result<Vec<siox::run::TestResult>, String> {
-    // The JIT is 64-bit-word only; reject wide designs and any IR the backend
-    // can't compile.
-    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
-        return Err(format!("signal `{}` is {} bits; the LLVM backend is 64-bit only", s.path, s.width));
+    if let Some(s) =
+        design.signals.iter().find(|s| s.width > siox::target::MAX_SIGNAL_WIDTH)
+    {
+        return Err(format!(
+            "signal `{}` is {} bits; the LLVM backend supports at most {} bits",
+            s.path,
+            s.width,
+            siox::target::MAX_SIGNAL_WIDTH
+        ));
     }
     let issues = design.validate();
     if !issues.is_empty() {
@@ -651,10 +668,22 @@ struct JitEngine<'a, 'ctx> {
 
 impl siox::run::Engine for JitEngine<'_, '_> {
     fn set(&mut self, sig: siox::ir::SignalId, value: u128) {
-        self.jit.set(sig.0, value as u64);
+        let words = siox::target::words_for(self.design.signals[sig.0 as usize].width);
+        for word in 0..words {
+            self.jit.set_word(
+                sig.0,
+                word,
+                (value >> (word * siox::target::ABI_WORD_BITS)) as u64,
+            );
+        }
     }
     fn read(&self, sig: siox::ir::SignalId) -> u128 {
-        self.jit.read(sig.0) as u128
+        let words = siox::target::words_for(self.design.signals[sig.0 as usize].width);
+        (0..words).fold(0u128, |value, word| {
+            value
+                | ((self.jit.read_word(sig.0, word) as u128)
+                    << (word * siox::target::ABI_WORD_BITS))
+        })
     }
     fn settle(&mut self) {
         self.jit.settle();

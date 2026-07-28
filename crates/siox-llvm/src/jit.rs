@@ -159,4 +159,41 @@ mod tests {
             assert_eq!(jit.read_word(0, 0), 42, "neighbour untouched");
         });
     }
+
+    #[test]
+    #[cfg(not(feature = "bitpack"))]
+    fn multiword_add_carries_between_abi_words() {
+        let design = Design {
+            signals: vec![sig("E.a", 128), sig("E.b", 128), sig("E.y", 128)],
+            drivers: vec![Driver {
+                ctx: 0,
+                target: SignalId(2),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Current(SignalId(0))),
+                    rhs: Box::new(Expr::Current(SignalId(1))),
+                },
+            }],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+        with_jit(&design, |jit| {
+            jit.set_word(0, 0, u64::MAX);
+            jit.set_word(0, 1, 0x0123_4567_89AB_CDEF);
+            jit.set_word(1, 0, 1);
+            jit.set_word(1, 1, 0);
+            jit.settle();
+
+            assert_eq!(jit.read_word(2, 0), 0);
+            assert_eq!(
+                jit.read_word(2, 1),
+                0x0123_4567_89AB_CDF0,
+                "the low-word overflow must carry into the same value's high word"
+            );
+        });
+    }
 }

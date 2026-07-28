@@ -26,33 +26,50 @@ pub const WORD_BITS: u32 = 64;
 #[cfg(feature = "word32")]
 pub const WORD_BITS: u32 = 32;
 
-/// How many machine words hold a `width`-bit value. A zero width (a parametric
-/// `unsigned[W]` before elaboration resolves it) still occupies one word, so
-/// callers never index an empty range.
-pub const fn words_for(width: u32) -> u32 {
-    if width <= WORD_BITS {
+/// The largest integer word exposed by the backend ABI.
+///
+/// Logical values may be wider than this. They cross the ABI as consecutive
+/// low-word-first chunks without changing their semantic type.
+pub const ABI_WORD_BITS: u32 = WORD_BITS;
+
+/// Total storage bits for `elements` values whose individual representation is
+/// `element_bits` wide. This is the layout rule behind vectors and arrays:
+/// count and element size are separate properties of the type.
+pub const fn bits_for(elements: u32, element_bits: u32) -> Option<u32> {
+    elements.checked_mul(element_bits)
+}
+
+/// How many ABI words hold a `bits`-wide value. A zero width (a parametric type
+/// before elaboration resolves it) still occupies one word, so callers never
+/// index an empty range.
+pub const fn words_for(bits: u32) -> u32 {
+    if bits <= ABI_WORD_BITS {
         1
     } else {
-        width.div_ceil(WORD_BITS)
+        bits.div_ceil(ABI_WORD_BITS)
     }
 }
 
-/// Whether a value of `width` bits spans more than one word.
-pub const fn is_multiword(width: u32) -> bool {
-    width > WORD_BITS
+/// Calculate both the total bit size and ABI-word count of a repeated type.
+pub const fn layout_for(elements: u32, element_bits: u32) -> Option<(u32, u32)> {
+    match bits_for(elements, element_bits) {
+        Some(bits) => Some((bits, words_for(bits))),
+        None => None,
+    }
 }
 
-/// The widest signal the engines can currently hold.
-///
-/// Multi-word storage is not implemented yet, so this is one word. It is
-/// written in terms of [`WORD_BITS`] rather than as a literal: when multi-word
-/// lands this becomes `WORD_BITS * MAX_WORDS` and every stage that reports or
-/// enforces the limit follows automatically.
-pub const MAX_SIGNAL_WIDTH: u32 = WORD_BITS * MAX_WORDS;
+/// Whether a value of `bits` bits spans more than one ABI word.
+pub const fn is_multiword(bits: u32) -> bool {
+    bits > ABI_WORD_BITS
+}
 
-/// Machine words a single signal may occupy. One until multi-word lowering
-/// (word-indexed `sx_set_word`/`sx_read_word` accessors) is in place.
-pub const MAX_WORDS: u32 = 1;
+/// The widest signal the engines can currently hold, derived from the ABI word
+/// and the number of words the host-side runner can exchange.
+pub const MAX_SIGNAL_WIDTH: u32 = ABI_WORD_BITS * MAX_WORDS;
+
+/// ABI words a single signal may occupy. Start with the width representable by
+/// the runner's `u128`; the word-based ABI itself is not limited to two.
+pub const MAX_WORDS: u32 = 2;
 
 #[cfg(test)]
 mod tests {
@@ -61,12 +78,20 @@ mod tests {
     #[test]
     fn word_counts_round_up() {
         assert_eq!(words_for(1), 1);
-        assert_eq!(words_for(WORD_BITS), 1);
-        assert_eq!(words_for(WORD_BITS + 1), 2);
-        assert_eq!(words_for(WORD_BITS * 2), 2);
-        assert_eq!(words_for(WORD_BITS * 2 + 1), 3);
+        assert_eq!(words_for(ABI_WORD_BITS), 1);
+        assert_eq!(words_for(ABI_WORD_BITS + 1), 2);
+        assert_eq!(words_for(ABI_WORD_BITS * 2), 2);
+        assert_eq!(words_for(ABI_WORD_BITS * 2 + 1), 3);
         // A not-yet-known parametric width still occupies a word.
         assert_eq!(words_for(0), 1);
+    }
+
+    #[test]
+    fn repeated_type_layout_uses_element_size() {
+        assert_eq!(layout_for(128, 1), Some((128, 2)));
+        assert_eq!(layout_for(4, 32), Some((128, 2)));
+        assert_eq!(layout_for(128, 4), Some((512, 8)));
+        assert_eq!(layout_for(u32::MAX, 2), None);
     }
 
     #[test]

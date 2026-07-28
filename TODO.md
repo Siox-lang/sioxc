@@ -188,11 +188,23 @@ Composites already flatten to per-leaf signals, each minimally sized (an enum is
   CPU's native features (AVX / AVX-512 → 256 / 512-bit vector registers) so the
   `-O2` vectorizer can use them for array/vector ops. Off by default the build
   targets a portable baseline (generic x86-64, SSE2 128-bit).
-- 🔴 **`wide`** — signals wider than 64 bits (`unsigned[128]` / `[256]` / `[512]`).
-  Feature flag declared; the base compiler is hard-capped at 64-bit. Needs
-  wide integers (`i128`/`iN`) threaded through `ir::Expr`/`Signal`, the three
-  backends (sized loads/stores + masked arithmetic on the wide types), and VCD.
-  Until then a `>64`-bit signal is rejected rather than silently miscompiled.
+- 🟡 **`wide` — per-type multi-word values** — signals wider than one ABI word
+  (`unsigned[128]` / `[256]` / `[512]`). A value's semantic width belongs to
+  its own type; the backend must not widen every expression to the widest
+  signal in the design. For a repeated/array type, calculate
+  `total_bits = element_count * element_type_size_bits`, then allocate
+  `ceil(total_bits / largest_ABI_word_bits)` words (with checked arithmetic).
+  Struct/array layouts apply this recursively; a view uses its backing
+  struct's layout. LLVM carries each logical value as its corresponding `iN`
+  and legalizes its arithmetic, while `sx_set_word`/`sx_read_word` split only
+  the external ABI representation into low-word-first chunks. ✅ The first
+  two-word increment supports `unsigned[128]`: per-expression LLVM widths,
+  word-indexed JIT exchange, cross-word carry, and linked native AOT are
+  covered. Remaining work: persist source type layouts in the IR instead of
+  backend inference, apply recursive element sizing to non-flattened
+  composites, define wide C-FFI and `bitpack` behavior, extend runner/waveform
+  values beyond `u128`, and add borrows, cross-word shifts/slices, comparisons,
+  and high-word-only event coverage before raising the two-word limit.
 - 🔴 **`f128`** — quad-precision float (LLVM `fp128`). Feature flag declared;
   needs `make_binary`/`emit` to carry `fp128` and a soft-float path for the
   runner (no native Rust `f128`).

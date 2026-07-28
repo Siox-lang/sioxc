@@ -940,3 +940,36 @@ literal's *text*, which is a syntactic concern, and every later stage may use
 
 The corpus (`match_pattern_test.siox` leans on these) stayed green, so no
 legitimate pattern was caught by the new check.
+
+### 2026-07-28 — Codex — starting per-type multi-word LLVM lowering
+
+Working on the `wide` TODO. Shared-file heads-up: `TODO.md`, `src/target.rs`,
+the IR/type-layout boundary, `crates/siox-llvm/src/emit.rs`, the JIT adapter,
+and focused tests. A value's LLVM width will come from its own type, never from
+the widest signal in the design. Physical ABI storage is calculated from the
+type's total bit size:
+
+`total_bits = element_count * element_size_bits`,
+`words = ceil(total_bits / largest ABI word)`.
+
+LLVM will keep each logical value as its own `iN`; only the JIT/native boundary
+splits it into independently addressable ABI words.
+
+### 2026-07-28 — Codex — per-type two-word LLVM values implemented
+
+The first multi-word increment is complete. `unsigned[128]` now lowers as its
+own LLVM `i128`; unrelated narrow expressions retain their own `iN` widths.
+The target layout separates element count from element representation size,
+uses checked multiplication, and derives low-word-first ABI word counts from
+the total bit size. `sioxc` exchanges up to two words through
+`sx_set_word`/`sx_read_word`, while the legacy one-word accessors remain intact.
+
+Coverage includes an `i8` + `i128` mixed design, a carry across the 64-bit word
+boundary in the JIT, the same carry through a linked native AOT object, and a
+source-level `wide_test.siox`. Existing custom operators exposed an important
+contextual-width case (`1 << self'length`); intermediates now retain the width
+they need before assignment truncation. `bitpack` still has a single-word
+layout and now rejects wide signals explicitly.
+
+Gates: workspace green (172 core + all integration tests), LLVM agreement
+36/36, `bitpack` agreement 36/36, corpus 78/78, wide JIT and native AOT green.

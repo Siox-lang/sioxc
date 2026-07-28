@@ -66,6 +66,13 @@ pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<
             if siox::target::MAX_WORDS == 1 { "word" } else { "words" },
         );
     }
+    #[cfg(feature = "bitpack")]
+    if let Some(s) = design.signals.iter().find(|s| s.width > 64) {
+        panic!(
+            "signal `{}` is {} bits wide; the bitpack layout does not yet span ABI words",
+            s.path, s.width
+        );
+    }
     let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
@@ -93,8 +100,6 @@ struct Codegen<'ctx, 'd> {
     slots: Vec<(u32, u32)>,
     #[cfg(feature = "bitpack")]
     words: u32,
-    /// Bit width of the integer computed values are carried in.
-    compute_bits: u32,
 }
 
 /// The smallest machine integer that holds `width` bits. Sub-byte widths (a
@@ -150,10 +155,6 @@ fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
 impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn new(ctx: &'ctx Context, design: &'d Design) -> Self {
         let module = ctx.create_module("design");
-        // One compute type for the whole design, wide enough for its widest
-        // signal (a power of two so LLVM legalizes it cleanly).
-        let widest = design.signals.iter().map(|s| s.width).max().unwrap_or(64).max(64);
-        let compute_bits = widest.next_power_of_two();
         #[cfg(not(feature = "bitpack"))]
         let state_ty = {
             let fields: Vec<_> =
@@ -168,7 +169,6 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             builder: ctx.create_builder(),
             design,
             n: design.signals.len() as u32,
-            compute_bits,
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -178,19 +178,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
-    /// The integer every computed value is carried in. One machine word
-    /// normally; widened to hold the design's widest signal when something
-    /// exceeds that, so operands never need re-extending mid-expression.
-    ///
-    /// Named `i64t` for the common case, which it still is.
+    /// The backend ABI word. This is only for counters, packed storage, and
+    /// external word accessors; logical expressions use [`Self::value_ty`].
     fn i64t(&self) -> inkwell::types::IntType<'ctx> {
-        match self.compute_bits {
-            64 => self.ctx.i64_type(),
-            w => self
-                .ctx
-                .custom_width_int_type(std::num::NonZeroU32::new(w).expect("non-zero width"))
-                .expect("LLVM supports the width"),
-        }
+        self.ctx.i64_type()
+    }
+
+    /// LLVM integer for one logical value. Width is a property of that value's
+    /// type, never of the widest signal elsewhere in the design.
+    fn value_ty(&self, width: u32) -> inkwell::types::IntType<'ctx> {
+        self.ctx
+            .custom_width_int_type(
+                std::num::NonZeroU32::new(width.max(1)).expect("logical widths are non-zero"),
+            )
+            .expect("LLVM supports the logical width")
     }
 
     /// The storage integer type of signal `id` (a field of [`Codegen::state_ty`]).
@@ -238,7 +239,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
         let ty = self.slot_ty(id);
         let v = self.builder.build_load(ty, self.slot_ptr(arr, id), "v").unwrap().into_int_value();
-        self.fit(v, self.i64t())
+        self.fit(v, self.value_ty(self.design.signals[id.0 as usize].width))
     }
 
     /// Zero-extend or truncate `v` to `ty`. Storage, compute and ABI widths all
@@ -312,7 +313,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         } else {
             word_val
         };
-        self.builder.build_and(shifted, i64.const_int(width_mask(w), false), "fld").unwrap()
+        let field =
+            self.builder.build_and(shifted, i64.const_int(width_mask(w), false), "fld").unwrap();
+        self.fit(field, self.value_ty(w))
     }
 
     /// Store signal `id`: read-modify-write its word — clear the field bits,
@@ -323,6 +326,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let w = self.design.signals[id.0 as usize].width;
         let i64 = self.i64t();
         let mask = width_mask(w);
+        let v = self.fit(v, i64);
         let field = self.builder.build_and(v, i64.const_int(mask, false), "m").unwrap();
         let field = if shift > 0 {
             self.builder
@@ -410,7 +414,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let v = self.load("cur", SignalId(id as u32));
+            let v = self.fit(self.load("cur", SignalId(id as u32)), i64);
             incoming.push((v, *bb));
             self.builder.build_unconditional_branch(ret).unwrap();
         }
@@ -459,8 +463,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_switch(sig, done, &cases).unwrap();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let cty = self.i64t();
             let w = self.design.signals[id].width;
+            let cty = self.value_ty(w);
             // shift = word * WORD_BITS, in the compute type.
             let shift = self.builder
                 .build_int_mul(
@@ -506,7 +510,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let mut incoming: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let cty = self.i64t();
+            let cty = self.value_ty(self.design.signals[id].width);
             let shift = self.builder
                 .build_int_mul(
                     self.fit(word, cty),
@@ -606,7 +610,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     None => fired,
                 };
                 let w = self.design.signals[u.target.0 as usize].width;
-                let val = self.mask(self.emit(&u.expr), w);
+                let val = self.emit_at(&u.expr, w);
                 staged.push((u.target, guard, val));
             }
         }
@@ -656,7 +660,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// `event[target] |= (next != prev)` — a change flags the signal.
     fn mark_event(&self, target: SignalId, prev: IntValue<'ctx>, next: IntValue<'ctx>) {
         let ch = self.builder.build_int_compare(IntPredicate::NE, next, prev, "ch").unwrap();
-        let ev = self.builder.build_or(self.load("event", target), self.zext(ch), "ev2").unwrap();
+        let event = self.load("event", target);
+        let changed = self.fit(ch, event.get_type());
+        let ev = self.builder.build_or(event, changed, "ev2").unwrap();
         self.store("event", target, ev);
     }
 
@@ -737,7 +743,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let mut val = prev;
         for &di in drivers {
             let d = &self.design.drivers[di];
-            let e = self.emit(&d.expr);
+            let w = self.design.signals[target.0 as usize].width;
+            let e = self.emit_at(&d.expr, w);
             val = match &d.cond {
                 Some(c) => {
                     let cond = self.as_i1(c);
@@ -747,7 +754,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             };
         }
         let w = self.design.signals[target.0 as usize].width;
-        let masked = self.mask(val, w);
+        let masked = self.fit(val, self.value_ty(w));
         self.store("cur", *target, masked);
         self.mark_event(*target, prev, masked);
     }
@@ -755,22 +762,73 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     // --- expressions ------------------------------------------------------
 
     fn c(&self, v: u64) -> IntValue<'ctx> {
-        self.i64t().const_int(v, false)
+        self.c_at(v, 64)
     }
 
-    /// Truncate to a signal's width by AND-masking (0 / >=64 => unchanged).
+    fn c_at(&self, v: u64, width: u32) -> IntValue<'ctx> {
+        self.value_ty(width).const_int(v, false)
+    }
+
+    /// Truncate or extend to a logical value width.
     fn mask(&self, v: IntValue<'ctx>, width: u32) -> IntValue<'ctx> {
-        if width == 0 || width >= 64 {
-            return v;
+        self.fit(v, self.value_ty(width))
+    }
+
+    /// Natural width of an IR expression. Constants take their minimum useful
+    /// width and acquire a wider contextual width from their enclosing
+    /// operation or assignment.
+    fn expr_width(&self, e: &Expr) -> u32 {
+        match e {
+            Expr::Const(v) => (64 - v.leading_zeros()).max(1),
+            Expr::Real(_) | Expr::CCall { .. } => 64,
+            Expr::Logic(_) => 1,
+            Expr::Current(id) | Expr::Old(id) => {
+                self.design.signals[id.0 as usize].width.max(1)
+            }
+            Expr::Event(_) => 1,
+            Expr::Unary { rhs, .. } => self.expr_width(rhs),
+            Expr::Binary { op, lhs, rhs } => {
+                if matches!(
+                    op,
+                    BinOp::Eq
+                        | BinOp::Ne
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge
+                        | BinOp::FEq
+                        | BinOp::FNe
+                        | BinOp::FLt
+                        | BinOp::FLe
+                        | BinOp::FGt
+                        | BinOp::FGe
+                ) {
+                    1
+                } else if matches!(op, BinOp::Shl) {
+                    let lhs_width = self.expr_width(lhs);
+                    match rhs.as_ref() {
+                        Expr::Const(shift) => lhs_width
+                            .checked_add((*shift).try_into().unwrap_or(u32::MAX))
+                            .unwrap_or(u32::MAX)
+                            .min(siox::target::MAX_SIGNAL_WIDTH),
+                        _ => lhs_width,
+                    }
+                } else {
+                    self.expr_width(lhs).max(self.expr_width(rhs))
+                }
+            }
+            Expr::Slice { hi, lo, .. } => hi - lo + 1,
+            Expr::Select { then, els, .. } => self.expr_width(then).max(self.expr_width(els)),
+            Expr::Unknown => 1,
         }
-        let m = (1u64 << width) - 1;
-        self.builder.build_and(v, self.c(m), "mask").unwrap()
     }
 
     /// Evaluate a condition to an `i1` (nonzero).
     fn as_i1(&self, e: &Expr) -> IntValue<'ctx> {
         let v = self.emit(e);
-        self.builder.build_int_compare(IntPredicate::NE, v, self.c(0), "nz").unwrap()
+        self.builder
+            .build_int_compare(IntPredicate::NE, v, v.get_type().const_zero(), "nz")
+            .unwrap()
     }
 
     /// zext an `i1` back to the i64 word domain.
@@ -779,35 +837,56 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     fn emit(&self, e: &Expr) -> IntValue<'ctx> {
+        self.emit_at(e, self.expr_width(e))
+    }
+
+    fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
-            Expr::Const(v) => self.c(*v),
-            Expr::Real(x) => self.c(x.to_bits()),
+            Expr::Const(v) => self.c_at(*v, width),
+            Expr::Real(x) => self.c_at(x.to_bits(), 64),
             // IR lowering resolves every logic literal to a `Const` (its
             // position in std's logic type), so none reach the backend.
             Expr::Logic(ch) => unreachable!("unresolved logic literal '{ch}' reached the backend"),
-            Expr::Current(id) => self.load("cur", *id),
-            Expr::Old(id) => self.load("old", *id),
-            Expr::Event(id) => self.load("event", *id),
+            Expr::Current(id) => self.mask(self.load("cur", *id), width),
+            Expr::Old(id) => self.mask(self.load("old", *id), width),
+            Expr::Event(id) => self.mask(self.load("event", *id), width),
             Expr::Unary { op, rhs } => {
-                let a = self.emit(rhs);
+                let a = self.emit_at(rhs, width);
                 match op {
                     UnOp::Not => {
-                        let z = self.builder.build_int_compare(IntPredicate::EQ, a, self.c(0), "not").unwrap();
-                        self.zext(z)
+                        let z = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                a,
+                                a.get_type().const_zero(),
+                                "not",
+                            )
+                            .unwrap();
+                        self.fit(z, self.value_ty(width))
                     }
                     UnOp::Neg => self.builder.build_int_neg(a, "neg").unwrap(),
                 }
             }
-            Expr::Binary { op, lhs, rhs } => self.emit_binary(*op, lhs, rhs),
+            Expr::Binary { op, lhs, rhs } => {
+                let operation_width = width.max(self.expr_width(e));
+                let value = self.emit_binary(*op, lhs, rhs, operation_width);
+                self.mask(value, width)
+            }
             Expr::Slice { base, hi, lo } => {
-                let b = self.emit(base);
-                let sh = self.builder.build_right_shift(b, self.c(*lo as u64), false, "sh").unwrap();
-                self.mask(sh, hi - lo + 1)
+                let base_width = self.expr_width(base).max(*hi + 1);
+                let b = self.emit_at(base, base_width);
+                let sh = self
+                    .builder
+                    .build_right_shift(b, self.c_at(*lo as u64, base_width), false, "sh")
+                    .unwrap();
+                let sliced = self.mask(sh, hi - lo + 1);
+                self.mask(sliced, width)
             }
             Expr::Select { cond, then, els } => {
                 let c = self.as_i1(cond);
-                let t = self.emit(then);
-                let e = self.emit(els);
+                let t = self.emit_at(then, width);
+                let e = self.emit_at(els, width);
                 self.builder.build_select(c, t, e, "sel").unwrap().into_int_value()
             }
             Expr::CCall { name, args, f64_args, f64_ret } => {
@@ -820,7 +899,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let mut ptypes: Vec<MT> = Vec::new();
                 let mut vals: Vec<MV> = Vec::new();
                 for (i, a) in args.iter().enumerate() {
-                    let v = self.emit(a);
+                    let v = self.emit_at(a, 64);
                     if f64_args.get(i).copied().unwrap_or(false) {
                         ptypes.push(f64t.into());
                         vals.push(
@@ -861,23 +940,31 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     r.into_int_value()
                 }
             }
-            Expr::Unknown => self.c(0),
+            Expr::Unknown => self.c_at(0, width),
         }
     }
 
-    fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
+    fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, result_width: u32) -> IntValue<'ctx> {
         // Float ops reinterpret the i64 words as f64.
         if matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv) {
             let f = self.ctx.f64_type();
-            let a = self.builder.build_bit_cast(self.emit(lhs), f, "fa").unwrap().into_float_value();
-            let b = self.builder.build_bit_cast(self.emit(rhs), f, "fb").unwrap().into_float_value();
+            let a = self
+                .builder
+                .build_bit_cast(self.emit_at(lhs, 64), f, "fa")
+                .unwrap()
+                .into_float_value();
+            let b = self
+                .builder
+                .build_bit_cast(self.emit_at(rhs, 64), f, "fb")
+                .unwrap()
+                .into_float_value();
             let r = match op {
                 BinOp::FAdd => self.builder.build_float_add(a, b, "fadd").unwrap(),
                 BinOp::FSub => self.builder.build_float_sub(a, b, "fsub").unwrap(),
                 BinOp::FMul => self.builder.build_float_mul(a, b, "fmul").unwrap(),
                 _ => self.builder.build_float_div(a, b, "fdiv").unwrap(),
             };
-            return self.builder.build_bit_cast(r, self.i64t(), "fbits").unwrap().into_int_value();
+            return self.builder.build_bit_cast(r, self.value_ty(64), "fbits").unwrap().into_int_value();
         }
         // Float comparison: reinterpret the words as f64 and compare with
         // ordered predicates (NaN -> false, except `!=`), yielding a 0/1 word.
@@ -886,8 +973,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe
         ) {
             let f = self.ctx.f64_type();
-            let a = self.builder.build_bit_cast(self.emit(lhs), f, "fa").unwrap().into_float_value();
-            let b = self.builder.build_bit_cast(self.emit(rhs), f, "fb").unwrap().into_float_value();
+            let a = self
+                .builder
+                .build_bit_cast(self.emit_at(lhs, 64), f, "fa")
+                .unwrap()
+                .into_float_value();
+            let b = self
+                .builder
+                .build_bit_cast(self.emit_at(rhs, 64), f, "fb")
+                .unwrap()
+                .into_float_value();
             let p = match op {
                 BinOp::FEq => FloatPredicate::OEQ,
                 BinOp::FNe => FloatPredicate::UNE,
@@ -897,14 +992,24 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 _ => FloatPredicate::OGE,
             };
             let c = self.builder.build_float_compare(p, a, b, "fcmp").unwrap();
-            return self.zext(c);
+            return self.fit(c, self.value_ty(result_width));
         }
 
-        let a = self.emit(lhs);
-        let b = self.emit(rhs);
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
+        let operand_width = if comparison {
+            self.expr_width(lhs).max(self.expr_width(rhs))
+        } else {
+            result_width
+        }
+        .max(1);
+        let a = self.emit_at(lhs, operand_width);
+        let b = self.emit_at(rhs, operand_width);
         let cmp = |p: IntPredicate, s: &str| {
             let c = self.builder.build_int_compare(p, a, b, s).unwrap();
-            self.zext(c)
+            self.fit(c, self.value_ty(result_width))
         };
         match op {
             BinOp::Add => self.builder.build_int_add(a, b, "add").unwrap(),
@@ -912,10 +1017,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::Mul => self.builder.build_int_mul(a, b, "mul").unwrap(),
             BinOp::Div => {
                 // Match the interpreter: divide-by-zero yields 0 (B0 formalizes).
-                let is0 = self.builder.build_int_compare(IntPredicate::EQ, b, self.c(0), "d0").unwrap();
-                let safe = self.builder.build_select(is0, self.c(1), b, "den").unwrap().into_int_value();
+                let zero = self.c_at(0, operand_width);
+                let one = self.c_at(1, operand_width);
+                let is0 = self.builder.build_int_compare(IntPredicate::EQ, b, zero, "d0").unwrap();
+                let safe = self.builder.build_select(is0, one, b, "den").unwrap().into_int_value();
                 let q = self.builder.build_int_unsigned_div(a, safe, "div").unwrap();
-                self.builder.build_select(is0, self.c(0), q, "divz").unwrap().into_int_value()
+                self.builder.build_select(is0, zero, q, "divz").unwrap().into_int_value()
             }
             BinOp::Shl => self.builder.build_left_shift(a, b, "shl").unwrap(),
             BinOp::Shr => self.builder.build_right_shift(a, b, false, "shr").unwrap(),
@@ -988,7 +1095,7 @@ mod tests {
         // limit at the declaration; this is the backstop for a width only
         // elaboration knows.
         let design = Design {
-            signals: vec![sig("E.a", 128)],
+            signals: vec![sig("E.a", siox::target::MAX_SIGNAL_WIDTH + 1)],
             drivers: vec![Driver {
                 ctx: 0,
                 target: SignalId(0),
@@ -1002,6 +1109,51 @@ mod tests {
             meta_of: Default::default(),
         };
         emit_module_ir(&design);
+    }
+
+    #[test]
+    #[cfg(not(feature = "bitpack"))]
+    fn expressions_keep_their_own_type_width() {
+        let design = Design {
+            signals: vec![
+                sig("E.a8", 8),
+                sig("E.b8", 8),
+                sig("E.y8", 8),
+                sig("E.a128", 128),
+                sig("E.b128", 128),
+                sig("E.y128", 128),
+            ],
+            drivers: vec![
+                Driver {
+                    ctx: 0,
+                    target: SignalId(2),
+                    cond: None,
+                    expr: Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Current(SignalId(0))),
+                        rhs: Box::new(Expr::Current(SignalId(1))),
+                    },
+                },
+                Driver {
+                    ctx: 0,
+                    target: SignalId(5),
+                    cond: None,
+                    expr: Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Current(SignalId(3))),
+                        rhs: Box::new(Expr::Current(SignalId(4))),
+                    },
+                },
+            ],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+        };
+        let ll = emit_module_ir(&design);
+        assert!(ll.contains("add i8"), "narrow operation was globally widened:\n{ll}");
+        assert!(ll.contains("add i128"), "wide operation lost its type width:\n{ll}");
     }
 
     #[test]
