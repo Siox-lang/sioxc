@@ -1023,3 +1023,20 @@ orchestration now lives in `scripts/test-corpus.sh`, outside the compiler.
 Workspace tests pass. All 74 corpus files containing testbenches compile and
 run through their emitted executables; the four source-only/top files pass
 `sioxc check`, for 78/78 total.
+
+### 2026-07-28 — Codex — rustc-shaped sioxc driver
+
+Audited rustc's documented boundary: a thin executable delegates one
+compilation to the driver/interface; flags such as `--emit` select artifacts,
+`--test` synthesizes but does not run a harness, and Cargo owns project graphs
+and execution. Applying that shape to SIOX now.
+
+The phase subcommands are replaced by one-input compiler flags:
+`--emit object|metadata|source|tokens|ast|tree|ir|llvm-ir`. `--test` remains a
+compile mode only. `main.rs` is now a minimal process entry point delegating to
+`driver.rs`; the frontend stays in `siox` and LLVM stays isolated in
+`siox-llvm`. The architecture guide records how a future Cargo-like tool and a
+later incremental query layer fit without leaking orchestration into `sioxc`.
+
+Gates: workspace green, sioxc integration tests green after the driver split,
+all emit modes smoke-tested, and the external corpus runner is 78/78.

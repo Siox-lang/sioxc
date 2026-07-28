@@ -16,7 +16,7 @@ for source in "$corpus"/*.siox; do
             --std "$root/std" --test "$source" -o "$binary")
     else
         command=(cargo run -q --manifest-path "$root/Cargo.toml" -p sioxc --
-            check "$source" --std "$root/std")
+            "$source" --std "$root/std" --emit metadata)
     fi
     if "${command[@]}" && { [[ ! -e "$binary" ]] || "$binary"; }; then
         passed=$((passed + 1))

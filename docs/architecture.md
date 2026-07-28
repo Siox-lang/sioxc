@@ -68,6 +68,32 @@ The three sibling crates:
 | `sioxc`     | 12 | The `sioxc` binary; runs the pipeline up to the stage each subcommand needs and renders diagnostics. Its native AOT emitter is the crate-local `build` module. Depends on `siox` + `siox-llvm`. |
 | `siox-lsp`  | — | The language server (skeleton). Depends on **`siox` only** — reaches at most the `ir` module for diagnostics, never the backend, so it builds without LLVM. |
 
+## rustc-shaped compiler boundary
+
+The compiler follows rustc's separation of responsibilities:
+
+| rustc concept | siox counterpart |
+| --- | --- |
+| `rustc` executable | `sioxc`'s minimal `main.rs`, which delegates one invocation |
+| `rustc_driver` / `rustc_interface` | `sioxc::driver`, which parses compiler options and composes the pipeline; extractable as a library crate when another tool needs to embed compilation |
+| frontend queries and MIR | `siox::{syntax, resolve, types, elab, ir}` |
+| codegen backend | `siox-llvm`, consuming only `siox::ir::Design` |
+| synthesized libtest harness | `sioxc --test`, which emits a native executable |
+| Cargo | a future project tool for dependency graphs, caching, compiling many inputs, running tests, simulation, and waveform workflows |
+
+The command line therefore has no phase subcommands. `sioxc input.siox`
+performs one compilation; `--emit object|metadata|source|tokens|ast|tree|ir|
+llvm-ir` chooses the requested artifact, while `--test` changes the generated
+artifact into a test executable. The compiler never executes that artifact.
+
+SIOX remains pass-oriented today. Rustc's memoized, demand-driven query system
+is a useful direction once incremental compilation or multiple consumers need
+it, but copying that machinery before persistent typed results exist would add
+coordination cost without improving semantics. The immediate architectural
+step is to keep phase products explicit and make the driver depend only on
+stable compiler interfaces; query caching can then replace individual phase
+calls without changing `sioxc` or the backend boundary.
+
 `src/lib.rs` opens with the module map, and each module's own file opens with a
 doc-comment summarising its responsibility and spec acceptance criteria — read
 it first when entering a module. Within the `siox` crate, refer to other modules
@@ -160,5 +186,7 @@ deferred until something needs precision beyond f64.
 `SourceMap`, runs the stages a subcommand needs on a shared `DiagnosticSink`,
 narrates each stage to stderr (more with `-v`), prints the requested artifact to
 stdout, and exits non-zero if any errors were reported. This makes the CLI the
-practical place to watch data move through the compiler — see the `tokens`,
-`parse -v`, `check`, and `tree` commands.
+practical place to watch data move through the compiler. Like `rustc`, it takes
+one input per invocation: `--emit` selects the artifact and `--test` selects
+test-harness compilation. Project graphs, directory traversal, execution, and
+simulation tooling are deliberately outside the compiler.

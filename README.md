@@ -103,13 +103,14 @@ sioxc sim counter.siox --wave counter.vcd
 
 | Command | What it does |
 | --- | --- |
-| `sioxc check file.siox` | type-check and validate — no simulation |
+| `sioxc file.siox --emit metadata` | type-check and elaborate without code generation |
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
 | `sioxc sim file.siox --wave out.vcd` | simulate and record a waveform |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it
-lives elsewhere. Peeking under the hood? `sioxc ast|ir|tree file.siox` print the
+ lives elsewhere. Peeking under the hood? `sioxc file.siox --emit
+ast|ir|tree` prints the
 parse tree, lowered IR, and instance hierarchy.
 
 ## Editor support

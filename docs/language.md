@@ -433,7 +433,7 @@ let p: Pll = { clk, locked };
 ```
 
 Applying it to anything else is `E-P006`. Instance attributes are preserved
-through elaboration (visible in `sioxc tree`) so synthesis/constraint
+through elaboration (visible with `sioxc file.siox --emit tree`) so synthesis/constraint
 backends can export them to external tools.
 
 ---
@@ -1850,7 +1850,7 @@ Implement:
 The compiler can run:
 
 ```bash
-siox parse counter.siox
+sioxc counter.siox --emit source
 ```
 
 and print a stable AST or pretty-printed source.
@@ -2645,18 +2645,17 @@ Make Phase 1 usable from the command line.
 Minimum commands:
 
 ```bash
-siox check <file>
-siox parse <file>
 sioxc <file>
+sioxc <file> --emit metadata
 sioxc --test <file> -o <test-executable>
 ```
 
 Useful debug commands:
 
 ```bash
-siox ast <file>
-siox ir <file>
-siox tree <file>
+sioxc <file> --emit ast
+sioxc <file> --emit ir
+sioxc <file> --emit tree
 ```
 
 ### Endgoal
@@ -2665,7 +2664,7 @@ A user can write examples, check them, run simulations, and inspect output.
 
 ### Acceptance criteria
 
-- `siox check counter.siox` reports success.
+- `sioxc counter.siox --emit metadata` reports success.
 - `sioxc --test counter_test.siox -o counter-tests` produces a runnable test
   executable.
 - The produced executable accepts a qualified test-name filter.
