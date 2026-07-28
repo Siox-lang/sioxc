@@ -14,7 +14,8 @@ LLVM toolchain. Around it:
 - **`crates/sioxc`** — the compiler CLI; depends on `siox` + `siox-llvm`.
 
 The separate `Siox-lang/siox-lsp` repository includes this compiler repository
-as a submodule and depends only on the backend-independent `siox` crate.
+as its `sioxc` submodule and depends only on the backend-independent `siox`
+crate.
 
 ```mermaid
 flowchart LR

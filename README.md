@@ -116,7 +116,7 @@ parse tree, lowered IR, and instance hierarchy.
 ## Editor support
 
 [`siox-lsp`](https://github.com/Siox-lang/siox-lsp) is maintained in its own
-repository and uses this compiler as a submodule. It provides live diagnostics,
+repository and uses this compiler as its `sioxc` submodule. It provides live diagnostics,
 go-to-definition, hover, completion, rename, and more:
 
 ```bash
