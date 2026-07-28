@@ -11,6 +11,7 @@ failed=0
 for source in "$corpus"/*.siox; do
     name=$(basename "${source%.siox}")
     binary="$tmp/$name"
+    vcd="$tmp/$name.vcd"
     if grep -q '#\[test\]' "$source"; then
         command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
             --std "$root/std" --test "$source" -o "$binary")
@@ -18,7 +19,10 @@ for source in "$corpus"/*.siox; do
         command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
             "$source" --std "$root/std" --emit metadata)
     fi
-    if "${command[@]}" && { [[ ! -e "$binary" ]] || "$binary"; }; then
+    if "${command[@]}" \
+        && { [[ ! -e "$binary" ]] || "$binary" --vcd "$vcd"; } \
+        && { [[ ! -e "$binary" ]] || python3 "$root/scripts/check-vcd.py" "$vcd" --profile "$name"; }
+    then
         passed=$((passed + 1))
     else
         echo "FAILED: $source" >&2

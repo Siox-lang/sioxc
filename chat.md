@@ -1182,3 +1182,10 @@ frequency suffixes supporting fractional real-valued hertz. Generalized IR
 width, scalar-constructor, and real-storage handling for field-less kernel
 newtypes, updated native suffix evaluation, documentation, integration tests,
 and added `time_frequency_test.siox` to the conformance corpus.
+### 2026-07-28 — Codex — added waveform-verified logic simulations
+
+Extended the corpus runner so every generated test executable writes and
+validates a VCD. Added semantic waveform profiles for the FIFO, register file,
+SPI loopback, and struct stream: they check FIFO occupancy/data order, dynamic
+memory write/read, eight-bit SPI completion, busy timing, and hierarchical
+bundle propagation rather than relying only on final test assertions.
