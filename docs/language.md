@@ -2416,8 +2416,8 @@ Export simulation traces for debugging.
 ### Example CLI
 
 The original `siox sim ...` sketch is obsolete: `sioxc` has no `sim` command.
-The generated native test executable will own the VCD option and write the file
-directly.
+The generated native test executable owns the VCD option and writes the file
+directly: `./tests --vcd trace.vcd`.
 
 ### Endgoal
 

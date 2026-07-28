@@ -11,6 +11,7 @@ fn test_no_run_builds_a_runnable_binary() {
     }
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let out = std::env::temp_dir().join(format!("siox_counter_{}", std::process::id()));
+    let vcd = out.with_extension("vcd");
 
     // Build from the repo root so `./std` resolves. The counter fixture lives
     // in-tree (the runnable `.siox` corpus moved to the siox-tests repo, but a
@@ -26,9 +27,34 @@ fn test_no_run_builds_a_runnable_binary() {
     assert!(out.exists(), "no binary produced");
 
     // The binary runs the testbench and exits 0 on PASS.
-    let run = Command::new(&out).status().unwrap();
+    let run = Command::new(&out)
+        .args(["--vcd", vcd.to_str().unwrap()])
+        .status()
+        .unwrap();
     assert!(run.success(), "native simulator returned {:?}", run.code());
+    let trace = std::fs::read_to_string(&vcd).expect("native executable did not write VCD");
+    assert!(trace.contains("$timescale 1fs $end"));
+    assert!(trace.contains("$scope module CounterTest $end"));
+    assert!(trace.contains("$scope module dut $end"));
+    let signal_id = |name: &str| {
+        trace
+            .lines()
+            .find(|line| line.starts_with("$var ") && line.split_whitespace().nth(4) == Some(name))
+            .and_then(|line| line.split_whitespace().nth(3))
+            .expect("signal missing from VCD declarations")
+    };
+    let clk_id = signal_id("clk");
+    let count_id = signal_id("count");
+    assert!(trace.contains("#0\n$dumpvars"));
+    assert!(trace.contains(&format!("#5000000\n1{clk_id}")));
+    assert!(trace.contains(&format!("#105000000\n1{clk_id}\nb00001010 {count_id}")));
+    assert_eq!(
+        trace.matches("#10000000\n").count(),
+        1,
+        "same-time changes must share one timestamp"
+    );
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&vcd);
 }
 
 #[test]
@@ -69,4 +95,79 @@ fn native_testbench_exchanges_more_than_two_words() {
     assert!(run.success(), "wide native test returned {:?}", run.code());
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_vcd_values_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let out = std::env::temp_dir().join(&stem);
+    let vcd = out.with_extension("vcd");
+    std::fs::write(
+        &source,
+        "module vcd_values;
+         using std::logic::Logic;
+         using std::bits::unsigned;
+         enum State { Idle, Run }
+         entity Values {
+             out scalar: Logic;
+             out bus: unsigned[4];
+             out state: State;
+         }
+         impl Values {
+             scalar = 'Z';
+             bus = \"1X0Z\";
+             state = State::Run;
+         }
+         #[test] entity WaveTest {}
+         impl WaveTest {
+             let scalar: Logic;
+             let bus: unsigned[4];
+             let state: State;
+             let dut: Values = {
+                 .scalar = scalar,
+                 .bus = bus,
+                 .state = state,
+             };
+             assert!(scalar == 'Z', \"scalar setup\");
+         }",
+    )
+    .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "VCD value fixture failed to compile");
+    let run = Command::new(&out)
+        .args(["--vcd", vcd.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(run.success(), "VCD value fixture failed to run");
+    let trace = std::fs::read_to_string(&vcd).unwrap();
+    assert!(
+        trace.contains("zv"),
+        "Logic 'Z' was not emitted as z:\n{trace}"
+    );
+    assert!(
+        trace.contains("b1x0z "),
+        "Logic vector metavalues were not preserved:\n{trace}"
+    );
+    assert!(
+        trace.contains("sRun "),
+        "enum symbol was not preserved:\n{trace}"
+    );
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_file(vcd);
 }

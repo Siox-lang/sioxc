@@ -9,7 +9,7 @@
 //! zeroes state between them. First cut: integer/logic/bool designs;
 //! real/char/string testbenches are a follow-on.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::Command;
 
@@ -201,6 +201,7 @@ pub fn build(
          \x20   double d = (double)(sx_rand() >> 11) / (double)(1ULL << 53);\n\
          \x20   return sx_b64(d);\n}\n",
     );
+    prog.push_str(&gen_vcd_runtime(design));
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
@@ -215,7 +216,7 @@ pub fn build(
          \x20   if (t > *now) *now = t;\n\
          \x20   for (signed i = 0; i < n; i++)\n\
          \x20       if (next[i] == t) { sx_set(cid[i], !sx_read(cid[i])); next[i] += half[i]; }\n\
-         \x20   sx_settle();\n\
+         \x20   sx_run_settle(*now);\n\
          \x20   return 1;\n}\n\n",
     );
 
@@ -318,13 +319,224 @@ pub fn build(
     Ok(())
 }
 
+#[derive(Default)]
+struct VcdScope {
+    children: BTreeMap<String, VcdScope>,
+    signals: Vec<(usize, String)>,
+}
+
+fn logic_vcd_symbols(design: &Design, signal: &siox::ir::Signal) -> Option<HashMap<u64, char>> {
+    logic_vcd_symbols_for_type(design, signal.enum_type.as_deref()?)
+}
+
+fn logic_vcd_symbols_for_type(design: &Design, type_name: &str) -> Option<HashMap<u64, char>> {
+    let symbols = design.enum_syms.get(type_name)?;
+    let mut out = HashMap::new();
+    for (&disc, symbol) in symbols {
+        let ch = symbol
+            .strip_prefix('\'')?
+            .strip_suffix('\'')?
+            .chars()
+            .next()?;
+        out.insert(
+            disc,
+            match ch {
+                '0' | 'L' => '0',
+                '1' | 'H' => '1',
+                'Z' => 'z',
+                'U' | 'X' | 'W' | '-' => 'x',
+                _ => return None,
+            },
+        );
+    }
+    Some(out)
+}
+
+fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &VcdScope, design: &Design) {
+    out.push_str(&format!("$scope module {name} $end\n"));
+    for &(id, ref signal_name) in &scope.signals {
+        let signal = &design.signals[id];
+        let kind = if signal.real {
+            "real"
+        } else if signal.enum_type.as_ref().is_some_and(|ty| {
+            logic_vcd_symbols(design, signal).is_none() && design.enum_syms.contains_key(ty)
+        }) {
+            "string"
+        } else {
+            "wire"
+        };
+        let width = if kind == "string" || logic_vcd_symbols(design, signal).is_some() {
+            1
+        } else {
+            signal.width.max(1)
+        };
+        out.push_str(&format!("$var {kind} {width} v{id} {signal_name} $end\n"));
+    }
+    for (child_name, child) in &scope.children {
+        emit_vcd_scope_header(out, child_name, child, design);
+    }
+    out.push_str("$upscope $end\n");
+}
+
+/// Generate the VCD writer into the native executable. Values are sampled
+/// directly from the design ABI after each settle; no trace is returned to the
+/// compiler process.
+fn gen_vcd_runtime(design: &Design) -> String {
+    let companions: std::collections::HashSet<usize> =
+        design.meta_of.values().map(|id| *id as usize).collect();
+    let mut root = VcdScope::default();
+    for (id, signal) in design.signals.iter().enumerate() {
+        if companions.contains(&id) {
+            continue;
+        }
+        let mut parts = signal.path.split('.').collect::<Vec<_>>();
+        let signal_name = parts.pop().unwrap_or("signal").to_string();
+        let mut scope = &mut root;
+        if parts.is_empty() {
+            parts.push("top");
+        }
+        for part in parts {
+            scope = scope.children.entry(part.to_string()).or_default();
+        }
+        scope.signals.push((id, signal_name));
+    }
+    let mut header =
+        String::from("$version siox native test executable $end\n$timescale 1fs $end\n");
+    for (name, scope) in &root.children {
+        emit_vcd_scope_header(&mut header, name, scope, design);
+    }
+    header.push_str("$enddefinitions $end\n");
+
+    let n = design.signals.len().max(1);
+    let mut c = format!(
+        "static FILE *g_vcd;\n\
+         static sx_value g_vcd_last[{n}];\n\
+         static unsigned char g_vcd_seen[{n}];\n\
+         static uint64_t g_vcd_base, g_vcd_last_time;\n\
+         static signed g_vcd_started;\n\
+         static signed sx_vcd_open(const char *path) {{\n\
+         \x20   g_vcd = fopen(path, \"wb\");\n\
+         \x20   if (!g_vcd) {{ fprintf(stderr, \"cannot open VCD output %s\\n\", path); return 0; }}\n\
+         \x20   fputs(\"{}\", g_vcd);\n\
+         \x20   return 1;\n\
+         }}\n\
+         static void sx_vcd_close(void) {{ if (g_vcd) {{ fclose(g_vcd); g_vcd = 0; }} }}\n\
+         static void sx_vcd_begin_test(void) {{\n\
+         \x20   if (!g_vcd) return;\n\
+         \x20   g_vcd_base = g_vcd_started ? g_vcd_last_time + 1 : 0;\n\
+         \x20   memset(g_vcd_seen, 0, sizeof(g_vcd_seen));\n\
+         }}\n\
+         static void sx_vcd_sample(uint64_t now) {{\n\
+         \x20   if (!g_vcd) return;\n\
+         \x20   uint64_t _time = g_vcd_base + now;\n\
+         \x20   signed _wrote = 0, _initial = !g_vcd_started;\n",
+        c_escape(&header)
+    );
+
+    let timestamp = "if (!_wrote) { if (_initial || _time != g_vcd_last_time) fprintf(g_vcd, \"#%llu\\n\", (unsigned long long)_time); if (_initial) fputs(\"$dumpvars\\n\", g_vcd); _wrote = 1; }";
+    for (id, signal) in design.signals.iter().enumerate() {
+        if companions.contains(&id) {
+            continue;
+        }
+        let meta = design
+            .meta_of
+            .get(&(id as u32))
+            .copied()
+            .map(|v| v as usize);
+        c.push_str(&format!("    {{ sx_value _v = sx_read({id});"));
+        if let Some(meta_id) = meta {
+            c.push_str(&format!(
+                " sx_value _m = sx_read({meta_id}); if (!g_vcd_seen[{id}] || _v != g_vcd_last[{id}] || !g_vcd_seen[{meta_id}] || _m != g_vcd_last[{meta_id}]) {{ {timestamp} "
+            ));
+            let table = ["ULogic", "Logic"]
+                .iter()
+                .find_map(|name| logic_vcd_symbols_for_type(design, name))
+                .unwrap_or_default();
+            c.push_str("fputc('b', g_vcd); for (signed _b = ");
+            c.push_str(&signal.width.saturating_sub(1).to_string());
+            c.push_str("; _b >= 0; _b--) { unsigned _d = (unsigned)((_m >> (_b * 4)) & 15); signed _ch = 'x'; switch (_d) {");
+            let mut entries = table.into_iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(disc, _)| *disc);
+            for (disc, ch) in entries {
+                c.push_str(&format!("case {disc}: _ch = '{ch}'; break;"));
+            }
+            c.push_str("} if (_ch != 'x' && _ch != 'z') _ch = ((_v >> _b) & 1) ? '1' : '0'; fputc(_ch, g_vcd); }");
+            c.push_str(&format!(
+                " fprintf(g_vcd, \" v{id}\\n\"); g_vcd_last[{meta_id}] = _m; g_vcd_seen[{meta_id}] = 1;"
+            ));
+        } else {
+            c.push_str(&format!(
+                " if (!g_vcd_seen[{id}] || _v != g_vcd_last[{id}]) {{ {timestamp} "
+            ));
+            if signal.real {
+                c.push_str(&format!(
+                    "fprintf(g_vcd, \"r%.17g v{id}\\n\", sx_f64((uint64_t)_v));"
+                ));
+            } else if let Some(table) = logic_vcd_symbols(design, signal) {
+                c.push_str("signed _ch = 'x'; switch ((uint64_t)_v) {");
+                let mut entries = table.into_iter().collect::<Vec<_>>();
+                entries.sort_by_key(|(disc, _)| *disc);
+                for (disc, ch) in entries {
+                    c.push_str(&format!("case {disc}ULL: _ch = '{ch}'; break;"));
+                }
+                c.push_str(&format!("}} fprintf(g_vcd, \"%cv{id}\\n\", _ch);"));
+            } else if let Some(symbols) = signal
+                .enum_type
+                .as_ref()
+                .and_then(|ty| design.enum_syms.get(ty))
+            {
+                c.push_str("switch ((uint64_t)_v) {");
+                let mut entries = symbols.iter().collect::<Vec<_>>();
+                entries.sort_by_key(|(disc, _)| **disc);
+                for (&disc, symbol) in entries {
+                    c.push_str(&format!(
+                        "case {disc}ULL: fputs(\"s{} v{id}\\n\", g_vcd); break;",
+                        c_escape(symbol)
+                    ));
+                }
+                c.push_str(&format!(
+                    "default: fprintf(g_vcd, \"s%llu v{id}\\n\", (unsigned long long)_v); break; }}"
+                ));
+            } else if signal.width <= 1 {
+                c.push_str(&format!(
+                    "fprintf(g_vcd, \"%cv{id}\\n\", (_v & 1) ? '1' : '0');"
+                ));
+            } else {
+                c.push_str("fputc('b', g_vcd); for (signed _b = ");
+                c.push_str(&signal.width.saturating_sub(1).to_string());
+                c.push_str("; _b >= 0; _b--) fputc(((_v >> _b) & 1) ? '1' : '0', g_vcd);");
+                c.push_str(&format!(" fputs(\" v{id}\\n\", g_vcd);"));
+            }
+        }
+        c.push_str(&format!(
+            " g_vcd_last[{id}] = _v; g_vcd_seen[{id}] = 1; }} }}\n"
+        ));
+    }
+    c.push_str(
+        "    if (_wrote) { if (_initial) fputs(\"$end\\n\", g_vcd); g_vcd_started = 1; g_vcd_last_time = _time; }\n\
+         }\n\
+         static void sx_run_settle(uint64_t now) { sx_settle(); sx_vcd_sample(now); }\n\n",
+    );
+    c
+}
+
 /// The libtest-style `main` that runs each `test_<name>` and reports results.
-/// Takes an optional name-substring filter as `argv[1]`, like a rustc test
-/// binary (`./testbin <filter>`).
+/// Accepts an optional name-substring filter and `--vcd <path>`.
 fn gen_main(names: &[(String, String)]) -> String {
     let mut m = String::new();
     m.push_str("signed main(signed argc, char **argv) {\n");
-    m.push_str("    const char *filter = argc > 1 ? argv[1] : 0;\n");
+    m.push_str(
+        "    const char *filter = 0, *vcd_path = 0;\n\
+         \x20   for (signed i = 1; i < argc; i++) {\n\
+         \x20       if (!strcmp(argv[i], \"--vcd\")) {\n\
+         \x20           if (++i == argc) { fprintf(stderr, \"--vcd requires a path\\n\"); return 2; }\n\
+         \x20           vcd_path = argv[i];\n\
+         \x20       } else if (!strncmp(argv[i], \"--vcd=\", 6)) vcd_path = argv[i] + 6;\n\
+         \x20       else if (!filter) filter = argv[i];\n\
+         \x20       else { fprintf(stderr, \"unexpected argument: %s\\n\", argv[i]); return 2; }\n\
+         \x20   }\n\
+         \x20   if (vcd_path && !sx_vcd_open(vcd_path)) return 2;\n",
+    );
     m.push_str("    signed failed = 0, ran = 0, filtered = 0;\n");
     // Count how many tests match, so the "running N tests" line is post-filter.
     for (_, display) in names {
@@ -346,7 +558,7 @@ fn gen_main(names: &[(String, String)]) -> String {
          \x20   if (g_warnings) printf(\"; %d warning%s\", g_warnings, g_warnings == 1 ? \"\" : \"s\");\n\
          \x20   printf(\"\\n\");\n",
     );
-    m.push_str("    return failed ? 1 : 0;\n}\n");
+    m.push_str("    sx_vcd_close();\n    return failed ? 1 : 0;\n}\n");
     m
 }
 
@@ -1219,7 +1431,7 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "signed test_{}(void) {{\n    sx_reset();\n",
+            "signed test_{}(void) {{\n    sx_reset();\n    sx_vcd_begin_test();\n",
             self.name
         ));
 
@@ -1351,7 +1563,7 @@ impl Ctx<'_> {
         // settle also catches violations that occur inside await loops).
         let b = b.replace(
             "sx_settle();",
-            "sx_settle(); if (sx_check_ranges()) return 1;",
+            "sx_run_settle(_now); if (sx_check_ranges()) return 1;",
         );
         Ok(b)
     }

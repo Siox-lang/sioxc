@@ -118,16 +118,14 @@ Current baseline:
 - ✅ Native tests support filtering, assertions, timing/`await`, multiple
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
   reporting.
+- ✅ Generated test executables accept `--vcd <path>` and write hierarchy,
+  femtosecond timestamps, changed arbitrary-width values, Logic x/z, real
+  values, and symbolic enums directly from the native scheduler.
 
 Remaining:
 
-- 🔴 **Generated VCD output.** Generate a VCD writer into the native test
-  executable. Its scheduler should open the requested `.vcd`, declare the
-  elaborated hierarchy, and emit changed low-word-first signal values at each
-  timestamp directly; do not buffer a compiler-side trace or route values back
-  through `sioxc`.
-- 🔴 **FST output.** Add compressed waveform output for large simulations after
-  the generated waveform path is established.
+- 🔴 **FST output.** Add compressed waveform output for large simulations using
+  the same scheduler-side change points as VCD.
 - 🔴 **Runtime file reads.** `read`/`read_to_string` fixtures are currently read
   while building a test executable and baked into it. Add runtime
   `fopen`/`fread` plus dynamic-length string/array ownership.

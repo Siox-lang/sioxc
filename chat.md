@@ -1167,3 +1167,10 @@ Removed `src/target.rs` and the inconsistent `word32` feature. The module was
 only used by LLVM and its generated C harness, whose ABI is explicitly
 low-word-first 64-bit chunks. `llvm` now owns `ABI_WORD_BITS` and `words_for`;
 unused generic repeated-layout helpers were removed.
+### 2026-07-28 — Codex — generated executables now write VCD directly
+
+Added `--vcd <path>`/`--vcd=<path>` to native test executables. The generated C
+scheduler writes hierarchy, 1fs timestamps, change-only arbitrary-width values,
+Logic x/z, real values, and symbolic enums without a compiler-side trace
+buffer. Added native integration coverage for timing, hierarchy, same-time
+coalescing, metavalues, and enum symbols; updated TODO and user documentation.

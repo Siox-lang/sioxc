@@ -68,7 +68,7 @@ earliest pending event and advances to it:
 
 ## Waveforms
 
-Waveform output will use
+Waveform output uses
 [VCD](https://en.wikipedia.org/wiki/Value_change_dump) (Value Change Dump), the
 format every digital waveform viewer reads. The generated native test
 executable owns the file: while running its scheduler it opens the requested
@@ -76,8 +76,15 @@ executable owns the file: while running its scheduler it opens the requested
 does not receive samples back, and the compiler library does not retain a trace
 or waveform writer.
 
-This generated VCD path is still outstanding. siox will not ship a viewer; the
-resulting file is opened in an external waveform application.
+```bash
+sioxc --test counter_test.siox -o counter-tests
+./counter-tests --vcd counter.vcd
+```
+
+The optional test-name filter may appear before or after `--vcd`. When several
+tests run, their traces are placed consecutively on one monotonic timeline.
+siox does not ship a viewer; the resulting file is opened in an external
+waveform application.
 
 **How siox values appear:**
 

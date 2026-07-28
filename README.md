@@ -92,9 +92,14 @@ to select a subset: `./counter-tests examples::counter::CounterTest`.
 
 ## See the waveforms
 
-Generated VCD output is the next native-runtime milestone. The compiled test
-executable—not `sioxc`—will write the requested `.vcd` while it runs. The file
-can then be opened in a waveform viewer such as
+The compiled test executable—not `sioxc`—writes the requested `.vcd` while it
+runs:
+
+```bash
+./counter-tests --vcd counter.vcd
+```
+
+The file can then be opened in a waveform viewer such as
 [GTKWave](https://gtkwave.sourceforge.net/) or
 [Surfer](https://surfer-project.org/).
 
@@ -104,6 +109,7 @@ can then be opened in a waveform viewer such as
 | --- | --- |
 | `sioxc file.siox --emit metadata` | type-check and elaborate without code generation |
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
+| `./tests --vcd out.vcd [filter]` | run generated tests and write a VCD |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it
