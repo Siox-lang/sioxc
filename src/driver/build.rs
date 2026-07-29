@@ -1738,6 +1738,23 @@ impl Ctx<'_> {
                 .iter()
                 .any(|(f, _)| self.map.contains_key(&format!("{}.{}", l.name.text, f)));
         if connected {
+            // The values live in signals, so there is nothing to declare — but
+            // the leaves' declared types are still needed to display and
+            // dispatch on them. Without this a connected `signed` field read
+            // back as its bit pattern (253 for -3) while the identical field
+            // on an unconnected struct read correctly.
+            self.local_types
+                .borrow_mut()
+                .insert(l.name.text.clone(), head.to_string());
+            for (f, fty) in fields {
+                let key = format!("{}.{}", l.name.text, f);
+                if let Some((fam, w)) = self.declared_family(fty) {
+                    self.local_families.borrow_mut().insert(key.clone(), fam);
+                    self.local_widths.borrow_mut().insert(key, w);
+                } else if let Some(w) = self.declared_width(fty) {
+                    self.local_widths.borrow_mut().insert(key, w);
+                }
+            }
             return Ok(false);
         }
         self.local_types
@@ -2279,8 +2296,11 @@ impl Ctx<'_> {
         // this a call never dispatched an impl at all and `neg(x) < 0` fell
         // back to an unsigned compare.
         let (fam, lwidth) = match lhs {
-            ast::Expr::Path(p) if p.segments.len() == 1 => {
-                let name = p.segments[0].text.clone();
+            // Any named value: a plain local, or a struct leaf like `p.x`
+            // (an `Expr::Field`, which this matched on shape and so missed —
+            // a connected `signed` field then compared unsigned).
+            _ if expr_path(lhs).is_some() => {
+                let name = expr_path(lhs).unwrap();
                 let family = self
                     .local_families
                     .borrow()
