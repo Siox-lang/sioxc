@@ -2097,10 +2097,10 @@ impl<'a> Checker<'a> {
             Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return,
         };
-        // `assert!(cond, "msg", args..)` puts the format string second.
+        // `assert!`/`warn!(cond, "msg", args..)` put the format string second.
         let fmt_at = match name {
             "print" => 0,
-            "assert" => 1,
+            "assert" | "warn" => 1,
             _ => return,
         };
         let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else {
@@ -5018,6 +5018,28 @@ mod tests {
             "{header}#[precedence = 5] impl Operator<\"^^\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
         );
         assert_eq!(check_src(&ok), 0);
+    }
+
+    #[test]
+    fn every_formatted_macro_checks_arity() {
+        let fixture =
+            |call: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {call}; }}\n");
+        for call in [
+            "print!(\"{}\")",
+            "assert!(true, \"{}\")",
+            "warn!(true, \"{}\")",
+        ] {
+            assert_eq!(
+                check_src(&fixture(call)),
+                1,
+                "`{call}` should diagnose its missing format argument"
+            );
+        }
+        assert_eq!(
+            check_src(&fixture("warn!(true, \"{}\", 1)")),
+            0,
+            "a matching warning format argument is valid"
+        );
     }
 
     #[test]

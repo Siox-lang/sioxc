@@ -239,6 +239,18 @@ pub fn build(
          buffer[3] = (char)(0x80 | (value & 0x3f)); buffer[4] = 0; }}\n\
          \x20   else {{ buffer[0] = '?'; buffer[1] = 0; }}\n\
          \x20   return buffer;\n\
+         }}\n\
+         static char *sx_chars(const sx_value *values, size_t length, char *buffer) {{\n\
+         \x20   char *cursor = buffer;\n\
+         \x20   for (size_t i = 0; i < length; ++i) {{\n\
+         \x20       char encoded[5];\n\
+         \x20       sx_utf8(values[i], encoded);\n\
+         \x20       size_t bytes = strlen(encoded);\n\
+         \x20       memcpy(cursor, encoded, bytes);\n\
+         \x20       cursor += bytes;\n\
+         \x20   }}\n\
+         \x20   *cursor = '\\0';\n\
+         \x20   return buffer;\n\
          }}\n"
     ));
     prog.push_str("extern void sx_settle(void);\n");
@@ -2111,6 +2123,7 @@ impl Ctx<'_> {
                 .map(|id| &self.design.signals[id.0 as usize]);
             let local_type =
                 expr_path(a).and_then(|path| self.local_types.borrow().get(&path).cloned());
+            let string_elems = self.formatted_string_elems(a);
             let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
                 matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
                     // `uniform()` returns a real but has no signal to ask.
@@ -2122,7 +2135,22 @@ impl Ctx<'_> {
                 sig.is_some_and(|signal| signal.char) || local_type.as_deref() == Some("Char");
             let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or(local_type);
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
-            if let Some(syms) = enum_syms {
+            if let ast::Expr::StrLit { text, .. } = a {
+                cfmt.push_str("%s");
+                cargs.push(format!("\"{}\"", c_escape(text)));
+            } else if let Some(elems) = string_elems {
+                cfmt.push_str("%s");
+                if elems.is_empty() {
+                    cargs.push("\"\"".into());
+                } else {
+                    let capacity = elems.len().saturating_mul(4).saturating_add(1);
+                    cargs.push(format!(
+                        "sx_chars((sx_value[]){{{}}}, {}, (char[{capacity}]){{0}})",
+                        elems.join(", "),
+                        elems.len()
+                    ));
+                }
+            } else if let Some(syms) = enum_syms {
                 let mut tern = String::from("\"?\"");
                 for (disc, sym) in syms {
                     let esc = c_escape(sym);
@@ -2178,7 +2206,20 @@ impl Ctx<'_> {
             .flat_map(|symbols| symbols.values().map(|symbol| symbol.len() as u64 + 1))
             .max()
             .unwrap_or(0);
-        let argument_capacity = decimal_capacity.max(enum_capacity).max(32);
+        let string_capacity = rest
+            .iter()
+            .filter_map(|arg| match arg {
+                ast::Expr::StrLit { text, .. } => Some(text.len() as u64 + 1),
+                _ => self
+                    .formatted_string_elems(arg)
+                    .map(|elems| (elems.len() as u64).saturating_mul(4).saturating_add(1)),
+            })
+            .max()
+            .unwrap_or(0);
+        let argument_capacity = decimal_capacity
+            .max(enum_capacity)
+            .max(string_capacity)
+            .max(32);
         let capacity = u64::try_from(text.len())
             .unwrap_or(u64::MAX)
             .saturating_add(
@@ -2398,6 +2439,21 @@ impl Ctx<'_> {
             elems.push(c_local_ident(&format!("{path}[{}]", elems.len())));
         }
         (!elems.is_empty()).then_some(elems)
+    }
+
+    /// A formatted string argument as its per-character reads. Empty
+    /// testbench-local strings deliberately produce an empty vector; they
+    /// otherwise have no element local through which `c_string_elems` could
+    /// recognize them.
+    fn formatted_string_elems(&self, e: &ast::Expr) -> Option<Vec<String>> {
+        let path = expr_path(e)?;
+        let ty = self.local_types.borrow().get(&path).cloned();
+        let elems = self.c_string_elems(e);
+        match ty.as_deref() {
+            Some("string") => Some(elems.unwrap_or_default()),
+            Some("Char") if elems.is_some() => elems,
+            _ => None,
+        }
     }
 
     /// Whole-string `==` / `!=` as a C boolean, when one operand is a string

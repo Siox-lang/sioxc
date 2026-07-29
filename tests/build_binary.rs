@@ -364,8 +364,12 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              impl T {{
                  let wide: unsigned[128] = {wide};
                  let character: Char = 'λ';
+                 let text: string = \"hé🙂\";
+                 let empty: string = \"\";
                  print!(\"wide {{}} char {{}}\", wide, character);
+                 print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
                  warn!(false, \"{long} {{}}\", wide);
+                 warn!(false, \"string argument {{}}\", text);
              }}"
         ),
     )
@@ -395,8 +399,16 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         "formatted output was truncated or mis-encoded:\n{stdout}"
     );
     assert!(
+        stdout.contains("strings literal hé🙂 <>"),
+        "string arguments were not formatted as Unicode text:\n{stdout}"
+    );
+    assert!(
         stderr.contains(&format!("{long} {wide}")),
         "warning buffer truncated the formatted message:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("string argument hé🙂"),
+        "warning did not format its string argument:\n{stderr}"
     );
 
     let _ = std::fs::remove_file(source);

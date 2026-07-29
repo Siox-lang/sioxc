@@ -1334,3 +1334,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
   storage derived from the format text, arity, numeric width, and enum symbols.
 - Added an executable regression covering an `unsigned[128]` maximum, a
   non-ASCII character, and a warning message longer than the old fixed buffer.
+
+### 2026-07-29 — Codex — format strings as values
+
+- Fixed native `print!`, `assert!`, and `warn!` formatting of string literals
+  and string/`Char[]` locals. They now reuse the existing per-character
+  representation and encode each code point as UTF-8, including empty strings.
+- Included formatted string argument sizes in generated diagnostic-buffer
+  capacity so a large string cannot reintroduce truncation.
+- Extended format-arity checking to `warn!`; it previously covered `print!`
+  and `assert!` but silently accepted missing or extra warning arguments.
+- Added focused semantic/native regressions and exercised literals, Unicode
+  locals, and empty strings in the external formatting corpus.
