@@ -48,6 +48,9 @@ division, arithmetic-right-shift, and formatting semantics. Each `for` body has
 its own value/type scope: a range binds an `integer`, collection iteration binds
 the element type, nested shadowing restores the enclosing loop metadata, and
 leaving the loop restores any same-named outer local.
+The same signed behavior applies to module constants, function/method results,
+struct fields, plain connected integers, and width-constrained integer signals;
+constrained values are sign-extended from their stored width before use.
 Named `real` constants and real-typed parameters/returns of ordinary functions
 and methods retain that same representation while native code inlines them.
 Struct-local numeric leaves use their declared width as well: fields wider

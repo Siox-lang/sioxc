@@ -73,6 +73,9 @@ pub struct Signal {
     /// A `real`-typed value: the 64-bit slot holds f64 bits, and arithmetic
     /// uses the float operators.
     pub real: bool,
+    /// A kernel `integer` value uses signed ABI-word comparisons/division and
+    /// formatting in native testbench expressions.
+    pub integer: bool,
     /// A `Char`-typed value: the slot holds a symbol (stored as its Unicode
     /// code point — an implementation detail); character literals compared or
     /// assigned to it read through the Unicode table.
@@ -1974,6 +1977,7 @@ impl<'a> Lowering<'a> {
             path: format!("{entity}.{name}"),
             width,
             real: false,
+            integer: false,
             char: false,
             range: None,
             init: vec![0],
@@ -2000,6 +2004,7 @@ impl<'a> Lowering<'a> {
             path: format!("{}$meta", sig.path),
             width: sig.width * 4,
             real: false,
+            integer: false,
             char: false,
             range: None,
             init: discs,
@@ -2021,6 +2026,7 @@ impl<'a> Lowering<'a> {
             path: format!("{}$meta", sig.path),
             width: sig.width * 4,
             real: false,
+            integer: false,
             char: false,
             range: None,
             init: vec![0],
@@ -2335,6 +2341,8 @@ impl<'a> Lowering<'a> {
             if let Some(&id) = self.locals.get(name) {
                 if is_real {
                     self.out.signals[id.0 as usize].real = true;
+                } else {
+                    self.out.signals[id.0 as usize].integer = true;
                 }
                 self.out.signals[id.0 as usize].range = range;
             }
@@ -2370,6 +2378,8 @@ impl<'a> Lowering<'a> {
                         let head = p.segments[0].text.as_str();
                         if head == "real" || struct_derives_kernel(head, "real", &self.structs) {
                             self.out.signals[id.0 as usize].real = true;
+                        } else if head == "integer" {
+                            self.out.signals[id.0 as usize].integer = true;
                         } else if head == "Char"
                             || struct_derives_kernel(head, "Char", &self.structs)
                         {
@@ -7287,6 +7297,29 @@ mod tests {
     }
 
     #[test]
+    fn signals_retain_kernel_integer_identity() {
+        let design = lower_src(
+            "module m;
+             #[top] entity E {
+                 out plain: integer;
+                 out constrained: integer<-10..10>;
+                 out bits: unsigned[8];
+             }
+             impl E { plain = -8; constrained = -3; bits = 255; }",
+        );
+        let signal = |suffix: &str| {
+            design
+                .signals
+                .iter()
+                .find(|signal| signal.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no signal {suffix}"))
+        };
+        assert!(signal(".plain").integer);
+        assert!(signal(".constrained").integer);
+        assert!(!signal(".bits").integer);
+    }
+
+    #[test]
     fn deep_acyclic_type_derivation_has_no_magic_depth_limit() {
         let mut src = String::from("module m;\nstruct S0(Bit);\n");
         for i in 1..80 {
@@ -7991,6 +8024,7 @@ mod tests {
             path: "s".into(),
             width: w,
             real: false,
+            integer: false,
             char: false,
             range: None,
             init: vec![0],

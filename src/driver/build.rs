@@ -140,6 +140,11 @@ pub fn build(
         .filter(|declaration| type_head_name(&declaration.ty) == Some("real"))
         .map(|declaration| declaration.name.text.clone())
         .collect();
+    let integer_consts: std::collections::HashSet<String> = const_decls
+        .iter()
+        .filter(|declaration| type_head_name(&declaration.ty) == Some("integer"))
+        .map(|declaration| declaration.name.text.clone())
+        .collect();
     let const_ranges: HashMap<String, (i64, i64)> = const_decls
         .iter()
         .filter(|declaration| type_head_name(&declaration.ty) == Some("range"))
@@ -274,6 +279,13 @@ pub fn build(
          static sx_value sx_ishr(int64_t lhs, sx_value rhs) {{\n\
          \x20   return rhs >= 64 ? (lhs < 0 ? (sx_value)-1 : 0) \
          : (sx_value)(uint64_t)(lhs >> rhs);\n\
+         }}\n\
+         static int64_t sx_i64(sx_value value, uint32_t width) {{\n\
+         \x20   uint64_t low = (uint64_t)value;\n\
+         \x20   if (width == 0 || width >= 64) return (int64_t)low;\n\
+         \x20   uint64_t mask = (UINT64_C(1) << width) - 1, sign = UINT64_C(1) << (width - 1);\n\
+         \x20   low &= mask;\n\
+         \x20   return (int64_t)((low ^ sign) - sign);\n\
          }}\n\
          static sx_value sx_mask(sx_value value, uint32_t width) {{\n\
          \x20   return width >= {value_bits} ? value : value & (((sx_value)1 << width) - 1);\n\
@@ -439,6 +451,7 @@ pub fn build(
             const_exprs: &const_exprs,
             consts: &consts,
             real_consts: &real_consts,
+            integer_consts: &integer_consts,
             const_ranges: &const_ranges,
             aliases: &aliases,
             tmp: Default::default(),
@@ -799,6 +812,8 @@ struct Ctx<'a> {
     /// Module constants declared as `real`; their stored C expressions are f64
     /// bit patterns and must be decoded when used as operands.
     real_consts: &'a std::collections::HashSet<String>,
+    /// Module constants declared as kernel `integer`.
+    integer_consts: &'a std::collections::HashSet<String>,
     /// Named range constants used by local type indices.
     const_ranges: &'a HashMap<String, (i64, i64)>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
@@ -2860,7 +2875,11 @@ impl Ctx<'_> {
                 cargs.push(format!("sx_utf8(({}), (char[5]){{0}})", self.expr(a)?));
             } else if self.is_integer_operand(a) {
                 cfmt.push_str("%lld");
-                cargs.push(format!("(long long)(int64_t)({})", self.expr(a)?));
+                let rendered = self.expr(a)?;
+                cargs.push(format!(
+                    "(long long)({})",
+                    self.c_integer_operand(a, &rendered)
+                ));
             } else {
                 cfmt.push_str("%s");
                 cargs.push(format!(
@@ -3211,9 +3230,26 @@ impl Ctx<'_> {
     /// comparisons, division, and right shift.
     fn is_integer_operand(&self, e: &ast::Expr) -> bool {
         match e {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs,
+                ..
+            } => {
+                return matches!(rhs.as_ref(), ast::Expr::Int { text, .. } if !text.contains('.'))
+                    || self.is_integer_operand(rhs);
+            }
             ast::Expr::Unary { rhs, .. } => return self.is_integer_operand(rhs),
             ast::Expr::Binary { lhs, rhs, .. } => {
                 return self.is_integer_operand(lhs) || self.is_integer_operand(rhs);
+            }
+            ast::Expr::IfExpr { then, els, .. } => {
+                return self.is_integer_operand(then) || self.is_integer_operand(els);
+            }
+            ast::Expr::Match { arms, .. } => {
+                return arms
+                    .iter()
+                    .filter_map(ast::MatchArm::value_expr)
+                    .any(|value| self.is_integer_operand(value));
             }
             ast::Expr::SysAttr { attr, .. }
                 if matches!(
@@ -3254,7 +3290,30 @@ impl Ctx<'_> {
             .and_then(|types| types.get(&path))
             .map(String::as_str)
             == Some("integer")
+            || self.integer_consts.contains(&path)
             || self.local_types.borrow().get(&path).map(String::as_str) == Some("integer")
+            || self
+                .map
+                .get(&path)
+                .is_some_and(|id| self.design.signals[id.0 as usize].integer)
+    }
+
+    fn c_integer_operand(&self, e: &ast::Expr, rendered: &str) -> String {
+        let width = expr_path(e).and_then(|path| {
+            self.map
+                .get(&path)
+                .filter(|id| self.design.signals[id.0 as usize].integer)
+                .map(|id| self.design.signals[id.0 as usize].width)
+                .or_else(|| {
+                    (self.local_types.borrow().get(&path).map(String::as_str) == Some("integer"))
+                        .then(|| self.local_widths.borrow().get(&path).copied())
+                        .flatten()
+                })
+        });
+        match width {
+            Some(width) => format!("sx_i64(({rendered}), {width})"),
+            None => format!("((int64_t)({rendered}))"),
+        }
     }
 
     /// An operand in a `real` comparison, as a C `double`: a real signal reads
@@ -4104,8 +4163,8 @@ impl Ctx<'_> {
                 }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
                 if self.is_integer_operand(lhs) || self.is_integer_operand(rhs) {
-                    let signed_a = format!("((int64_t)({a}))");
-                    let signed_c = format!("((int64_t)({c}))");
+                    let signed_a = self.c_integer_operand(lhs, &a);
+                    let signed_c = self.c_integer_operand(rhs, &c);
                     match op {
                         ast::BinOp::Div => {
                             return Ok(format!("sx_idiv({signed_a}, {signed_c})"));

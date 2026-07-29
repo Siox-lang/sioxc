@@ -363,6 +363,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              using std::math::{{sqrt, pow, floor, PI}};
              const HALF_PI: real = PI / 2.0;
              const BYTE_RANGE: range = 7..0;
+             const NEGATIVE: integer = -8;
              fn half(value: real) -> real {{ return value / 2.0; }}
              fn one() -> real {{ return 1; }}
              enum Symbol {{ 'α', 'β' }}
@@ -379,6 +380,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              impl RealBox {{
                  fn half(self) -> real {{ return self.value / 2.0; }}
              }}
+             entity SignedSource {{ out value: integer<-10..10>; }}
+             impl SignedSource {{ value = -3; }}
              #[test] entity T {{}}
              impl T {{
                  let wide: unsigned[128] = {wide};
@@ -393,6 +396,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let boxed: CharacterBox = {{ .value = 'λ' }};
                  let real_value: real = 1.5;
                  let signed_value: integer = -8;
+                 let connected_signed: integer<-10..10>;
+                 let signed_source: SignedSource = {{ .value = connected_signed }};
                  let real_box: RealBox = {{ .value = 3.5 }};
                  let math_result: real = sqrt(9.0);
                  let wide_box: WideBox = {{ .value = {wide} }};
@@ -439,6 +444,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(symbol == 'β', \"local enum symbol assignment\");
                  print!(\"reals {{}} {{}}\", real_value, real_box.value);
                  print!(\"signed integer {{}}\", signed_value);
+                 print!(\"signed values {{}} {{}}\", NEGATIVE, connected_signed);
+                 assert!(NEGATIVE / 3 == -2, \"signed constant arithmetic\");
+                 assert!(connected_signed < 0, \"connected signed comparison\");
+                 assert!(connected_signed / 2 == -1, \"connected signed division\");
                  print!(\"real comparison {{}}\", real_value == 1.5);
                  real_value = real_value + 0.75;
                  assert!(real_value == 2.25, \"real local arithmetic {{}}\", real_value);
@@ -540,6 +549,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
     assert!(
         stdout.contains("signed integer -8"),
         "signed integer formatting lost its sign:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("signed values -8 -3"),
+        "signed constants or constrained signals formatted as unsigned:\n{stdout}"
     );
     assert!(
         stdout.contains("extern floor 3"),

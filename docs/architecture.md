@@ -174,6 +174,13 @@ Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
 Array-derived numeric newtypes retain their family name for trait dispatch,
 but there is no separate semantic `Vector` type.
 
+IR signals retain kernel scalar identity independently from packed-family
+signedness: `real`, `integer`, `Char`, and enum identity survive flattening.
+The `integer` marker lets native consumers sign-extend a constrained value from
+its actual storage width before signed comparison, division, shifting, or
+formatting. This does not make `std::bits::signed` compiler-special; that
+family's behavior still comes from its std operator implementations.
+
 ## Signal widths
 
 LLVM represents each value at its own semantic bit width. The ABI exchanges

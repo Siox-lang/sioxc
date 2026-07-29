@@ -1529,3 +1529,19 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Added semantic, native integration, and external corpus coverage for nested
   loop shadowing, outer-value restoration, negative ranges, signed arithmetic,
   signed formatting, and separated real reassignment.
+
+### 2026-07-29 — Codex — persist kernel-integer identity into native consumers
+
+- Reproduced signed locals working while a negative module constant or
+  connected `integer<-10..10>` silently used unsigned comparison/division and
+  formatting.
+- Added kernel-`integer` identity to IR signals, distinct from std packed
+  `signed` families, and propagated declared integer constants into the native
+  type environment.
+- Added width-aware two's-complement decoding so a constrained `-3` stored as
+  five raw bits sign-extends before signed operations and display.
+- Extended signed expression discovery through calls, attributes, negative
+  literals, conditionals, and match results.
+- Added IR, native integration, and external corpus coverage for plain and
+  constrained signals, constants, negative literals, conditionals, division,
+  comparison, and signed formatting.

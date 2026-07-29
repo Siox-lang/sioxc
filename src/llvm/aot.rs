@@ -82,6 +82,7 @@ mod tests {
             path: path.into(),
             width,
             real: false,
+            integer: false,
             char: false,
             range: None,
             init: vec![0],
