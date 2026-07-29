@@ -2295,6 +2295,11 @@ impl Ctx<'_> {
                     None => return Ok(None),
                 }
             }
+            ast::Expr::Call { .. } if self.conversion_target(lhs).is_some() => {
+                // A conversion names its own family and width.
+                let (fam, w) = self.conversion_target(lhs).unwrap();
+                (fam, Some(w))
+            }
             ast::Expr::Call { .. } => {
                 let Some(ret) = self.call_return_type(lhs) else {
                     return Ok(None);
@@ -3232,6 +3237,21 @@ impl Ctx<'_> {
     }
 
     /// Whether an operand reads a `real` signal.
+    /// The family and width a conversion names: `signed[8](x)` -> ("signed", 8).
+    /// A conversion is a `Call` whose callee is the indexed family, so it has
+    /// no declared return type to consult like an ordinary call does.
+    fn conversion_target(&self, e: &ast::Expr) -> Option<(String, u32)> {
+        let ast::Expr::Call { callee, .. } = e else {
+            return None;
+        };
+        let ast::Expr::Index { base, index, .. } = callee.as_ref() else {
+            return None;
+        };
+        let head = expr_path(base)?;
+        let w = siox::ir::eval_const_fns(index, &HashMap::new(), self.fns, 0)? as u32;
+        (w > 0 && w <= 64).then_some((head, w))
+    }
+
     /// The declared return type of a call, for recovering everything the call
     /// site would otherwise throw away: a vector's width and family, an enum's
     /// symbols. See `call_return_head` for the name alone.
@@ -3372,6 +3392,14 @@ impl Ctx<'_> {
     /// Without it a `signed[8]` holding -5 prints as 251 while `s < 0` is
     /// simultaneously true, which reads as a contradiction.
     fn signed_vector_width(&self, e: &ast::Expr) -> Option<u32> {
+        // A conversion names its target directly: `signed[8](x)` is a Call
+        // whose callee is the indexed family. Hardware read this as signed and
+        // the testbench did not, so the two disagreed on `signed[8](200)`.
+        if let Some((fam, w)) = self.conversion_target(e) {
+            if self.type_name_is(&fam, "signed") {
+                return Some(w);
+            }
+        }
         // A call carries no name; its declared return type is what says the
         // result is signed and how wide it is.
         if let Some(ret) = self.call_return_type(e) {
