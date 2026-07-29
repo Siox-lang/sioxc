@@ -116,6 +116,14 @@ pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink)
 /// concern; `::ddt` is kept here only as the guard the spec calls out.
 const PHASE2_ATTRS: &[&str] = &["ddt"];
 
+/// Every system attribute the compiler implements (spec 3.9 / 3.23). Anything
+/// else after a `'` is reported rather than lowered: an unrecognized one used
+/// to pass every stage and become an `Unknown` in the IR, surfacing only as
+/// "no engine can run this design" with nothing naming the attribute.
+const SYS_ATTRS: &[&str] = &[
+    "event", "old", "length", "high", "low", "left", "right", "ascending",
+];
+
 /// A port as seen by the checker: its name, resolved type, and direction.
 struct PortInfo {
     name: String,
@@ -2543,19 +2551,35 @@ impl<'a> Checker<'a> {
                         codes::PHASE2_SYNTAX,
                         *span,
                         format!(
-                            "`::{}` is Phase-2 analogue syntax, not available in Phase 1",
+                            "`'{}` is Phase-2 analogue syntax, not available in Phase 1",
                             attr.text
                         ),
                     );
                 }
-                // The edge helpers are ordinary trait methods now, so the
-                // compiler no longer treats them as attributes: an unknown
-                // system attribute is just that.
-                if matches!(attr.text.as_str(), "rising" | "falling" | "edge") {
-                    self.error(
+                // Anything outside the implemented set is reported here.
+                // Silently lowering it produced an `Unknown` that only failed
+                // at codegen, naming a driver index rather than the attribute.
+                let a = attr.text.as_str();
+                if !PHASE2_ATTRS.contains(&a) && !SYS_ATTRS.contains(&a) {
+                    // The edge helpers are ordinary trait methods now, so this
+                    // is the one wrong attribute worth a migration hint.
+                    let help = if matches!(a, "rising" | "falling" | "edge") {
+                        format!("the edge helpers are `ClockLike` methods now — write `.{a}()`")
+                    } else {
+                        format!(
+                            "known system attributes: {}",
+                            SYS_ATTRS
+                                .iter()
+                                .map(|s| format!("`'{s}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    };
+                    self.error_with_help(
                         codes::UNKNOWN_NAME,
                         *span,
-                        format!("unknown system attribute `::{}`", attr.text),
+                        format!("unknown system attribute `'{a}`"),
+                        help,
                     );
                 }
                 if matches!(attr.text.as_str(), "event" | "old") {
@@ -4955,6 +4979,26 @@ mod tests {
         assert_eq!(cmp(8, "255"), 0, "the largest 8-bit value fits");
         assert_eq!(cmp(8, "256"), 1, "one past it does not");
         assert_eq!(cmp(63, "9223372036854775807"), 0, "i64::MAX fits 63 bits");
+    }
+
+    /// An attribute the compiler does not implement used to pass every stage
+    /// and lower to an `Unknown`, which surfaced only at codegen as "no engine
+    /// can run this design" — naming a driver index, never the attribute. It
+    /// is reported at the use site now.
+    #[test]
+    fn unknown_system_attribute_is_reported() {
+        let attr = |a: &str| {
+            check_src(&format!(
+                "module m;\nentity E {{ in x: unsigned[8]; out y: unsigned[8]; }}\nimpl E {{ y = x'{a}; }}\n"
+            ))
+        };
+        // Every implemented attribute still passes.
+        for a in ["length", "high", "low", "left", "right"] {
+            assert_eq!(attr(a), 0, "`'{a}` is implemented");
+        }
+        assert_eq!(attr("bogus"), 1, "an invented attribute is reported");
+        // The edge helpers became ClockLike methods; they are not attributes.
+        assert_eq!(attr("rising"), 1, "`'rising` is not an attribute");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
