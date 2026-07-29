@@ -151,6 +151,10 @@ type GenericFnSignature = (Vec<Param>, Vec<(String, Type)>);
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
 struct Checker<'a> {
+    /// Whether the statements being checked are a function body. `return`
+    /// belongs to a function; in hardware statement position there is nothing
+    /// to return from, and lowering silently dropped it.
+    in_fn_body: std::cell::Cell<bool>,
     sink: &'a mut DiagnosticSink,
     resolved: &'a Resolved,
     /// Entity name -> its ports.
@@ -248,6 +252,7 @@ impl<'a> Checker<'a> {
             attr_value_kinds.insert(name.to_string(), ty);
         }
         Checker {
+            in_fn_body: std::cell::Cell::new(false),
             sink,
             resolved,
             entities: HashMap::new(),
@@ -1481,6 +1486,9 @@ impl<'a> Checker<'a> {
     }
 
     fn check_block(&mut self, b: &Block) {
+        // Every caller of this is a function body — a trait method, a free
+        // function, or an impl method — so `return` is legal inside it.
+        let saved = self.in_fn_body.replace(true);
         let (dirs, sym) = (
             PortDirs {
                 illegal: HashSet::new(),
@@ -1493,6 +1501,7 @@ impl<'a> Checker<'a> {
         for s in &b.stmts {
             self.check_stmt(s, &dirs, &sym, &ranged);
         }
+        self.in_fn_body.set(saved);
     }
 
     fn check_stmt(
@@ -1564,9 +1573,20 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => self.check_expr(e, sym),
-            Stmt::Return { value, .. } => {
+            Stmt::Return { value, span } => {
                 if let Some(v) = value {
                     self.check_expr(v, sym);
+                }
+                if !self.in_fn_body.get() {
+                    self.error_with_help(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        "`return` outside a function".to_string(),
+                        "an entity body describes hardware that is always active, so there \
+                         is nothing to return from — lowering used to drop this statement \
+                         silently"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -4999,6 +5019,33 @@ mod tests {
         assert_eq!(attr("bogus"), 1, "an invented attribute is reported");
         // The edge helpers became ClockLike methods; they are not attributes.
         assert_eq!(attr("rising"), 1, "`'rising` is not an attribute");
+    }
+
+    /// `return` in an entity body was dropped by lowering without a word: an
+    /// entity describes hardware that is always active, so there is nothing to
+    /// return from. It stays legal inside a function.
+    #[test]
+    fn return_outside_a_function_is_reported() {
+        let hw = check_src(
+            "module m;\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; return; }\n",
+        );
+        assert_eq!(hw, 1, "hardware statement position");
+        let free_fn = check_src(
+            "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { return x + 1; }\n\
+             entity E { out y: unsigned[8]; }\nimpl E { y = f(1); }\n",
+        );
+        assert_eq!(free_fn, 0, "a free function may return");
+        let method = check_src(
+            "module m;\nstruct S { v: unsigned[8] }\n\
+             impl S { fn get(self) -> unsigned[8] { return self.v; } }\n\
+             entity E { out y: unsigned[8]; }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
+        );
+        assert_eq!(method, 0, "a method may return");
+        let nested = check_src(
+            "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { if x == 0 { return 1; } return x; }\n\
+             entity E { out y: unsigned[8]; }\nimpl E { y = f(1); }\n",
+        );
+        assert_eq!(nested, 0, "including inside a nested block");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
