@@ -190,16 +190,25 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// Signed kernel-`integer` division.
+    SDiv,
     And,
     Or,
     Shl,
     Shr,
+    /// Arithmetic right shift for the signed kernel `integer`.
+    AShr,
     Eq,
     Ne,
     Lt,
     Le,
     Gt,
     Ge,
+    /// Signed kernel-`integer` ordering comparisons.
+    SLt,
+    SLe,
+    SGt,
+    SGe,
     /// Float arithmetic on f64-bit values (`real` operands).
     FAdd,
     FSub,
@@ -3674,7 +3683,7 @@ impl<'a> Lowering<'a> {
                         r = v;
                     }
                 }
-                self.make_binary(op.clone(), l, r)
+                self.make_binary(op.clone(), l, r, self.binary_uses_kernel_integer(lhs, rhs))
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
@@ -4207,7 +4216,7 @@ impl<'a> Lowering<'a> {
                     BinOp::Add => Some(BinOp::FAdd),
                     BinOp::Sub => Some(BinOp::FSub),
                     BinOp::Mul => Some(BinOp::FMul),
-                    BinOp::Div => Some(BinOp::FDiv),
+                    BinOp::Div | BinOp::SDiv => Some(BinOp::FDiv),
                     _ => None,
                 };
                 match fop {
@@ -4226,7 +4235,7 @@ impl<'a> Lowering<'a> {
     /// Build a binary node, switching `+ - * /` to float arithmetic (and
     /// coercing integer constants) when either operand is real. `==`/`!=`
     /// compare f64 bits exactly, which is right once constants are coerced.
-    fn make_binary(&self, op: ast::BinOp, lhs: Expr, rhs: Expr) -> Expr {
+    fn make_binary(&self, op: ast::BinOp, lhs: Expr, rhs: Expr, integer: bool) -> Expr {
         if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
             let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
             let op = match op {
@@ -4253,14 +4262,77 @@ impl<'a> Lowering<'a> {
                 rhs: Box::new(rhs),
             };
         }
+        // Generic/library impl bodies can leave their parameter expressions
+        // typed as the kernel default even after substitution. The concrete
+        // lowered signal is authoritative: a `signed[N]`, `unsigned[N]`, Bit,
+        // enum, or user-newtype signal must keep the implementation's raw
+        // vector operations rather than inherit kernel-integer signedness.
+        let integer =
+            integer && !self.has_non_integer_signal(&lhs) && !self.has_non_integer_signal(&rhs);
         match lower_binop(op) {
-            Some(op) => Expr::Binary {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
+            Some(op) => {
+                let op = if integer {
+                    match op {
+                        BinOp::Div => BinOp::SDiv,
+                        BinOp::Shr => BinOp::AShr,
+                        BinOp::Lt => BinOp::SLt,
+                        BinOp::Le => BinOp::SLe,
+                        BinOp::Gt => BinOp::SGt,
+                        BinOp::Ge => BinOp::SGe,
+                        op => op,
+                    }
+                } else {
+                    op
+                };
+                Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }
+            }
             None => Expr::Unknown,
         }
+    }
+
+    fn has_non_integer_signal(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Current(id) | Expr::Old(id) => !self.out.signals[id.0 as usize].integer,
+            Expr::Event(_) => true,
+            Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
+                self.has_non_integer_signal(rhs)
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.has_non_integer_signal(lhs) || self.has_non_integer_signal(rhs)
+            }
+            Expr::Select { cond, then, els } => {
+                self.has_non_integer_signal(cond)
+                    || self.has_non_integer_signal(then)
+                    || self.has_non_integer_signal(els)
+            }
+            Expr::CCall { args, .. } => args.iter().any(|arg| self.has_non_integer_signal(arg)),
+            Expr::Const(_)
+            | Expr::WideConst(_)
+            | Expr::Real(_)
+            | Expr::Logic(_)
+            | Expr::Unknown => false,
+        }
+    }
+
+    fn binary_uses_kernel_integer(&self, lhs: &ast::Expr, rhs: &ast::Expr) -> bool {
+        let lhs = self.expr_types.get(&ast::expr_span(lhs));
+        let rhs = self.expr_types.get(&ast::expr_span(rhs));
+        // Literals retain their default `integer` type even when they occur
+        // inside an inlined library-vector implementation. A concrete
+        // array/newtype operand owns that operation through std; it must not be
+        // reinterpreted as a signed kernel-integer operation merely because
+        // its other operand happens to be an integer literal.
+        if matches!(lhs, Some(crate::types::Ty::Array { .. }))
+            || matches!(rhs, Some(crate::types::Ty::Array { .. }))
+        {
+            return false;
+        }
+        matches!(lhs, Some(crate::types::Ty::Integer))
+            || matches!(rhs, Some(crate::types::Ty::Integer))
     }
 
     /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
@@ -5136,7 +5208,12 @@ impl<'a> Lowering<'a> {
                     self.lower_scalar_env(lhs, env),
                     self.lower_scalar_env(rhs, env),
                 );
-                Val::Scalar(self.make_binary(op.clone(), l, r))
+                Val::Scalar(self.make_binary(
+                    op.clone(),
+                    l,
+                    r,
+                    self.binary_uses_kernel_integer(lhs, rhs),
+                ))
             }
             ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
                 op: lower_unop(*op),
@@ -5355,7 +5432,16 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
     if let Expr::Binary { op, lhs, rhs } = e {
         if matches!(
             op,
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::SLt
+                | BinOp::SLe
+                | BinOp::SGt
+                | BinOp::SGe
         ) {
             let comp = |x: &Expr| match x {
                 Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
@@ -5885,16 +5971,22 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
+        BinOp::SDiv => "/",
         BinOp::And => "and",
         BinOp::Or => "or",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
+        BinOp::AShr => ">>",
         BinOp::Eq => "==",
         BinOp::Ne => "!=",
         BinOp::Lt => "<",
         BinOp::Le => "<=",
         BinOp::Gt => ">",
         BinOp::Ge => ">=",
+        BinOp::SLt => "<",
+        BinOp::SLe => "<=",
+        BinOp::SGt => ">",
+        BinOp::SGe => ">=",
         BinOp::FAdd => "+.",
         BinOp::FSub => "-.",
         BinOp::FMul => "*.",
@@ -8384,6 +8476,57 @@ mod tests {
              impl E { y = FAR; }\n",
         );
         assert_eq!(design.drivers.len(), 1);
+    }
+
+    #[test]
+    fn kernel_integer_operations_retain_signed_semantics() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E {\n\
+                 in a: integer<-16..15>;\n\
+                 in b: integer<-16..15>;\n\
+                 out lt: Bit;\n\
+                 out q: integer<-16..15>;\n\
+                 out shr: integer<-16..15>;\n\
+             }\n\
+             impl E {\n\
+                 lt = if a < b { '1' } else { '0' };\n\
+                 q = a / b;\n\
+                 shr = a >> 1;\n\
+             }\n",
+        );
+        let driver = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("target signal");
+            &design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target as u32))
+                .expect("target driver")
+                .expr
+        };
+        assert!(matches!(
+            driver(".lt"),
+            Expr::Select { cond, .. }
+                if matches!(cond.as_ref(), Expr::Binary { op: BinOp::SLt, .. })
+        ));
+        assert!(matches!(
+            driver(".q"),
+            Expr::Binary {
+                op: BinOp::SDiv,
+                ..
+            }
+        ));
+        assert!(matches!(
+            driver(".shr"),
+            Expr::Binary {
+                op: BinOp::AShr,
+                ..
+            }
+        ));
     }
 
     #[test]

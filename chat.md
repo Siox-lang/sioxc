@@ -1545,3 +1545,19 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Added IR, native integration, and external corpus coverage for plain and
   constrained signals, constants, negative literals, conditionals, division,
   comparison, and signed formatting.
+
+### 2026-07-29 — Codex — preserve signed kernel integers through LLVM
+
+- Reproduced constrained kernel integers behaving correctly in native
+  testbench expressions while the same comparison, division, and right shift
+  inside a DUT used unsigned LLVM operations.
+- Added explicit signed division, arithmetic-right-shift, and signed ordering
+  operations to the backend-neutral IR and selected them from Stage-4
+  kernel-`integer` types.
+- Sign-extended constrained operands at mixed widths and made signed division
+  total for zero and minimum-value/-1, avoiding LLVM poison.
+- Kept `std::bits::signed` and other packed/user families library-defined:
+  concrete non-integer signals veto kernel signed lowering even when generic
+  implementation literals retain their default `integer` type.
+- Added an IR regression and an external executable DUT covering negative
+  comparison, division, and arithmetic shift.

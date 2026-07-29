@@ -979,6 +979,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                         | BinOp::Le
                         | BinOp::Gt
                         | BinOp::Ge
+                        | BinOp::SLt
+                        | BinOp::SLe
+                        | BinOp::SGt
+                        | BinOp::SGe
                         | BinOp::FEq
                         | BinOp::FNe
                         | BinOp::FLt
@@ -1137,6 +1141,27 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// Emit a signed operand at a common operation width. Stored constrained
+    /// integers must be sign-extended; literals and compound expressions are
+    /// emitted directly in the contextual width so positive constants do not
+    /// accidentally acquire a sign from their minimum unsigned bit width.
+    fn emit_signed_operand_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
+        match e {
+            Expr::Current(id) | Expr::Old(id) => {
+                let natural = self.design.signals[id.0 as usize].width.max(1);
+                let value = self.emit_at(e, natural);
+                if natural < width {
+                    self.builder
+                        .build_int_s_extend(value, self.value_ty(width), "sext")
+                        .unwrap()
+                } else {
+                    self.fit(value, self.value_ty(width))
+                }
+            }
+            _ => self.emit_at(e, width),
+        }
+    }
+
     fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, result_width: u32) -> IntValue<'ctx> {
         // Float ops reinterpret the i64 words as f64.
         if matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv) {
@@ -1192,9 +1217,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             return self.fit(c, self.value_ty(result_width));
         }
 
+        let signed_comparison = matches!(op, BinOp::SLt | BinOp::SLe | BinOp::SGt | BinOp::SGe);
         let comparison = matches!(
             op,
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::SLt
+                | BinOp::SLe
+                | BinOp::SGt
+                | BinOp::SGe
         );
         let operand_width = if comparison {
             self.expr_width(lhs).max(self.expr_width(rhs))
@@ -1202,13 +1237,17 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             result_width
         }
         .max(1);
-        if matches!(op, BinOp::Shl | BinOp::Shr) {
+        if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::AShr) {
             // LLVM shifts are poison when the count is at least the operation
             // width. Hardware and the native harness define those cases as
             // zero, so compare at a width that preserves the entire count,
             // substitute a safe zero count, then select the defined result.
             let shift_width = operand_width.max(self.expr_width(rhs)).max(1);
-            let a = self.emit_at(lhs, shift_width);
+            let a = if matches!(op, BinOp::AShr) {
+                self.emit_signed_operand_at(lhs, shift_width)
+            } else {
+                self.emit_at(lhs, shift_width)
+            };
             let b = self.emit_at(rhs, shift_width);
             let limit = self.c_at(operand_width as u64, shift_width);
             let out_of_range = self
@@ -1225,17 +1264,38 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.builder.build_left_shift(a, safe, "shl").unwrap()
             } else {
                 self.builder
-                    .build_right_shift(a, safe, false, "shr")
+                    .build_right_shift(a, safe, matches!(op, BinOp::AShr), "shr")
                     .unwrap()
+            };
+            let out_of_range_value = if matches!(op, BinOp::AShr) {
+                let negative = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, a, a.get_type().const_zero(), "shneg")
+                    .unwrap();
+                self.builder
+                    .build_select(negative, a.get_type().const_all_ones(), zero, "shfill")
+                    .unwrap()
+                    .into_int_value()
+            } else {
+                zero
             };
             return self
                 .builder
-                .build_select(out_of_range, zero, shifted, "shzero")
+                .build_select(out_of_range, out_of_range_value, shifted, "shzero")
                 .unwrap()
                 .into_int_value();
         }
-        let a = self.emit_at(lhs, operand_width);
-        let b = self.emit_at(rhs, operand_width);
+        let signed = signed_comparison || matches!(op, BinOp::SDiv);
+        let a = if signed {
+            self.emit_signed_operand_at(lhs, operand_width)
+        } else {
+            self.emit_at(lhs, operand_width)
+        };
+        let b = if signed {
+            self.emit_signed_operand_at(rhs, operand_width)
+        } else {
+            self.emit_at(rhs, operand_width)
+        };
         let cmp = |p: IntPredicate, s: &str| {
             let c = self.builder.build_int_compare(p, a, b, s).unwrap();
             self.fit(c, self.value_ty(result_width))
@@ -1263,7 +1323,52 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .unwrap()
                     .into_int_value()
             }
-            BinOp::Shl | BinOp::Shr => unreachable!("shifts return above"),
+            BinOp::SDiv => {
+                // LLVM's `sdiv` is poison for both division by zero and
+                // MIN/-1. Kernel integer arithmetic is total in simulation:
+                // zero yields zero and overflow wraps to MIN.
+                let zero = self.c_at(0, operand_width);
+                let one = self.c_at(1, operand_width);
+                let neg_one = self.value_ty(operand_width).const_all_ones();
+                let min = self
+                    .builder
+                    .build_left_shift(
+                        one,
+                        self.c_at((operand_width - 1) as u64, operand_width),
+                        "sdminv",
+                    )
+                    .unwrap();
+                let is0 = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, b, zero, "sd0")
+                    .unwrap();
+                let is_min = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, a, min, "sdmin")
+                    .unwrap();
+                let is_neg_one = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, b, neg_one, "sdneg1")
+                    .unwrap();
+                let overflow = self.builder.build_and(is_min, is_neg_one, "sdov").unwrap();
+                let unsafe_divisor = self.builder.build_or(is0, overflow, "sdbad").unwrap();
+                let safe = self
+                    .builder
+                    .build_select(unsafe_divisor, one, b, "sden")
+                    .unwrap()
+                    .into_int_value();
+                let q = self.builder.build_int_signed_div(a, safe, "sdiv").unwrap();
+                let q_or_min = self
+                    .builder
+                    .build_select(overflow, min, q, "sdivov")
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_select(is0, zero, q_or_min, "sdivz")
+                    .unwrap()
+                    .into_int_value()
+            }
+            BinOp::Shl | BinOp::Shr | BinOp::AShr => unreachable!("shifts return above"),
             // Core logical operators; for boolean 0/1 operands these match
             // their scalar reading, and vectors apply them per bit.
             // operands this matches the logical reading.
@@ -1275,6 +1380,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::Le => cmp(IntPredicate::ULE, "le"),
             BinOp::Gt => cmp(IntPredicate::UGT, "gt"),
             BinOp::Ge => cmp(IntPredicate::UGE, "ge"),
+            BinOp::SLt => cmp(IntPredicate::SLT, "slt"),
+            BinOp::SLe => cmp(IntPredicate::SLE, "sle"),
+            BinOp::SGt => cmp(IntPredicate::SGT, "sgt"),
+            BinOp::SGe => cmp(IntPredicate::SGE, "sge"),
             BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => unreachable!(),
             BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe => {
                 unreachable!()
