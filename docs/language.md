@@ -78,8 +78,9 @@ precise reference.
   receiver's fields.
 - **Newtypes** — `enum B(A);` / `struct B(A);` reuse a representation under a
   new identity, with the derivation conversion synthesised automatically.
-  Derivation never adds members and never inherits behaviour; bigger types are
-  built by composition.
+  Derivation never adds members or generally inherits behaviour; bigger types
+  are built by composition. A packed `Vector` newtype is the narrow exception:
+  it forwards constrained blanket implementations declared for its array base.
 - `#[…]` attributes, including type-targeted ones.
 - System attributes for metadata: `x'length`, range bounds `x'high`/`x'low`/`x'left`/`x'right`/`x'ascending`.
 
@@ -421,6 +422,36 @@ impls. The one thing that is not an operator — sign-extension when widening �
 is therefore a library function, `std::bits::sext`: `signed[16](sext(x))` widens
 a signed vector, while a bare `signed[16](x)` is a raw resize (zero-extend /
 truncate).
+
+Array behavior is reusable without making nominal vectors interchangeable:
+
+```siox
+impl<T: Resolve> Resolve for T[] {
+    fn resolve(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i].resolve(rhs[i]); }
+        return result;
+    }
+}
+
+impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] and rhs[i]; }
+        return result;
+    }
+}
+```
+
+The generic parameter list precedes the trait, as in Rust. A `Vector` newtype
+forwards such an implementation only when its scalar element satisfies the
+constraint. Thus `unsigned(Logic[])` receives element-wise `Resolve` and
+`and` because `Logic` implements both, while `struct Codes(Code[])` receives
+neither unless `Code` opts in. A direct impl on the nominal vector takes
+precedence and is the mechanism used for signed-specific behavior.
+Phase 1 lowers this form for `Resolve` and the core `and`/`or`/`not`
+contracts; other blanket array traits are rejected until their generic bodies
+can be monomorphized without an intrinsic lowering.
 
 **Type-targeted attributes.** A target may also be a *type name*, declaring
 an attribute valid only on that entity/struct or on declarations/instances

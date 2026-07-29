@@ -214,7 +214,7 @@ impl Printer {
                         .join(", ");
                     format!("<{list}>")
                 };
-                format!("impl {name}{args}{} for {} {{", params(&i.params), target)
+                format!("impl{} {name}{args} for {} {{", params(&i.params), target)
             }
             None => format!("impl {}{} {{", target, params(&i.params)),
         };

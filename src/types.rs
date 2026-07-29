@@ -169,9 +169,14 @@ struct Checker<'a> {
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
-    /// Struct name -> signedness, for structs carrying `#[vector]` (an
-    /// array-derived numeric family). Membership is the attribute, not shape.
+    /// Structs opting into packed numeric storage through `impl Vector`.
     vector_families: HashSet<String>,
+    /// Packed family -> scalar element type, following nominal vector bases.
+    vector_elements: HashMap<String, String>,
+    /// Trait/operator keys implemented generically for an unconstrained array
+    /// target (`impl<T: Tr> Tr for T[]`). A nominal Vector family may forward
+    /// one of these only when its element type implements the same key.
+    blanket_array_impls: HashMap<String, String>,
     /// Generic module fns: name -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
@@ -247,6 +252,8 @@ impl<'a> Checker<'a> {
             structs: HashMap::new(),
             views: HashMap::new(),
             vector_families: HashSet::new(),
+            vector_elements: HashMap::new(),
+            blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
             fn_arity: HashMap::new(),
             suffix_types: HashMap::new(),
@@ -282,6 +289,7 @@ impl<'a> Checker<'a> {
         // (`struct Byte : unsigned[8]`); resolve that transitively before typing
         // ports, so such a type is treated as a numeric vector.
         self.resolve_transitive_vector_families();
+        self.resolve_vector_elements();
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
@@ -479,7 +487,34 @@ impl<'a> Checker<'a> {
                                 .or_default()
                                 .push((arg_name(0), arg_name(1)));
                         }
-                        self.trait_impls.entry(t).or_default().insert(ty);
+                        if is_blanket_array_impl(im) {
+                            let requirement = blanket_requirement(im).unwrap_or_else(|| t.clone());
+                            let supported = is_liftable_array_key(&t);
+                            if !supported {
+                                self.error(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    format!(
+                                        "element-wise array forwarding is not implemented for `{t}`"
+                                    ),
+                                );
+                            }
+                            let matching_bound = requirement == t;
+                            if supported && !matching_bound {
+                                self.error(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    format!(
+                                        "element-wise `{t}` forwarding requires the element bound `{t}`, found `{requirement}`"
+                                    ),
+                                );
+                            }
+                            if supported && matching_bound {
+                                self.blanket_array_impls.insert(t, requirement);
+                            }
+                        } else {
+                            self.trait_impls.entry(t).or_default().insert(ty);
+                        }
                     }
                 }
             }
@@ -724,6 +759,50 @@ impl<'a> Checker<'a> {
                 break;
             }
         }
+    }
+
+    fn resolve_vector_elements(&mut self) {
+        for family in self.vector_families.clone() {
+            let mut current = family.as_str();
+            let mut seen = HashSet::new();
+            while seen.insert(current.to_string()) {
+                let Some((base, _)) = self.structs.get(current) else {
+                    break;
+                };
+                let Some(base) = base else {
+                    break;
+                };
+                let Some(head) = type_head_name(base) else {
+                    break;
+                };
+                if matches!(base, Type::Indexed { .. }) && !self.vector_families.contains(head) {
+                    self.vector_elements
+                        .insert(family.clone(), head.to_string());
+                    break;
+                }
+                current = head;
+            }
+        }
+    }
+
+    fn has_impl(&self, key: &str, owner: &str) -> bool {
+        if self
+            .trait_impls
+            .get(key)
+            .is_some_and(|types| types.contains(owner))
+        {
+            return true;
+        }
+        let Some(element) = self.vector_elements.get(owner) else {
+            return false;
+        };
+        self.blanket_array_impls
+            .get(key)
+            .is_some_and(|requirement| {
+                self.trait_impls
+                    .get(requirement)
+                    .is_some_and(|types| types.contains(element))
+            })
     }
 
     fn check_item(&mut self, item: &Item) {
@@ -1031,6 +1110,21 @@ impl<'a> Checker<'a> {
 
     fn check_impl(&mut self, im: &ImplDecl) {
         self.check_trait_contract(im);
+        // The supported constrained array implementations are lowered by the
+        // element-wise vector machinery. Still validate their metadata here;
+        // abstract `T[]` has no standalone runtime representation for the
+        // ordinary body checker.
+        if is_blanket_array_impl(im) {
+            let sym = HashMap::new();
+            for attr in &im.attrs {
+                self.check_attr_target(attr, "impl", type_head_name(&im.target));
+                self.check_attr_value(attr);
+                if let Some(value) = &attr.value {
+                    self.check_expr(value, &sym);
+                }
+            }
+            return;
+        }
         let (dirs, sym, ranged) = self.impl_env(im);
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
@@ -1471,9 +1565,7 @@ impl<'a> Checker<'a> {
     }
 
     fn implements_boolean(&self, name: &str) -> bool {
-        self.trait_impls
-            .get("Boolean")
-            .is_some_and(|set| set.contains(name))
+        self.has_impl("Boolean", name)
     }
 
     /// The name a type is keyed by in the trait-impl table (`unsigned[8]` and
@@ -1775,11 +1867,12 @@ impl<'a> Checker<'a> {
     fn satisfies(&self, ty: &Ty, trait_name: &str) -> bool {
         match self.type_kind_name(ty) {
             Some(kind) => {
-                if self
-                    .trait_impls
-                    .get(trait_name)
-                    .is_some_and(|implementors| {
-                        implementors.contains(&kind)
+                if self.has_impl(trait_name, &kind)
+                    || self
+                        .trait_impls
+                        .get(trait_name)
+                        .is_some_and(|implementors| {
+                            implementors.contains(&kind)
                             // Applied views are stored by their full nominal
                             // identity (`Controller@Spi`), while expression
                             // typing names the visible view (`Controller`).
@@ -1788,7 +1881,7 @@ impl<'a> Checker<'a> {
                             || implementors
                                 .iter()
                                 .any(|name| name.starts_with(&format!("{kind}@")))
-                    })
+                        })
                 {
                     return true;
                 }
@@ -2310,19 +2403,7 @@ impl<'a> Checker<'a> {
                         );
                     }
                     if let Some(owner) = self.ty_head(&t) {
-                        let intrinsic_vector = matches!(
-                            t,
-                            Ty::Array {
-                                family: Some(_),
-                                ..
-                            }
-                        );
-                        if !intrinsic_vector
-                            && !self
-                                .trait_impls
-                                .get("not")
-                                .is_some_and(|types| types.contains(&owner))
-                        {
+                        if !self.has_impl("not", &owner) {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
@@ -2472,11 +2553,7 @@ impl<'a> Checker<'a> {
                 // `==`/`!=` on enums stay built-in (discriminant compare).
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
-                        let has_op = |tr: &str| {
-                            self.trait_impls
-                                .get(tr)
-                                .is_some_and(|set| set.contains(&name))
-                        };
+                        let has_op = |tr: &str| self.has_impl(tr, &name);
                         // Operators dispatch by symbol; one three-way `<=>`
                         // (`-> Ordering`) impl derives every comparison.
                         let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
@@ -2821,9 +2898,7 @@ impl<'a> Checker<'a> {
                     if let Ty::Named(id) = self.type_of(rhs, sym) {
                         let has_impl = self.resolved.def(id).map(|d| &d.name).is_some_and(|name| {
                             let tr = crate::syntax::pretty::bin_op(op);
-                            self.trait_impls
-                                .get(tr)
-                                .is_some_and(|set| set.contains(name))
+                            self.has_impl(tr, name)
                         });
                         if has_impl {
                             return Ty::Named(id);
@@ -3037,6 +3112,9 @@ impl<'a> Checker<'a> {
                 let d = self.resolved.def(id)?;
                 matches!(d.kind, DefKind::Struct | DefKind::Enum).then(|| d.name.clone())
             }
+            Ty::Array {
+                family: Some(name), ..
+            } => Some(name),
             _ => None,
         }
     }
@@ -3367,6 +3445,46 @@ fn type_identity(ty: &Type) -> Option<String> {
     }
 }
 
+fn is_blanket_array_impl(im: &ImplDecl) -> bool {
+    let Type::Indexed {
+        base, index: None, ..
+    } = &im.target
+    else {
+        return false;
+    };
+    let Some(head) = type_head_name(base) else {
+        return false;
+    };
+    im.params.params.iter().any(|param| param.name.text == head)
+}
+
+fn blanket_requirement(im: &ImplDecl) -> Option<String> {
+    let Type::Indexed { base, .. } = &im.target else {
+        return None;
+    };
+    let parameter = type_head_name(base)?;
+    let bound = im
+        .params
+        .params
+        .iter()
+        .find(|candidate| candidate.name.text == parameter)?
+        .bound
+        .as_ref()?;
+    match bound {
+        Type::Generic { base, args, .. } if type_head_name(base) == Some("Operator") => {
+            args.first().and_then(|argument| match argument {
+                GenericArg::Positional(Expr::StrLit { text, .. }) => Some(text.clone()),
+                _ => None,
+            })
+        }
+        _ => type_head_name(bound).map(str::to_string),
+    }
+}
+
+fn is_liftable_array_key(key: &str) -> bool {
+    matches!(key, "Resolve" | "and" | "or" | "not")
+}
+
 /// Width of a bracketed type index when it is a literal (`unsigned[8]` -> 8);
 /// otherwise `0`, meaning "parametric / not yet known".
 fn width_of(index: &Expr) -> u32 {
@@ -3500,6 +3618,7 @@ mod tests {
         enum Bit { '0', '1' }\n\
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Bool { false, true }\n\
+        enum Ordering { Less, Equal, Greater }\n\
         trait Boolean { fn as_bool(self) -> Bool; }\n\
         trait Vector {}\n\
         trait ClockLike { fn rising(self) -> Bool; }\n\
@@ -3512,9 +3631,16 @@ mod tests {
         impl Operator<\"and\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
         impl Operator<\"or\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
         impl Operator<\"not\", Bit, Bit> for Bit { fn apply(self) -> Bit { return self; } }\n\
+        impl Operator<\"and\", Logic, Logic> for Logic { fn apply(self, rhs: Logic) -> Logic { return self; } }\n\
+        impl Operator<\"or\", Logic, Logic> for Logic { fn apply(self, rhs: Logic) -> Logic { return self; } }\n\
         impl Operator<\"not\", Logic, Logic> for Logic { fn apply(self) -> Logic { return self; } }\n\
+        impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Operator<\"or\", T, T>> Operator<\"or\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { fn apply(self) -> T[] { return self; } }\n\
         impl Vector for unsigned {}\n\
         struct unsigned(Logic[]);\n\
+        impl Operator<\"/\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
+        impl Operator<\"<=>\", unsigned, Ordering> for unsigned { fn apply(self, rhs: unsigned) -> Ordering { return Equal; } }\n\
         impl Vector for signed {}\n\
         struct signed(Logic[]);\n";
 
@@ -3900,6 +4026,49 @@ mod tests {
             "module m;\nentity E { out count: unsigned[8]; out q: Bit; out clk: Bit; }\nimpl E {\n  let value: unsigned[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
         );
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn vector_newtype_forwards_matching_blanket_array_operator() {
+        let errors = check_src(
+            "module m;\n\
+             impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] {\n\
+               fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
+             }\n\
+             struct Flags(Bit[]);\n\
+             impl Vector for Flags {}\n\
+             entity E { in a: Flags[4]; in b: Flags[4]; out y: Flags[4]; }\n\
+             impl E { y = a and b; }\n",
+        );
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn vector_newtype_does_not_forward_unsatisfied_array_operator() {
+        let errors = check_src(
+            "module m;\n\
+             enum Cell { Off, On }\n\
+             impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] {\n\
+               fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
+             }\n\
+             struct Cells(Cell[]);\n\
+             impl Vector for Cells {}\n\
+             entity E { in a: Cells[4]; in b: Cells[4]; out y: Cells[4]; }\n\
+             impl E { y = a and b; }\n",
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
+        let errors = check_src(
+            "module m;\n\
+             #[precedence = 35]\n\
+             impl<T: Operator<\"xor\", T, T>> Operator<\"xor\", T, T> for T[] {\n\
+               fn apply(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n",
+        );
+        assert_eq!(errors, 1);
     }
 
     #[test]

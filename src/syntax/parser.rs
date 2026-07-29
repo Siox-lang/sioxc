@@ -575,6 +575,16 @@ impl<'a> Parser<'a> {
         let start = self.span();
         self.bump(); // `impl`
 
+        // Rust-style trait-impl parameters precede the trait:
+        // `impl<T: Resolve> Resolve for T[]`. Keep the older target-impl form
+        // `impl Counter<W: integer> { ... }` below, where the parameters follow
+        // the target name.
+        let mut params = if self.at(TokenKind::Lt) {
+            self.parse_params()
+        } else {
+            Params::default()
+        };
+
         // `impl "+" for T` names an operator trait by its quoted string.
         let head_path = if self.at(TokenKind::StrLit) {
             let name = self.parse_trait_name();
@@ -588,9 +598,8 @@ impl<'a> Parser<'a> {
         };
         // A `<name: bound>` list declares impl parameters; a `<expr>` list is
         // generic arguments that stay inside the target type.
-        let mut params = Params::default();
         let head_args = if self.at(TokenKind::Lt) {
-            if self.angle_is_param_list(self.pos) {
+            if params.params.is_empty() && self.angle_is_param_list(self.pos) {
                 params = self.parse_params();
                 None
             } else {
@@ -2354,6 +2363,29 @@ mod tests {
         assert!(matches!(i.items[1], ImplItem::Let(_)));
         assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::If(_))));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
+    }
+
+    #[test]
+    fn generic_trait_impl_parameters_precede_the_trait() {
+        let m = parse_ok(
+            "module m;\n\
+             impl<T: Resolve> Resolve for T[] {\n\
+               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n",
+        );
+        let Item::Impl(im) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        assert_eq!(im.params.params.len(), 1);
+        assert_eq!(im.params.params[0].name.text, "T");
+        assert_eq!(
+            im.trait_
+                .as_ref()
+                .and_then(|path| path.segments.last())
+                .map(|name| name.text.as_str()),
+            Some("Resolve")
+        );
+        assert!(matches!(im.target, Type::Indexed { index: None, .. }));
     }
 
     /// `!x` is the reflex from C/Verilog/Rust, but `!` here only marks a macro

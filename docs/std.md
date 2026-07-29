@@ -30,7 +30,7 @@ is a documented shim, and the declaration here is canonical.
 | ------------- | -------------------------------- | -------- |
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `time`/`frequency` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
-| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (incl. `signed`'s signed `<=>`) |
+| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -97,6 +97,13 @@ three-way compare): one impl derives all of `< <= > >= == !=` (spec 3.25).
 **`Boolean`** — a type usable as a condition provides `as_bool` returning the
 system `Bool` type (`true`/`false`), applied only in condition position.
 `Bit`/`Bool` opt in; `Logic` deliberately does not.
+
+`Resolve` and the core `and`/`or`/`not` operators have constrained blanket
+implementations for `T[]`. Packed `Vector` newtypes forward them when their
+element type implements the scalar contract. Consequently `unsigned` and
+`signed` reuse `Logic` resolution and truth tables without duplicate forwarding
+impls; their arithmetic and signed interpretation remain nominal impls in
+`std::bits`.
 
 `Operator`, `Suffix`, and `Prefix` are compiler bootstraps. Operator symbol,
 precedence, input, and output are std/user declarations. Impls are inlined

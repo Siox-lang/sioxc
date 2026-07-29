@@ -346,6 +346,10 @@ struct Lowering<'a> {
     /// rhs type (the `integer` in `impl Add<integer> for T`; `None` reads as
     /// `Self`). Overloads select by that rhs, or the fn's rhs parameter type.
     op_impls: HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
+    /// Generic implementations whose target is an unconstrained scalar array.
+    /// Nominal Vector families forward these when their element satisfies the
+    /// implementation's constraint.
+    blanket_array_impls: HashMap<String, String>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
     suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
     /// Module-level functions, inlined at call sites / const-evaluated.
@@ -492,6 +496,7 @@ impl<'a> Lowering<'a> {
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
             op_impls: HashMap::new(),
+            blanket_array_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
             free_fns: HashMap::new(),
             inline_depth: std::cell::Cell::new(0),
@@ -632,6 +637,12 @@ impl<'a> Lowering<'a> {
                                         _ => None,
                                     });
                                 let operator = op_symbol.unwrap_or_else(|| tr.text.clone());
+                                if is_blanket_array_impl(im) {
+                                    let requirement =
+                                        blanket_requirement(im).unwrap_or_else(|| operator.clone());
+                                    self.blanket_array_impls.insert(operator, requirement);
+                                    continue;
+                                }
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
@@ -1541,15 +1552,36 @@ impl<'a> Lowering<'a> {
                 .or_default()
                 .push(i);
         }
-        let mut replaced: Vec<(u32, Expr)> = Vec::new();
+        let mut replaced: Vec<(u32, Expr, Option<Expr>)> = Vec::new();
         for (t, ctxs) in &by_target {
+            // Metavalue companions are an implementation plane of their parent
+            // signal. The parent's element-wise Resolve replaces their drivers
+            // together; diagnosing the temporary per-context companion drivers
+            // as an independent unresolved net would be a false conflict.
+            if self.out.meta_of.values().any(|companion| companion == t) {
+                continue;
+            }
             if ctxs.len() < 2 {
                 continue;
             }
             let ty = self.sig_type.get(t).cloned().unwrap_or_default();
-            let has_resolve = self
+            let direct_resolve = self
                 .op_impls
                 .contains_key(&("Resolve".to_string(), ty.clone()));
+            let element_resolve = self
+                .out
+                .vector_element_enums
+                .get(t)
+                .filter(|element| {
+                    self.blanket_array_impls
+                        .get("Resolve")
+                        .is_some_and(|requirement| {
+                            self.op_impls
+                                .contains_key(&(requirement.clone(), (*element).clone()))
+                        })
+                })
+                .cloned();
+            let has_resolve = direct_resolve || element_resolve.is_some();
             let path = self.out.signals[*t as usize].path.clone();
             if !has_resolve {
                 // Lead with the mistake (several sources driving one signal),
@@ -1579,6 +1611,21 @@ impl<'a> Lowering<'a> {
                 )));
                 continue;
             }
+            // A forwarded array Resolve operates per element and preserves the
+            // separate value/discriminant planes.
+            if let Some(element) = element_resolve {
+                let width = self.out.signals[*t as usize].width;
+                if let Some((value, meta)) = self.resolve_vector_contexts(*t, ctxs, width, &element)
+                {
+                    replaced.push((*t, value, Some(meta)));
+                } else {
+                    self.sink.emit(crate::diag::Diagnostic::error(format!(
+                        "could not instantiate element-wise `impl Resolve for {element}[]` folding `{path}`"
+                    )));
+                }
+                continue;
+            }
+
             // Each context: fold its drivers (later overrides) over a 'Z' base.
             let mut contributions = Vec::new();
             for idxs in ctxs.values() {
@@ -1610,9 +1657,9 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            replaced.push((*t, folded));
+            replaced.push((*t, folded, None));
         }
-        for (t, expr) in replaced {
+        for (t, expr, meta) in replaced {
             self.out.drivers.retain(|d| d.target.0 != t);
             self.out.drivers.push(Driver {
                 target: SignalId(t),
@@ -1620,7 +1667,124 @@ impl<'a> Lowering<'a> {
                 expr,
                 ctx: 0,
             });
+            if let Some(meta) = meta {
+                let cid = self.driven_companion(SignalId(t));
+                self.out.drivers.retain(|d| d.target.0 != cid);
+                self.out.drivers.push(Driver {
+                    target: SignalId(cid),
+                    cond: None,
+                    expr: meta,
+                    ctx: 0,
+                });
+            }
         }
+    }
+
+    fn resolve_vector_contexts(
+        &self,
+        target: u32,
+        contexts: &std::collections::BTreeMap<u32, Vec<usize>>,
+        width: u32,
+        element: &str,
+    ) -> Option<(Expr, Expr)> {
+        let z = self.char_disc('Z', element)?;
+        let mut contributions = Vec::new();
+        for indices in contexts.values() {
+            let context = indices
+                .first()
+                .map(|index| self.out.drivers[*index].ctx)
+                .unwrap_or(0);
+            let mut companion_drivers: Vec<&Driver> = self
+                .out
+                .meta_of
+                .get(&target)
+                .into_iter()
+                .flat_map(|companion| {
+                    self.out.drivers.iter().filter(move |driver| {
+                        driver.target.0 == *companion && driver.ctx == context
+                    })
+                })
+                .collect();
+            let mut value = Expr::Const(z & 1);
+            let mut meta = Expr::Const(if z >= 2 { z } else { 0 });
+            value = repeat_element_plane(value, width, 1);
+            meta = repeat_element_plane(meta, width, 4);
+            for &index in indices {
+                let driver = &self.out.drivers[index];
+                let next_value = driver.expr.clone();
+                let matching = companion_drivers
+                    .iter()
+                    .position(|meta| meta.cond.is_some() == driver.cond.is_some());
+                let next_meta = matching
+                    .map(|position| companion_drivers.remove(position).expr.clone())
+                    .or_else(|| self.lower_meta_ir(&driver.expr, width))
+                    .unwrap_or(Expr::Const(0));
+                match &driver.cond {
+                    None => {
+                        value = next_value;
+                        meta = next_meta;
+                    }
+                    Some(condition) => {
+                        value = Expr::Select {
+                            cond: Box::new(condition.clone()),
+                            then: Box::new(next_value),
+                            els: Box::new(value),
+                        };
+                        meta = Expr::Select {
+                            cond: Box::new(condition.clone()),
+                            then: Box::new(next_meta),
+                            els: Box::new(meta),
+                        };
+                    }
+                }
+            }
+            contributions.push((value, meta));
+        }
+
+        let mut contributions = contributions.into_iter();
+        let mut accumulated = contributions.next()?;
+        for incoming in contributions {
+            let mut value = Expr::Const(0);
+            let mut meta = Expr::Const(0);
+            for index in 0..width {
+                let left = logic_element_disc(&accumulated.0, &accumulated.1, index);
+                let right = logic_element_disc(&incoming.0, &incoming.1, index);
+                let result = self.inline_resolve(element, left, right)?;
+                let value_bit = Expr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(result.clone()),
+                    rhs: Box::new(Expr::Const(1)),
+                };
+                value = or_expr(
+                    value,
+                    Expr::Binary {
+                        op: BinOp::Shl,
+                        lhs: Box::new(value_bit),
+                        rhs: Box::new(Expr::Const(index as u64)),
+                    },
+                );
+                let is_meta = Expr::Binary {
+                    op: BinOp::Ge,
+                    lhs: Box::new(result.clone()),
+                    rhs: Box::new(Expr::Const(2)),
+                };
+                let nibble = Expr::Select {
+                    cond: Box::new(is_meta),
+                    then: Box::new(result),
+                    els: Box::new(Expr::Const(0)),
+                };
+                meta = or_expr(
+                    meta,
+                    Expr::Binary {
+                        op: BinOp::Shl,
+                        lhs: Box::new(nibble),
+                        rhs: Box::new(Expr::Const((4 * index) as u64)),
+                    },
+                );
+            }
+            accumulated = (value, meta);
+        }
+        Some(accumulated)
     }
 
     /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
@@ -1920,6 +2084,14 @@ impl<'a> Lowering<'a> {
         for d in &self.out.drivers {
             let n = self.out.signals[d.target.0 as usize].width;
             if n == 0 {
+                continue;
+            }
+            if self.out.meta_of.get(&d.target.0).is_some_and(|companion| {
+                self.out
+                    .drivers
+                    .iter()
+                    .any(|driver| driver.target.0 == *companion)
+            }) {
                 continue;
             }
             if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
@@ -5250,6 +5422,39 @@ fn bit(e: &Expr, i: u32) -> Expr {
         lo: i,
     }
 }
+
+fn logic_element_disc(value: &Expr, meta: &Expr, index: u32) -> Expr {
+    let nibble = Expr::Slice {
+        base: Box::new(meta.clone()),
+        hi: 4 * index + 3,
+        lo: 4 * index,
+    };
+    Expr::Select {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Ge,
+            lhs: Box::new(nibble.clone()),
+            rhs: Box::new(Expr::Const(2)),
+        }),
+        then: Box::new(nibble),
+        els: Box::new(bit(value, index)),
+    }
+}
+
+fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
+    let mut result = Expr::Const(0);
+    for index in 0..count {
+        result = or_expr(
+            result,
+            Expr::Binary {
+                op: BinOp::Shl,
+                lhs: Box::new(element.clone()),
+                rhs: Box::new(Expr::Const((index * stride) as u64)),
+            },
+        );
+    }
+    result
+}
+
 /// Whether element `i` of a metavalue disc-array is a metavalue (disc >= 2).
 fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
     match m {
@@ -6854,6 +7059,42 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
         ast::Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
         ast::Type::View { view, .. } => view.segments.last().map(|s| s.text.as_str()),
+    }
+}
+
+fn is_blanket_array_impl(im: &ast::ImplDecl) -> bool {
+    let ast::Type::Indexed {
+        base, index: None, ..
+    } = &im.target
+    else {
+        return false;
+    };
+    let Some(head) = type_head_name(base) else {
+        return false;
+    };
+    im.params.params.iter().any(|param| param.name.text == head)
+}
+
+fn blanket_requirement(im: &ast::ImplDecl) -> Option<String> {
+    let ast::Type::Indexed { base, .. } = &im.target else {
+        return None;
+    };
+    let parameter = type_head_name(base)?;
+    let bound = im
+        .params
+        .params
+        .iter()
+        .find(|candidate| candidate.name.text == parameter)?
+        .bound
+        .as_ref()?;
+    match bound {
+        ast::Type::Generic { base, args, .. } if type_head_name(base) == Some("Operator") => {
+            args.first().and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
+                _ => None,
+            })
+        }
+        _ => type_head_name(bound).map(str::to_string),
     }
 }
 

@@ -1226,3 +1226,16 @@ the packed type's declared element enum instead of searching for std logic
 type names. Removed the corresponding scalar-width cases, updated the docs,
 and standardized range documentation and diagnostics on directional
 `left..right` terminology.
+### 2026-07-29 — Codex — added constrained array impl forwarding
+
+Added Rust-style leading generic parameters on trait implementations
+(`impl<T: Trait> Trait for T[]`) and constrained forwarding through nominal
+packed `Vector` newtypes. Moved `Resolve` and core `and`/`or`/`not` lifting into
+generic std array implementations, removing the duplicate unsigned/signed
+bodies. Implemented element-wise vector resolution in IR across separate value
+and Logic-discriminant planes, including X/Z-preserving native and VCD output.
+Added rejection coverage when a vector element does not satisfy the blanket
+constraint and an executable custom `Word(Logic[])` corpus regression covering
+resolution and logical forwarding. Making vector operators source-driven also
+exposed the missing explicit unsigned `<=>`; std now declares it using kernel
+unsigned comparison semantics.

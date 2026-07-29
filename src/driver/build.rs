@@ -1368,6 +1368,15 @@ impl Ctx<'_> {
         let Some(family) = family else {
             return Ok(None);
         };
+        // A packed Vector forwards the blanket `T[]` implementation of core
+        // `not`; the native harness performs that element-wise operation
+        // directly at the concrete width.
+        if self.families.contains(&family) {
+            let width = self.name_width(&name).unwrap_or(0);
+            if width > 0 {
+                return Ok(Some(mask_c(&format!("~({})", self.expr(rhs)?), width)));
+            }
+        }
         let Some((f, _)) = self
             .op_impls
             .get(&("not".to_string(), family))

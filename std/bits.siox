@@ -30,8 +30,9 @@ impl Vector for signed {}
 // (spec 3.25). Inside an operator impl the operands read as kernel words, so
 // `self + rhs` below is the built-in integer add — results wrap to the
 // target's width when stored, which is what makes `unsigned[N]` modular.
-// Comparisons on `unsigned` are the kernel's unsigned compare (no Ord impl
-// needed); `signed` gets a sign-aware Ord below.
+// Comparisons on `unsigned` use kernel unsigned semantics; the explicit
+// `<=>` below exposes them through the ordinary
+// operator contract. `signed` gets a sign-aware implementation later.
 
 // --- unsigned[N]: modular unsigned arithmetic -------------------------------
 
@@ -59,6 +60,14 @@ impl Operator<">>", unsigned, unsigned> for unsigned {
     fn apply(self, rhs: unsigned) -> unsigned { return self >> rhs; }
 }
 
+impl Operator<"<=>", unsigned, Ordering> for unsigned {
+    fn apply(self, rhs: unsigned) -> Ordering {
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
+
 // Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
 // bits/digit) and `o"17"` octal (3 bits/digit). The symbol parameterizes the
 // `Prefix` trait — the compiler names the trait, std owns which prefixes exist
@@ -71,30 +80,6 @@ impl Prefix<"o", string> for unsigned {}
 
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
-
-impl Operator<"and", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self and rhs; }
-}
-
-impl Operator<"or", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self or rhs; }
-}
-
-impl Operator<"not", unsigned, unsigned> for unsigned {
-    fn apply(self) -> unsigned { return ((1 << self'length) - 1) - self; }
-}
-
-impl Operator<"and", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self and rhs; }
-}
-
-impl Operator<"or", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self or rhs; }
-}
-
-impl Operator<"not", signed, signed> for signed {
-    fn apply(self) -> signed { return ((1 << self'length) - 1) - self; }
-}
 
 #[precedence = 35]
 impl Operator<"xor", unsigned, unsigned> for unsigned {

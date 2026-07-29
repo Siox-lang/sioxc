@@ -156,7 +156,11 @@ unsigned(Logic[])` / `struct signed(Logic[])` declarations in `std/bits.siox`** 
 no longer seeded compiler names. A library type opts into packed numeric
 storage with `impl Vector for F`; derived families inherit that representation.
 Signed interpretation is not compiler metadata: it comes from the type's
-operator implementations. They accept `integer` on assignment (spec,
+operator implementations. Constrained `impl<T: Trait> Trait for T[]`
+declarations are forwarded through a packed family's array representation only
+when its element satisfies the constraint; direct nominal impls override them.
+This supplies element-wise Logic resolution and core logical operators without
+general trait inheritance. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style
 `Operator` impls — including
 `signed`'s sign-aware `<=>` (signed comparison is library source, not compiler

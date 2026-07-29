@@ -199,6 +199,41 @@ pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }
 
+// Array behavior is lifted from the element contract. Fieldless nominal
+// Vector newtypes forward these implementations from their array base without
+// becoming interchangeable with that base.
+impl<T: Resolve> Resolve for T[] {
+    fn resolve(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i].resolve(rhs[i]); }
+        return result;
+    }
+}
+
+impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] and rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"or", T, T>> Operator<"or", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] or rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"not", T, T>> Operator<"not", T, T> for T[] {
+    fn apply(self) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = not self[i]; }
+        return result;
+    }
+}
+
 // The default constructor (language.md 3.29): the value an uninitialized signal
 // of `T` powers on to, and the nullary member of the `T(...)` family. The body
 // must be a constant. Absent an impl, the compiler uses the type's first
