@@ -1480,3 +1480,20 @@ forward declarations, DUT outputs, and direct native-testbench references.
   passing analysis but later reporting `unknown ::length`.
 - Added lexer, semantic, native, and external corpus coverage for separated
   wide values, real values, named widths, based widths, ranges, and indices.
+
+### 2026-07-29 — Codex — enforce native composite assignment shapes
+
+- Reproduced a fixed native `string` local accepting a differently sized later
+  literal and writing only the zipped overlap, leaving stale characters or
+  silently truncating input.
+- Retained initializer-derived lengths for unconstrained local collections in
+  the semantic environment, so mismatches are rejected before code generation,
+  and kept a native lowering guard as defense in depth.
+- Reproduced positional struct reassignment falling through as a nonexistent
+  scalar target and spread reassignment ignoring its base.
+- Unified flattened struct writes across named, positional, typed-positional,
+  and spread-update assignment forms, including recursive fields.
+- Added compiler and external corpus regressions for string shape rejection and
+  positional/spread struct reassignment.
+- Expanded the Phase 3 Output roadmap with a versioned, vendor-neutral RTL
+  elaboration artifact for Vivado, Quartus, and other implementation tools.

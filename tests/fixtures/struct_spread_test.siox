@@ -21,6 +21,10 @@ impl StructSpreadTest {
     assert!(upd.a == 1, "upd.a from base");
     assert!(upd.b == 20, "upd.b overridden");
     assert!(upd.c == 3, "upd.c from base");
+    upd = { ..base, .c = 30 };
+    assert!(upd.a == 1, "reassigned upd.a from base");
+    assert!(upd.b == 2, "reassigned upd.b from base");
+    assert!(upd.c == 30, "reassigned upd.c overridden");
 
     // Hardware spread through a DUT.
     let i: Pkt; let o: Pkt;

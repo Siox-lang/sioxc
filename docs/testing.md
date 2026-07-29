@@ -54,6 +54,11 @@ arbitrary-width elements too.
 Materialization is recursive for nested arrays, arrays of structs, and arrays
 of fixed-size strings; composite copies match scalar leaf paths rather than
 collapsing an aggregate into one machine word.
+Unconstrained string/array locals acquire the initializer's concrete native
+storage shape, and later assignments must match it. Struct locals accept the
+same named, positional, typed-positional, and spread-update forms during
+reassignment as during initialization; every form writes the flattened fields
+in declaration order.
 Explicit local ranges retain their declared logical indices and direction.
 This applies to numeric vectors and arrays alike: indexing, iteration, string
 literal initialization of logic arrays, and the `'left`, `'right`, `'high`,

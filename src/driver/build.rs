@@ -1887,12 +1887,19 @@ impl Ctx<'_> {
                 Ok(true)
             }
             ast::Expr::StrLit { text, .. } => {
+                let source_len = text.chars().count();
                 let indices = self
                     .local_indices
                     .borrow()
                     .get(name)
                     .cloned()
-                    .unwrap_or_else(|| (0..text.chars().count() as i64).collect());
+                    .unwrap_or_else(|| (0..source_len as i64).collect());
+                if indices.len() != source_len {
+                    return Err(format!(
+                        "string assignment length mismatch: `{name}` has {} element(s), source has {source_len}",
+                        indices.len()
+                    ));
+                }
                 for (index, ch) in indices.into_iter().zip(text.chars()) {
                     let element = format!("{name}[{index}]");
                     let value = self.char_value_for_target(&element, ch);
@@ -1911,43 +1918,112 @@ impl Ctx<'_> {
                 }
                 Ok(true)
             }
-            ast::Expr::Construct { args, .. } => {
+            ast::Expr::Construct {
+                ty, args, spread, ..
+            } => {
+                let type_name = ty
+                    .as_ref()
+                    .and_then(type_head_name)
+                    .map(str::to_string)
+                    .or_else(|| self.local_types.borrow().get(name).cloned());
+                let fields = type_name
+                    .as_ref()
+                    .and_then(|head| self.structs.get(head))
+                    .cloned()
+                    .unwrap_or_default();
                 let mut wrote = false;
-                for arg in args {
-                    // Named `.field = v` only; positional needs struct field
-                    // order (a follow-up). A value-less arg is parser recovery.
-                    let Some(f) = &arg.field else { continue };
-                    let field = format!("{name}.{}", f.text);
-                    if let Some(v) = &arg.value {
-                        if self.write_composite(&field, v, b, ind)? {
-                            wrote = true;
-                            continue;
+
+                if let Some(source_name) = spread.as_deref().and_then(expr_path) {
+                    let source = self.composite_reads(&source_name);
+                    let target = self.composite_targets(name);
+                    if source.keys().ne(target.keys()) {
+                        return Err(format!(
+                            "composite assignment shape mismatch: `{name}` and `{source_name}`"
+                        ));
+                    }
+                    for (suffix, expression) in source {
+                        let (signal, destination) = &target[&suffix];
+                        if *signal {
+                            b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                        } else {
+                            b.push_str(&format!("{ind}{destination} = {expression};\n"));
                         }
                     }
-                    if let Some(&id) = self.map.get(&field) {
-                        let e = match &arg.value {
-                            Some(v) => self.value_for(id, v)?,
-                            None => "0".to_string(),
-                        };
-                        b.push_str(&format!("{ind}sx_set({}, {e});\n", id.0));
-                        wrote = true;
-                    } else if self.locals.borrow().contains(&field) {
-                        let e = match &arg.value {
-                            Some(v) => self.value_for_local(&field, v)?,
-                            None => "0".to_string(),
-                        };
-                        let e = match self.local_widths.borrow().get(&field) {
-                            Some(&w) => mask_c(&e, w),
-                            None => e,
-                        };
-                        b.push_str(&format!("{ind}{} = {e};\n", c_local_ident(&field)));
-                        wrote = true;
-                    }
+                    wrote = true;
+                }
+
+                for (position, arg) in args.iter().enumerate() {
+                    let field_name = arg
+                        .field
+                        .as_ref()
+                        .map(|field| field.text.as_str())
+                        .or_else(|| fields.get(position).map(|(field, _)| field.as_str()));
+                    let Some(field_name) = field_name else {
+                        return Err(format!(
+                            "cannot bind positional field {} while assigning `{name}`",
+                            position + 1
+                        ));
+                    };
+                    let Some(value) = &arg.value else { continue };
+                    wrote |=
+                        self.write_composite_field(&format!("{name}.{field_name}"), value, b, ind)?;
                 }
                 Ok(wrote)
             }
+            ast::Expr::Concat { parts, .. } => {
+                let type_name = self.local_types.borrow().get(name).cloned();
+                let fields = type_name
+                    .as_ref()
+                    .and_then(|head| self.structs.get(head))
+                    .cloned()
+                    .unwrap_or_default();
+                if fields.is_empty() {
+                    return Ok(false);
+                }
+                if fields.len() != parts.len() {
+                    return Err(format!(
+                        "struct assignment field count mismatch: `{name}` has {} field(s), source has {}",
+                        fields.len(),
+                        parts.len()
+                    ));
+                }
+                for ((field, _), value) in fields.iter().zip(parts) {
+                    self.write_composite_field(&format!("{name}.{field}"), value, b, ind)?;
+                }
+                Ok(true)
+            }
             _ => Ok(false),
         }
+    }
+
+    fn write_composite_field(
+        &self,
+        field: &str,
+        value: &ast::Expr,
+        b: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        if self.write_composite(field, value, b, ind)? {
+            return Ok(true);
+        }
+        if let Some(&id) = self.map.get(field) {
+            b.push_str(&format!(
+                "{ind}sx_set({}, {});\n",
+                id.0,
+                self.value_for(id, value)?
+            ));
+            return Ok(true);
+        }
+        if self.locals.borrow().contains(field) {
+            let expression = self.value_for_local(field, value)?;
+            let expression = match self.local_widths.borrow().get(field) {
+                Some(&width) => mask_c(&expression, width),
+                None => expression,
+            };
+            b.push_str(&format!("{ind}{} = {expression};\n", c_local_ident(field)));
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn has_storage_prefix(&self, prefix: &str) -> bool {

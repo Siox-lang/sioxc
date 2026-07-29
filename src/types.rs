@@ -705,6 +705,26 @@ impl<'a> Checker<'a> {
         self.base_struct_fields_at(ty, &mut HashSet::new())
     }
 
+    fn struct_field_count(&self, id: crate::resolve::DefId) -> Option<usize> {
+        let name = &self.resolved.def(id)?.name;
+        self.struct_field_count_at(name, &mut HashSet::new())
+    }
+
+    fn struct_field_count_at(&self, name: &str, seen: &mut HashSet<String>) -> Option<usize> {
+        if !seen.insert(name.to_string()) {
+            return None;
+        }
+        let (base, own) = self.structs.get(name)?;
+        let inherited = match base.as_ref().and_then(type_head_name) {
+            Some(base) if self.structs.contains_key(base) => {
+                self.struct_field_count_at(base, seen)?
+            }
+            _ => 0,
+        };
+        seen.remove(name);
+        inherited.checked_add(own.len())
+    }
+
     /// Cycle-safe because resolution reports cyclic derivation but checking
     /// continues best-effort.
     fn base_struct_fields_at(&self, ty: &Type, seen: &mut HashSet<String>) -> Vec<String> {
@@ -1375,7 +1395,29 @@ impl<'a> Checker<'a> {
         for it in &im.items {
             match it {
                 ImplItem::Let(l) => {
-                    let ty = l.ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error);
+                    let mut ty = l.ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error);
+                    // An unconstrained local still acquires fixed storage in a
+                    // native test executable. Retain the initializer's known
+                    // shape in the statement environment so later writes are
+                    // checked against that storage instead of treating `len=0`
+                    // as a wildcard forever.
+                    if let Ty::Array { len, .. } = &mut ty {
+                        if *len == 0 {
+                            *len = match l.value.as_ref() {
+                                Some(Expr::StrLit { text, .. }) => {
+                                    u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
+                                }
+                                Some(Expr::Array { elems, .. }) => {
+                                    u32::try_from(elems.len()).unwrap_or(u32::MAX)
+                                }
+                                Some(value) => match self.type_of(value, &sym) {
+                                    Ty::Array { len, .. } => len,
+                                    _ => 0,
+                                },
+                                None => 0,
+                            };
+                        }
+                    }
                     sym.insert(l.name.text.clone(), ty);
                     if let Some(r) = l.ty.as_ref().and_then(|t| self.declared_range(t)) {
                         ranged.insert(l.name.text.clone(), r);
@@ -2429,6 +2471,14 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Error => true,
                 _ => false,
+            },
+            // A name-less positional struct literal lexes as concatenation.
+            // It is structurally assignable to a named struct when its arity
+            // matches; field-value checks are contextualized during lowering.
+            Expr::Concat { parts, .. } => match lhs {
+                Ty::Named(id) => self.struct_field_count(*id) == Some(parts.len()),
+                Ty::Error => true,
+                _ => compatible(lhs, &self.type_of(value, sym)),
             },
             // A string is a sequence of characters: assigned to a `Logic`-vector
             // it fills each element with the matching `std_ulogic` (like `b"…"`),

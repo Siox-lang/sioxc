@@ -534,3 +534,52 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(output);
 }
+
+#[test]
+fn native_string_reassignment_rejects_storage_length_mismatch() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let stem = format!("siox_string_shape_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        "module string_shape;
+         #[test] entity T {}
+         impl T {
+             let text: string = \"abc\";
+             text = \"x\";
+         }",
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        !build.status.success(),
+        "mismatched string storage was accepted"
+    );
+    assert!(
+        stderr.contains("error[E-P003]: cannot assign Char[1] to Char[3]"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("later stages skipped"),
+        "the mismatch should be rejected before native code generation:\n{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}

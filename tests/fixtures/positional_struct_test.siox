@@ -21,4 +21,12 @@ impl PositionalStructTest {
     assert!(q.b == 9, "q.b");
     assert!(r.a == 5, "r.a");
     assert!(r.b == 6, "r.b");
+
+    p = { 10, 11 };
+    assert!(p.a == 10, "positional reassignment p.a");
+    assert!(p.b == 11, "positional reassignment p.b");
+
+    r = Pkt { 12, 13 };
+    assert!(r.a == 12, "typed positional reassignment r.a");
+    assert!(r.b == 13, "typed positional reassignment r.b");
 }
