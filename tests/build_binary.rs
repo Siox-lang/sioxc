@@ -362,6 +362,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
             "module wide_format;
              enum Symbol {{ 'α', 'β' }}
              struct CharacterBox {{ value: Char }}
+             struct RealBox {{ value: real }}
              #[test] entity T {{}}
              impl T {{
                  let wide: unsigned[128] = {wide};
@@ -374,6 +375,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let scalar_character: Char = 'λ';
                  let symbol: Symbol = 'α';
                  let boxed: CharacterBox = {{ .value = 'λ' }};
+                 let real_value: real = 1.5;
+                 let real_box: RealBox = {{ .value = 3.5 }};
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -395,6 +398,18 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(boxed.value == 'β', \"struct Char field assignment\");
                  symbol = 'β';
                  assert!(symbol == 'β', \"local enum symbol assignment\");
+                 print!(\"reals {{}} {{}}\", real_value, real_box.value);
+                 print!(\"real comparison {{}}\", real_value == 1.5);
+                 real_value = real_value + 0.75;
+                 assert!(real_value == 2.25, \"real local arithmetic {{}}\", real_value);
+                 real_value = -real_value;
+                 assert!(real_value == -2.25, \"real local negation {{}}\", real_value);
+                 real_value = if 1 == 1 {{ 4.5 }} else {{ 9.5 }};
+                 assert!(real_value == 4.5, \"real conditional {{}}\", real_value);
+                 real_value = match 1 {{ 1 => 5.5, _ => 9.5 }};
+                 assert!(real_value == 5.5, \"real match {{}}\", real_value);
+                 real_box.value = real_box.value + 0.5;
+                 assert!(real_box.value == 4.0, \"real struct field {{}}\", real_box.value);
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"
@@ -428,6 +443,14 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
     assert!(
         stdout.contains("strings literal hé🙂 <>"),
         "string arguments were not formatted as Unicode text:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("reals 1.5 3.5"),
+        "real locals or fields were not formatted as floating-point values:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("real comparison 1"),
+        "a real comparison result was incorrectly formatted as a real:\n{stdout}"
     );
     assert!(
         stderr.contains(&format!("{long} {wide}")),

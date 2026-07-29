@@ -36,6 +36,9 @@ their characters (including the zero-character empty-string case).
 Unconnected `Char` locals, string elements, and `Char` fields retain Unicode
 character context for initialization, assignment, and comparison just like
 DUT-connected character signals.
+Unconnected `real` locals and fields likewise use floating-point semantics for
+arithmetic, comparisons, conditionals, negation, and formatted output; their
+native storage remains the same f64 bit representation used by real signals.
 
 ## Reporting
 

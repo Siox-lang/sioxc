@@ -1372,3 +1372,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
   type, matching the context-sensitive initializer and connected-signal paths.
 - Added executable coverage for Unicode scalar locals, mutable string
   elements, `Char` struct fields, and reassigned character-enum locals.
+
+### 2026-07-29 — Codex — restore floating-point semantics for native locals
+
+- Reproduced unconnected `real` locals silently initializing decimal literals
+  as zero. Comparisons such as `x == 1.5` falsely passed because the literal
+  was independently lowered to the same zero.
+- Extended real-operand discovery through locals, struct fields, unary/binary
+  expressions, conditionals, match arms, frequency values, and `uniform()`.
+- Real locals now encode literal assignments as f64 bits, decode operands for
+  arithmetic/comparison/negation, re-encode results, and format as floats.
+- Added native and standalone corpus coverage for initialization, assignment,
+  arithmetic, unary negation, conditional values, fields, and formatting.

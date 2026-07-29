@@ -1911,19 +1911,7 @@ impl Ctx<'_> {
                                 // A char literal on an enum-typed local resolves
                                 // by position in that enum (data-driven), like
                                 // the native harness + hardware paths.
-                                Some(v) => {
-                                    let head = l.ty.as_ref().and_then(type_head_name);
-                                    match (head, v) {
-                                        (Some("Char"), ast::Expr::CharLit { ch, .. }) => {
-                                            format!("{}ULL", *ch as u32)
-                                        }
-                                        (Some(head), _) => match self.enum_char_lit(head, v) {
-                                            Some(d) => format!("{d}ULL"),
-                                            None => self.expr(v)?,
-                                        },
-                                        (None, _) => self.expr(v)?,
-                                    }
-                                }
+                                Some(v) => self.value_for_local(&l.name.text, v)?,
                                 // Uninitialized: the type's `new()` default
                                 // (`Logic` -> `'U'`), matching native + hardware.
                                 None => {
@@ -2188,13 +2176,7 @@ impl Ctx<'_> {
             let local_type =
                 expr_path(a).and_then(|path| self.local_types.borrow().get(&path).cloned());
             let string_elems = self.formatted_string_elems(a);
-            let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
-                matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
-                    // `uniform()` returns a real but has no signal to ask.
-                    || matches!(a, ast::Expr::Call { callee, .. }
-                        if matches!(callee.as_ref(), ast::Expr::Path(p)
-                            if p.segments.len() == 1 && p.segments[0].text == "uniform"))
-            });
+            let is_real = self.is_real_operand(a);
             let is_char =
                 sig.is_some_and(|signal| signal.char) || local_type.as_deref() == Some("Char");
             let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or(local_type);
@@ -2457,10 +2439,56 @@ impl Ctx<'_> {
 
     /// Whether an operand reads a `real` signal.
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
-        expr_path(e)
-            .and_then(|p| self.map.get(&p))
+        match e {
+            ast::Expr::Int { text, .. } if text.contains('.') => return true,
+            ast::Expr::SuffixLit { suffix, .. }
+                if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
+            {
+                return true;
+            }
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs,
+                ..
+            } => return self.is_real_operand(rhs),
+            ast::Expr::Binary { op, lhs, rhs, .. }
+                if !matches!(
+                    op,
+                    ast::BinOp::Eq
+                        | ast::BinOp::Ne
+                        | ast::BinOp::Lt
+                        | ast::BinOp::Le
+                        | ast::BinOp::Gt
+                        | ast::BinOp::Ge
+                ) =>
+            {
+                return self.is_real_operand(lhs) || self.is_real_operand(rhs);
+            }
+            ast::Expr::IfExpr { then, els, .. } => {
+                return self.is_real_operand(then) || self.is_real_operand(els);
+            }
+            ast::Expr::Match { arms, .. } => {
+                return arms
+                    .iter()
+                    .filter_map(ast::MatchArm::value_expr)
+                    .any(|value| self.is_real_operand(value));
+            }
+            ast::Expr::Call { callee, .. }
+                if matches!(callee.as_ref(), ast::Expr::Path(path)
+                    if path.segments.len() == 1 && path.segments[0].text == "uniform") =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        let Some(path) = expr_path(e) else {
+            return false;
+        };
+        self.map
+            .get(&path)
             .map(|&id| self.design.signals[id.0 as usize].real)
             .unwrap_or(false)
+            || self.local_types.borrow().get(&path).map(String::as_str) == Some("real")
     }
 
     /// An operand in a `real` comparison, as a C `double`: a real signal reads
@@ -2476,9 +2504,15 @@ impl Ctx<'_> {
                 Ok(format!("((double)({text}) * {scale}.0)"))
             }
             _ if self.is_real_operand(e) => {
-                let path = expr_path(e).ok_or("real operand must be a signal")?;
-                let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
-                Ok(format!("sx_f64(sx_read({}))", id.0))
+                if let Some(path) = expr_path(e) {
+                    if self.locals.borrow().contains(&path) {
+                        return Ok(format!("sx_f64({})", c_local_ident(&path)));
+                    }
+                    if let Some(id) = self.map.get(&path) {
+                        return Ok(format!("sx_f64(sx_read({}))", id.0));
+                    }
+                }
+                Ok(format!("sx_f64({})", self.expr(e)?))
             }
             _ => Ok(format!("((double)({}))", self.expr(e)?)),
         }
@@ -2704,6 +2738,10 @@ impl Ctx<'_> {
     fn value_for_local(&self, name: &str, e: &ast::Expr) -> Result<String, String> {
         let ty = self.local_types.borrow().get(name).cloned();
         match (ty.as_deref(), e) {
+            (Some("real"), ast::Expr::Int { text, .. }) => text
+                .parse::<f64>()
+                .map(|value| format!("{}ULL", value.to_bits()))
+                .map_err(|_| format!("invalid real literal `{text}`")),
             (Some("Char"), ast::Expr::CharLit { ch, .. }) => Ok(format!("{}ULL", *ch as u32)),
             (Some(en), _) => match self.enum_char_lit(en, e) {
                 Some(discriminant) => Ok(format!("{discriminant}ULL")),
@@ -2913,22 +2951,33 @@ impl Ctx<'_> {
             ast::Expr::IfExpr {
                 cond, then, els, ..
             } => {
-                format!(
-                    "(({}) ? ({}) : ({}))",
-                    self.expr(cond)?,
-                    self.expr(then)?,
-                    self.expr(els)?
-                )
+                if self.is_real_operand(e) {
+                    format!(
+                        "sx_b64(({}) ? ({}) : ({}))",
+                        self.expr(cond)?,
+                        self.c_real_operand(then)?,
+                        self.c_real_operand(els)?
+                    )
+                } else {
+                    format!(
+                        "(({}) ? ({}) : ({}))",
+                        self.expr(cond)?,
+                        self.expr(then)?,
+                        self.expr(els)?
+                    )
+                }
             }
             // A match-expression: a first-match C ternary chain over the arms.
             ast::Expr::Match {
                 scrutinee, arms, ..
             } => {
                 let scrut = self.expr(scrutinee)?;
+                let real = self.is_real_operand(e);
                 // Build from the last arm backward.
                 let mut out = String::from("0");
                 for arm in arms.iter().rev() {
                     let val = match arm.value_expr() {
+                        Some(v) if real => format!("sx_b64({})", self.c_real_operand(v)?),
                         Some(v) => self.expr(v)?,
                         None => "0".to_string(),
                     };
@@ -3131,6 +3180,9 @@ impl Ctx<'_> {
                     if let Some(value) = self.c_dispatch_not(rhs)? {
                         return Ok(value);
                     }
+                }
+                if *op == ast::UnOp::Neg && self.is_real_operand(rhs) {
+                    return Ok(format!("sx_b64(-({}))", self.c_real_operand(rhs)?));
                 }
                 let r = self.expr(rhs)?;
                 match op {
