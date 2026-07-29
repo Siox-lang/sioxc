@@ -204,6 +204,11 @@ the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C
 classification. LLVM call results are always fitted to the requested expression
 width, including inside staged clocked updates.
 
+Exact `using` aliases are resolved transitively and cycle-safely before IR
+signal flattening. The terminal type therefore supplies storage width, numeric
+range, scalar identity, vector family, struct layout, and array element shape;
+a multi-hop alias cannot degrade into an unknown-width signal.
+
 ## Signal widths
 
 LLVM represents each value at its own semantic bit width. The ABI exchanges

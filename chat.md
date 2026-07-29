@@ -1620,3 +1620,14 @@ forward declarations, DUT outputs, and direct native-testbench references.
   participates.
 - Added default and bitpack native integration coverage proving external
   stimulus now reports the constrained input path and fails the executable.
+
+### 2026-07-29 — Codex — resolve signal aliases transitively
+
+- Reproduced a two-hop alias to `integer<-16..15>` passing type checking but
+  reaching IR with width zero, so both aliased ports prevented code generation.
+- Replaced one-hop signal alias substitution with cycle-safe terminal
+  resolution and reused it when applying an index to an aliased unconstrained
+  array.
+- Added IR coverage for retained integer width/range/identity and aliased
+  `Char[]` element flattening, plus an executable DUT covering negative copy and
+  comparison through the chained alias.

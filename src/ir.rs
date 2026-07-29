@@ -972,7 +972,7 @@ impl<'a> Lowering<'a> {
                     let unconstrained = match &l.ty {
                         None => true,
                         Some(t) => matches!(
-                            self.resolve_alias_shallow(t),
+                            self.resolve_alias(t),
                             ast::Type::Indexed { index: None, .. }
                         ),
                     };
@@ -2238,17 +2238,17 @@ impl<'a> Lowering<'a> {
             subst_ty = subst_type_params(ty, &self.cur_type_env);
             &subst_ty
         };
-        // Substitute `using X = T;` aliases; an index applied to an alias of
+        // Substitute `using X = T;` aliases transitively; an index applied to an alias of
         // an unconstrained array fills its hole (`string[5]` = `Char[5]`).
         let resolved;
         let ty = match ty {
             ast::Type::Path(p) if p.segments.len() == 1 => {
-                match self.aliases.get(&p.segments[0].text) {
-                    Some(t) => {
-                        resolved = t.clone();
-                        &resolved
-                    }
-                    None => ty,
+                let terminal = self.resolve_alias(ty);
+                if std::ptr::eq(terminal, ty) {
+                    ty
+                } else {
+                    resolved = terminal.clone();
+                    &resolved
                 }
             }
             ast::Type::Indexed {
@@ -2256,18 +2256,13 @@ impl<'a> Lowering<'a> {
                 index: Some(i),
                 span,
             } => {
-                let inner = match base.as_ref() {
-                    ast::Type::Path(p) if p.segments.len() == 1 => {
-                        self.aliases.get(&p.segments[0].text)
-                    }
-                    _ => None,
-                };
+                let inner = self.resolve_alias(base);
                 match inner {
-                    Some(ast::Type::Indexed {
+                    ast::Type::Indexed {
                         base: elem,
                         index: None,
                         ..
-                    }) => {
+                    } => {
                         resolved = ast::Type::Indexed {
                             base: elem.clone(),
                             index: Some(i.clone()),
@@ -4014,16 +4009,27 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    /// One alias hop, for inspecting a declared type's shape.
-    fn resolve_alias_shallow<'t>(&'t self, ty: &'t ast::Type) -> &'t ast::Type {
-        if let ast::Type::Path(p) = ty {
-            if p.segments.len() == 1 {
-                if let Some(t) = self.aliases.get(&p.segments[0].text) {
-                    return t;
-                }
+    /// Resolve an exact `using` alias chain without looping on malformed
+    /// cyclic declarations (which resolution diagnoses separately).
+    fn resolve_alias<'t>(&'t self, ty: &'t ast::Type) -> &'t ast::Type {
+        let mut ty = ty;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let ast::Type::Path(path) = ty else {
+                return ty;
+            };
+            if path.segments.len() != 1 {
+                return ty;
             }
+            let name = path.segments[0].text.as_str();
+            if !seen.insert(name) {
+                return ty;
+            }
+            let Some(alias) = self.aliases.get(name) else {
+                return ty;
+            };
+            ty = alias;
         }
-        ty
     }
 
     fn type_resolves_to(&self, ty: &ast::Type, expected: &str) -> bool {
@@ -8614,6 +8620,36 @@ mod tests {
                 .map(|driver| &driver.expr),
             Some(Expr::Current(_))
         ));
+    }
+
+    #[test]
+    fn chained_aliases_retain_terminal_signal_representation() {
+        let design = lower_src(
+            "module m;\n\
+             using Small = integer<-16..15>;\n\
+             using Alias = Small;\n\
+             using Chars = Char[];\n\
+             using Text = Chars;\n\
+             #[top] entity E { in x: Alias; out y: Alias; }\n\
+             impl E { let text: Text[3] = \"abc\"; y = x; }\n",
+        );
+        for suffix in [".x", ".y"] {
+            let signal = design
+                .signals
+                .iter()
+                .find(|signal| signal.path.ends_with(suffix))
+                .expect("aliased signal");
+            assert_eq!(signal.width, 5);
+            assert!(signal.integer);
+            assert_eq!(signal.range, Some((-16, 15)));
+        }
+        let text: Vec<_> = design
+            .signals
+            .iter()
+            .filter(|signal| signal.path.contains(".text["))
+            .collect();
+        assert_eq!(text.len(), 3);
+        assert!(text.iter().all(|signal| signal.char));
     }
 
     #[test]

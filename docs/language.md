@@ -1695,6 +1695,11 @@ next paragraph. They also leave nowhere to put a body, so **extension is not
 expressible** — the rule below is enforced by the grammar, not by a check.
 `:` is then only ever type ascription (fields, parameters, trait bounds).
 
+Alias chains are exact and transitive: if `B = A` and
+`A = integer<-16..15>`, a `B` signal has the same five-bit ranged-integer
+representation and behavior. Applying an index through chained aliases to an
+unconstrained array likewise fills the terminal array's range.
+
 **Derivation never extends.** A derived type has exactly its base's variants
 or fields — it cannot add. To build a bigger type, use **composition**:
 
