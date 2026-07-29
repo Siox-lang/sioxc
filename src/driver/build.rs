@@ -1298,6 +1298,11 @@ impl Ctx<'_> {
         }
         for (i, &code) in codes.iter().enumerate() {
             let key = format!("{name}[{i}]");
+            if !bytes {
+                self.local_types
+                    .borrow_mut()
+                    .insert(key.clone(), "Char".into());
+            }
             // A connected element writes its signal; an unconnected local gets
             // its own C variable, registered so `name[i]` reads resolve to it.
             if let Some(&id) = self.map.get(&key) {
@@ -1344,6 +1349,9 @@ impl Ctx<'_> {
             .insert(l.name.text.clone(), "string".into());
         for i in 0..len {
             let key = format!("{}[{i}]", l.name.text);
+            self.local_types
+                .borrow_mut()
+                .insert(key.clone(), "Char".into());
             let value = literal
                 .and_then(|text| text.chars().nth(i))
                 .map(|ch| format!("{}ULL", ch as u32))
@@ -1465,9 +1473,14 @@ impl Ctx<'_> {
             } else if let Some(w) = self.declared_width(fty) {
                 self.local_widths.borrow_mut().insert(key.clone(), w);
             }
+            if let Some(head) = fhead {
+                self.local_types
+                    .borrow_mut()
+                    .insert(key.clone(), head.to_string());
+            }
             let init_e = match init.get(fname.as_str()) {
                 Some(v) => {
-                    let e = self.expr(v)?;
+                    let e = self.value_for_local(&key, v)?;
                     match self.local_widths.borrow().get(&key) {
                         Some(&w) => mask_c(&e, w),
                         None => e,
@@ -1574,7 +1587,7 @@ impl Ctx<'_> {
                         wrote = true;
                     } else if self.locals.borrow().contains(&field) {
                         let e = match &arg.value {
-                            Some(v) => self.expr(v)?,
+                            Some(v) => self.value_for_local(&field, v)?,
                             None => "0".to_string(),
                         };
                         let e = match self.local_widths.borrow().get(&field) {
@@ -2013,7 +2026,7 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 if self.locals.borrow().contains(&name) {
-                    let e = self.expr(value)?;
+                    let e = self.value_for_local(&name, value)?;
                     let e = match self.local_widths.borrow().get(&name) {
                         Some(&w) => mask_c(&e, w),
                         None => e,
@@ -2380,10 +2393,14 @@ impl Ctx<'_> {
     /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
     /// is a code point, not a logic code).
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
-        expr_path(e)
-            .and_then(|p| self.map.get(&p))
+        let Some(path) = expr_path(e) else {
+            return false;
+        };
+        self.map
+            .get(&path)
             .map(|&id| self.design.signals[id.0 as usize].char)
             .unwrap_or(false)
+            || self.local_types.borrow().get(&path).map(String::as_str) == Some("Char")
     }
 
     /// An operand in a `Char` comparison: a `'x'` literal is its Unicode code
@@ -2679,6 +2696,21 @@ impl Ctx<'_> {
             }
         }
         self.expr(e)
+    }
+
+    /// Translate a value using an unconnected local's declared symbol type.
+    /// A character literal is a Unicode code point for `Char`, an ordinal for
+    /// an enum, and only otherwise a context-free logic literal.
+    fn value_for_local(&self, name: &str, e: &ast::Expr) -> Result<String, String> {
+        let ty = self.local_types.borrow().get(name).cloned();
+        match (ty.as_deref(), e) {
+            (Some("Char"), ast::Expr::CharLit { ch, .. }) => Ok(format!("{}ULL", *ch as u32)),
+            (Some(en), _) => match self.enum_char_lit(en, e) {
+                Some(discriminant) => Ok(format!("{discriminant}ULL")),
+                None => self.expr(e),
+            },
+            (None, _) => self.expr(e),
+        }
     }
 
     /// A `print!` real argument as a u64-bit-pattern C expression.

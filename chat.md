@@ -1360,3 +1360,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
   guard in generated-test lowering.
 - Extended native and external regressions across empty, literal, copied,
   initialized, and reassigned strings.
+
+### 2026-07-29 — Codex — retain character context on native locals
+
+- Fixed unconnected `Char` locals and local string elements comparing
+  non-logic character literals through the logic-symbol table (usually as
+  zero) instead of their Unicode code points.
+- Registered declared leaf types for string elements and local struct fields,
+  closing the same context loss for `Char` and character-enum fields.
+- Made subsequent local and struct-field assignments use the target's symbol
+  type, matching the context-sensitive initializer and connected-signal paths.
+- Added executable coverage for Unicode scalar locals, mutable string
+  elements, `Char` struct fields, and reassigned character-enum locals.

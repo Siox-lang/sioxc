@@ -360,6 +360,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         &source,
         format!(
             "module wide_format;
+             enum Symbol {{ 'α', 'β' }}
+             struct CharacterBox {{ value: Char }}
              #[test] entity T {{}}
              impl T {{
                  let wide: unsigned[128] = {wide};
@@ -369,6 +371,9 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let empty: string = \"\";
                  let other_empty: string = \"\";
                  let mutable_text: string = \"old\";
+                 let scalar_character: Char = 'λ';
+                 let symbol: Symbol = 'α';
+                 let boxed: CharacterBox = {{ .value = 'λ' }};
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -380,6 +385,16 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(mutable_text == \"hé🙂\", \"string local copy assignment\");
                  mutable_text = \"new\";
                  assert!(mutable_text == \"new\", \"string literal assignment\");
+                 assert!(scalar_character == 'λ', \"local Char comparison\");
+                 scalar_character = 'β';
+                 assert!(scalar_character == 'β', \"local Char assignment\");
+                 text[0] = 'H';
+                 assert!(text[0] == 'H', \"string element Char assignment\");
+                 assert!(boxed.value == 'λ', \"struct Char field initializer\");
+                 boxed.value = 'β';
+                 assert!(boxed.value == 'β', \"struct Char field assignment\");
+                 symbol = 'β';
+                 assert!(symbol == 'β', \"local enum symbol assignment\");
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"
@@ -419,7 +434,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         "warning buffer truncated the formatted message:\n{stderr}"
     );
     assert!(
-        stderr.contains("string argument hé🙂"),
+        stderr.contains("string argument Hé🙂"),
         "warning did not format its string argument:\n{stderr}"
     );
 

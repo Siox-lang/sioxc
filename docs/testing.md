@@ -33,6 +33,9 @@ struct-typed locals work in stimulus, so a testbench can drive a design through
 a method result. Strings retain their array semantics here: locals can be
 initialized or assigned from another same-length string, and equality compares
 their characters (including the zero-character empty-string case).
+Unconnected `Char` locals, string elements, and `Char` fields retain Unicode
+character context for initialization, assignment, and comparison just like
+DUT-connected character signals.
 
 ## Reporting
 
