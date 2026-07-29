@@ -151,6 +151,11 @@ type GenericFnSignature = (Vec<Param>, Vec<(String, Type)>);
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
 struct Checker<'a> {
+    /// Entities carrying `#[test]`: testbenches, where the stimulus
+    /// primitives (`await`, `assert!`, `print!`, `warn!`) are meaningful.
+    test_entities: HashSet<String>,
+    /// Whether the statements being checked belong to a testbench impl.
+    in_testbench: std::cell::Cell<bool>,
     /// Whether the statements being checked are a function body. `return`
     /// belongs to a function; in hardware statement position there is nothing
     /// to return from, and lowering silently dropped it.
@@ -252,6 +257,8 @@ impl<'a> Checker<'a> {
             attr_value_kinds.insert(name.to_string(), ty);
         }
         Checker {
+            test_entities: HashSet::new(),
+            in_testbench: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),
             sink,
             resolved,
@@ -321,6 +328,11 @@ impl<'a> Checker<'a> {
                             range: self.declared_range(&p.ty),
                         })
                         .collect();
+                    if e.attrs.iter().any(|a| {
+                        a.name.segments.last().map(|s| s.text.as_str()) == Some("test")
+                    }) {
+                        self.test_entities.insert(e.name.text.clone());
+                    }
                     self.entities.insert(e.name.text.clone(), ports);
                 }
             }
@@ -1292,6 +1304,16 @@ impl<'a> Checker<'a> {
     }
 
     fn check_impl(&mut self, im: &ImplDecl) {
+        // Stimulus primitives are meaningful in a testbench; in an entity body
+        // lowering dropped them without a word.
+        let saved_tb = self.in_testbench.replace(
+            type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)),
+        );
+        self.check_impl_inner(im);
+        self.in_testbench.set(saved_tb);
+    }
+
+    fn check_impl_inner(&mut self, im: &ImplDecl) {
         self.check_trait_contract(im);
         // The supported constrained array implementations are lowered by the
         // element-wise vector machinery. Still validate their metadata here;
@@ -1572,7 +1594,10 @@ impl<'a> Checker<'a> {
                     self.check_stmt(s, dirs, &loop_sym, ranged);
                 }
             }
-            Stmt::Expr(e) => self.check_expr(e, sym),
+            Stmt::Expr(e) => {
+                self.check_stimulus_context(e);
+                self.check_expr(e, sym);
+            }
             Stmt::Return { value, span } => {
                 if let Some(v) = value {
                     self.check_expr(v, sym);
@@ -1590,6 +1615,38 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// `await`, `assert!`, `print!` and `warn!` drive and observe a simulation;
+    /// an entity body describes hardware that is always active and has no
+    /// stimulus to run. Lowering handles them only in a testbench and its
+    /// catch-all dropped them elsewhere, so an assertion written into a design
+    /// silently never ran.
+    fn check_stimulus_context(&mut self, e: &Expr) {
+        if self.in_testbench.get() || self.in_fn_body.get() {
+            return;
+        }
+        let Expr::Call { callee, span, .. } = e else {
+            return;
+        };
+        let Expr::Path(p) = callee.as_ref() else {
+            return;
+        };
+        let name = match p.segments.as_slice() {
+            [seg] => seg.text.as_str(),
+            _ => return,
+        };
+        if !matches!(name, "await" | "wait" | "assert" | "print" | "warn") {
+            return;
+        }
+        self.error_with_help(
+            codes::INVALID_METHOD_CALL,
+            *span,
+            format!("`{name}` is only available in a testbench"),
+            "an entity body describes hardware that is always active — put stimulus and \
+             checks in a `#[test]` entity, which drives this one"
+                .to_string(),
+        );
     }
 
     fn check_if(
@@ -5046,6 +5103,29 @@ mod tests {
              entity E { out y: unsigned[8]; }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(nested, 0, "including inside a nested block");
+    }
+
+    /// Stimulus in an entity body was dropped by lowering without a word —
+    /// most dangerously `assert!`, which let a check written into a design
+    /// silently never run.
+    #[test]
+    fn stimulus_outside_a_testbench_is_reported() {
+        let hw = |body: &str| {
+            check_src(&format!(
+                "module m;\nentity E {{ out y: unsigned[8]; }}\nimpl E {{ y = 1; {body} }}\n"
+            ))
+        };
+        assert_eq!(hw("await 1ns;"), 1, "await needs simulation time");
+        assert_eq!(hw(r#"assert!(y == 1, "x");"#), 1, "an assertion needs a run");
+        assert_eq!(hw(r#"print!("hi");"#), 1, "printing needs a run");
+        assert_eq!(hw(""), 0, "plain hardware is unaffected");
+
+        // All of it is exactly what a testbench is for.
+        let tb = check_src(
+            "module m;\n#[test] entity T {}\n\
+             impl T { let y: unsigned[8] = 1; await 1ns; assert!(y == 1, \"x\"); print!(\"hi\"); }\n",
+        );
+        assert_eq!(tb, 0, "a testbench may drive and check");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
