@@ -2167,6 +2167,34 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Runtime-provided std functions have no source `FnDecl`, so they do not
+    /// enter `fn_arity`. Check their public call contract explicitly rather
+    /// than letting generated C silently ignore extra arguments or fail much
+    /// later while building the harness.
+    fn check_runtime_call_arity(&mut self, callee: &Expr, args: &[Expr]) {
+        let Expr::Path(path) = callee else { return };
+        let [name] = path.segments.as_slice() else {
+            return;
+        };
+        let expected = match name.text.as_str() {
+            "rand" | "uniform" => 0,
+            "seed" | "exists" | "read" | "read_to_string" => 1,
+            "randint" => 2,
+            _ => return,
+        };
+        if args.len() != expected {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(callee),
+                format!(
+                    "`{}` takes {expected} argument(s) but {} were given",
+                    name.text,
+                    args.len()
+                ),
+            );
+        }
+    }
+
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
     /// array, which is always declared with a plain element count.
     fn is_entity_ty(&self, t: &Ty) -> bool {
@@ -2766,6 +2794,7 @@ impl<'a> Checker<'a> {
                 self.check_conversion_fit(callee, args, e);
                 self.check_generic_bounds(callee, args, sym);
                 self.check_call_arity(callee, args);
+                self.check_runtime_call_arity(callee, args);
             }
             Expr::Construct { args, .. } => {
                 for c in args {
@@ -4664,6 +4693,22 @@ mod tests {
             0,
             "conversion"
         );
+    }
+
+    #[test]
+    fn runtime_function_arity_is_checked() {
+        let tb = |expression: &str| {
+            format!(
+                "module m;\n#[test] entity T {{}}\n\
+                 impl T {{ {expression}; }}\n"
+            )
+        };
+        assert_eq!(check_src(&tb("rand(1)")), 1, "rand is nullary");
+        assert_eq!(check_src(&tb("uniform(1)")), 1, "uniform is nullary");
+        assert_eq!(check_src(&tb("randint(1)")), 1, "randint needs two bounds");
+        assert_eq!(check_src(&tb("randint(1, 2, 3)")), 1, "too many bounds");
+        assert_eq!(check_src(&tb("rand()")), 0);
+        assert_eq!(check_src(&tb("randint(1, 2)")), 0);
     }
 
     /// A miscounted `print!` silently rendered an empty slot or dropped an

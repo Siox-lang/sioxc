@@ -50,8 +50,9 @@ earliest pending event and advances to it:
 - **Background clocks.** `clk = not clk after 5ns;` registers a free-running
   clock with a `5ns` half-period — the canonical clock generator. Multiple
   clocks interleave on the one wheel with real timestamps.
-- **One-shot delays.** Any other `x = v after d;` schedules a write at
-  `now + d`.
+- **Delayed assignments.** The native Phase 1 harness currently accepts the
+  canonical self-toggle above. Other `x = v after d;` forms receive a build
+  error until one-shot writes are represented on the event wheel.
 - **`await`** is the single timing primitive in a testbench, in three forms:
 
   ```siox
@@ -65,6 +66,11 @@ earliest pending event and advances to it:
   `await`.) The wheel lives in the runner and, identically, in the emitted C of
   the native binary. Design-note for the forward-looking scheduler/cocotb ABI:
   [proposals/timing-and-await.md](proposals/timing-and-await.md).
+
+Native time is an unsigned 64-bit femtosecond count. A literal whose unit
+conversion cannot fit that timeline is a build error. Runtime additions
+saturate at `18446744073709551615fs` instead of wrapping to time zero; the
+event-wheel sentinel and multi-test VCD timestamps use the same rule.
 
 ## Waveforms
 

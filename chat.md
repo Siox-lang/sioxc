@@ -1303,3 +1303,22 @@ forward declarations, DUT outputs, and direct native-testbench references.
   reject negative or unrepresentable constant widths/ranges before later
   phases, and post-typecheck commands stop safely when semantic errors exist.
 - Added API, semantic, exact-storage, ABI-boundary, and CLI regressions.
+
+## 2026-07-29 — hardened random bounds and the native timeline
+
+- Replaced generated `randint` arithmetic with one shared helper. It normalizes
+  left/right direction and handles the complete unsigned 64-bit domain without
+  wrapping the inclusive span to a zero modulo and crashing. Rejection sampling
+  also removes modulo bias, and wider native value types draw every required
+  64-bit chunk.
+- Added semantic arity checks for runtime-provided std functions (`rand`,
+  `uniform`, `randint`, `seed`, and file helpers), whose missing source
+  declarations previously let extra arguments disappear in generated C.
+- Replaced build-time duration multiplication with checked femtosecond scaling;
+  out-of-range time literals now return a clear build error.
+- Made scheduler event increments, waits, and VCD test offsets saturate at the
+  64-bit timeline boundary. A wait ending at `UINT64_MAX` now recognizes the
+  no-event sentinel instead of looping forever.
+- Corrected simulation documentation that claimed arbitrary delayed
+  assignments were already scheduled; the native Phase 1 harness currently
+  supports the canonical clock self-toggle form.

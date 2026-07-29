@@ -226,6 +226,28 @@ pub fn build(
          \x20   g_rand ^= g_rand >> 12; g_rand ^= g_rand << 25; g_rand ^= g_rand >> 27;\n\
          \x20   return g_rand * 0x2545F4914F6CDD1DULL;\n}\n",
     );
+    prog.push_str(&format!(
+        "static sx_value sx_random_value(void) {{\n\
+         \x20   sx_value value = 0;\n\
+         \x20   for (unsigned bit = 0; bit < {value_bits}; bit += 64)\n\
+         \x20       value |= (sx_value)sx_rand() << bit;\n\
+         \x20   return value;\n\
+         }}\n\
+         static sx_value sx_randint(sx_value left, sx_value right) {{\n\
+         \x20   if (right < left) {{ sx_value swap = left; left = right; right = swap; }}\n\
+         \x20   sx_value span = right - left;\n\
+         \x20   if (right <= (sx_value)UINT64_MAX) {{\n\
+         \x20       if (span == (sx_value)UINT64_MAX) return left + (sx_value)sx_rand();\n\
+         \x20       uint64_t range = (uint64_t)span + 1, threshold = (0 - range) % range, draw;\n\
+         \x20       do {{ draw = sx_rand(); }} while (draw < threshold);\n\
+         \x20       return left + (sx_value)(draw % range);\n\
+         \x20   }}\n\
+         \x20   if (span == ~(sx_value)0) return sx_random_value();\n\
+         \x20   sx_value range = span + 1, threshold = (0 - range) % range, draw;\n\
+         \x20   do {{ draw = sx_random_value(); }} while (draw < threshold);\n\
+         \x20   return left + draw % range;\n\
+         }}\n"
+    ));
     // `uniform()` — the runner's exact expression, so both engines agree.
     prog.push_str(
         "static uint64_t sx_uniform(void) {\n\
@@ -246,7 +268,8 @@ pub fn build(
          \x20   if (t == UINT64_MAX) return 0;\n\
          \x20   if (t > *now) *now = t;\n\
          \x20   for (signed i = 0; i < n; i++)\n\
-         \x20       if (next[i] == t) { sx_set(cid[i], !sx_read(cid[i])); next[i] += half[i]; }\n\
+         \x20       if (next[i] == t) { sx_set(cid[i], !sx_read(cid[i])); \
+         next[i] = UINT64_MAX - next[i] < half[i] ? UINT64_MAX : next[i] + half[i]; }\n\
          \x20   sx_run_settle(*now);\n\
          \x20   return 1;\n}\n\n",
     );
@@ -288,7 +311,7 @@ pub fn build(
         let qualified = qualified_test_name(modules, &name);
         let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, &name);
-        let clocks = scan_clocks(&items, &aliases);
+        let clocks = scan_clocks(&items, &aliases)?;
         let instance_names: std::collections::HashSet<String> = hier
             .instance(root)
             .children
@@ -454,12 +477,14 @@ fn gen_vcd_runtime(design: &Design) -> String {
          static void sx_vcd_close(void) {{ if (g_vcd) {{ fclose(g_vcd); g_vcd = 0; }} }}\n\
          static void sx_vcd_begin_test(void) {{\n\
          \x20   if (!g_vcd) return;\n\
-         \x20   g_vcd_base = g_vcd_started ? g_vcd_last_time + 1 : 0;\n\
+         \x20   g_vcd_base = g_vcd_started && g_vcd_last_time != UINT64_MAX \
+         ? g_vcd_last_time + 1 : (g_vcd_started ? UINT64_MAX : 0);\n\
          \x20   memset(g_vcd_seen, 0, sizeof(g_vcd_seen));\n\
          }}\n\
          static void sx_vcd_sample(uint64_t now) {{\n\
          \x20   if (!g_vcd) return;\n\
-         \x20   uint64_t _time = g_vcd_base + now;\n\
+         \x20   uint64_t _time = UINT64_MAX - g_vcd_base < now \
+         ? UINT64_MAX : g_vcd_base + now;\n\
          \x20   signed _wrote = 0, _initial = !g_vcd_started;\n",
         c_escape(&header)
     );
@@ -1860,7 +1885,7 @@ impl Ctx<'_> {
                 if after.is_some() {
                     // `clk = !clk after d;` registers on the event wheel; other
                     // delayed writes aren't compiled yet.
-                    let (path, _) = after_toggle(target, value, after)
+                    let (path, _) = after_toggle(target, value, after)?
                         .ok_or("only the `clk = not clk after d` form of `after` is supported in a native test executable")?;
                     if !self.map.contains_key(&path) {
                         return Err(format!("unknown signal `{path}`"));
@@ -2402,10 +2427,12 @@ impl Ctx<'_> {
         let ind = "    ".repeat(depth);
         match args.first() {
             Some(ast::Expr::SuffixLit { .. }) | Some(ast::Expr::Field { .. }) => {
-                let dur = duration_fs(args);
+                let dur = duration_fs(args)?;
                 b.push_str(&format!(
-                    "{ind}{{ uint64_t _tgt = _now + {dur}ULL; \
-                     while (sx_next_edge(_next, _nclk) <= _tgt) \
+                    "{ind}{{ uint64_t _tgt = UINT64_MAX - _now < {dur}ULL \
+                     ? UINT64_MAX : _now + {dur}ULL; \
+                     while (sx_next_edge(_next, _nclk) != UINT64_MAX && \
+                     sx_next_edge(_next, _nclk) <= _tgt) \
                      sx_step_clock(&_now, _next, _cid, _half, _nclk); \
                      _now = _tgt; sx_settle(); }}\n"
                 ));
@@ -2554,7 +2581,7 @@ impl Ctx<'_> {
                 "randint" => {
                     let lo = self.expr(args.first().ok_or("randint needs bounds")?)?;
                     let hi = self.expr(args.get(1).ok_or("randint needs bounds")?)?;
-                    Ok(format!("(({lo}) + sx_rand() % ((({hi}) - ({lo})) + 1))"))
+                    Ok(format!("sx_randint(({lo}), ({hi}))"))
                 }
                 _ => Err(format!("unsupported call `{name}` in testbench expression")),
             };
@@ -3027,9 +3054,13 @@ fn after_toggle(
     target: &ast::Expr,
     value: &ast::Expr,
     after: &Option<ast::Expr>,
-) -> Option<(String, u64)> {
-    let delay = after.as_ref()?;
-    let path = expr_path(target)?;
+) -> Result<Option<(String, u64)>, String> {
+    let Some(delay) = after.as_ref() else {
+        return Ok(None);
+    };
+    let Some(path) = expr_path(target) else {
+        return Ok(None);
+    };
     if let ast::Expr::Unary {
         op: ast::UnOp::Not,
         rhs,
@@ -3037,11 +3068,11 @@ fn after_toggle(
     } = value
     {
         if expr_path(rhs).as_deref() == Some(path.as_str()) {
-            let half = duration_fs(std::slice::from_ref(delay)).max(1);
-            return Some((path, half));
+            let half = duration_fs(std::slice::from_ref(delay))?.max(1);
+            return Ok(Some((path, half)));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Collect the background clocks in a test's body — `clock(clk, period)` calls
@@ -3049,7 +3080,7 @@ fn after_toggle(
 fn scan_clocks(
     items: &[&ast::ImplItem],
     aliases: &HashMap<String, Vec<SignalId>>,
-) -> Vec<(u32, u64)> {
+) -> Result<Vec<(u32, u64)>, String> {
     let mut clocks: Vec<(u32, u64)> = Vec::new();
     let mut add = |id: u32, half: u64| {
         if !clocks.iter().any(|(c, _)| *c == id) {
@@ -3064,7 +3095,7 @@ fn scan_clocks(
             ..
         }) = item
         {
-            if let Some((path, half)) = after_toggle(target, value, after) {
+            if let Some((path, half)) = after_toggle(target, value, after)? {
                 // A clock shared by several DUTs toggles every port.
                 for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
                     add(id.0, half);
@@ -3072,24 +3103,31 @@ fn scan_clocks(
             }
         }
     }
-    clocks
+    Ok(clocks)
 }
 
 /// The femtosecond duration of `10ns` / `10.ns`; a missing/unknown form
 /// defaults to the runner's half period (5 ns).
-fn duration_fs(args: &[ast::Expr]) -> u64 {
+fn duration_fs(args: &[ast::Expr]) -> Result<u64, String> {
+    let scaled = |text: &str, unit: &str| {
+        let value = try_parse_u64(text)
+            .ok_or_else(|| format!("duration value `{text}` does not fit the native timeline"))?;
+        let scale = u64::try_from(ast::suffix_scale(unit).unwrap_or(1_000_000))
+            .map_err(|_| format!("time unit `{unit}` is too large for the native timeline"))?;
+        value.checked_mul(scale).ok_or_else(|| {
+            format!("duration `{text}{unit}` exceeds the native 64-bit femtosecond timeline")
+        })
+    };
     match args.first() {
-        Some(ast::Expr::SuffixLit { text, suffix, .. }) => {
-            parse_u64(text) * ast::suffix_scale(&suffix.text).unwrap_or(1_000_000) as u64
-        }
+        Some(ast::Expr::SuffixLit { text, suffix, .. }) => scaled(text, &suffix.text),
         Some(ast::Expr::Field { base, field, .. }) => {
             if let ast::Expr::Int { text, .. } = base.as_ref() {
-                parse_u64(text) * ast::suffix_scale(&field.text).unwrap_or(1_000_000) as u64
+                scaled(text, &field.text)
             } else {
-                5_000_000
+                Ok(5_000_000)
             }
         }
-        _ => 5_000_000,
+        _ => Ok(5_000_000),
     }
 }
 
@@ -3201,13 +3239,18 @@ fn str_lit(e: &ast::Expr) -> Option<String> {
 }
 
 fn parse_u64(text: &str) -> u64 {
-    let t = text.trim();
+    try_parse_u64(text).unwrap_or(0)
+}
+
+fn try_parse_u64(text: &str) -> Option<u64> {
+    let normalized = text.trim().replace('_', "");
+    let t = normalized.as_str();
     if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u64::from_str_radix(h, 16).unwrap_or(0)
+        u64::from_str_radix(h, 16).ok()
     } else if let Some(bin) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
-        u64::from_str_radix(bin, 2).unwrap_or(0)
+        u64::from_str_radix(bin, 2).ok()
     } else {
-        t.parse().unwrap_or(0)
+        t.parse().ok()
     }
 }
 

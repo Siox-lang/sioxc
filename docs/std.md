@@ -139,6 +139,13 @@ multipliers. `wait`/`tick`
 stimulus control is built-in simulator syntax; `wait 10ns` also works in
 bare files through a fixed fallback table typed as `integer`.
 
+## `std::rand`
+
+Native testbenches provide deterministic `rand()`, `uniform()`, `seed(value)`,
+and inclusive `randint(left, right)`. `randint` accepts ascending or descending
+bounds. Its full unsigned 64-bit domain is valid and consumes exactly one raw
+draw, without forming a wrapping zero modulo.
+
 ## `std::numeric`
 
 Ranged integers (spec 3.26): each stores in the smallest width covering its

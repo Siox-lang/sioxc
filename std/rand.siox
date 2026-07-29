@@ -5,7 +5,8 @@ module std::rand;
 // classify functions by purity; the bang is reserved for macros:
 //
 //   rand()             a raw 64-bit random word
-//   randint(left, right) an integer in left..right inclusive
+//   randint(left, right) an integer between the bounds, inclusive; either
+//                        direction is accepted, and the full u64 span is valid
 //   uniform()          a real in 0.0..1.0
 //   seed(n)            reseed (the default seed is fixed, so runs reproduce)
 //

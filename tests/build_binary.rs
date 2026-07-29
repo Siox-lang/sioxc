@@ -282,3 +282,64 @@ fn extreme_layouts_fail_cleanly_instead_of_panicking() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(object);
 }
+
+#[test]
+fn overflowing_native_duration_is_a_build_error() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_duration_overflow_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        "module duration_overflow;
+         #[test] entity T {}
+         impl T { await 18446744073709551615ns; }",
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !result.status.success(),
+        "overflowing duration was accepted"
+    );
+    assert!(stderr.contains("exceeds the native"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+
+    std::fs::write(
+        &source,
+        "module duration_overflow;
+         #[test] entity T {}
+         impl T { await 18446744073709551616fs; }",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !result.status.success(),
+        "oversized duration value was accepted"
+    );
+    assert!(stderr.contains("does not fit"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}
