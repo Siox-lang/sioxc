@@ -164,14 +164,11 @@ code). The CLI loads `std::` modules transitively from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
 compile, so the core types always carry their std semantics — the kernel
 word fallback only applies when the std root has no prelude at all. `resolve`
-still seeds the scalar names (`Bit`, `Logic`, `integer`,
-...), but **not `unsigned`/`signed`** — those come from their std declarations. The
-efficient internal `UInt(w)/Int(w)` encoding remains, but it is now populated
-from the declaration (family shape + `Signed`), not triggered by a magic
-name. Residual name-recognition survives in a few structural spots
-(array-vs-vector, conversion syntax, elab width) and could be generalized to
-the family set later; it is harmless (the compiler knowing its stdlib's
-vector shapes).
+seeds only the kernel scalars (`integer`, `real`, and Unicode `Char`);
+`Bit`, `Logic`, `Bool`, `unsigned`, and `signed` come from std declarations.
+Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
+Array-derived numeric newtypes retain their family name for trait dispatch,
+but there is no separate semantic `Vector` type.
 
 ## Signal widths
 

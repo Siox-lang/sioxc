@@ -4,10 +4,8 @@ module std::logic;
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
 // enumeration types declared in library code, not compiler magic).
 //
-// These are the canonical declarations. The compiler still recognizes them by
-// name and keeps their operator semantics intrinsic — a temporary shim until
-// operator overloading (spec 3.13) lets the truth tables live here as trait
-// impls, the way std_logic_1164 defines `and`/`or` as plain functions.
+// These are the canonical declarations. The type checker represents them as
+// ordinary named enums; their non-core behavior lives in the trait impls below.
 // The kernel's base types are `integer` and `real`; boolean truth is the
 // system `Bool` type — `true`/`false` (see std::ops::Boolean), not an integer
 // code.

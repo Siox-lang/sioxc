@@ -13,9 +13,9 @@
 //! - associated paths like `State::Idle` resolve correctly
 //!
 //! Phase-1 scope notes:
-//! - The kernel base types (`integer`, `real`) are seeded as builtins, plus —
-//!   as a shim until operator overloading — the std type names the checker/IR
-//!   still special-case (`Bit`, `unsigned`, ...) and the `std::attrs` attributes.
+//! - The kernel base types (`integer`, `real`, `Char`) are seeded as builtins.
+//!   Digital scalars such as `Bit`, `Logic`, and `Bool` resolve from std like
+//!   any user enum.
 //! - Type references, enum-variant paths, and attribute names are resolved
 //!   strictly (an unknown one is an error). Plain value identifiers (signals,
 //!   ports, locals) are resolved best-effort and never produce a false
@@ -197,16 +197,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn seed_builtins(&mut self) {
-        // The kernel's base types are `integer` and `real` (unconstrained,
-        // VHDL-style); everything else is designed to live in `std/`:
-        // Bit/Logic/Bool are enums in std/logic.siox, `Boolean` a trait
-        // in std/ops.siox, and unsigned[N]/signed[N] are derived Logic vectors that
-        // accept `integer` on assignment. The rest of this list is the shim:
-        // names the checker/IR still special-case until operator overloading
-        // lets their semantics move to std as source.
-        for name in [
-            "integer", "real", "Char", "Bit", "Logic", "Bool", "string", "range",
-        ] {
+        // The numeric and character kernels are intrinsic. Digital scalar
+        // enums and indexed families come from std declarations.
+        for name in ["integer", "real", "Char", "string", "range"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
         }
@@ -1270,9 +1263,15 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
+    const DIGITAL_PRELUDE: &str = "\n\
+        enum Bit { '0', '1' }\n\
+        enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
+        enum Bool { false, true }\n";
+
     fn resolve_src(src: &str) -> (Resolved, usize) {
+        let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
-        let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
         (resolved, sink.error_count())
@@ -1280,8 +1279,9 @@ mod tests {
 
     /// Resolve and return the raw diagnostics, for inspecting help/labels.
     fn diagnostics(src: &str) -> DiagnosticSink {
+        let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
-        let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         resolve(std::slice::from_ref(&module), &mut sink);
         sink
     }
@@ -1551,7 +1551,6 @@ mod tests {
     fn counter_resolves_clean() {
         let (_, errors) = resolve_src(
             "module m;\n\
-             using std::logic::{Bit, Logic};\n\
              struct unsigned(Logic[]);\n\
              #[top]\n\
              entity Counter<W: integer> {\n\

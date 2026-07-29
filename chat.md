@@ -1206,3 +1206,12 @@ routed every protocol role through them. Implemented IR inlining for free
 functions called in statement position, allowing the generic `write` wrapper
 to lower its nested trait method into real signal drivers. Applied-view trait
 implementations now also satisfy generic capability bounds.
+### 2026-07-29 — Codex — unified semantic arrays and std scalar types
+
+Removed the dedicated `Ty::Vector`, `Ty::Bit`, `Ty::Logic`, and `Ty::Bool`
+variants. `Bit`, `Logic`, and `Bool` now resolve as the ordinary named enums
+declared by std, while numeric families and ordinary indexed collections share
+one `Ty::Array` representation; an optional family name retains nominal
+operator/method dispatch for `unsigned`, `signed`, and derived families.
+Stopped seeding the std digital scalar names as resolver builtins. Kept only
+the true kernel scalars (`integer`, `real`, and Unicode `Char`) specialized.

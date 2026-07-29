@@ -1,7 +1,7 @@
 //! Type system and kind checking for siox Phase 1 (spec Stage 4).
 //!
-//! Checks primitive digital types (`Bit`, `Logic`, `Bool`), integer widths
-//! (`unsigned[N]`, `signed[N]`), structs, enums, arrays/vectors, entity types,
+//! Checks std-defined digital types (`Bit`, `Logic`, `Bool`), indexed widths
+//! (`unsigned[N]`, `signed[N]`), structs, enums, arrays, entity types,
 //! directional views and bus modes, function/method signatures, trait bounds,
 //! attribute value typing, and pattern typing.
 //!
@@ -24,39 +24,25 @@ use crate::syntax::Module;
 /// A checked, interned type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ty {
-    Bit,
-    Logic,
-    Bool,
     /// The kernel base type `integer` — an unbounded mathematical number, NOT
     /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
     /// comparison, but has NO per-bit boolean operators (unlike unsigned/signed).
     Integer,
     /// The kernel base type `real` (f64 in simulation).
     Real,
-    /// The kernel base type `Char`: a non-numeric character symbol.
-    /// Equality is intrinsic; numbers only exist via std encoding tables.
+    /// The kernel character scalar. Unlike library enums, its value set is the
+    /// full Unicode scalar range rather than a finite declaration.
     Char,
-    /// A packed bit vector — every `#[vector]` family (unsigned/signed and user
-    /// types). Width `0` means "not yet known" (parametric `F[W]`) or the
-    /// unbounded kernel `integer`. `family` is the declared family name when
-    /// one is known (`unsigned`, `signed`, a user `struct Byte : unsigned[8]`), carried
-    /// purely so diagnostics name the real type; it is `None` for anonymous
-    /// vectors (bit-string literals, concatenations) that have no family.
-    ///
-    /// The compiler still has NO *semantic* notion of `unsigned`/`signed`: every
-    /// family shares one operator surface (keyed `unsigned` in [`Self::ty_head`]),
-    /// and width comparison ignores `family` — `family` never gates a check,
-    /// it only labels.
-    Vector {
-        family: Option<String>,
-        width: u32,
-    },
     /// Named struct / enum / entity, keyed by its definition.
     Named(crate::resolve::DefId),
-    /// `T[range]` array/vector of a digital element type.
+    /// The single indexed collection representation. Plain arrays have no
+    /// family; a library newtype over an unconstrained array (`unsigned`,
+    /// `signed`, or a user equivalent) retains its nominal family for method
+    /// and operator dispatch while using the same element/length shape.
     Array {
         elem: Box<Ty>,
         len: u32,
+        family: Option<String>,
     },
     /// Placeholder for an as-yet-unresolved/error type.
     Error,
@@ -67,12 +53,15 @@ impl Ty {
     /// metadata and therefore return `None` here.
     pub fn bit_width(&self) -> Option<u32> {
         match self {
-            Ty::Bit | Ty::Bool => Some(1),
-            Ty::Logic => Some(4),
             Ty::Integer | Ty::Real => Some(64),
             Ty::Char => Some(32),
-            Ty::Vector { width, .. } => (*width != 0).then_some(*width),
-            Ty::Array { elem, len } => elem.bit_width()?.checked_mul(*len),
+            Ty::Array { elem, len, family } => {
+                if family.is_some() {
+                    (*len != 0).then_some(*len)
+                } else {
+                    elem.bit_width()?.checked_mul(*len)
+                }
+            }
             Ty::Named(_) | Ty::Error => None,
         }
     }
@@ -1521,14 +1510,13 @@ impl<'a> Checker<'a> {
     /// `unsigned` share `unsigned`). `Error`/array types have no name.
     fn type_kind_name(&self, t: &Ty) -> Option<String> {
         match t {
-            Ty::Bit => Some("Bit".to_string()),
-            Ty::Logic => Some("Logic".to_string()),
-            Ty::Bool => Some("Bool".to_string()),
             Ty::Integer => Some("integer".to_string()),
-            Ty::Vector { .. } => Some("unsigned".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
+            Ty::Array {
+                family: Some(name), ..
+            } => Some(name.clone()),
             Ty::Array { .. } | Ty::Error => None,
         }
     }
@@ -1576,7 +1564,7 @@ impl<'a> Checker<'a> {
             return false;
         };
         let base_ty = self.type_of(base, sym);
-        if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
+        if matches!(base_ty, Ty::Array { .. }) {
             return false;
         }
         let Some(owner) = self.type_kind_name(&base_ty) else {
@@ -1931,7 +1919,16 @@ impl<'a> Checker<'a> {
                 .def(*id)
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| ty_name(t)),
-            Ty::Array { elem, len } => format!("{}[{len}]", self.ty_display(elem)),
+            Ty::Array {
+                elem: _,
+                len,
+                family: Some(name),
+            } => format!("{name}[{len}]"),
+            Ty::Array {
+                elem,
+                len,
+                family: None,
+            } => format!("{}[{len}]", self.ty_display(elem)),
             _ => ty_name(t),
         }
     }
@@ -2013,7 +2010,7 @@ impl<'a> Checker<'a> {
     /// A constant bit index or slice outside a packed vector's width has no
     /// hardware meaning — it lowered to `Unknown` and surfaced much later as a
     /// generic "no engine can run this design". Only *packed* vectors
-    /// (`Ty::Vector`, indices `0..width-1`) are checked: an array with a
+    /// (family-carrying `Ty::Array`, indices `0..width-1`) are checked: an array with a
     /// declared range (`Logic[15..8]`) is indexed by its own bounds.
     fn check_index_bounds(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
         // What we can bound-check, and how to name it. A packed vector is
@@ -2022,8 +2019,16 @@ impl<'a> Checker<'a> {
         // array, which may carry a declared range (`Logic[15..8]`) and is
         // therefore left alone.
         let (len, noun) = match self.type_of(base, sym) {
-            Ty::Vector { width, .. } => (width, "bit"),
-            Ty::Array { elem, len } if self.is_entity_ty(&elem) => (len, "instance"),
+            Ty::Array {
+                len,
+                family: Some(_),
+                ..
+            } => (len, "bit"),
+            Ty::Array {
+                elem,
+                len,
+                family: None,
+            } if self.is_entity_ty(&elem) => (len, "instance"),
             _ => return,
         };
         if len == 0 {
@@ -2078,7 +2083,7 @@ impl<'a> Checker<'a> {
 
     fn check_custom_index(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
         let base_ty = self.type_of(base, sym);
-        if matches!(base_ty, Ty::Vector { .. } | Ty::Array { .. }) {
+        if matches!(base_ty, Ty::Array { .. }) {
             return;
         }
         let Some(owner) = self.type_kind_name(&base_ty) else {
@@ -2132,8 +2137,13 @@ impl<'a> Checker<'a> {
             let Some(v) = Self::const_literal(lit) else {
                 continue;
             };
-            if let Ty::Vector { width, .. } = self.type_of(operand, sym) {
-                self.check_fits_width(v, width, expr_span(lit));
+            if let Ty::Array {
+                len,
+                family: Some(_),
+                ..
+            } = self.type_of(operand, sym)
+            {
+                self.check_fits_width(v, len, expr_span(lit));
             }
         }
     }
@@ -2142,7 +2152,15 @@ impl<'a> Checker<'a> {
         match value {
             // A numeric literal also initialises `real` (`.re = 10` is 10.0).
             Expr::Int { .. } => {
-                matches!(lhs, Ty::Vector { .. } | Ty::Integer | Ty::Real | Ty::Error)
+                matches!(
+                    lhs,
+                    Ty::Array {
+                        family: Some(_),
+                        ..
+                    } | Ty::Integer
+                        | Ty::Real
+                        | Ty::Error
+                )
             }
             Expr::CharLit { ch, .. } => {
                 // A character literal reads through its context type (spec:
@@ -2151,7 +2169,7 @@ impl<'a> Checker<'a> {
                 if let Ty::Named(id) = lhs {
                     return self.enum_has_char_variant(*id, *ch);
                 }
-                matches!(lhs, Ty::Bit | Ty::Logic | Ty::Char | Ty::Error)
+                matches!(lhs, Ty::Char | Ty::Error)
             }
             // An if-expression is assignable if both branches are — so char
             // literals in the branches read through the target type
@@ -2163,7 +2181,11 @@ impl<'a> Checker<'a> {
             // element must be assignable to the element type (element literals
             // read through it, as in an initialiser).
             Expr::Array { elems, .. } => match lhs {
-                Ty::Array { elem, len } => {
+                Ty::Array {
+                    elem,
+                    len,
+                    family: None,
+                } => {
                     elems.len() as u32 == *len
                         && elems.iter().all(|e| self.assignable(elem, e, sym))
                 }
@@ -2177,12 +2199,17 @@ impl<'a> Checker<'a> {
             Expr::StrLit { text, .. } => {
                 let n = text.chars().count() as u32;
                 match lhs {
-                    Ty::Vector { width, .. } => {
-                        (*width == 0 || n == *width)
-                            && text.chars().all(|c| "01ZXUWLH-".contains(c))
-                    }
+                    Ty::Array {
+                        len,
+                        family: Some(_),
+                        ..
+                    } => (*len == 0 || n == *len) && text.chars().all(|c| "01ZXUWLH-".contains(c)),
                     // A char-enum array (`Color[3] = "rgb"`): each char a variant.
-                    Ty::Array { elem, len } if matches!(elem.as_ref(), Ty::Named(_)) => {
+                    Ty::Array {
+                        elem,
+                        len,
+                        family: None,
+                    } if matches!(elem.as_ref(), Ty::Named(_)) => {
                         let Ty::Named(id) = elem.as_ref() else {
                             unreachable!()
                         };
@@ -2313,7 +2340,13 @@ impl<'a> Checker<'a> {
                         );
                     }
                     if let Some(owner) = self.ty_head(&t) {
-                        let intrinsic_vector = matches!(t, Ty::Vector { .. });
+                        let intrinsic_vector = matches!(
+                            t,
+                            Ty::Array {
+                                family: Some(_),
+                                ..
+                            }
+                        );
                         if !intrinsic_vector
                             && !self
                                 .trait_impls
@@ -2360,7 +2393,11 @@ impl<'a> Checker<'a> {
                     if matches!(lit.as_ref(), Expr::CharLit { .. })
                         && matches!(
                             self.type_of(other, sym),
-                            Ty::Vector { .. } | Ty::Integer | Ty::Real
+                            Ty::Array {
+                                family: Some(_),
+                                ..
+                            } | Ty::Integer
+                                | Ty::Real
                         )
                     {
                         self.error(
@@ -2474,7 +2511,9 @@ impl<'a> Checker<'a> {
                         // (`-> Ordering`) impl derives every comparison.
                         let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
                         let sym = if is_cmp { "<=>" } else { op_str };
-                        if !has_op(sym) {
+                        let core_boolean =
+                            matches!(sym, "and" | "or") && matches!(name.as_str(), "Bit" | "Bool");
+                        if !core_boolean && !has_op(sym) {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
@@ -2710,9 +2749,10 @@ impl<'a> Checker<'a> {
                     'o' => 3,
                     _ => return Ty::Error,
                 };
-                Ty::Vector {
-                    family: None,
-                    width: digits.len() as u32 * bits,
+                Ty::Array {
+                    elem: Box::new(self.ty_from_head("Logic")),
+                    family: Some("unsigned".to_string()),
+                    len: digits.len() as u32 * bits,
                 }
             }
             // A char literal defaults to `Char`; an annotation/target
@@ -2722,6 +2762,7 @@ impl<'a> Checker<'a> {
             Expr::StrLit { text, .. } => Ty::Array {
                 elem: Box::new(Ty::Char),
                 len: text.chars().count() as u32,
+                family: None,
             },
             Expr::Path(p) => {
                 if p.segments.len() == 1 {
@@ -2729,8 +2770,7 @@ impl<'a> Checker<'a> {
                 } else {
                     // `Enum::Variant` has the enum's type, not the variant's.
                     // `Bool`'s variants (`true`/`false`, desugared to
-                    // `Bool::true`) keep the primitive `Ty::Bool` so conditions
-                    // and attrs that expect it are unaffected.
+                    // `Bool::true`) are ordinary enum values.
                     match self
                         .resolved
                         .resolved(p.span)
@@ -2749,15 +2789,6 @@ impl<'a> Checker<'a> {
                                 .and_then(|s| self.resolved.resolved(s.span))
                                 .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Enum));
                             match qualifier.or(d.parent) {
-                                Some(pid)
-                                    if self
-                                        .resolved
-                                        .def(pid)
-                                        .map(|p| p.name == "Bool")
-                                        .unwrap_or(false) =>
-                                {
-                                    Ty::Bool
-                                }
                                 Some(pid) => Ty::Named(pid),
                                 None => Ty::Error,
                             }
@@ -2768,15 +2799,15 @@ impl<'a> Checker<'a> {
             }
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
                 // `::event` is Bool; the edge helpers are `ClockLike` methods now.
-                "event" => Ty::Bool,
+                "event" => self.ty_from_head("Bool"),
                 "old" => self.type_of(base, sym),
                 "length" | "high" | "low" | "left" | "right" => Ty::Integer,
-                "ascending" => Ty::Bool,
+                "ascending" => self.ty_from_head("Bool"),
                 _ => Ty::Error,
             },
             Expr::Binary { op, lhs, rhs, .. } => {
                 if is_comparison(op) {
-                    return Ty::Bool;
+                    return self.ty_from_head("Bool");
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
@@ -2809,7 +2840,10 @@ impl<'a> Checker<'a> {
                 // (`100 / r` with r: signed[8] is an signed[8], via the std
                 // `impl Div<signed> for integer`).
                 if matches!(lhs_ty, Ty::Integer) {
-                    if let r @ Ty::Vector { .. } = self.type_of(rhs, sym) {
+                    if let r @ Ty::Array {
+                        family: Some(_), ..
+                    } = self.type_of(rhs, sym)
+                    {
                         return r;
                     }
                 }
@@ -2852,10 +2886,11 @@ impl<'a> Checker<'a> {
             // A name-less struct literal (`ty: None`) takes its type from the
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
-            // A concatenation is an unsigned bit vector of unknown width.
-            Expr::Concat { .. } => Ty::Vector {
-                family: None,
-                width: 0,
+            // A concatenation is an anonymous packed Logic array of unknown width.
+            Expr::Concat { .. } => Ty::Array {
+                elem: Box::new(self.ty_from_head("Logic")),
+                family: Some("unsigned".to_string()),
+                len: 0,
             },
             // An array literal: element type from the first element, length
             // from the count.
@@ -2867,6 +2902,7 @@ impl<'a> Checker<'a> {
                 Ty::Array {
                     elem: Box::new(elem),
                     len: elems.len() as u32,
+                    family: None,
                 }
             }
             Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
@@ -2877,37 +2913,25 @@ impl<'a> Checker<'a> {
                     Expr::Range { .. } | Expr::PartialRange { .. }
                 );
                 match &base_ty {
-                    Ty::Vector { family, .. } if is_range => {
+                    Ty::Array { elem, family, .. } if is_range => {
                         let width = explicit_range_len(index).unwrap_or(0);
                         if width == 1 {
-                            Ty::Logic
+                            elem.as_ref().clone()
                         } else {
-                            Ty::Vector {
+                            Ty::Array {
+                                elem: elem.clone(),
                                 family: family.clone(),
-                                width,
+                                len: width,
                             }
                         }
                     }
-                    // Numeric vector families derive from Logic[], so one
-                    // indexed element is a Logic value even at vector width 1.
-                    Ty::Vector { width, .. } => {
-                        if signed_lit(index).is_some_and(|i| i < 0 || i as u64 >= *width as u64) {
-                            Ty::Error
-                        } else {
-                            Ty::Logic
-                        }
-                    }
-                    Ty::Array { elem, len } if !is_range => {
+                    Ty::Array { elem, len, .. } if !is_range => {
                         if signed_lit(index).is_some_and(|i| i < 0 || i as u64 >= *len as u64) {
                             Ty::Error
                         } else {
                             elem.as_ref().clone()
                         }
                     }
-                    Ty::Array { elem, .. } => Ty::Array {
-                        elem: elem.clone(),
-                        len: explicit_range_len(index).unwrap_or(0),
-                    },
                     _ => {
                         let Some(owner) = self.type_kind_name(&base_ty) else {
                             return Ty::Error;
@@ -2941,9 +2965,10 @@ impl<'a> Checker<'a> {
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
                     match self.vector_families.get(head) {
-                        Some(_) => Ty::Vector {
+                        Some(_) => Ty::Array {
+                            elem: Box::new(self.ty_from_head("Logic")),
                             family: Some(head.to_string()),
-                            width: w,
+                            len: w,
                         },
                         None => Ty::Error,
                     }
@@ -2964,15 +2989,19 @@ impl<'a> Checker<'a> {
                         self.path_ty(p)
                     }
                     "integer" => Ty::Integer,
-                    "Char" => Ty::Char,
+                    "Char" => self.ty_from_head("Char"),
                     // resize keeps the argument's family at the new width.
                     "resize" => {
                         let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
                         let family = match args.first().map(|a| self.type_of(a, sym)) {
-                            Some(Ty::Vector { family, .. }) => family,
+                            Some(Ty::Array { family, .. }) => family,
                             _ => None,
                         };
-                        Ty::Vector { family, width: w }
+                        Ty::Array {
+                            elem: Box::new(self.ty_from_head("Logic")),
+                            family,
+                            len: w,
+                        }
                     }
                     _ => Ty::Error,
                 },
@@ -2997,32 +3026,29 @@ impl<'a> Checker<'a> {
     }
 
     /// The type-head name used to key impl methods: a named type's def name,
-    /// a base type's spelling, or `unsigned` for a bit vector.
+    /// a kernel type's spelling, or the nominal family of an indexed array.
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
             Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
-            Ty::Bit => "Bit".to_string(),
-            Ty::Logic => "Logic".to_string(),
-            Ty::Bool => "Bool".to_string(),
-            Ty::Char => "Char".to_string(),
             Ty::Real => "real".to_string(),
             Ty::Integer => "integer".to_string(),
-            Ty::Vector { .. } => "unsigned".to_string(),
+            Ty::Char => "Char".to_string(),
+            Ty::Array {
+                family: Some(name), ..
+            } => name.clone(),
             _ => return None,
         })
     }
 
     fn ty_from_head(&self, name: &str) -> Ty {
         match name {
-            "Bit" => Ty::Bit,
-            "Logic" => Ty::Logic,
-            "Bool" => Ty::Bool,
-            "Char" => Ty::Char,
             "integer" => Ty::Integer,
             "real" => Ty::Real,
-            name if self.is_vector_family(name) => Ty::Vector {
+            "Char" => Ty::Char,
+            name if self.is_vector_family(name) => Ty::Array {
+                elem: Box::new(self.ty_from_head("Logic")),
                 family: Some(name.to_string()),
-                width: 0,
+                len: 0,
             },
             name => self
                 .resolved
@@ -3156,19 +3182,39 @@ impl<'a> Checker<'a> {
                     // The *first* index on a vector family sets its width
                     // (`unsigned[8]`). A *second* index makes an array of those
                     // vectors (`unsigned[8][4]` = 4 elements, each 8 wide).
-                    Ty::Vector { family, width: 0 } => Ty::Vector { family, width },
-                    v @ Ty::Vector { .. } => Ty::Array {
+                    Ty::Array {
+                        elem,
+                        len: 0,
+                        family: Some(family),
+                    } => Ty::Array {
+                        elem,
+                        len: width,
+                        family: Some(family),
+                    },
+                    v @ Ty::Array {
+                        family: Some(_), ..
+                    } => Ty::Array {
                         elem: Box::new(v),
                         len: width,
+                        family: None,
                     },
                     // An index on an *unconstrained* array fills its hole
                     // rather than nesting: `string[5]` is `Char[5]`, not
                     // `Char[0][5]` (`using string = Char[]`, std::text). The
                     // lowerer already did this; the checker rejected the form.
-                    Ty::Array { elem, len: 0 } => Ty::Array { elem, len: width },
+                    Ty::Array {
+                        elem,
+                        len: 0,
+                        family: None,
+                    } => Ty::Array {
+                        elem,
+                        len: width,
+                        family: None,
+                    },
                     other => Ty::Array {
                         elem: Box::new(other),
                         len: width,
+                        family: None,
                     },
                 }
             }
@@ -3192,12 +3238,6 @@ impl<'a> Checker<'a> {
     fn path_ty(&self, p: &Path) -> Ty {
         if p.segments.len() == 1 {
             match p.segments[0].text.as_str() {
-                "Bit" => Ty::Bit,
-                "Logic" => Ty::Logic,
-                "Bool" => Ty::Bool,
-                // `integer` is the kernel word; `unsigned`/`signed` are no longer
-                // names here — they resolve as array-derived Logic families
-                // (`struct unsigned : Logic[]` in std::bits) via the arm below.
                 "integer" => Ty::Integer,
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
@@ -3216,9 +3256,10 @@ impl<'a> Checker<'a> {
                     }
                     // A bit-vector family (`struct F : Logic[]`): width applies
                     // via `F[N]` (ast_ty's Indexed).
-                    None if self.is_vector_family(name) => Ty::Vector {
+                    None if self.is_vector_family(name) => Ty::Array {
+                        elem: Box::new(self.ty_from_head("Logic")),
                         family: Some(name.to_string()),
-                        width: 0,
+                        len: 0,
                     },
                     None => self.named_ty(p.span),
                 },
@@ -3253,9 +3294,6 @@ impl<'a> Checker<'a> {
     /// `real`), `Char`, and non-enums.
     fn enum_operand_name(&self, t: &Ty) -> Option<String> {
         match t {
-            Ty::Bit => Some("Bit".into()),
-            Ty::Logic => Some("Logic".into()),
-            Ty::Bool => Some("Bool".into()),
             Ty::Named(id) => {
                 let d = self.resolved.def(*id)?;
                 matches!(d.kind, DefKind::Enum).then(|| d.name.clone())
@@ -3386,19 +3424,33 @@ fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         return true;
     }
     match (lhs, rhs) {
-        (Bit, Bit) | (Logic, Logic) | (Bool, Bool) | (Char, Char) | (Real, Real) => true,
+        (Real, Real) | (Char, Char) => true,
         // `integer` is the number kernel; it coerces to/from any bit vector
         // (a unsigned[8] accepts `42`, and a vector's value is an integer).
         (Integer, Integer) => true,
-        (Integer, Vector { .. }) | (Vector { .. }, Integer) => true,
-        // Width-only: `family` never gates compatibility (`unsigned[8]` and
-        // `signed[8]` are interchangeable — signedness lives in operator impls).
-        (Vector { width: a, .. }, Vector { width: b, .. }) => *a == 0 || *b == 0 || a == b,
+        (
+            Integer,
+            Array {
+                family: Some(_), ..
+            },
+        )
+        | (
+            Array {
+                family: Some(_), ..
+            },
+            Integer,
+        ) => true,
         (Named(a), Named(b)) => a == b,
-        // Whole-array copy: same element type, matching length (0 = unset).
-        (Array { elem: ea, len: la }, Array { elem: eb, len: lb }) => {
-            compatible(ea, eb) && (*la == 0 || *lb == 0 || la == lb)
-        }
+        // All indexed collections use the same shape. Nominal families do not
+        // gate assignment; their behavior lives in trait implementations.
+        (
+            Array {
+                elem: ea, len: la, ..
+            },
+            Array {
+                elem: eb, len: lb, ..
+            },
+        ) => compatible(ea, eb) && (*la == 0 || *lb == 0 || la == lb),
         _ => false,
     }
 }
@@ -3412,39 +3464,38 @@ fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
         return None;
     };
     match lhs {
-        // A string *is* a Char array — that assignment is correct.
-        Ty::Array { elem, .. } if matches!(**elem, Ty::Char) => None,
-        Ty::Bit | Ty::Logic | Ty::Char | Ty::Bool | Ty::Named(_) => Some(if text.chars().count() == 1 {
+        Ty::Char | Ty::Named(_) => Some(if text.chars().count() == 1 {
             format!("`\"{text}\"` is a string; for a single {} value use a character literal `'{text}'`", ty_name(lhs))
         } else {
             format!("`\"{text}\"` is a string (a `Char` array); a {} is one character, written `'c'`", ty_name(lhs))
         }),
-        Ty::Vector { .. } => Some(format!(
+        Ty::Array {
+            family: Some(_),
+            ..
+        } => Some(format!(
             "`\"{text}\"` is a string; for a bit vector use a bit-string literal `b\"{text}\"` (binary) or `x\"...\"` (hex)"
         )),
-        // A logic/bit array: strings don't build one.
-        Ty::Array { .. } => Some(format!(
-            "`\"{text}\"` is a string (a `Char` array); build the array from element values, e.g. `{{'0', '1', ...}}`, or use a bit vector `b\"{text}\"`"
-        )),
+        Ty::Array { .. } => None,
         _ => None,
     }
 }
 
 fn ty_name(t: &Ty) -> String {
     match t {
-        Ty::Bit => "Bit".to_string(),
-        Ty::Logic => "Logic".to_string(),
-        Ty::Bool => "Bool".to_string(),
         Ty::Real => "real".to_string(),
-        Ty::Char => "Char".to_string(),
         Ty::Integer => "integer".to_string(),
-        // Name the real family when one is known (`signed[8]`, `Byte`), falling
-        // back to `unsigned` for anonymous vectors (bit-string literals, concats).
-        Ty::Vector { family, width: 0 } => family.clone().unwrap_or_else(|| "unsigned".to_string()),
-        Ty::Vector { family, width: w } => {
-            format!("{}[{w}]", family.as_deref().unwrap_or("unsigned"))
-        }
+        Ty::Char => "Char".to_string(),
         Ty::Named(_) => "a named type".to_string(),
+        Ty::Array {
+            family: Some(name),
+            len: 0,
+            ..
+        } => name.clone(),
+        Ty::Array {
+            family: Some(name),
+            len,
+            ..
+        } => format!("{name}[{len}]"),
         Ty::Array { .. } => "an array".to_string(),
         Ty::Error => "<unknown>".to_string(),
     }
@@ -3477,7 +3528,12 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
-    const VEC: &str = "\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n";
+    const VEC: &str = "\n\
+        enum Bit { '0', '1' }\n\
+        enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
+        enum Bool { false, true }\n\
+        struct unsigned(Logic[]);\n\
+        struct signed(Logic[]);\n";
 
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");
@@ -3501,9 +3557,15 @@ mod tests {
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
         let typed = check(std::slice::from_ref(&module), &resolved, &mut sink);
-        assert!(!sink.has_errors());
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let logic = resolved
+            .defs()
+            .iter()
+            .position(|def| def.name == "Logic")
+            .map(|index| Ty::Named(crate::resolve::DefId(index as u32)))
+            .expect("Logic definition");
         assert!(
-            typed.expr_types().values().any(|ty| *ty == Ty::Logic),
+            typed.expr_types().values().any(|ty| *ty == logic),
             "the indexed vector element type is retained"
         );
     }
@@ -3623,14 +3685,15 @@ mod tests {
             text: t.to_string(),
             span: sp,
         };
-        // A scalar Logic/Bit/Char points at the character literal.
-        let h = strlit_help(&Ty::Logic, &s("0")).unwrap();
+        // A named scalar points at the character literal.
+        let h = strlit_help(&Ty::Named(crate::resolve::DefId(0)), &s("0")).unwrap();
         assert!(h.contains("'0'"), "{h}");
         // A bit vector points at the bit-string literal.
         let h = strlit_help(
-            &Ty::Vector {
-                family: None,
-                width: 4,
+            &Ty::Array {
+                elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+                family: Some("unsigned".to_string()),
+                len: 4,
             },
             &s("0101"),
         )
@@ -3640,6 +3703,7 @@ mod tests {
         let str_ty = Ty::Array {
             elem: Box::new(Ty::Char),
             len: 2,
+            family: None,
         };
         assert!(strlit_help(&str_ty, &s("hi")).is_none());
     }
@@ -3647,27 +3711,31 @@ mod tests {
     #[test]
     fn vector_names_its_real_family() {
         // A known family displays by name; anonymous vectors fall back to unsigned.
-        let int8 = Ty::Vector {
+        let int8 = Ty::Array {
+            elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
             family: Some("signed".to_string()),
-            width: 8,
+            len: 8,
         };
         assert_eq!(ty_name(&int8), "signed[8]");
-        let byte = Ty::Vector {
+        let byte = Ty::Array {
+            elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
             family: Some("Byte".to_string()),
-            width: 0,
+            len: 0,
         };
         assert_eq!(ty_name(&byte), "Byte");
-        let anon = Ty::Vector {
-            family: None,
-            width: 4,
+        let anon = Ty::Array {
+            elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+            family: Some("unsigned".to_string()),
+            len: 4,
         };
         assert_eq!(ty_name(&anon), "unsigned[4]");
         // Width still ignores the family: unsigned[8] and signed[8] stay compatible.
         assert!(compatible(
             &int8,
-            &Ty::Vector {
-                family: None,
-                width: 8
+            &Ty::Array {
+                elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
+                family: Some("unsigned".to_string()),
+                len: 8
             }
         ));
     }
@@ -4004,10 +4072,10 @@ mod tests {
             Ty::Array { .. }
         ));
         // `true`/`false` desugar to `Bool::true`/`Bool::false`, so std's `Bool`
-        // enum must be in scope for them to resolve and type as `Ty::Bool`.
+        // The enum must be in scope for them to resolve as a named type.
         assert!(matches!(
             ty("module m;\nenum Bool { false, true }\nimpl E { y = true; }\n"),
-            Ty::Bool
+            Ty::Named(_)
         ));
     }
 
