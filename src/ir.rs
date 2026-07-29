@@ -6188,33 +6188,33 @@ pub fn eval_const_fns(
         }
         ast::Expr::Unary { op, rhs, .. } => {
             let v = eval_const_fns(rhs, env, fns, depth + 1)?;
-            Some(match op {
-                ast::UnOp::Neg => -v,
-                ast::UnOp::Not => (v == 0) as i64,
-            })
+            match op {
+                ast::UnOp::Neg => v.checked_neg(),
+                ast::UnOp::Not => Some((v == 0) as i64),
+            }
         }
         ast::Expr::Binary { op, lhs, rhs, .. } => {
             let (a, b) = (
                 eval_const_fns(lhs, env, fns, depth + 1)?,
                 eval_const_fns(rhs, env, fns, depth + 1)?,
             );
-            Some(match op {
-                ast::BinOp::Add => a + b,
-                ast::BinOp::Sub => a - b,
-                ast::BinOp::Mul => a * b,
-                ast::BinOp::Div if b != 0 => a / b,
-                ast::BinOp::Shl => a << b,
-                ast::BinOp::Shr => a >> b,
-                ast::BinOp::Eq => (a == b) as i64,
-                ast::BinOp::Ne => (a != b) as i64,
-                ast::BinOp::Lt => (a < b) as i64,
-                ast::BinOp::Le => (a <= b) as i64,
-                ast::BinOp::Gt => (a > b) as i64,
-                ast::BinOp::Ge => (a >= b) as i64,
-                ast::BinOp::And => (a != 0 && b != 0) as i64,
-                ast::BinOp::Or => (a != 0 || b != 0) as i64,
-                _ => return None,
-            })
+            match op {
+                ast::BinOp::Add => a.checked_add(b),
+                ast::BinOp::Sub => a.checked_sub(b),
+                ast::BinOp::Mul => a.checked_mul(b),
+                ast::BinOp::Div => a.checked_div(b),
+                ast::BinOp::Shl => u32::try_from(b).ok().and_then(|shift| a.checked_shl(shift)),
+                ast::BinOp::Shr => u32::try_from(b).ok().and_then(|shift| a.checked_shr(shift)),
+                ast::BinOp::Eq => Some((a == b) as i64),
+                ast::BinOp::Ne => Some((a != b) as i64),
+                ast::BinOp::Lt => Some((a < b) as i64),
+                ast::BinOp::Le => Some((a <= b) as i64),
+                ast::BinOp::Gt => Some((a > b) as i64),
+                ast::BinOp::Ge => Some((a >= b) as i64),
+                ast::BinOp::And => Some((a != 0 && b != 0) as i64),
+                ast::BinOp::Or => Some((a != 0 || b != 0) as i64),
+                ast::BinOp::Custom { .. } => None,
+            }
         }
         _ => None,
     }
@@ -8327,6 +8327,21 @@ mod tests {
             driver.target == SignalId(cid)
                 && matches!(&driver.expr, Expr::WideConst(words) if words == &[0, 3])
         }));
+    }
+
+    /// Constant evaluation is best-effort and must never let host integer
+    /// overflow abort the compiler. The exact expression remains available to
+    /// arbitrary-width lowering even when it does not fit the narrow
+    /// elaboration evaluator.
+    #[test]
+    fn overflowing_narrow_constant_evaluation_does_not_panic() {
+        let design = lower_src(
+            "module m;\n\
+             const FAR: integer = 1 << 64;\n\
+             #[top] entity E { out y: unsigned[128]; }\n\
+             impl E { y = FAR; }\n",
+        );
+        assert_eq!(design.drivers.len(), 1);
     }
 
     #[test]

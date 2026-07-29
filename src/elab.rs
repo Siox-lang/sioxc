@@ -908,18 +908,26 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
             .map(Int)
             .unwrap_or(Unknown),
         Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
-            (UnOp::Neg, Int(v)) => Int(-v),
+            (UnOp::Neg, Int(v)) => v.checked_neg().map(Int).unwrap_or(Unknown),
             (UnOp::Not, Int(v)) => Int(!v),
             _ => Unknown,
         },
         Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs, env), eval(rhs, env)) {
             (Int(a), Int(b)) => match op {
-                BinOp::Add => Int(a + b),
-                BinOp::Sub => Int(a - b),
-                BinOp::Mul => Int(a * b),
-                BinOp::Div if b != 0 => Int(a / b),
-                BinOp::Shl => Int(a << b),
-                BinOp::Shr => Int(a >> b),
+                BinOp::Add => a.checked_add(b).map(Int).unwrap_or(Unknown),
+                BinOp::Sub => a.checked_sub(b).map(Int).unwrap_or(Unknown),
+                BinOp::Mul => a.checked_mul(b).map(Int).unwrap_or(Unknown),
+                BinOp::Div => a.checked_div(b).map(Int).unwrap_or(Unknown),
+                BinOp::Shl => u32::try_from(b)
+                    .ok()
+                    .and_then(|shift| a.checked_shl(shift))
+                    .map(Int)
+                    .unwrap_or(Unknown),
+                BinOp::Shr => u32::try_from(b)
+                    .ok()
+                    .and_then(|shift| a.checked_shr(shift))
+                    .map(Int)
+                    .unwrap_or(Unknown),
                 BinOp::And => Int(a & b),
                 BinOp::Or => Int(a | b),
                 // Comparisons yield 1/0, for `if`-generate conditions.

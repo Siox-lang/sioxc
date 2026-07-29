@@ -201,6 +201,9 @@ pub fn build(
          \x20   for (uint32_t i = 0; i < sx_nwords[s]; ++i)\n\
          \x20       v |= (sx_value)sx_read_word(s, i) << (i * 64);\n\
          \x20   return v;\n\
+         }}\n\
+         static sx_value sx_udiv(sx_value lhs, sx_value rhs) {{\n\
+         \x20   return rhs == 0 ? 0 : lhs / rhs;\n\
          }}\n"
     ));
     prog.push_str("extern void sx_settle(void);\n");
@@ -948,7 +951,11 @@ fn emit_c_const(
         ast::Expr::Binary { op, lhs, rhs, .. } => {
             let lhs = emit_c_const(lhs, constants, enums)?;
             let rhs = emit_c_const(rhs, constants, enums)?;
-            Some(format!("(({lhs}) {} ({rhs}))", c_binop(op).ok()?))
+            if matches!(op, ast::BinOp::Div) {
+                Some(format!("sx_udiv(({lhs}), ({rhs}))"))
+            } else {
+                Some(format!("(({lhs}) {} ({rhs}))", c_binop(op).ok()?))
+            }
         }
         ast::Expr::IfExpr {
             cond, then, els, ..
@@ -2743,6 +2750,9 @@ impl Ctx<'_> {
                 if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
                     let a = self.c_char_operand(lhs)?;
                     let b = self.c_char_operand(rhs)?;
+                    if matches!(op, ast::BinOp::Div) {
+                        return Ok(format!("sx_udiv(({a}), ({b}))"));
+                    }
                     return Ok(format!("({a} {} {b})", c_binop(op)?));
                 }
                 // A char literal compared for (in)equality against an enum-typed
@@ -2792,7 +2802,11 @@ impl Ctx<'_> {
                     return Ok(v);
                 }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
-                format!("({a} {o} {c})")
+                if matches!(op, ast::BinOp::Div) {
+                    format!("sx_udiv(({a}), ({c}))")
+                } else {
+                    format!("({a} {o} {c})")
+                }
             }
             other => {
                 // Say WHICH expression, so the report is actionable.

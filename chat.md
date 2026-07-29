@@ -1261,3 +1261,16 @@ arbitrary-width `_BitInt` constant expressions directly while retaining its
 narrow evaluator only for compile-time helper functions. Added an executable
 corpus regression covering 128-bit and 192-bit literals, composed constants,
 forward declarations, DUT outputs, and direct native-testbench references.
+## 2026-07-29 — hardened arithmetic edge cases
+
+- Fixed native testbench division by a runtime zero divisor. The compiled DUT
+  already returned zero through LLVM, but the generated C harness used raw `/`
+  and terminated with `SIGFPE`; both paths now share zero-on-zero semantics.
+- Replaced unchecked narrow constant arithmetic in semantic analysis,
+  elaboration, and IR lowering with checked operations. Large exact constants
+  continue through the arbitrary-width expression path instead of crashing the
+  compiler because an auxiliary `i64` evaluation overflowed.
+- Added a native DUT/testbench parity regression for division by zero and unit
+  regressions for overflowing conversion and module-constant expressions.
+- Updated `TODO.md` to reflect that arbitrary-width, composed, and
+  declaration-order-independent module constants are implemented.

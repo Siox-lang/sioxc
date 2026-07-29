@@ -1927,13 +1927,13 @@ impl<'a> Checker<'a> {
             match e {
                 Expr::Binary { op, lhs, rhs, .. } => {
                     let (a, b) = (const_fold(lhs)?, const_fold(rhs)?);
-                    Some(match op {
-                        BinOp::Add => a + b,
-                        BinOp::Sub => a - b,
-                        BinOp::Mul => a * b,
-                        BinOp::Div if b != 0 => a / b,
-                        _ => return None,
-                    })
+                    match op {
+                        BinOp::Add => a.checked_add(b),
+                        BinOp::Sub => a.checked_sub(b),
+                        BinOp::Mul => a.checked_mul(b),
+                        BinOp::Div => a.checked_div(b),
+                        _ => None,
+                    }
                 }
                 _ => signed_lit(e),
             }
@@ -4332,6 +4332,17 @@ mod tests {
             1,
             "flagged from the left too"
         );
+    }
+
+    /// Fit checking is advisory for expressions that exceed the narrow
+    /// evaluator. Host overflow must not abort semantic analysis; later
+    /// arbitrary-width lowering retains the expression.
+    #[test]
+    fn overflowing_conversion_constant_does_not_panic() {
+        let src = "module m;\n\
+            entity E { out y: unsigned[64]; }\n\
+            impl E { y = unsigned[64](9223372036854775807 + 1); }\n";
+        let _ = check_src(src);
     }
 
     /// Two variants with the same explicit value are indistinguishable at

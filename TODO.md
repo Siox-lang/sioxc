@@ -5,7 +5,7 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-07-28 against the compiler, standard library, documentation,
+Status audited 2026-07-29 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
@@ -53,7 +53,8 @@ Current baseline:
 
 - ✅ Combinational and event-driven processes are distinct; delta cycles,
   derived clocks, initialized/undriven behavior, Logic metavalue companions,
-  arbitrary-width initializers, and per-type word counts are covered.
+  arbitrary-width initializers/module constants, order-independent constant
+  aliases, and per-type word counts are covered.
 - ✅ W-P003 unused internal signals, W-P010 combinational loops, W-P011
   undriven outputs/signals, W-P012 unconnected inputs, latch and driver lints
   operate on the normalized design.
@@ -69,10 +70,6 @@ Remaining:
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
   detection.
-- 🟡 **Arbitrary-width constant evaluation.** IR literals, patterns,
-  initializers, waveform values, and native values are word vectors; module
-  constant evaluation still has a `u128` ceiling. Move the shared evaluator to
-  the same low-word-first representation.
 - 🟡 **Instance-array build facts.** See the AST item above: carry declared
   bounds and built slots into lowering so an unbuilt read has a precise source
   diagnostic.
