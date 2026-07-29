@@ -2893,8 +2893,9 @@ impl Ctx<'_> {
                 expr_path(a).and_then(|path| self.local_types.borrow().get(&path).cloned());
             let string_elems = self.formatted_string_elems(a);
             let is_real = self.is_real_operand(a);
-            let is_char =
-                sig.is_some_and(|signal| signal.char) || local_type.as_deref() == Some("Char");
+            let is_char = sig.is_some_and(|signal| signal.char)
+                || local_type.as_deref() == Some("Char")
+                || self.call_return_head(a).as_deref() == Some("Char");
             let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or(local_type);
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let ast::Expr::StrLit { text, .. } = a {
@@ -3107,6 +3108,11 @@ impl Ctx<'_> {
     /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
     /// is a code point, not a logic code).
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
+        // A call has no path to look up, so its declared return type is the
+        // only thing that says it yields a character.
+        if self.call_return_head(e).as_deref() == Some("Char") {
+            return true;
+        }
         let Some(path) = expr_path(e) else {
             return false;
         };
@@ -3201,6 +3207,32 @@ impl Ctx<'_> {
     }
 
     /// Whether an operand reads a `real` signal.
+    /// The head name of a call's declared return type. `is_real_operand`
+    /// already consulted this for `real`; nothing else did, so a function
+    /// returning `Char` produced a value that displayed and compared as a
+    /// plain number at the call site while the same value bound to a typed
+    /// local behaved correctly.
+    fn call_return_head(&self, e: &ast::Expr) -> Option<String> {
+        let ast::Expr::Call { callee, .. } = e else {
+            return None;
+        };
+        if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+            let receiver = self.receiver_type(base)?;
+            return self
+                .methods
+                .get(&(receiver, field.text.clone()))
+                .and_then(|f| f.ret.as_ref())
+                .and_then(type_head_name)
+                .map(str::to_string);
+        }
+        let key = siox::ir::call_fn_key(callee)?;
+        self.fns
+            .get(&key)
+            .and_then(|f| f.ret.as_ref())
+            .and_then(type_head_name)
+            .map(str::to_string)
+    }
+
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
         match e {
             ast::Expr::Int { text, .. } if text.contains('.') => return true,
