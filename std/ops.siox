@@ -30,7 +30,7 @@ pub trait Suffix<char: string, T> {
 }
 
 // Inclusive index ranges are ordinary values when indexing is overloaded.
-// Partial source forms (`..hi`, `lo..`, `..`) are completed from the indexed
+// Partial source forms (`..right`, `left..`, `..`) are completed from the indexed
 // object's declared bounds before dispatch.
 pub struct Range {
     left: integer,
@@ -170,6 +170,10 @@ pub enum Ordering {
 pub trait Boolean {
     fn as_bool(self) -> Bool;
 }
+
+// Opts an unconstrained scalar-array newtype into packed numeric storage.
+// Field-less newtypes derived from a Vector family inherit the capability.
+pub trait Vector {}
 
 impl Boolean for Bit {
     fn as_bool(self) -> Bool {

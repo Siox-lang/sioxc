@@ -41,7 +41,7 @@ pub enum ParamValue {
 /// that don't carry a simple width are kept as a rendered `Other`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EType {
-    /// Any named type: an enum scalar (`Bit`/`Logic`/`Bool`), a struct, or a
+    /// Any named type: an enum scalar, a struct, or a
     /// bare bit-vector family (`unsigned`). No bit-vector width, so the width check
     /// skips it.
     Named(String),
@@ -235,26 +235,14 @@ struct Elaborator<'a> {
 
 impl<'a> Elaborator<'a> {
     fn collect(&mut self, modules: &'a [Module]) {
+        self.families = crate::ir::vector_families(modules);
         for m in modules {
             for item in &m.items {
                 match item {
                     Item::Entity(e) => {
                         self.entities.insert(e.name.text.clone(), e);
                     }
-                    Item::Struct(st) => {
-                        // Bit vector by shape (`struct unsigned : Logic[]`).
-                        let is_vec = st.fields.is_empty()
-                            && matches!(
-                                st.base.as_ref().and_then(|b| match b {
-                                    Type::Indexed { base, .. } => type_head_name(base),
-                                    _ => None,
-                                }),
-                                Some("Logic" | "Bit" | "ULogic")
-                            );
-                        if is_vec {
-                            self.families.insert(st.name.text.clone());
-                        }
-                    }
+                    Item::Struct(_) => {}
                     Item::View(_) => {}
                     Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(name) = type_head_name(&im.target) {
@@ -896,7 +884,7 @@ fn eval_params(
     out
 }
 
-/// The values a `for i in lo..hi` loop visits. Endpoints are **inclusive and
+/// The values a `for i in left..right` loop visits. Endpoints are **inclusive and
 /// directional**, matching bit slices and array ranges: `0..2` -> 0,1,2 and
 /// `2..0` -> 2,1,0. (Kept in sync with `crate::ir::loop_range`, which owns the
 /// canonical definition; the crate layering forbids depending on it here.)

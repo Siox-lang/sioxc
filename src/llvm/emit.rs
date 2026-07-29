@@ -52,6 +52,7 @@ mod bitpack_tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let llvm = emit_module_ir(&design);
         assert!(
@@ -1266,6 +1267,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // State layout, accessors, settle, and the add+mask are present. The
@@ -1299,6 +1301,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let ll = emit_module_ir(&design);
         assert!(ll.contains("i512"), "{ll}");
@@ -1320,6 +1323,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let ll = emit_module_ir(&design);
         assert!(
@@ -1366,6 +1370,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let ll = emit_module_ir(&design);
         assert!(
@@ -1409,6 +1414,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let ll = emit_module_ir(&design);
         // In the settle body, the store to b's slot precedes the store to y's.

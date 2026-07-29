@@ -116,6 +116,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));
@@ -195,6 +196,7 @@ signed main(void) {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_wide_{}", std::process::id()));

@@ -1215,3 +1215,14 @@ one `Ty::Array` representation; an optional family name retains nominal
 operator/method dispatch for `unsigned`, `signed`, and derived families.
 Stopped seeding the std digital scalar names as resolver builtins. Kept only
 the true kernel scalars (`integer`, `real`, and Unicode `Char`) specialized.
+### 2026-07-29 — Codex — removed std operator and vector-name shims
+
+Removed the type checker's seeded `Boolean`/`Not` capabilities and made all
+core-operator availability come from source `Operator` and `Boolean` impls.
+Added the public `Vector` marker trait so packed numeric storage is selected by
+library declarations rather than the spellings `Logic`, `Bit`, or `ULogic`;
+derived vector families inherit that representation. VCD generation now uses
+the packed type's declared element enum instead of searching for std logic
+type names. Removed the corresponding scalar-width cases, updated the docs,
+and standardized range documentation and diagnostics on directional
+`left..right` terminology.

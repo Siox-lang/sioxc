@@ -448,9 +448,11 @@ fn gen_vcd_runtime(design: &Design) -> String {
             c.push_str(&format!(
                 " sx_value _m = sx_read({meta_id}); if (!g_vcd_seen[{id}] || _v != g_vcd_last[{id}] || !g_vcd_seen[{meta_id}] || _m != g_vcd_last[{meta_id}]) {{ {timestamp} "
             ));
-            let table = ["ULogic", "Logic"]
-                .iter()
-                .find_map(|name| logic_vcd_symbols_for_type(design, name))
+            let table = design
+                .vector_element_enums
+                .get(&(id as u32))
+                .map(String::as_str)
+                .and_then(|name| logic_vcd_symbols_for_type(design, name))
                 .unwrap_or_default();
             c.push_str("fputc('b', g_vcd); for (signed _b = ");
             c.push_str(&signal.width.saturating_sub(1).to_string());

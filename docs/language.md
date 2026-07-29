@@ -408,11 +408,12 @@ means:
 #[top = true]
 ```
 
-**Bit vectors are recognized by shape.** A bodyless struct deriving from an
-array of a bit scalar — `struct unsigned(Logic[])` — *is* a packed bit vector
-(one N-bit signal); no annotation is needed, since an array of bits already
-says so. The compiler tracks **no signedness at all** — `unsigned` and `signed` are the same
-shape (`Logic[]`), and their difference is entirely their **operator impls**:
+**Packed numeric vectors opt in through a trait.** A fieldless array newtype
+such as `struct unsigned(Logic[])` becomes one packed N-bit signal through
+`impl Vector for unsigned {}`. Types derived from that family inherit its
+representation. The compiler tracks **no signedness at all** — `unsigned` and
+`signed` have the same representation (`Logic[]`), and their difference is
+entirely their **operator impls**:
 `signed` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
 `unsigned` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
 marker (attribute or trait) — signedness is behaviour, and behaviour lives in
@@ -1314,7 +1315,7 @@ up[..4]     // 0..4
 Because `..` is already inclusive, `..=` is invalid. Partial ranges require an
 indexed value that supplies `'left` and `'right`; a standalone `..4` or a
 partial range passed to a custom index type without declared bounds is an
-error. Full `lo..hi` ranges are ordinary `Range` values for custom `Index`
+error. Full `left..right` ranges are ordinary `Range` values for custom `Index`
 implementations.
 
 **Unconstrained arrays.** Empty brackets leave the range to be set at use
@@ -1581,7 +1582,7 @@ Semantics:
 - **Runtime range check** (implemented): a dynamic value leaving the range is a
   simulation check (later; VHDL semantics). Until it lands, arithmetic
   wraps at the storage width.
-- `real<lo..hi>` documents and (later) checks the constraint; storage
+- `real<left..right>` documents and (later) checks the constraint; storage
   stays f64.
 
 `std::numeric` provides the everyday names: `Byte`, `Short`, `Int`,
@@ -2319,7 +2320,7 @@ port is a plain local. `for` binds its loop variable, and any array iterates
 directly, Python-style — length is the `'length` system attribute (an
 elaboration-time fact).
 
-A numeric range `lo..hi` in a `for` is **inclusive and directional**, exactly
+A numeric range `left..right` in a `for` is **inclusive and directional**, exactly
 like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`
 and `2..0` visits `2, 1, 0` — reversing the endpoints reverses the traversal
 over the *same* set. (This is not Python's half-open `range`; siox gives `..`

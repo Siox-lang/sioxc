@@ -14,4 +14,5 @@ pub attr name: string for entity;
 // Binding power for a custom infix operator implementation.
 pub attr precedence: integer for impl;
 
-// (unsigned/signed are bit vectors by shape; signedness is their operator impls.)
+// Vector storage is selected by the ordinary `Vector` trait; signedness remains
+// entirely in each type's operator implementations.

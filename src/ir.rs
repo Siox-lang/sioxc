@@ -52,6 +52,10 @@ pub struct Design {
     /// vectors, so a design that never touches metavalues is unchanged. See
     /// `docs/proposals/xz-vector-propagation.md`.
     pub meta_of: HashMap<u32, u32>,
+    /// Packed-vector signal -> enum used by each element. This is declaration
+    /// metadata (`struct F(E[]); impl Vector for F {}`), not a std type-name
+    /// convention. Consumers use it to render metavalue companions.
+    pub vector_element_enums: HashMap<u32, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -70,7 +74,7 @@ pub struct Signal {
     /// code point — an implementation detail); character literals compared or
     /// assigned to it read through the Unicode table.
     pub char: bool,
-    /// A ranged numeric's value domain (`integer<lo..hi>`, spec 3.26): the
+    /// A ranged numeric's value domain (`integer<left..right>`, spec 3.26): the
     /// simulation checks every settled value against it — a dynamic range
     /// assert. Plain `unsigned[N]`/`signed[N]` wrap instead (documented semantics).
     pub range: Option<(i64, i64)>,
@@ -2068,31 +2072,27 @@ impl<'a> Lowering<'a> {
             for i in indices {
                 self.add_typed_signal(entity, &format!("{name}[{i}]"), &elem, env);
             }
-        } else if let Some(w) = self.enum_width(ty) {
-            if let ast::Type::Path(p) = ty {
-                self.local_enum
-                    .insert(name.to_string(), p.segments[0].text.clone());
-            }
+        } else if let Some((w, enum_name)) = self.enum_representation(ty) {
+            self.local_enum.insert(name.to_string(), enum_name.clone());
             self.add_signal(entity, name, w);
-            if let (ast::Type::Path(p), Some(&id)) = (ty, self.locals.get(name)) {
-                self.sig_type.insert(id.0, p.segments[0].text.clone());
+            if let Some(&id) = self.locals.get(name) {
+                self.sig_type.insert(id.0, enum_name.clone());
                 // Record the enum type so consumers render variants symbolically.
-                self.out.signals[id.0 as usize].enum_type = Some(p.segments[0].text.clone());
+                self.out.signals[id.0 as usize].enum_type = Some(enum_name.clone());
                 // `new()` default: an uninitialized enum signal powers on to its
                 // `impl New for T` value if one exists (`Logic` -> `'U'`),
                 // otherwise its first variant (`T'LEFT`) — always a valid member,
                 // not a bare `0`. An explicit `let x = V` overwrites this below.
-                let name = &p.segments[0].text;
                 if let Some(&d) = self
                     .new_defaults
-                    .get(name)
-                    .or_else(|| self.enum_first_disc.get(name))
+                    .get(&enum_name)
+                    .or_else(|| self.enum_first_disc.get(&enum_name))
                 {
                     self.out.signals[id.0 as usize].init = vec![d];
                 }
             }
         } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
-            // `integer<lo..hi>` stores in the smallest width covering the
+            // `integer<left..right>` stores in the smallest width covering the
             // range (two's complement when lo < 0); `real<..>` stays f64. The
             // bounds ride on the signal for the simulation's range checks.
             self.add_signal(entity, name, w);
@@ -2119,6 +2119,9 @@ impl<'a> Lowering<'a> {
                             .insert(name.to_string(), head.to_string());
                         if let Some(&id) = self.locals.get(name) {
                             self.sig_type.insert(id.0, head.to_string());
+                            if let Some(element) = self.vector_element_enum(head) {
+                                self.out.vector_element_enums.insert(id.0, element);
+                            }
                         }
                     }
                 }
@@ -2143,8 +2146,26 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    fn vector_element_enum(&self, family: &str) -> Option<String> {
+        let mut current = family;
+        let mut seen = HashSet::new();
+        while seen.insert(current.to_string()) {
+            let base = self.structs.get(current)?.base.as_ref()?;
+            let head = match base {
+                ast::Type::Indexed { base, .. } => type_head_name(base)?,
+                ast::Type::Path(_) => type_head_name(base)?,
+                _ => return None,
+            };
+            if self.enum_reprs.contains_key(head) {
+                return Some(head.to_string());
+            }
+            current = head;
+        }
+        None
+    }
+
     /// The storage width of a value-range-constrained numeric type
-    /// (`integer<lo..hi>` / `real<lo..hi>`), if `ty` is one. Returns
+    /// (`integer<left..right>` / `real<left..right>`), if `ty` is one. Returns
     /// `(width, is_real)`.
     fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool, Option<(i64, i64)>)> {
         let ast::Type::Generic { base, args, .. } = ty else {
@@ -2189,14 +2210,25 @@ impl<'a> Lowering<'a> {
         Some((64, false, None))
     }
 
-    /// The bit width of `ty` if it names a known enum.
-    fn enum_width(&self, ty: &ast::Type) -> Option<u32> {
-        match ty {
-            ast::Type::Path(p) if p.segments.len() == 1 => {
-                self.enum_reprs.get(&p.segments[0].text).copied()
+    /// The bit width of `ty` if it names a known enum or a fieldless nominal
+    /// type whose representation ultimately derives from one.
+    fn enum_representation(&self, ty: &ast::Type) -> Option<(u32, String)> {
+        let ast::Type::Path(path) = ty else {
+            return None;
+        };
+        let mut name = path.segments.last()?.text.as_str();
+        let mut seen = HashSet::new();
+        while seen.insert(name.to_string()) {
+            if let Some(width) = self.enum_reprs.get(name) {
+                return Some((*width, name.to_string()));
             }
-            _ => None,
+            let declaration = self.structs.get(name)?;
+            if !declaration.fields.is_empty() {
+                return None;
+            }
+            name = type_head_name(declaration.base.as_ref()?)?;
         }
+        None
     }
 
     /// The `(field name, field type)` list if `ty` names a known struct —
@@ -2339,7 +2371,7 @@ impl<'a> Lowering<'a> {
             }
         }
         match stmt {
-            // `for i in lo..hi { .. }`: a generate loop — unroll over the static
+            // `for i in left..right { .. }`: a generate loop — unroll over the static
             // range, substituting the index, so per-iteration drivers (and
             // nested generate-`if`s) are lowered concretely.
             ast::Stmt::For {
@@ -5723,7 +5755,6 @@ fn type_width_at(
 ) -> u32 {
     match t {
         ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
-            Some("Bit") | Some("Logic") | Some("Bool") => 1,
             Some("integer") | Some("real") => 64, // native kernel word / f64 bits
             Some("Char") => 32,                   // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
@@ -5924,10 +5955,6 @@ pub fn eval_const_stmts(
 /// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
 /// honoured; unspecified variants continue from the previous discriminant + 1.
 /// Index every enum declaration by name (for base-chain resolution).
-/// Array-derived Logic vector families (`struct F : Logic[]` / `: Bit[]`,
-/// -> signedness. A bodyless struct whose base is an array of a bit scalar
-/// (`struct unsigned : Logic[]`) IS a bit vector — no annotation needed, the shape
-/// says so. Signedness is the `Signed` capability. unsigned/signed are just members.
 /// Every derived type's inherited width: `struct Byte : Logic[8]` -> 8,
 /// `struct Word : Byte` -> 8 (following the base chain). A derived type reuses
 /// its base array's size/range (spec: nominal derivation). Testbench evaluators
@@ -5956,9 +5983,8 @@ pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
 }
 
 pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
-    // The set of bit-vector families by shape. No signedness — that lives in
-    // each type's operator impls. Computed to a fixpoint so a type deriving
-    // from *another* vector family (`struct Byte : unsigned[8]`) is recognized too.
+    // `impl Vector for F` opts a family into packed numeric storage. Compute
+    // inheritance to a fixpoint so `struct Byte(unsigned[8])` joins it too.
     let structs: Vec<&ast::StructDecl> = modules
         .iter()
         .flat_map(|m| &m.items)
@@ -5967,7 +5993,22 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
             _ => None,
         })
         .collect();
-    let mut out = std::collections::HashSet::new();
+    let mut out: std::collections::HashSet<String> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Impl(im)
+                if im
+                    .trait_
+                    .as_ref()
+                    .and_then(|path| path.segments.last())
+                    .is_some_and(|name| name.text == "Vector") =>
+            {
+                type_head_name(&im.target).map(str::to_string)
+            }
+            _ => None,
+        })
+        .collect();
     loop {
         let mut changed = false;
         for st in &structs {
@@ -5983,11 +6024,8 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
     out
 }
 
-/// A bodyless struct deriving from an array whose element is a bit scalar
-/// (`struct F : Logic[]` / `: Bit[]`) or an already-known vector family
-/// (`struct Byte : unsigned[8]`) — a packed bit vector. This is what makes unsigned/signed
-/// and user vectors; the shape (and its base) is the definition, not an
-/// attribute.
+/// A field-less struct deriving from an already-known `Vector` family inherits
+/// packed numeric storage.
 fn is_bit_vector_struct(
     st: &ast::StructDecl,
     families: &std::collections::HashSet<String>,
@@ -6001,7 +6039,7 @@ fn is_bit_vector_struct(
         Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
         _ => None,
     };
-    matches!(elem, Some("Logic" | "Bit" | "ULogic")) || elem.is_some_and(|h| families.contains(h))
+    elem.is_some_and(|head| families.contains(head))
 }
 
 fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
@@ -6643,7 +6681,7 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
     }
 }
 
-/// The values a `for i in lo..hi` loop visits. Range endpoints are **inclusive
+/// The values a `for i in left..right` loop visits. Range endpoints are **inclusive
 /// and directional**, matching bit slices and array ranges elsewhere in the
 /// language: `0..2` yields 0,1,2 and `2..0` yields 2,1,0.
 pub fn loop_range(a: i64, b: i64) -> Vec<i64> {
@@ -6831,7 +6869,22 @@ mod tests {
 
     /// A minimal `ClockLike` impl so self-contained test sources can use the
     /// `clk.rising()` edge methods (std provides these for real designs).
-    const CLK_PRELUDE: &str = "\nenum Bool { false, true }\nenum Bit { '0', '1' }\nenum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\ntrait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\nimpl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
+    const CLK_PRELUDE: &str = "\n\
+        enum Bool { false, true }\n\
+        enum Bit { '0', '1' }\n\
+        enum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
+        enum Logic(ULogic);\n\
+        trait Boolean { fn as_bool(self) -> Bool; }\n\
+        trait Vector {}\n\
+        impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
+        impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
+        impl Vector for unsigned {}\n\
+        impl Vector for signed {}\n\
+        impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Operator<\"or\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
+        trait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\n\
+        impl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
 
     fn lower_src(src: &str) -> Design {
         // unsigned/signed are library types (attribute-marked vectors), not seeded.
@@ -7605,6 +7658,7 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            vector_element_enums: Default::default(),
         };
         let issues = bad.validate();
         assert!(

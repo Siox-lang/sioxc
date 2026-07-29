@@ -230,31 +230,13 @@ impl<'a> Checker<'a> {
         ] {
             attr_value_kinds.insert(name.to_string(), ty);
         }
-        // Mirror of std::ops' `Boolean` impls: `Bit` and `Bool` can be used
-        // directly as conditions (spec 3.16); a condition's truth is a `Bool`
-        // (`true`/`false`), not an integer code.
-        // `Logic` is omitted, so it still requires an explicit comparison.
-        // ponytail: hardcoded shim — replace with real trait-impl lookup when
-        // trait resolution lands, so user `impl Boolean for T` works from source.
-        let mut trait_impls: HashMap<String, HashSet<String>> = HashMap::new();
-        trait_impls.insert(
-            "Boolean".to_string(),
-            ["Bit", "Bool"].iter().map(|s| s.to_string()).collect(),
-        );
-        trait_impls.insert(
-            "Not".to_string(),
-            ["Bit", "Bool", "Logic"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        );
         Checker {
             sink,
             resolved,
             entities: HashMap::new(),
             attr_targets,
             attr_value_kinds,
-            trait_impls,
+            trait_impls: HashMap::new(),
             trait_required: HashMap::new(),
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
@@ -354,6 +336,9 @@ impl<'a> Checker<'a> {
                     let trait_name = tr.segments.last().map(|s| s.text.clone());
                     let target = type_identity(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
+                        if t == "Vector" {
+                            self.vector_families.insert(ty.clone());
+                        }
                         // `impl Operator<"<sym>", Input, Output> for T`: the
                         // first trait argument is the operator symbol, which
                         // keys the impl. A user operator (a non-standard symbol)
@@ -549,20 +534,6 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
                     .insert(st.name.text.clone(), (st.base.clone(), fields));
-                // A bodyless struct over an array of bit scalars is a bit
-                // vector by shape (`struct unsigned : Logic[]`); signedness comes
-                // from `impl Signed for T`, applied in a post-pass.
-                let is_vec = st.fields.is_empty()
-                    && matches!(
-                        st.base.as_ref().and_then(|b| match b {
-                            Type::Indexed { base, .. } => type_head_name(base),
-                            _ => None,
-                        }),
-                        Some("Logic" | "Bit" | "ULogic")
-                    );
-                if is_vec {
-                    self.vector_families.insert(st.name.text.clone());
-                }
             }
             Item::View(v) => {
                 let key = declared_view_key(v);
@@ -712,15 +683,15 @@ impl<'a> Checker<'a> {
         out
     }
 
-    /// Whether `name` is a bit-vector family (`struct F : Logic[]`),
-    /// recognized by shape. There is no signedness — that lives in the
-    /// family's operator impls.
+    /// Whether `name` opted into packed numeric storage through `Vector`, or
+    /// inherits from a family that did. There is no signedness — that lives in
+    /// the family's operator impls.
     fn is_vector_family(&self, name: &str) -> bool {
         self.vector_families.contains(name)
     }
 
-    /// Fixpoint: a field-less struct whose base array element is a bit scalar
-    /// or an already-known vector family is itself a vector family, so
+    /// Fixpoint: a field-less struct whose base is an already-known vector
+    /// family is itself a vector family, so
     /// `struct Byte : unsigned[8]` inherits unsigned's numeric nature.
     fn resolve_transitive_vector_families(&mut self) {
         loop {
@@ -741,10 +712,9 @@ impl<'a> Checker<'a> {
                     Some(Type::Path(p)) => p.segments.last().map(|s| s.text.clone()),
                     _ => None,
                 };
-                let is_vec = matches!(elem.as_deref(), Some("Logic" | "Bit" | "ULogic"))
-                    || elem
-                        .as_deref()
-                        .is_some_and(|h| self.vector_families.contains(h));
+                let is_vec = elem
+                    .as_deref()
+                    .is_some_and(|head| self.vector_families.contains(head));
                 if is_vec {
                     self.vector_families.insert(name);
                     changed = true;
@@ -1575,7 +1545,7 @@ impl<'a> Checker<'a> {
                 codes::TYPE_MISMATCH,
                 *span,
                 format!(
-                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `lo..hi` range"
+                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `left..right` range"
                 ),
             );
             return true;
@@ -2094,7 +2064,7 @@ impl<'a> Checker<'a> {
                 codes::TYPE_MISMATCH,
                 expr_span(index),
                 format!(
-                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `lo..hi` range"
+                    "partial range indexing on `{owner}` has no declared bounds; use an explicit `left..right` range"
                 ),
             );
             return;
@@ -2350,13 +2320,13 @@ impl<'a> Checker<'a> {
                         if !intrinsic_vector
                             && !self
                                 .trait_impls
-                                .get("Not")
+                                .get("not")
                                 .is_some_and(|types| types.contains(&owner))
                         {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
-                                format!("`not` needs an `impl Not<Output> for {owner}`"),
+                                format!("`not` needs an `impl Operator<\"not\", …> for {owner}`"),
                             );
                         }
                     }
@@ -2511,9 +2481,7 @@ impl<'a> Checker<'a> {
                         // (`-> Ordering`) impl derives every comparison.
                         let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
                         let sym = if is_cmp { "<=>" } else { op_str };
-                        let core_boolean =
-                            matches!(sym, "and" | "or") && matches!(name.as_str(), "Bit" | "Bool");
-                        if !core_boolean && !has_op(sym) {
+                        if !has_op(sym) {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
@@ -3076,7 +3044,7 @@ impl<'a> Checker<'a> {
     /// A constant initializer must lie inside a value-range-constrained
     /// numeric type (`let b: integer<0..255> = 300;` is an error). Literal
     /// bounds only; named ranges and dynamic values are runtime checks later.
-    /// The declared bounds of a ranged numeric (`integer<lo..hi>`), resolving
+    /// The declared bounds of a ranged numeric (`integer<left..right>`), resolving
     /// one alias hop (`using Byte = integer<0..255>`). `None` for every other
     /// type.
     fn declared_range(&self, decl_ty: &Type) -> Option<(i64, i64)> {
@@ -3532,7 +3500,22 @@ mod tests {
         enum Bit { '0', '1' }\n\
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Bool { false, true }\n\
+        trait Boolean { fn as_bool(self) -> Bool; }\n\
+        trait Vector {}\n\
+        trait ClockLike { fn rising(self) -> Bool; }\n\
+        impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
+        impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
+        impl ClockLike for Bit { fn rising(self) -> Bool { return false; } }\n\
+        impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Operator<\"or\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
+        impl Operator<\"and\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
+        impl Operator<\"or\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
+        impl Operator<\"not\", Bit, Bit> for Bit { fn apply(self) -> Bit { return self; } }\n\
+        impl Operator<\"not\", Logic, Logic> for Logic { fn apply(self) -> Logic { return self; } }\n\
+        impl Vector for unsigned {}\n\
         struct unsigned(Logic[]);\n\
+        impl Vector for signed {}\n\
         struct signed(Logic[]);\n";
 
     fn check_src(src: &str) -> usize {
