@@ -29,6 +29,9 @@ use crate::elab::Hierarchy;
 use crate::syntax::ast::{self, BinOp as AstBinOp, UnOp as AstUnOp};
 use crate::syntax::Module;
 
+type OperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
+type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);
+
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
 #[derive(Default)]
 pub struct Design {
@@ -345,7 +348,7 @@ struct Lowering<'a> {
     /// (trait name, target type) -> the impl's fns with the impl's declared
     /// rhs type (the `integer` in `impl Add<integer> for T`; `None` reads as
     /// `Self`). Overloads select by that rhs, or the fn's rhs parameter type.
-    op_impls: HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
+    op_impls: OperatorImpls<'a>,
     /// Generic implementations whose target is an unconstrained scalar array.
     /// Nominal Vector families forward these when their element satisfies the
     /// implementation's constraint.
@@ -1983,9 +1986,11 @@ impl<'a> Lowering<'a> {
                 .meta_of
                 .get(&id.0)
                 .map(|&c| Expr::Current(SignalId(c))),
-            Expr::Binary { op, lhs, rhs }
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
-            {
+            Expr::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                lhs,
+                rhs,
+            } => {
                 let cond = [
                     self.lower_meta_ir(lhs, width),
                     self.lower_meta_ir(rhs, width),
@@ -2339,7 +2344,7 @@ impl<'a> Lowering<'a> {
     /// The storage width of a value-range-constrained numeric type
     /// (`integer<left..right>` / `real<left..right>`), if `ty` is one. Returns
     /// `(width, is_real)`.
-    fn ranged_numeric(&self, ty: &ast::Type) -> Option<(u32, bool, Option<(i64, i64)>)> {
+    fn ranged_numeric(&self, ty: &ast::Type) -> Option<NumericRangeInfo> {
         let ast::Type::Generic { base, args, .. } = ty else {
             return None;
         };
@@ -4021,7 +4026,7 @@ impl<'a> Lowering<'a> {
     /// The `(base, digits)` of a bit-string-like value: an explicit radix
     /// literal `x"…"`/`o"…"`, or a plain string (internal base `'b'`, per-char
     /// binary) — a string of logic values reads as a logic array, no prefix.
-    fn bit_string_parts<'e>(e: &'e ast::Expr) -> Option<(char, &'e str)> {
+    fn bit_string_parts(e: &ast::Expr) -> Option<(char, &str)> {
         match e {
             ast::Expr::BitStrLit { base, digits, .. } => Some((*base, digits)),
             ast::Expr::StrLit { text, .. } => Some(('b', text)),
@@ -4149,8 +4154,6 @@ impl<'a> Lowering<'a> {
     /// Build a binary node, switching `+ - * /` to float arithmetic (and
     /// coercing integer constants) when either operand is real. `==`/`!=`
     /// compare f64 bits exactly, which is right once constants are coerced.
-    // ponytail: ordered compares (< <=) on real stay bitwise — wrong for
-    // negative floats; add FLt/FLe when something needs them.
     fn make_binary(&self, op: ast::BinOp, lhs: Expr, rhs: Expr) -> Expr {
         if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
             let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
@@ -4430,7 +4433,7 @@ impl<'a> Lowering<'a> {
         }
         (self.vector_families.contains(name)
             || matches!(name.as_str(), "integer" | "Char" | "real"))
-        .then(|| Val::Scalar(Expr::Const(0)))
+        .then_some(Val::Scalar(Expr::Const(0)))
     }
 
     /// A struct's derived default as flattened `(leaf-dotted-name, expr)` pairs
@@ -6343,6 +6346,7 @@ pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
 /// - `let x: Entity = { .. }` (type on the construct),
 /// - `let x: Entity = { .. }` (type from the annotation, name-less construct),
 /// - `let x: Entity;` (type from the annotation, no connections).
+///
 /// `entities` decides whether an annotation names an entity.
 fn instance_let_parts(
     l: &ast::LetDecl,
@@ -7020,13 +7024,12 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
         // one code per variant. An explicit discriminant can sit far above the
         // ordinal range (`enum Code { Lo = 1, Hi = 9 }` is two variants but
         // needs four bits), so the larger of the two bounds wins.
-        let w = if e.repr.is_some() && enum_base_name(e, &enums).is_none() {
-            type_width(
-                e.repr.as_ref().unwrap(),
-                &empty,
-                &HashMap::new(),
-                &HashMap::new(),
-            )
+        let w = if let Some(repr) = e
+            .repr
+            .as_ref()
+            .filter(|_| enum_base_name(e, &enums).is_none())
+        {
+            type_width(repr, &empty, &HashMap::new(), &HashMap::new())
         } else {
             let variants = effective_variants(name, &enums, &mut Vec::new());
             let n = variants.len().max(1) as u32;

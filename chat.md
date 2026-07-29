@@ -1239,3 +1239,14 @@ constraint and an executable custom `Word(Logic[])` corpus regression covering
 resolution and logical forwarding. Making vector operators source-driven also
 exposed the missing explicit unsigned `<=>`; std now declares it using kernel
 unsigned comparison semantics.
+### 2026-07-29 — Codex — fixed overflowing match patterns and enforced lint CI
+
+Fixed integer match-pattern parsing so decimal/hex/binary values outside the
+supported signed 64-bit pattern domain produce a diagnostic instead of
+silently becoming `0`; the valid `-9223372036854775808` boundary remains
+accepted. Added parser regressions for both cases. Cleared the full strict
+Clippy backlog across frontend, IR, LLVM, resolver, and native harness code,
+including replacing a checked-add fallback with explicit saturating width
+arithmetic and removing an unnecessary enum-representation unwrap. CI now
+runs `clippy -D warnings` for both the frontend-only and all-target/all-feature
+configurations.

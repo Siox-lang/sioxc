@@ -18,6 +18,10 @@ use siox::ir::{Design, SignalId};
 use siox::syntax::ast;
 use siox::syntax::Module;
 
+type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
+type StructFields = Vec<(String, ast::Type)>;
+type RawStructLayouts = HashMap<String, (Option<String>, StructFields)>;
+
 /// Build a native simulator binary that runs *all* `#[test]` entities, like
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
 /// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
@@ -44,8 +48,7 @@ pub fn build(
     }
     let enums = siox::ir::enum_discriminants(modules);
     let families = siox::ir::vector_families(modules);
-    let mut op_impls: HashMap<(String, String), Vec<(&ast::FnDecl, Option<String>)>> =
-        HashMap::new();
+    let mut op_impls: NativeOperatorImpls<'_> = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
@@ -608,7 +611,7 @@ struct Ctx<'a> {
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
-    op_impls: &'a HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>,
+    op_impls: &'a NativeOperatorImpls<'a>,
     /// Impl methods `(type head, method) -> fn`, for `recv.method(args)`.
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
     /// Struct layouts (name -> base-first field list) so a struct-typed
@@ -639,8 +642,8 @@ struct Ctx<'a> {
 /// Struct layouts keyed by name, each a base-first flattened field list
 /// (`struct B : A` prepends A's fields), so a struct-typed testbench local can
 /// be materialized as one C local per field.
-fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type)>> {
-    let mut raw: HashMap<String, (Option<String>, Vec<(String, ast::Type)>)> = HashMap::new();
+fn collect_structs(modules: &[Module]) -> HashMap<String, StructFields> {
+    let mut raw: RawStructLayouts = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(s) = item {
@@ -656,9 +659,9 @@ fn collect_structs(modules: &[Module]) -> HashMap<String, Vec<(String, ast::Type
     }
     fn flat(
         name: &str,
-        raw: &HashMap<String, (Option<String>, Vec<(String, ast::Type)>)>,
+        raw: &RawStructLayouts,
         seen: &mut std::collections::HashSet<String>,
-    ) -> Vec<(String, ast::Type)> {
+    ) -> StructFields {
         if !seen.insert(name.to_string()) {
             return Vec::new();
         }
@@ -2290,7 +2293,6 @@ impl Ctx<'_> {
                 _ => Err(format!("unsupported call `{name}` in testbench expression")),
             };
         };
-        let f = f;
         let body = f.body.as_ref().ok_or("fn has no body")?;
         // Constant arguments fold statically (also the only way a recursive
         // fn like clog2 compiles here).
@@ -2778,21 +2780,19 @@ fn scan_clocks(
         }
     };
     for item in items {
-        match item {
-            ast::ImplItem::Stmt(ast::Stmt::Assign {
-                target,
-                value,
-                after,
-                ..
-            }) => {
-                if let Some((path, half)) = after_toggle(target, value, after) {
-                    // A clock shared by several DUTs toggles every port.
-                    for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
-                        add(id.0, half);
-                    }
+        if let ast::ImplItem::Stmt(ast::Stmt::Assign {
+            target,
+            value,
+            after,
+            ..
+        }) = item
+        {
+            if let Some((path, half)) = after_toggle(target, value, after) {
+                // A clock shared by several DUTs toggles every port.
+                for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    add(id.0, half);
                 }
             }
-            _ => {}
         }
     }
     clocks

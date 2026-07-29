@@ -883,8 +883,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             }
         }
         // Any cyclic remainder in index order.
-        for i in 0..m {
-            if !seen[i] {
+        for (i, was_seen) in seen.iter().enumerate().take(m) {
+            if !was_seen {
                 order.push(i);
             }
         }
@@ -968,9 +968,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 } else if matches!(op, BinOp::Shl) {
                     let lhs_width = self.expr_width(lhs);
                     match rhs.as_ref() {
-                        Expr::Const(shift) => lhs_width
-                            .checked_add((*shift).try_into().unwrap_or(u32::MAX))
-                            .unwrap_or(u32::MAX),
+                        Expr::Const(shift) => {
+                            lhs_width.saturating_add((*shift).try_into().unwrap_or(u32::MAX))
+                        }
                         _ => lhs_width,
                     }
                 } else {

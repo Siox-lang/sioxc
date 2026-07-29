@@ -519,19 +519,19 @@ impl<'a> Elaborator<'a> {
                 });
             }
             Stmt::For {
-                var, range, body, ..
+                var,
+                range: Expr::Range { lo, hi, .. },
+                body,
+                ..
             } => {
-                if let Expr::Range { lo, hi, .. } = range {
-                    if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env))
-                    {
-                        // Inclusive, directional range (`0..2` -> 0,1,2;
-                        // `2..0` -> 2,1,0), matching slices/array ranges.
-                        for i in loop_range(a, b) {
-                            let mut e = env.clone();
-                            e.insert(var.text.clone(), i);
-                            for st in &body.stmts {
-                                self.gather_stmt(st, &e, tparams, out);
-                            }
+                if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
+                    // Inclusive, directional range (`0..2` -> 0,1,2;
+                    // `2..0` -> 2,1,0), matching slices/array ranges.
+                    for i in loop_range(a, b) {
+                        let mut e = env.clone();
+                        e.insert(var.text.clone(), i);
+                        for st in &body.stmts {
+                            self.gather_stmt(st, &e, tparams, out);
                         }
                     }
                 }
@@ -1075,12 +1075,13 @@ fn parse_int(text: &str) -> Option<i64> {
 /// as connected for the missing-connection check (spec 3.12, form 3).
 fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
     match s {
-        Stmt::Assign { target, .. } => {
-            if let Expr::Field { base, field, .. } = target {
-                if let Expr::Path(p) = base.as_ref() {
-                    if p.segments.len() == 1 && p.segments[0].text == inst {
-                        out.insert(field.text.clone());
-                    }
+        Stmt::Assign {
+            target: Expr::Field { base, field, .. },
+            ..
+        } => {
+            if let Expr::Path(p) = base.as_ref() {
+                if p.segments.len() == 1 && p.segments[0].text == inst {
+                    out.insert(field.text.clone());
                 }
             }
         }

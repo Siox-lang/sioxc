@@ -138,6 +138,10 @@ enum AttrValueTy {
     Other,
 }
 
+type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
+type GenericFnSignature = (Vec<Param>, Vec<(String, Type)>);
+type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
+
 struct Checker<'a> {
     sink: &'a mut DiagnosticSink,
     resolved: &'a Resolved,
@@ -155,9 +159,9 @@ struct Checker<'a> {
     trait_required: HashMap<String, Vec<String>>,
     /// (operator trait, implementing type) -> (input type, output type).
     /// Multiple entries are overloads selected by the right operand.
-    operator_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
+    operator_sigs: OperatorSignatures,
     /// (`Index`/`IndexAssign`, target) -> (index type, value/output type).
-    index_sigs: HashMap<(String, String), Vec<(Option<String>, Option<String>)>>,
+    index_sigs: OperatorSignatures,
     operator_precedence: HashMap<String, (u8, Span)>,
     /// Enum name -> its EFFECTIVE variant names (inherited + own).
     enum_variants: HashMap<String, Vec<String>>,
@@ -179,7 +183,7 @@ struct Checker<'a> {
     blanket_array_impls: HashMap<String, String>,
     /// Generic module fns: name -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
-    generic_fns: HashMap<String, (Vec<Param>, Vec<(String, Type)>)>,
+    generic_fns: HashMap<String, GenericFnSignature>,
     /// Declared free function -> its parameter count, for call-arity checking.
     /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
     /// functions (rand/fs) have no declaration and are not listed.
@@ -1005,7 +1009,7 @@ impl<'a> Checker<'a> {
             let Some((base_ty, fields)) = self.structs.get(&name) else {
                 return;
             };
-            if fields.iter().any(|f| *f == field.text) {
+            if fields.contains(&field.text) {
                 return;
             }
             cur = base_ty
@@ -1190,10 +1194,7 @@ impl<'a> Checker<'a> {
 
     /// Build the value environment for an impl body: the `in` ports (for the
     /// write check) and a name -> type table (ports + impl-level lets/consts).
-    fn impl_env(
-        &self,
-        im: &ImplDecl,
-    ) -> (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>) {
+    fn impl_env(&self, im: &ImplDecl) -> ImplEnvironment {
         let mut illegal = HashSet::new();
         let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();

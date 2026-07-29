@@ -26,7 +26,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.90.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -35,6 +35,9 @@ jobs:
 
       - name: Check frontend without CLI or LLVM
         run: cargo check --locked --no-default-features --lib
+
+      - name: Lint frontend
+        run: cargo clippy --locked --no-default-features --lib -- -D warnings
 
   compiler:
     name: LLVM, native, bitpack, and corpus
@@ -52,6 +55,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy
 
       - name: Install LLVM 22 and Clang
         run: |
@@ -71,6 +76,9 @@ jobs:
 
       - name: Test bitpack backend
         run: cargo test --locked --features bitpack
+
+      - name: Lint all targets and backends
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Compile and run corpus
         run: ./scripts/test-corpus.sh "$GITHUB_WORKSPACE/siox-tests"

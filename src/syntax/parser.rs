@@ -1228,17 +1228,20 @@ impl<'a> Parser<'a> {
         let neg = self.eat(TokenKind::Minus);
         let t = self.bump();
         let txt = self.text_of(t.span).replace('_', "");
-        let v = if let Some(h) = txt.strip_prefix("0x").or_else(|| txt.strip_prefix("0X")) {
-            i64::from_str_radix(h, 16).unwrap_or(0)
+        let magnitude = if let Some(h) = txt.strip_prefix("0x").or_else(|| txt.strip_prefix("0X")) {
+            i128::from_str_radix(h, 16)
         } else if let Some(b) = txt.strip_prefix("0b").or_else(|| txt.strip_prefix("0B")) {
-            i64::from_str_radix(b, 2).unwrap_or(0)
+            i128::from_str_radix(b, 2)
         } else {
-            txt.parse().unwrap_or(0)
+            txt.parse()
         };
-        if neg {
-            -v
-        } else {
-            v
+        let value = magnitude.map(|value| if neg { -value } else { value });
+        match value.ok().and_then(|value| i64::try_from(value).ok()) {
+            Some(value) => value,
+            None => {
+                self.error_at(t.span, "integer pattern is outside the supported i64 range");
+                0
+            }
         }
     }
 
@@ -2602,6 +2605,39 @@ mod tests {
         assert_eq!(mt.arms.len(), 2);
         assert!(matches!(mt.arms[0].pattern, Pattern::Path(_)));
         assert!(matches!(mt.arms[1].pattern, Pattern::Wildcard));
+    }
+
+    #[test]
+    fn overflowing_integer_pattern_is_not_silently_zero() {
+        let (_, errors) = parse(
+            "module m;\nimpl M {\n\
+             match value { 18446744073709551616 => y = 1, _ => y = 0 }\n\
+             }\n",
+        );
+        assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn minimum_i64_pattern_is_accepted() {
+        let module = parse_ok(
+            "module m;\nimpl M {\n\
+             match value { -9223372036854775808 => y = 1, _ => y = 0 }\n\
+             }\n",
+        );
+        let Item::Impl(im) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Stmt(Stmt::Match(statement)) = &im.items[0] else {
+            panic!("expected match")
+        };
+        assert!(matches!(
+            statement.arms[0].pattern,
+            Pattern::Range {
+                lo: i64::MIN,
+                hi: i64::MIN,
+                ..
+            }
+        ));
     }
 
     #[test]

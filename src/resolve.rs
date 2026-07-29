@@ -758,11 +758,10 @@ impl<'a> Resolver<'a> {
             .last()
             .into_iter()
             .flat_map(|scope| scope.iter())
-            .filter_map(|(name, &id)| {
-                (self.out.kind_of(id) == Some(DefKind::Param)).then(|| {
-                    let uses = self.out.uses.values().filter(|&&used| used == id).count();
-                    (name.clone(), id, uses)
-                })
+            .filter(|(_, id)| self.out.kind_of(**id) == Some(DefKind::Param))
+            .map(|(name, &id)| {
+                let uses = self.out.uses.values().filter(|&&used| used == id).count();
+                (name.clone(), id, uses)
             })
             .collect();
         let saved_impl_owner = self
