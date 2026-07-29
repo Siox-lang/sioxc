@@ -377,6 +377,9 @@ struct Lowering<'a> {
     param_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
+    /// Exact literal values for module constants, including values wider than
+    /// the signed width/parameter evaluator can represent.
+    const_values: HashMap<String, Expr>,
     /// Module-level `real` constants (`const PI: real = 3.14159...`).
     consts_real: HashMap<String, f64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
@@ -508,6 +511,7 @@ impl<'a> Lowering<'a> {
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
+            const_values: HashMap::new(),
             consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
@@ -533,6 +537,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn collect(&mut self, modules: &'a [Module]) {
+        let mut constant_decls = Vec::new();
         for m in modules {
             for item in &m.items {
                 match item {
@@ -565,19 +570,7 @@ impl<'a> Lowering<'a> {
                     // constants (`const BYTE: range = 7..0`) keep their
                     // written direction. Aliases substitute during lowering.
                     ast::Item::Const(c) => {
-                        if let ast::Expr::Range { lo, hi, .. } = &c.value {
-                            if let (Some(a), Some(b)) =
-                                (eval_const(lo, &self.consts), eval_const(hi, &self.consts))
-                            {
-                                self.const_ranges.insert(c.name.text.clone(), (a, b));
-                            }
-                        } else if let Some(v) = eval_const(&c.value, &self.consts) {
-                            self.consts.insert(c.name.text.clone(), v);
-                        } else if let ast::Expr::Int { text, .. } = &c.value {
-                            if let Ok(f) = text.parse::<f64>() {
-                                self.consts_real.insert(c.name.text.clone(), f);
-                            }
-                        }
+                        constant_decls.push(c);
                     }
                     ast::Item::Using(u) => {
                         if let ast::UsingKind::Alias { name, ty } = &u.kind {
@@ -659,6 +652,72 @@ impl<'a> Lowering<'a> {
                     }
                     _ => {}
                 }
+            }
+        }
+        // Constants are order-independent. Keep the narrow signed value table
+        // for widths/generate conditions, and a separate exact literal table
+        // for signal values so a 128-bit constant never passes through i64.
+        for _ in 0..=constant_decls.len() {
+            let mut progressed = false;
+            for constant in &constant_decls {
+                let name = &constant.name.text;
+                if self.const_ranges.contains_key(name)
+                    || self.consts.contains_key(name)
+                    || self.consts_real.contains_key(name)
+                    || self.const_values.contains_key(name)
+                {
+                    continue;
+                }
+                if let ast::Expr::Range { lo, hi, .. } = &constant.value {
+                    if let (Some(left), Some(right)) =
+                        (eval_const(lo, &self.consts), eval_const(hi, &self.consts))
+                    {
+                        self.const_ranges.insert(name.clone(), (left, right));
+                        progressed = true;
+                    }
+                } else if let ast::Expr::Int { text, .. } = &constant.value {
+                    if text.contains('.') {
+                        if let Ok(value) = text.parse::<f64>() {
+                            self.consts_real.insert(name.clone(), value);
+                            progressed = true;
+                        }
+                    } else if let Some(value) = integer_const(text) {
+                        if let Expr::Const(word) = value {
+                            if let Ok(narrow) = i64::try_from(word) {
+                                self.consts.insert(name.clone(), narrow);
+                            }
+                            self.const_values.insert(name.clone(), Expr::Const(word));
+                        } else {
+                            self.const_values.insert(name.clone(), value);
+                        }
+                        progressed = true;
+                    }
+                } else if let ast::Expr::Path(path) = &constant.value {
+                    if path.segments.len() == 1 {
+                        let source = &path.segments[0].text;
+                        if let Some(value) = self.const_values.get(source).cloned() {
+                            self.const_values.insert(name.clone(), value);
+                            progressed = true;
+                        } else if let Some(&value) = self.consts.get(source) {
+                            self.consts.insert(name.clone(), value);
+                            progressed = true;
+                        }
+                    }
+                } else if let Some(value) =
+                    lower_const_value(&constant.value, &self.const_values, &self.consts)
+                {
+                    self.const_values.insert(name.clone(), value);
+                    if let Some(narrow) = eval_const(&constant.value, &self.consts) {
+                        self.consts.insert(name.clone(), narrow);
+                    }
+                    progressed = true;
+                } else if let Some(value) = eval_const(&constant.value, &self.consts) {
+                    self.consts.insert(name.clone(), value);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
             }
         }
     }
@@ -3457,6 +3516,9 @@ impl<'a> Lowering<'a> {
                     return Expr::Current(*id);
                 }
                 // Module constants read as values (`x * PI`).
+                if let Some(value) = self.const_values.get(name) {
+                    return value.clone();
+                }
                 if let Some(&v) = self.cur_env.get(name) {
                     return Expr::Const(v as u64);
                 }
@@ -5937,6 +5999,48 @@ fn words_const(mut words: Vec<u64>) -> Expr {
         [] => Expr::Const(0),
         [word] => Expr::Const(*word),
         _ => Expr::WideConst(words),
+    }
+}
+
+fn lower_const_value(
+    expression: &ast::Expr,
+    exact: &HashMap<String, Expr>,
+    narrow: &HashMap<String, i64>,
+) -> Option<Expr> {
+    match expression {
+        ast::Expr::Int { text, .. } if text.contains('.') => text.parse().ok().map(Expr::Real),
+        ast::Expr::Int { text, .. } => integer_const(text),
+        ast::Expr::Path(path) if path.segments.len() == 1 => {
+            exact.get(&path.segments[0].text).cloned().or_else(|| {
+                narrow
+                    .get(&path.segments[0].text)
+                    .map(|value| Expr::Const(*value as u64))
+            })
+        }
+        ast::Expr::Unary { op, rhs, .. } => Some(Expr::Unary {
+            op: lower_unop(*op),
+            rhs: Box::new(lower_const_value(rhs, exact, narrow)?),
+        }),
+        ast::Expr::Binary { op, lhs, rhs, .. } => Some(Expr::Binary {
+            op: lower_binop(op.clone())?,
+            lhs: Box::new(lower_const_value(lhs, exact, narrow)?),
+            rhs: Box::new(lower_const_value(rhs, exact, narrow)?),
+        }),
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => Some(Expr::Select {
+            cond: Box::new(lower_const_value(cond, exact, narrow)?),
+            then: Box::new(lower_const_value(then, exact, narrow)?),
+            els: Box::new(lower_const_value(els, exact, narrow)?),
+        }),
+        ast::Expr::SuffixLit { text, suffix, .. } => Some(Expr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(integer_const(text)?),
+            rhs: Box::new(Expr::Const(
+                ast::suffix_scale(&suffix.text).unwrap_or(1) as u64
+            )),
+        }),
+        _ => None,
     }
 }
 

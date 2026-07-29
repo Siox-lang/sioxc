@@ -1250,3 +1250,14 @@ including replacing a checked-add fallback with explicit saturating width
 arithmetic and removing an unnecessary enum-representation unwrap. CI now
 runs `clippy -D warnings` for both the frontend-only and all-target/all-feature
 configurations.
+### 2026-07-29 — Codex — removed module-constant width ceilings
+
+Fixed module constants taking a different, lossy path from ordinary literals:
+IR collection previously forced them through signed i64 and the native harness
+through u64/u128, so wide constants became zero, wrapped, or lost high ABI
+words. IR now retains exact arbitrary-width literal/expression trees and
+resolves forward constant aliases to a fixpoint. The native harness emits
+arbitrary-width `_BitInt` constant expressions directly while retaining its
+narrow evaluator only for compile-time helper functions. Added an executable
+corpus regression covering 128-bit and 192-bit literals, composed constants,
+forward declarations, DUT outputs, and direct native-testbench references.

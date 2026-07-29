@@ -142,6 +142,25 @@ pub fn build(
             break;
         }
     }
+    // Preserve the source expression separately from the narrow evaluator.
+    // `_BitInt` accepts the resulting arbitrary-width C expression directly,
+    // so testbench references never inherit the u128 helper's ceiling.
+    let mut const_exprs: HashMap<String, String> = HashMap::new();
+    for _ in 0..=const_decls.len() {
+        let mut progressed = false;
+        for declaration in &const_decls {
+            if const_exprs.contains_key(&declaration.name.text) {
+                continue;
+            }
+            if let Some(expression) = emit_c_const(&declaration.value, &const_exprs, &enums) {
+                const_exprs.insert(declaration.name.text.clone(), expression);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
 
     // Struct field layouts (base-first, inheritance flattened) so a struct-typed
     // testbench local can be materialized as one C local per leaf field. Every
@@ -282,7 +301,7 @@ pub fn build(
             methods: &methods,
             structs: &structs,
             derived_widths: &derived_widths,
-            consts: &consts,
+            const_exprs: &const_exprs,
             aliases: &aliases,
             tmp: Default::default(),
             fns: &fns,
@@ -624,7 +643,7 @@ struct Ctx<'a> {
     /// resolving a method call's receiver type.
     local_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level `const` values, for bare-name references.
-    consts: &'a HashMap<String, u128>,
+    const_exprs: &'a HashMap<String, String>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
@@ -843,18 +862,108 @@ fn eval_c_const(
     fns: &HashMap<String, &ast::FnDecl>,
 ) -> Option<u128> {
     match e {
-        ast::Expr::Int { text, .. } => Some(parse_u64(text) as u128),
+        ast::Expr::Int { text, .. } => {
+            let words = parse_word_literal(text);
+            (words.len() <= 2).then(|| {
+                words.first().copied().unwrap_or(0) as u128
+                    | ((words.get(1).copied().unwrap_or(0) as u128) << 64)
+            })
+        }
         ast::Expr::CharLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
         ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
         ast::Expr::Path(p) if p.segments.len() >= 2 => enums
             .get(&p.segments[0].text)
             .and_then(|m| m.get(&p.segments[1].text))
             .map(|&d| d as u128),
+        ast::Expr::Unary { op, rhs, .. } => {
+            let value = eval_c_const(rhs, consts, enums, fns)?;
+            Some(match op {
+                ast::UnOp::Neg => 0u128.wrapping_sub(value),
+                ast::UnOp::Not => u128::from(value == 0),
+            })
+        }
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let left = eval_c_const(lhs, consts, enums, fns)?;
+            let right = eval_c_const(rhs, consts, enums, fns)?;
+            Some(match op {
+                ast::BinOp::Add => left.wrapping_add(right),
+                ast::BinOp::Sub => left.wrapping_sub(right),
+                ast::BinOp::Mul => left.wrapping_mul(right),
+                ast::BinOp::Div if right != 0 => left / right,
+                ast::BinOp::Shl => left.checked_shl(right.try_into().ok()?).unwrap_or(0),
+                ast::BinOp::Shr => left.checked_shr(right.try_into().ok()?).unwrap_or(0),
+                ast::BinOp::Eq => u128::from(left == right),
+                ast::BinOp::Ne => u128::from(left != right),
+                ast::BinOp::Lt => u128::from(left < right),
+                ast::BinOp::Le => u128::from(left <= right),
+                ast::BinOp::Gt => u128::from(left > right),
+                ast::BinOp::Ge => u128::from(left >= right),
+                ast::BinOp::And => left & right,
+                ast::BinOp::Or => left | right,
+                _ => return None,
+            })
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            if eval_c_const(cond, consts, enums, fns)? != 0 {
+                eval_c_const(then, consts, enums, fns)
+            } else {
+                eval_c_const(els, consts, enums, fns)
+            }
+        }
         _ => {
             let env: HashMap<String, i64> =
                 consts.iter().map(|(k, &v)| (k.clone(), v as i64)).collect();
             siox::ir::eval_const_fns(e, &env, fns, 0).map(|v| v as u128)
         }
+    }
+}
+
+fn emit_c_const(
+    expression: &ast::Expr,
+    constants: &HashMap<String, String>,
+    enums: &HashMap<String, HashMap<String, u64>>,
+) -> Option<String> {
+    match expression {
+        ast::Expr::Int { text, .. } => Some(c_word_literal(&parse_word_literal(text))),
+        ast::Expr::CharLit { ch, .. } => {
+            Some(format!("((sx_value){})", logic_lit_value(*ch, enums)))
+        }
+        ast::Expr::Path(path) if path.segments.len() == 1 => {
+            constants.get(&path.segments[0].text).cloned()
+        }
+        ast::Expr::Path(path) if path.segments.len() >= 2 => enums
+            .get(&path.segments[0].text)
+            .and_then(|variants| variants.get(&path.segments[1].text))
+            .map(|value| format!("((sx_value){value}ULL)")),
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs,
+            ..
+        } => {
+            let rhs = emit_c_const(rhs, constants, enums)?;
+            Some(format!("(-({rhs}))"))
+        }
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let lhs = emit_c_const(lhs, constants, enums)?;
+            let rhs = emit_c_const(rhs, constants, enums)?;
+            Some(format!("(({lhs}) {} ({rhs}))", c_binop(op).ok()?))
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => Some(format!(
+            "(({}) ? ({}) : ({}))",
+            emit_c_const(cond, constants, enums)?,
+            emit_c_const(then, constants, enums)?,
+            emit_c_const(els, constants, enums)?
+        )),
+        ast::Expr::SuffixLit { text, suffix, .. } => {
+            let value = c_word_literal(&parse_word_literal(text));
+            let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
+            Some(format!("(({value}) * {scale}ULL)"))
+        }
+        _ => None,
     }
 }
 
@@ -2582,8 +2691,8 @@ impl Ctx<'_> {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 if let Some(&id) = self.map.get(&p.segments[0].text) {
                     format!("sx_read({})", id.0)
-                } else if let Some(&v) = self.consts.get(&p.segments[0].text) {
-                    format!("{}ULL", v as u64)
+                } else if let Some(value) = self.const_exprs.get(&p.segments[0].text) {
+                    value.clone()
                 } else {
                     return Err(unsup(&p.segments[0].text));
                 }
