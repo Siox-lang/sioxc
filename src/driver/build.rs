@@ -2436,6 +2436,14 @@ impl Ctx<'_> {
         }))
     }
 
+    /// The width of a call argument, for binding `param'length` at an inline.
+    /// A named value carries its declared width; anything else has none to
+    /// give and the body falls back to its own rules.
+    fn arg_width(&self, a: &ast::Expr) -> Option<u32> {
+        let path = expr_path(a)?;
+        self.name_width(&path)
+    }
+
     /// The declared bit width of a vector-family type: `unsigned[8]` -> 8 (and the
     /// element width of an array of one). Mirrors the runner's rule.
     fn declared_width(&self, ty: &ast::Type) -> Option<u32> {
@@ -3875,8 +3883,27 @@ impl Ctx<'_> {
                         );
                         continue;
                     }
+                    // A `signed` vector reaching an `integer` parameter is a
+                    // value, not a bit pattern: `compatible` allows the
+                    // coercion, so it has to be value-preserving. Passing the
+                    // raw bits made `abs(-5)` see 251 and return it unchanged.
+                    if head == "integer" {
+                        if let Some(w) = self.signed_vector_width(a) {
+                            let v = self.expr(a)?;
+                            env.insert(n.text.clone(), format!("((sx_value)sx_i64(({v}), {w}))"));
+                            continue;
+                        }
+                    }
                 }
                 env.insert(n.text.clone(), format!("({})", self.expr(a)?));
+                // The argument's width travels with it, as at the operator and
+                // method inline sites. A nested inline reads `self'length` off
+                // this parameter — signed's Ord tests the sign with
+                // `self >> (self'length - 1)` — and without a binding that
+                // shifted by 0, so `abs(-5)` came back as 251.
+                if let Some(w) = self.arg_width(a) {
+                    env.insert(format!("{}::length", n.text), format!("{w}ULL"));
+                }
             }
         }
         self.fn_env.borrow_mut().push(env);
