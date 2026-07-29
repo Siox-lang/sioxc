@@ -58,7 +58,9 @@ Unconstrained string/array locals acquire the initializer's concrete native
 storage shape, and later assignments must match it. Struct locals accept the
 same named, positional, typed-positional, and spread-update forms during
 reassignment as during initialization; every form writes the flattened fields
-in declaration order.
+in declaration order. Recursive initialization retains nested struct literals,
+whole-struct copies, nested spreads, arrays of structs, and fixed-size string
+fields rather than defaulting their descendant leaves.
 Explicit local ranges retain their declared logical indices and direction.
 This applies to numeric vectors and arrays alike: indexing, iteration, string
 literal initialization of logic arrays, and the `'left`, `'right`, `'high`,

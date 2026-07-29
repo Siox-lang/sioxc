@@ -1699,6 +1699,7 @@ impl Ctx<'_> {
             Some(ast::Expr::Construct {
                 spread: Some(base), ..
             }) => expr_path(base),
+            Some(value) => expr_path(value),
             _ => None,
         };
         self.declare_struct_fields(&l.name.text, fields, &init, spread_base.as_deref(), b)?;
@@ -1717,6 +1718,34 @@ impl Ctx<'_> {
     ) -> Result<(), String> {
         for (fname, fty) in fields {
             let key = format!("{prefix}.{fname}");
+            // An indexed aggregate field keeps its array dimension. Looking
+            // only at `type_head_name` would mistake `Child[2]` for one nested
+            // `Child` and materialize `field.x` instead of
+            // `field[0].x`, `field[1].x`.
+            if self.array_parts(fty).is_some()
+                || sized_string_indices(fty, self.const_ranges, self.consts).is_some()
+            {
+                self.declare_typed_storage(&key, fty, b)?;
+                if let Some(value) = init.get(fname.as_str()) {
+                    if !self.write_composite(&key, value, b, "    ")? {
+                        return Err(format!("cannot initialize aggregate struct field `{key}`"));
+                    }
+                } else if let Some(base) = spread_base {
+                    let source_name = format!("{base}.{fname}");
+                    let source = self.composite_reads(&source_name);
+                    let target = self.composite_targets(&key);
+                    if source.keys().ne(target.keys()) {
+                        return Err(format!(
+                            "composite assignment shape mismatch: `{key}` and `{source_name}`"
+                        ));
+                    }
+                    for (suffix, expression) in source {
+                        let (_, destination) = &target[&suffix];
+                        b.push_str(&format!("    {destination} = {expression};\n"));
+                    }
+                }
+                continue;
+            }
             // A nested *field-aggregate* field expands to its own leaves; a
             // field that inherits from an array (a `unsigned`/`signed`/enum vector,
             // which has no fields) is a scalar leaf.
@@ -1728,8 +1757,44 @@ impl Ctx<'_> {
                 self.local_types
                     .borrow_mut()
                     .insert(key.clone(), fhead.unwrap().to_string());
-                let sub_base = spread_base.map(|s| format!("{s}.{fname}"));
-                self.declare_struct_fields(&key, sub, &HashMap::new(), sub_base.as_deref(), b)?;
+                let nested = init.get(fname.as_str()).copied();
+                let sub_init: HashMap<&str, &ast::Expr> = match nested {
+                    Some(ast::Expr::Construct { args, .. }) => args
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(position, argument)| {
+                            let value = argument.value.as_ref()?;
+                            let field = argument
+                                .field
+                                .as_ref()
+                                .map(|field| field.text.as_str())
+                                .or_else(|| sub.get(position).map(|(field, _)| field.as_str()))?;
+                            Some((field, value))
+                        })
+                        .collect(),
+                    Some(ast::Expr::Concat { parts, .. }) => parts
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(position, value)| {
+                            Some((sub.get(position)?.0.as_str(), value))
+                        })
+                        .collect(),
+                    _ => HashMap::new(),
+                };
+                let explicit_base = match nested {
+                    Some(ast::Expr::Construct {
+                        spread: Some(base), ..
+                    }) => expr_path(base),
+                    Some(value) => expr_path(value),
+                    None => None,
+                };
+                let inherited_base = spread_base.map(|base| format!("{base}.{fname}"));
+                let sub_base = if nested.is_some() {
+                    explicit_base
+                } else {
+                    inherited_base
+                };
+                self.declare_struct_fields(&key, sub, &sub_init, sub_base.as_deref(), b)?;
                 continue;
             }
             let leaf_width = if let Some((fam, w)) = self.declared_family(fty) {

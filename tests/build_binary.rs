@@ -371,6 +371,11 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              struct WideBox {{ value: unsigned[128] }}
              struct NarrowWideBox {{ value: unsigned[80] }}
              struct WidePair {{ value: unsigned[128], character: Char }}
+             struct NestedBox {{
+                 character: CharacterBox,
+                 values: unsigned[8][2],
+                 word: string[3]
+             }}
              impl RealBox {{
                  fn half(self) -> real {{ return self.value / 2.0; }}
              }}
@@ -400,6 +405,12 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                      {{ .value = {wide}, .character = 'β' }}
                  ];
                  let words: string[3][2] = [\"abc\", \"def\"];
+                 let nested_box: NestedBox = {{
+                     .character = CharacterBox {{ .value = 'λ' }},
+                     .values = [7, 8],
+                     .word = \"box\"
+                 }};
+                 let copied_nested_box: NestedBox = nested_box;
                  let ranged_wide: unsigned[127..0] = {wide};
                  let descending_bits: Bit[3..0] = \"1010\";
                  let named_bits: Bit[BYTE_RANGE] = \"11001010\";
@@ -461,6 +472,12 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  words[1] = \"xyz\";
                  assert!(words[0] == \"abc\", \"string array first\");
                  assert!(words[1] == \"xyz\", \"string array assignment\");
+                 assert!(nested_box.character.value == 'λ', \"nested struct initializer\");
+                 assert!(nested_box.values[1] == 8, \"array struct field initializer\");
+                 assert!(nested_box.word == \"box\", \"string struct field initializer\");
+                 assert!(copied_nested_box.character.value == 'λ', \"nested struct copy\");
+                 assert!(copied_nested_box.values[0] == 7, \"array field copy\");
+                 assert!(copied_nested_box.word == \"box\", \"string field copy\");
                  assert!(ranged_wide == {wide}, \"ranged wide local\");
                  assert!(ranged_wide'length == 128, \"ranged wide length\");
                  assert!(ranged_wide'left == 127, \"ranged wide left\");

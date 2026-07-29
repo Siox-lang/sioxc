@@ -1497,3 +1497,18 @@ forward declarations, DUT outputs, and direct native-testbench references.
   positional/spread struct reassignment.
 - Expanded the Phase 3 Output roadmap with a versioned, vendor-neutral RTL
   elaboration artifact for Vivado, Quartus, and other implementation tools.
+
+### 2026-07-29 — Codex — retain recursive native struct initializers
+
+- Reproduced a nested struct literal working during later assignment but
+  silently initializing all nested leaves to zero when used in a declaration.
+- Threaded named, positional, copy, and spread child initializers through
+  recursive struct-local materialization.
+- Fixed indexed struct fields being classified only by their nominal element
+  head, which collapsed `Child[N]` into one `Child` and lost every array index.
+- Routed arrays of structs and fixed-size string fields through recursive typed
+  aggregate storage before nominal struct recursion, including copy and spread
+  initialization.
+- Added native integration and external corpus coverage for nested enum/numeric
+  leaves, whole-struct copies, nested spreads, arrays of structs, and fixed
+  string fields.
