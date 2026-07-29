@@ -360,10 +360,16 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         &source,
         format!(
             "module wide_format;
-             using std::math::{{sqrt, pow, floor}};
+             using std::math::{{sqrt, pow, floor, PI}};
+             const HALF_PI: real = PI / 2.0;
+             fn half(value: real) -> real {{ return value / 2.0; }}
+             fn one() -> real {{ return 1; }}
              enum Symbol {{ 'α', 'β' }}
              struct CharacterBox {{ value: Char }}
              struct RealBox {{ value: real }}
+             impl RealBox {{
+                 fn half(self) -> real {{ return self.value / 2.0; }}
+             }}
              #[test] entity T {{}}
              impl T {{
                  let wide: unsigned[128] = {wide};
@@ -416,6 +422,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  math_result = pow(2.0, 3.0);
                  assert!(math_result == 8.0, \"native extern pow {{}}\", math_result);
                  print!(\"extern floor {{}}\", floor(3.75));
+                 assert!(HALF_PI > 1.5, \"named real constant {{}}\", HALF_PI);
+                 assert!(half(8.0) == 4.0, \"real function parameter/return {{}}\", half(8.0));
+                 assert!(one() == 1.0, \"integer literal real return {{}}\", one());
+                 assert!(real_box.half() == 2.0, \"real method return {{}}\", real_box.half());
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"

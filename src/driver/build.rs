@@ -135,6 +135,11 @@ pub fn build(
             _ => None,
         })
         .collect();
+    let real_consts: std::collections::HashSet<String> = const_decls
+        .iter()
+        .filter(|declaration| type_head_name(&declaration.ty) == Some("real"))
+        .map(|declaration| declaration.name.text.clone())
+        .collect();
     let mut consts: HashMap<String, u128> = HashMap::new();
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
@@ -161,7 +166,13 @@ pub fn build(
             if const_exprs.contains_key(&declaration.name.text) {
                 continue;
             }
-            if let Some(expression) = emit_c_const(&declaration.value, &const_exprs, &enums) {
+            let expression = if real_consts.contains(&declaration.name.text) {
+                emit_c_real_const(&declaration.value, &const_exprs, &real_consts, &enums)
+                    .map(|value| format!("sx_b64((double)({value}))"))
+            } else {
+                emit_c_const(&declaration.value, &const_exprs, &enums)
+            };
+            if let Some(expression) = expression {
                 const_exprs.insert(declaration.name.text.clone(), expression);
                 progressed = true;
             }
@@ -399,12 +410,14 @@ pub fn build(
             structs: &structs,
             derived_widths: &derived_widths,
             const_exprs: &const_exprs,
+            real_consts: &real_consts,
             aliases: &aliases,
             tmp: Default::default(),
             message_id: Default::default(),
             fns: &fns,
             extern_fns: &extern_fns,
             fn_env: Default::default(),
+            fn_type_env: Default::default(),
             instance_names,
             value_bits,
         };
@@ -746,6 +759,9 @@ struct Ctx<'a> {
     local_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level `const` values, for bare-name references.
     const_exprs: &'a HashMap<String, String>,
+    /// Module constants declared as `real`; their stored C expressions are f64
+    /// bit patterns and must be decoded when used as operands.
+    real_consts: &'a std::collections::HashSet<String>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
@@ -760,6 +776,9 @@ struct Ctx<'a> {
     extern_fns: &'a std::collections::HashSet<String>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
+    /// Declared parameter types parallel to `fn_env`, retained while inlining
+    /// user functions so named real parameters keep floating-point semantics.
+    fn_type_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
     /// Names elaboration turned into DUT instances (`let dut: Sub = {..}` /
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
@@ -1221,6 +1240,68 @@ fn emit_c_const(
             let value = c_word_literal(&parse_word_literal(text));
             let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
             Some(format!("(({value}) * {scale}ULL)"))
+        }
+        _ => None,
+    }
+}
+
+/// Emit a module `real` constant as a C `double` expression. Named real
+/// dependencies are stored as f64 bit patterns in `consts`, so decode them;
+/// integer-shaped dependencies promote normally.
+fn emit_c_real_const(
+    e: &ast::Expr,
+    consts: &HashMap<String, String>,
+    real_consts: &std::collections::HashSet<String>,
+    enums: &HashMap<String, HashMap<String, u64>>,
+) -> Option<String> {
+    match e {
+        ast::Expr::Int { text, .. } => text
+            .parse::<f64>()
+            .ok()
+            .map(|_| format!("((double)({text}))")),
+        ast::Expr::Path(path) if path.segments.len() == 1 => {
+            let name = &path.segments[0].text;
+            let value = consts.get(name)?;
+            Some(if real_consts.contains(name) {
+                format!("sx_f64({value})")
+            } else {
+                format!("((double)({value}))")
+            })
+        }
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs,
+            ..
+        } => Some(format!(
+            "(-({}))",
+            emit_c_real_const(rhs, consts, real_consts, enums)?
+        )),
+        ast::Expr::Binary { op, lhs, rhs, .. }
+            if matches!(
+                op,
+                ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div
+            ) =>
+        {
+            Some(format!(
+                "(({}) {} ({}))",
+                emit_c_real_const(lhs, consts, real_consts, enums)?,
+                c_binop(op).ok()?,
+                emit_c_real_const(rhs, consts, real_consts, enums)?
+            ))
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => Some(format!(
+            "(({}) ? ({}) : ({}))",
+            emit_c_const(cond, consts, enums)?,
+            emit_c_real_const(then, consts, real_consts, enums)?,
+            emit_c_real_const(els, consts, real_consts, enums)?
+        )),
+        ast::Expr::SuffixLit { text, suffix, .. }
+            if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
+        {
+            let scale = ast::suffix_scale(&suffix.text)?;
+            Some(format!("((double)({text}) * {scale}.0)"))
         }
         _ => None,
     }
@@ -1775,7 +1856,9 @@ impl Ctx<'_> {
             }
         }
         self.fn_env.borrow_mut().push(env);
-        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_type_env.borrow_mut().push(HashMap::new());
+        let out = self.c_fn_stmts(&body.stmts, false);
+        self.fn_type_env.borrow_mut().pop();
         self.fn_env.borrow_mut().pop();
         let r = out?;
         Ok(Some(match cmp {
@@ -1827,7 +1910,9 @@ impl Ctx<'_> {
         env.insert("self".to_string(), format!("({})", self.expr(rhs)?));
         env.insert("self::length".to_string(), format!("{width}ULL"));
         self.fn_env.borrow_mut().push(env);
-        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_type_env.borrow_mut().push(HashMap::new());
+        let out = self.c_fn_stmts(&body.stmts, false);
+        self.fn_type_env.borrow_mut().pop();
         self.fn_env.borrow_mut().pop();
         let value = out?;
         Ok(Some(if width > 0 {
@@ -2502,6 +2587,16 @@ impl Ctx<'_> {
                     .any(|value| self.is_real_operand(value));
             }
             ast::Expr::Call { callee, .. } => {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    if let Some(receiver) = self.receiver_type(base) {
+                        return self
+                            .methods
+                            .get(&(receiver, field.text.clone()))
+                            .and_then(|function| function.ret.as_ref())
+                            .and_then(type_head_name)
+                            == Some("real");
+                    }
+                }
                 if matches!(callee.as_ref(), ast::Expr::Path(path)
                     if path.segments.len() == 1 && path.segments[0].text == "uniform")
                 {
@@ -2521,6 +2616,17 @@ impl Ctx<'_> {
         let Some(path) = expr_path(e) else {
             return false;
         };
+        if self.real_consts.contains(&path)
+            || self
+                .fn_type_env
+                .borrow()
+                .last()
+                .and_then(|types| types.get(&path))
+                .map(String::as_str)
+                == Some("real")
+        {
+            return true;
+        }
         self.map
             .get(&path)
             .map(|&id| self.design.signals[id.0 as usize].real)
@@ -2542,6 +2648,14 @@ impl Ctx<'_> {
             }
             _ if self.is_real_operand(e) => {
                 if let Some(path) = expr_path(e) {
+                    if self
+                        .fn_env
+                        .borrow()
+                        .last()
+                        .is_some_and(|environment| environment.contains_key(&path))
+                    {
+                        return Ok(format!("sx_f64({})", self.expr(e)?));
+                    }
                     if self.locals.borrow().contains(&path) {
                         return Ok(format!("sx_f64({})", c_local_ident(&path)));
                     }
@@ -2838,7 +2952,10 @@ impl Ctx<'_> {
             .iter()
             .map(|s| siox::ir::subst_stmt_paths(s, &map))
             .collect();
-        self.c_fn_stmts(&stmts)
+        self.c_fn_stmts(
+            &stmts,
+            f.ret.as_ref().and_then(type_head_name) == Some("real"),
+        )
     }
 
     /// A module-fn call as a C expression: bind the arguments, then flatten
@@ -2902,21 +3019,25 @@ impl Ctx<'_> {
             });
         }
         let body = f.body.as_ref().ok_or("fn has no body")?;
+        let real_return = f.ret.as_ref().and_then(type_head_name) == Some("real");
         // Constant arguments fold statically (also the only way a recursive
-        // fn like clog2 compiles here).
-        let consts: Option<Vec<i64>> = args
-            .iter()
-            .map(|a| siox::ir::eval_const_fns(a, &HashMap::new(), self.fns, 0))
-            .collect();
-        if let Some(cs) = consts {
-            let mut cenv = HashMap::new();
-            for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
-                if let Some(n) = &p.name {
-                    cenv.insert(n.text.clone(), v);
+        // fn like clog2 compiles here). The evaluator is integer-only, so a
+        // declared real result must retain the typed native path below.
+        if !real_return {
+            let consts: Option<Vec<i64>> = args
+                .iter()
+                .map(|a| siox::ir::eval_const_fns(a, &HashMap::new(), self.fns, 0))
+                .collect();
+            if let Some(cs) = consts {
+                let mut cenv = HashMap::new();
+                for (p, v) in f.params.iter().filter(|p| !p.is_self).zip(cs) {
+                    if let Some(n) = &p.name {
+                        cenv.insert(n.text.clone(), v);
+                    }
                 }
-            }
-            if let Some(v) = siox::ir::eval_const_stmts(&body.stmts, &cenv, self.fns, 0) {
-                return Ok(format!("{}ULL", v as u64));
+                if let Some(v) = siox::ir::eval_const_stmts(&body.stmts, &cenv, self.fns, 0) {
+                    return Ok(format!("{}ULL", v as u64));
+                }
             }
         }
         if self.tmp.get() > 4096 {
@@ -2924,28 +3045,44 @@ impl Ctx<'_> {
         }
         self.tmp.set(self.tmp.get() + 64);
         let mut env = HashMap::new();
+        let mut types = HashMap::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
+                if let Some(head) = p.ty.as_ref().and_then(type_head_name) {
+                    types.insert(n.text.clone(), head.to_string());
+                    if head == "real" {
+                        env.insert(
+                            n.text.clone(),
+                            format!("sx_b64({})", self.c_real_operand(a)?),
+                        );
+                        continue;
+                    }
+                }
                 env.insert(n.text.clone(), format!("({})", self.expr(a)?));
             }
         }
         self.fn_env.borrow_mut().push(env);
-        let out = self.c_fn_stmts(&body.stmts);
+        self.fn_type_env.borrow_mut().push(types);
+        let out = self.c_fn_stmts(&body.stmts, real_return);
+        self.fn_type_env.borrow_mut().pop();
         self.fn_env.borrow_mut().pop();
         self.tmp.set(self.tmp.get() - 64);
         out
     }
 
     /// `return e;` / `if c { .. } else { .. }` chains as nested C ternaries.
-    fn c_fn_stmts(&self, stmts: &[ast::Stmt]) -> Result<String, String> {
+    fn c_fn_stmts(&self, stmts: &[ast::Stmt], real_return: bool) -> Result<String, String> {
         match stmts.first() {
+            Some(ast::Stmt::Return { value: Some(v), .. }) if real_return => {
+                Ok(format!("sx_b64({})", self.c_real_operand(v)?))
+            }
             Some(ast::Stmt::Return { value: Some(v), .. }) => Ok(format!("({})", self.expr(v)?)),
             Some(ast::Stmt::If(iff)) => {
                 let c = self.expr(&iff.cond)?;
-                let t = self.c_fn_stmts(&iff.then.stmts)?;
+                let t = self.c_fn_stmts(&iff.then.stmts, real_return)?;
                 let e = match iff.else_.as_deref() {
-                    Some(ast::ElseBranch::Block(b)) => self.c_fn_stmts(&b.stmts)?,
-                    _ => self.c_fn_stmts(&stmts[1..])?,
+                    Some(ast::ElseBranch::Block(b)) => self.c_fn_stmts(&b.stmts, real_return)?,
+                    _ => self.c_fn_stmts(&stmts[1..], real_return)?,
                 };
                 Ok(format!("(({c}) ? {t} : {e})"))
             }

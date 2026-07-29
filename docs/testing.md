@@ -42,6 +42,8 @@ native storage remains the same f64 bit representation used by real signals.
 Calls to declared `extern "C"` functions are also valid in native testbench
 expressions; parameter and return conversion follows the declaration (`real`
 crosses as C `double`, integer-shaped scalars as an ABI word).
+Named `real` constants and real-typed parameters/returns of ordinary functions
+and methods retain that same representation while native code inlines them.
 
 ## Reporting
 

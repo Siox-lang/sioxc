@@ -1395,3 +1395,17 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Extended real-expression discovery to declared real-returning calls, so
   nested arithmetic and formatting decode the returned f64 bit pattern.
 - Added native and external coverage using `sqrt`, `pow`, and `floor`.
+
+### 2026-07-29 — Codex — retain real types through named native values
+
+- Reproduced imported `PI` and real-returning user functions printing and
+  assigning as zero even after literal/call semantics were fixed.
+- Added real-aware module-constant emission with dependency fixpoint support,
+  so expressions such as `const HALF_PI: real = PI / 2.0` preserve f64 bits.
+- Added an inlining type environment for function parameters, type-directed
+  real returns for functions/methods, and disabled the integer-only const
+  evaluator for real return types.
+- Fixed an inner real parameter shadowed by an outer testbench local of the
+  same name reading the outer local during inlining.
+- Added native and corpus coverage for imported/derived constants, parameters,
+  integer-to-real returns, functions, methods, and shadowing.
