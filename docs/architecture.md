@@ -187,6 +187,15 @@ sign-extend constrained inputs to their destination width. This does not make
 its std operator implementations, and lowering keeps those library vector
 operations separate.
 
+Range polarity determines extension from storage: a negative-capable range
+uses two's-complement sign extension, while `integer<0..N>` zero-extends its
+full magnitude bits. Signed kernel operations use an extra compute guard bit,
+so the top value of a nonnegative range cannot become negative. Ranged
+assignments are also compared against their bounds before destination
+truncation; LLVM latches the first violating signal id and the native scheduler
+checks it after every settle, preventing both wrapped and transient violations
+from disappearing.
+
 Foreign C calls retain ABI kind metadata independently for each parameter and
 the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C
 `double`, and packed values as unsigned words; aliases are resolved before this

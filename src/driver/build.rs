@@ -242,6 +242,8 @@ pub fn build(
     prog.push_str("extern void sx_reset(void);\n");
     prog.push_str("extern void sx_set_word(uint32_t, uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read_word(uint32_t, uint32_t);\n");
+    prog.push_str("extern uint32_t sx_range_error(void);\n");
+    prog.push_str("static signed sx_check_ranges(void);\n");
     let abi_words = design
         .signals
         .iter()
@@ -340,7 +342,7 @@ pub fn build(
          }}\n"
     ));
     prog.push_str("extern void sx_settle(void);\n");
-    prog.push_str("static const char *g_msg;\n");
+    prog.push_str("static const char *g_msg;\nstatic signed g_range_failed;\n");
     prog.push_str("static signed g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
@@ -410,7 +412,24 @@ pub fn build(
         .filter_map(|(i, s)| s.range.map(|_| (i as u32, s)))
         .collect();
     if !ranged.is_empty() {
-        prog.push_str("static signed sx_check_ranges(void) {\n    int64_t v;\n");
+        prog.push_str(
+            "static signed sx_check_ranges(void) {\n    int64_t v;\n    uint32_t e;\n\
+             \x20   if (g_range_failed) return 1;\n\
+             \x20   e = sx_range_error();\n",
+        );
+        prog.push_str("    if (e) { switch (e) {\n");
+        for (id, sig) in &ranged {
+            let (lo, hi) = sig.range.unwrap();
+            prog.push_str(&format!(
+                "    case {}: g_msg = \"`{}` left its range {lo}..{hi}\"; break;\n",
+                id + 1,
+                sig.path
+            ));
+        }
+        prog.push_str(
+            "    default: g_msg = \"a ranged signal left its domain\"; break;\n\
+             \x20   } g_range_failed = 1; return 1; }\n",
+        );
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
             let decode = if lo < 0 && sig.width > 0 && sig.width < 64 {
@@ -423,7 +442,7 @@ pub fn build(
                 format!("v = (int64_t)sx_read({id});")
             };
             prog.push_str(&format!(
-                "    {decode}\n    if (v < {lo}LL || v > {hi}LL) {{ g_msg = \"`{}` left its range {lo}..{hi}\"; return 1; }}\n",
+                "    {decode}\n    if (v < {lo}LL || v > {hi}LL) {{ g_msg = \"`{}` left its range {lo}..{hi}\"; g_range_failed = 1; return 1; }}\n",
                 sig.path
             ));
         }
@@ -711,7 +730,7 @@ fn gen_vcd_runtime(design: &Design) -> String {
     c.push_str(
         "    if (_wrote) { if (_initial) fputs(\"$end\\n\", g_vcd); g_vcd_started = 1; g_vcd_last_time = _time; }\n\
          }\n\
-         static void sx_run_settle(uint64_t now) { sx_settle(); sx_vcd_sample(now); }\n\n",
+         static void sx_run_settle(uint64_t now) { sx_settle(); sx_vcd_sample(now); (void)sx_check_ranges(); }\n\n",
     );
     c
 }
@@ -2455,7 +2474,7 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "signed test_{}(void) {{\n    sx_reset();\n    sx_vcd_begin_test();\n",
+            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_reset();\n    sx_vcd_begin_test();\n",
             self.name
         ));
 
@@ -2584,7 +2603,7 @@ impl Ctx<'_> {
         }
         self.locals.borrow_mut().clear();
 
-        b.push_str("    return 0;\n}\n\n");
+        b.push_str("    if (sx_check_ranges()) return 1;\n    return 0;\n}\n\n");
         // Post-settle range asserts (values persist, so checking at the next
         // settle also catches violations that occur inside await loops).
         let b = b.replace(
@@ -3330,21 +3349,38 @@ impl Ctx<'_> {
     }
 
     fn c_integer_operand(&self, e: &ast::Expr, rendered: &str) -> String {
-        let width = expr_path(e).and_then(|path| {
-            self.map
+        let signed_width = expr_path(e).and_then(|path| {
+            if let Some(id) = self
+                .map
                 .get(&path)
                 .filter(|id| self.design.signals[id.0 as usize].integer)
-                .map(|id| self.design.signals[id.0 as usize].width)
-                .or_else(|| {
-                    self.local_types
-                        .borrow()
-                        .get(&path)
-                        .is_some_and(|name| self.type_name_is(name, "integer"))
-                        .then(|| self.local_widths.borrow().get(&path).copied())
-                        .flatten()
-                })
+            {
+                let signal = &self.design.signals[id.0 as usize];
+                return signal
+                    .range
+                    .map(|(lo, _)| lo < 0)
+                    .unwrap_or(true)
+                    .then_some(signal.width);
+            }
+            let integer_local = self
+                .local_types
+                .borrow()
+                .get(&path)
+                .is_some_and(|name| self.type_name_is(name, "integer"));
+            if !integer_local {
+                return None;
+            }
+            let negative_capable = self
+                .local_ranges
+                .borrow()
+                .get(&path)
+                .map(|(lo, _)| *lo < 0)
+                .unwrap_or(true);
+            negative_capable
+                .then(|| self.local_widths.borrow().get(&path).copied())
+                .flatten()
         });
-        match width {
+        match signed_width {
             Some(width) => format!("sx_i64(({rendered}), {width})"),
             None => format!("((int64_t)({rendered}))"),
         }

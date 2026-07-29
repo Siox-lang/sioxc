@@ -1591,3 +1591,21 @@ forward declarations, DUT outputs, and direct native-testbench references.
   than an incompatible `uint64_t` declaration.
 - Extended the FFI executable regression with an aliased integer signature and
   a clocked constrained-integer `labs(-20)` update.
+
+### 2026-07-29 — Codex — enforce ranged integers before truncation
+
+- Reproduced `integer<0..3>` value `3` being decoded as two-bit `-1` in native
+  and LLVM comparisons because every constrained integer was sign-extended
+  regardless of its range polarity.
+- Zero-extended nonnegative ranged storage, retained sign extension for
+  negative-capable ranges, and gave signed kernel operations a compute guard
+  bit so all magnitude values remain positive.
+- Reproduced a clocked ranged register leaving its domain at one edge and
+  returning before the end of `await`, which let the old end-only checker miss
+  the violation.
+- Added pre-truncation LLVM range checks with a latched first-failure signal,
+  invoked range enforcement after every scheduler settle, and retained the
+  failure across later valid states.
+- Added native/LLVM positive-range comparison coverage and an integration
+  regression proving that `2` assigned dynamically to one-bit `integer<0..1>`
+  fails even though its stored bits would otherwise wrap to zero.

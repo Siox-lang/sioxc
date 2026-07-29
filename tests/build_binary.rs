@@ -98,6 +98,67 @@ fn native_testbench_exchanges_more_than_two_words() {
 }
 
 #[test]
+fn native_range_checks_each_clock_settle() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_transient_range_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let out = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        "module transient_range;
+         entity PulseRange {
+             in clk: Bit;
+             in bad: integer<0..3>;
+             out n: integer<0..1>;
+         }
+         impl PulseRange {
+             let value: integer<0..1> = 0;
+             if clk.rising() { value = bad; }
+             if clk.falling() { value = 0; }
+             n = value;
+         }
+         #[test] entity RangeTest {}
+         impl RangeTest {
+             let clk: Bit = '0';
+             let bad: integer<0..3> = 2;
+             let n: integer<0..1>;
+             let dut: PulseRange = { .clk = clk, .bad = bad, .n = n };
+             clk = not clk after 1ns;
+             await 2ns;
+         }",
+    )
+    .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "range fixture failed to compile");
+    let run = Command::new(&out).output().unwrap();
+    assert!(
+        !run.status.success(),
+        "a transient out-of-range clock state was silently missed"
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(output.contains("left its range 0..1"), "{output}");
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
 fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

@@ -249,9 +249,21 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     fn build(&self) {
+        let range_error = self
+            .module
+            .add_global(self.ctx.i32_type(), None, "range_error");
+        range_error.set_initializer(&self.ctx.i32_type().const_zero());
+        range_error.set_linkage(Linkage::Internal);
         self.state_globals();
         self.accessors();
         self.settle();
+    }
+
+    fn range_error_ptr(&self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("range_error")
+            .expect("range error global")
+            .as_pointer_value()
     }
 
     // --- state ------------------------------------------------------------
@@ -493,6 +505,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_function("sx_reset", void.fn_type(&[], false), None);
         self.builder
             .position_at_end(self.ctx.append_basic_block(f, "e"));
+        self.builder
+            .build_store(self.range_error_ptr(), i32.const_zero())
+            .unwrap();
         for id in 0..self.n {
             let signal = &self.design.signals[id as usize];
             let init = self
@@ -503,6 +518,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.store("event", SignalId(id), i64.const_zero());
         }
         self.builder.build_return(None).unwrap();
+
+        // i32 sx_range_error(void): zero, or one plus the first ranged signal
+        // whose pre-truncation value left its declared domain.
+        let f = self
+            .module
+            .add_function("sx_range_error", i32.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
+        let error = self
+            .builder
+            .build_load(i32, self.range_error_ptr(), "range")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&error)).unwrap();
 
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
@@ -780,12 +809,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     Some(c) => self.builder.build_and(fired, self.as_i1(c), "g").unwrap(),
                     None => fired,
                 };
-                let w = self.design.signals[u.target.0 as usize].width;
-                let val = if self.design.signals[u.target.0 as usize].integer {
-                    self.emit_signed_operand_at(&u.expr, w)
-                } else {
-                    self.emit_at(&u.expr, w)
-                };
+                let val = self.emit_target_value(u.target, &u.expr, Some(guard));
                 staged.push((u.target, guard, val));
             }
         }
@@ -846,6 +870,65 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for pi in self.topo_order() {
             self.emit_comb(&comb[pi]);
         }
+    }
+
+    /// Emit one assignment value before destination truncation and latch a
+    /// dynamic range failure while the offending mathematical value is still
+    /// observable. `active` is the driver/update guard.
+    fn emit_target_value(
+        &self,
+        target: SignalId,
+        expr: &Expr,
+        active: Option<IntValue<'ctx>>,
+    ) -> IntValue<'ctx> {
+        let signal = &self.design.signals[target.0 as usize];
+        let Some((lo, hi)) = signal.range else {
+            return if signal.integer {
+                self.emit_signed_operand_at(expr, signal.width)
+            } else {
+                self.emit_at(expr, signal.width)
+            };
+        };
+        let check_width = self.expr_width(expr).max(signal.width).max(64);
+        let value = self.emit_signed_operand_at(expr, check_width);
+        let lo = self.value_ty(check_width).const_int(lo as u64, true);
+        let hi = self.value_ty(check_width).const_int(hi as u64, true);
+        let below = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, value, lo, "rlo")
+            .unwrap();
+        let above = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, value, hi, "rhi")
+            .unwrap();
+        let mut violation = self.builder.build_or(below, above, "rbad").unwrap();
+        if let Some(active) = active {
+            violation = self
+                .builder
+                .build_and(active, violation, "ractive")
+                .unwrap();
+        }
+        let i32 = self.ctx.i32_type();
+        let previous = self
+            .builder
+            .build_load(i32, self.range_error_ptr(), "rprev")
+            .unwrap()
+            .into_int_value();
+        let empty = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, previous, i32.const_zero(), "rempty")
+            .unwrap();
+        let record = self.builder.build_and(empty, violation, "rrecord").unwrap();
+        let id = i32.const_int(u64::from(target.0) + 1, false);
+        let next = self
+            .builder
+            .build_select(record, id, previous, "rnext")
+            .unwrap()
+            .into_int_value();
+        self.builder
+            .build_store(self.range_error_ptr(), next)
+            .unwrap();
+        self.fit(value, self.value_ty(signal.width))
     }
 
     /// `event[target] |= (next != prev)` — a change flags the signal.
@@ -937,20 +1020,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let mut val = prev;
         for &di in drivers {
             let d = &self.design.drivers[di];
-            let w = self.design.signals[target.0 as usize].width;
-            let e = if self.design.signals[target.0 as usize].integer {
-                self.emit_signed_operand_at(&d.expr, w)
-            } else {
-                self.emit_at(&d.expr, w)
-            };
-            val = match &d.cond {
-                Some(c) => {
-                    let cond = self.as_i1(c);
-                    self.builder
-                        .build_select(cond, e, val, "drv")
-                        .unwrap()
-                        .into_int_value()
-                }
+            let cond = d.cond.as_ref().map(|condition| self.as_i1(condition));
+            let e = self.emit_target_value(*target, &d.expr, cond);
+            val = match cond {
+                Some(cond) => self
+                    .builder
+                    .build_select(cond, e, val, "drv")
+                    .unwrap()
+                    .into_int_value(),
                 None => e,
             };
         }
@@ -1179,9 +1256,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn emit_signed_operand_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
             Expr::Current(id) | Expr::Old(id) => {
-                let natural = self.design.signals[id.0 as usize].width.max(1);
+                let signal = &self.design.signals[id.0 as usize];
+                let natural = signal.width.max(1);
                 let value = self.emit_at(e, natural);
-                if self.design.signals[id.0 as usize].integer && natural < width {
+                let negative_capable =
+                    signal.integer && signal.range.map(|(lo, _)| lo < 0).unwrap_or(true);
+                if negative_capable && natural < width {
                     self.builder
                         .build_int_s_extend(value, self.value_ty(width), "sext")
                         .unwrap()
@@ -1262,6 +1342,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
 
         let signed_comparison = matches!(op, BinOp::SLt | BinOp::SLe | BinOp::SGt | BinOp::SGe);
+        let signed = signed_comparison
+            || matches!(
+                op,
+                BinOp::SAdd | BinOp::SSub | BinOp::SMul | BinOp::SDiv | BinOp::AShr
+            );
         let comparison = matches!(
             op,
             BinOp::Eq
@@ -1281,6 +1366,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             result_width
         }
         .max(1);
+        // A nonnegative constrained integer may use every storage bit for
+        // magnitude (`integer<0..3>` is i2). Kernel operations still use a
+        // signed mathematical domain, so add a guard bit and either zero- or
+        // sign-extend each operand according to its declared range.
+        let operand_width = if signed {
+            operand_width.saturating_add(1)
+        } else {
+            operand_width
+        };
         if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::AShr) {
             // LLVM shifts are poison when the count is at least the operation
             // width. Hardware and the native harness define those cases as
@@ -1329,8 +1423,6 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .unwrap()
                 .into_int_value();
         }
-        let signed = signed_comparison
-            || matches!(op, BinOp::SAdd | BinOp::SSub | BinOp::SMul | BinOp::SDiv);
         let a = if signed {
             self.emit_signed_operand_at(lhs, operand_width)
         } else {

@@ -1631,9 +1631,11 @@ Semantics:
 - Assignments between differently constrained `integer` values are ordinary
   numeric assignments, not implicit packed-vector resizes. The destination
   constraint governs validity and storage; widening sign-extends the value.
-- **Runtime range check** (implemented): a dynamic value leaving the range is a
-  simulation check (later; VHDL semantics). Until it lands, arithmetic
-  wraps at the storage width.
+- **Runtime range check**: every dynamic driver/update is checked before
+  destination truncation, and every scheduler settle validates stored ranged
+  values. The first violation is latched even if a later clock edge returns the
+  signal to range; the generated test executable fails with the signal path and
+  declared domain.
 - `real<left..right>` documents and (later) checks the constraint; storage
   stays f64.
 
