@@ -1628,6 +1628,9 @@ Semantics:
   domain covers it (two's complement when the range dips below zero).
   `integer<0..255>` is 8 bits; `integer<0..1114111>` is 21.
 - **Constant range check**: `let b: Byte = 300;` is a compile-time error.
+- Assignments between differently constrained `integer` values are ordinary
+  numeric assignments, not implicit packed-vector resizes. The destination
+  constraint governs validity and storage; widening sign-extends the value.
 - **Runtime range check** (implemented): a dynamic value leaving the range is a
   simulation check (later; VHDL semantics). Until it lands, arithmetic
   wraps at the storage width.

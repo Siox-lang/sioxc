@@ -190,7 +190,12 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    /// Signed kernel-`integer` division.
+    /// Signed kernel-`integer` arithmetic. Add/subtract/multiply use the same
+    /// bit operation as their unsigned counterparts, but retain signedness so
+    /// a wider enclosing expression sign-extends their operands/results.
+    SAdd,
+    SSub,
+    SMul,
     SDiv,
     And,
     Or,
@@ -2719,7 +2724,16 @@ impl<'a> Lowering<'a> {
                         }
                         let tw = self.out.signals[tid.0 as usize].width;
                         if let Some(sw) = self.ref_width(value) {
-                            if tw > 0 && sw > 0 && tw != sw {
+                            // Ranged kernel integers are constraints/subtypes
+                            // of one numeric type, not packed-vector families.
+                            // Their storage widths may differ across a normal
+                            // assignment; range checking (static for constants,
+                            // runtime for dynamic values) governs validity.
+                            let integer_to_integer = self.out.signals[tid.0 as usize].integer
+                                && expr_path(value)
+                                    .and_then(|path| self.locals.get(&path))
+                                    .is_some_and(|id| self.out.signals[id.0 as usize].integer);
+                            if tw > 0 && sw > 0 && tw != sw && !integer_to_integer {
                                 self.sink.emit(
                                     crate::diag::Diagnostic::error(format!(
                                         "width mismatch: `{tpath}` is {tw} bits but the \
@@ -4213,9 +4227,9 @@ impl<'a> Lowering<'a> {
             },
             Expr::Binary { op, lhs, rhs } => {
                 let fop = match op {
-                    BinOp::Add => Some(BinOp::FAdd),
-                    BinOp::Sub => Some(BinOp::FSub),
-                    BinOp::Mul => Some(BinOp::FMul),
+                    BinOp::Add | BinOp::SAdd => Some(BinOp::FAdd),
+                    BinOp::Sub | BinOp::SSub => Some(BinOp::FSub),
+                    BinOp::Mul | BinOp::SMul => Some(BinOp::FMul),
                     BinOp::Div | BinOp::SDiv => Some(BinOp::FDiv),
                     _ => None,
                 };
@@ -4273,6 +4287,9 @@ impl<'a> Lowering<'a> {
             Some(op) => {
                 let op = if integer {
                     match op {
+                        BinOp::Add => BinOp::SAdd,
+                        BinOp::Sub => BinOp::SSub,
+                        BinOp::Mul => BinOp::SMul,
                         BinOp::Div => BinOp::SDiv,
                         BinOp::Shr => BinOp::AShr,
                         BinOp::Lt => BinOp::SLt,
@@ -4304,12 +4321,14 @@ impl<'a> Lowering<'a> {
             Expr::Binary { lhs, rhs, .. } => {
                 self.has_non_integer_signal(lhs) || self.has_non_integer_signal(rhs)
             }
-            Expr::Select { cond, then, els } => {
-                self.has_non_integer_signal(cond)
-                    || self.has_non_integer_signal(then)
-                    || self.has_non_integer_signal(els)
+            // A select's condition controls which value flows but does not
+            // participate in that value's numeric representation.
+            Expr::Select { then, els, .. } => {
+                self.has_non_integer_signal(then) || self.has_non_integer_signal(els)
             }
-            Expr::CCall { args, .. } => args.iter().any(|arg| self.has_non_integer_signal(arg)),
+            // Argument representations do not determine a foreign call's
+            // declared return type.
+            Expr::CCall { .. } => false,
             Expr::Const(_)
             | Expr::WideConst(_)
             | Expr::Real(_)
@@ -5971,6 +5990,9 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
+        BinOp::SAdd => "+",
+        BinOp::SSub => "-",
+        BinOp::SMul => "*",
         BinOp::SDiv => "/",
         BinOp::And => "and",
         BinOp::Or => "or",
@@ -8526,6 +8548,37 @@ mod tests {
                 op: BinOp::AShr,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn ranged_integer_assignment_can_change_storage_width() {
+        let src = "module m;\n\
+             #[top] entity E {\n\
+                 in narrow: integer<-16..15>;\n\
+                 out wide: integer<-128..127>;\n\
+             }\n\
+             impl E { wide = narrow; }\n";
+        let diagnostics = lower_diags(src);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("width mismatch")),
+            "{diagnostics:?}"
+        );
+        let design = lower_src(src);
+        let wide = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".wide"))
+            .expect("wide integer signal");
+        assert!(matches!(
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(wide as u32))
+                .map(|driver| &driver.expr),
+            Some(Expr::Current(_))
         ));
     }
 

@@ -178,11 +178,14 @@ IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.
 The `integer` marker lets native consumers sign-extend a constrained value from
 its actual storage width before signed comparison, division, shifting, or
-formatting. IR also carries distinct signed division, arithmetic-right-shift,
-and ordering operations so LLVM cannot reinterpret an elaborated kernel
-integer as an unsigned bit pattern. This does not make `std::bits::signed`
-compiler-special; that family's behavior still comes from its std operator
-implementations, and lowering keeps those library vector operations separate.
+formatting. IR also carries signed arithmetic, division,
+arithmetic-right-shift, and ordering operations so LLVM cannot reinterpret an
+elaborated kernel integer—or a nested select/arithmetic result—as an unsigned
+bit pattern. Integer-valued driver and event-update targets recursively
+sign-extend constrained inputs to their destination width. This does not make
+`std::bits::signed` compiler-special; that family's behavior still comes from
+its std operator implementations, and lowering keeps those library vector
+operations separate.
 
 ## Signal widths
 

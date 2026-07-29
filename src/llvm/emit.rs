@@ -769,7 +769,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     None => fired,
                 };
                 let w = self.design.signals[u.target.0 as usize].width;
-                let val = self.emit_at(&u.expr, w);
+                let val = if self.design.signals[u.target.0 as usize].integer {
+                    self.emit_signed_operand_at(&u.expr, w)
+                } else {
+                    self.emit_at(&u.expr, w)
+                };
                 staged.push((u.target, guard, val));
             }
         }
@@ -922,7 +926,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for &di in drivers {
             let d = &self.design.drivers[di];
             let w = self.design.signals[target.0 as usize].width;
-            let e = self.emit_at(&d.expr, w);
+            let e = if self.design.signals[target.0 as usize].integer {
+                self.emit_signed_operand_at(&d.expr, w)
+            } else {
+                self.emit_at(&d.expr, w)
+            };
             val = match &d.cond {
                 Some(c) => {
                     let cond = self.as_i1(c);
@@ -1150,13 +1158,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             Expr::Current(id) | Expr::Old(id) => {
                 let natural = self.design.signals[id.0 as usize].width.max(1);
                 let value = self.emit_at(e, natural);
-                if natural < width {
+                if self.design.signals[id.0 as usize].integer && natural < width {
                     self.builder
                         .build_int_s_extend(value, self.value_ty(width), "sext")
                         .unwrap()
                 } else {
                     self.fit(value, self.value_ty(width))
                 }
+            }
+            Expr::Unary { op: UnOp::Neg, rhs } => {
+                let rhs = self.emit_signed_operand_at(rhs, width);
+                self.builder.build_int_neg(rhs, "sneg").unwrap()
+            }
+            Expr::Select { cond, then, els } => {
+                let cond = self.as_i1(cond);
+                let then = self.emit_signed_operand_at(then, width);
+                let els = self.emit_signed_operand_at(els, width);
+                self.builder
+                    .build_select(cond, then, els, "ssel")
+                    .unwrap()
+                    .into_int_value()
             }
             _ => self.emit_at(e, width),
         }
@@ -1285,7 +1306,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .unwrap()
                 .into_int_value();
         }
-        let signed = signed_comparison || matches!(op, BinOp::SDiv);
+        let signed = signed_comparison
+            || matches!(op, BinOp::SAdd | BinOp::SSub | BinOp::SMul | BinOp::SDiv);
         let a = if signed {
             self.emit_signed_operand_at(lhs, operand_width)
         } else {
@@ -1304,6 +1326,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::Add => self.builder.build_int_add(a, b, "add").unwrap(),
             BinOp::Sub => self.builder.build_int_sub(a, b, "sub").unwrap(),
             BinOp::Mul => self.builder.build_int_mul(a, b, "mul").unwrap(),
+            BinOp::SAdd => self.builder.build_int_add(a, b, "sadd").unwrap(),
+            BinOp::SSub => self.builder.build_int_sub(a, b, "ssub").unwrap(),
+            BinOp::SMul => self.builder.build_int_mul(a, b, "smul").unwrap(),
             BinOp::Div => {
                 // Match the interpreter: divide-by-zero yields 0 (B0 formalizes).
                 let zero = self.c_at(0, operand_width);

@@ -1561,3 +1561,17 @@ forward declarations, DUT outputs, and direct native-testbench references.
   implementation literals retain their default `integer` type.
 - Added an IR regression and an external executable DUT covering negative
   comparison, division, and arithmetic shift.
+
+### 2026-07-29 — Codex — sign nested and widened kernel integers
+
+- Reproduced a five-bit constrained `-8` becoming positive `24` when it flowed
+  through a wider `if` expression before comparison or division.
+- Preserved signed identity for kernel integer add/subtract/multiply and made
+  signed operand emission recurse through selects and negation.
+- Made combinational drivers and event updates sign-extend integer-valued
+  sources at the destination boundary.
+- Removed the packed-vector width-mismatch diagnostic from assignments between
+  differently constrained values of the same kernel `integer` type; their
+  ranges are constraints, not nominal vector widths.
+- Extended IR and executable DUT regressions across nested selection,
+  arithmetic, negation, division, and direct constrained-integer widening.
