@@ -388,9 +388,11 @@ impl<'a> Checker<'a> {
                                     .then_some(a)
                                     .and_then(|a| a.value.as_ref())
                                     .and_then(|v| match v {
-                                        Expr::Int { text, span } => {
-                                            text.parse::<u8>().ok().map(|p| (p, *span))
-                                        }
+                                        Expr::Int { text, span } => text
+                                            .replace('_', "")
+                                            .parse::<u8>()
+                                            .ok()
+                                            .map(|p| (p, *span)),
                                         _ => None,
                                     })
                                 });
@@ -3662,10 +3664,9 @@ fn is_liftable_array_key(key: &str) -> bool {
 /// Width of a bracketed type index when it is a literal (`unsigned[8]` -> 8);
 /// otherwise `0`, meaning "parametric / not yet known".
 fn width_of(index: &Expr) -> u32 {
-    match index {
-        Expr::Int { text, .. } => text.parse().unwrap_or(0),
-        _ => 0,
-    }
+    signed_lit(index)
+        .and_then(|width| u32::try_from(width).ok())
+        .unwrap_or(0)
 }
 
 fn is_comparison(op: &BinOp) -> bool {
@@ -3764,11 +3765,27 @@ fn ty_name(t: &Ty) -> String {
 /// The value of an integer literal, allowing a leading unary minus.
 fn signed_lit(e: &Expr) -> Option<i64> {
     match e {
-        Expr::Int { text, .. } => text.parse::<i64>().ok(),
+        Expr::Int { text, .. } => i64::try_from(unsigned_lit_text(text)?).ok(),
         Expr::Unary {
             op: UnOp::Neg, rhs, ..
-        } => signed_lit(rhs).map(|v| -v),
+        } => match rhs.as_ref() {
+            // Permit the full signed domain, including `-0x8000_0000_0000_0000`,
+            // whose unsigned magnitude cannot first pass through i64.
+            Expr::Int { text, .. } => i64::try_from(-i128::from(unsigned_lit_text(text)?)).ok(),
+            _ => signed_lit(rhs)?.checked_neg(),
+        },
         _ => None,
+    }
+}
+
+fn unsigned_lit_text(text: &str) -> Option<u64> {
+    let text = text.replace('_', "");
+    if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        u64::from_str_radix(digits, 16).ok()
+    } else if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        u64::from_str_radix(digits, 2).ok()
+    } else {
+        text.parse().ok()
     }
 }
 
@@ -3850,6 +3867,23 @@ mod tests {
         assert!(
             typed.expr_types().values().any(|ty| *ty == logic),
             "the indexed vector element type is retained"
+        );
+    }
+
+    #[test]
+    fn numeric_separators_and_based_type_indices_are_checked_at_full_width() {
+        let errors = check_src(
+            "module m;\n\
+             entity E {\n\
+               in a: unsigned[1_28];\n\
+               in b: Logic[0x3..0b0];\n\
+               out y: Logic;\n\
+             }\n\
+             impl E { y = a[0x7f] and b[0b11]; }\n",
+        );
+        assert_eq!(
+            errors, 0,
+            "literal spelling must not turn valid widths or indices into unknown widths"
         );
     }
 

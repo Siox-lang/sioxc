@@ -1466,3 +1466,17 @@ forward declarations, DUT outputs, and direct native-testbench references.
   around already-grouped native `if` conditions.
 - Added native integration and external corpus regressions covering wide
   ranged vectors, bounds, direction, indexing, enum coercion, and iteration.
+
+### 2026-07-29 — Codex — make numeric literal spelling consistent across passes
+
+- Reproduced `_`-separated literals being lexed as a number plus an unknown
+  suffix, while downstream wide-literal helpers already expected separators.
+- Added separator-aware lexing for decimal, hexadecimal, binary, and real
+  literals without consuming identifier suffixes.
+- Normalized separators and based integers consistently in semantic width/index
+  checks, elaboration, constant evaluation, IR lowering, native real constants,
+  and operator precedence attributes.
+- Fixed native local types indexed by an integer module constant or based width
+  passing analysis but later reporting `unknown ::length`.
+- Added lexer, semantic, native, and external corpus coverage for separated
+  wide values, real values, named widths, based widths, ranges, and indices.

@@ -1068,7 +1068,8 @@ fn render_expr(e: &Expr) -> String {
 }
 
 fn parse_int(text: &str) -> Option<i64> {
-    let t = text.trim();
+    let normalized = text.trim().replace('_', "");
+    let t = normalized.as_str();
     if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         i64::from_str_radix(h, 16).ok()
     } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {

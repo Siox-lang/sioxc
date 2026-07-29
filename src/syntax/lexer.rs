@@ -154,7 +154,9 @@ impl<'a> Lexer<'a> {
             };
 
         let digits_start = self.pos;
-        while self.peek().is_some_and(radix_digit) {
+        while self.peek().is_some_and(radix_digit)
+            || (self.peek() == Some(b'_') && self.peek_at(1).is_some_and(radix_digit))
+        {
             self.bump();
         }
         if self.pos == digits_start && self.pos > start + 1 {
@@ -169,7 +171,9 @@ impl<'a> Lexer<'a> {
         // Requiring the trailing digit keeps range syntax (`31..0`) as integers.
         if is_decimal && self.peek() == Some(b'.') && self.peek_at(1).is_some_and(is_dec_digit) {
             self.bump(); // `.`
-            while self.peek().is_some_and(is_dec_digit) {
+            while self.peek().is_some_and(is_dec_digit)
+                || (self.peek() == Some(b'_') && self.peek_at(1).is_some_and(is_dec_digit))
+            {
                 self.bump();
             }
             return TokenKind::Float;
@@ -468,13 +472,17 @@ mod tests {
     #[test]
     fn numbers_decimal_hex_binary() {
         assert_eq!(kinds("42 0xFF 0b1010"), vec![Int, Int, Int, Eof]);
+        assert_eq!(kinds("1_000 0xff_ff 0b1010_0101"), vec![Int, Int, Int, Eof]);
         // A suffix is a separate identifier token, not part of the number.
         assert_eq!(kinds("100n"), vec![Int, Ident, Eof]);
+        // An underscore only belongs to a number when followed by another
+        // digit; suffix-like identifiers remain separate.
+        assert_eq!(kinds("100_ns"), vec![Int, Ident, Eof]);
     }
 
     #[test]
     fn floats_and_ranges_are_distinguished() {
-        assert_eq!(kinds("1000.0"), vec![Float, Eof]);
+        assert_eq!(kinds("1000.0 1_000.25_5"), vec![Float, Float, Eof]);
         // The `f`-style suffix is a separate identifier, mirroring signed suffixes.
         assert_eq!(kinds("1000.0f"), vec![Float, Ident, Eof]);
         // A double dot is a range, never a float.

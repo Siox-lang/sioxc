@@ -1433,6 +1433,18 @@ Both may use the English word “direction”, but they are different concepts.
 
 ### 3.24 Literal suffixes and bit-string literals
 
+Integer and real digits may use `_` separators for readability; separators do
+not affect the value. This applies to decimal, hexadecimal, and binary integers,
+to either side of a real literal's decimal point, and wherever a literal is
+used as a type width, range bound, index, constant, or ordinary expression:
+
+```siox
+const WIDTH: integer = 1_28;
+let mask: unsigned[WIDTH] = 0xffff_ffff_ffff_ffff;
+let lanes: Bit[0x3..0b0];
+let rate: real = 1_000.25_5;
+```
+
 A numeric literal may carry an adjacent identifier suffix (no space):
 
 ```siox

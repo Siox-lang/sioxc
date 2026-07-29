@@ -39,7 +39,8 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                     let mut k = j + 1;
                     while k < tokens.len() && tokens[k].kind != TokenKind::RBracket {
                         if tokens[k].kind == TokenKind::Int {
-                            pending_precedence = text(&tokens[k]).parse::<u8>().ok();
+                            pending_precedence =
+                                text(&tokens[k]).replace('_', "").parse::<u8>().ok();
                             break;
                         }
                         k += 1;

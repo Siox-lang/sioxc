@@ -428,6 +428,7 @@ pub fn build(
             structs: &structs,
             derived_widths: &derived_widths,
             const_exprs: &const_exprs,
+            consts: &consts,
             real_consts: &real_consts,
             const_ranges: &const_ranges,
             aliases: &aliases,
@@ -784,6 +785,8 @@ struct Ctx<'a> {
     local_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level `const` values, for bare-name references.
     const_exprs: &'a HashMap<String, String>,
+    /// Integer module constants, also usable as local type widths.
+    consts: &'a HashMap<String, u128>,
     /// Module constants declared as `real`; their stored C expressions are f64
     /// bit patterns and must be decoded when used as operands.
     real_consts: &'a std::collections::HashSet<String>,
@@ -1282,10 +1285,13 @@ fn emit_c_real_const(
     enums: &HashMap<String, HashMap<String, u64>>,
 ) -> Option<String> {
     match e {
-        ast::Expr::Int { text, .. } => text
-            .parse::<f64>()
-            .ok()
-            .map(|_| format!("((double)({text}))")),
+        ast::Expr::Int { text, .. } => {
+            let normalized = text.replace('_', "");
+            normalized
+                .parse::<f64>()
+                .ok()
+                .map(|_| format!("((double)({normalized}))"))
+        }
         ast::Expr::Path(path) if path.segments.len() == 1 => {
             let name = &path.segments[0].text;
             let value = consts.get(name)?;
@@ -1328,7 +1334,7 @@ fn emit_c_real_const(
             if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
         {
             let scale = ast::suffix_scale(&suffix.text)?;
-            Some(format!("((double)({text}) * {scale}.0)"))
+            Some(format!("((double)({}) * {scale}.0)", text.replace('_', "")))
         }
         _ => None,
     }
@@ -1470,7 +1476,7 @@ impl Ctx<'_> {
         let declared_indices = match ty {
             ast::Type::Indexed {
                 index: Some(index), ..
-            } => index_values(index, self.const_ranges),
+            } => index_values(index, self.const_ranges, self.consts),
             _ => None,
         };
         let indices = declared_indices
@@ -1553,12 +1559,12 @@ impl Ctx<'_> {
         ty: &ast::Type,
         b: &mut String,
     ) -> Result<(), String> {
-        if let Some((left, right)) = type_index_bounds(ty, self.const_ranges) {
+        if let Some((left, right)) = type_index_bounds(ty, self.const_ranges, self.consts) {
             self.local_ranges
                 .borrow_mut()
                 .insert(prefix.to_string(), (left, right));
         }
-        if let Some(indices) = sized_string_indices(ty, self.const_ranges) {
+        if let Some(indices) = sized_string_indices(ty, self.const_ranges, self.consts) {
             self.local_types
                 .borrow_mut()
                 .insert(prefix.to_string(), "string".into());
@@ -2008,7 +2014,7 @@ impl Ctx<'_> {
             }
             return Some((
                 head.to_string(),
-                u32::try_from(index_values(i, self.const_ranges)?.len()).ok()?,
+                u32::try_from(index_values(i, self.const_ranges, self.consts)?.len()).ok()?,
             ));
         }
         None
@@ -2031,7 +2037,7 @@ impl Ctx<'_> {
                 return None;
             }
         }
-        Some((base, index_values(index, self.const_ranges)?))
+        Some((base, index_values(index, self.const_ranges, self.consts)?))
     }
 
     /// The bit width a testbench name carries: a local's declared width or the
@@ -2245,7 +2251,7 @@ impl Ctx<'_> {
             if !self.families.contains(head) {
                 return None;
             }
-            return u32::try_from(index_values(i, self.const_ranges)?.len()).ok();
+            return u32::try_from(index_values(i, self.const_ranges, self.consts)?.len()).ok();
         }
         None
     }
@@ -2296,9 +2302,10 @@ impl Ctx<'_> {
                                 .borrow_mut()
                                 .insert(l.name.text.clone(), fam);
                         }
-                        if let Some((left, right)) =
-                            l.ty.as_ref()
-                                .and_then(|ty| type_index_bounds(ty, self.const_ranges))
+                        if let Some((left, right)) = l
+                            .ty
+                            .as_ref()
+                            .and_then(|ty| type_index_bounds(ty, self.const_ranges, self.consts))
                         {
                             self.local_ranges
                                 .borrow_mut()
@@ -3288,7 +3295,7 @@ impl Ctx<'_> {
         let sig = &self.design.signals[id.0 as usize];
         if sig.real {
             if let ast::Expr::Int { text, .. } = e {
-                if let Ok(f) = text.parse::<f64>() {
+                if let Ok(f) = text.replace('_', "").parse::<f64>() {
                     return Ok(format!("{}ULL", f.to_bits()));
                 }
             }
@@ -3331,7 +3338,7 @@ impl Ctx<'_> {
     /// A `print!` real argument as a u64-bit-pattern C expression.
     fn value_for_print(&self, a: &ast::Expr) -> Result<String, String> {
         if let ast::Expr::Int { text, .. } = a {
-            if let Ok(f) = text.parse::<f64>() {
+            if let Ok(f) = text.replace('_', "").parse::<f64>() {
                 return Ok(format!("{}ULL", f.to_bits()));
             }
         }
@@ -4138,6 +4145,7 @@ fn is_single_string_type(ty: &ast::Type) -> bool {
 fn sized_string_indices(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
+    consts: &HashMap<String, u128>,
 ) -> Option<Vec<i64>> {
     let ast::Type::Indexed {
         base,
@@ -4154,14 +4162,17 @@ fn sized_string_indices(
     ) {
         return None;
     }
-    index_values(index, const_ranges)
+    index_values(index, const_ranges, consts)
 }
 
-fn index_values(index: &ast::Expr, const_ranges: &HashMap<String, (i64, i64)>) -> Option<Vec<i64>> {
+fn index_values(
+    index: &ast::Expr,
+    const_ranges: &HashMap<String, (i64, i64)>,
+    consts: &HashMap<String, u128>,
+) -> Option<Vec<i64>> {
     match index {
         ast::Expr::Int { text, .. } => {
-            let count: usize = text.replace('_', "").parse().ok()?;
-            let count = i64::try_from(count).ok()?;
+            let count = i64::try_from(try_parse_u64(text)?).ok()?;
             Some((0..count).collect())
         }
         ast::Expr::Range { lo, hi, .. } => {
@@ -4170,8 +4181,13 @@ fn index_values(index: &ast::Expr, const_ranges: &HashMap<String, (i64, i64)>) -
             Some(directional_indices(left, right))
         }
         ast::Expr::Path(path) if path.segments.len() == 1 => {
-            let (left, right) = *const_ranges.get(&path.segments[0].text)?;
-            Some(directional_indices(left, right))
+            let name = &path.segments[0].text;
+            if let Some(&(left, right)) = const_ranges.get(name) {
+                Some(directional_indices(left, right))
+            } else {
+                let count = i64::try_from(*consts.get(name)?).ok()?;
+                Some((0..count).collect())
+            }
         }
         _ => None,
     }
@@ -4188,6 +4204,7 @@ fn directional_indices(left: i64, right: i64) -> Vec<i64> {
 fn type_index_bounds(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
+    consts: &HashMap<String, u128>,
 ) -> Option<(i64, i64)> {
     let ast::Type::Indexed {
         index: Some(index), ..
@@ -4195,7 +4212,7 @@ fn type_index_bounds(
     else {
         return None;
     };
-    let indices = index_values(index, const_ranges)?;
+    let indices = index_values(index, const_ranges, consts)?;
     Some((*indices.first()?, *indices.last()?))
 }
 

@@ -677,7 +677,7 @@ impl<'a> Lowering<'a> {
                     }
                 } else if let ast::Expr::Int { text, .. } = &constant.value {
                     if text.contains('.') {
-                        if let Ok(value) = text.parse::<f64>() {
+                        if let Ok(value) = text.replace('_', "").parse::<f64>() {
                             self.consts_real.insert(name.clone(), value);
                             progressed = true;
                         }
@@ -1899,7 +1899,7 @@ impl<'a> Lowering<'a> {
         match e {
             // --- literals: a value read as bits ---
             ast::Expr::Int { text, .. } if text.contains('.') => {
-                text.parse::<f64>().ok().map(f64::to_bits)
+                text.replace('_', "").parse::<f64>().ok().map(f64::to_bits)
             }
             // A character reads by its position in the target enum (VHDL
             // `T'pos`), else std's default logic type. No value table here.
@@ -3485,7 +3485,7 @@ impl<'a> Lowering<'a> {
             } => self.lower_match_expr(scrutinee, arms),
             // A decimal point makes it a `real` literal (`1.5`).
             ast::Expr::Int { text, .. } if text.contains('.') => {
-                Expr::Real(text.parse().unwrap_or(0.0))
+                Expr::Real(text.replace('_', "").parse().unwrap_or(0.0))
             }
             ast::Expr::Int { text, .. } => integer_const(text).unwrap_or(Expr::Const(0)),
             // A suffix with an `impl Suffix` fn inlines it (scalar results
@@ -5154,7 +5154,7 @@ impl<'a> Lowering<'a> {
                 // A `real` parameter takes the literal's float value.
                 let is_real = p.ty.as_ref().and_then(type_head_name) == Some("real");
                 let v = if is_real {
-                    Expr::Real(text.parse().unwrap_or(0.0))
+                    Expr::Real(text.replace('_', "").parse().unwrap_or(0.0))
                 } else {
                     Expr::Const(parse_int(text).unwrap_or(0))
                 };
@@ -5952,7 +5952,8 @@ fn lower_binop(op: AstBinOp) -> Option<BinOp> {
 }
 
 fn parse_int(text: &str) -> Option<u64> {
-    let t = text.trim();
+    let normalized = text.trim().replace('_', "");
+    let t = normalized.as_str();
     if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         u64::from_str_radix(h, 16).ok()
     } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
@@ -6008,7 +6009,9 @@ fn lower_const_value(
     narrow: &HashMap<String, i64>,
 ) -> Option<Expr> {
     match expression {
-        ast::Expr::Int { text, .. } if text.contains('.') => text.parse().ok().map(Expr::Real),
+        ast::Expr::Int { text, .. } if text.contains('.') => {
+            text.replace('_', "").parse().ok().map(Expr::Real)
+        }
         ast::Expr::Int { text, .. } => integer_const(text),
         ast::Expr::Path(path) if path.segments.len() == 1 => {
             exact.get(&path.segments[0].text).cloned().or_else(|| {

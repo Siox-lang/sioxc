@@ -59,7 +59,9 @@ This applies to numeric vectors and arrays alike: indexing, iteration, string
 literal initialization of logic arrays, and the `'left`, `'right`, `'high`,
 `'low`, `'length`, and `'ascending` attributes all observe the declared range.
 Named `range` constants can be used as local type indices, and signed bounds
-remain addressable.
+remain addressable. Integer constants can likewise supply local widths; based
+and `_`-separated literal spellings retain the same width and value through
+analysis, elaboration, IR, and native test generation.
 
 ## Reporting
 
