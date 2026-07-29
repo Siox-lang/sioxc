@@ -799,7 +799,7 @@ impl<'a> Lowering<'a> {
                         if let Some(sub) = type_head_name(&cty) {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
-                            sub_env.extend(self.construct_params(&cty, env));
+                            sub_env.extend(self.construct_params(&cty, sub, env));
                             let sub_tenv = self.construct_type_params(&cty, sub);
                             let sub_ports = self.lower_body(
                                 sub,
@@ -1200,7 +1200,7 @@ impl<'a> Lowering<'a> {
             }
             let sub_path = format!("{path}.{inst}");
             let mut sub_env = self.consts.clone();
-            sub_env.extend(self.construct_params(cty, env));
+            sub_env.extend(self.construct_params(cty, sub_ename, env));
             let sub_type_env = self.construct_type_params(cty, sub_ename);
 
             // Resolve `inout` connections to the parent net they share *before*
@@ -1360,14 +1360,42 @@ impl<'a> Lowering<'a> {
         ports
     }
 
-    /// Concrete parameter bindings written on an instance type (`Counter<W=8>`).
-    fn construct_params(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> HashMap<String, i64> {
+    /// Concrete parameter bindings written on an instance type
+    /// (`Counter<W = 8>`, or positionally as `Counter<8>`).
+    ///
+    /// Positional args bind the declaration's parameters in order, matching
+    /// `construct_type_params` — each takes the ones it owns, value params
+    /// here and bare type params there. Dropping the positional form left the
+    /// parameter unbound, which surfaced far downstream as "signal has unknown
+    /// width (0)" rather than anything pointing at the instance.
+    fn construct_params(
+        &self,
+        ty: &ast::Type,
+        ename: &str,
+        env: &HashMap<String, i64>,
+    ) -> HashMap<String, i64> {
         let mut out = HashMap::new();
-        if let ast::Type::Generic { args, .. } = ty {
-            for a in args {
-                if let ast::GenericArg::Named { name, value } = a {
+        let ast::Type::Generic { args, .. } = ty else {
+            return out;
+        };
+        let decl = self.entities.get(ename);
+        for (i, a) in args.iter().enumerate() {
+            match a {
+                ast::GenericArg::Named { name, value } => {
                     if let Some(v) = eval_const(value, env) {
                         out.insert(name.text.clone(), v);
+                    }
+                }
+                ast::GenericArg::Positional(e) => {
+                    let Some(p) = decl.and_then(|d| d.params.params.get(i)) else {
+                        continue;
+                    };
+                    // A bare type param is `construct_type_params`' business.
+                    if p.bound.is_none() {
+                        continue;
+                    }
+                    if let Some(v) = eval_const(e, env) {
+                        out.insert(p.name.text.clone(), v);
                     }
                 }
             }
@@ -8357,6 +8385,33 @@ mod tests {
             .find(|dr| d.signals[dr.target.0 as usize].path.ends_with(".y"))
             .expect("driver for y");
         assert!(!has_unknown(&dr.expr), "no Unknown left: {:?}", dr.expr);
+    }
+
+    /// `Counter<W = 8>` bound its parameter but `Counter<8>` silently did not:
+    /// only the named form was read, so the positional one left the parameter
+    /// unbound and every port kept width 0 — surfacing far downstream as
+    /// "signal has unknown width (0)" with nothing pointing at the instance.
+    #[test]
+    fn positional_generic_argument_binds_a_value_parameter() {
+        let src = |arg: &str| {
+            format!(
+                "module m;\n\
+                 entity Inc<W: integer> {{ in a: unsigned[W]; out y: unsigned[W]; }}\n\
+                 impl Inc<W: integer> {{ y = a + 1; }}\n\
+                 #[top] entity H {{}}\n\
+                 impl H {{ let a: unsigned[4]; let y: unsigned[4]; \
+                 let i: Inc<{arg}> = {{ .a = a, .y = y }}; }}"
+            )
+        };
+        for arg in ["W = 4", "4"] {
+            let d = lower_src(&src(arg));
+            let w = d
+                .signals
+                .iter()
+                .find(|s| s.path.ends_with("i.a"))
+                .map(|s| s.width);
+            assert_eq!(w, Some(4), "`Inc<{arg}>` should bind W");
+        }
     }
 
     #[test]
