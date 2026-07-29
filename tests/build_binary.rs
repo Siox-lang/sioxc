@@ -360,6 +360,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         &source,
         format!(
             "module wide_format;
+             using std::math::{{sqrt, pow, floor}};
              enum Symbol {{ 'α', 'β' }}
              struct CharacterBox {{ value: Char }}
              struct RealBox {{ value: real }}
@@ -377,6 +378,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let boxed: CharacterBox = {{ .value = 'λ' }};
                  let real_value: real = 1.5;
                  let real_box: RealBox = {{ .value = 3.5 }};
+                 let math_result: real = sqrt(9.0);
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -410,6 +412,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(real_value == 5.5, \"real match {{}}\", real_value);
                  real_box.value = real_box.value + 0.5;
                  assert!(real_box.value == 4.0, \"real struct field {{}}\", real_box.value);
+                 assert!(math_result == 3.0, \"native extern sqrt {{}}\", math_result);
+                 math_result = pow(2.0, 3.0);
+                 assert!(math_result == 8.0, \"native extern pow {{}}\", math_result);
+                 print!(\"extern floor {{}}\", floor(3.75));
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"
@@ -451,6 +457,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
     assert!(
         stdout.contains("real comparison 1"),
         "a real comparison result was incorrectly formatted as a real:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("extern floor 3"),
+        "an extern real return was not formatted correctly:\n{stdout}"
     );
     assert!(
         stderr.contains(&format!("{long} {wide}")),

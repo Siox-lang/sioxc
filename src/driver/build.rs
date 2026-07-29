@@ -93,11 +93,20 @@ pub fn build(
         }
     }
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
+    let mut extern_fns = std::collections::HashSet::new();
     for m in modules {
         for item in &m.items {
             match item {
                 ast::Item::Fn(f) => {
                     fns.insert(f.name.text.clone(), f);
+                }
+                ast::Item::ExternBlock {
+                    abi, fns: block, ..
+                } if abi == "C" => {
+                    for f in block {
+                        extern_fns.insert(f.name.text.clone());
+                        fns.insert(f.name.text.clone(), f);
+                    }
                 }
                 // A *static* associated fn (no `self`) is callable as
                 // `Type::name(..)`, keyed like a module-level fn.
@@ -172,6 +181,21 @@ pub fn build(
     // Header, one `signed test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
     prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
+    for name in &extern_fns {
+        let f = fns[name];
+        let ret = f.ret.as_ref().map_or("void", |ty| extern_c_type(Some(ty)));
+        let params = f
+            .params
+            .iter()
+            .filter(|param| !param.is_self)
+            .map(|param| extern_c_type(param.ty.as_ref()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        prog.push_str(&format!(
+            "extern {ret} {name}({});\n",
+            if params.is_empty() { "void" } else { &params }
+        ));
+    }
     prog.push_str("extern void sx_reset(void);\n");
     prog.push_str("extern void sx_set_word(uint32_t, uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read_word(uint32_t, uint32_t);\n");
@@ -379,6 +403,7 @@ pub fn build(
             tmp: Default::default(),
             message_id: Default::default(),
             fns: &fns,
+            extern_fns: &extern_fns,
             fn_env: Default::default(),
             instance_names,
             value_bits,
@@ -730,6 +755,9 @@ struct Ctx<'a> {
     message_id: std::cell::Cell<usize>,
     /// Module-level functions (testbench-callable; translated to C ternaries).
     fns: &'a HashMap<String, &'a ast::FnDecl>,
+    /// Functions declared in an `extern "C"` block. Their signatures drive
+    /// native ABI conversion instead of requiring a Siox body to inline.
+    extern_fns: &'a std::collections::HashSet<String>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
     /// Names elaboration turned into DUT instances (`let dut: Sub = {..}` /
@@ -2473,11 +2501,20 @@ impl Ctx<'_> {
                     .filter_map(ast::MatchArm::value_expr)
                     .any(|value| self.is_real_operand(value));
             }
-            ast::Expr::Call { callee, .. }
+            ast::Expr::Call { callee, .. } => {
                 if matches!(callee.as_ref(), ast::Expr::Path(path)
-                    if path.segments.len() == 1 && path.segments[0].text == "uniform") =>
-            {
-                return true;
+                    if path.segments.len() == 1 && path.segments[0].text == "uniform")
+                {
+                    return true;
+                }
+                if let Some(key) = siox::ir::call_fn_key(callee) {
+                    return self
+                        .fns
+                        .get(&key)
+                        .and_then(|function| function.ret.as_ref())
+                        .and_then(type_head_name)
+                        == Some("real");
+                }
             }
             _ => {}
         }
@@ -2848,6 +2885,22 @@ impl Ctx<'_> {
                 _ => Err(format!("unsupported call `{name}` in testbench expression")),
             };
         };
+        if self.extern_fns.contains(name) {
+            let mut converted = Vec::new();
+            for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
+                if param.ty.as_ref().and_then(type_head_name) == Some("real") {
+                    converted.push(self.c_real_operand(arg)?);
+                } else {
+                    converted.push(self.expr(arg)?);
+                }
+            }
+            let call = format!("{name}({})", converted.join(", "));
+            return Ok(if f.ret.as_ref().and_then(type_head_name) == Some("real") {
+                format!("sx_b64({call})")
+            } else {
+                call
+            });
+        }
         let body = f.body.as_ref().ok_or("fn has no body")?;
         // Constant arguments fold statically (also the only way a recursive
         // fn like clog2 compiles here).
@@ -3488,6 +3541,16 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
         ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
         ast::Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
+    }
+}
+
+/// Phase-1 C ABI mapping for foreign function declarations. `real` is the
+/// native C `double`; every integer-shaped scalar crosses as one ABI word.
+fn extern_c_type(ty: Option<&ast::Type>) -> &'static str {
+    if ty.and_then(type_head_name) == Some("real") {
+        "double"
+    } else {
+        "uint64_t"
     }
 }
 

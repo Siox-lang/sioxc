@@ -1384,3 +1384,14 @@ forward declarations, DUT outputs, and direct native-testbench references.
   arithmetic/comparison/negation, re-encode results, and format as floats.
 - Added native and standalone corpus coverage for initialization, assignment,
   arithmetic, unary negation, conditional values, fields, and formatting.
+
+### 2026-07-29 — Codex — call declared C functions from native testbenches
+
+- Reproduced direct `sqrt(9.0)`/`pow(..)` calls passing semantic analysis but
+  failing native-test compilation as unsupported calls.
+- Collected `extern "C"` declarations into native function lookup, emitted C
+  prototypes from their Siox signatures, and converted arguments/returns
+  according to declared types rather than hardcoded function names.
+- Extended real-expression discovery to declared real-returning calls, so
+  nested arithmetic and formatting decode the returned f64 bit pattern.
+- Added native and external coverage using `sqrt`, `pow`, and `floor`.

@@ -39,6 +39,9 @@ DUT-connected character signals.
 Unconnected `real` locals and fields likewise use floating-point semantics for
 arithmetic, comparisons, conditionals, negation, and formatted output; their
 native storage remains the same f64 bit representation used by real signals.
+Calls to declared `extern "C"` functions are also valid in native testbench
+expressions; parameter and return conversion follows the declaration (`real`
+crosses as C `double`, integer-shaped scalars as an ABI word).
 
 ## Reporting
 
