@@ -3868,7 +3868,16 @@ impl<'a> Lowering<'a> {
                         .map(|w| w as u32)
                         .unwrap_or(64)
                 }
-                _ => 64,
+                // An ordinary call is as wide as its declared return type. The
+                // 64 below is the kernel-integer default; taking it for a
+                // `signed[8]` result made a nested inline read `self'length`
+                // as 64 and test bit 63 for the sign.
+                _ => call_fn_key(callee)
+                    .and_then(|k| self.free_fns.get(&k))
+                    .and_then(|f| f.ret.as_ref())
+                    .map(|ret| type_width(ret, &self.cur_env, &self.free_fns, &self.structs))
+                    .filter(|w| *w > 0)
+                    .unwrap_or(64),
             },
             ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
             ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
@@ -4801,6 +4810,14 @@ impl<'a> Lowering<'a> {
             Some(Val::Scalar(v)) => Some(v),
             _ => None,
         };
+        // The result is a value of the declared return type, so it wraps to
+        // that width. Assigning it to a signal masked it anyway, which hid
+        // this — but used in place (`neg(x) < 0`) the extra bits survived and
+        // signed's Ord tested the wrong one.
+        let out = match (out, f.ret.as_ref()) {
+            (Some(v), Some(ret)) => Some(self.mask_to_type_width(v, ret)),
+            (v, _) => v,
+        };
         for (name, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
@@ -4815,6 +4832,23 @@ impl<'a> Lowering<'a> {
         }
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
+    }
+
+    /// Wrap `v` to the width of declared type `ret`, when that is a bounded
+    /// vector. A `real`, a kernel `integer` or an unknown width is left alone.
+    fn mask_to_type_width(&self, v: Expr, ret: &ast::Type) -> Expr {
+        if type_head_name(ret).is_some_and(|h| matches!(h, "real" | "integer")) {
+            return v;
+        }
+        let w = type_width(ret, &self.cur_env, &self.free_fns, &self.structs);
+        if w == 0 || w >= 64 {
+            return v;
+        }
+        Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(v),
+            rhs: Box::new(Expr::Const((1u64 << w) - 1)),
+        }
     }
 
     /// Find a method `name` on type `ty`: an inherent-impl method
@@ -5118,8 +5152,21 @@ impl<'a> Lowering<'a> {
                 // A conversion reads as its target: a vector family
                 // (`signed[32](a)`) or an enum (`ULogic(b)` inside
                 // `Logic(ULogic(b))`).
-                (self.vector_families.contains(&head) || self.enum_variants.contains_key(&head))
-                    .then_some(head)
+                if self.vector_families.contains(&head) || self.enum_variants.contains_key(&head) {
+                    return Some(head);
+                }
+                // Otherwise it is an ordinary call, and its declared return
+                // type is the family. Without this a call had none, so
+                // `neg(x) < 0` never dispatched signed's Ord and compared
+                // unsigned.
+                let ret = self
+                    .free_fns
+                    .get(&head)
+                    .or_else(|| call_fn_key(callee).and_then(|k| self.free_fns.get(&k)))
+                    .and_then(|f| f.ret.as_ref())
+                    .and_then(type_head_name)?;
+                (self.vector_families.contains(ret) || self.enum_variants.contains_key(ret))
+                    .then(|| ret.to_string())
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
@@ -8436,6 +8483,29 @@ mod tests {
     /// width, so a nested inline — `signed`'s Ord inside `abs` — read
     /// `self'length` as 1 and tested the sign bit with `>> 0`. `abs(-5)`
     /// returned 251.
+    /// A call result is a value of its declared return type, so it wraps to
+    /// that width. Left unmasked, `neg(x)` on a `signed[8]`-returning function
+    /// carried a full-width `0 - x`, and a nested inline then tested the wrong
+    /// bit for the sign. Assigning to a signal masked it anyway, which hid it.
+    ///
+    /// The operator dispatch that goes with this needs std's `<=>` impl, which
+    /// this harness's minimal prelude does not have; `fn_return_type_test` in
+    /// the corpus covers that end.
+    #[test]
+    fn a_call_result_carries_its_return_type() {
+        let d = lower_src(
+            "module m;\n\
+             fn neg(v: signed[8]) -> signed[8] { return 0 - v; }\n\
+             entity E { in s: signed[8]; out lt: unsigned[8]; }\n\
+             impl E { lt = if neg(s) < 0 { 1 } else { 0 }; }\n\
+             #[top] entity H {}\n\
+             impl H { let s: signed[8]; let lt: unsigned[8]; \
+             let e: E = { .s = s, .lt = lt }; }",
+        );
+        let text = d.to_ir_string();
+        assert!(text.contains("and 255"), "masked to the return width:\n{text}");
+    }
+
     #[test]
     fn an_inlined_parameter_keeps_its_argument_width() {
         let d = lower_src(
