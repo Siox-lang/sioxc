@@ -6,8 +6,8 @@
 //! links them into an executable that runs *every* `#[test]` (one C function
 //! per test, a libtest-style `main`) and reports results + exit code. All
 //! tests share the one lowered Design (one `sx_*` namespace); `sx_reset`
-//! zeroes state between them. First cut: integer/logic/bool designs;
-//! real/char/string testbenches are a follow-on.
+//! zeroes state between them. Testbench locals use the same flattened,
+//! arbitrary-width scalar representation as elaborated signals.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -1432,7 +1432,7 @@ impl Ctx<'_> {
 
     fn try_declare_string_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(ty) = &l.ty else { return Ok(false) };
-        if type_head_name(ty) != Some("string") {
+        if !is_single_string_type(ty) {
             return Ok(false);
         }
         let literal = match &l.value {
@@ -1491,48 +1491,10 @@ impl Ctx<'_> {
     /// index (`unsigned[128][2]`) is the array dimension represented here.
     fn try_declare_array_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(ty) = &l.ty else { return Ok(false) };
-        let Some((element_ty, len)) = self.array_parts(ty) else {
-            return Ok(false);
-        };
-        let head = type_head_name(element_ty);
-        // Field aggregates need recursive leaf expansion; leave them to the
-        // existing struct path rather than pretending each aggregate is scalar.
-        if head
-            .and_then(|name| self.structs.get(name))
-            .is_some_and(|fields| !fields.is_empty())
-        {
+        if self.array_parts(ty).is_none() {
             return Ok(false);
         }
-        let family = self.declared_family(element_ty);
-        let width = family
-            .as_ref()
-            .map(|(_, width)| *width)
-            .or_else(|| self.declared_width(element_ty));
-        for i in 0..len {
-            let key = format!("{}[{i}]", l.name.text);
-            if let Some((name, _)) = &family {
-                self.local_families
-                    .borrow_mut()
-                    .insert(key.clone(), name.clone());
-            }
-            if let Some(width) = width {
-                self.local_widths.borrow_mut().insert(key.clone(), width);
-            }
-            if let Some(head) = head {
-                self.local_types
-                    .borrow_mut()
-                    .insert(key.clone(), head.to_string());
-            }
-            if !self.map.contains_key(&key) {
-                let c_ty = if width.is_some_and(|bits| bits > 64) {
-                    "sx_value"
-                } else {
-                    "uint64_t"
-                };
-                b.push_str(&format!("    {c_ty} {} = 0;\n", c_local_ident(&key)));
-                self.locals.borrow_mut().insert(key);
-            }
-        }
+        self.declare_typed_storage(&l.name.text, ty, b)?;
         if let Some(value) = &l.value {
             if !self.write_composite(&l.name.text, value, b, "    ")? {
                 return Err(format!(
@@ -1542,6 +1504,84 @@ impl Ctx<'_> {
             }
         }
         Ok(true)
+    }
+
+    /// Recursively flatten an array/field aggregate into typed scalar leaves.
+    /// Connected leaves already exist in `map`; only unconnected leaves need C
+    /// storage, but both receive metadata for formatting and target coercion.
+    fn declare_typed_storage(
+        &self,
+        prefix: &str,
+        ty: &ast::Type,
+        b: &mut String,
+    ) -> Result<(), String> {
+        if let Some(len) = sized_string_len(ty) {
+            self.local_types
+                .borrow_mut()
+                .insert(prefix.to_string(), "string".into());
+            for i in 0..len {
+                let element = format!("{prefix}[{i}]");
+                self.local_types
+                    .borrow_mut()
+                    .insert(element.clone(), "Char".into());
+                if !self.map.contains_key(&element) {
+                    b.push_str(&format!("    uint64_t {} = 0;\n", c_local_ident(&element)));
+                    self.locals.borrow_mut().insert(element);
+                }
+            }
+            return Ok(());
+        }
+        if let Some((element, len)) = self.array_parts(ty) {
+            for i in 0..len {
+                self.declare_typed_storage(&format!("{prefix}[{i}]"), element, b)?;
+            }
+            return Ok(());
+        }
+        let head = type_head_name(ty);
+        if let Some(fields) = head
+            .and_then(|name| self.structs.get(name))
+            .filter(|fields| !fields.is_empty())
+        {
+            if let Some(head) = head {
+                self.local_types
+                    .borrow_mut()
+                    .insert(prefix.to_string(), head.to_string());
+            }
+            for (field, field_ty) in fields {
+                self.declare_typed_storage(&format!("{prefix}.{field}"), field_ty, b)?;
+            }
+            return Ok(());
+        }
+        let family = self.declared_family(ty);
+        let width = family
+            .as_ref()
+            .map(|(_, width)| *width)
+            .or_else(|| self.declared_width(ty));
+        if let Some((name, _)) = family {
+            self.local_families
+                .borrow_mut()
+                .insert(prefix.to_string(), name);
+        }
+        if let Some(width) = width {
+            self.local_widths
+                .borrow_mut()
+                .insert(prefix.to_string(), width);
+        }
+        if let Some(head) = head {
+            self.local_types
+                .borrow_mut()
+                .insert(prefix.to_string(), head.to_string());
+        }
+        if !self.map.contains_key(prefix) {
+            let c_ty = if width.is_some_and(|bits| bits > 64) {
+                "sx_value"
+            } else {
+                "uint64_t"
+            };
+            b.push_str(&format!("    {c_ty} {} = 0;\n", c_local_ident(prefix)));
+            self.locals.borrow_mut().insert(prefix.to_string());
+        }
+        Ok(())
     }
 
     /// Emit writes for a composite value assigned to a connected name — a
@@ -1687,6 +1727,26 @@ impl Ctx<'_> {
         b: &mut String,
         ind: &str,
     ) -> Result<bool, String> {
+        if let Some(source_name) = expr_path(value) {
+            let source = self.composite_reads(&source_name);
+            if !source.is_empty() {
+                let target = self.composite_targets(name);
+                if source.keys().ne(target.keys()) {
+                    return Err(format!(
+                        "composite assignment shape mismatch: `{name}` and `{source_name}`"
+                    ));
+                }
+                for (suffix, expression) in source {
+                    let (signal, destination) = &target[&suffix];
+                    if *signal {
+                        b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                    } else {
+                        b.push_str(&format!("{ind}{destination} = {expression};\n"));
+                    }
+                }
+                return Ok(true);
+            }
+        }
         if !matches!(value, ast::Expr::StrLit { .. }) {
             if let Some(source) = self.c_string_elems(value) {
                 let mut target = Vec::new();
@@ -1730,7 +1790,7 @@ impl Ctx<'_> {
                 let mut target_len = 0usize;
                 loop {
                     let element = format!("{name}[{target_len}]");
-                    if self.map.contains_key(&element) || self.locals.borrow().contains(&element) {
+                    if self.has_storage_prefix(&element) {
                         target_len += 1;
                     } else {
                         break;
@@ -1819,6 +1879,49 @@ impl Ctx<'_> {
             }
             _ => Ok(false),
         }
+    }
+
+    fn has_storage_prefix(&self, prefix: &str) -> bool {
+        let descendant = |name: &str| {
+            name == prefix
+                || name
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('[') || rest.starts_with('.'))
+        };
+        self.map.keys().any(|name| descendant(name))
+            || self.locals.borrow().iter().any(|name| descendant(name))
+    }
+
+    /// Scalar descendant reads keyed by their suffix relative to `prefix`.
+    fn composite_reads(&self, prefix: &str) -> BTreeMap<String, String> {
+        let mut reads = BTreeMap::new();
+        for (name, id) in self.map {
+            if let Some(suffix) = descendant_suffix(name, prefix) {
+                reads.insert(suffix.to_string(), format!("sx_read({})", id.0));
+            }
+        }
+        for name in self.locals.borrow().iter() {
+            if let Some(suffix) = descendant_suffix(name, prefix) {
+                reads.insert(suffix.to_string(), c_local_ident(name));
+            }
+        }
+        reads
+    }
+
+    /// Scalar descendant write destinations keyed like `composite_reads`.
+    fn composite_targets(&self, prefix: &str) -> BTreeMap<String, (bool, String)> {
+        let mut targets = BTreeMap::new();
+        for (name, id) in self.map {
+            if let Some(suffix) = descendant_suffix(name, prefix) {
+                targets.insert(suffix.to_string(), (true, id.0.to_string()));
+            }
+        }
+        for name in self.locals.borrow().iter() {
+            if let Some(suffix) = descendant_suffix(name, prefix) {
+                targets.insert(suffix.to_string(), (false, c_local_ident(name)));
+            }
+        }
+        targets
     }
 
     /// The declared `(family, width)` of a vector-family type (`signed[8]` ->
@@ -3813,6 +3916,41 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
     }
 }
 
+/// A single string value rather than an outer array of strings.
+fn is_single_string_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Path(path) => path.segments.last().map(|id| id.text.as_str()) == Some("string"),
+        ast::Type::Indexed { base, .. } => matches!(
+            base.as_ref(),
+            ast::Type::Path(path)
+                if path.segments.last().map(|id| id.text.as_str()) == Some("string")
+        ),
+        _ => false,
+    }
+}
+
+fn sized_string_len(ty: &ast::Type) -> Option<usize> {
+    let ast::Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    if !matches!(
+        base.as_ref(),
+        ast::Type::Path(path)
+            if path.segments.last().map(|id| id.text.as_str()) == Some("string")
+    ) {
+        return None;
+    }
+    let ast::Expr::Int { text, .. } = index.as_ref() else {
+        return None;
+    };
+    text.replace('_', "").parse().ok()
+}
+
 /// Phase-1 C ABI mapping for foreign function declarations. `real` is the
 /// native C `double`; every integer-shaped scalar crosses as one ABI word.
 fn extern_c_type(ty: Option<&ast::Type>) -> &'static str {
@@ -3837,6 +3975,11 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
         },
         _ => None,
     }
+}
+
+fn descendant_suffix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+    name.strip_prefix(prefix)
+        .filter(|rest| rest.starts_with('[') || rest.starts_with('.'))
 }
 
 fn str_lit(e: &ast::Expr) -> Option<String> {

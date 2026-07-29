@@ -1433,3 +1433,18 @@ forward declarations, DUT outputs, and direct native-testbench references.
   name-to-name copying through the existing composite path.
 - Added native and corpus regressions for 128-bit array elements, indexing,
   mutation, copying, and literal reassignment.
+
+### 2026-07-29 — Codex — recursively materialize nested native arrays
+
+- Reproduced `unsigned[128][2][2]` creating only outer pseudo-scalars, then
+  rejecting the first nested literal because `matrix[0][…]` leaves were absent.
+- Recursively flatten nested arrays and array-contained structs into typed
+  scalar leaves, preserving wide storage and `Char`/enum target metadata.
+- Generalized composite name-to-name copying by matching descendant suffixes,
+  and made literal assignment recognize aggregate prefixes instead of exact
+  scalar names only.
+- Distinguished a single `string[N]` from `string[N][M]`; arrays of strings now
+  materialize inner `Char` leaves and support comparison, copy, assignment,
+  and formatting.
+- Added a standalone corpus fixture plus native integration coverage for wide
+  matrices, arrays of structs, arrays of strings, copying, and mutation.

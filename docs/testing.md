@@ -50,6 +50,9 @@ harness-wide value still wraps at its own boundary.
 Unconnected scalar/vector arrays are materialized one typed element at a time,
 so literals, indexing, element mutation, and same-shaped array copies preserve
 arbitrary-width elements too.
+Materialization is recursive for nested arrays, arrays of structs, and arrays
+of fixed-size strings; composite copies match scalar leaf paths rather than
+collapsing an aggregate into one machine word.
 
 ## Reporting
 

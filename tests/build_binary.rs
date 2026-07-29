@@ -369,6 +369,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              struct RealBox {{ value: real }}
              struct WideBox {{ value: unsigned[128] }}
              struct NarrowWideBox {{ value: unsigned[80] }}
+             struct WidePair {{ value: unsigned[128], character: Char }}
              impl RealBox {{
                  fn half(self) -> real {{ return self.value / 2.0; }}
              }}
@@ -391,6 +392,13 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let narrow_wide_box: NarrowWideBox = {{ .value = 1208925819614629174706175 }};
                  let wide_values: unsigned[128][2] = [{wide}, 1];
                  let copied_values: unsigned[128][2] = wide_values;
+                 let matrix: unsigned[128][2][2] = [[1, 2], [3, {wide}]];
+                 let copied_matrix: unsigned[128][2][2] = matrix;
+                 let pairs: WidePair[2] = [
+                     {{ .value = 5, .character = 'λ' }},
+                     {{ .value = {wide}, .character = 'β' }}
+                 ];
+                 let words: string[3][2] = [\"abc\", \"def\"];
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -439,6 +447,15 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(copied_values[0] == wide_values[0], \"wide array copy\");
                  wide_values = [3, 4];
                  assert!(wide_values[1] == 4, \"wide array literal reassignment\");
+                 assert!(matrix[1][1] == {wide}, \"nested wide array\");
+                 assert!(copied_matrix[1][1] == matrix[1][1], \"nested array copy\");
+                 matrix[0][1] = 9;
+                 assert!(matrix[0][1] == 9, \"nested array mutation\");
+                 assert!(pairs[1].value == {wide}, \"array of structs\");
+                 assert!(pairs[0].character == 'λ', \"array struct Char field\");
+                 words[1] = \"xyz\";
+                 assert!(words[0] == \"abc\", \"string array first\");
+                 assert!(words[1] == \"xyz\", \"string array assignment\");
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"
