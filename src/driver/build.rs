@@ -2273,7 +2273,12 @@ impl Ctx<'_> {
         lhs: &ast::Expr,
         rhs: &ast::Expr,
     ) -> Result<Option<String>, String> {
-        let (fam, lname) = match lhs {
+        // The family decides which operator impl runs; the width is only ever
+        // needed to bind `self'length` inside it. A call has no name to look
+        // either up by, so its declared return type supplies both — without
+        // this a call never dispatched an impl at all and `neg(x) < 0` fell
+        // back to an unsigned compare.
+        let (fam, lwidth) = match lhs {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = p.segments[0].text.clone();
                 let family = self
@@ -2283,16 +2288,28 @@ impl Ctx<'_> {
                     .cloned()
                     .or_else(|| self.local_types.borrow().get(&name).cloned());
                 match family {
-                    Some(f) => (f, name),
+                    Some(f) => {
+                        let w = self.name_width(&name);
+                        (f, w)
+                    }
                     None => return Ok(None),
                 }
+            }
+            ast::Expr::Call { .. } => {
+                let Some(ret) = self.call_return_type(lhs) else {
+                    return Ok(None);
+                };
+                let Some(head) = type_head_name(&ret) else {
+                    return Ok(None);
+                };
+                (head.to_string(), self.declared_width(&ret))
             }
             _ => return Ok(None),
         };
         let op_str = siox::syntax::pretty::bin_op(op);
         // `==`/`!=`: bit equality at the type's width (mask both sides).
         if matches!(op_str, "==" | "!=") {
-            let Some(w) = self.name_width(&lname) else {
+            let Some(w) = lwidth else {
                 return Ok(None);
             };
             if w == 0 || w >= 64 {
@@ -2353,7 +2370,7 @@ impl Ctx<'_> {
             return Ok(None);
         };
 
-        let w = self.name_width(&lname).unwrap_or(0);
+        let w = lwidth.unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), format!("({})", self.expr(lhs)?));
         env.insert("self::length".to_string(), format!("{w}ULL"));
@@ -2896,7 +2913,15 @@ impl Ctx<'_> {
             let is_char = sig.is_some_and(|signal| signal.char)
                 || local_type.as_deref() == Some("Char")
                 || self.call_return_head(a).as_deref() == Some("Char");
-            let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or(local_type);
+            let ety: Option<String> = sig
+                .and_then(|s| s.enum_type.clone())
+                .or(local_type)
+                .or_else(|| {
+                    // A call returning an enum renders its symbol, like a
+                    // signal or local of that type does.
+                    let head = self.call_return_head(a)?;
+                    self.design.enum_syms.contains_key(&head).then_some(head)
+                });
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let ast::Expr::StrLit { text, .. } = a {
                 cfmt.push_str("%s");
@@ -3207,6 +3232,24 @@ impl Ctx<'_> {
     }
 
     /// Whether an operand reads a `real` signal.
+    /// The declared return type of a call, for recovering everything the call
+    /// site would otherwise throw away: a vector's width and family, an enum's
+    /// symbols. See `call_return_head` for the name alone.
+    fn call_return_type(&self, e: &ast::Expr) -> Option<ast::Type> {
+        let ast::Expr::Call { callee, .. } = e else {
+            return None;
+        };
+        if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+            let receiver = self.receiver_type(base)?;
+            return self
+                .methods
+                .get(&(receiver, field.text.clone()))
+                .and_then(|f| f.ret.clone());
+        }
+        let key = siox::ir::call_fn_key(callee)?;
+        self.fns.get(&key).and_then(|f| f.ret.clone())
+    }
+
     /// The head name of a call's declared return type. `is_real_operand`
     /// already consulted this for `real`; nothing else did, so a function
     /// returning `Char` produced a value that displayed and compared as a
@@ -3329,6 +3372,17 @@ impl Ctx<'_> {
     /// Without it a `signed[8]` holding -5 prints as 251 while `s < 0` is
     /// simultaneously true, which reads as a contradiction.
     fn signed_vector_width(&self, e: &ast::Expr) -> Option<u32> {
+        // A call carries no name; its declared return type is what says the
+        // result is signed and how wide it is.
+        if let Some(ret) = self.call_return_type(e) {
+            if type_head_name(&ret).is_some_and(|h| self.type_name_is(h, "signed")) {
+                if let Some(w) = self.declared_width(&ret) {
+                    if w > 0 && w <= 64 {
+                        return Some(w);
+                    }
+                }
+            }
+        }
         let path = expr_path(e)?;
         // `local_families` is the declared vector family; it is recorded for
         // connected locals and struct leaves too, which `local_types` is not.
