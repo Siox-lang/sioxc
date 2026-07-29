@@ -1448,3 +1448,21 @@ forward declarations, DUT outputs, and direct native-testbench references.
   and formatting.
 - Added a standalone corpus fixture plus native integration coverage for wide
   matrices, arrays of structs, arrays of strings, copying, and mutation.
+
+### 2026-07-29 — Codex — preserve native local ranges
+
+- Reproduced explicit-range locals losing their width, logical indices,
+  direction, and range attributes in native test executables.
+- Materialized array leaves under their declared indices, including descending,
+  named, and signed ranges, while retaining `(left, right)` metadata.
+- Coerced string-literal characters through the destination enum/logic type
+  instead of storing raw Unicode code points in `Bit` and `Logic` arrays.
+- Made array iteration use both connected and unconnected typed leaves and
+  retain element type, family, and width metadata for the loop variable.
+- Sign-extended negative range attributes to the harness value width and taught
+  indexed paths to address negative logical indices.
+- Mapped foreign `integer` declarations to signed C ABI words (removing an
+  incompatible libc prototype) and stopped emitting redundant parentheses
+  around already-grouped native `if` conditions.
+- Added native integration and external corpus regressions covering wide
+  ranged vectors, bounds, direction, indexing, enum coercion, and iteration.

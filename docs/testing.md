@@ -41,7 +41,8 @@ arithmetic, comparisons, conditionals, negation, and formatted output; their
 native storage remains the same f64 bit representation used by real signals.
 Calls to declared `extern "C"` functions are also valid in native testbench
 expressions; parameter and return conversion follows the declaration (`real`
-crosses as C `double`, integer-shaped scalars as an ABI word).
+crosses as C `double`, `integer` as the signed ABI word, and packed scalars as
+an unsigned ABI word).
 Named `real` constants and real-typed parameters/returns of ordinary functions
 and methods retain that same representation while native code inlines them.
 Struct-local numeric leaves use their declared width as well: fields wider
@@ -53,6 +54,12 @@ arbitrary-width elements too.
 Materialization is recursive for nested arrays, arrays of structs, and arrays
 of fixed-size strings; composite copies match scalar leaf paths rather than
 collapsing an aggregate into one machine word.
+Explicit local ranges retain their declared logical indices and direction.
+This applies to numeric vectors and arrays alike: indexing, iteration, string
+literal initialization of logic arrays, and the `'left`, `'right`, `'high`,
+`'low`, `'length`, and `'ascending` attributes all observe the declared range.
+Named `range` constants can be used as local type indices, and signed bounds
+remain addressable.
 
 ## Reporting
 

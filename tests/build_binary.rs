@@ -362,6 +362,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
             "module wide_format;
              using std::math::{{sqrt, pow, floor, PI}};
              const HALF_PI: real = PI / 2.0;
+             const BYTE_RANGE: range = 7..0;
              fn half(value: real) -> real {{ return value / 2.0; }}
              fn one() -> real {{ return 1; }}
              enum Symbol {{ 'α', 'β' }}
@@ -399,6 +400,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                      {{ .value = {wide}, .character = 'β' }}
                  ];
                  let words: string[3][2] = [\"abc\", \"def\"];
+                 let ranged_wide: unsigned[127..0] = {wide};
+                 let descending_bits: Bit[3..0] = \"1010\";
+                 let named_bits: Bit[BYTE_RANGE] = \"11001010\";
+                 let one_count: unsigned[4] = 0;
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -456,6 +461,21 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  words[1] = \"xyz\";
                  assert!(words[0] == \"abc\", \"string array first\");
                  assert!(words[1] == \"xyz\", \"string array assignment\");
+                 assert!(ranged_wide == {wide}, \"ranged wide local\");
+                 assert!(ranged_wide'length == 128, \"ranged wide length\");
+                 assert!(ranged_wide'left == 127, \"ranged wide left\");
+                 assert!(ranged_wide'right == 0, \"ranged wide right\");
+                 assert!(ranged_wide'ascending == false, \"descending wide range\");
+                 assert!(descending_bits[3] == '1', \"descending array left element\");
+                 assert!(descending_bits[0] == '0', \"descending array right element\");
+                 assert!(descending_bits'left == 3, \"descending array left\");
+                 assert!(descending_bits'right == 0, \"descending array right\");
+                 assert!(named_bits[7] == '1', \"named range left element\");
+                 assert!(named_bits[0] == '0', \"named range right element\");
+                 for bit in descending_bits {{
+                     if bit == '1' {{ one_count = one_count + 1; }}
+                 }}
+                 assert!(one_count == 2, \"ranged array iteration {{}}\", one_count);
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"

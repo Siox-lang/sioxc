@@ -140,6 +140,19 @@ pub fn build(
         .filter(|declaration| type_head_name(&declaration.ty) == Some("real"))
         .map(|declaration| declaration.name.text.clone())
         .collect();
+    let const_ranges: HashMap<String, (i64, i64)> = const_decls
+        .iter()
+        .filter(|declaration| type_head_name(&declaration.ty) == Some("range"))
+        .filter_map(|declaration| {
+            let ast::Expr::Range { lo, hi, .. } = &declaration.value else {
+                return None;
+            };
+            Some((
+                declaration.name.text.clone(),
+                (signed_index_bound(lo)?, signed_index_bound(hi)?),
+            ))
+        })
+        .collect();
     let mut consts: HashMap<String, u128> = HashMap::new();
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
@@ -406,6 +419,8 @@ pub fn build(
             clocks,
             locals: Default::default(),
             local_widths: Default::default(),
+            local_indices: Default::default(),
+            local_ranges: Default::default(),
             local_families: Default::default(),
             local_types: Default::default(),
             op_impls: &op_impls,
@@ -414,6 +429,7 @@ pub fn build(
             derived_widths: &derived_widths,
             const_exprs: &const_exprs,
             real_consts: &real_consts,
+            const_ranges: &const_ranges,
             aliases: &aliases,
             tmp: Default::default(),
             message_id: Default::default(),
@@ -744,6 +760,12 @@ struct Ctx<'a> {
     /// Declared bit width of a C local (`let c: unsigned[8]` -> 8): writes mask to
     /// it so arithmetic wraps exactly like the equivalent hardware signal.
     local_widths: std::cell::RefCell<HashMap<String, u32>>,
+    /// Array/string name -> logical indices in declaration order. Width-only
+    /// arrays are `0..N-1`; explicit ranges preserve either direction.
+    local_indices: std::cell::RefCell<HashMap<String, Vec<i64>>>,
+    /// Declared `(left, right)` bounds for range attributes, preserving
+    /// direction independently from flattened storage order.
+    local_ranges: std::cell::RefCell<HashMap<String, (i64, i64)>>,
     /// Declared vector family of a testbench name (`let a: signed[8]` -> "signed"),
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
@@ -765,6 +787,8 @@ struct Ctx<'a> {
     /// Module constants declared as `real`; their stored C expressions are f64
     /// bit patterns and must be decoded when used as operands.
     real_consts: &'a std::collections::HashSet<String>,
+    /// Named range constants used by local type indices.
+    const_ranges: &'a HashMap<String, (i64, i64)>,
     /// Testbench name -> EVERY connected port's signal id (a write drives all).
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
@@ -1443,31 +1467,45 @@ impl Ctx<'_> {
             .value
             .as_ref()
             .and_then(|value| self.c_string_elems(value));
-        let declared_len = match ty {
+        let declared_indices = match ty {
             ast::Type::Indexed {
                 index: Some(index), ..
-            } => match index.as_ref() {
-                ast::Expr::Int { text, .. } => text.parse().ok(),
-                _ => None,
-            },
+            } => index_values(index, self.const_ranges),
             _ => None,
         };
-        let len = declared_len
-            .or_else(|| literal.map(|text| text.chars().count()))
-            .or_else(|| source.as_ref().map(Vec::len))
-            .unwrap_or(0);
+        let indices = declared_indices
+            .or_else(|| literal.map(|text| (0..text.chars().count() as i64).collect()))
+            .or_else(|| {
+                source
+                    .as_ref()
+                    .map(|values| (0..values.len() as i64).collect())
+            })
+            .unwrap_or_default();
         self.local_types
             .borrow_mut()
             .insert(l.name.text.clone(), "string".into());
-        for i in 0..len {
-            let key = format!("{}[{i}]", l.name.text);
+        self.local_indices
+            .borrow_mut()
+            .insert(l.name.text.clone(), indices.clone());
+        if let (Some(left), Some(right)) = (indices.first(), indices.last()) {
+            self.local_ranges
+                .borrow_mut()
+                .insert(l.name.text.clone(), (*left, *right));
+        }
+        for (position, index) in indices.into_iter().enumerate() {
+            let key = format!("{}[{index}]", l.name.text);
             self.local_types
                 .borrow_mut()
                 .insert(key.clone(), "Char".into());
             let value = literal
-                .and_then(|text| text.chars().nth(i))
+                .and_then(|text| text.chars().nth(position))
                 .map(|ch| format!("{}ULL", ch as u32))
-                .or_else(|| source.as_ref().and_then(|values| values.get(i)).cloned())
+                .or_else(|| {
+                    source
+                        .as_ref()
+                        .and_then(|values| values.get(position))
+                        .cloned()
+                })
                 .unwrap_or_else(|| "0ULL".into());
             // Elaboration materializes a connected string as one signal per
             // character. Seed those signals directly so the DUT connection
@@ -1515,12 +1553,20 @@ impl Ctx<'_> {
         ty: &ast::Type,
         b: &mut String,
     ) -> Result<(), String> {
-        if let Some(len) = sized_string_len(ty) {
+        if let Some((left, right)) = type_index_bounds(ty, self.const_ranges) {
+            self.local_ranges
+                .borrow_mut()
+                .insert(prefix.to_string(), (left, right));
+        }
+        if let Some(indices) = sized_string_indices(ty, self.const_ranges) {
             self.local_types
                 .borrow_mut()
                 .insert(prefix.to_string(), "string".into());
-            for i in 0..len {
-                let element = format!("{prefix}[{i}]");
+            self.local_indices
+                .borrow_mut()
+                .insert(prefix.to_string(), indices.clone());
+            for index in indices {
+                let element = format!("{prefix}[{index}]");
                 self.local_types
                     .borrow_mut()
                     .insert(element.clone(), "Char".into());
@@ -1531,9 +1577,12 @@ impl Ctx<'_> {
             }
             return Ok(());
         }
-        if let Some((element, len)) = self.array_parts(ty) {
-            for i in 0..len {
-                self.declare_typed_storage(&format!("{prefix}[{i}]"), element, b)?;
+        if let Some((element, indices)) = self.array_parts(ty) {
+            self.local_indices
+                .borrow_mut()
+                .insert(prefix.to_string(), indices.clone());
+            for index in indices {
+                self.declare_typed_storage(&format!("{prefix}[{index}]"), element, b)?;
             }
             return Ok(());
         }
@@ -1787,23 +1836,27 @@ impl Ctx<'_> {
         }
         match value {
             ast::Expr::Array { elems, .. } => {
-                let mut target_len = 0usize;
-                loop {
-                    let element = format!("{name}[{target_len}]");
-                    if self.has_storage_prefix(&element) {
-                        target_len += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if target_len != elems.len() {
+                let indices = self
+                    .local_indices
+                    .borrow()
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let mut indices = Vec::new();
+                        while self.has_storage_prefix(&format!("{name}[{}]", indices.len())) {
+                            indices.push(indices.len() as i64);
+                        }
+                        indices
+                    });
+                if indices.len() != elems.len() {
                     return Err(format!(
-                        "array assignment length mismatch: `{name}` has {target_len} element(s), source has {}",
+                        "array assignment length mismatch: `{name}` has {} element(s), source has {}",
+                        indices.len(),
                         elems.len()
                     ));
                 }
-                for (i, value) in elems.iter().enumerate() {
-                    let element = format!("{name}[{i}]");
+                for (index, value) in indices.into_iter().zip(elems) {
+                    let element = format!("{name}[{index}]");
                     if self.write_composite(&element, value, b, ind)? {
                         continue;
                     }
@@ -1828,15 +1881,25 @@ impl Ctx<'_> {
                 Ok(true)
             }
             ast::Expr::StrLit { text, .. } => {
-                for (i, ch) in text.chars().enumerate() {
-                    let element = format!("{name}[{i}]");
+                let indices = self
+                    .local_indices
+                    .borrow()
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| (0..text.chars().count() as i64).collect());
+                for (index, ch) in indices.into_iter().zip(text.chars()) {
+                    let element = format!("{name}[{index}]");
+                    let value = self.char_value_for_target(&element, ch);
                     if let Some(&id) = self.map.get(&element) {
-                        b.push_str(&format!("{ind}sx_set({}, {}ULL);\n", id.0, ch as u32));
+                        b.push_str(&format!("{ind}sx_set({}, {value}ULL);\n", id.0));
                     } else if self.locals.borrow().contains(&element) {
+                        let expression = match self.local_widths.borrow().get(&element) {
+                            Some(&width) => mask_c(&format!("{value}ULL"), width),
+                            None => format!("{value}ULL"),
+                        };
                         b.push_str(&format!(
-                            "{ind}{} = {}ULL;\n",
-                            c_local_ident(&element),
-                            ch as u32
+                            "{ind}{} = {expression};\n",
+                            c_local_ident(&element)
                         ));
                     }
                 }
@@ -1943,16 +2006,17 @@ impl Ctx<'_> {
             if !self.families.contains(head) {
                 return None;
             }
-            if let ast::Expr::Int { text, .. } = i.as_ref() {
-                return Some((head.to_string(), text.parse().ok()?));
-            }
+            return Some((
+                head.to_string(),
+                u32::try_from(index_values(i, self.const_ranges)?.len()).ok()?,
+            ));
         }
         None
     }
 
     /// The outer array element type and count, excluding a packed vector's own
     /// width index (`unsigned[128]` is one value; `unsigned[128][2]` is two).
-    fn array_parts<'b>(&self, ty: &'b ast::Type) -> Option<(&'b ast::Type, usize)> {
+    fn array_parts<'b>(&self, ty: &'b ast::Type) -> Option<(&'b ast::Type, Vec<i64>)> {
         let ast::Type::Indexed {
             base,
             index: Some(index),
@@ -1967,10 +2031,7 @@ impl Ctx<'_> {
                 return None;
             }
         }
-        let ast::Expr::Int { text, .. } = index.as_ref() else {
-            return None;
-        };
-        Some((base, text.replace('_', "").parse().ok()?))
+        Some((base, index_values(index, self.const_ranges)?))
     }
 
     /// The bit width a testbench name carries: a local's declared width or the
@@ -2184,9 +2245,7 @@ impl Ctx<'_> {
             if !self.families.contains(head) {
                 return None;
             }
-            if let ast::Expr::Int { text, .. } = i.as_ref() {
-                return text.parse().ok();
-            }
+            return u32::try_from(index_values(i, self.const_ranges)?.len()).ok();
         }
         None
     }
@@ -2236,6 +2295,14 @@ impl Ctx<'_> {
                             self.local_families
                                 .borrow_mut()
                                 .insert(l.name.text.clone(), fam);
+                        }
+                        if let Some((left, right)) =
+                            l.ty.as_ref()
+                                .and_then(|ty| type_index_bounds(ty, self.const_ranges))
+                        {
+                            self.local_ranges
+                                .borrow_mut()
+                                .insert(l.name.text.clone(), (left, right));
                         }
                         if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
                             self.local_types
@@ -2399,18 +2466,82 @@ impl Ctx<'_> {
                 {
                     let k = self.tmp.get();
                     self.tmp.set(k + 1);
-                    let ids: Vec<String> = (0..n)
-                        .map(|i| self.map[&format!("{path}[{i}]")].0.to_string())
+                    let indices = self
+                        .local_indices
+                        .borrow()
+                        .get(&path)
+                        .cloned()
+                        .unwrap_or_else(|| (0..n as i64).collect());
+                    let values: Vec<String> = indices
+                        .into_iter()
+                        .map(|index| {
+                            let element = format!("{path}[{index}]");
+                            if let Some(id) = self.map.get(&element) {
+                                format!("sx_read({})", id.0)
+                            } else {
+                                c_local_ident(&element)
+                            }
+                        })
                         .collect();
                     b.push_str(&format!(
-                        "{ind}{{ static const uint32_t _a{k}[] = {{{}}};\n\
+                        "{ind}{{ sx_value _a{k}[] = {{{}}};\n\
                          {ind}for (signed _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
-                         uint64_t {v} = sx_read(_a{k}[_i{k}]);\n",
-                        ids.join(", ")
+                         sx_value {v} = _a{k}[_i{k}];\n",
+                        values.join(", ")
                     ));
                     let fresh = self.locals.borrow_mut().insert(v.clone());
+                    let first_element = self
+                        .local_indices
+                        .borrow()
+                        .get(&path)
+                        .and_then(|indices| indices.first().copied())
+                        .unwrap_or(0);
+                    let element = format!("{path}[{first_element}]");
+                    let loop_type = self.local_types.borrow().get(&element).cloned();
+                    let loop_family = self.local_families.borrow().get(&element).cloned();
+                    let loop_width = self.local_widths.borrow().get(&element).copied();
+                    let previous_type = loop_type
+                        .as_ref()
+                        .and_then(|ty| self.local_types.borrow_mut().insert(v.clone(), ty.clone()));
+                    let previous_family = loop_family.as_ref().and_then(|family| {
+                        self.local_families
+                            .borrow_mut()
+                            .insert(v.clone(), family.clone())
+                    });
+                    let previous_width = loop_width
+                        .and_then(|width| self.local_widths.borrow_mut().insert(v.clone(), width));
                     for s in &body.stmts {
                         self.stmt(s, b, depth + 1)?;
+                    }
+                    if loop_type.is_some() {
+                        match previous_type {
+                            Some(previous) => {
+                                self.local_types.borrow_mut().insert(v.clone(), previous);
+                            }
+                            None => {
+                                self.local_types.borrow_mut().remove(v);
+                            }
+                        }
+                    }
+                    if loop_family.is_some() {
+                        match previous_family {
+                            Some(previous) => {
+                                self.local_families.borrow_mut().insert(v.clone(), previous);
+                            }
+                            None => {
+                                self.local_families.borrow_mut().remove(v);
+                            }
+                        }
+                    }
+                    if loop_width.is_some() {
+                        match previous_width {
+                            Some(previous) => {
+                                self.local_widths.borrow_mut().insert(v.clone(), previous);
+                            }
+                            None => {
+                                self.local_widths.borrow_mut().remove(v);
+                            }
+                        }
                     }
                     if fresh {
                         self.locals.borrow_mut().remove(v);
@@ -2479,7 +2610,15 @@ impl Ctx<'_> {
     fn c_if(&self, iff: &ast::IfStmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         let c = self.expr(&iff.cond)?;
-        b.push_str(&format!("{ind}if ({c}) {{\n"));
+        // Binary/comparison lowering already encloses its expression. Avoid
+        // producing `if ((a == b))`, which Clang diagnoses as suspicious,
+        // while still parenthesizing a bare name or literal as C requires.
+        let condition = if c.starts_with('(') && c.ends_with(')') {
+            c
+        } else {
+            format!("({c})")
+        };
+        b.push_str(&format!("{ind}if {condition} {{\n"));
         for s in &iff.then.stmts {
             self.stmt(s, b, depth + 1)?;
         }
@@ -2713,6 +2852,11 @@ impl Ctx<'_> {
 
     /// Element count of a DUT-connected array in the signal map.
     fn array_len(&self, path: &str) -> Option<u64> {
+        if let Some(indices) = self.local_indices.borrow().get(path) {
+            return u64::try_from(indices.len())
+                .ok()
+                .filter(|length| *length > 0);
+        }
         let mut n = 0;
         while self.map.contains_key(&format!("{path}[{n}]")) {
             n += 1;
@@ -2758,6 +2902,37 @@ impl Ctx<'_> {
                 .copied();
         }
         None
+    }
+
+    fn char_value_for_target(&self, name: &str, ch: char) -> u64 {
+        if let Some(id) = self.map.get(name) {
+            let signal = &self.design.signals[id.0 as usize];
+            if signal.char {
+                return ch as u32 as u64;
+            }
+            if let Some(enum_name) = &signal.enum_type {
+                if let Some(value) = self
+                    .enums
+                    .get(enum_name)
+                    .and_then(|symbols| symbols.get(&format!("'{ch}'")))
+                {
+                    return *value;
+                }
+            }
+        }
+        if let Some(ty) = self.local_types.borrow().get(name) {
+            if ty == "Char" {
+                return ch as u32 as u64;
+            }
+            if let Some(value) = self
+                .enums
+                .get(ty)
+                .and_then(|symbols| symbols.get(&format!("'{ch}'")))
+            {
+                return *value;
+            }
+        }
+        ch as u32 as u64
     }
 
     /// The enum type of an operand that is an enum-typed signal or testbench
@@ -2909,6 +3084,22 @@ impl Ctx<'_> {
     /// element locals. `None` if `e` isn't an array-shaped name.
     fn c_string_elems(&self, e: &ast::Expr) -> Option<Vec<String>> {
         let path = expr_path(e)?;
+        if let Some(indices) = self.local_indices.borrow().get(&path).cloned() {
+            let values = indices
+                .into_iter()
+                .filter_map(|index| {
+                    let element = format!("{path}[{index}]");
+                    if let Some(id) = self.map.get(&element) {
+                        Some(format!("sx_read({})", id.0))
+                    } else if self.locals.borrow().contains(&element) {
+                        Some(c_local_ident(&element))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            return Some(values);
+        }
         // A connected string: element signals `path[i]` in the map.
         if let Some(n) = self.array_len(&path) {
             return Some(
@@ -3544,16 +3735,31 @@ impl Ctx<'_> {
                     "left" | "right" | "high" | "low" | "ascending"
                 ) =>
             {
-                let w = expr_path(base)
-                    .and_then(|p| self.name_width(&p))
+                let path = expr_path(base);
+                let bounds = path
+                    .as_ref()
+                    .and_then(|path| self.local_ranges.borrow().get(path).copied());
+                let w = path
+                    .as_ref()
+                    .and_then(|path| self.name_width(path))
                     .unwrap_or(0) as i64;
+                let (left, right) = bounds.unwrap_or((0, (w - 1).max(0)));
                 let v = match attr.text.as_str() {
-                    "left" | "low" => 0,
-                    "right" | "high" => (w - 1).max(0),
-                    "ascending" => 1,
+                    "left" => left,
+                    "right" => right,
+                    "low" => left.min(right),
+                    "high" => left.max(right),
+                    "ascending" => i64::from(left <= right),
                     _ => unreachable!(),
                 };
-                format!("{v}ULL")
+                if attr.text == "ascending" {
+                    format!("{v}ULL")
+                } else {
+                    // Bounds are language `integer` values. Cast through a
+                    // signed ABI word so a negative bound sign-extends to the
+                    // harness-wide value instead of becoming only 64 one-bits.
+                    format!("((sx_value)(int64_t){v}LL)")
+                }
             }
             ast::Expr::Path(p)
                 if p.segments.len() == 1
@@ -3929,7 +4135,10 @@ fn is_single_string_type(ty: &ast::Type) -> bool {
     }
 }
 
-fn sized_string_len(ty: &ast::Type) -> Option<usize> {
+fn sized_string_indices(
+    ty: &ast::Type,
+    const_ranges: &HashMap<String, (i64, i64)>,
+) -> Option<Vec<i64>> {
     let ast::Type::Indexed {
         base,
         index: Some(index),
@@ -3945,19 +4154,71 @@ fn sized_string_len(ty: &ast::Type) -> Option<usize> {
     ) {
         return None;
     }
-    let ast::Expr::Int { text, .. } = index.as_ref() else {
+    index_values(index, const_ranges)
+}
+
+fn index_values(index: &ast::Expr, const_ranges: &HashMap<String, (i64, i64)>) -> Option<Vec<i64>> {
+    match index {
+        ast::Expr::Int { text, .. } => {
+            let count: usize = text.replace('_', "").parse().ok()?;
+            let count = i64::try_from(count).ok()?;
+            Some((0..count).collect())
+        }
+        ast::Expr::Range { lo, hi, .. } => {
+            let left = signed_index_bound(lo)?;
+            let right = signed_index_bound(hi)?;
+            Some(directional_indices(left, right))
+        }
+        ast::Expr::Path(path) if path.segments.len() == 1 => {
+            let (left, right) = *const_ranges.get(&path.segments[0].text)?;
+            Some(directional_indices(left, right))
+        }
+        _ => None,
+    }
+}
+
+fn directional_indices(left: i64, right: i64) -> Vec<i64> {
+    if left <= right {
+        (left..=right).collect()
+    } else {
+        (right..=left).rev().collect()
+    }
+}
+
+fn type_index_bounds(
+    ty: &ast::Type,
+    const_ranges: &HashMap<String, (i64, i64)>,
+) -> Option<(i64, i64)> {
+    let ast::Type::Indexed {
+        index: Some(index), ..
+    } = ty
+    else {
         return None;
     };
-    text.replace('_', "").parse().ok()
+    let indices = index_values(index, const_ranges)?;
+    Some((*indices.first()?, *indices.last()?))
+}
+
+fn signed_index_bound(expr: &ast::Expr) -> Option<i64> {
+    match expr {
+        ast::Expr::Int { text, .. } => i64::try_from(try_parse_u64(text)?).ok(),
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs,
+            ..
+        } => signed_index_bound(rhs)?.checked_neg(),
+        _ => None,
+    }
 }
 
 /// Phase-1 C ABI mapping for foreign function declarations. `real` is the
-/// native C `double`; every integer-shaped scalar crosses as one ABI word.
+/// native C `double`, language `integer` is the signed ABI word, and packed
+/// scalar values cross as the corresponding unsigned word.
 fn extern_c_type(ty: Option<&ast::Type>) -> &'static str {
-    if ty.and_then(type_head_name) == Some("real") {
-        "double"
-    } else {
-        "uint64_t"
+    match ty.and_then(type_head_name) {
+        Some("real") => "double",
+        Some("integer") => "int64_t",
+        _ => "uint64_t",
     }
 }
 
@@ -3967,12 +4228,11 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
         ast::Expr::Field { base, field, .. } => {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
-        ast::Expr::Index { base, index, .. } => match index.as_ref() {
-            ast::Expr::Int { text, .. } => {
-                Some(format!("{}[{}]", expr_path(base)?, parse_u64(text)))
-            }
-            _ => None,
-        },
+        ast::Expr::Index { base, index, .. } => Some(format!(
+            "{}[{}]",
+            expr_path(base)?,
+            signed_index_bound(index)?
+        )),
         _ => None,
     }
 }

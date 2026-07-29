@@ -1639,8 +1639,9 @@ extern "C" {
 }
 ```
 
-Type mapping: `real` is `double`; `integer` and the word-sized numeric types
-are 64-bit words. Calls are usable in hardware expressions and testbenches.
+Type mapping: `real` is `double`; `integer` is the signed 64-bit ABI word; packed
+word-sized numeric types use the unsigned 64-bit ABI word. Calls are usable in
+hardware expressions and testbenches.
 The native binary resolves symbols at link time (the math library is linked by
 default). Only the `"C"` ABI is supported.
 

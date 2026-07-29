@@ -11,9 +11,9 @@ A design or testbench may call C functions declared `extern "C"`:
 extern "C" fn sin(x: real) -> real;
 ```
 
-Only the `"C"` ABI is supported. Type mapping: `real` is `double`; `integer` and
-the word-sized numeric types are 64-bit words. Calls are usable in hardware
-expressions and in testbenches.
+Only the `"C"` ABI is supported. Type mapping: `real` is `double`; `integer` is
+the signed 64-bit ABI word; packed word-sized numeric types use the unsigned
+64-bit ABI word. Calls are usable in hardware expressions and in testbenches.
 
 In the **native binary**, symbols resolve at link time. The math library is
 linked by default, so the `std::math` surface — `sin`, `sqrt`, … — works out of
