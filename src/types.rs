@@ -1538,10 +1538,21 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::For { range, body, .. } => {
+            Stmt::For {
+                var, range, body, ..
+            } => {
                 self.check_expr(range, sym);
+                let loop_ty = match range {
+                    Expr::Range { .. } => Ty::Integer,
+                    _ => match self.type_of(range, sym) {
+                        Ty::Array { elem, .. } => *elem,
+                        _ => Ty::Error,
+                    },
+                };
+                let mut loop_sym = sym.clone();
+                loop_sym.insert(var.text.clone(), loop_ty);
                 for s in &body.stmts {
-                    self.check_stmt(s, dirs, sym, ranged);
+                    self.check_stmt(s, dirs, &loop_sym, ranged);
                 }
             }
             Stmt::Expr(e) => self.check_expr(e, sym),
@@ -3935,6 +3946,27 @@ mod tests {
             errors, 0,
             "literal spelling must not turn valid widths or indices into unknown widths"
         );
+    }
+
+    #[test]
+    fn loop_variables_shadow_outer_types_with_element_types() {
+        let errors = check_src(
+            "module m;\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let item: real = 3.5;\n\
+               let bits: Bit[2] = \"10\";\n\
+               for item in 0..1 {\n\
+                 assert!(item >= 0, \"integer range item\");\n\
+                 for item in bits {\n\
+                   assert!(item == '0' or item == '1', \"Bit array item\");\n\
+                 }\n\
+                 assert!(item <= 1, \"integer item restored\");\n\
+               }\n\
+               assert!(item == 3.5, \"outer real restored\");\n\
+             }\n",
+        );
+        assert_eq!(errors, 0, "each loop body needs its own value-type scope");
     }
 
     fn diag_codes(src: &str) -> Vec<String> {

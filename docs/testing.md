@@ -43,6 +43,11 @@ Calls to declared `extern "C"` functions are also valid in native testbench
 expressions; parameter and return conversion follows the declaration (`real`
 crosses as C `double`, `integer` as the signed ABI word, and packed scalars as
 an unsigned ABI word).
+Native kernel-`integer` locals and loop counters retain signed comparison,
+division, arithmetic-right-shift, and formatting semantics. Each `for` body has
+its own value/type scope: a range binds an `integer`, collection iteration binds
+the element type, nested shadowing restores the enclosing loop metadata, and
+leaving the loop restores any same-named outer local.
 Named `real` constants and real-typed parameters/returns of ordinary functions
 and methods retain that same representation while native code inlines them.
 Struct-local numeric leaves use their declared width as well: fields wider
@@ -68,7 +73,8 @@ literal initialization of logic arrays, and the `'left`, `'right`, `'high`,
 Named `range` constants can be used as local type indices, and signed bounds
 remain addressable. Integer constants can likewise supply local widths; based
 and `_`-separated literal spellings retain the same width and value through
-analysis, elaboration, IR, and native test generation.
+analysis, elaboration, IR, and native test generation, including direct real
+reassignment and comparison.
 
 ## Reporting
 

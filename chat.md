@@ -1512,3 +1512,20 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Added native integration and external corpus coverage for nested enum/numeric
   leaves, whole-struct copies, nested spreads, arrays of structs, and fixed
   string fields.
+
+### 2026-07-29 — Codex — scope and sign native loop values correctly
+
+- Reproduced `for` bodies being type-checked against an outer same-named local
+  instead of the range/collection element, rejecting valid character
+  comparisons inside a loop that shadowed a `real`.
+- Gave semantic loop bodies a scoped `integer` or collection-element binding,
+  and made native array/range loops replace and restore every type, family, and
+  width metadata slot through nested shadowing.
+- Reproduced negative range counters using unsigned comparison semantics and
+  fixed kernel-`integer` comparisons, division, arithmetic right shift, and
+  formatted output through signed ABI-word operations.
+- Fixed the remaining `_`-separated real paths in local reassignment, direct
+  comparison, and frequency operand generation.
+- Added semantic, native integration, and external corpus coverage for nested
+  loop shadowing, outer-value restoration, negative ranges, signed arithmetic,
+  signed formatting, and separated real reassignment.

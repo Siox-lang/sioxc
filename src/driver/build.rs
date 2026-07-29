@@ -260,11 +260,20 @@ pub fn build(
          static sx_value sx_udiv(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs == 0 ? 0 : lhs / rhs;\n\
          }}\n\
+         static sx_value sx_idiv(int64_t lhs, int64_t rhs) {{\n\
+         \x20   if (rhs == 0) return 0;\n\
+         \x20   if (lhs == INT64_MIN && rhs == -1) return (sx_value)(uint64_t)INT64_MIN;\n\
+         \x20   return (sx_value)(uint64_t)(lhs / rhs);\n\
+         }}\n\
          static sx_value sx_shl(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs >= {value_bits} ? 0 : lhs << rhs;\n\
          }}\n\
          static sx_value sx_shr(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs >= {value_bits} ? 0 : lhs >> rhs;\n\
+         }}\n\
+         static sx_value sx_ishr(int64_t lhs, sx_value rhs) {{\n\
+         \x20   return rhs >= 64 ? (lhs < 0 ? (sx_value)-1 : 0) \
+         : (sx_value)(uint64_t)(lhs >> rhs);\n\
          }}\n\
          static sx_value sx_mask(sx_value value, uint32_t width) {{\n\
          \x20   return width >= {value_bits} ? value : value & (((sx_value)1 << width) - 1);\n\
@@ -2648,48 +2657,32 @@ impl Ctx<'_> {
                     let loop_type = self.local_types.borrow().get(&element).cloned();
                     let loop_family = self.local_families.borrow().get(&element).cloned();
                     let loop_width = self.local_widths.borrow().get(&element).copied();
-                    let previous_type = loop_type
-                        .as_ref()
-                        .and_then(|ty| self.local_types.borrow_mut().insert(v.clone(), ty.clone()));
-                    let previous_family = loop_family.as_ref().and_then(|family| {
-                        self.local_families
-                            .borrow_mut()
-                            .insert(v.clone(), family.clone())
-                    });
-                    let previous_width = loop_width
-                        .and_then(|width| self.local_widths.borrow_mut().insert(v.clone(), width));
+                    let previous_type = self.local_types.borrow_mut().remove(v);
+                    let previous_family = self.local_families.borrow_mut().remove(v);
+                    let previous_width = self.local_widths.borrow_mut().remove(v);
+                    if let Some(ty) = loop_type {
+                        self.local_types.borrow_mut().insert(v.clone(), ty);
+                    }
+                    if let Some(family) = loop_family {
+                        self.local_families.borrow_mut().insert(v.clone(), family);
+                    }
+                    if let Some(width) = loop_width {
+                        self.local_widths.borrow_mut().insert(v.clone(), width);
+                    }
                     for s in &body.stmts {
                         self.stmt(s, b, depth + 1)?;
                     }
-                    if loop_type.is_some() {
-                        match previous_type {
-                            Some(previous) => {
-                                self.local_types.borrow_mut().insert(v.clone(), previous);
-                            }
-                            None => {
-                                self.local_types.borrow_mut().remove(v);
-                            }
-                        }
+                    self.local_types.borrow_mut().remove(v);
+                    self.local_families.borrow_mut().remove(v);
+                    self.local_widths.borrow_mut().remove(v);
+                    if let Some(previous) = previous_type {
+                        self.local_types.borrow_mut().insert(v.clone(), previous);
                     }
-                    if loop_family.is_some() {
-                        match previous_family {
-                            Some(previous) => {
-                                self.local_families.borrow_mut().insert(v.clone(), previous);
-                            }
-                            None => {
-                                self.local_families.borrow_mut().remove(v);
-                            }
-                        }
+                    if let Some(previous) = previous_family {
+                        self.local_families.borrow_mut().insert(v.clone(), previous);
                     }
-                    if loop_width.is_some() {
-                        match previous_width {
-                            Some(previous) => {
-                                self.local_widths.borrow_mut().insert(v.clone(), previous);
-                            }
-                            None => {
-                                self.local_widths.borrow_mut().remove(v);
-                            }
-                        }
+                    if let Some(previous) = previous_width {
+                        self.local_widths.borrow_mut().insert(v.clone(), previous);
                     }
                     if fresh {
                         self.locals.borrow_mut().remove(v);
@@ -2714,8 +2707,25 @@ impl Ctx<'_> {
                      {ind}uint64_t {v} = (uint64_t)_c{k};\n"
                 ));
                 let fresh = self.locals.borrow_mut().insert(v.clone());
+                let previous_type = self
+                    .local_types
+                    .borrow_mut()
+                    .insert(v.clone(), "integer".to_string());
+                let previous_family = self.local_families.borrow_mut().remove(v);
+                let previous_width = self.local_widths.borrow_mut().insert(v.clone(), 64);
                 for s in &body.stmts {
                     self.stmt(s, b, depth + 1)?;
+                }
+                self.local_types.borrow_mut().remove(v);
+                self.local_widths.borrow_mut().remove(v);
+                if let Some(previous) = previous_type {
+                    self.local_types.borrow_mut().insert(v.clone(), previous);
+                }
+                if let Some(previous) = previous_family {
+                    self.local_families.borrow_mut().insert(v.clone(), previous);
+                }
+                if let Some(previous) = previous_width {
+                    self.local_widths.borrow_mut().insert(v.clone(), previous);
                 }
                 if fresh {
                     self.locals.borrow_mut().remove(v);
@@ -2848,6 +2858,9 @@ impl Ctx<'_> {
             } else if is_char {
                 cfmt.push_str("%s");
                 cargs.push(format!("sx_utf8(({}), (char[5]){{0}})", self.expr(a)?));
+            } else if self.is_integer_operand(a) {
+                cfmt.push_str("%lld");
+                cargs.push(format!("(long long)(int64_t)({})", self.expr(a)?));
             } else {
                 cfmt.push_str("%s");
                 cargs.push(format!(
@@ -3192,17 +3205,69 @@ impl Ctx<'_> {
             || self.local_types.borrow().get(&path).map(String::as_str) == Some("real")
     }
 
+    /// Whether an operand has the kernel signed `integer` type. Integer
+    /// literals alone stay contextual (so `unsigned_value < 5` still dispatches
+    /// as unsigned); an explicitly typed path/call/attribute selects signed
+    /// comparisons, division, and right shift.
+    fn is_integer_operand(&self, e: &ast::Expr) -> bool {
+        match e {
+            ast::Expr::Unary { rhs, .. } => return self.is_integer_operand(rhs),
+            ast::Expr::Binary { lhs, rhs, .. } => {
+                return self.is_integer_operand(lhs) || self.is_integer_operand(rhs);
+            }
+            ast::Expr::SysAttr { attr, .. }
+                if matches!(
+                    attr.text.as_str(),
+                    "left" | "right" | "high" | "low" | "length"
+                ) =>
+            {
+                return true;
+            }
+            ast::Expr::Call { callee, .. } => {
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    if let Some(receiver) = self.receiver_type(base) {
+                        return self
+                            .methods
+                            .get(&(receiver, field.text.clone()))
+                            .and_then(|function| function.ret.as_ref())
+                            .and_then(type_head_name)
+                            == Some("integer");
+                    }
+                }
+                if let Some(key) = siox::ir::call_fn_key(callee) {
+                    return self
+                        .fns
+                        .get(&key)
+                        .and_then(|function| function.ret.as_ref())
+                        .and_then(type_head_name)
+                        == Some("integer");
+                }
+            }
+            _ => {}
+        }
+        let Some(path) = expr_path(e) else {
+            return false;
+        };
+        self.fn_type_env
+            .borrow()
+            .last()
+            .and_then(|types| types.get(&path))
+            .map(String::as_str)
+            == Some("integer")
+            || self.local_types.borrow().get(&path).map(String::as_str) == Some("integer")
+    }
+
     /// An operand in a `real` comparison, as a C `double`: a real signal reads
     /// its bits, an integer/decimal literal is a float constant, anything else
     /// is cast.
     fn c_real_operand(&self, e: &ast::Expr) -> Result<String, String> {
         match e {
-            ast::Expr::Int { text, .. } => Ok(format!("((double){text})")),
+            ast::Expr::Int { text, .. } => Ok(format!("((double){})", text.replace('_', ""))),
             ast::Expr::SuffixLit { text, suffix, .. }
                 if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
             {
                 let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
-                Ok(format!("((double)({text}) * {scale}.0)"))
+                Ok(format!("((double)({}) * {scale}.0)", text.replace('_', "")))
             }
             _ if self.is_real_operand(e) => {
                 if let Some(path) = expr_path(e) {
@@ -3464,6 +3529,7 @@ impl Ctx<'_> {
         let ty = self.local_types.borrow().get(name).cloned();
         match (ty.as_deref(), e) {
             (Some("real"), ast::Expr::Int { text, .. }) => text
+                .replace('_', "")
                 .parse::<f64>()
                 .map(|value| format!("{}ULL", value.to_bits()))
                 .map_err(|_| format!("invalid real literal `{text}`")),
@@ -4037,6 +4103,27 @@ impl Ctx<'_> {
                     return Ok(v);
                 }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
+                if self.is_integer_operand(lhs) || self.is_integer_operand(rhs) {
+                    let signed_a = format!("((int64_t)({a}))");
+                    let signed_c = format!("((int64_t)({c}))");
+                    match op {
+                        ast::BinOp::Div => {
+                            return Ok(format!("sx_idiv({signed_a}, {signed_c})"));
+                        }
+                        ast::BinOp::Shr => {
+                            return Ok(format!("sx_ishr({signed_a}, ({c}))"));
+                        }
+                        ast::BinOp::Eq
+                        | ast::BinOp::Ne
+                        | ast::BinOp::Lt
+                        | ast::BinOp::Le
+                        | ast::BinOp::Gt
+                        | ast::BinOp::Ge => {
+                            return Ok(format!("({signed_a} {o} {signed_c})"));
+                        }
+                        _ => {}
+                    }
+                }
                 match op {
                     ast::BinOp::Div => format!("sx_udiv(({a}), ({c}))"),
                     ast::BinOp::Shl => format!("sx_shl(({a}), ({c}))"),

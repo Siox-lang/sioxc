@@ -392,6 +392,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let symbol: Symbol = 'α';
                  let boxed: CharacterBox = {{ .value = 'λ' }};
                  let real_value: real = 1.5;
+                 let signed_value: integer = -8;
                  let real_box: RealBox = {{ .value = 3.5 }};
                  let math_result: real = sqrt(9.0);
                  let wide_box: WideBox = {{ .value = {wide} }};
@@ -437,6 +438,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  symbol = 'β';
                  assert!(symbol == 'β', \"local enum symbol assignment\");
                  print!(\"reals {{}} {{}}\", real_value, real_box.value);
+                 print!(\"signed integer {{}}\", signed_value);
                  print!(\"real comparison {{}}\", real_value == 1.5);
                  real_value = real_value + 0.75;
                  assert!(real_value == 2.25, \"real local arithmetic {{}}\", real_value);
@@ -534,6 +536,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
     assert!(
         stdout.contains("real comparison 1"),
         "a real comparison result was incorrectly formatted as a real:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("signed integer -8"),
+        "signed integer formatting lost its sign:\n{stdout}"
     );
     assert!(
         stdout.contains("extern floor 3"),
