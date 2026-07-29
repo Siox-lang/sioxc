@@ -205,6 +205,10 @@ struct Checker<'a> {
     /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
     /// functions (rand/fs) have no declaration and are not listed.
     fn_arity: HashMap<String, usize>,
+    /// Free-function name -> its declared parameter types. Arguments were
+    /// checked for count but never for type, so a value of the wrong type was
+    /// reinterpreted bit-for-bit at the call.
+    fn_param_types: HashMap<String, Vec<Option<Type>>>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -280,6 +284,7 @@ impl<'a> Checker<'a> {
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
             fn_arity: HashMap::new(),
+            fn_param_types: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -594,6 +599,16 @@ impl<'a> Checker<'a> {
                 self.fn_arity.insert(
                     f.name.text.clone(),
                     f.params.iter().filter(|p| !p.is_self).count(),
+                );
+                // Generic functions are verified at each call, where the
+                // concrete types are known; only concrete ones are recorded.
+                self.fn_param_types.insert(
+                    f.name.text.clone(),
+                    f.params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .map(|p| p.ty.clone())
+                        .collect(),
                 );
             }
             Item::Struct(st) => {
@@ -2323,6 +2338,40 @@ impl<'a> Checker<'a> {
                     name.text,
                     args.len()
                 ),
+            );
+            return;
+        }
+        self.check_call_arg_types(&name.text, args);
+    }
+
+    /// Each argument must be assignable to its parameter, by the same rule an
+    /// assignment uses. Only the count was checked, so a `real` handed to an
+    /// `integer` parameter passed its f64 bits through as an integer, and a
+    /// `signed[8]` passed its raw bit pattern — `abs(-5)` returned 251.
+    fn check_call_arg_types(&mut self, name: &str, args: &[Expr]) {
+        let Some(params) = self.fn_param_types.get(name).cloned() else {
+            return;
+        };
+        let sym = HashMap::new();
+        for (arg, pty) in args.iter().zip(params.iter()) {
+            let Some(pty) = pty else { continue };
+            let want = self.ast_ty(pty);
+            if want == Ty::Error || self.assignable(&want, arg, &sym) {
+                continue;
+            }
+            let got = self.type_of(arg, &sym);
+            if got == Ty::Error {
+                continue;
+            }
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                expr_span(arg),
+                format!(
+                    "cannot pass {} to a {} parameter of `{name}` without an explicit conversion",
+                    self.ty_display(&got),
+                    self.ty_display(&want)
+                ),
+                format!("wrap it in a conversion, e.g. `{}(...)`", self.ty_display(&want)),
             );
         }
     }

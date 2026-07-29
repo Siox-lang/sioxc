@@ -394,6 +394,11 @@ struct Lowering<'a> {
     /// the concrete argument's family), so operator dispatch in the body uses
     /// the caller's type (e.g. signed's signed `Ord`, not the kernel compare).
     param_types: std::cell::RefCell<HashMap<String, String>>,
+    /// A bound parameter's width, alongside its family in `param_types`. The
+    /// family alone let the body dispatch `signed`'s operators while
+    /// `self'length` inside them fell back to 1, so the sign-bit test shifted
+    /// by 0 and `abs(-5)` returned 251.
+    param_widths: std::cell::RefCell<HashMap<String, u32>>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
     /// Exact literal values for module constants, including values wider than
@@ -529,6 +534,7 @@ impl<'a> Lowering<'a> {
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
+            param_widths: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
             const_values: HashMap::new(),
             consts_real: HashMap::new(),
@@ -3836,6 +3842,13 @@ impl<'a> Lowering<'a> {
     }
 
     fn ast_width(&self, e: &ast::Expr) -> u32 {
+        // A bound parameter carries the caller's width, recorded at the
+        // inline; without it a nested inline sees no width at all.
+        if let Some(p) = expr_path(e) {
+            if let Some(&w) = self.param_widths.borrow().get(&p) {
+                return w;
+            }
+        }
         match e {
             ast::Expr::IfExpr { then, .. } => self.ast_width(then),
             // A conversion is as wide as its target (64 for kernel integer).
@@ -4757,6 +4770,7 @@ impl<'a> Lowering<'a> {
         let mut fenv: HashMap<String, Val> = HashMap::new();
         // Saved param-family bindings to restore after this inline (nesting).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
+        let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
@@ -4769,6 +4783,13 @@ impl<'a> Lowering<'a> {
                 if let Some(fam) = self.operand_type_name(a) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
+                }
+                // The width travels with the family: a nested inline (e.g.
+                // `signed`'s Ord inside this body) reads `self'length` off the
+                // parameter, and without this it saw none.
+                let w = self.ast_width(a);
+                if w > 0 {
+                    saved_widths.push((n.text.clone(), self.param_widths.borrow_mut().insert(n.text.clone(), w)));
                 }
             }
         }
@@ -4784,6 +4805,12 @@ impl<'a> Lowering<'a> {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
                 None => self.param_types.borrow_mut().remove(&name),
+            };
+        }
+        for (name, prev) in saved_widths.into_iter().rev() {
+            match prev {
+                Some(w) => self.param_widths.borrow_mut().insert(name, w),
+                None => self.param_widths.borrow_mut().remove(&name),
             };
         }
         self.inline_depth.set(self.inline_depth.get() - 1);
@@ -4860,6 +4887,7 @@ impl<'a> Lowering<'a> {
         );
         // Family bindings to restore after the inline (nesting-safe).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
+        let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
         let self_prev = self
             .param_types
             .borrow_mut()
@@ -4876,6 +4904,13 @@ impl<'a> Lowering<'a> {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
                 }
+                // The width travels with the family: a nested inline (e.g.
+                // `signed`'s Ord inside this body) reads `self'length` off the
+                // parameter, and without this it saw none.
+                let w = self.ast_width(a);
+                if w > 0 {
+                    saved_widths.push((n.text.clone(), self.param_widths.borrow_mut().insert(n.text.clone(), w)));
+                }
             }
         }
         let out = self.inline_block(&body.stmts, &fenv);
@@ -4883,6 +4918,12 @@ impl<'a> Lowering<'a> {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
                 None => self.param_types.borrow_mut().remove(&name),
+            };
+        }
+        for (name, prev) in saved_widths.into_iter().rev() {
+            match prev {
+                Some(w) => self.param_widths.borrow_mut().insert(name, w),
+                None => self.param_widths.borrow_mut().remove(&name),
             };
         }
         self.self_signal.set(saved_self);
@@ -8391,6 +8432,32 @@ mod tests {
     /// only the named form was read, so the positional one left the parameter
     /// unbound and every port kept width 0 — surfacing far downstream as
     /// "signal has unknown width (0)" with nothing pointing at the instance.
+    /// A parameter carried its argument's *family* into the body but not its
+    /// width, so a nested inline — `signed`'s Ord inside `abs` — read
+    /// `self'length` as 1 and tested the sign bit with `>> 0`. `abs(-5)`
+    /// returned 251.
+    #[test]
+    fn an_inlined_parameter_keeps_its_argument_width() {
+        let d = lower_src(
+            "module m;\n\
+             fn width_of(v: integer) -> integer { return v'length; }\n\
+             entity E { in s: signed[8]; out y: unsigned[8]; }\n\
+             impl E { y = width_of(s); }\n\
+             #[top] entity H {}\n\
+             impl H { let s: signed[8]; let y: unsigned[8]; let e: E = { .s = s, .y = y }; }",
+        );
+        let dr = d
+            .drivers
+            .iter()
+            .find(|dr| d.signals[dr.target.0 as usize].path.ends_with(".y"))
+            .expect("driver for y");
+        assert!(
+            matches!(dr.expr, Expr::Const(8)),
+            "the parameter should report the argument's width, got {:?}",
+            dr.expr
+        );
+    }
+
     #[test]
     fn positional_generic_argument_binds_a_value_parameter() {
         let src = |arg: &str| {
