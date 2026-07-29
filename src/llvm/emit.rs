@@ -554,6 +554,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_switch(sig, done, &cases).unwrap();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
+            self.record_range_value(SignalId(id as u32), val, None);
             // Mask to the signal's width, exactly like the interpreter's
             // `set` — outside writers (runner, native harness, FFI) may hand
             // in a value wider than the signal.
@@ -650,6 +651,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
             let w = self.design.signals[id].width;
+            let first_word = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, word, i32.const_zero(), "word0")
+                .unwrap();
+            self.record_range_value(SignalId(id as u32), val, Some(first_word));
             let cty = self.value_ty(w);
             // shift = word * ABI_WORD_BITS, in the compute type.
             let shift = self
@@ -882,7 +888,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         active: Option<IntValue<'ctx>>,
     ) -> IntValue<'ctx> {
         let signal = &self.design.signals[target.0 as usize];
-        let Some((lo, hi)) = signal.range else {
+        let Some(_) = signal.range else {
             return if signal.integer {
                 self.emit_signed_operand_at(expr, signal.width)
             } else {
@@ -891,8 +897,22 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         };
         let check_width = self.expr_width(expr).max(signal.width).max(64);
         let value = self.emit_signed_operand_at(expr, check_width);
-        let lo = self.value_ty(check_width).const_int(lo as u64, true);
-        let hi = self.value_ty(check_width).const_int(hi as u64, true);
+        self.record_range_value(target, value, active);
+        self.fit(value, self.value_ty(signal.width))
+    }
+
+    fn record_range_value(
+        &self,
+        target: SignalId,
+        value: IntValue<'ctx>,
+        active: Option<IntValue<'ctx>>,
+    ) {
+        let Some((lo, hi)) = self.design.signals[target.0 as usize].range else {
+            return;
+        };
+        let ty = value.get_type();
+        let lo = ty.const_int(lo as u64, true);
+        let hi = ty.const_int(hi as u64, true);
         let below = self
             .builder
             .build_int_compare(IntPredicate::SLT, value, lo, "rlo")
@@ -928,7 +948,6 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder
             .build_store(self.range_error_ptr(), next)
             .unwrap();
-        self.fit(value, self.value_ty(signal.width))
     }
 
     /// `event[target] |= (next != prev)` — a change flags the signal.

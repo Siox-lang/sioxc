@@ -1609,3 +1609,14 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Added native/LLVM positive-range comparison coverage and an integration
   regression proving that `2` assigned dynamically to one-bit `integer<0..1>`
   fails even though its stored bits would otherwise wrap to zero.
+
+### 2026-07-29 — Codex — validate ranged external stimulus
+
+- Reproduced a dynamic `integer<0..3>` testbench value entering an
+  `integer<0..1>` DUT input through the native word ABI, truncating to zero
+  before the internal range checker could observe it.
+- Reused the LLVM pre-truncation range latch in both `sx_set` and
+  `sx_set_word`, guarding word-wise checks so only the value-bearing first word
+  participates.
+- Added default and bitpack native integration coverage proving external
+  stimulus now reports the constrained input path and fails the executable.

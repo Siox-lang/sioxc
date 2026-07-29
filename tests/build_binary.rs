@@ -159,6 +159,61 @@ fn native_range_checks_each_clock_settle() {
 }
 
 #[test]
+fn native_range_checks_external_stimulus_before_truncation() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_input_range_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let out = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        "module input_range;
+         entity InputRange {
+             in x: integer<0..1>;
+             out y: integer<0..1>;
+         }
+         impl InputRange { y = x; }
+         #[test] entity RangeTest {}
+         impl RangeTest {
+             let wide: integer<0..3> = 2;
+             let x: integer<0..1>;
+             let y: integer<0..1>;
+             let dut: InputRange = { .x = x, .y = y };
+             x = wide;
+             await 1ns;
+         }",
+    )
+    .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "input range fixture failed to compile");
+    let run = Command::new(&out).output().unwrap();
+    assert!(
+        !run.status.success(),
+        "an external out-of-range value was truncated before validation"
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(output.contains("left its range 0..1"), "{output}");
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
 fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

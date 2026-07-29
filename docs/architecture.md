@@ -194,7 +194,9 @@ so the top value of a nonnegative range cannot become negative. Ranged
 assignments are also compared against their bounds before destination
 truncation; LLVM latches the first violating signal id and the native scheduler
 checks it after every settle, preventing both wrapped and transient violations
-from disappearing.
+from disappearing. The same pre-truncation hook is used by the public
+`sx_set`/`sx_set_word` stimulus ABI, so a wider testbench value cannot wrap
+while entering a constrained input port.
 
 Foreign C calls retain ABI kind metadata independently for each parameter and
 the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C

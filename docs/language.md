@@ -1633,9 +1633,10 @@ Semantics:
   constraint governs validity and storage; widening sign-extends the value.
 - **Runtime range check**: every dynamic driver/update is checked before
   destination truncation, and every scheduler settle validates stored ranged
-  values. The first violation is latched even if a later clock edge returns the
-  signal to range; the generated test executable fails with the signal path and
-  declared domain.
+values. The first violation is latched even if a later clock edge returns the
+signal to range; the generated test executable fails with the signal path and
+declared domain. Checks cover both design-internal assignments and external
+testbench stimulus before either is narrowed to the destination storage.
 - `real<left..right>` documents and (later) checks the constraint; storage
   stays f64.
 
