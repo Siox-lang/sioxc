@@ -2333,8 +2333,9 @@ let r: unsigned[8] = randint(10, 20);             //   (runtime-provided, std::r
 ```
 
 `print!` auto-newlines (like `$display`); real values print as floats, `Char`
-as the character, everything else as decimal. Range violations on ranged
-numerics report automatically — no syntax.
+as the Unicode character, everything else as decimal. Decimal formatting
+preserves the complete declared width, including values wider than the target
+ABI word. Range violations on ranged numerics report automatically — no syntax.
 
 `warn!(cond, "msg")` is the **non-fatal** sibling of `assert!`: a false
 condition reports to stderr and counts toward the test's warning total, but

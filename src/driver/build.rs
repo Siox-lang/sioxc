@@ -189,8 +189,15 @@ pub fn build(
         .unwrap_or(1)
         .max(max_literal_type_width(modules, &derived_widths))
         .max(siox::llvm::ABI_WORD_BITS);
+    // ceil(bits * log10(2)) + sign/NUL slack, using a conservative integer
+    // approximation so formatting storage scales with the actual value type.
+    let decimal_capacity = u64::from(value_bits)
+        .saturating_mul(30_103)
+        .div_ceil(100_000)
+        .saturating_add(2);
     prog.push_str(&format!(
         "typedef unsigned _BitInt({value_bits}) sx_value;\n\
+         #define SX_DECIMAL_CAP {decimal_capacity}\n\
          static const uint32_t sx_nwords[] = {{{abi_words}}};\n\
          static void sx_set(uint32_t s, sx_value v) {{\n\
          \x20   for (uint32_t i = 0; i < sx_nwords[s]; ++i)\n\
@@ -210,10 +217,32 @@ pub fn build(
          }}\n\
          static sx_value sx_shr(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs >= {value_bits} ? 0 : lhs >> rhs;\n\
+         }}\n\
+         static char *sx_decimal(sx_value value, char *buffer) {{\n\
+         \x20   char *end = buffer + SX_DECIMAL_CAP, *cursor = end;\n\
+         \x20   *--cursor = '\\0';\n\
+         \x20   do {{ *--cursor = (char)('0' + value % 10); value /= 10; }} while (value);\n\
+         \x20   memmove(buffer, cursor, (size_t)(end - cursor));\n\
+         \x20   return buffer;\n\
+         }}\n\
+         static char *sx_utf8(sx_value raw, char buffer[5]) {{\n\
+         \x20   uint32_t value = (uint32_t)raw;\n\
+         \x20   if (value <= 0x7f) {{ buffer[0] = (char)value; buffer[1] = 0; }}\n\
+         \x20   else if (value <= 0x7ff) {{ buffer[0] = (char)(0xc0 | value >> 6); \
+         buffer[1] = (char)(0x80 | (value & 0x3f)); buffer[2] = 0; }}\n\
+         \x20   else if (value <= 0xffff && !(value >= 0xd800 && value <= 0xdfff)) {{ \
+         buffer[0] = (char)(0xe0 | value >> 12); buffer[1] = (char)(0x80 | ((value >> 6) & 0x3f)); \
+         buffer[2] = (char)(0x80 | (value & 0x3f)); buffer[3] = 0; }}\n\
+         \x20   else if (value <= 0x10ffff) {{ buffer[0] = (char)(0xf0 | value >> 18); \
+         buffer[1] = (char)(0x80 | ((value >> 12) & 0x3f)); \
+         buffer[2] = (char)(0x80 | ((value >> 6) & 0x3f)); \
+         buffer[3] = (char)(0x80 | (value & 0x3f)); buffer[4] = 0; }}\n\
+         \x20   else {{ buffer[0] = '?'; buffer[1] = 0; }}\n\
+         \x20   return buffer;\n\
          }}\n"
     ));
     prog.push_str("extern void sx_settle(void);\n");
-    prog.push_str("static const char *g_msg;\nstatic char g_msgbuf[512];\n");
+    prog.push_str("static const char *g_msg;\n");
     prog.push_str("static signed g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
@@ -336,9 +365,11 @@ pub fn build(
             const_exprs: &const_exprs,
             aliases: &aliases,
             tmp: Default::default(),
+            message_id: Default::default(),
             fns: &fns,
             fn_env: Default::default(),
             instance_names,
+            value_bits,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
         names.push((name, qualified));
@@ -682,6 +713,9 @@ struct Ctx<'a> {
     aliases: &'a HashMap<String, Vec<SignalId>>,
     /// Unique-suffix counter for generated C identifiers.
     tmp: std::cell::Cell<usize>,
+    /// Unique local-static buffer suffix for formatted assertion/warning
+    /// messages. Each call owns storage sized from its actual format arity.
+    message_id: std::cell::Cell<usize>,
     /// Module-level functions (testbench-callable; translated to C ternaries).
     fns: &'a HashMap<String, &'a ast::FnDecl>,
     /// Parameter-substitution stack while translating a fn body.
@@ -690,6 +724,9 @@ struct Ctx<'a> {
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
     instance_names: std::collections::HashSet<String>,
+    /// Harness-wide `_BitInt` width, also the upper bound for decimal
+    /// formatting capacity.
+    value_bits: u32,
 }
 
 /// Struct layouts keyed by name, each a base-first flattened field list
@@ -1798,15 +1835,19 @@ impl Ctx<'_> {
                                 // A char literal on an enum-typed local resolves
                                 // by position in that enum (data-driven), like
                                 // the native harness + hardware paths.
-                                Some(v) => match l
-                                    .ty
-                                    .as_ref()
-                                    .and_then(type_head_name)
-                                    .and_then(|h| self.enum_char_lit(h, v))
-                                {
-                                    Some(d) => format!("{d}ULL"),
-                                    None => self.expr(v)?,
-                                },
+                                Some(v) => {
+                                    let head = l.ty.as_ref().and_then(type_head_name);
+                                    match (head, v) {
+                                        (Some("Char"), ast::Expr::CharLit { ch, .. }) => {
+                                            format!("{}ULL", *ch as u32)
+                                        }
+                                        (Some(head), _) => match self.enum_char_lit(head, v) {
+                                            Some(d) => format!("{d}ULL"),
+                                            None => self.expr(v)?,
+                                        },
+                                        (None, _) => self.expr(v)?,
+                                    }
+                                }
                                 // Uninitialized: the type's `new()` default
                                 // (`Logic` -> `'U'`), matching native + hardware.
                                 None => {
@@ -2068,6 +2109,8 @@ impl Ctx<'_> {
             let sig = expr_path(a)
                 .and_then(|p| self.map.get(&p))
                 .map(|id| &self.design.signals[id.0 as usize]);
+            let local_type =
+                expr_path(a).and_then(|path| self.local_types.borrow().get(&path).cloned());
             let is_real = sig.map(|s| s.real).unwrap_or_else(|| {
                 matches!(a, ast::Expr::Int { text, .. } if text.contains('.'))
                     // `uniform()` returns a real but has no signal to ask.
@@ -2075,9 +2118,9 @@ impl Ctx<'_> {
                         if matches!(callee.as_ref(), ast::Expr::Path(p)
                             if p.segments.len() == 1 && p.segments[0].text == "uniform"))
             });
-            let ety: Option<String> = sig
-                .and_then(|s| s.enum_type.clone())
-                .or_else(|| expr_path(a).and_then(|p| self.local_types.borrow().get(&p).cloned()));
+            let is_char =
+                sig.is_some_and(|signal| signal.char) || local_type.as_deref() == Some("Char");
+            let ety: Option<String> = sig.and_then(|s| s.enum_type.clone()).or(local_type);
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let Some(syms) = enum_syms {
                 let mut tern = String::from("\"?\"");
@@ -2093,9 +2136,15 @@ impl Ctx<'_> {
             } else if is_real {
                 cfmt.push_str("%g");
                 cargs.push(format!("sx_f64({})", self.value_for_print(a)?));
+            } else if is_char {
+                cfmt.push_str("%s");
+                cargs.push(format!("sx_utf8(({}), (char[5]){{0}})", self.expr(a)?));
             } else {
-                cfmt.push_str("%llu");
-                cargs.push(format!("(unsigned long long)({})", self.expr(a)?));
+                cfmt.push_str("%s");
+                cargs.push(format!(
+                    "sx_decimal(({}), (char[SX_DECIMAL_CAP]){{0}})",
+                    self.expr(a)?
+                ));
             }
         }
         Ok((cfmt, cargs))
@@ -2118,8 +2167,32 @@ impl Ctx<'_> {
         } else {
             format!(", {}", cargs.join(", "))
         };
+        let decimal_capacity = u64::from(self.value_bits)
+            .saturating_mul(30_103)
+            .div_ceil(100_000)
+            .saturating_add(2);
+        let enum_capacity = self
+            .design
+            .enum_syms
+            .values()
+            .flat_map(|symbols| symbols.values().map(|symbol| symbol.len() as u64 + 1))
+            .max()
+            .unwrap_or(0);
+        let argument_capacity = decimal_capacity.max(enum_capacity).max(32);
+        let capacity = u64::try_from(text.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(
+                u64::try_from(rest.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(argument_capacity),
+            )
+            .saturating_add(1);
+        let id = self.message_id.get();
+        self.message_id.set(id.saturating_add(1));
         Ok(format!(
-            "snprintf(g_msgbuf, sizeof g_msgbuf, \"{cfmt}\"{list}); g_msg = g_msgbuf;"
+            "static char _sx_msg_{id}[{capacity}]; \
+             snprintf(_sx_msg_{id}, sizeof _sx_msg_{id}, \"{cfmt}\"{list}); \
+             g_msg = _sx_msg_{id};"
         ))
     }
 

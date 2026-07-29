@@ -36,7 +36,8 @@ a method result.
 
 - `assert!(cond, "msg")` — fail the test if `cond` is false.
 - `warn!(…)` / `print!(…)` — diagnostics and logging; enum and logic values
-  render symbolically (`Idle`, `'Z'`), not as raw codes.
+  render symbolically (`Idle`, `'Z'`), `Char` values render as Unicode, and
+  arbitrary-width numeric values retain every decimal digit.
 - `stop!` / `finish!` — end the run.
 
 ## Running

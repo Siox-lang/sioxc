@@ -343,3 +343,62 @@ fn overflowing_native_duration_is_a_build_error() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(output);
 }
+
+#[test]
+fn native_formatting_preserves_wide_unicode_and_long_messages() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_wide_format_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    let wide = "340282366920938463463374607431768211455";
+    let long = format!("{}END", "x".repeat(600));
+    std::fs::write(
+        &source,
+        format!(
+            "module wide_format;
+             #[test] entity T {{}}
+             impl T {{
+                 let wide: unsigned[128] = {wide};
+                 let character: Char = 'λ';
+                 print!(\"wide {{}} char {{}}\", wide, character);
+                 warn!(false, \"{long} {{}}\", wide);
+             }}"
+        ),
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "wide formatting fixture failed to compile:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "formatting test failed:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("wide {wide} char λ")),
+        "formatted output was truncated or mis-encoded:\n{stdout}"
+    );
+    assert!(
+        stderr.contains(&format!("{long} {wide}")),
+        "warning buffer truncated the formatted message:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}

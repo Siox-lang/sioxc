@@ -1322,3 +1322,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Corrected simulation documentation that claimed arbitrary delayed
   assignments were already scheduled; the native Phase 1 harness currently
   supports the canonical clock self-toggle form.
+
+### 2026-07-29 — Codex — preserve native formatted values
+
+- Replaced the native harness's `%llu` formatting with decimal conversion over
+  the complete generated `_BitInt` width, so values wider than one ABI word no
+  longer lose their upper bits.
+- Added Unicode encoding for `Char` output and fixed context-sensitive local
+  `Char` literal initialization, which was incorrectly attempting enum lookup.
+- Replaced the shared 512-byte assertion/warning buffer with per-message
+  storage derived from the format text, arity, numeric width, and enum symbols.
+- Added an executable regression covering an `unsigned[128]` maximum, a
+  non-ASCII character, and a warning message longer than the old fixed buffer.
