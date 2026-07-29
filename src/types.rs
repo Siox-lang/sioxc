@@ -810,6 +810,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_item(&mut self, item: &Item) {
+        self.check_item_type_layouts(item);
         let sym = HashMap::new();
         let sym = &sym;
         match item {
@@ -884,6 +885,149 @@ impl<'a> Checker<'a> {
             Item::Struct(_) => {}
             Item::View(v) => self.check_view(v),
             Item::Using(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
+        }
+    }
+
+    /// Validate constant layout bounds before elaboration/lowering tries to
+    /// flatten them. Symbolic widths are checked after substitution; here we
+    /// catch source constants that cannot fit the compiler's `u32` layout
+    /// representation and would otherwise truncate or attempt an impossible
+    /// allocation during error recovery.
+    fn check_type_layout(&mut self, ty: &Type) {
+        match ty {
+            Type::Path(_) => {}
+            Type::Indexed { base, index, .. } => {
+                self.check_type_layout(base);
+                let Some(index) = index.as_deref() else {
+                    return;
+                };
+                match index {
+                    Expr::Range { lo, hi, .. } => {
+                        let (Some(left), Some(right)) = (signed_lit(lo), signed_lit(hi)) else {
+                            return;
+                        };
+                        let length = (i128::from(left) - i128::from(right)).unsigned_abs() + 1;
+                        if length > u128::from(u32::MAX) {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(index),
+                                format!(
+                                    "range contains {length} elements, exceeding the compiler \
+                                     layout maximum of {}",
+                                    u32::MAX
+                                ),
+                            );
+                        }
+                    }
+                    _ => {
+                        let Some(width) = signed_lit(index) else {
+                            return;
+                        };
+                        if width < 0 {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(index),
+                                "a type width cannot be negative".to_string(),
+                            );
+                        } else if u32::try_from(width).is_err() {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(index),
+                                format!(
+                                    "type width {width} exceeds the compiler layout maximum of {}",
+                                    u32::MAX
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            Type::Generic { base, .. } => self.check_type_layout(base),
+            Type::View { target, .. } => self.check_type_layout(target),
+        }
+    }
+
+    fn check_fn_type_layouts(&mut self, function: &FnDecl) {
+        self.check_param_type_layouts(&function.generics);
+        for parameter in &function.params {
+            if let Some(ty) = &parameter.ty {
+                self.check_type_layout(ty);
+            }
+        }
+        if let Some(ret) = &function.ret {
+            self.check_type_layout(ret);
+        }
+    }
+
+    fn check_param_type_layouts(&mut self, parameters: &Params) {
+        for parameter in &parameters.params {
+            if let Some(bound) = &parameter.bound {
+                self.check_type_layout(bound);
+            }
+        }
+    }
+
+    fn check_item_type_layouts(&mut self, item: &Item) {
+        match item {
+            Item::Using(using) => {
+                if let UsingKind::Alias { ty, .. } = &using.kind {
+                    self.check_type_layout(ty);
+                }
+            }
+            Item::Const(constant) => self.check_type_layout(&constant.ty),
+            Item::Fn(function) => self.check_fn_type_layouts(function),
+            Item::ExternBlock { fns, .. } => {
+                for function in fns {
+                    self.check_fn_type_layouts(function);
+                }
+            }
+            Item::Struct(structure) => {
+                self.check_param_type_layouts(&structure.params);
+                if let Some(base) = &structure.base {
+                    self.check_type_layout(base);
+                }
+                for field in &structure.fields {
+                    self.check_type_layout(&field.ty);
+                }
+            }
+            Item::View(view) => {
+                self.check_param_type_layouts(&view.params);
+                self.check_type_layout(&view.target);
+            }
+            Item::Enum(en) => {
+                if let Some(repr) = &en.repr {
+                    self.check_type_layout(repr);
+                }
+            }
+            Item::Entity(entity) => {
+                self.check_param_type_layouts(&entity.params);
+                for port in &entity.ports {
+                    self.check_type_layout(&port.ty);
+                }
+            }
+            Item::Impl(implementation) => {
+                self.check_param_type_layouts(&implementation.params);
+                self.check_type_layout(&implementation.target);
+                for item in &implementation.items {
+                    match item {
+                        ImplItem::Const(constant) => self.check_type_layout(&constant.ty),
+                        ImplItem::Let(declaration) => {
+                            if let Some(ty) = &declaration.ty {
+                                self.check_type_layout(ty);
+                            }
+                        }
+                        ImplItem::Fn(function) => self.check_fn_type_layouts(function),
+                        ImplItem::ModeField { .. } | ImplItem::Stmt(_) => {}
+                    }
+                }
+            }
+            Item::Trait(trait_) => {
+                self.check_param_type_layouts(&trait_.params);
+                for function in &trait_.items {
+                    self.check_fn_type_layouts(function);
+                }
+            }
+            Item::AttrDecl(attribute) => self.check_type_layout(&attribute.ty),
         }
     }
 
@@ -4343,6 +4487,24 @@ mod tests {
             entity E { out y: unsigned[64]; }\n\
             impl E { y = unsigned[64](9223372036854775807 + 1); }\n";
         let _ = check_src(src);
+    }
+
+    #[test]
+    fn unrepresentable_type_layouts_are_rejected_before_lowering() {
+        let range = "module m;\n\
+            entity E { out y: Logic[-9223372036854775807..9223372036854775807]; }\n\
+            impl E {}\n";
+        assert_eq!(check_src(range), 1, "the range length exceeds u32");
+
+        let width = "module m;\n\
+            entity E { out y: unsigned[4294967296]; }\n\
+            impl E {}\n";
+        assert_eq!(check_src(width), 1, "the width exceeds u32");
+
+        let negative = "module m;\n\
+            entity E { out y: unsigned[-1]; }\n\
+            impl E {}\n";
+        assert_eq!(check_src(negative), 1, "negative widths are invalid");
     }
 
     /// Two variants with the same explicit value are indistinguishable at

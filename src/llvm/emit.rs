@@ -12,6 +12,10 @@ use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
 
+/// LLVM's `IntegerType::MAX_INT_BITS` (from `llvm/IR/DerivedTypes.h`).
+/// This is a backend capability, not a siox language/container limit.
+pub(crate) const LLVM_MAX_INT_BITS: u32 = 1 << 23;
+
 /// Run LLVM's default `-O2` pipeline over the module before codegen. The
 /// word-based IR is emitted naively — every value is an `i64`, so each `real`
 /// op bitcasts to `f64` and back, comparisons of constants stay unfolded, and
@@ -54,7 +58,7 @@ mod bitpack_tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let llvm = emit_module_ir(&design);
+        let llvm = emit_module_ir(&design).unwrap();
         assert!(
             llvm.contains("@event = internal global [2 x i64]"),
             "65 event flags need exactly two words:\n{llvm}"
@@ -64,31 +68,48 @@ mod bitpack_tests {
 
 /// Build the LLVM module for `design` and return its textual IR (`.ll`).
 /// This is what `siox build --emit-llvm` prints and what golden tests diff.
-pub fn emit_module_ir(design: &Design) -> String {
+pub fn emit_module_ir(design: &Design) -> Result<String, String> {
     let ctx = Context::create();
-    let module = build_module(&ctx, design);
-    module.print_to_string().to_string()
+    let module = build_module(&ctx, design)?;
+    Ok(module.print_to_string().to_string())
 }
 
 /// Build and verify the LLVM module for `design` in `ctx`.
-pub(crate) fn build_module<'ctx>(ctx: &'ctx Context, design: &Design) -> Module<'ctx> {
+pub(crate) fn build_module<'ctx>(
+    ctx: &'ctx Context,
+    design: &Design,
+) -> Result<Module<'ctx>, String> {
     // Reject IR a backend can't compile (bad ids, Unknown, unknown widths)
     // with a clear message rather than emitting malformed LLVM (B0).
     let issues = design.validate();
     if !issues.is_empty() {
-        panic!("cannot codegen invalid IR:\n  - {}", issues.join("\n  - "));
+        return Err(format!(
+            "cannot codegen invalid IR:\n  - {}",
+            issues.join("\n  - ")
+        ));
+    }
+    if let Some(signal) = design
+        .signals
+        .iter()
+        .find(|signal| signal.width > LLVM_MAX_INT_BITS)
+    {
+        return Err(format!(
+            "signal `{}` is {} bits wide, but this LLVM backend supports integer \
+             values up to {LLVM_MAX_INT_BITS} bits",
+            signal.path, signal.width
+        ));
     }
     let cg = Codegen::new(ctx, design);
     cg.build();
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
-        panic!(
+        return Err(format!(
             "emitted invalid LLVM module:\n{}\n--- IR ---\n{}",
             e,
             cg.module.print_to_string()
-        );
+        ));
     }
-    cg.module
+    Ok(cg.module)
 }
 
 struct Codegen<'ctx, 'd> {
@@ -125,11 +146,11 @@ fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
         0..=64 => ctx.i64_type(),
         // Past one machine word LLVM still has a native integer: it legalizes
         // `iN` into word-sized pieces with the right carries and shifts, so a
-        // multi-word signal needs no hand-written word juggling here.
+        // multi-word signal needs no hand-written word juggling here. Keep the
+        // exact semantic width; rounding to a power of two both wasted storage
+        // and overflowed for large valid `u32` widths.
         w => ctx
-            .custom_width_int_type(
-                std::num::NonZeroU32::new(w.next_power_of_two()).expect("non-zero width"),
-            )
+            .custom_width_int_type(std::num::NonZeroU32::new(w).expect("non-zero width"))
             .expect("LLVM supports the width"),
     }
 }
@@ -1300,7 +1321,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         // State layout, accessors, settle, and the add+mask are present. The
         // state is a width-packed struct: three 8-bit signals -> three `i8`s.
         assert!(
@@ -1334,9 +1355,45 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("i512"), "{ll}");
         assert_eq!(crate::llvm::words_for(512), 8);
+    }
+
+    #[test]
+    fn storage_keeps_exact_wide_signal_width() {
+        let design = Design {
+            signals: vec![sig("E.value", 65)],
+            drivers: vec![],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+            vector_element_enums: Default::default(),
+        };
+        let ll = emit_module_ir(&design).unwrap();
+        assert!(
+            ll.contains("@cur = internal global <{ i65 }>"),
+            "65-bit storage was rounded to an unrelated width:\n{ll}"
+        );
+    }
+
+    #[test]
+    fn unsupported_llvm_width_is_an_error_not_a_panic() {
+        let design = Design {
+            signals: vec![sig("E.enormous", LLVM_MAX_INT_BITS + 1)],
+            drivers: vec![],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+            vector_element_enums: Default::default(),
+        };
+        let error = emit_module_ir(&design).unwrap_err();
+        assert!(error.contains("E.enormous"), "{error}");
+        assert!(error.contains(&LLVM_MAX_INT_BITS.to_string()), "{error}");
     }
 
     #[test]
@@ -1356,7 +1413,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         assert!(
             ll.contains("1020847100762815390427017310442723737601"),
             "{ll}"
@@ -1403,7 +1460,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         assert!(
             ll.contains("add i8"),
             "narrow operation was globally widened:\n{ll}"
@@ -1435,7 +1492,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         assert!(
             ll.contains("icmp uge i16"),
             "missing shift bound check:\n{ll}"
@@ -1480,7 +1537,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
         };
-        let ll = emit_module_ir(&design);
+        let ll = emit_module_ir(&design).unwrap();
         // In the settle body, the store to b's slot precedes the store to y's.
         let body = ll.split("@sx_settle()").nth(1).unwrap();
         // Struct-GEP field indices: `i32 0, i32 <id>`.

@@ -24,7 +24,9 @@ pub const fn words_for(bits: u32) -> u32 {
     if bits == 0 {
         1
     } else {
-        bits.div_ceil(ABI_WORD_BITS)
+        // Written without `div_ceil`: its `(bits + word - 1)` formulation
+        // overflows at `u32::MAX`, even though the quotient is representable.
+        1 + (bits - 1) / ABI_WORD_BITS
     }
 }
 
@@ -39,5 +41,6 @@ mod tests {
         assert_eq!(words_for(64), 1);
         assert_eq!(words_for(65), 2);
         assert_eq!(words_for(512), 8);
+        assert_eq!(words_for(u32::MAX), 67_108_864);
     }
 }

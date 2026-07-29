@@ -180,12 +180,18 @@ LLVM represents each value at its own semantic bit width. The ABI exchanges
 wider values as low-word-first machine-word chunks, with the required word
 count derived from that type. There is no global maximum word count:
 `unsigned[128]` uses two 64-bit ABI words and `unsigned[512]` uses eight,
-without widening unrelated values.
+without widening unrelated values. Native state also keeps the exact semantic
+width (`i65` stays `i65`; it is not rounded to `i128`).
+
+The current LLVM output backend accepts LLVM integer widths through
+`IntegerType::MAX_INT_BITS` (8,388,608 bits). This is an LLVM capability, not
+a word-ABI or language limit: a design beyond it receives a normal codegen
+error and can be consumed by a future backend with a different value model.
 
 Integer literals and match-pattern masks use the same low-word-first
 arbitrary-width representation. The native test harness chooses its C
-`_BitInt` width from the widest type in that design and exchanges every ABI
-word. Generated native test executables write requested VCD changes directly
+`_BitInt` width from the widest type or nested expression in that design and
+exchanges every ABI word. Generated native test executables write requested VCD changes directly
 while scheduling; waveform values do not round-trip through the compiler.
 Structural inheritance walks terminate by detecting actual cycles, so a valid
 deep type hierarchy is not rejected at an arbitrary depth.

@@ -1288,3 +1288,18 @@ forward declarations, DUT outputs, and direct native-testbench references.
   `_BitInt`, and its undefined shift could corrupt unrelated assertions.
 - Added LLVM structural coverage and an executable regression covering
   boundary/oversized shifts plus a 65-bit testbench-only literal.
+
+## 2026-07-29 — made extreme layouts diagnostic-safe
+
+- Reproduced `unsigned[4294967295]` panicking in `next_power_of_two` during
+  LLVM storage construction. Native state now uses the exact semantic integer
+  width instead of power-of-two rounding.
+- Threaded LLVM module construction errors through object and textual-IR
+  output. Values beyond LLVM's real `IntegerType::MAX_INT_BITS` capability now
+  produce a clear backend error rather than an assertion or Rust panic.
+- Made ABI word-count rounding overflow-safe through `u32::MAX`.
+- Reproduced an extreme explicit range overflowing subtraction in elaboration
+  and then attempting an impossible flattened allocation. Type layouts now
+  reject negative or unrepresentable constant widths/ranges before later
+  phases, and post-typecheck commands stop safely when semantic errors exist.
+- Added API, semantic, exact-storage, ABI-boundary, and CLI regressions.

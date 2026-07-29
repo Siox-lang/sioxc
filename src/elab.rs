@@ -987,12 +987,14 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
 fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
         if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
-            return Some((a - b).unsigned_abs() as u32 + 1);
+            return u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
+                .ok()?
+                .checked_add(1);
         }
         return None;
     }
     match eval(index, env) {
-        ParamValue::Int(v) if v >= 0 => Some(v as u32),
+        ParamValue::Int(v) if v >= 0 => u32::try_from(v).ok(),
         _ => None,
     }
 }

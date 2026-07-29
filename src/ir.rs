@@ -6097,7 +6097,12 @@ fn type_width_at(
                     eval_const_fns(lo, env, fns, 0),
                     eval_const_fns(hi, env, fns, 0),
                 ) {
-                    (Some(a), Some(b)) => (a - b).unsigned_abs() as u32 + 1,
+                    (Some(a), Some(b)) => {
+                        u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
+                            .ok()
+                            .and_then(|width| width.checked_add(1))
+                            .unwrap_or(0)
+                    }
                     _ => 0,
                 }
             }

@@ -223,3 +223,62 @@ fn nominal_time_and_real_frequency_run_natively() {
     let _ = std::fs::remove_file(out);
     let _ = std::fs::remove_file(vcd);
 }
+
+#[test]
+fn extreme_layouts_fail_cleanly_instead_of_panicking() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_extreme_layout_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let object = std::env::temp_dir().join(format!("{stem}.o"));
+
+    std::fs::write(
+        &source,
+        "module extreme_range;
+         #[top] entity E {
+             out y: Logic[-9223372036854775807..9223372036854775807];
+         }
+         impl E {}",
+    )
+    .unwrap();
+    let range = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([source.to_str().unwrap(), "--emit", "ir"])
+        .output()
+        .unwrap();
+    let range_stderr = String::from_utf8_lossy(&range.stderr);
+    assert!(!range.status.success(), "impossible range was accepted");
+    assert!(range_stderr.contains("range contains"), "{range_stderr}");
+    assert!(!range_stderr.contains("panicked"), "{range_stderr}");
+
+    std::fs::write(
+        &source,
+        "module extreme_width;
+         #[top] entity E { out y: unsigned[4294967295]; }
+         impl E { y = 0; }",
+    )
+    .unwrap();
+    let width = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            source.to_str().unwrap(),
+            "--emit",
+            "object",
+            "-o",
+            object.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let width_stderr = String::from_utf8_lossy(&width.stderr);
+    assert!(
+        !width.status.success(),
+        "unsupported LLVM width was accepted"
+    );
+    assert!(
+        width_stderr.contains("LLVM backend supports integer values"),
+        "{width_stderr}"
+    );
+    assert!(!width_stderr.contains("panicked"), "{width_stderr}");
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(object);
+}

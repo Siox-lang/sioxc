@@ -65,7 +65,7 @@ pub fn host_target_machine() -> Result<TargetMachine, String> {
 pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
     let tm = host_target_machine()?;
     let ctx = Context::create();
-    let module = build_module(&ctx, design);
+    let module = build_module(&ctx, design)?;
     super::emit::optimize_module(&module, &tm)?;
     tm.write_to_file(&module, FileType::Object, path)
         .map_err(|e| format!("object emission failed: {e}"))

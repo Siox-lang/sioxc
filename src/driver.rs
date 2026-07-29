@@ -359,6 +359,22 @@ fn run_semantic(path: &Path, std_root: &Path, trace: bool) -> Result<Semantic, E
     Ok(Semantic { fe, typed })
 }
 
+/// Later phases assume semantically valid types and may otherwise try to
+/// materialize impossible layouts while recovering from an existing error.
+/// Commands that proceed past type checking call this gate first.
+fn reject_semantic_errors(semantic: &Semantic) -> bool {
+    if !semantic.fe.sink.has_errors() {
+        return false;
+    }
+    eprintln!();
+    render_diagnostics(&semantic.fe.sources, &semantic.fe.sink);
+    eprintln!(
+        "\nsemantic analysis failed: {} error(s); later stages skipped",
+        semantic.fe.sink.error_count()
+    );
+    true
+}
+
 /// `siox check`: parse -> resolve -> typecheck. `-v` adds the token/item dump.
 fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     let mut sem = match run_semantic(path, std_root, verbose) {
@@ -397,6 +413,9 @@ fn cmd_build(path: &Path, std_root: &Path, top: Option<&str>, out: Option<&Path>
         Ok(s) => s,
         Err(code) => return code,
     };
+    if reject_semantic_errors(&sem) {
+        return ExitCode::FAILURE;
+    }
     let modules = sem.fe.modules.as_slice();
 
     let top = match resolve_top(modules, top) {
@@ -485,6 +504,9 @@ fn cmd_build_test(path: &Path, std_root: &Path, out: Option<&Path>) -> ExitCode 
         Ok(s) => s,
         Err(code) => return code,
     };
+    if reject_semantic_errors(&sem) {
+        return ExitCode::FAILURE;
+    }
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     let design = siox::ir::lower_in(
@@ -522,6 +544,9 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
+    if reject_semantic_errors(&sem) {
+        return ExitCode::FAILURE;
+    }
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
     let design = siox::ir::lower_in(
@@ -544,8 +569,16 @@ fn cmd_emit_llvm(path: &Path, std_root: &Path) -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    print!("{}", siox::llvm::emit_module_ir(&design));
-    ExitCode::SUCCESS
+    match siox::llvm::emit_module_ir(&design) {
+        Ok(llvm) => {
+            print!("{llvm}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cannot emit LLVM: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `siox tree`: run the semantic pipeline, elaborate the instance hierarchy, and
@@ -555,6 +588,9 @@ fn cmd_tree(path: &Path, std_root: &Path) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
+    if reject_semantic_errors(&sem) {
+        return ExitCode::FAILURE;
+    }
 
     let modules = sem.fe.modules.as_slice();
     let before = sem.fe.sink.error_count();
@@ -584,6 +620,9 @@ fn cmd_ir(path: &Path, std_root: &Path) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
+    if reject_semantic_errors(&sem) {
+        return ExitCode::FAILURE;
+    }
 
     let modules = sem.fe.modules.as_slice();
     let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
