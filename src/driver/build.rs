@@ -3998,7 +3998,19 @@ impl Ctx<'_> {
         self.fn_type_env.borrow_mut().pop();
         self.fn_env.borrow_mut().pop();
         self.tmp.set(self.tmp.get() - 64);
-        out
+        let value = out?;
+        // The result is a value of the declared return type, so it wraps to
+        // that width — the operator inlines beside this one already do. Left
+        // unmasked, `neg(5) -> signed[8]` produced a full-width `0 - 5`, and
+        // every consumer then read a 64-bit pattern where 8 bits were
+        // declared: the sign test in signed's Ord looked at bit 7 of that.
+        if real_return {
+            return Ok(value);
+        }
+        match f.ret.as_ref().and_then(|ty| self.declared_width(ty)) {
+            Some(w) if w > 0 && w < 64 => Ok(mask_c(&value, w)),
+            _ => Ok(value),
+        }
     }
 
     /// `return e;` / `if c { .. } else { .. }` chains as nested C ternaries.
