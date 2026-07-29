@@ -2928,6 +2928,10 @@ impl Ctx<'_> {
                     "(long long)({})",
                     self.c_integer_operand(a, &rendered)
                 ));
+            } else if let Some(width) = self.signed_vector_width(a) {
+                cfmt.push_str("%lld");
+                let rendered = self.expr(a)?;
+                cargs.push(format!("(long long)sx_i64(({rendered}), {width})"));
             } else {
                 cfmt.push_str("%s");
                 cargs.push(format!(
@@ -3276,6 +3280,42 @@ impl Ctx<'_> {
     /// literals alone stay contextual (so `unsigned_value < 5` still dispatches
     /// as unsigned); an explicitly typed path/call/attribute selects signed
     /// comparisons, division, and right shift.
+    /// The width of a `signed`-family value whose declared type this stage can
+    /// see, for display. The compiler tracks no signedness — `signed` is just
+    /// the family whose std impls give it a signed `Ord`, an arithmetic `Shr`
+    /// and a signed `Div` — so printing has to recover it from the declared
+    /// type, the same way this stage already recovers `Char` and enum symbols.
+    ///
+    /// Without it a `signed[8]` holding -5 prints as 251 while `s < 0` is
+    /// simultaneously true, which reads as a contradiction.
+    fn signed_vector_width(&self, e: &ast::Expr) -> Option<u32> {
+        let path = expr_path(e)?;
+        // `local_families` is the declared vector family; it is recorded for
+        // connected locals and struct leaves too, which `local_types` is not.
+        let family = self
+            .local_families
+            .borrow()
+            .get(&path)
+            .cloned()
+            .or_else(|| self.local_types.borrow().get(&path).cloned())?;
+        if !self.type_name_is(&family, "signed") {
+            return None;
+        }
+        // A connected name records no local width — the signal it is wired to
+        // carries it — so fall back to that rather than losing the family.
+        let width = self
+            .local_widths
+            .borrow()
+            .get(&path)
+            .copied()
+            .or_else(|| {
+                self.map
+                    .get(&path)
+                    .map(|id| self.design.signals[id.0 as usize].width)
+            })?;
+        (width > 0 && width <= 64).then_some(width)
+    }
+
     fn is_integer_operand(&self, e: &ast::Expr) -> bool {
         match e {
             ast::Expr::Unary {
