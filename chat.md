@@ -1346,3 +1346,17 @@ forward declarations, DUT outputs, and direct native-testbench references.
   and `assert!` but silently accepted missing or extra warning arguments.
 - Added focused semantic/native regressions and exercised literals, Unicode
   locals, and empty strings in the external formatting corpus.
+
+### 2026-07-29 — Codex — complete native local-string operations
+
+- Fixed empty string locals being invisible to native whole-string equality
+  because their element-based representation naturally creates no C locals.
+- Constant string-literal equality/inequality now folds directly instead of
+  falling through to unsupported scalar expression lowering.
+- Fixed literal reassignment of unconnected string locals; the composite path
+  previously claimed the write but only updated DUT-connected elements.
+- Added same-length element-wise initialization and assignment between string
+  locals, including inferred unconstrained lengths and an explicit mismatch
+  guard in generated-test lowering.
+- Extended native and external regressions across empty, literal, copied,
+  initialized, and reassigned strings.

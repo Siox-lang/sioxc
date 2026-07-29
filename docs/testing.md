@@ -30,7 +30,9 @@ Testbench bodies are sequential: statements run in order, `await` advances
 simulation time (see [simulation.md](simulation.md)), and a testbench `let` is a
 mutable local with ordinary sequential assignment. Method calls on the DUT or on
 struct-typed locals work in stimulus, so a testbench can drive a design through
-a method result.
+a method result. Strings retain their array semantics here: locals can be
+initialized or assigned from another same-length string, and equality compares
+their characters (including the zero-character empty-string case).
 
 ## Reporting
 

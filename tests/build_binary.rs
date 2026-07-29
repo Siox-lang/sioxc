@@ -365,9 +365,21 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let wide: unsigned[128] = {wide};
                  let character: Char = 'λ';
                  let text: string = \"hé🙂\";
+                 let copied_text: string = text;
                  let empty: string = \"\";
+                 let other_empty: string = \"\";
+                 let mutable_text: string = \"old\";
+                 mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
+                 assert!(empty == \"\", \"empty string vs literal\");
+                 assert!(empty == other_empty, \"empty string locals\");
+                 assert!(\"constant\" == \"constant\", \"string literals compare\");
+                 assert!(\"left\" != \"right\", \"different string literals compare\");
+                 assert!(copied_text == text, \"string initializer copy\");
+                 assert!(mutable_text == \"hé🙂\", \"string local copy assignment\");
+                 mutable_text = \"new\";
+                 assert!(mutable_text == \"new\", \"string literal assignment\");
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"

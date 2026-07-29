@@ -1322,6 +1322,10 @@ impl Ctx<'_> {
             Some(ast::Expr::StrLit { text, .. }) => Some(text.as_str()),
             _ => None,
         };
+        let source = l
+            .value
+            .as_ref()
+            .and_then(|value| self.c_string_elems(value));
         let declared_len = match ty {
             ast::Type::Indexed {
                 index: Some(index), ..
@@ -1333,6 +1337,7 @@ impl Ctx<'_> {
         };
         let len = declared_len
             .or_else(|| literal.map(|text| text.chars().count()))
+            .or_else(|| source.as_ref().map(Vec::len))
             .unwrap_or(0);
         self.local_types
             .borrow_mut()
@@ -1341,17 +1346,18 @@ impl Ctx<'_> {
             let key = format!("{}[{i}]", l.name.text);
             let value = literal
                 .and_then(|text| text.chars().nth(i))
-                .map(|ch| ch as u32)
-                .unwrap_or(0);
+                .map(|ch| format!("{}ULL", ch as u32))
+                .or_else(|| source.as_ref().and_then(|values| values.get(i)).cloned())
+                .unwrap_or_else(|| "0ULL".into());
             // Elaboration materializes a connected string as one signal per
             // character. Seed those signals directly so the DUT connection
             // sees the initializer; only genuinely unconnected strings need C
             // locals.
             if let Some(&id) = self.map.get(&key) {
-                b.push_str(&format!("    sx_set({}, {value}ULL);\n", id.0));
+                b.push_str(&format!("    sx_set({}, {value});\n", id.0));
             } else {
                 b.push_str(&format!(
-                    "    uint64_t {} = {value}ULL;\n",
+                    "    uint64_t {} = {value};\n",
                     c_local_ident(&key)
                 ));
                 self.locals.borrow_mut().insert(key);
@@ -1492,11 +1498,56 @@ impl Ctx<'_> {
         b: &mut String,
         ind: &str,
     ) -> Result<bool, String> {
+        if !matches!(value, ast::Expr::StrLit { .. }) {
+            if let Some(source) = self.c_string_elems(value) {
+                let mut target = Vec::new();
+                while let Some(destination) = {
+                    let element = format!("{name}[{}]", target.len());
+                    self.map
+                        .get(&element)
+                        .map(|id| (true, id.0.to_string()))
+                        .or_else(|| {
+                            self.locals
+                                .borrow()
+                                .contains(&element)
+                                .then(|| (false, c_local_ident(&element)))
+                        })
+                } {
+                    target.push(destination);
+                }
+                let target_is_empty_string = target.is_empty()
+                    && self.local_types.borrow().get(name).map(String::as_str) == Some("string");
+                if !target.is_empty() || target_is_empty_string {
+                    if target.len() != source.len() {
+                        return Err(format!(
+                            "array assignment length mismatch: `{name}` has {} element(s), source has {}",
+                            target.len(),
+                            source.len()
+                        ));
+                    }
+                    for ((signal, destination), expression) in target.iter().zip(source) {
+                        if *signal {
+                            b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                        } else {
+                            b.push_str(&format!("{ind}{destination} = {expression};\n"));
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         match value {
             ast::Expr::StrLit { text, .. } => {
                 for (i, ch) in text.chars().enumerate() {
-                    if let Some(&id) = self.map.get(&format!("{name}[{i}]")) {
+                    let element = format!("{name}[{i}]");
+                    if let Some(&id) = self.map.get(&element) {
                         b.push_str(&format!("{ind}sx_set({}, {}ULL);\n", id.0, ch as u32));
+                    } else if self.locals.borrow().contains(&element) {
+                        b.push_str(&format!(
+                            "{ind}{} = {}ULL;\n",
+                            c_local_ident(&element),
+                            ch as u32
+                        ));
                     }
                 }
                 Ok(true)
@@ -2438,7 +2489,13 @@ impl Ctx<'_> {
         {
             elems.push(c_local_ident(&format!("{path}[{}]", elems.len())));
         }
-        (!elems.is_empty()).then_some(elems)
+        if !elems.is_empty()
+            || self.local_types.borrow().get(&path).map(String::as_str) == Some("string")
+        {
+            Some(elems)
+        } else {
+            None
+        }
     }
 
     /// A formatted string argument as its per-character reads. Empty
@@ -2470,7 +2527,13 @@ impl Ctx<'_> {
             _ => None,
         };
         let eq = matches!(op, ast::BinOp::Eq);
-        if lit(lhs).is_none() && lit(rhs).is_none() {
+        let left_literal = lit(lhs);
+        let right_literal = lit(rhs);
+        if let (Some(left), Some(right)) = (&left_literal, &right_literal) {
+            let equal = left == right;
+            return Ok(Some(if equal == eq { "1".into() } else { "0".into() }));
+        }
+        if left_literal.is_none() && right_literal.is_none() {
             let (Some(left), Some(right)) = (self.c_string_elems(lhs), self.c_string_elems(rhs))
             else {
                 return Ok(None);
@@ -2494,8 +2557,8 @@ impl Ctx<'_> {
                 format!("(!({all}))")
             }));
         }
-        let (elems, chars) = match (lit(lhs), lit(rhs)) {
-            (Some(_), Some(_)) => return Ok(None),
+        let (elems, chars) = match (left_literal, right_literal) {
+            (Some(_), Some(_)) => unreachable!(),
             (None, Some(c)) => (self.c_string_elems(lhs), c),
             (Some(c), None) => (self.c_string_elems(rhs), c),
             (None, None) => unreachable!(),
