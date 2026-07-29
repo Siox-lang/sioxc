@@ -47,6 +47,9 @@ and methods retain that same representation while native code inlines them.
 Struct-local numeric leaves use their declared width as well: fields wider
 than one ABI word preserve every word, while a field narrower than the
 harness-wide value still wraps at its own boundary.
+Unconnected scalar/vector arrays are materialized one typed element at a time,
+so literals, indexing, element mutation, and same-shaped array copies preserve
+arbitrary-width elements too.
 
 ## Reporting
 

@@ -389,6 +389,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  let math_result: real = sqrt(9.0);
                  let wide_box: WideBox = {{ .value = {wide} }};
                  let narrow_wide_box: NarrowWideBox = {{ .value = 1208925819614629174706175 }};
+                 let wide_values: unsigned[128][2] = [{wide}, 1];
+                 let copied_values: unsigned[128][2] = wide_values;
                  mutable_text = copied_text;
                  print!(\"wide {{}} char {{}}\", wide, character);
                  print!(\"strings {{}} {{}} <{{}}>\", \"literal\", text, empty);
@@ -433,6 +435,10 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
                  assert!(wide_box.value == {wide}, \"wide struct field {{}}\", wide_box.value);
                  narrow_wide_box.value = narrow_wide_box.value + 1;
                  assert!(narrow_wide_box.value == 0, \"80-bit field wraps {{}}\", narrow_wide_box.value);
+                 assert!(wide_values[0] == {wide}, \"wide array element {{}}\", wide_values[0]);
+                 assert!(copied_values[0] == wide_values[0], \"wide array copy\");
+                 wide_values = [3, 4];
+                 assert!(wide_values[1] == 4, \"wide array literal reassignment\");
                  warn!(false, \"{long} {{}}\", wide);
                  warn!(false, \"string argument {{}}\", text);
              }}"

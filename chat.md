@@ -1421,3 +1421,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
   width even when the harness-wide `_BitInt` is wider.
 - Added 128-bit preservation and 80-bit wrapping regressions to the native
   integration fixture and external wide-value corpus.
+
+### 2026-07-29 — Codex — materialize native array locals element-wise
+
+- Reproduced a valid `let values: unsigned[128][2] = [...]` passing semantic
+  analysis but failing native compilation because the whole array was lowered
+  as one scalar expression.
+- Added typed element storage for unconnected scalar/vector arrays; each leaf
+  selects `sx_value` or an ABI word from its own declared width.
+- Added element-wise array literal initialization/reassignment and same-shaped
+  name-to-name copying through the existing composite path.
+- Added native and corpus regressions for 128-bit array elements, indexing,
+  mutation, copying, and literal reassignment.

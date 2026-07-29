@@ -1486,6 +1486,64 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    /// Materialize a one-dimensional array whose element is a scalar or packed
+    /// vector. Packed vectors (`unsigned[128]`) are leaves; an additional
+    /// index (`unsigned[128][2]`) is the array dimension represented here.
+    fn try_declare_array_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
+        let Some(ty) = &l.ty else { return Ok(false) };
+        let Some((element_ty, len)) = self.array_parts(ty) else {
+            return Ok(false);
+        };
+        let head = type_head_name(element_ty);
+        // Field aggregates need recursive leaf expansion; leave them to the
+        // existing struct path rather than pretending each aggregate is scalar.
+        if head
+            .and_then(|name| self.structs.get(name))
+            .is_some_and(|fields| !fields.is_empty())
+        {
+            return Ok(false);
+        }
+        let family = self.declared_family(element_ty);
+        let width = family
+            .as_ref()
+            .map(|(_, width)| *width)
+            .or_else(|| self.declared_width(element_ty));
+        for i in 0..len {
+            let key = format!("{}[{i}]", l.name.text);
+            if let Some((name, _)) = &family {
+                self.local_families
+                    .borrow_mut()
+                    .insert(key.clone(), name.clone());
+            }
+            if let Some(width) = width {
+                self.local_widths.borrow_mut().insert(key.clone(), width);
+            }
+            if let Some(head) = head {
+                self.local_types
+                    .borrow_mut()
+                    .insert(key.clone(), head.to_string());
+            }
+            if !self.map.contains_key(&key) {
+                let c_ty = if width.is_some_and(|bits| bits > 64) {
+                    "sx_value"
+                } else {
+                    "uint64_t"
+                };
+                b.push_str(&format!("    {c_ty} {} = 0;\n", c_local_ident(&key)));
+                self.locals.borrow_mut().insert(key);
+            }
+        }
+        if let Some(value) = &l.value {
+            if !self.write_composite(&l.name.text, value, b, "    ")? {
+                return Err(format!(
+                    "unsupported array initializer for `{}`",
+                    l.name.text
+                ));
+            }
+        }
+        Ok(true)
+    }
+
     /// Emit writes for a composite value assigned to a connected name — a
     /// string literal (`s = "hi"` -> one `Char` element per index) or a struct
     /// literal (`a = { .re = 3 }` -> one field signal each). Returns `true`
@@ -1668,6 +1726,47 @@ impl Ctx<'_> {
             }
         }
         match value {
+            ast::Expr::Array { elems, .. } => {
+                let mut target_len = 0usize;
+                loop {
+                    let element = format!("{name}[{target_len}]");
+                    if self.map.contains_key(&element) || self.locals.borrow().contains(&element) {
+                        target_len += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if target_len != elems.len() {
+                    return Err(format!(
+                        "array assignment length mismatch: `{name}` has {target_len} element(s), source has {}",
+                        elems.len()
+                    ));
+                }
+                for (i, value) in elems.iter().enumerate() {
+                    let element = format!("{name}[{i}]");
+                    if self.write_composite(&element, value, b, ind)? {
+                        continue;
+                    }
+                    if let Some(&id) = self.map.get(&element) {
+                        b.push_str(&format!(
+                            "{ind}sx_set({}, {});\n",
+                            id.0,
+                            self.value_for(id, value)?
+                        ));
+                    } else {
+                        let expression = self.value_for_local(&element, value)?;
+                        let expression = match self.local_widths.borrow().get(&element) {
+                            Some(&width) => mask_c(&expression, width),
+                            None => expression,
+                        };
+                        b.push_str(&format!(
+                            "{ind}{} = {expression};\n",
+                            c_local_ident(&element)
+                        ));
+                    }
+                }
+                Ok(true)
+            }
             ast::Expr::StrLit { text, .. } => {
                 for (i, ch) in text.chars().enumerate() {
                     let element = format!("{name}[{i}]");
@@ -1746,6 +1845,29 @@ impl Ctx<'_> {
             }
         }
         None
+    }
+
+    /// The outer array element type and count, excluding a packed vector's own
+    /// width index (`unsigned[128]` is one value; `unsigned[128][2]` is two).
+    fn array_parts<'b>(&self, ty: &'b ast::Type) -> Option<(&'b ast::Type, usize)> {
+        let ast::Type::Indexed {
+            base,
+            index: Some(index),
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        if let ast::Type::Path(path) = base.as_ref() {
+            let head = path.segments.last()?.text.as_str();
+            if self.families.contains(head) {
+                return None;
+            }
+        }
+        let ast::Expr::Int { text, .. } = index.as_ref() else {
+            return None;
+        };
+        Some((base, text.replace('_', "").parse().ok()?))
     }
 
     /// The bit width a testbench name carries: a local's declared width or the
@@ -1999,6 +2121,7 @@ impl Ctx<'_> {
                 ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {}
                 ast::ImplItem::Let(l) if self.try_declare_fs_read_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_string_local(l, &mut b)? => {}
+                ast::ImplItem::Let(l) if self.try_declare_array_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) => match &l.value {
                     Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
