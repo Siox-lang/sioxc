@@ -2265,12 +2265,21 @@ impl<'a> Checker<'a> {
         if !(1..=64).contains(&width) {
             return;
         }
-        let hi = if width == 64 {
+        // Both bounds are computed in `i64` and so saturate near its top:
+        // `1i64 << 63` is already `i64::MIN`, which makes `- 1` overflow at
+        // width 63 and the negation overflow at width 64. Those widths are
+        // exactly where a bit vector meets a plain integer literal, so this is
+        // reachable from any `a == 5` on a 63- or 64-bit signal.
+        let hi = if width >= 63 {
             i64::MAX
         } else {
             (1i64 << width) - 1
         };
-        let lo = -(1i64 << (width - 1));
+        let lo = if width >= 64 {
+            i64::MIN
+        } else {
+            -(1i64 << (width - 1))
+        };
         if v < lo || v > hi {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -4924,6 +4933,28 @@ mod tests {
         assert_eq!(at(129), 0);
         assert_eq!(at(512), 0);
         assert_eq!(at(4096), 0);
+    }
+
+    /// The literal-fits-width bounds are computed in `i64`, which saturates
+    /// right where bit vectors get interesting: `1i64 << 63` is `i64::MIN`, so
+    /// `- 1` overflowed at width 63 and the negation overflowed at width 64.
+    /// Any `a == 5` on a signal that wide panicked the compiler.
+    #[test]
+    fn literal_width_bounds_do_not_overflow_at_the_top_widths() {
+        let cmp = |w: u32, v: &str| {
+            check_src(&format!(
+                "module m;\nentity E {{ in a: unsigned[{w}]; out y: unsigned[8]; }}\nimpl E {{ if a == {v} {{ y = 1; }} }}\n"
+            ))
+        };
+        // Reaching these at all is the regression: they used to panic. `1`
+        // is representable at every width, including 1 bit.
+        for w in 1..=64 {
+            assert_eq!(cmp(w, "1"), 0, "width {w} accepts a literal that fits");
+        }
+        // The bound is still a bound.
+        assert_eq!(cmp(8, "255"), 0, "the largest 8-bit value fits");
+        assert_eq!(cmp(8, "256"), 1, "one past it does not");
+        assert_eq!(cmp(63, "9223372036854775807"), 0, "i64::MAX fits 63 bits");
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
