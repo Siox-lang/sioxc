@@ -1409,3 +1409,15 @@ forward declarations, DUT outputs, and direct native-testbench references.
   same name reading the outer local during inlining.
 - Added native and corpus coverage for imported/derived constants, parameters,
   integer-to-real returns, functions, methods, and shadowing.
+
+### 2026-07-29 — Codex — preserve arbitrary-width local struct fields
+
+- Reproduced an `unsigned[128]` testbench-local struct field being declared as
+  `uint64_t`, with Clang warning while truncating its upper 64 bits.
+- Selected `sx_value` storage for every struct leaf wider than one ABI word,
+  matching standalone local storage.
+- Replaced the generated-C 64-bit mask expression with an arbitrary-width
+  `sx_mask` helper. Each local/field assignment now wraps at its own declared
+  width even when the harness-wide `_BitInt` is wider.
+- Added 128-bit preservation and 80-bit wrapping regressions to the native
+  integration fixture and external wide-value corpus.

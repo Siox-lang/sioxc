@@ -44,6 +44,9 @@ expressions; parameter and return conversion follows the declaration (`real`
 crosses as C `double`, integer-shaped scalars as an ABI word).
 Named `real` constants and real-typed parameters/returns of ordinary functions
 and methods retain that same representation while native code inlines them.
+Struct-local numeric leaves use their declared width as well: fields wider
+than one ABI word preserve every word, while a field narrower than the
+harness-wide value still wraps at its own boundary.
 
 ## Reporting
 

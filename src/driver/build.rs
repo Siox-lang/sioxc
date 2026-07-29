@@ -253,6 +253,9 @@ pub fn build(
          static sx_value sx_shr(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs >= {value_bits} ? 0 : lhs >> rhs;\n\
          }}\n\
+         static sx_value sx_mask(sx_value value, uint32_t width) {{\n\
+         \x20   return width >= {value_bits} ? value : value & (((sx_value)1 << width) - 1);\n\
+         }}\n\
          static char *sx_decimal(sx_value value, char *buffer) {{\n\
          \x20   char *end = buffer + SX_DECIMAL_CAP, *cursor = end;\n\
          \x20   *--cursor = '\\0';\n\
@@ -1309,8 +1312,8 @@ fn emit_c_real_const(
 
 /// Wrap a C expression so it masks to `w` bits (wrap at 2^w).
 fn mask_c(e: &str, w: u32) -> String {
-    if w > 0 && w < 64 {
-        format!("(({e}) & {:#x}ULL)", (1u64 << w) - 1)
+    if w > 0 {
+        format!("sx_mask(({e}), {w})")
     } else {
         e.to_string()
     }
@@ -1576,12 +1579,16 @@ impl Ctx<'_> {
                 self.declare_struct_fields(&key, sub, &HashMap::new(), sub_base.as_deref(), b)?;
                 continue;
             }
-            if let Some((fam, w)) = self.declared_family(fty) {
+            let leaf_width = if let Some((fam, w)) = self.declared_family(fty) {
                 self.local_families.borrow_mut().insert(key.clone(), fam);
                 self.local_widths.borrow_mut().insert(key.clone(), w);
+                Some(w)
             } else if let Some(w) = self.declared_width(fty) {
                 self.local_widths.borrow_mut().insert(key.clone(), w);
-            }
+                Some(w)
+            } else {
+                None
+            };
             if let Some(head) = fhead {
                 self.local_types
                     .borrow_mut()
@@ -1604,10 +1611,12 @@ impl Ctx<'_> {
                     _ => "0".to_string(),
                 },
             };
-            b.push_str(&format!(
-                "    uint64_t {} = {init_e};\n",
-                c_local_ident(&key)
-            ));
+            let c_ty = if leaf_width.is_some_and(|width| width > 64) {
+                "sx_value"
+            } else {
+                "uint64_t"
+            };
+            b.push_str(&format!("    {c_ty} {} = {init_e};\n", c_local_ident(&key)));
             self.locals.borrow_mut().insert(key);
         }
         Ok(())
