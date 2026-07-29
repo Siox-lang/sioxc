@@ -172,7 +172,9 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
         f64_args: Vec<bool>,
+        integer_args: Vec<bool>,
         f64_ret: bool,
+        integer_ret: bool,
     },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
@@ -4024,6 +4026,29 @@ impl<'a> Lowering<'a> {
         ty
     }
 
+    fn type_resolves_to(&self, ty: &ast::Type, expected: &str) -> bool {
+        let mut ty = ty;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let Some(name) = type_head_name(ty) else {
+                return false;
+            };
+            if name == expected {
+                return true;
+            }
+            let ast::Type::Path(path) = ty else {
+                return false;
+            };
+            if path.segments.len() != 1 || !seen.insert(name) {
+                return false;
+            }
+            let Some(alias) = self.aliases.get(name) else {
+                return false;
+            };
+            ty = alias;
+        }
+    }
+
     /// Declare `name` as a `Char[n]` array (string-literal inference).
     fn add_char_array(&mut self, entity: &str, name: &str, n: usize) {
         self.local_array
@@ -4642,23 +4667,32 @@ impl<'a> Lowering<'a> {
         let f = *self.free_fns.get(name)?;
         // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
-            let is_real = |t: &Option<ast::Type>| {
-                matches!(t, Some(ast::Type::Path(p))
-                    if p.segments.last().map(|s| s.text.as_str()) == Some("real"))
+            let is_type = |t: &Option<ast::Type>, expected: &str| {
+                t.as_ref()
+                    .is_some_and(|ty| self.type_resolves_to(ty, expected))
             };
             let f64_args = f
                 .params
                 .iter()
                 .filter(|p| !p.is_self)
-                .map(|p| is_real(&p.ty))
+                .map(|p| is_type(&p.ty, "real"))
                 .collect();
-            let f64_ret = is_real(&f.ret);
+            let integer_args = f
+                .params
+                .iter()
+                .filter(|p| !p.is_self)
+                .map(|p| is_type(&p.ty, "integer"))
+                .collect();
+            let f64_ret = is_type(&f.ret, "real");
+            let integer_ret = is_type(&f.ret, "integer");
             let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
             return Some(Expr::CCall {
                 name: name.to_string(),
                 args,
                 f64_args,
+                integer_args,
                 f64_ret,
+                integer_ret,
             });
         }
         // Constant arguments: run the body statically.
@@ -8579,6 +8613,29 @@ mod tests {
                 .find(|driver| driver.target == SignalId(wide as u32))
                 .map(|driver| &driver.expr),
             Some(Expr::Current(_))
+        ));
+    }
+
+    #[test]
+    fn foreign_integer_calls_retain_signed_abi_types() {
+        let design = lower_src(
+            "module m;\n\
+             using CWord = integer;\n\
+             using CInteger = CWord;\n\
+             extern \"C\" { pub fn labs(v: CInteger) -> CInteger; }\n\
+             #[top] entity E {\n\
+                 in x: integer<-128..127>;\n\
+                 out y: integer<-128..127>;\n\
+             }\n\
+             impl E { y = labs(x); }\n",
+        );
+        assert!(matches!(
+            design.drivers.first().map(|driver| &driver.expr),
+            Some(Expr::CCall {
+                integer_args,
+                integer_ret: true,
+                ..
+            }) if integer_args == &[true]
         ));
     }
 

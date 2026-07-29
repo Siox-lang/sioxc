@@ -92,6 +92,17 @@ pub fn build(
             }
         }
     }
+    let type_aliases: HashMap<String, ast::Type> = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Using(ast::Using {
+                kind: ast::UsingKind::Alias { name, ty },
+                ..
+            }) => Some((name.text.clone(), ty.clone())),
+            _ => None,
+        })
+        .collect();
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
     let mut extern_fns = std::collections::HashSet::new();
     for m in modules {
@@ -137,12 +148,12 @@ pub fn build(
         .collect();
     let real_consts: std::collections::HashSet<String> = const_decls
         .iter()
-        .filter(|declaration| type_head_name(&declaration.ty) == Some("real"))
+        .filter(|declaration| resolved_type_name(&declaration.ty, &type_aliases) == Some("real"))
         .map(|declaration| declaration.name.text.clone())
         .collect();
     let integer_consts: std::collections::HashSet<String> = const_decls
         .iter()
-        .filter(|declaration| type_head_name(&declaration.ty) == Some("integer"))
+        .filter(|declaration| resolved_type_name(&declaration.ty, &type_aliases) == Some("integer"))
         .map(|declaration| declaration.name.text.clone())
         .collect();
     let const_ranges: HashMap<String, (i64, i64)> = const_decls
@@ -212,12 +223,15 @@ pub fn build(
     prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
     for name in &extern_fns {
         let f = fns[name];
-        let ret = f.ret.as_ref().map_or("void", |ty| extern_c_type(Some(ty)));
+        let ret = f
+            .ret
+            .as_ref()
+            .map_or("void", |ty| extern_c_type(Some(ty), &type_aliases));
         let params = f
             .params
             .iter()
             .filter(|param| !param.is_self)
-            .map(|param| extern_c_type(param.ty.as_ref()))
+            .map(|param| extern_c_type(param.ty.as_ref(), &type_aliases))
             .collect::<Vec<_>>()
             .join(", ");
         prog.push_str(&format!(
@@ -458,6 +472,7 @@ pub fn build(
             message_id: Default::default(),
             fns: &fns,
             extern_fns: &extern_fns,
+            type_aliases: &type_aliases,
             fn_env: Default::default(),
             fn_type_env: Default::default(),
             instance_names,
@@ -828,6 +843,8 @@ struct Ctx<'a> {
     /// Functions declared in an `extern "C"` block. Their signatures drive
     /// native ABI conversion instead of requiring a Siox body to inline.
     extern_fns: &'a std::collections::HashSet<String>,
+    /// Module type aliases, used when deciding native and foreign ABI kinds.
+    type_aliases: &'a HashMap<String, ast::Type>,
     /// Parameter-substitution stack while translating a fn body.
     fn_env: std::cell::RefCell<Vec<HashMap<String, String>>>,
     /// Declared parameter types parallel to `fn_env`, retained while inlining
@@ -1424,6 +1441,18 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 }
 
 impl Ctx<'_> {
+    fn type_is(&self, ty: &ast::Type, expected: &str) -> bool {
+        resolved_type_name(ty, self.type_aliases) == Some(expected)
+    }
+
+    fn type_name_is(&self, name: &str, expected: &str) -> bool {
+        name == expected
+            || self
+                .type_aliases
+                .get(name)
+                .is_some_and(|ty| self.type_is(ty, expected))
+    }
+
     /// A testbench local initialized from a `std::fs` file read
     /// (`let s: string = read_to_string("path")`, `let m: unsigned[8][N] = read(..)`).
     /// The file is read at **build time** (matching the corpus's stable fixtures)
@@ -3266,8 +3295,7 @@ impl Ctx<'_> {
                             .methods
                             .get(&(receiver, field.text.clone()))
                             .and_then(|function| function.ret.as_ref())
-                            .and_then(type_head_name)
-                            == Some("integer");
+                            .is_some_and(|ty| self.type_is(ty, "integer"));
                     }
                 }
                 if let Some(key) = siox::ir::call_fn_key(callee) {
@@ -3275,8 +3303,7 @@ impl Ctx<'_> {
                         .fns
                         .get(&key)
                         .and_then(|function| function.ret.as_ref())
-                        .and_then(type_head_name)
-                        == Some("integer");
+                        .is_some_and(|ty| self.type_is(ty, "integer"));
                 }
             }
             _ => {}
@@ -3291,7 +3318,11 @@ impl Ctx<'_> {
             .map(String::as_str)
             == Some("integer")
             || self.integer_consts.contains(&path)
-            || self.local_types.borrow().get(&path).map(String::as_str) == Some("integer")
+            || self
+                .local_types
+                .borrow()
+                .get(&path)
+                .is_some_and(|name| self.type_name_is(name, "integer"))
             || self
                 .map
                 .get(&path)
@@ -3305,7 +3336,10 @@ impl Ctx<'_> {
                 .filter(|id| self.design.signals[id.0 as usize].integer)
                 .map(|id| self.design.signals[id.0 as usize].width)
                 .or_else(|| {
-                    (self.local_types.borrow().get(&path).map(String::as_str) == Some("integer"))
+                    self.local_types
+                        .borrow()
+                        .get(&path)
+                        .is_some_and(|name| self.type_name_is(name, "integer"))
                         .then(|| self.local_widths.borrow().get(&path).copied())
                         .flatten()
                 })
@@ -3653,7 +3687,7 @@ impl Ctx<'_> {
             .collect();
         self.c_fn_stmts(
             &stmts,
-            f.ret.as_ref().and_then(type_head_name) == Some("real"),
+            f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real")),
         )
     }
 
@@ -3704,21 +3738,30 @@ impl Ctx<'_> {
         if self.extern_fns.contains(name) {
             let mut converted = Vec::new();
             for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
-                if param.ty.as_ref().and_then(type_head_name) == Some("real") {
+                if param.ty.as_ref().is_some_and(|ty| self.type_is(ty, "real")) {
                     converted.push(self.c_real_operand(arg)?);
+                } else if param
+                    .ty
+                    .as_ref()
+                    .is_some_and(|ty| self.type_is(ty, "integer"))
+                {
+                    let rendered = self.expr(arg)?;
+                    converted.push(self.c_integer_operand(arg, &rendered));
                 } else {
                     converted.push(self.expr(arg)?);
                 }
             }
             let call = format!("{name}({})", converted.join(", "));
-            return Ok(if f.ret.as_ref().and_then(type_head_name) == Some("real") {
-                format!("sx_b64({call})")
-            } else {
-                call
-            });
+            return Ok(
+                if f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real")) {
+                    format!("sx_b64({call})")
+                } else {
+                    call
+                },
+            );
         }
         let body = f.body.as_ref().ok_or("fn has no body")?;
-        let real_return = f.ret.as_ref().and_then(type_head_name) == Some("real");
+        let real_return = f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real"));
         // Constant arguments fold statically (also the only way a recursive
         // fn like clog2 compiles here). The evaluator is integer-only, so a
         // declared real result must retain the typed native path below.
@@ -4518,11 +4561,32 @@ fn signed_index_bound(expr: &ast::Expr) -> Option<i64> {
 /// Phase-1 C ABI mapping for foreign function declarations. `real` is the
 /// native C `double`, language `integer` is the signed ABI word, and packed
 /// scalar values cross as the corresponding unsigned word.
-fn extern_c_type(ty: Option<&ast::Type>) -> &'static str {
-    match ty.and_then(type_head_name) {
+fn extern_c_type(ty: Option<&ast::Type>, aliases: &HashMap<String, ast::Type>) -> &'static str {
+    match ty.and_then(|ty| resolved_type_name(ty, aliases)) {
         Some("real") => "double",
         Some("integer") => "int64_t",
         _ => "uint64_t",
+    }
+}
+
+fn resolved_type_name<'a>(
+    ty: &'a ast::Type,
+    aliases: &'a HashMap<String, ast::Type>,
+) -> Option<&'a str> {
+    let mut ty = ty;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let name = type_head_name(ty)?;
+        let ast::Type::Path(path) = ty else {
+            return Some(name);
+        };
+        if path.segments.len() != 1 || !seen.insert(name) {
+            return Some(name);
+        }
+        let Some(alias) = aliases.get(name) else {
+            return Some(name);
+        };
+        ty = alias;
     }
 }
 

@@ -306,6 +306,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// Signed counterpart of [`Self::fit`]: widening preserves the source sign
+    /// bit, while equal-width and narrowing crossings are representation
+    /// identical.
+    fn fit_signed(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
+        let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
+        match from.cmp(&to) {
+            std::cmp::Ordering::Less => self.builder.build_int_s_extend(v, ty, "sx").unwrap(),
+            std::cmp::Ordering::Greater => self.builder.build_int_truncate(v, ty, "tr").unwrap(),
+            std::cmp::Ordering::Equal => v,
+        }
+    }
+
     /// Store an `i64` compute value into signal `id`'s width-sized slot in
     /// `@<arr>` (truncating; writers already mask to the signal width).
     #[cfg(not(feature = "bitpack"))]
@@ -1093,7 +1105,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 name,
                 args,
                 f64_args,
+                integer_args,
                 f64_ret,
+                integer_ret,
             } => {
                 // Foreign C call: `real` params are doubles (bit-cast from the
                 // word), everything else i64. Native linking resolves symbols.
@@ -1103,7 +1117,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let mut ptypes: Vec<MT> = Vec::new();
                 let mut vals: Vec<MV> = Vec::new();
                 for (i, a) in args.iter().enumerate() {
-                    let v = self.emit_at(a, 64);
+                    let v = if integer_args.get(i).copied().unwrap_or(false) {
+                        self.emit_signed_operand_at(a, 64)
+                    } else {
+                        self.emit_at(a, 64)
+                    };
                     if f64_args.get(i).copied().unwrap_or(false) {
                         ptypes.push(f64t.into());
                         vals.push(
@@ -1136,13 +1154,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     inkwell::values::ValueKind::Basic(v) => v,
                     _ => panic!("extern fn returns a value"),
                 };
-                if *f64_ret {
+                let raw = if *f64_ret {
                     self.builder
                         .build_bit_cast(r.into_float_value(), self.i64t(), "fbits")
                         .unwrap()
                         .into_int_value()
                 } else {
                     r.into_int_value()
+                };
+                if *integer_ret {
+                    self.fit_signed(raw, self.value_ty(width))
+                } else {
+                    self.fit(raw, self.value_ty(width))
                 }
             }
             Expr::Unknown => self.c_at(0, width),

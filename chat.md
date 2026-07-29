@@ -1575,3 +1575,19 @@ forward declarations, DUT outputs, and direct native-testbench references.
   ranges are constraints, not nominal vector widths.
 - Extended IR and executable DUT regressions across nested selection,
   arithmetic, negation, division, and direct constrained-integer widening.
+
+### 2026-07-29 — Codex — fit and sign foreign integer calls
+
+- Reproduced a direct `integer` C-call result in an eight-bit clocked update
+  producing invalid LLVM: the staged select mixed the raw `i64` return with the
+  destination's `i8` previous value.
+- Made foreign-call IR retain signed kernel-integer metadata independently for
+  parameters and results, and made LLVM fit every result to its requested
+  expression width.
+- Sign-extended constrained integer arguments to the C `int64_t` ABI instead of
+  zero-extending negative values.
+- Resolved type aliases when selecting both LLVM and generated-C foreign ABI
+  kinds; generated declarations now use `int64_t` for aliased integers rather
+  than an incompatible `uint64_t` declaration.
+- Extended the FFI executable regression with an aliased integer signature and
+  a clocked constrained-integer `labs(-20)` update.

@@ -187,6 +187,12 @@ sign-extend constrained inputs to their destination width. This does not make
 its std operator implementations, and lowering keeps those library vector
 operations separate.
 
+Foreign C calls retain ABI kind metadata independently for each parameter and
+the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C
+`double`, and packed values as unsigned words; aliases are resolved before this
+classification. LLVM call results are always fitted to the requested expression
+width, including inside staged clocked updates.
+
 ## Signal widths
 
 LLVM represents each value at its own semantic bit width. The ABI exchanges
