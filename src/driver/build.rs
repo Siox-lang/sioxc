@@ -204,6 +204,12 @@ pub fn build(
          }}\n\
          static sx_value sx_udiv(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs == 0 ? 0 : lhs / rhs;\n\
+         }}\n\
+         static sx_value sx_shl(sx_value lhs, sx_value rhs) {{\n\
+         \x20   return rhs >= {value_bits} ? 0 : lhs << rhs;\n\
+         }}\n\
+         static sx_value sx_shr(sx_value lhs, sx_value rhs) {{\n\
+         \x20   return rhs >= {value_bits} ? 0 : lhs >> rhs;\n\
          }}\n"
     ));
     prog.push_str("extern void sx_settle(void);\n");
@@ -709,6 +715,131 @@ fn collect_structs(modules: &[Module]) -> HashMap<String, StructFields> {
 }
 
 fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) -> u32 {
+    fn literal_width(text: &str) -> u32 {
+        if text.contains('.') {
+            return 64;
+        }
+        let words = parse_word_literal(text);
+        let high = words.last().copied().unwrap_or(0);
+        ((words.len().saturating_sub(1) as u32) * 64 + (64 - high.leading_zeros())).max(1)
+    }
+
+    fn expr_width(expression: &ast::Expr) -> u32 {
+        use ast::Expr;
+        match expression {
+            Expr::Int { text, .. } | Expr::SuffixLit { text, .. } => literal_width(text),
+            Expr::BitStrLit { base, digits, .. } => {
+                let bits = match base.to_ascii_lowercase() {
+                    'b' => 1,
+                    'o' => 3,
+                    'x' => 4,
+                    _ => 1,
+                };
+                u32::try_from(digits.chars().count())
+                    .ok()
+                    .and_then(|count| count.checked_mul(bits))
+                    .unwrap_or(u32::MAX)
+                    .max(1)
+            }
+            Expr::Field { base, .. }
+            | Expr::SysAttr { base, .. }
+            | Expr::Unary { rhs: base, .. } => expr_width(base),
+            Expr::Index { base, index, .. } => {
+                let mut width = expr_width(base).max(expr_width(index));
+                // A conversion-shaped `unsigned[128](...)` needs a 128-bit C
+                // value even when no design signal has that width. Treating a
+                // plain constant index the same way is conservative and keeps
+                // this syntax-only scan independent of type resolution.
+                if matches!(base.as_ref(), Expr::Path(_)) {
+                    if let Expr::Int { text, .. } = index.as_ref() {
+                        width = width.max(text.replace('_', "").parse().unwrap_or(0));
+                    }
+                }
+                width
+            }
+            Expr::Range { lo, hi, .. } => expr_width(lo).max(expr_width(hi)),
+            Expr::PartialRange { lo, hi, .. } => lo
+                .as_deref()
+                .map(expr_width)
+                .unwrap_or(0)
+                .max(hi.as_deref().map(expr_width).unwrap_or(0)),
+            Expr::Binary { lhs, rhs, .. } => expr_width(lhs).max(expr_width(rhs)),
+            Expr::IfExpr {
+                cond, then, els, ..
+            } => expr_width(cond).max(expr_width(then)).max(expr_width(els)),
+            Expr::Match {
+                scrutinee, arms, ..
+            } => arms.iter().fold(expr_width(scrutinee), |width, arm| {
+                width.max(block_width(&arm.body))
+            }),
+            Expr::Call { callee, args, .. } => args
+                .iter()
+                .fold(expr_width(callee), |width, arg| width.max(expr_width(arg))),
+            Expr::Construct { args, spread, .. } => {
+                let width = args
+                    .iter()
+                    .filter_map(|argument| argument.value.as_ref())
+                    .fold(0, |width, value| width.max(expr_width(value)));
+                width.max(spread.as_deref().map(expr_width).unwrap_or(0))
+            }
+            Expr::Concat { parts, .. } => parts
+                .iter()
+                .map(expr_width)
+                .try_fold(0u32, u32::checked_add)
+                .unwrap_or(u32::MAX),
+            Expr::Array { elems, .. } => elems.iter().map(expr_width).max().unwrap_or(0),
+            Expr::CharLit { .. } | Expr::StrLit { .. } | Expr::Path(_) => 0,
+        }
+    }
+
+    fn stmt_width(statement: &ast::Stmt) -> u32 {
+        match statement {
+            ast::Stmt::Let(declaration) => declaration.value.as_ref().map(expr_width).unwrap_or(0),
+            ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => expr_width(target)
+                .max(expr_width(value))
+                .max(after.as_ref().map(expr_width).unwrap_or(0)),
+            ast::Stmt::If(statement) => {
+                let else_width = match statement.else_.as_deref() {
+                    Some(ast::ElseBranch::Block(block)) => block_width(block),
+                    Some(ast::ElseBranch::If(statement)) => if_width(statement),
+                    None => 0,
+                };
+                expr_width(&statement.cond)
+                    .max(block_width(&statement.then))
+                    .max(else_width)
+            }
+            ast::Stmt::Match(statement) => statement
+                .arms
+                .iter()
+                .fold(expr_width(&statement.scrutinee), |width, arm| {
+                    width.max(block_width(&arm.body))
+                }),
+            ast::Stmt::For { range, body, .. } => expr_width(range).max(block_width(body)),
+            ast::Stmt::Expr(expression) => expr_width(expression),
+            ast::Stmt::Return { value, .. } => value.as_ref().map(expr_width).unwrap_or(0),
+        }
+    }
+
+    fn if_width(statement: &ast::IfStmt) -> u32 {
+        let else_width = match statement.else_.as_deref() {
+            Some(ast::ElseBranch::Block(block)) => block_width(block),
+            Some(ast::ElseBranch::If(statement)) => if_width(statement),
+            None => 0,
+        };
+        expr_width(&statement.cond)
+            .max(block_width(&statement.then))
+            .max(else_width)
+    }
+
+    fn block_width(block: &ast::Block) -> u32 {
+        block.stmts.iter().map(stmt_width).max().unwrap_or(0)
+    }
+
     fn width(ty: &ast::Type, derived: &HashMap<String, u32>) -> u32 {
         match ty {
             ast::Type::Path(p) => p
@@ -721,7 +852,7 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                 let own = index
                     .as_deref()
                     .and_then(|e| match e {
-                        ast::Expr::Int { text, .. } => text.parse().ok(),
+                        ast::Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
                         ast::Expr::Range { lo, hi, .. } => {
                             let ast::Expr::Int { text: lo, .. } = lo.as_ref() else {
                                 return None;
@@ -729,11 +860,9 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                             let ast::Expr::Int { text: hi, .. } = hi.as_ref() else {
                                 return None;
                             };
-                            Some(
-                                (lo.parse::<i64>().ok()? - hi.parse::<i64>().ok()?).unsigned_abs()
-                                    as u32
-                                    + 1,
-                            )
+                            let lo = lo.replace('_', "").parse::<i64>().ok()? as i128;
+                            let hi = hi.replace('_', "").parse::<i64>().ok()? as i128;
+                            u32::try_from((lo - hi).unsigned_abs().saturating_add(1)).ok()
                         }
                         _ => None,
                     })
@@ -763,12 +892,30 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                             .map(|t| width(t, derived)),
                     );
                     widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                    widths.extend(f.body.as_ref().map(block_width));
+                }
+                ast::Item::Const(constant) => {
+                    widths.push(width(&constant.ty, derived));
+                    widths.push(expr_width(&constant.value));
+                }
+                ast::Item::Enum(en) => {
+                    widths.extend(
+                        en.variants
+                            .iter()
+                            .filter_map(|variant| variant.value.as_ref())
+                            .map(expr_width),
+                    );
                 }
                 ast::Item::Impl(im) => {
                     for item in &im.items {
                         match item {
                             ast::ImplItem::Let(l) => {
                                 widths.extend(l.ty.as_ref().map(|t| width(t, derived)));
+                                widths.extend(l.value.as_ref().map(expr_width));
+                            }
+                            ast::ImplItem::Const(constant) => {
+                                widths.push(width(&constant.ty, derived));
+                                widths.push(expr_width(&constant.value));
                             }
                             ast::ImplItem::Fn(f) => {
                                 widths.extend(
@@ -778,7 +925,9 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                                         .map(|t| width(t, derived)),
                                 );
                                 widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                                widths.extend(f.body.as_ref().map(block_width));
                             }
+                            ast::ImplItem::Stmt(statement) => widths.push(stmt_width(statement)),
                             _ => {}
                         }
                     }
@@ -951,10 +1100,11 @@ fn emit_c_const(
         ast::Expr::Binary { op, lhs, rhs, .. } => {
             let lhs = emit_c_const(lhs, constants, enums)?;
             let rhs = emit_c_const(rhs, constants, enums)?;
-            if matches!(op, ast::BinOp::Div) {
-                Some(format!("sx_udiv(({lhs}), ({rhs}))"))
-            } else {
-                Some(format!("(({lhs}) {} ({rhs}))", c_binop(op).ok()?))
+            match op {
+                ast::BinOp::Div => Some(format!("sx_udiv(({lhs}), ({rhs}))")),
+                ast::BinOp::Shl => Some(format!("sx_shl(({lhs}), ({rhs}))")),
+                ast::BinOp::Shr => Some(format!("sx_shr(({lhs}), ({rhs}))")),
+                _ => Some(format!("(({lhs}) {} ({rhs}))", c_binop(op).ok()?)),
             }
         }
         ast::Expr::IfExpr {
@@ -2750,8 +2900,11 @@ impl Ctx<'_> {
                 if self.is_char_operand(lhs) || self.is_char_operand(rhs) {
                     let a = self.c_char_operand(lhs)?;
                     let b = self.c_char_operand(rhs)?;
-                    if matches!(op, ast::BinOp::Div) {
-                        return Ok(format!("sx_udiv(({a}), ({b}))"));
+                    match op {
+                        ast::BinOp::Div => return Ok(format!("sx_udiv(({a}), ({b}))")),
+                        ast::BinOp::Shl => return Ok(format!("sx_shl(({a}), ({b}))")),
+                        ast::BinOp::Shr => return Ok(format!("sx_shr(({a}), ({b}))")),
+                        _ => {}
                     }
                     return Ok(format!("({a} {} {b})", c_binop(op)?));
                 }
@@ -2802,10 +2955,11 @@ impl Ctx<'_> {
                     return Ok(v);
                 }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
-                if matches!(op, ast::BinOp::Div) {
-                    format!("sx_udiv(({a}), ({c}))")
-                } else {
-                    format!("({a} {o} {c})")
+                match op {
+                    ast::BinOp::Div => format!("sx_udiv(({a}), ({c}))"),
+                    ast::BinOp::Shl => format!("sx_shl(({a}), ({c}))"),
+                    ast::BinOp::Shr => format!("sx_shr(({a}), ({c}))"),
+                    _ => format!("({a} {o} {c})"),
                 }
             }
             other => {

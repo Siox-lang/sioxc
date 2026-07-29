@@ -1180,6 +1180,38 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             result_width
         }
         .max(1);
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            // LLVM shifts are poison when the count is at least the operation
+            // width. Hardware and the native harness define those cases as
+            // zero, so compare at a width that preserves the entire count,
+            // substitute a safe zero count, then select the defined result.
+            let shift_width = operand_width.max(self.expr_width(rhs)).max(1);
+            let a = self.emit_at(lhs, shift_width);
+            let b = self.emit_at(rhs, shift_width);
+            let limit = self.c_at(operand_width as u64, shift_width);
+            let out_of_range = self
+                .builder
+                .build_int_compare(IntPredicate::UGE, b, limit, "shoob")
+                .unwrap();
+            let zero = self.c_at(0, shift_width);
+            let safe = self
+                .builder
+                .build_select(out_of_range, zero, b, "shamt")
+                .unwrap()
+                .into_int_value();
+            let shifted = if matches!(op, BinOp::Shl) {
+                self.builder.build_left_shift(a, safe, "shl").unwrap()
+            } else {
+                self.builder
+                    .build_right_shift(a, safe, false, "shr")
+                    .unwrap()
+            };
+            return self
+                .builder
+                .build_select(out_of_range, zero, shifted, "shzero")
+                .unwrap()
+                .into_int_value();
+        }
         let a = self.emit_at(lhs, operand_width);
         let b = self.emit_at(rhs, operand_width);
         let cmp = |p: IntPredicate, s: &str| {
@@ -1209,8 +1241,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .unwrap()
                     .into_int_value()
             }
-            BinOp::Shl => self.builder.build_left_shift(a, b, "shl").unwrap(),
-            BinOp::Shr => self.builder.build_right_shift(a, b, false, "shr").unwrap(),
+            BinOp::Shl | BinOp::Shr => unreachable!("shifts return above"),
             // Core logical operators; for boolean 0/1 operands these match
             // their scalar reading, and vectors apply them per bit.
             // operands this matches the logical reading.
@@ -1381,6 +1412,39 @@ mod tests {
             ll.contains("add i128"),
             "wide operation lost its type width:\n{ll}"
         );
+    }
+
+    #[test]
+    fn guards_dynamic_shifts_against_llvm_poison() {
+        let design = Design {
+            signals: vec![sig("E.value", 16), sig("E.amount", 16), sig("E.y", 16)],
+            drivers: vec![Driver {
+                ctx: 0,
+                target: SignalId(2),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Shl,
+                    lhs: Box::new(Expr::Current(SignalId(0))),
+                    rhs: Box::new(Expr::Current(SignalId(1))),
+                },
+            }],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+            vector_element_enums: Default::default(),
+        };
+        let ll = emit_module_ir(&design);
+        assert!(
+            ll.contains("icmp uge i16"),
+            "missing shift bound check:\n{ll}"
+        );
+        assert!(
+            ll.contains("shoob"),
+            "missing guarded shift condition:\n{ll}"
+        );
+        assert!(ll.contains("shzero"), "missing zero fallback:\n{ll}");
     }
 
     #[test]

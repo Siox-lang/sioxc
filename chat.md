@@ -1274,3 +1274,17 @@ forward declarations, DUT outputs, and direct native-testbench references.
   regressions for overflowing conversion and module-constant expressions.
 - Updated `TODO.md` to reflect that arbitrary-width, composed, and
   declaration-order-independent module constants are implemented.
+
+## 2026-07-29 — defined oversized shifts and complete harness width scanning
+
+- Reproduced dynamic shifts at or beyond the operand width becoming LLVM
+  poison and producing incorrect DUT output. LLVM now guards the count and
+  returns zero for oversized logical shifts.
+- Replaced raw generated-C shifts with guarded helpers, preventing C undefined
+  behavior for counts at or beyond the harness value width.
+- Fixed native harness sizing to scan literals throughout testbench statements,
+  function bodies, constants, enum values, and nested expressions. Previously,
+  a wide literal used only in an assertion could be emitted into a too-small
+  `_BitInt`, and its undefined shift could corrupt unrelated assertions.
+- Added LLVM structural coverage and an executable regression covering
+  boundary/oversized shifts plus a 65-bit testbench-only literal.

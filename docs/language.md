@@ -1518,6 +1518,12 @@ implements `apply(self)` with no rhs. Using an operator on a user struct/enum
 without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.
 
+Logical shifts are total operations: a shift count greater than or equal to
+the operand width produces zero. This applies identically in compiled design
+logic and native testbench expressions; it never inherits C undefined behavior
+or LLVM poison semantics. A constant expression can acquire a wider contextual
+width, so `unsigned[128](1) << 64` remains a valid cross-word shift.
+
 **Reserved symbols cannot be overloaded.** The grammar owns `=`, `::`, `:`,
 `.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so an
 `Operator<"=", …>` impl is an error. The six comparison operators
