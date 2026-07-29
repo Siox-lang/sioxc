@@ -261,4 +261,7 @@ pub mod codes {
     /// A signal assigned unconditionally twice in one block: the earlier
     /// assignment can never be observed (drivers in a context override).
     pub const DEAD_ASSIGNMENT: &str = "W-P014";
+    /// An attribute `std::attrs` declares and resolution accepts, but which no
+    /// stage reads: writing it has no effect and nothing else would say so.
+    pub const UNIMPLEMENTED_ATTR: &str = "W-P015";
 }

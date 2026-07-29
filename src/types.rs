@@ -1171,6 +1171,26 @@ impl<'a> Checker<'a> {
                 format!("attribute `{name}` cannot be applied to this {kind} (allowed: {allowed})"),
             );
         }
+        self.warn_unimplemented_attr(name, a.name.span);
+    }
+
+    /// Attributes `std::attrs` declares and the compiler resolves, but which
+    /// no stage reads. Writing one has no effect, and nothing else says so —
+    /// `#[name = "foo"]` looks like it renames the emitted entity and does
+    /// nothing at all.
+    fn warn_unimplemented_attr(&mut self, name: &str, span: Span) {
+        let purpose = match name {
+            "keep" => "preserving a signal through optimization",
+            "library" => "the emitted library name",
+            "name" => "the emitted entity name",
+            _ => return,
+        };
+        self.warn(
+            codes::UNIMPLEMENTED_ATTR,
+            span,
+            format!("attribute `{name}` has no effect yet"),
+            &format!("it is reserved for {purpose}; nothing reads it today"),
+        );
     }
 
     /// `p.nosuch` on a struct: the field access lowered to `Unknown`, so the
@@ -5126,6 +5146,30 @@ mod tests {
              impl T { let y: unsigned[8] = 1; await 1ns; assert!(y == 1, \"x\"); print!(\"hi\"); }\n",
         );
         assert_eq!(tb, 0, "a testbench may drive and check");
+    }
+
+    /// `std::attrs` declares attributes no stage reads. They resolve and apply
+    /// cleanly, so `#[name = "foo"]` looks like it renames the emitted entity
+    /// and silently does nothing.
+    #[test]
+    fn attributes_with_no_effect_are_flagged() {
+        let n = |src: &str| warnings(src, codes::UNIMPLEMENTED_ATTR);
+        assert_eq!(
+            n("module m;\n#[name = \"x\"]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            1,
+            "`name` is reserved, not implemented"
+        );
+        assert_eq!(
+            n("module m;\n#[library = \"work\"]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            1,
+            "so is `library`"
+        );
+        // The implemented ones stay quiet.
+        assert_eq!(
+            n("module m;\n#[top]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            0,
+            "`top` is acted on"
+        );
     }
 
     /// A bare name in pattern position lowered to a wildcard, because
