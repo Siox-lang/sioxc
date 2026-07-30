@@ -4062,7 +4062,47 @@ impl Ctx<'_> {
 
     /// A module-fn call as a C expression: bind the arguments, then flatten
     /// the `return`/`if` body into nested conditionals.
+    /// The C constant for a zero-argument construction of a named type: the
+    /// `impl New` default where one is declared, an enum's first variant, and
+    /// zero for a vector family. Returns `None` when the callee is not a type,
+    /// so an ordinary call falls through.
+    fn c_default_construction(&self, callee: &ast::Expr) -> Option<String> {
+        // `unsigned[8]()` — the width is irrelevant to the value.
+        let name = match callee {
+            ast::Expr::Index { base, .. } => expr_path(base)?,
+            _ => match callee {
+                ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.clone(),
+                // `T::new()`, the trait spelling of the same thing.
+                ast::Expr::Path(p) if p.segments.len() == 2 && p.segments[1].text == "new" => {
+                    p.segments[0].text.clone()
+                }
+                _ => return None,
+            },
+        };
+        if let Some(&v) = self.design.new_defaults.get(&name) {
+            return Some(format!("{v}ULL"));
+        }
+        if let Some(syms) = self.design.enum_syms.get(&name) {
+            // The declared-first variant: `enum Phase { Idle, Run }` -> Idle.
+            let first = syms.keys().copied().min()?;
+            return Some(format!("{first}ULL"));
+        }
+        (self.structs.contains_key(&name)
+            || self.type_name_is(&name, "unsigned")
+            || self.type_name_is(&name, "signed"))
+        .then(|| "0ULL".to_string())
+    }
+
     fn c_fn_call(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Result<String, String> {
+        // `T()` / `unsigned[8]()`: the type's default (spec 3.29). Hardware
+        // built these; the testbench had no case for a zero-argument type
+        // call, so `Phase()` and `unsigned[8]()` failed as "unsupported call"
+        // although `let e: Phase;` — the same default, implicitly — worked.
+        if args.is_empty() {
+            if let Some(v) = self.c_default_construction(callee) {
+                return Ok(v);
+            }
+        }
         // A bare name, or `Type::name` for a static associated fn.
         let Some(key) = siox::ir::call_fn_key(callee) else {
             return Err("unsupported call in testbench expression".into());

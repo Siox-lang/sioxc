@@ -1793,9 +1793,10 @@ trait (`From::from`, `Operator::apply`, `Boolean::as_bool`). A parameterized
 `new(args)` (when a type provides one) is ordinary explicit construction.
 
 ```siox
-let p: Phase;          // implicit: the default Phase
-let p2 = Phase();      // explicit: the same default, written out
-let n = unsigned[8]();     // == 0
+let p: Phase;                        // implicit: the default Phase
+let p2: Phase = Phase();             // explicit: the same default, written out
+let p3: Phase = Phase::new();        // and the trait spelling of it
+let n: unsigned[8] = unsigned[8]();  // == 0
 ```
 
 **The derived default is structural** (VHDL's `T'LEFT`), applied recursively:

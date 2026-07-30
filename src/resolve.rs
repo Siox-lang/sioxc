@@ -1111,6 +1111,15 @@ impl<'a> Resolver<'a> {
             if let Some(id) = self.lookup(&head) {
                 if self.out.kind_of(id) == Some(DefKind::Enum) {
                     let var = p.segments[1].text.clone();
+                    // `Phase::new()` is the `New` trait's constructor, not a
+                    // variant — the same default `Phase()` builds. Resolving
+                    // `Enum::x` as a variant first made the documented pair
+                    // disagree: `Pair::new()` worked and `Phase::new()` was
+                    // "not a variant of enum `Phase`".
+                    if var == "new" {
+                        self.out.uses.insert(p.segments[0].span, id);
+                        return;
+                    }
                     match self.variant(id, &var) {
                         Some(vid) => {
                             self.out.uses.insert(p.span, vid);

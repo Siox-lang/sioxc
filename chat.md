@@ -2422,3 +2422,45 @@ Two real bugs came out of the same probe:
 `signed_widen_test.siox` now pins all of it: raw conversion, `sext`, the two
 composed, expression arguments, same-width reinterpretation, narrowing — in
 hardware and testbench.
+
+## 2026-07-31 (cont.) — auditing the spec's falsifiable claims
+
+One section of `language.md` contradicting another was worth following up, so
+I looked for the spec's *checkable* statements: code-block comments asserting
+a concrete result. There are not many, which is itself informative.
+
+`§3.29`'s default-construction block was the productive one. It claims a
+declaration without an initializer takes `T::new()`, and that `T()` and
+`T::new()` are equivalent spellings of it. Testing the matrix:
+
+| form | before |
+| --- | --- |
+| `let p: Pair;` (implicit) | works |
+| `Pair()` / `Pair::new()` | works |
+| `let e: Phase;` (implicit) | works |
+| `Phase()` | **"unsupported call `Phase` in testbench expression"** |
+| `unsigned[8]()` | **"unsupported call in testbench expression"** |
+| `Phase::new()` | **"`new` is not a variant of enum `Phase`"** |
+
+Three of six documented forms failed, each differently, and only in the
+testbench — hardware built all of them correctly. So the implicit default was
+implemented everywhere, the explicit spelling only for structs, and nobody
+noticed because the corpus never writes `T()`.
+
+Two fixes. The emitter had no case for a zero-argument type call, so it now
+builds the default from `design.new_defaults` (the `impl New` value), an
+enum's first variant, or zero for a vector — the same sources the implicit
+path uses. And `Enum::new()` was resolving as a variant lookup before anything
+could consider the `New` trait; `new` is now excluded from that lookup, while
+a genuinely wrong variant still reports as before.
+
+The doc had its own bug in the same block: `let p2 = Phase();` and `let n =
+unsigned[8]();`, both written without type annotations, which E-P012 rejects
+outright — "Phase 1 is type-strict". Two examples of the language's own
+default-construction feature, neither of which compiles.
+
+The pattern across both doc findings: prose and examples drift when the
+feature they describe is only partly exercised. The conversion block was wrong
+because signedness moved to the library; this block was wrong because only its
+implicit half was ever run. `default_construction_test.siox` now runs all six
+forms in both engines.
