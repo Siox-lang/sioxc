@@ -1631,3 +1631,65 @@ forward declarations, DUT outputs, and direct native-testbench references.
 - Added IR coverage for retained integer width/range/identity and aliased
   `Char[]` element flattening, plus an executable DUT covering negative copy and
   comparison through the chained alias.
+
+### 2026-07-30 — Claude — bug log: the `{type} × {shape}` grid
+
+A long bug-hunting run. Rather than list fixes, this records the two patterns
+that produced almost all of them, because both are structural and will keep
+producing bugs until the root is addressed.
+
+**Pattern 1 — one type taught, the rest left.** A type-dependent behaviour is
+implemented for whichever type first needed it, and the others silently fall
+through to a default. Every one of these was found by testing the *other*
+types of a behaviour already known to work for one:
+
+| behaviour | worked for | silently wrong for |
+| --- | --- | --- |
+| display | real, Char, enum | `signed` printed 251 for -5 |
+| fn parameter coercion | real (`sx_b64`) | `signed` passed raw bits: `abs(-5)` = 251 |
+| call return type at the use site | real | Char, signed, enum, Logic |
+| look through `if`/`match` | real | signed, then Char/enum/Logic |
+
+**Pattern 2 — dispatch keyed on expression shape.** The operator dispatch and
+the display path ask "what shape is this expression" rather than "what does it
+denote", so each new shape must be added by hand. Four were missing: a call, a
+conversion (`signed[8](x)`), a struct field (`p.x`), and a branch-valued
+expression (`if`/`match`). Each looked like a separate bug and was the same
+one.
+
+Both patterns share a root: **`Typed` carries no expression→type map**, so
+every consumer re-derives type facts from AST shape independently. The
+`type_witness` helper closes the branch cell of the grid generically rather
+than per type — that shape is the model for the rest, but the durable fix is
+to populate `Typed` and ask it once.
+
+Other bugs, not from those patterns:
+
+- `check_fits_width` computed its bounds in i64, so `a == 5` on a 63- or
+  64-bit signal **panicked the compiler** (`1i64 << 63` is already i64::MIN).
+- An exhaustive `match` *expression* left `Unknown` in the Select chain, so
+  the spelling the non-exhaustive lint asks for produced a design no engine
+  would run. Exhaustiveness was never checked on expressions at all.
+- A bare name in pattern position became a silent wildcard, so a mistyped or
+  unqualified variant collapsed a whole match to its first arm. Malformed bit
+  patterns did the same, and the two engines disagreed about them.
+- `Counter<8>` silently left the parameter unbound where `Counter<W = 8>`
+  worked; every port kept width 0.
+- Inlining lost the argument's width, so signed's Ord tested bit 0.
+- A call result was not wrapped to its declared return width, in both engines.
+
+**Silently-unimplemented, now diagnosed** (the user's request: make missing
+things visible rather than quiet):
+
+- `assert!`/`print!`/`await` in an entity body were dropped without a word —
+  a check written into a design never ran. Now an error naming `#[test]`.
+- `return` in hardware statement position, likewise dropped.
+- An unknown system attribute (`x'bogus`) lowered to `Unknown` and surfaced
+  only as "no engine can run this design".
+- `keep`, `library` and `name` are declared in `std::attrs` and read by
+  nothing; they warn now (W-P015).
+
+**Process note.** CI was red for several commits without my noticing: it runs
+`cargo fmt --all --check`, and scripted edits do not go through rustfmt. I had
+been running `cargo test`, the corpus and a bare `cargo clippy` — none cover
+formatting. Running the workflow's own recipe is the check that matters.
