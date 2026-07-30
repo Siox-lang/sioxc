@@ -2158,3 +2158,38 @@ Every list context: one diagnostic. The neighbours on either side still parse.
 The three narrow tests I wrote yesterday are replaced by one table over all
 ten contexts — the property now belongs where the fix does, and a list added
 later is covered by construction rather than by remembering.
+
+## 2026-07-30 (cont.) — asking the same question one stage up
+
+Recovery in the semantic stage is sound. Unknown type, unknown entity,
+unknown method, unknown variant, width mismatch, arity mismatch: one error
+each, naming the thing. An unknown type used three times reports three times,
+which is right — three separate uses, as rustc does.
+
+Elaboration is sound too, once probed correctly. My first sweep showed zeros
+everywhere and I nearly wrote that up as silent acceptance; the outer entity
+was never instantiated, so nothing elaborated at all — the gap logged earlier,
+biting me rather than a user. Instantiated properly: an unknown port is an
+error, an undriven signal and a combinational loop are warnings, and a
+multiple-driver assignment is W-P014. An unconnected *output* is silent, which
+is correct — a dangling output is legal in any HDL — while an unconnected
+*input* warns (W-P012), which is the case that matters.
+
+So no cascade above the parser. The one thing worth changing was the runtime
+message a failing range check prints:
+
+    `RangeFail.d.v` left its range 1..10
+
+The signal, the bounds, and not the value. The generated C decodes that value
+one line above to decide the check failed, then sets a static string and drops
+it. Now:
+
+    `RangeFail.d.v` left its range 1..10 (it was 11)
+    `NegRange.d.v` left its range -5..5 (it was -6)
+
+There were two copies of the check — one for the engine-flagged path, one for
+the post-settle scan — and only the second decoded the value. Rather than
+teach the first to do it too, both now share `decode` and `report` closures,
+so the message is written once. That is the same shape as the parser fix in
+the previous entry, at a smaller scale: the duplicate is what let the two
+paths drift in the first place.

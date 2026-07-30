@@ -433,13 +433,42 @@ pub fn build(
              \x20   if (g_range_failed) return 1;\n\
              \x20   e = sx_range_error();\n",
         );
+        // Read a ranged signal into `v`, sign-extending when its domain goes
+        // below zero. Both the engine-flagged path and the post-settle scan
+        // need the value, and the message is written once for both: naming the
+        // signal and its bounds while dropping the number that broke them left
+        // the reader to go and find it.
+        let decode = |id: u32, sig: &siox::ir::Signal, lo: i64| {
+            if lo < 0 && sig.width > 0 && sig.width < 64 {
+                format!(
+                    "v = (int64_t)sx_read({id}); if (v & {s}LL) v -= {m}LL;",
+                    s = 1u64 << (sig.width - 1),
+                    m = 1u64 << sig.width
+                )
+            } else {
+                format!("v = (int64_t)sx_read({id});")
+            }
+        };
+        let report = |id: u32, sig: &siox::ir::Signal, lo: i64, hi: i64| {
+            let buffer = format!("_sx_range_{id}");
+            let capacity = sig.path.len() + 64;
+            format!(
+                "static char {buffer}[{capacity}]; \
+                 snprintf({buffer}, sizeof {buffer}, \
+                 \"`{}` left its range {lo}..{hi} (it was %lld)\", (long long)v); \
+                 g_msg = {buffer};",
+                sig.path
+            )
+        };
+
         prog.push_str("    if (e) { switch (e) {\n");
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
             prog.push_str(&format!(
-                "    case {}: g_msg = \"`{}` left its range {lo}..{hi}\"; break;\n",
+                "    case {}: {{ {} {} }} break;\n",
                 id + 1,
-                sig.path
+                decode(*id, sig, lo),
+                report(*id, sig, lo, hi)
             ));
         }
         prog.push_str(
@@ -448,18 +477,10 @@ pub fn build(
         );
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
-            let decode = if lo < 0 && sig.width > 0 && sig.width < 64 {
-                format!(
-                    "v = (int64_t)sx_read({id}); if (v & {s}LL) v -= {m}LL;",
-                    s = 1u64 << (sig.width - 1),
-                    m = 1u64 << sig.width
-                )
-            } else {
-                format!("v = (int64_t)sx_read({id});")
-            };
             prog.push_str(&format!(
-                "    {decode}\n    if (v < {lo}LL || v > {hi}LL) {{ g_msg = \"`{}` left its range {lo}..{hi}\"; g_range_failed = 1; return 1; }}\n",
-                sig.path
+                "    {}\n    if (v < {lo}LL || v > {hi}LL) {{ {} g_range_failed = 1; return 1; }}\n",
+                decode(*id, sig, lo),
+                report(*id, sig, lo, hi)
             ));
         }
         prog.push_str("    return 0;\n}\n\n");
