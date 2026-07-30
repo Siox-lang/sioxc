@@ -82,3 +82,8 @@ jobs:
 
       - name: Compile and run corpus
         run: ./scripts/test-corpus.sh "$GITHUB_WORKSPACE/siox-tests"
+
+      # The packed value representation was reached only by the unit tests.
+      # The corpus is what exercises a backend end to end.
+      - name: Compile and run corpus (bitpack)
+        run: SIOXC_FEATURES=bitpack ./scripts/test-corpus.sh "$GITHUB_WORKSPACE/siox-tests"

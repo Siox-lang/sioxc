@@ -27,4 +27,6 @@ step "test"                      cargo test --locked
 step "test (bitpack)"            cargo test --locked --features bitpack
 step "clippy (all targets)"      cargo clippy --locked --all-targets --all-features -- -D warnings
 step "corpus"                    bash "$(dirname "$0")/test-corpus.sh" "$corpus"
+SIOXC_FEATURES=bitpack \
+step "corpus (bitpack)"          bash "$(dirname "$0")/test-corpus.sh" "$corpus"
 exit $fail

@@ -6,7 +6,13 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-sioxc=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --)
+# `SIOXC_FEATURES=bitpack ./test-corpus.sh` runs the whole corpus against an
+# alternate value representation. That backend was only ever reached by the
+# unit tests; the corpus is what actually exercises it end to end.
+features=${SIOXC_FEATURES:-}
+cargo_args=(-q --manifest-path "$root/Cargo.toml" --bin sioxc)
+[[ -n "$features" ]] && cargo_args+=(--features "$features")
+sioxc=(cargo run "${cargo_args[@]}" --)
 
 # `--emit source` must produce source that parses back to the same program,
 # and printing must be idempotent (spec Stage 2). Compiling and running a
@@ -33,11 +39,9 @@ for source in "$corpus"/*.siox; do
     binary="$tmp/$name"
     vcd="$tmp/$name.vcd"
     if grep -q '#\[test\]' "$source"; then
-        command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
-            --std "$root/std" --test "$source" -o "$binary")
+        command=("${sioxc[@]}" --std "$root/std" --test "$source" -o "$binary")
     else
-        command=(cargo run -q --manifest-path "$root/Cargo.toml" --bin sioxc --
-            "$source" --std "$root/std" --emit metadata)
+        command=("${sioxc[@]}" "$source" --std "$root/std" --emit metadata)
     fi
     if "${command[@]}" \
         && { [[ ! -e "$binary" ]] || "$binary" --vcd "$vcd"; } \

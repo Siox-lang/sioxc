@@ -1999,3 +1999,31 @@ had been false for as long as any corpus file contained an escaped quote.
 `scripts/test-corpus.sh` now round-trips every file: print, re-parse,
 print again, compare. Verified by reintroducing the bug — 103 passed, 3
 failed — rather than trusting that a passing check was checking anything.
+
+## 2026-07-30 (cont.) — running the corpus against the other backend
+
+No bugs this round. Following the same thread as the round-trip check —
+which stated property is claimed but never tested? — I looked at the feature
+flags.
+
+`bitpack` selects a different value representation. CI tested it with
+`cargo test --features bitpack`, and that is all: the corpus, which is the
+only thing that compiles and *runs* 106 designs end to end, was built with
+default features every time. The backend most likely to differ in behaviour
+was covered exclusively by unit tests.
+
+It passes — 106/106 under bitpack, same as default. So this found no bug,
+and that is the honest result. What it did find is that nothing would have
+told us if it had. `test-corpus.sh` now takes `SIOXC_FEATURES`, and both CI
+and `ci-local.sh` run the corpus twice.
+
+`simd`, `wide` and `f128` also build and test clean. They are never built by
+CI at all (only `--all-features` clippy, which lints without running), but
+they are empty feature gates today, so there is nothing behind them to test
+yet — noting it rather than acting on it.
+
+Two checks on the check itself, since a test that passes vacuously is worse
+than no test: `SIOXC_FEATURES=no_such_feature` fails the whole corpus (so
+the variable is really reaching cargo), and the same substitution inside
+`ci-local.sh` fails there too (so it survives the `step` wrapper). Both
+restored afterwards.
