@@ -391,6 +391,26 @@ fn pub_kw(is_pub: bool) -> &'static str {
     }
 }
 
+/// Re-escape a string literal's text for printing. The AST stores the string
+/// a program *means* — the lexer having already turned `\"` into a quote — so
+/// printing it raw closed the literal early and produced source that no
+/// longer parsed. This is the exact inverse of the parser's `unescape`.
+fn escape_str(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// The comma between two members of a brace-delimited list. Commas separate
 /// rather than terminate, so the last member of a struct, view, enum, or
 /// entity body carries none.
@@ -592,7 +612,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::SuffixLit { text, suffix, .. } => (format!("{text}{}", suffix.text), u8::MAX),
         Expr::BitStrLit { base, digits, .. } => (format!("{base}\"{digits}\""), u8::MAX),
         Expr::CharLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
-        Expr::StrLit { text, .. } => (format!("\"{text}\""), u8::MAX),
+        Expr::StrLit { text, .. } => (format!("\"{}\"", escape_str(text)), u8::MAX),
         // `true`/`false` desugar to `Bool::true`/`Bool::false`; print them back
         // in their surface form so source round-trips.
         Expr::Path(p)
@@ -740,6 +760,18 @@ mod tests {
         // Printing must be idempotent: print(parse(print(x))) == print(x).
         let printed2 = print_module(&m2);
         assert_eq!(printed, printed2, "pretty-printing is not idempotent");
+    }
+
+    /// The AST holds the string a program *means*, the lexer having already
+    /// turned `\"` into a quote. Printing that raw closed the literal early —
+    /// `"x\"BEEF\" = 0xBEEF"` came back out as `"x"BEEF" = 0xBEEF"` — so the
+    /// printed source no longer parsed. Three corpus files did exactly this.
+    #[test]
+    fn roundtrips_string_escapes() {
+        roundtrip(
+            "module m;\n#[test]\nentity T {}\nimpl T {\n    \
+             print!(\"a \\\" b \\\\ c \\n d \\t e\");\n}\n",
+        );
     }
 
     #[test]

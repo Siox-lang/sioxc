@@ -1971,3 +1971,31 @@ The lesson is about the order I nearly did this in. "Lowering is too strict,
 relax it" was the obvious reading of the symptom, and it would have been a
 regression. The check that saved it was probing whether the stage I wanted to
 trust actually did the thing I was about to trust it for.
+
+## 2026-07-30 (cont.) — the printer emitted source it could not read
+
+Traits, generic functions, VCD output and every `--emit` mode over the whole
+corpus came back clean. Then a different question: `--emit source` claims to
+round-trip (Stage 2 acceptance, stated at the top of `pretty.rs`), so does
+it? Print each corpus file, print the result again, and compare.
+
+Three of 106 failed, all the same cause. The lexer unescapes a string
+literal when parsing, so the AST holds the string a program *means* — a real
+`"` where the source wrote `\"`. Printing wrote that back raw:
+
+    assert!(h == 0xBEEF, "x"BEEF" = 0xBEEF");
+
+which closes at the second quote and no longer parses. One file ended a
+string with a backslash, which then escaped the closing quote and swallowed
+the rest of the line. The printer needed the exact inverse of the parser's
+`unescape`, and never had one.
+
+What is worth keeping from this is not the fix but the check. The corpus
+compiles each file and runs its testbench; neither of those calls the
+printer, so nothing in CI had ever read its output. A stated acceptance
+criterion with no test behind it is a claim, not a property — and this one
+had been false for as long as any corpus file contained an escaped quote.
+
+`scripts/test-corpus.sh` now round-trips every file: print, re-parse,
+print again, compare. Verified by reintroducing the bug — 103 passed, 3
+failed — rather than trusting that a passing check was checking anything.
