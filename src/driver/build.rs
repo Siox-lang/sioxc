@@ -210,6 +210,22 @@ pub fn build(
             break;
         }
     }
+    // Constant lookup tables, one emitted expression per element. The scalar
+    // table above holds a single entry per name, so an indexed read of a
+    // `const` array found nothing there and was called untranslatable.
+    let mut const_array_exprs: HashMap<String, Vec<String>> = HashMap::new();
+    for declaration in &const_decls {
+        let ast::Expr::Array { elems, .. } = &declaration.value else {
+            continue;
+        };
+        let values: Option<Vec<String>> = elems
+            .iter()
+            .map(|e| emit_c_const(e, &const_exprs, &enums))
+            .collect();
+        if let Some(values) = values {
+            const_array_exprs.insert(declaration.name.text.clone(), values);
+        }
+    }
 
     // Struct field layouts (base-first, inheritance flattened) so a struct-typed
     // testbench local can be materialized as one C local per leaf field. Every
@@ -482,6 +498,7 @@ pub fn build(
             structs: &structs,
             derived_widths: &derived_widths,
             const_exprs: &const_exprs,
+            const_array_exprs: &const_array_exprs,
             consts: &consts,
             real_consts: &real_consts,
             integer_consts: &integer_consts,
@@ -841,6 +858,8 @@ struct Ctx<'a> {
     local_types: std::cell::RefCell<HashMap<String, String>>,
     /// Module-level `const` values, for bare-name references.
     const_exprs: &'a HashMap<String, String>,
+    /// Module-level `const` lookup tables, one expression per element.
+    const_array_exprs: &'a HashMap<String, Vec<String>>,
     /// Integer module constants, also usable as local type widths.
     consts: &'a HashMap<String, u128>,
     /// Module constants declared as `real`; their stored C expressions are f64
@@ -4464,6 +4483,22 @@ impl Ctx<'_> {
                         )
                     })?;
                 format!("{d}ULL")
+            }
+            // An element of a constant lookup table, at a constant index or a
+            // runtime one. Constants are stored one scalar per name, so both
+            // forms missed the table entirely and were reported as something
+            // the emitter cannot translate.
+            ast::Expr::Index { base, index, .. }
+                if expr_path(base).is_some_and(|b| self.const_array_exprs.contains_key(&b)) =>
+            {
+                let values = &self.const_array_exprs[&expr_path(base).unwrap()];
+                let idx = self.expr(index)?;
+                // C folds the chain away when the index is a literal.
+                let mut out = String::from("0ULL");
+                for (k, value) in values.iter().enumerate().rev() {
+                    out = format!("((({idx}) == {k}ULL) ? ({value}) : {out})");
+                }
+                out
             }
             // A *dynamic* array index — `a[i]` where `i` is not constant, so
             // the whole expression has no path. The elements are separate C

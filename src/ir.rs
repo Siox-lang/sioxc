@@ -412,6 +412,11 @@ struct Lowering<'a> {
     /// Exact literal values for module constants, including values wider than
     /// the signed width/parameter evaluator can represent.
     const_values: HashMap<String, Expr>,
+    /// Constant lookup tables (`const TAB: unsigned[8][4] = [..]`), whose
+    /// elements are folded individually. `const_values` holds one scalar
+    /// per name and has no room for a sequence, so an indexed read of a
+    /// const array used to find nothing and lower to `Unknown`.
+    const_arrays: HashMap<String, Vec<Expr>>,
     /// Module-level `real` constants (`const PI: real = 3.14159...`).
     consts_real: HashMap<String, f64>,
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
@@ -546,6 +551,7 @@ impl<'a> Lowering<'a> {
             param_widths: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
             const_values: HashMap::new(),
+            const_arrays: HashMap::new(),
             consts_real: HashMap::new(),
             const_ranges: HashMap::new(),
             aliases: HashMap::new(),
@@ -699,6 +705,7 @@ impl<'a> Lowering<'a> {
                     || self.consts.contains_key(name)
                     || self.consts_real.contains_key(name)
                     || self.const_values.contains_key(name)
+                    || self.const_arrays.contains_key(name)
                 {
                     continue;
                 }
@@ -707,6 +714,18 @@ impl<'a> Lowering<'a> {
                         (eval_const(lo, &self.consts), eval_const(hi, &self.consts))
                     {
                         self.const_ranges.insert(name.clone(), (left, right));
+                        progressed = true;
+                    }
+                } else if let ast::Expr::Array { elems, .. } = &constant.value {
+                    // A constant lookup table. Every element has to fold, or
+                    // the table is left for a later round of the fixed point
+                    // (an element may name a constant not yet resolved).
+                    let values: Option<Vec<Expr>> = elems
+                        .iter()
+                        .map(|e| lower_const_value(e, &self.const_values, &self.consts))
+                        .collect();
+                    if let Some(values) = values {
+                        self.const_arrays.insert(name.clone(), values);
                         progressed = true;
                     }
                 } else if let ast::Expr::Int { text, .. } = &constant.value {
@@ -3682,6 +3701,39 @@ impl<'a> Lowering<'a> {
                     .borrow_mut()
                     .push((name.clone(), p.span));
                 Expr::Unknown
+            }
+            // An element of a constant lookup table (`TAB[2]`, `TAB[addr]`).
+            // A signal array has had both forms since dynamic indexing landed;
+            // a `const` array had neither, because constants are stored one
+            // scalar per name. Both lowered to `Unknown` and were reported as
+            // a driver index with no name attached.
+            ast::Expr::Index { base, index, .. }
+                if expr_path(base).is_some_and(|b| self.const_arrays.contains_key(&b)) =>
+            {
+                let values = &self.const_arrays[&expr_path(base).unwrap()];
+                if let Some(i) = eval_const(index, &self.consts) {
+                    return usize::try_from(i)
+                        .ok()
+                        .and_then(|i| values.get(i).cloned())
+                        // Out of range reads 0, as a dynamic index does.
+                        .unwrap_or(Expr::Const(0));
+                }
+                // A runtime index selects between the elements, the same mux
+                // chain `lower_dynamic_read` builds over a signal array.
+                let idx = self.lower_expr(index);
+                let mut acc = Expr::Const(0);
+                for (i, value) in values.iter().enumerate().rev() {
+                    acc = Expr::Select {
+                        cond: Box::new(Expr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(idx.clone()),
+                            rhs: Box::new(Expr::Const(i as u64)),
+                        }),
+                        then: Box::new(value.clone()),
+                        els: Box::new(acc),
+                    };
+                }
+                acc
             }
             // `Enum::Variant` lowers to its discriminant constant.
             ast::Expr::Path(p) if p.segments.len() >= 2 => self

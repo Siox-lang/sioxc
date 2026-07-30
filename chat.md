@@ -1877,3 +1877,27 @@ Two smaller ones alongside it:
 indexed in hardware lowers to `Unknown` and reports `driver 2 expr: contains
 an Unknown (unlowered) expression` — a driver index rather than a name. A
 `const` array is not seeded the way a `let` array now is.
+
+## 2026-07-30 (cont.) — const lookup tables
+
+Closing the item logged last round. `const TAB: unsigned[8][4] = [5, 6, 7,
+8];` read at `TAB[2]` lowered to an unlowered `Unknown` in hardware and was
+reported in a testbench as something the emitter "cannot translate yet".
+
+The cause is one line of storage: constants are held one scalar per name
+(`const_values: HashMap<String, Expr>` in the lowerer, `const_exprs:
+HashMap<String, String>` in the emitter). There is nowhere to put a
+sequence, so an indexed read of a const array found nothing and each side
+fell through to its own "I don't know what this is" path — which is why the
+same declaration produced two unrelated-looking failures.
+
+Both sides now keep a table of element expressions beside the scalar one,
+and read it at a constant index or a runtime one. The runtime form reuses
+the shape each side already had for signal arrays: a `Select` chain in the
+IR, a ternary chain in C. Out of range reads 0, matching the signal case.
+
+Worth noting the symmetry with the previous find. That one was a `let` array
+whose initializer was dropped; this one is a `const` array with nowhere to
+be stored. Both meant "a lookup table does not work", both were silent or
+near-silent, and neither was covered because the corpus's array tests all
+build their arrays by driving them rather than declaring their contents.
