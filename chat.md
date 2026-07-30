@@ -2381,3 +2381,44 @@ compiler implements, used inside std itself) and `finish` (documented
 simulation control at language.md:2367, implemented in the emitter, declared
 nowhere). Both were false positives my probes did not cover, and both are now
 in the list beside a note to keep it in step with the emitter's own match.
+
+## 2026-07-31 (cont.) — the doc that contradicted itself
+
+Probing `std::bits` conversions against known values. `signed[16](s8v)` on
+-56 gave 200, and so did `resize(s8v, 16)` and `integer(s8v)`. Three wrong
+answers in a row for the most basic thing a signed type does.
+
+Except they are not wrong. `lower_conversion` says so plainly — "conversions
+are a raw resize (zero-extend / truncate); signed widening is the library
+`std::bits::sext`" — and `sext` exists, and `docs/language.md:422` documents
+exactly that. The compiler tracks no signedness by design; widening a signed
+value is `signed[16](sext(x))`.
+
+**But `docs/language.md:1014` says the opposite**, in a code block, with
+comments:
+
+    z = signed[16](s);    // widen: sign-extends when the source is signed
+    k = integer(s);       // cross to the kernel word (sign-extending from signed)
+    r = resize(a, W + 1); // keeps unsigned/signed-ness
+
+Three lines, all false, four hundred lines from the passage that contradicts
+them. Following them silently produces wrong numbers — this is the one place
+today where the *documentation* was the defect. Rewritten to state the raw-
+resize rule, why (the compiler has no signedness to consult), and to show the
+`sext` form beside it.
+
+Two real bugs came out of the same probe:
+
+- **`sext` failed for any argument that was not a plain name.** `sext(a)`
+  worked; `sext(a + 0)` and `sext(signed[8](56))` reported "`x'length` is not
+  known here". `arg_width` consulted only `expr_path`, so the width never
+  travelled with an expression argument and `x'length` inside the inlined body
+  had nothing to read. Same shape as the family bugs earlier today, and the
+  same fix: `dispatch_operand_family` already walks conversions, arithmetic
+  and branches and already returns a width, so ask it.
+- The error message that made this findable was one I rewrote this morning.
+  It named `x` and said why. The old text was `unknown ::length`.
+
+`signed_widen_test.siox` now pins all of it: raw conversion, `sext`, the two
+composed, expression arguments, same-width reinterpretation, narrowing — in
+hardware and testbench.

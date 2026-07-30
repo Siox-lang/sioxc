@@ -2541,8 +2541,16 @@ impl Ctx<'_> {
     /// A named value carries its declared width; anything else has none to
     /// give and the body falls back to its own rules.
     fn arg_width(&self, a: &ast::Expr) -> Option<u32> {
-        let path = expr_path(a)?;
-        self.name_width(&path)
+        if let Some(w) = expr_path(a).and_then(|p| self.name_width(&p)) {
+            return Some(w);
+        }
+        // Only a *named* argument had a width, so `x'length` inside an inlined
+        // body had nothing to consult when the argument was an expression:
+        // `sext(a)` worked and `sext(a + 0)` did not, though both are the same
+        // eight bits. A conversion states its width, arithmetic keeps its
+        // operands', a branch takes its branches' — the shapes operator
+        // dispatch already walks, so ask the same question there.
+        self.dispatch_operand_family(a).and_then(|(_, w)| w)
     }
 
     /// The declared bit width of a vector-family type: `unsigned[8]` -> 8 (and the

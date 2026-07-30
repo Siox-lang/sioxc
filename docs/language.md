@@ -1007,20 +1007,30 @@ This is especially important for `Logic` to `Bit` because unknown/high-impedance
 ---
 
 
-**Explicit conversions** use type application — `T(x)` — plus the
-family-preserving `resize`:
+**Explicit conversions** use type application — `T(x)` — plus `resize`:
 
 ```siox
-y = unsigned[16](a);      // widen: zero-extends (unsigned target)
-z = signed[16](s);       // widen: sign-extends when the source is signed
-n = unsigned[4](a);       // narrow: truncates
-k = integer(s);       // cross to the kernel word (sign-extending from signed)
-r = resize(a, W + 1); // keeps unsigned/signed-ness; width is const-evaluable
+y = unsigned[16](a);  // widen: zero-extends
+z = signed[16](s);    // widen: zero-extends too — see below
+n = unsigned[4](a);   // narrow: truncates
+k = integer(s);       // the raw (unsigned) bits as a kernel word
+r = resize(a, W + 1); // same rule, width as a const-evaluable value
 ```
 
-Extension comes from the source/target families; `resize(x, n)` takes its
-width as a value argument because the language is static — a const-evaluable
-value argument in width position *is* a generic argument.
+A conversion is a **raw resize**: zero-extend or truncate, whatever the
+families involved. The compiler tracks no signedness (§3.10), so it cannot
+know that a widening should copy a sign bit — sign extension is the library
+function [`std::bits::sext`](../std/bits.siox), and a signed value is widened
+by going through it:
+
+```siox
+z = signed[16](sext(s));   // -56 stays -56
+k = sext(s);               // the signed *value* as a kernel integer
+```
+
+`resize(x, n)` takes its width as a value argument because the language is
+static — a const-evaluable value argument in width position *is* a generic
+argument.
 
 **Constant conversion arguments must fit the target**: `unsigned[4](300)` and
 `signed[4](-9)` are compile-time errors (`-8..7` is signed[4]'s domain), the same
