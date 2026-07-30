@@ -99,9 +99,16 @@ impl<'a> Parser<'a> {
     pub fn new(src: &'a str, tokens: Vec<Token>, sink: &'a mut DiagnosticSink) -> Self {
         // Strip comment trivia so the grammar can ignore it. The trailing `Eof`
         // is always kept.
+        //
+        // `Unknown` goes with it. The lexer has already reported that run of
+        // unrecognized input, so every rule that met one added diagnostics
+        // about a name or separator it could not find *after* the real cause
+        // had been named — one stray token cost three to eight errors
+        // depending on which list it landed in. Dropping it here fixes every
+        // list at once, rather than teaching each of them the same lesson.
         let tokens: Vec<Token> = tokens
             .into_iter()
-            .filter(|t| t.kind != TokenKind::Comment)
+            .filter(|t| !matches!(t.kind, TokenKind::Comment | TokenKind::Unknown))
             .collect();
         Parser {
             src,
@@ -539,14 +546,6 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LBrace, "to open an entity body");
         let mut ports = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            // Unrecognized input the lexer has already reported. Feeding it to
-            // `parse_port` produced four more diagnostics about the name, the
-            // `:` and the separator it could not find.
-            if self.at(TokenKind::Unknown) {
-                self.bump();
-                self.eat(TokenKind::Comma);
-                continue;
-            }
             let before = self.pos;
             let (port, terminated) = self.parse_port();
             ports.push(port);
@@ -1037,20 +1036,6 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Stmt {
         match self.kind() {
-            // The lexer already reported this run of unrecognized input, and
-            // it can only be skipped from here. Parsing it as an expression
-            // added "expected an expression" and "expected `;`" on top of a
-            // diagnostic that had already named the real problem.
-            TokenKind::Unknown => {
-                let span = self.span();
-                self.bump();
-                // The same placeholder `parse_primary` synthesizes, so callers
-                // downstream see one shape for "this expression is a mistake".
-                Stmt::Expr(Expr::Int {
-                    text: String::new(),
-                    span,
-                })
-            }
             TokenKind::Let => {
                 let start = self.span();
                 self.bump();
@@ -2442,18 +2427,58 @@ mod tests {
         assert!(diags[0].message.contains("`,`, not `;`"));
     }
 
-    /// A run of unrecognized bytes is one mistake. The lexer reported it once
-    /// per byte and the parser then retried each `Unknown` token as a fresh
-    /// statement, so `@@@` in an impl body produced nine diagnostics.
+    /// A run of unrecognized bytes is one mistake wherever it lands. It used
+    /// to cost three to eight diagnostics depending on the list — each rule
+    /// reporting the name or separator it could not find *after* the lexer had
+    /// already named the cause. `Unknown` is trivia now, so this holds for
+    /// every list in the grammar rather than the ones that were reported.
     #[test]
-    fn a_stray_token_run_reports_once() {
-        let diags = diagnostics("module m;\nimpl E { y = a; @@@ }\n");
-        assert_eq!(diags.len(), 1, "got {diags:#?}");
-        assert!(diags[0].message.contains("unexpected characters `@@@`"));
+    fn a_stray_token_run_reports_once_in_any_list() {
+        let cases = [
+            ("entity ports", "entity E { a: Bit in, @@@ y: Bit out }"),
+            ("struct body", "struct S { a: Bit, @@@ b: Bit }"),
+            ("enum body", "enum E { A, @@@ B }"),
+            (
+                "view body",
+                "struct S { a: Bit, b: Bit }\nview V for S { a out, @@@ b in }",
+            ),
+            (
+                "param list",
+                "entity E<W: integer, @@@ X: integer> { y: Bit out }",
+            ),
+            ("import list", "using std::bits::{unsigned, @@@ signed};"),
+            (
+                "impl statements",
+                "entity E { a: Bit in, y: Bit out }\nimpl E { y = a; @@@ }",
+            ),
+            (
+                "call arguments",
+                "entity E { y: Bit out }\nimpl E { y = f(1, @@@ 2); }",
+            ),
+            (
+                "array literal",
+                "entity E { y: Bit out }\nimpl E { let a: Bit[2] = ['0', @@@ '1']; y = a[0]; }",
+            ),
+            (
+                "match arms",
+                "entity E { s: unsigned[2] in, y: Bit out }\n\
+                 impl E { y = match s { 0 => '0', @@@ _ => '1' }; }",
+            ),
+        ];
+        for (what, body) in cases {
+            let diags = diagnostics(&format!("module m;\n{body}\n"));
+            assert_eq!(diags.len(), 1, "in {what}: {diags:#?}");
+            assert!(
+                diags[0].message.contains("unexpected characters `@@@`"),
+                "in {what}: {:?}",
+                diags[0].message
+            );
+        }
     }
 
     /// Multi-byte input coalesces by character, not by byte, and the message
-    /// quotes what was written.
+    /// quotes what was written. The old message formatted one byte as a
+    /// `char`, which mangled anything non-ASCII.
     #[test]
     fn a_stray_token_run_is_quoted_by_character() {
         let diags = diagnostics("module m;\nimpl E { y = a; ¡¿ }\n");
@@ -2461,15 +2486,11 @@ mod tests {
         assert!(diags[0].message.contains("`¡¿`"), "{:?}", diags[0].message);
     }
 
-    /// In a port list the same run cost four further diagnostics about the
-    /// name, the `:` and the separator it could not find. The ports on either
-    /// side of it still parse.
+    /// Dropping the token must not drop its neighbours: the ports on either
+    /// side of the stray run still parse.
     #[test]
-    fn a_stray_token_in_a_port_list_keeps_the_ports_around_it() {
-        let src = "module m;\nentity E { a: Bit in, @@@ y: Bit out }\n";
-        let diags = diagnostics(src);
-        assert_eq!(diags.len(), 1, "got {diags:#?}");
-        let (m, _) = parse(src);
+    fn a_stray_token_keeps_the_ports_around_it() {
+        let (m, _) = parse("module m;\nentity E { a: Bit in, @@@ y: Bit out }\n");
         let Some(Item::Entity(e)) = m.items.first() else {
             panic!("expected an entity")
         };

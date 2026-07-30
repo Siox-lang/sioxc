@@ -2126,3 +2126,35 @@ specific place it was reported (ports), and the same defect elsewhere
 (statements, and the lexer beneath both) was left. Recovery is a property of
 every list in the grammar, not of the list someone happened to file a bug
 against.
+
+## 2026-07-30 (cont.) — fixing it once instead of nine times
+
+Acting on the lesson from the previous entry rather than waiting for the next
+report. If recovery is a property of every list in the grammar, sweep every
+list: struct bodies, enum bodies, view bodies, call arguments, match arms,
+array literals, parameter lists, import lists.
+
+All eight cascaded. One `@@@` cost between three and eight diagnostics
+depending on where it landed — each rule dutifully reporting the name, the
+`:` or the separator it could not find, after the lexer had already named the
+cause. Yesterday's two fixes (statements, entity ports) were the two places
+someone had happened to look.
+
+The obvious next move was eight more skip-this-token guards. That is the
+mistake in a different costume: it leaves the tenth list, and the one added
+next month, broken in exactly the same way.
+
+`Unknown` is trivia. The lexer reports the run, and the parser has no use for
+a token whose only content is "this was already an error" — precisely the
+relationship it already has with `Comment`, which is stripped on construction
+and never reaches the grammar. One line in the filter, and both of yesterday's
+special cases deleted as dead code:
+
+    .filter(|t| !matches!(t.kind, TokenKind::Comment | TokenKind::Unknown))
+
+Every list context: one diagnostic. The neighbours on either side still parse.
+216 tests pass unchanged, so nothing depended on seeing `Unknown`.
+
+The three narrow tests I wrote yesterday are replaced by one table over all
+ten contexts — the property now belongs where the fix does, and a list added
+later is covered by construction rather than by remembering.
