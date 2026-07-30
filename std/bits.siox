@@ -166,15 +166,21 @@ impl Operator<"*", signed, signed> for signed {
 // word-wrapping negate, truncated back to the operand's width); results
 // wrap to the target's width when stored, which re-encodes a negative
 // quotient as two's complement.
+// The sign test reads the RAW top bit, like `sext` above: `self >> ..` here
+// dispatches signed's own arithmetic shift, which fills with the sign, so a
+// negative operand tests as all-ones and never equals 1. (`Shr` and `Ord`
+// below spell it the short way safely — a `>>` nested inside those bodies is
+// the built-in shift, not a re-entry into this dispatch.)
 impl Operator<"/", signed, signed> for signed {
     fn apply(self, rhs: signed) -> signed {
-        if ((self >> (self'length - 1)) == 1) and ((rhs >> (rhs'length - 1)) == 1) {
+        if ((integer(self) >> (self'length - 1)) == 1)
+            and ((integer(rhs) >> (rhs'length - 1)) == 1) {
             return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
         }
-        if (self >> (self'length - 1)) == 1 {
+        if (integer(self) >> (self'length - 1)) == 1 {
             return 0 - (resize(0 - self, self'length) / rhs);
         }
-        if (rhs >> (rhs'length - 1)) == 1 {
+        if (integer(rhs) >> (rhs'length - 1)) == 1 {
             return 0 - (self / resize(0 - rhs, rhs'length));
         }
         return self / rhs;

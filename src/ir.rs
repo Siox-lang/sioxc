@@ -4027,6 +4027,20 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The width to bind for an operand of an inlined impl. A bare integer
+    /// literal has no width of its own — `2` is two bits, and its top bit is
+    /// set — so `rhs'length` made every positive literal look negative:
+    /// `s / 2` took signed division's both-operands-negative branch and
+    /// returned |s| / |2| with the sign dropped, 28 where -28 was meant. A
+    /// literal operand is as wide as the value it is used with, the same rule
+    /// its *family* already follows.
+    fn literal_aware_width(&self, e: &ast::Expr, other: u32) -> u32 {
+        match e {
+            ast::Expr::Int { .. } if other > 0 => other,
+            _ => self.ast_width(e),
+        }
+    }
+
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         // A bound parameter carries the caller's width, recorded at the
         // inline; without it a nested inline sees no width at all.
@@ -4037,6 +4051,19 @@ impl<'a> Lowering<'a> {
         }
         match e {
             ast::Expr::IfExpr { then, .. } => self.ast_width(then),
+            ast::Expr::Match { arms, .. } => arms
+                .iter()
+                .filter_map(|a| a.value_expr())
+                .map(|v| self.ast_width(v))
+                .max()
+                .unwrap_or(1),
+            // Arithmetic and shifts are as wide as their operands. Without
+            // this the fallback below gave 1, so `sext(s + 0)` bound
+            // `x'length` to 1 and tested bit 0 for the sign: -56 came back
+            // as 200, while `sext(s)` — the same value, named — was right.
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
+                self.ast_width(lhs).max(self.ast_width(rhs))
+            }
             // A conversion is as wide as its target (64 for kernel integer).
             ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { base, index, .. }
@@ -4161,7 +4188,9 @@ impl<'a> Lowering<'a> {
                 fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
                 fenv.insert(
                     format!("{}::length", n.text),
-                    Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
+                    Val::Scalar(Expr::Const(
+                        self.literal_aware_width(rhs, self.ast_width(lhs)) as u64,
+                    )),
                 );
             }
         }
@@ -5124,12 +5153,15 @@ impl<'a> Lowering<'a> {
             .borrow_mut()
             .insert("self".to_string(), ty.clone());
         saved.push(("self".to_string(), self_prev));
+        let receiver_width = self.ast_width(base);
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
                 fenv.insert(
                     format!("{}::length", n.text),
-                    Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
+                    Val::Scalar(Expr::Const(
+                        self.literal_aware_width(a, receiver_width) as u64
+                    )),
                 );
                 if let Some(fam) = self.operand_type_name(a) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);

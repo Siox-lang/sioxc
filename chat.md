@@ -2525,3 +2525,46 @@ constant, so the unrolling is bounded. Arrays are excluded by asking
 `array_elements` first.
 
 Bit-string literals (`x"AB"` = 171, `o"53"` = 43) were correct already.
+
+## 2026-07-31 (cont.) — diffing the two engines directly
+
+Five bugs had shared a shape — works in hardware, fails in the testbench — so
+instead of waiting for a sixth, I built a harness that evaluates the same
+expression in both engines and compares. `parity.sh "<expr>" "<type>"` prints
+ok / DISAGREE / TB FAILS / HW FAILS.
+
+Most of the language is fine: arithmetic, logic, shifts, slices, fields,
+array elements, if- and match-expressions, conversions, `'length` — all agree.
+Three disagreements, and the interesting part is that two of them ran the
+*other* way, which is what a symmetric test buys over probing one side.
+
+**`sext(s + 0)`: hardware 200, testbench -56.** The mirror of the bug I fixed
+in the emitter last tick. `ast_width` knew `IfExpr`, calls, concat, slices and
+literals, and not `Binary`, so an arithmetic argument fell to the 1-bit
+default and `sext` tested bit 0 for the sign. Added `Binary` and `Match`.
+
+**`s / 2`: hardware 28, testbench -28.** This one took the IR dump to see:
+
+    (((D.s >> 7) == 1) and ((2 >> (2 - 1)) == 1)) ? ...
+
+`rhs'length` for the literal `2` is **two** — its own minimal width — whose
+top bit is set. So every positive literal divisor tested as negative, signed
+division took its both-operands-negative branch, and returned |a| / |b| with
+the sign dropped. A literal operand now takes the receiver's width, the rule
+its *family* already followed.
+
+While reading std I also found its division spelling the sign test the way
+`sext` explicitly warns against — `self >> (w-1)`, which dispatches signed's
+own arithmetic shift and yields all-ones, never 1. It happens to be masked
+here (the test is reached with the literal width wrong either way), but it is
+wrong on its face, and `Shr`/`Ord` only get away with the same spelling
+because a `>>` nested in *their* bodies is the built-in shift. Fixed to the
+raw form.
+
+**Two left open**, both found by the same harness and both real:
+
+- `s / (0 - 2)` gives **0 in both engines**; -56 / -2 is 28. They agree on a
+  wrong answer, which is exactly what a differential test cannot catch — worth
+  remembering when reading the ok lines above.
+- `(0 - 2)` prints as 18446744073709551614 in a testbench: an expression of
+  two integer literals has no signed family, so it renders unsigned.
