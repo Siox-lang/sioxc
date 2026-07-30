@@ -1232,16 +1232,28 @@ impl<'a> Checker<'a> {
     }
 
     /// `p.nosuch` on a struct: the field access lowered to `Unknown`, so the
-    /// driver silently carried no value. Only *plain struct* receivers are
-    /// checked — an instance port (`dut.y`), a view leaf and a derived
-    /// struct's inherited fields all reach here as field accesses too, so the
-    /// check walks the derivation chain and stays silent on anything else.
+    /// driver silently carried no value. Struct receivers are checked, as are
+    /// bus ports through their view's backing struct; an instance port
+    /// (`dut.y`) and anything else unresolvable stay silent, and the check
+    /// walks the derivation chain so an inherited field counts as present.
     fn check_field_exists(&mut self, base: &Expr, field: &Ident, sym: &HashMap<String, Ty>) {
         let Some(head) = self.ty_head(&self.type_of(base, sym)) else {
             return;
         };
         // `s.ready()` parses as a call over a *field* node, so a method name
         // reaches here too — it is not a missing field.
+        if self
+            .methods
+            .contains_key(&(head.clone(), field.text.clone()))
+        {
+            return;
+        }
+        // A bus port (`bus: Stream Source`) types as the *view*, which owns no
+        // fields, so the walk below found no struct and returned silently —
+        // leaving every field access through a bus unchecked.
+        let head = self.view_backing(&head).unwrap_or(head);
+        // The backing struct's own methods are callable through the bus, and
+        // reach here as field nodes just as the view's own methods do.
         if self
             .methods
             .contains_key(&(head.clone(), field.text.clone()))
@@ -3512,6 +3524,16 @@ impl<'a> Checker<'a> {
 
     /// The type-head name used to key impl methods: a named type's def name,
     /// a kernel type's spelling, or the nominal family of an indexed array.
+    /// The struct behind a view, given the view's bare name. `views` is keyed
+    /// by the `(view, backing)` pair, so a bare name resolves only when one
+    /// view carries it; an ambiguous name is left alone rather than guessed.
+    fn view_backing(&self, name: &str) -> Option<String> {
+        let prefix = format!("{name}@");
+        let mut targets = self.views.keys().filter_map(|k| k.strip_prefix(&prefix));
+        let first = targets.next()?;
+        targets.next().is_none().then(|| first.to_string())
+    }
+
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
             Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
@@ -4111,6 +4133,37 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    /// A bus port types as its *view*, which owns no fields, so the field
+    /// check found no struct behind it and returned silently — every field
+    /// access through a bus went unchecked, whether the entity was
+    /// instantiated or not.
+    #[test]
+    fn a_bus_port_checks_fields_against_its_backing_struct() {
+        let errors = check_src(
+            "module m;\n\
+             struct S { a: Bit, b: Bit }\n\
+             view V for S { a out, b in }\n\
+             entity E { bus: S V, q: Bit out }\n\
+             impl E { q = bus.nosuch; }\n",
+        );
+        assert_eq!(errors, 1, "a missing field behind a view is reported");
+    }
+
+    /// The fields the view does declare still resolve, and so do methods on
+    /// the backing struct — both reach the check as field nodes.
+    #[test]
+    fn a_bus_port_accepts_real_fields_and_struct_methods() {
+        let errors = check_src(
+            "module m;\n\
+             struct S { a: Bit, b: Bit }\n\
+             view V for S { a out, b in }\n\
+             impl S { fn helper(self) -> Bit { return self.a; } }\n\
+             entity E { bus: S V, q: Bit out, r: Bit out }\n\
+             impl E { q = bus.a; r = bus.helper(); }\n",
+        );
+        assert_eq!(errors, 0, "declared fields and methods still resolve");
     }
 
     #[test]

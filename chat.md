@@ -1901,3 +1901,34 @@ whose initializer was dropped; this one is a `const` array with nowhere to
 be stored. Both meant "a lookup table does not work", both were silent or
 near-silent, and neither was covered because the corpus's array tests all
 build their arrays by driving them rather than declaring their contents.
+
+## 2026-07-30 (cont.) — a typo through a bus port was never checked
+
+`bus.nonexistent_field` on a `bus: Stream Source` port passed `check` clean.
+A plain struct receiver was caught (`S has no field ...`, with the real
+fields listed), and so was an *uninstantiated* entity's struct local — my
+first guess, that this was the uninstantiated-entity gap logged earlier, was
+wrong. The distinguishing factor is the receiver: a bus port.
+
+A view-typed port types as the **view**, and a view owns no fields. So
+`check_field_exists` looked up the view name in `structs`, found nothing,
+and returned — silently, by design. The doc comment said as much: "a view
+leaf ... reach here as field accesses too, so the check ... stays silent on
+anything else." Conservative, and correct at the time, because there was no
+way to get from a view to the struct behind it at that point.
+
+There is now: `views` is keyed by the `(view, backing)` pair, so a bare view
+name resolves whenever exactly one view carries it. Ambiguous names are
+still left alone rather than guessed. The backing struct's own methods are
+callable through the bus and arrive as field nodes, so they are checked
+after the mapping as well as before it — without that, `bus.helper()` would
+have become a false "no such field".
+
+Timing (`await` at 0ns, 5ns, 100ns against a 5ns half-period clock) and
+generic width propagation through two levels of instantiation both came back
+correct.
+
+**Still open**, and now better understood: an entity that is never
+instantiated *is* type-checked (that half works) but never elaborated or
+lowered, so the lowering-stage diagnostics — the unresolved-name check added
+earlier today among them — do not see it. The gap is narrower than logged.
