@@ -1,0 +1,22 @@
+module aot_counter;
+
+// A `#[top]` design compiled to a plain object file. An external harness
+// drives it through the exported `sx_*` ABI — the shape cocotb will use.
+#[top]
+entity Counter {
+    clk: Bit in,
+    rst: Logic in,
+    n: unsigned[8] out
+}
+
+impl Counter {
+    let v: unsigned[8] = 0;
+    if clk.rising() {
+        if rst == '1' {
+            v = 0;
+        } else {
+            v = v + 1;
+        }
+    }
+    n = v;
+}

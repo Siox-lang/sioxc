@@ -2067,3 +2067,29 @@ on a 10-character file silently stores 10 elements and reports `'length` as
 that should be an error, or a truncation — but the entity path
 (`let mem: unsigned[8][4] = read("rom.bin")`, the corpus idiom) may already
 truncate, and picking one is a semantics decision rather than a fix.
+
+## 2026-07-30 (cont.) — the AOT object, actually linked and run
+
+No bugs. Probing the one major surface nothing had touched: `sioxc file.siox
+-o out.o`, the object build an external harness consumes.
+
+It works, and works well. The object exports `sx_reset`/`sx_set`/`sx_read`/
+`sx_settle`, links against a plain C driver, and simulates correctly —
+counting, resetting, resuming. 128-bit signals carry properly across word
+boundaries through `sx_set_word`/`sx_read_word`, which is more than task #41
+("Wide signals: 128-bit end to end", still open) implies. Top selection
+errors are clear: `no #[top] entity; name one with --top <Entity>` and `no
+entity named 'Nope'`.
+
+I assumed nothing linked an AOT object and was wrong: `src/llvm/aot.rs` has
+`object_links_and_runs` and `eight_word_object_links_and_carries`. Worth
+correcting rather than quietly moving on — but the gap is real and narrower
+than I first thought. Those tests construct a `Design` **by hand** from
+`Signal` structs, so they cover the LLVM emitter given an IR, not the
+pipeline that produces the IR. Nothing went source -> object -> link -> run,
+which is the path an external harness actually takes, and the one that would
+break if elaboration changed signal order or top selection regressed.
+
+`tests/aot_object.rs` now does that, with the fixture beside it. Confirmed it
+detects a wrong design and not merely a missing file: changing the counter to
+`v + 2` fails it at the specific check, restored afterwards.
