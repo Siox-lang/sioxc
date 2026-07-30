@@ -4606,6 +4606,11 @@ impl Ctx<'_> {
                 }
                 out
             }
+            // A constant bit slice of a packed value, before the generic
+            // field/index path: `w[7..4]` has no `expr_path` to look up.
+            ast::Expr::Index { base, index, .. } if self.c_bit_slice(base, index).is_some() => {
+                self.c_bit_slice(base, index).unwrap()?
+            }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 let path = expr_path(e).ok_or_else(|| {
                     // Naming the base is the difference between "the tool has
@@ -4762,6 +4767,74 @@ impl Ctx<'_> {
 
     /// Read one already-flattened path: a testbench local reads its mangled C
     /// name, anything else is a connected signal.
+    /// A constant bit slice of a packed value (`w[7..4]`, `w[7]`, `w[..4]`).
+    /// Hardware has had these since ranges landed and the testbench had none,
+    /// so a design could compute a nibble and its test could not check it.
+    /// Returns `None` when this is not a slice of a scalar — an array element
+    /// resolves through its own signal instead.
+    fn c_bit_slice(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Result<String, String>> {
+        let path = expr_path(base)?;
+        // An array's elements are separate locals; only a packed scalar is
+        // sliced by bit position.
+        if !self.array_elements(&path).is_empty() {
+            return None;
+        }
+        if !self.locals.borrow().contains(&path) && !self.map.contains_key(&path) {
+            return None;
+        }
+        let konst = |e: &ast::Expr| siox::ir::eval_const_fns(e, &HashMap::new(), self.fns, 0);
+        let declared = self.local_ranges.borrow().get(&path).copied();
+        let (a, b) = match index {
+            ast::Expr::Range { lo, hi, .. } => (konst(lo)?, konst(hi)?),
+            ast::Expr::PartialRange { lo, hi, .. } => {
+                let (left, right) = declared?;
+                (
+                    match lo {
+                        Some(lo) => konst(lo)?,
+                        None => left,
+                    },
+                    match hi {
+                        Some(hi) => konst(hi)?,
+                        None => right,
+                    },
+                )
+            }
+            _ => {
+                let n = konst(index)?;
+                (n, n)
+            }
+        };
+        Some(self.c_bit_slice_of(&path, a, b))
+    }
+
+    /// The C expression for bits `a..b` of `path`. A descending range is the
+    /// natural order and shifts out directly; an ascending one names the same
+    /// bits with their significance reversed (spec 3.13), so it is assembled
+    /// bit by bit — the width is a constant, so the unrolling is bounded.
+    fn c_bit_slice_of(&self, path: &str, a: i64, b: i64) -> Result<String, String> {
+        let v = self.read_path(path)?;
+        let (hi, lo) = (a.max(b), a.min(b));
+        if hi < 0 || lo < 0 {
+            return Err(format!("`{path}` sliced with a negative bound"));
+        }
+        let width = (hi - lo + 1) as u32;
+        if a >= b {
+            let mask = if width >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << width) - 1
+            };
+            return Ok(format!("((({v}) >> {lo}) & {mask}ULL)"));
+        }
+        let mut parts = Vec::new();
+        for k in 0..width {
+            let from = a as u32 + k;
+            let to = width - 1 - k;
+            parts.push(format!("(((({v}) >> {from}) & 1ULL) << {to})"));
+        }
+        Ok(format!("({})", parts.join(" | ")))
+    }
+
     fn read_path(&self, path: &str) -> Result<String, String> {
         if self.locals.borrow().contains(path) {
             return Ok(c_local_ident(path));

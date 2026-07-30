@@ -3544,20 +3544,8 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Index { base, index, .. } = target else {
             return None;
         };
-        // The base has to be one signal — a packed vector. An array's elements
-        // are separate signals and `mem[2] = v` resolves through those instead.
+        let (a, b) = self.slice_bounds(base, index)?;
         let sig = *self.locals.get(&expr_path(base)?)?;
-        let (a, b) = match self.slice_bounds(base, index) {
-            Some(range) => range,
-            // A single constant index is the one-bit slice `y[n..n]`, which is
-            // how the spec writes `status[7] = err`. Reading one bit already
-            // worked and writing it did not, because only a range shape was
-            // recognised here.
-            None => {
-                let n = eval_const(index, &self.cur_env)?;
-                (n, n)
-            }
-        };
         Some((sig, a.max(b) as u32, a.min(b) as u32))
     }
 
@@ -4205,6 +4193,14 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 self.const_ranges.get(&p.segments[0].text).copied()
+            }
+            // A single constant index is the one-bit slice `w[n..n]`, but only
+            // on a packed vector — which is one signal. An array's elements are
+            // signals of their own and `a[2]` resolves through those, so the
+            // base having its own entry in `locals` is what tells them apart.
+            _ if self.locals.contains_key(&path) => {
+                let n = eval_const(index, &self.cur_env)?;
+                Some((n, n))
             }
             _ => None,
         }

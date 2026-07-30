@@ -2497,3 +2497,31 @@ the feature fixed the message — the reverse of the usual direction.
 All four of §3.13's claims now hold, including the clocked read-modify-write
 (0xAA with the low nibble set to 5 gives 0xA5). `slice_assign_test.siox` pins
 them.
+
+## 2026-07-31 (cont.) — slicing, in the engine that could not
+
+Fourth spec section, and the direction rules themselves are right: `w[7..4]`
+gives 0xB, `w[4..7]` gives 0xD with the significance reversed, partial ranges
+fill from the declared bounds. In *hardware*. The testbench could not slice a
+packed local at all — every form reported "testbench references `w`, which
+siox build cannot translate yet".
+
+So a design could compute a nibble and its own test could not check it. That
+is the shape this file keeps finding: a feature built in one engine, absent in
+the other, and nothing comparing them because the corpus asserts on DUT
+outputs rather than on expressions in the testbench.
+
+Two fixes, and the first is a correction of my own work. Last tick I made the
+single-bit *write* `y[7] = e` work by special-casing `slice_target`. The
+matching *read* `y[7]` was still unsupported — I fixed one direction of a
+symmetric operation and did not check the other. The special case is gone;
+`slice_bounds` now treats a constant index as `w[n..n]` for both, guarded by
+the base being a single signal so an array's `a[2]` still resolves through its
+element.
+
+The second: the emitter now lowers a constant bit slice. Descending shifts and
+masks; ascending assembles the bits in reverse, unrolled — the width is a
+constant, so the unrolling is bounded. Arrays are excluded by asking
+`array_elements` first.
+
+Bit-string literals (`x"AB"` = 171, `o"53"` = 43) were correct already.
