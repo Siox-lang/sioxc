@@ -559,17 +559,27 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// True when the result carries the operands' numeric family, so an
-    /// expression built from this operator answers "is it signed", "is it
-    /// real", "how wide is it" the same way its operands do.
+    /// True when the result carries the operands' family, so an expression
+    /// built from this operator answers "is it signed", "is it this enum",
+    /// "how wide is it" the same way its operands do.
     ///
-    /// Comparisons and the logical operators yield `Bool` and so carry no
-    /// numeric family; a custom operator's result comes from its impl's
-    /// declared output rather than from its operands.
+    /// `and`/`or` belong here: they are not fixed to `Bool` but overloaded
+    /// per type (`Operator<"and", Logic, Logic> for Logic`), so they return
+    /// what they were given — `x and y` on `Logic` is a `Logic`.
+    ///
+    /// Comparisons yield `Bool` or `Ordering` whatever their operands were,
+    /// and a custom operator's result comes from its impl's declared output.
     pub fn keeps_operand_family(&self) -> bool {
         matches!(
             self,
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Shl | BinOp::Shr
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Shl
+                | BinOp::Shr
+                | BinOp::And
+                | BinOp::Or
         )
     }
 }

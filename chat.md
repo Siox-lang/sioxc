@@ -1802,3 +1802,33 @@ its bodies are never checked at all. `entity Pick { .. } impl Pick { y =
 nonexistent; }` alone in a file still reports `check ok`. Reaching it means
 either elaborating uninstantiated entities speculatively or doing the value
 scoping in `types.rs` as the resolve comment intended.
+
+## 2026-07-30 (cont.) — the same gap, two more places
+
+Probing 9-value logic: the truth tables are right (IEEE 1076 std_logic_1164
+— `1 and X` is `X`, `0 and X` is `0`, `U` dominates except where `0` forces).
+The *rendering* was not: `print!("{}", a and b)` printed `3`, the raw
+discriminant, where the bound `let c: Logic = a and b;` printed `'X'`.
+
+Two causes, both the shape-matching pattern again:
+
+- `and`/`or` were excluded from `keeps_operand_family` when I added it
+  earlier today, on the reasoning that logical operators yield `Bool`. That
+  is wrong here: they are not fixed to `Bool` but overloaded per type —
+  `impl Operator<"and", Logic, Logic> for Logic` — so they return what they
+  were given. Reading std would have said so; I reasoned from the operator's
+  name instead.
+- `type_witness`, which decides how to *render* an expression, looked
+  through `IfExpr` and `Match` but not `Binary` or `not`.
+
+And one that had nothing to do with expressions: `print!("{}", State::Done)`
+printed `2`. Everything reached through a *name* rendered as `Done` — a
+local, a field, an if-expression, a match — while the literal variant, the
+one form that states its type outright, fell through every branch of the
+`ety` lookup because it has no name to look up by.
+
+Worth noting what the corpus did and did not catch. It has `logic_test`,
+`logic_ninevalue_test`, `xz_*` — the values were covered thoroughly. Every
+one of them asserts on values and prints named signals. None printed an
+inline expression, so the rendering path had no coverage at all. Assertions
+test what the compiler computes; only output tests what it says.

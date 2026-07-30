@@ -2939,6 +2939,23 @@ impl Ctx<'_> {
                 Some(v) => Self::type_witness(v),
                 None => e,
             },
+            // An operator that keeps its operands' family renders as they do,
+            // so `a and b` on `Logic` prints a symbol rather than the raw
+            // discriminant. A literal operand carries no name to look a type
+            // up by, so prefer the side that does: `x and '1'` reads as `x`.
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
+                let l = Self::type_witness(lhs);
+                if expr_path(l).is_some() {
+                    l
+                } else {
+                    Self::type_witness(rhs)
+                }
+            }
+            ast::Expr::Unary {
+                op: ast::UnOp::Not,
+                rhs,
+                ..
+            } => Self::type_witness(rhs),
             _ => e,
         }
     }
@@ -2977,6 +2994,16 @@ impl Ctx<'_> {
                     // signal or local of that type does.
                     let head = self.call_return_head(w)?;
                     self.design.enum_syms.contains_key(&head).then_some(head)
+                })
+                .or_else(|| {
+                    // The variant itself names its enum: `print!("{}",
+                    // State::Done)`. Everything reached through a name
+                    // rendered as `Done` while the literal variant — the one
+                    // form that says its type outright — printed `2`.
+                    let ast::Expr::Path(p) = w else { return None };
+                    let head = p.segments.first()?.text.clone();
+                    (p.segments.len() >= 2 && self.design.enum_syms.contains_key(&head))
+                        .then_some(head)
                 });
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let ast::Expr::StrLit { text, .. } = a {
