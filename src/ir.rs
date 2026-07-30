@@ -822,6 +822,24 @@ impl<'a> Lowering<'a> {
                                 };
                                 if let Some(&(sig, dir)) = sub_ports.get(&port) {
                                     bindings.entry(tbname).or_default().push((sig, dir));
+                                    continue;
+                                }
+                                // A struct/bus port is not one signal: it is
+                                // flattened into leaves (`bus.valid`, ...), so
+                                // the scalar lookup above finds nothing and the
+                                // binding used to be dropped — two testbench
+                                // DUTs sharing a struct local were left
+                                // unconnected, silently. Bind each leaf to the
+                                // matching leaf of the testbench name.
+                                let prefix = format!("{port}.");
+                                for (pname, &(sig, dir)) in sub_ports.iter() {
+                                    let Some(leaf) = pname.strip_prefix(&prefix) else {
+                                        continue;
+                                    };
+                                    bindings
+                                        .entry(format!("{tbname}.{leaf}"))
+                                        .or_default()
+                                        .push((sig, dir));
                                 }
                             }
                         }
