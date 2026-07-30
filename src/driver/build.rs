@@ -2284,6 +2284,34 @@ impl Ctx<'_> {
     /// Translate `lhs op rhs` through the lhs family's operator impl as an
     /// inline C expression, when one exists — the native mirror of the
     /// runner's `dispatch_binop`. Comparisons derive from `Ord::cmp`.
+    /// The `(family, width)` an operand dispatches on, for the shapes that
+    /// carry one indirectly. Kept separate from `c_dispatch_binop`'s own match
+    /// so a branch can be asked the same question its parent was.
+    fn dispatch_operand_family(&self, e: &ast::Expr) -> Option<(String, Option<u32>)> {
+        if let Some((fam, w)) = self.conversion_target(e) {
+            return Some((fam, Some(w)));
+        }
+        match e {
+            ast::Expr::IfExpr { then, els, .. } => self
+                .dispatch_operand_family(then)
+                .or_else(|| self.dispatch_operand_family(els)),
+            ast::Expr::Match { arms, .. } => arms
+                .iter()
+                .filter_map(|a| a.value_expr())
+                .find_map(|v| self.dispatch_operand_family(v)),
+            _ => {
+                let name = expr_path(e)?;
+                let family = self
+                    .local_families
+                    .borrow()
+                    .get(&name)
+                    .cloned()
+                    .or_else(|| self.local_types.borrow().get(&name).cloned())?;
+                Some((family, self.name_width(&name)))
+            }
+        }
+    }
+
     fn c_dispatch_binop(
         &self,
         op: &ast::BinOp,
@@ -2296,6 +2324,26 @@ impl Ctx<'_> {
         // this a call never dispatched an impl at all and `neg(x) < 0` fell
         // back to an unsigned compare.
         let (fam, lwidth) = match lhs {
+            // Branch-valued shapes carry their branches' family.
+            ast::Expr::IfExpr { then, els, .. } => {
+                let inner = self
+                    .dispatch_operand_family(then)
+                    .or_else(|| self.dispatch_operand_family(els));
+                match inner {
+                    Some(v) => v,
+                    None => return Ok(None),
+                }
+            }
+            ast::Expr::Match { arms, .. } => {
+                let inner = arms
+                    .iter()
+                    .filter_map(|a| a.value_expr())
+                    .find_map(|v| self.dispatch_operand_family(v));
+                match inner {
+                    Some(v) => v,
+                    None => return Ok(None),
+                }
+            }
             // Any named value: a plain local, or a struct leaf like `p.x`
             // (an `Expr::Field`, which this matched on shape and so missed —
             // a connected `signed` field then compared unsigned).
@@ -3412,6 +3460,24 @@ impl Ctx<'_> {
     /// Without it a `signed[8]` holding -5 prints as 251 while `s < 0` is
     /// simultaneously true, which reads as a contradiction.
     fn signed_vector_width(&self, e: &ast::Expr) -> Option<u32> {
+        // A branch-valued expression is as signed as its branches; the type
+        // checker has already made them agree. `is_real_operand` looks through
+        // these shapes for `real`, and nothing did for `signed`, so
+        // `if c { a } else { b }` on signed values read back as a bit pattern.
+        match e {
+            ast::Expr::IfExpr { then, els, .. } => {
+                return self
+                    .signed_vector_width(then)
+                    .or_else(|| self.signed_vector_width(els));
+            }
+            ast::Expr::Match { arms, .. } => {
+                return arms
+                    .iter()
+                    .filter_map(|a| a.value_expr())
+                    .find_map(|v| self.signed_vector_width(v));
+            }
+            _ => {}
+        }
         // A conversion names its target directly: `signed[8](x)` is a Call
         // whose callee is the indexed family. Hardware read this as signed and
         // the testbench did not, so the two disagreed on `signed[8](200)`.
