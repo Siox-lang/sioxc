@@ -2963,6 +2963,22 @@ impl Ctx<'_> {
     /// Expand a format string into a printf format plus argument expressions,
     /// honouring `{{`/`}}` escapes and rendering enum/real/integer operands the
     /// way `print!` does. Shared by `print!` and the `assert!`/`warn!` messages.
+    /// A stand-in for `e` when deciding how to *render* it. A branch-valued
+    /// expression has no name or type of its own, but its branches do, and the
+    /// type checker has already made them agree — so the first branch answers
+    /// "is this a Char / an enum / a signed vector" for the whole expression.
+    /// The value still comes from `e` itself.
+    fn type_witness<'e>(&self, e: &'e ast::Expr) -> &'e ast::Expr {
+        match e {
+            ast::Expr::IfExpr { then, .. } => self.type_witness(then),
+            ast::Expr::Match { arms, .. } => match arms.iter().find_map(|a| a.value_expr()) {
+                Some(v) => self.type_witness(v),
+                None => e,
+            },
+            _ => e,
+        }
+    }
+
     fn c_format(&self, text: &str, args: &[ast::Expr]) -> Result<(String, Vec<String>), String> {
         let mut cfmt = String::new();
         let mut cargs = Vec::new();
@@ -2976,23 +2992,26 @@ impl Ctx<'_> {
                 siox::syntax::format::FormatPart::Placeholder => vals.next(),
             };
             let Some(a) = a else { continue };
-            let sig = expr_path(a)
+            // Type questions go through a witness so a branch-valued argument
+            // is rendered as whatever its branches are.
+            let w = self.type_witness(a);
+            let sig = expr_path(w)
                 .and_then(|p| self.map.get(&p))
                 .map(|id| &self.design.signals[id.0 as usize]);
             let local_type =
-                expr_path(a).and_then(|path| self.local_types.borrow().get(&path).cloned());
+                expr_path(w).and_then(|path| self.local_types.borrow().get(&path).cloned());
             let string_elems = self.formatted_string_elems(a);
             let is_real = self.is_real_operand(a);
             let is_char = sig.is_some_and(|signal| signal.char)
                 || local_type.as_deref() == Some("Char")
-                || self.call_return_head(a).as_deref() == Some("Char");
+                || self.call_return_head(w).as_deref() == Some("Char");
             let ety: Option<String> = sig
                 .and_then(|s| s.enum_type.clone())
                 .or(local_type)
                 .or_else(|| {
                     // A call returning an enum renders its symbol, like a
                     // signal or local of that type does.
-                    let head = self.call_return_head(a)?;
+                    let head = self.call_return_head(w)?;
                     self.design.enum_syms.contains_key(&head).then_some(head)
                 });
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
@@ -3206,6 +3225,8 @@ impl Ctx<'_> {
     /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
     /// is a code point, not a logic code).
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
+        // A branch-valued operand is a character if its branches are.
+        let e = self.type_witness(e);
         // A call has no path to look up, so its declared return type is the
         // only thing that says it yields a character.
         if self.call_return_head(e).as_deref() == Some("Char") {
