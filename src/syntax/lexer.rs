@@ -26,6 +26,48 @@
 use crate::diag::{Diagnostic, DiagnosticSink, FileId, Span};
 use crate::syntax::token::{Token, TokenKind};
 
+/// True for a byte the lexer has no rule for, so a run of them can be
+/// gathered into one `Unknown` token. Everything the lexer *does* recognize —
+/// identifiers, numbers, quotes, whitespace and the punctuation set — is
+/// excluded, so this never swallows the start of a valid token.
+fn unrecognized_byte(c: u8) -> bool {
+    if c.is_ascii_alphanumeric() || c.is_ascii_whitespace() {
+        return false;
+    }
+    !matches!(
+        c,
+        b'_' | b'\''
+            | b'"'
+            | b'('
+            | b')'
+            | b'{'
+            | b'}'
+            | b'['
+            | b']'
+            | b'<'
+            | b'>'
+            | b':'
+            | b';'
+            | b','
+            | b'.'
+            | b'='
+            | b'&'
+            | b'|'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'/'
+            | b'!'
+            | b'#'
+            | b'%'
+            | b'^'
+            | b'~'
+            | b'?'
+            | b'$'
+            | b'`'
+    )
+}
+
 pub struct Lexer<'a> {
     file: FileId,
     src: &'a str,
@@ -320,8 +362,21 @@ impl<'a> Lexer<'a> {
                 TokenKind::CustomOp
             }
             _ => {
+                // A run of unrecognized bytes is one mistake, not one per
+                // byte. `@@@` reported three times, and the parser then
+                // retried each `Unknown` token as a fresh statement, turning
+                // one stray token into nine diagnostics.
+                while self.peek().is_some_and(unrecognized_byte) {
+                    self.bump();
+                }
+                let text = &self.src[start..self.pos];
+                let noun = if text.chars().count() == 1 {
+                    "character"
+                } else {
+                    "characters"
+                };
                 sink.emit(
-                    Diagnostic::error(format!("unexpected character `{}`", one as char))
+                    Diagnostic::error(format!("unexpected {noun} `{text}`"))
                         .at(self.span(start, self.pos)),
                 );
                 TokenKind::Unknown

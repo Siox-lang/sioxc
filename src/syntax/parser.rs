@@ -539,6 +539,14 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LBrace, "to open an entity body");
         let mut ports = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            // Unrecognized input the lexer has already reported. Feeding it to
+            // `parse_port` produced four more diagnostics about the name, the
+            // `:` and the separator it could not find.
+            if self.at(TokenKind::Unknown) {
+                self.bump();
+                self.eat(TokenKind::Comma);
+                continue;
+            }
             let before = self.pos;
             let (port, terminated) = self.parse_port();
             ports.push(port);
@@ -1029,6 +1037,20 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Stmt {
         match self.kind() {
+            // The lexer already reported this run of unrecognized input, and
+            // it can only be skipped from here. Parsing it as an expression
+            // added "expected an expression" and "expected `;`" on top of a
+            // diagnostic that had already named the real problem.
+            TokenKind::Unknown => {
+                let span = self.span();
+                self.bump();
+                // The same placeholder `parse_primary` synthesizes, so callers
+                // downstream see one shape for "this expression is a mistake".
+                Stmt::Expr(Expr::Int {
+                    text: String::new(),
+                    span,
+                })
+            }
             TokenKind::Let => {
                 let start = self.span();
                 self.bump();
@@ -2418,6 +2440,41 @@ mod tests {
         let diags = diagnostics("module m;\nentity E {\n  clk: Bit in;\n  q: Bit out\n}\n");
         assert_eq!(diags.len(), 1, "got {diags:#?}");
         assert!(diags[0].message.contains("`,`, not `;`"));
+    }
+
+    /// A run of unrecognized bytes is one mistake. The lexer reported it once
+    /// per byte and the parser then retried each `Unknown` token as a fresh
+    /// statement, so `@@@` in an impl body produced nine diagnostics.
+    #[test]
+    fn a_stray_token_run_reports_once() {
+        let diags = diagnostics("module m;\nimpl E { y = a; @@@ }\n");
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("unexpected characters `@@@`"));
+    }
+
+    /// Multi-byte input coalesces by character, not by byte, and the message
+    /// quotes what was written.
+    #[test]
+    fn a_stray_token_run_is_quoted_by_character() {
+        let diags = diagnostics("module m;\nimpl E { y = a; ¡¿ }\n");
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("`¡¿`"), "{:?}", diags[0].message);
+    }
+
+    /// In a port list the same run cost four further diagnostics about the
+    /// name, the `:` and the separator it could not find. The ports on either
+    /// side of it still parse.
+    #[test]
+    fn a_stray_token_in_a_port_list_keeps_the_ports_around_it() {
+        let src = "module m;\nentity E { a: Bit in, @@@ y: Bit out }\n";
+        let diags = diagnostics(src);
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        let (m, _) = parse(src);
+        let Some(Item::Entity(e)) = m.items.first() else {
+            panic!("expected an entity")
+        };
+        let names: Vec<&str> = e.ports.iter().map(|p| p.name.text.as_str()).collect();
+        assert_eq!(names, ["a", "y"]);
     }
 
     /// The parser learns its operators from `impl Operator<..>`, so an

@@ -2093,3 +2093,36 @@ break if elaboration changed signal order or top selection regressed.
 `tests/aot_object.rs` now does that, with the fixture beside it. Confirmed it
 detects a wrong design and not merely a missing file: changing the counter to
 `v + 2` fails it at the specific check, restored afterwards.
+
+## 2026-07-30 (cont.) — one stray token, nine diagnostics
+
+Sweeping parser recovery: one deliberate mistake per file, counting what came
+out. Most cases were already good — a missing brace, a missing `;`, an
+unclosed paren, a bad type each cost one or two diagnostics, and the first one
+named the real problem. Two outliers.
+
+`@@@` in an impl body produced **nine** errors. Two faults compounding:
+
+- The lexer reported every unrecognized *byte* separately. The arm directly
+  above it already coalesces a run of custom-operator characters into one
+  token; the unknown arm never got the same treatment.
+- The parser then retried each resulting `Unknown` token as a fresh
+  statement, adding "expected an expression" and "expected `;`" to a
+  diagnostic that had already named the cause — the same per-leftover-token
+  cascade that `malformed_port_reports_once` was written for, in a different
+  place.
+
+The same run inside a *port list* cost five, for the same reason one level up:
+`parse_port` was handed input the lexer had already rejected and reported the
+name, the `:` and the separator it then could not find.
+
+Now one diagnostic each, quoting what was written. Coalescing works by
+character rather than byte, so `¡¿` reports as `¡¿` and not as four
+unprintable errors — worth checking, since the old message formatted `one as
+char` from a single byte and would have mangled any non-ASCII input.
+
+The general shape, which is the third time today: a fix was applied to the
+specific place it was reported (ports), and the same defect elsewhere
+(statements, and the lexer beneath both) was left. Recovery is a property of
+every list in the grammar, not of the list someone happened to file a bug
+against.
