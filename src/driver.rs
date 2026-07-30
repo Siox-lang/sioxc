@@ -386,7 +386,9 @@ fn cmd_check(path: &Path, std_root: &Path, verbose: bool) -> ExitCode {
     // Skip if earlier stages already failed — later stages assume a clean AST.
     if !sem.fe.sink.has_errors() {
         let modules = sem.fe.modules.as_slice();
-        let hier = siox::elab::elaborate(modules, &sem.typed, &mut sem.fe.sink);
+        // `check` analyses everything the file declares, including entities
+        // nothing instantiates yet.
+        let hier = siox::elab::elaborate_for_check(modules, &sem.typed, &mut sem.fe.sink);
         let _ = siox::ir::lower_in(
             modules,
             &hier,

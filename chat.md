@@ -2193,3 +2193,44 @@ teach the first to do it too, both now share `decode` and `report` closures,
 so the message is written once. That is the same shape as the parser fix in
 the previous entry, at a smaller scale: the duplicate is what let the two
 paths drift in the first place.
+
+## 2026-07-30 (cont.) — checking the code you actually compiled
+
+Closing the gap logged three times today, and the reason I stopped deferring
+it: it misled *me* twice while probing. Both times I read a screen of zeros as
+"the compiler accepts this silently" when the truth was "nothing ran". If the
+person holding the probe gets it wrong twice in one session, someone writing a
+library entity has no chance.
+
+Structural analysis lives in elaboration and lowering, and elaboration starts
+from `#[top]` / `#[test]` roots. Everything else is reached only by being
+instantiated. So an entity written before its first use — the ordinary way to
+write a library — was not analysed at all:
+
+    entity Lib { a: Bit in, y: Bit out }
+    impl Lib {
+        let d: Sub = { .a = a, .z = a };   // no port `z`
+        let t: Bit;                        // never driven
+        y = nonexistent_name;              // no such value
+    }
+
+`check ok`. Three mistakes, one of them a name that does not exist.
+
+`check` now roots the usual entities plus every entity nothing instantiates.
+Something instantiated still arrives through its parent, so nothing is
+reported twice — worth a test of its own, since double-reporting would have
+been the obvious way to get this wrong.
+
+Two things I checked rather than assumed:
+
+- **No new diagnostics on the corpus.** Diffed the full before/after
+  diagnostic counts across all 106 files: identical. Every corpus entity is
+  instantiated by its testbench, so nothing new is rooted — which also means
+  the corpus does not exercise this path, and the tests carry it instead.
+- **Generic entities stay quiet.** A never-instantiated `Shift<W>` elaborates
+  with `W` unbound. That was the plausible way to generate false positives on
+  correct code, and it does not.
+
+`sioxc build` and `--test` are untouched: they root where they always did.
+Only `check` widens, which is the one command whose job is to tell you about
+code you have not run yet.

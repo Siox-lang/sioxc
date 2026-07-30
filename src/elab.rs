@@ -167,6 +167,53 @@ pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -
     elaborate_roots(modules, typed, sink, is_root)
 }
 
+/// Elaborate for `check`: the usual roots, plus every entity that nothing
+/// instantiates.
+///
+/// Structural analysis — unknown ports, undriven signals, combinational loops,
+/// unresolved names — only sees what elaboration reaches, so a library entity
+/// written before its first use was never analysed at all. A body with a
+/// misspelled port, an undriven signal and an unresolved name in it reported
+/// `check ok`. An entity that *is* instantiated still arrives through its
+/// parent, so it is not rooted twice.
+pub fn elaborate_for_check(
+    modules: &[Module],
+    typed: &Typed,
+    sink: &mut DiagnosticSink,
+) -> Hierarchy {
+    let instantiated = instantiated_entities(modules);
+    elaborate_roots(modules, typed, sink, |ent| {
+        is_root(ent) || !instantiated.contains(&ent.name.text)
+    })
+}
+
+/// Entity names used as the type of an instance `let` anywhere. Such a name is
+/// reached through its parent, so `check` need not root it itself.
+fn instantiated_entities(modules: &[Module]) -> HashSet<String> {
+    let declared: HashSet<&str> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|item| match item {
+            Item::Entity(e) => Some(e.name.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut out = HashSet::new();
+    for m in modules {
+        for item in &m.items {
+            let Item::Impl(im) = item else { continue };
+            for it in &im.items {
+                let ImplItem::Let(l) = it else { continue };
+                let head = l.ty.as_ref().and_then(type_head_name);
+                if let Some(head) = head.filter(|h| declared.contains(h)) {
+                    out.insert(head.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Elaborate rooted at a single named entity — for `sioxc build`, which builds
 /// one top-level module setup (not the testbenches). Lowering only lowers
 /// entities that appear in the hierarchy, so this yields just the top and its
@@ -1199,6 +1246,62 @@ mod tests {
         let before = sink.error_count();
         let hier = elaborate(modules, &typed, &mut sink);
         (hier, sink.error_count() - before)
+    }
+
+    /// As `elaborate_src`, but through the root selection `check` uses.
+    fn check_src(src: &str) -> usize {
+        let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n");
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
+        let modules = std::slice::from_ref(&module);
+        let resolved = crate::resolve::resolve(modules, &mut sink);
+        let typed = crate::types::check(modules, &resolved, &mut sink);
+        let before = sink.error_count();
+        elaborate_for_check(modules, &typed, &mut sink);
+        sink.error_count() - before
+    }
+
+    /// Structural analysis only sees what elaboration reaches, so an entity
+    /// written before its first use was never analysed: a misspelled port in
+    /// its body reported `check ok`.
+    #[test]
+    fn check_analyses_an_entity_nothing_instantiates() {
+        let src = "module m;\n\
+            entity Sub { a: Bit in, y: Bit out }\n\
+            impl Sub { y = a; }\n\
+            entity Lib { a: Bit in, y: Bit out }\n\
+            impl Lib { let d: Sub = { .a = a, .z = a }; y = a; }\n";
+        assert_eq!(check_src(src), 1, "the misspelled port is reported");
+        // The old root selection reaches neither entity.
+        let (_, errors) = elaborate_src(src);
+        assert_eq!(errors, 0, "and was not reported before");
+    }
+
+    /// An instantiated entity arrives through its parent, so rooting the
+    /// unreached ones must not report its contents twice.
+    #[test]
+    fn check_does_not_double_report_an_instantiated_entity() {
+        let src = "module m;\n\
+            entity Sub { a: Bit in, y: Bit out }\n\
+            impl Sub { let d: Sub2 = { .a = a, .z = a }; y = a; }\n\
+            entity Sub2 { a: Bit in, y: Bit out }\n\
+            impl Sub2 { y = a; }\n";
+        assert_eq!(check_src(src), 1, "reported once, through its parent");
+    }
+
+    /// A correct generic entity is elaborated with its parameters unbound.
+    /// That must not invent diagnostics for code that is simply unused.
+    #[test]
+    fn check_is_quiet_about_a_correct_generic_entity() {
+        let src = "module m;\n\
+            entity Shift<W: integer> { clk: Bit in, d: unsigned[W] in, q: unsigned[W] out }\n\
+            impl Shift<W: integer> {\n\
+              let r: unsigned[W] = 0;\n\
+              if clk.rising() { r = d; }\n\
+              q = r;\n\
+            }\n";
+        assert_eq!(check_src(src), 0);
     }
 
     const HARNESS: &str = "module m;\n\
