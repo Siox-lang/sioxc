@@ -2979,8 +2979,22 @@ impl Ctx<'_> {
             let sig = expr_path(w)
                 .and_then(|p| self.map.get(&p))
                 .map(|id| &self.design.signals[id.0 as usize]);
-            let local_type =
-                expr_path(w).and_then(|path| self.local_types.borrow().get(&path).cloned());
+            let local_type = expr_path(w)
+                .and_then(|path| self.local_types.borrow().get(&path).cloned())
+                .or_else(|| {
+                    // A dynamic index (`s[i]`) has no path, but every element
+                    // of an array shares a type, so element 0 answers for the
+                    // whole of it. Without this `s[i]` on a string printed the
+                    // code point where `s[0]` printed the character.
+                    let ast::Expr::Index { base, .. } = w else {
+                        return None;
+                    };
+                    let base = expr_path(base)?;
+                    self.local_types
+                        .borrow()
+                        .get(&format!("{base}[0]"))
+                        .cloned()
+                });
             let string_elems = self.formatted_string_elems(a);
             let is_real = self.is_real_operand(a);
             let is_char = sig.is_some_and(|signal| signal.char)
@@ -4451,8 +4465,35 @@ impl Ctx<'_> {
                     })?;
                 format!("{d}ULL")
             }
+            // A *dynamic* array index — `a[i]` where `i` is not constant, so
+            // the whole expression has no path. The elements are separate C
+            // locals (or signals), so select between them with a ternary
+            // chain: the same shape the hardware path builds as a mux tree,
+            // which is why this was supported there and not here.
+            ast::Expr::Index { base, index, .. }
+                if expr_path(e).is_none()
+                    && expr_path(base).is_some_and(|b| !self.array_elements(&b).is_empty()) =>
+            {
+                let elements = self.array_elements(&expr_path(base).unwrap());
+                let idx = self.expr(index)?;
+                // An out-of-range index reads 0, matching an undriven signal
+                // rather than aliasing some other element.
+                let mut out = String::from("0ULL");
+                for (k, element) in elements.iter().enumerate().rev() {
+                    let read = self.read_path(element)?;
+                    out = format!("((({idx}) == {k}ULL) ? ({read}) : {out})");
+                }
+                out
+            }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
-                let path = expr_path(e).ok_or("unsupported field/index")?;
+                let path = expr_path(e).ok_or_else(|| {
+                    // Naming the base is the difference between "the tool has
+                    // a gap" and a reader hunting a nameless message.
+                    match expr_path_base(e) {
+                        Some(b) => unsup(&b),
+                        None => "unsupported field/index expression".to_string(),
+                    }
+                })?;
                 // A struct-field / array-element of a testbench local reads its
                 // mangled C local; otherwise it's a connected signal.
                 if self.locals.borrow().contains(&path) {
@@ -4582,6 +4623,31 @@ impl Ctx<'_> {
                 ));
             }
         })
+    }
+
+    /// The element paths of an array named `base`, in index order, stopping
+    /// at the first gap. Elements are registered one by one as locals or
+    /// signals, so their presence is what says how long the array is.
+    fn array_elements(&self, base: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        loop {
+            let element = format!("{base}[{}]", out.len());
+            if !self.locals.borrow().contains(&element) && !self.map.contains_key(&element) {
+                return out;
+            }
+            out.push(element);
+        }
+    }
+
+    /// Read one already-flattened path: a testbench local reads its mangled C
+    /// name, anything else is a connected signal.
+    fn read_path(&self, path: &str) -> Result<String, String> {
+        if self.locals.borrow().contains(path) {
+            return Ok(c_local_ident(path));
+        }
+        let id = self.map.get(path).ok_or_else(|| unsup(path))?;
+        self.check_scalar(*id)?;
+        Ok(format!("sx_read({})", id.0))
     }
 
     /// Reject `real` signals in scalar expressions — native stimulus is
@@ -4953,6 +5019,16 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
             expr_path(base)?,
             signed_index_bound(index)?
         )),
+        _ => None,
+    }
+}
+
+/// The innermost named base of a field/index chain, for diagnostics: `a[i].x`
+/// has no path but is still recognisably about `a`.
+fn expr_path_base(e: &ast::Expr) -> Option<String> {
+    match e {
+        ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => expr_path_base(base),
         _ => None,
     }
 }

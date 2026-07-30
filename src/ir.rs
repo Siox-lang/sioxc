@@ -1115,6 +1115,25 @@ impl<'a> Lowering<'a> {
                             }
                         }
                     }
+                    // An array-literal initializer (`let rom: unsigned[8][4] =
+                    // [1, 2, 3, 4]`) seeds each element, as the string and
+                    // struct-literal forms above do. Without it a lookup table
+                    // written this way powered on at 0 in every element and
+                    // read back as zeros with no diagnostic.
+                    if let Some(ast::Expr::Array { elems, .. }) = &l.value {
+                        for (i, elem) in elems.iter().enumerate() {
+                            let Some(&id) = self.locals.get(&format!("{}[{i}]", l.name.text))
+                            else {
+                                continue;
+                            };
+                            // The element's own enum type resolves a character
+                            // literal (`['0', '1']`) to its variant.
+                            let en = self.out.signals[id.0 as usize].enum_type.clone();
+                            if let Some(v) = self.const_init_value(elem, en.as_deref()) {
+                                self.out.signals[id.0 as usize].init = vec![v];
+                            }
+                        }
+                    }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
                     // entities are excluded: a `#[test]` testbench's locals are

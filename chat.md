@@ -1832,3 +1832,48 @@ Worth noting what the corpus did and did not catch. It has `logic_test`,
 one of them asserts on values and prints named signals. None printed an
 inline expression, so the rendering path had no coverage at all. Assertions
 test what the compiler computes; only output tests what it says.
+
+## 2026-07-30 (cont.) — a ROM that reads as zeros
+
+Probing arrays turned up the most serious bug of the day, and it was hiding
+behind a different one.
+
+`let cells: unsigned[8][4] = [1, 2, 3, 4];` inside an entity, read at
+`cells[addr]`, returned 0. My first reading was "dynamic indexing is broken
+in hardware" — but a *constant* index returned 0 too. **An array-literal
+initializer on a hardware `let` was never applied.** A lookup table written
+the obvious way powered on at zero in every element and read back as zeros,
+with no diagnostic anywhere.
+
+The corpus has `regfile_test`, which does `let regs: unsigned[8][4];` — no
+initializer, written through a clocked process. It covers dynamic read and
+write thoroughly and never initializes an array, so the whole initializer
+path was untested.
+
+What makes this one worth writing down is the comment sitting three lines
+above the bug:
+
+> A struct-literal initializer (`let p: P = { .a = 1 }`) seeds each field
+> signal. The testbench interpreter has always honoured this; hardware
+> lowering did not, so an entity-level struct local silently powered on at 0.
+
+Same bug, same place, found and fixed before — for structs. There is also an
+arm for string initializers seeding char arrays. Array literals were the
+third shape, and nobody went back for them. That is the pattern of the day
+restated once more: a fix applied to the shape that was reported, in a
+function that handles shapes one at a time.
+
+Two smaller ones alongside it:
+
+- A dynamic index into a *testbench* array (`a[i]`) was unsupported, though
+  hardware has built a mux tree for it since task #10. The elements are
+  already separate C locals, so a ternary chain is the same construction;
+  out of range reads 0. The old message was `unsupported field/index` — no
+  name, no span. It names the base now.
+- `s[i]` on a string printed `108` where `s[0]` printed `l`: a dynamic index
+  has no path to look an element type up by. Element 0 answers for the array.
+
+**Still open** (logged, not fixed): `const TAB: unsigned[8][4] = [...]`
+indexed in hardware lowers to `Unknown` and reports `driver 2 expr: contains
+an Unknown (unlowered) expression` — a driver index rather than a name. A
+`const` array is not seeded the way a `let` array now is.
