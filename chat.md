@@ -2312,3 +2312,36 @@ flattened per-bit and a different error fired first. The file already has
 `lower_diags` with a correct prelude. The lesson is small but repeats: when a
 test fails for a reason that is not the thing under test, the setup is usually
 wrong, not the code.
+
+## 2026-07-31 (cont.) — finishing the diagnostic audit
+
+The last message carrying internal vocabulary: `cannot lower this assignment
+target: `X``. It named the target, which is more than "driver 0" managed, but
+carried no span, no code and no help — and it covered two unrelated mistakes
+with one sentence.
+
+Probing which shapes actually reach it:
+
+- `m[i][i] = a` — a chained runtime index as a *write*. The exact counterpart
+  of the read case fixed in the previous entry, and a real gap in lowering.
+- `f(a) = a` — assigning to a call result, which is not a place at all and
+  never will be. (Worth noting the type checker lets this through; lowering is
+  where it stops.)
+
+Those want different sentences, so they get them: E-P017 `cannot assign to
+`m[i][i]`` with the same explanation as the read side, and E-P018 ``f(a)`
+cannot be assigned to` with a list of what a target may be. Both spanned, both
+routed through one helper so the combinational and clocked paths cannot drift
+apart — which is how the duplicate messages existed in the first place.
+
+**Where the audit ends.** Scanning for emitted diagnostics without a span
+gives a list, but the heuristic is unreliable (a `.at()` applied at the end of
+a chain reads as missing) and, more importantly, the remaining ones are not
+the same defect. They name a testbench, a file path, a signal path — things
+the reader can find. What they lack is a *line*, and supplying that means
+`Signal` carrying a declaration span through elaboration and lowering: a
+structural change, not a wording one. Logging it rather than starting it.
+
+The distinction is worth keeping: "driver 0" was unusable, `T.d.m[1][0]` is
+merely inconvenient. Five bugs came from the first kind and none from the
+second, which is a reasonable signal about where the remaining value is.

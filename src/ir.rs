@@ -1739,6 +1739,32 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// An assignment whose left side lowering cannot place. Two different
+    /// mistakes arrive here and used to share one message that carried no
+    /// span, no code and no help: a chained runtime index, which is a real
+    /// gap, and an expression that is not a place at all.
+    fn report_bad_assign_target(&mut self, target: &ast::Expr) {
+        let text = crate::syntax::pretty::expr_string(target);
+        let span = ast::expr_span(target);
+        let diag = if matches!(target, ast::Expr::Index { .. }) {
+            crate::diag::Diagnostic::error(format!("cannot assign to `{text}`"))
+                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                .help(
+                    "a runtime index writes one array (`mem[addr] = v`); chaining \
+                     them (`m[i][j] = v`) is not lowered yet — write one level into \
+                     a named signal, or make the outer index constant",
+                )
+        } else {
+            crate::diag::Diagnostic::error(format!("`{text}` cannot be assigned to"))
+                .with_code(crate::diag::codes::INVALID_ASSIGN_TARGET)
+                .help(
+                    "an assignment target is a signal, a field, an index, a slice, \
+                     or a concatenation of those",
+                )
+        };
+        self.sink.emit(diag.at(span));
+    }
+
     /// Report field/index expressions that reached no hardware form. From the
     /// IR these are anonymous `Unknown`s, and validation could only say which
     /// signal's driver held one; here the source spelling is still available.
@@ -3087,12 +3113,7 @@ impl<'a> Lowering<'a> {
                         off -= w;
                     }
                 } else {
-                    // Anything else is a target shape the lowering doesn't
-                    // understand — say so rather than silently dropping it.
-                    self.sink.emit(crate::diag::Diagnostic::error(format!(
-                        "cannot lower this assignment target: `{}`",
-                        crate::syntax::pretty::expr_string(target)
-                    )));
+                    self.report_bad_assign_target(target);
                 }
             }
             ast::Stmt::If(iff) => {
@@ -3402,10 +3423,7 @@ impl<'a> Lowering<'a> {
                             off -= w;
                         }
                     } else {
-                        self.sink.emit(crate::diag::Diagnostic::error(format!(
-                            "cannot lower this assignment target: `{}`",
-                            crate::syntax::pretty::expr_string(target)
-                        )));
+                        self.report_bad_assign_target(target);
                     }
                 }
                 ast::Stmt::If(iff) => {
@@ -8518,6 +8536,41 @@ mod tests {
         assert!(
             matches!(&dr.expr, Expr::Select { .. }),
             "if-expression must lower to a select"
+        );
+    }
+
+    /// Two different mistakes reached one message that carried no span, no
+    /// code and no help: a chained runtime index write (a real gap) and an
+    /// expression that is not a place at all.
+    #[test]
+    fn a_bad_assignment_target_says_which_kind_it_is() {
+        let gap = lower_diags(
+            "module m;
+             #[top] entity E { a: unsigned[8] in, y: unsigned[8] out }
+             impl E {
+               let mm: unsigned[8][2][2];
+               let i: integer = 1;
+               mm[i][i] = a;
+               y = a;
+             }",
+        );
+        assert!(
+            gap.iter()
+                .any(|d| d.contains("E-P017") && d.contains("cannot assign to `mm[i][i]`")),
+            "{gap:#?}"
+        );
+
+        let not_a_place = lower_diags(
+            "module m;
+             fn f(x: unsigned[8]) -> unsigned[8] { return x; }
+             #[top] entity E { a: unsigned[8] in, y: unsigned[8] out }
+             impl E { f(a) = a; y = a; }",
+        );
+        assert!(
+            not_a_place
+                .iter()
+                .any(|d| d.contains("E-P018") && d.contains("`f(a)` cannot be assigned to")),
+            "{not_a_place:#?}"
         );
     }
 

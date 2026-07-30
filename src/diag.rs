@@ -245,6 +245,9 @@ pub mod codes {
     /// which validation could only report as "the driver for `x` contains an
     /// Unknown", naming neither the expression nor its line.
     pub const UNSUPPORTED_EXPR: &str = "E-P017";
+    /// The left of an assignment is not a place: `f(x) = v`. A target is a
+    /// signal, a field, an index, a slice, or a concatenation of those.
+    pub const INVALID_ASSIGN_TARGET: &str = "E-P018";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";
