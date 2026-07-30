@@ -847,7 +847,25 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        for ports in bindings.values() {
+        for (tbname, ports) in &bindings {
+            // A tristate net needs one shared node that folds each driver's
+            // *expression*; the entity path builds one, this path has no
+            // testbench signal to build it on. Connecting an `inout` here used
+            // to bind nothing at all and read back high-Z, as though no one
+            // were driving — report it instead of simulating a lie.
+            if ports.iter().any(|(_, d)| *d == Some(ast::Direction::Inout)) {
+                self.sink.emit(
+                    crate::diag::Diagnostic::error(format!(
+                        "`{tbname}` connects an `inout` port between testbench instances"
+                    ))
+                    .with_code(crate::diag::codes::INVALID_METHOD_CALL)
+                    .help(
+                        "a shared tristate net is built inside an entity — wire the \
+                         instances there and drive that entity from the testbench",
+                    ),
+                );
+                continue;
+            }
             let outs: Vec<SignalId> = ports
                 .iter()
                 .filter(|(_, d)| *d == Some(ast::Direction::Out))
