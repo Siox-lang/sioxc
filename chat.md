@@ -2345,3 +2345,39 @@ structural change, not a wording one. Logging it rather than starting it.
 The distinction is worth keeping: "driver 0" was unusable, `T.d.m[1][0]` is
 merely inconvenient. Five bugs came from the first kind and none from the
 second, which is a reasonable signal about where the remaining value is.
+
+## 2026-07-31 (cont.) — a missing import that blamed the backend
+
+Probing std's own functions against known values. They are correct: `abs`,
+`min`, `max` and `sqrt` all give the right answers, in hardware and in a
+testbench, positive and negative.
+
+Finding that took a detour that turned out to be the actual bug. My first
+probe called `abs(-5)` without `using std::math`, and got:
+
+    sioxc --test: unsupported call `abs` in testbench expression
+
+I read that as "std functions do not work in testbenches" and started
+investigating the emitter. They work fine; the module simply had not been
+loaded, because I had not imported it. The message describes the emitter's
+predicament, not mine.
+
+Worse, the same message appears for a function that does not exist anywhere.
+`totally_bogus_fn(1)` passed parse, resolve *and* typecheck; in a testbench it
+surfaced as "unsupported call", and in hardware as "the driver for `T.d.y`
+contains an Unknown" — which does not mention the function at all. A typo in a
+call name had no diagnostic of its own at any stage.
+
+`check_call_arity` is where it slipped: no entry in `fn_arity` meant "return
+silently", because conversions and runtime-provided std functions also have no
+declaration there. Those two cases had to be told apart, so `callee_is_declared`
+now enumerates what legitimately has no `fn`: a type used as a conversion, the
+runtime-provided std functions, the compiler's own primitives, and any method
+name. Anything else is `unknown function`, with help naming the likely cause —
+a missing `using`.
+
+The corpus earned its keep twice. It caught `resize` (a width builtin the
+compiler implements, used inside std itself) and `finish` (documented
+simulation control at language.md:2367, implemented in the emitter, declared
+nowhere). Both were false positives my probes did not cover, and both are now
+in the list beside a note to keep it in step with the emitter's own match.

@@ -2439,6 +2439,22 @@ impl<'a> Checker<'a> {
             return;
         };
         let Some(&want) = self.fn_arity.get(&name.text) else {
+            // No declaration here is normal for a conversion (`unsigned[8](x)`,
+            // `Logic(b)`) and for the runtime-provided std functions, and a
+            // mistake for anything else — but the two were indistinguishable,
+            // so a misspelled or unimported call passed every stage and failed
+            // in the backend as "unsupported call `abs` in testbench
+            // expression", blaming the emitter for a missing `using`.
+            if !self.callee_is_declared(&name.text) {
+                self.error_with_help(
+                    codes::UNKNOWN_NAME,
+                    expr_span(callee),
+                    format!("unknown function `{}`", name.text),
+                    "declare it, or import it with `using` — a std function needs \
+                     its module (`using std::math::{abs};`)"
+                        .to_string(),
+                );
+            }
             return;
         };
         if args.len() != want {
@@ -2517,6 +2533,54 @@ impl<'a> Checker<'a> {
                 ),
             );
         }
+    }
+
+    /// Whether a bare call name is something the language declares somewhere:
+    /// a `fn`, a type used as a conversion, or one of the runtime-provided std
+    /// functions that never reach `fn_arity`. Anything else does not exist.
+    fn callee_is_declared(&self, name: &str) -> bool {
+        // Runtime-provided (std::rand, std::fs) — declared by the runtime, not
+        // by a `fn`. Kept beside `check_runtime_call_arity`'s list.
+        if matches!(
+            name,
+            "rand" | "uniform" | "randint" | "seed" | "exists" | "read" | "read_to_string"
+        ) {
+            return true;
+        }
+        // Primitives the compiler implements rather than std declaring: the
+        // stimulus and reporting forms, simulation control (`stop`/`finish`,
+        // spec 3.24), and the width builtin. Kept in step with the emitter's
+        // own match — anything it handles by name belongs here.
+        if matches!(
+            name,
+            "print"
+                | "assert"
+                | "warn"
+                | "await"
+                | "wait"
+                | "tick"
+                | "clock"
+                | "stop"
+                | "finish"
+                | "resize"
+        ) {
+            return true;
+        }
+        // A conversion names a type: kernel scalars, a vector family, an
+        // alias, or any declared struct/enum/entity.
+        if matches!(name, "integer" | "real" | "Char" | "string")
+            || self.is_vector_family(name)
+            || self.aliases.contains_key(name)
+            || self.structs.contains_key(name)
+            || self.enum_variants.contains_key(name)
+            || self.entities.contains_key(name)
+        {
+            return true;
+        }
+        // A method reached through UFCS-ish sugar, or a trait method the
+        // receiver supplies: if any type implements a method of this name it
+        // is not an unknown *function*.
+        self.methods.keys().any(|(_, m)| m == name)
     }
 
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
@@ -4297,6 +4361,40 @@ mod tests {
                 sink.diagnostics()
             );
         }
+    }
+
+    /// A call to a function nothing declares passed every stage and failed in
+    /// the backend as "unsupported call `abs` in testbench expression",
+    /// blaming the emitter for a missing `using`.
+    #[test]
+    fn an_undeclared_call_is_reported() {
+        let errors = check_src(
+            "module m;\n\
+             entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
+             impl E { y = nosuchfn(a); }\n",
+        );
+        assert_eq!(errors, 1, "the unknown function is reported");
+    }
+
+    /// The categories that legitimately have no `fn` declaration: a declared
+    /// function, a type used as a conversion, a runtime-provided std function,
+    /// a compiler primitive, and the width builtin. The corpus caught
+    /// `resize` and `finish` missing from this list.
+    #[test]
+    fn calls_without_a_declaration_are_not_all_mistakes() {
+        let errors = check_src(
+            "module m;\n\
+             fn twice(x: unsigned[8]) -> unsigned[8] { return x + x; }\n\
+             entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
+             impl E { y = twice(unsigned[8](resize(a, 8))); }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let v: integer = randint(0, 3);\n\
+               print!(\"{}\", v);\n\
+               finish();\n\
+             }\n",
+        );
+        assert_eq!(errors, 0, "none of these is an unknown function");
     }
 
     /// A bus port types as its *view*, which owns no fields, so the field
