@@ -2270,3 +2270,45 @@ hint: a diagnostic that is true about the compiler's internal state
 ("resolution found no `Inc`") and false about the user's situation ("your
 import list is wrong"). Those read as correct in code review and mislead in
 practice.
+
+## 2026-07-31 — auditing for "true about the compiler, false about the user"
+
+Four bugs today shared a shape, so rather than trip over the fifth I went
+looking: which diagnostics describe the compiler's internal state instead of
+the reader's situation? Grepping messages for internal vocabulary — driver
+indices, lowering, IR, engines, `Unknown` — gave a short list.
+
+**`driver 0 expr: contains an Unknown (unlowered) expression`.** The one I hit
+repeatedly today. `driver 0` is a position in a vector built during lowering;
+it means nothing to the person who wrote the design, and it is the *only*
+locating information the message carries. The driver knows its target signal
+and signals carry paths, so it now reads `the driver for `T.d.y`` — the signal
+they can go and look at. Same for event blocks, named by what they update.
+
+**`no engine can run this design`** turned out to be already gone: both
+remaining occurrences are comments recording that it used to happen. Worth
+checking rather than assuming — I nearly "fixed" a string that no longer
+exists.
+
+Then the deeper half. Naming the signal is an improvement, but "contains an
+Unknown" still describes lowering rather than the design. The expression that
+failed is known at the moment it fails — the IR has thrown that away by the
+time validation runs. So the `Field`/`Index` fallthrough now records the
+source spelling and span before returning `Unknown`, and reports:
+
+    error[E-P017]: `mm[i][i]` has no hardware form
+      --> unk2.siox:6:9
+       = help: a runtime index reads one array (`mem[addr]`); chaining them
+               (`m[i][j]`) is not lowered yet — index one level into a named
+               signal, or make the outer index constant
+
+Which also documents a real limitation nobody had written down: chained
+runtime indexing is unsupported. It was previously indistinguishable from a
+compiler bug.
+
+A note on the test. My first version built its own mini-prelude and failed for
+an unrelated reason — `unsigned` was not marked `impl Vector`, so the array
+flattened per-bit and a different error fired first. The file already has
+`lower_diags` with a correct prelude. The lesson is small but repeats: when a
+test fails for a reason that is not the thing under test, the setup is usually
+wrong, not the code.

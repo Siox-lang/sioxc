@@ -240,6 +240,11 @@ pub mod codes {
     /// A qualified path or `using` that accesses a private declaration from a
     /// different source module.
     pub const PRIVATE_IMPORT: &str = "E-P016";
+    /// An expression with no hardware form — a chained runtime index
+    /// (`m[i][j]`) is the usual one. It lowered to an anonymous `Unknown`,
+    /// which validation could only report as "the driver for `x` contains an
+    /// Unknown", naming neither the expression nor its line.
+    pub const UNSUPPORTED_EXPR: &str = "E-P017";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

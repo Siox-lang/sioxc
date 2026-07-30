@@ -315,6 +315,7 @@ pub fn lower_in(
     }
     l.report_depth_exceeded();
     l.report_unresolved_names();
+    l.report_unsupported_exprs();
     l.lint_possible_latches();
     l.resolve_driver_contexts();
     l.propagate_metavalues();
@@ -394,6 +395,10 @@ struct Lowering<'a> {
     /// used to become a silent `Unknown`, which `check` reported as ok
     /// and a build reported as "driver 0 contains an Unknown".
     unresolved_names: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Field/index expressions with no hardware form — a nested dynamic index
+    /// (`m[i][j]`) is the usual one. Recorded here with the source spelling,
+    /// which the IR no longer has by the time validation sees an `Unknown`.
+    unsupported_exprs: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
     /// The receiver signal bound to `self` while inlining a method body, so a
     /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
@@ -546,6 +551,7 @@ impl<'a> Lowering<'a> {
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
+            unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             param_widths: std::cell::RefCell::new(HashMap::new()),
@@ -1728,6 +1734,27 @@ impl<'a> Lowering<'a> {
                     .help(
                         "a value has to be a port, a `let` signal or local, a \
                          constant, or a parameter of the enclosing entity",
+                    ),
+            );
+        }
+    }
+
+    /// Report field/index expressions that reached no hardware form. From the
+    /// IR these are anonymous `Unknown`s, and validation could only say which
+    /// signal's driver held one; here the source spelling is still available.
+    fn report_unsupported_exprs(&mut self) {
+        let mut exprs = std::mem::take(&mut *self.unsupported_exprs.borrow_mut());
+        exprs.sort_by_key(|(text, span)| (span.start, text.clone()));
+        exprs.dedup();
+        for (text, span) in exprs {
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!("`{text}` has no hardware form"))
+                    .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                    .at(span)
+                    .help(
+                        "a runtime index reads one array (`mem[addr]`); chaining them \
+                         (`m[i][j]`) is not lowered yet — index one level into a named \
+                         signal, or make the outer index constant",
                     ),
             );
         }
@@ -3785,6 +3812,13 @@ impl<'a> Lowering<'a> {
                         return v;
                     }
                 }
+                // No signal, no mux tree, no `Index` impl. Record the shape
+                // while the source is still in hand: from the IR this was an
+                // anonymous `Unknown`, and the reader was told only which
+                // signal's driver contained one.
+                self.unsupported_exprs
+                    .borrow_mut()
+                    .push((crate::syntax::pretty::expr_string(e), ast::expr_span(e)));
                 Expr::Unknown
             }
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
@@ -6104,23 +6138,44 @@ impl Design {
                 ));
             }
         };
-        for (di, d) in self.drivers.iter().enumerate() {
-            let ctx = format!("driver {di}");
+        // A driver's position in this vector means nothing to the person who
+        // wrote the design; the signal it drives is what they can go and look
+        // at. "driver 0 expr: contains an Unknown" sent readers to an IR dump
+        // to work out which line it meant.
+        let name = |id: SignalId| -> String {
+            self.signals
+                .get(id.0 as usize)
+                .map(|s| format!("`{}`", s.path))
+                .unwrap_or_else(|| format!("signal id {}", id.0))
+        };
+        for d in &self.drivers {
+            let ctx = format!("the driver for {}", name(d.target));
             target(d.target, &ctx, &mut issues);
             if let Some(c) = &d.cond {
-                check_expr(c, n, &mut issues, &format!("{ctx} cond"));
+                check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
             }
-            check_expr(&d.expr, n, &mut issues, &format!("{ctx} expr"));
+            check_expr(&d.expr, n, &mut issues, &ctx);
         }
         for (bi, eb) in self.event_blocks.iter().enumerate() {
-            check_expr(&eb.condition, n, &mut issues, &format!("event {bi} cond"));
-            for (ui, u) in eb.updates.iter().enumerate() {
-                let ctx = format!("event {bi} update {ui}");
+            // An event block has no single target, so name it by what it
+            // updates; the index is the fallback for an empty one.
+            let block = match eb.updates.first() {
+                Some(u) => format!("the event block updating {}", name(u.target)),
+                None => format!("event block {bi}"),
+            };
+            check_expr(
+                &eb.condition,
+                n,
+                &mut issues,
+                &format!("{block} (condition)"),
+            );
+            for u in &eb.updates {
+                let ctx = format!("{block}, update of {}", name(u.target));
                 target(u.target, &ctx, &mut issues);
                 if let Some(c) = &u.cond {
-                    check_expr(c, n, &mut issues, &format!("{ctx} cond"));
+                    check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
                 }
-                check_expr(&u.expr, n, &mut issues, &format!("{ctx} expr"));
+                check_expr(&u.expr, n, &mut issues, &ctx);
             }
         }
         issues
@@ -8466,6 +8521,28 @@ mod tests {
         );
     }
 
+    /// A chained runtime index has no hardware form. It lowered to an
+    /// anonymous `Unknown`, so the only report was "the driver for `x`
+    /// contains an Unknown" — naming neither the expression nor its line.
+    #[test]
+    fn a_chained_runtime_index_names_itself() {
+        let diags = lower_diags(
+            "module m;
+             #[top] entity E { y: unsigned[8] out }
+             impl E {
+               let mm: unsigned[8][2][2];
+               let i: integer = 1;
+               y = mm[i][i];
+             }",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.contains("`mm[i][i]` has no hardware form")),
+            "{diags:#?}"
+        );
+    }
+
     #[test]
     fn validate_accepts_good_and_flags_bad_ir() {
         // A lowered counter is well-formed.
@@ -8514,6 +8591,15 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("slice bounds")),
             "{issues:?}"
+        );
+        // Each issue names the signal it concerns. A driver's index in the
+        // vector is an artefact of lowering: "driver 0 expr" sent the reader
+        // to an IR dump to find out which line of their design it meant.
+        assert!(
+            issues
+                .iter()
+                .all(|i| i.contains("`s`") || i.contains("signal id")),
+            "every issue names a signal: {issues:?}"
         );
     }
 
