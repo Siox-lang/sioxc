@@ -2968,11 +2968,11 @@ impl Ctx<'_> {
     /// type checker has already made them agree — so the first branch answers
     /// "is this a Char / an enum / a signed vector" for the whole expression.
     /// The value still comes from `e` itself.
-    fn type_witness<'e>(&self, e: &'e ast::Expr) -> &'e ast::Expr {
+    fn type_witness(e: &ast::Expr) -> &ast::Expr {
         match e {
-            ast::Expr::IfExpr { then, .. } => self.type_witness(then),
+            ast::Expr::IfExpr { then, .. } => Self::type_witness(then),
             ast::Expr::Match { arms, .. } => match arms.iter().find_map(|a| a.value_expr()) {
-                Some(v) => self.type_witness(v),
+                Some(v) => Self::type_witness(v),
                 None => e,
             },
             _ => e,
@@ -2994,7 +2994,7 @@ impl Ctx<'_> {
             let Some(a) = a else { continue };
             // Type questions go through a witness so a branch-valued argument
             // is rendered as whatever its branches are.
-            let w = self.type_witness(a);
+            let w = Self::type_witness(a);
             let sig = expr_path(w)
                 .and_then(|p| self.map.get(&p))
                 .map(|id| &self.design.signals[id.0 as usize]);
@@ -3226,7 +3226,7 @@ impl Ctx<'_> {
     /// is a code point, not a logic code).
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
         // A branch-valued operand is a character if its branches are.
-        let e = self.type_witness(e);
+        let e = Self::type_witness(e);
         // A call has no path to look up, so its declared return type is the
         // only thing that says it yields a character.
         if self.call_return_head(e).as_deref() == Some("Char") {
