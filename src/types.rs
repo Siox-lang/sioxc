@@ -4101,7 +4101,7 @@ mod tests {
     #[test]
     fn typed_records_expression_types() {
         let src = format!(
-            "module m;\nentity E {{ in a: unsigned[8]; out y: Logic; }}\n\
+            "module m;\nentity E {{ a: unsigned[8] in, y: Logic out, }}\n\
              impl E {{ y = a[0]; }}\n{VEC}"
         );
         let mut sink = DiagnosticSink::new();
@@ -4126,9 +4126,9 @@ mod tests {
         let errors = check_src(
             "module m;\n\
              entity E {\n\
-               in a: unsigned[1_28];\n\
-               in b: Logic[0x3..0b0];\n\
-               out y: Logic;\n\
+               a: unsigned[1_28] in,\n\
+               b: Logic[0x3..0b0] in,\n\
+               y: Logic out,\n\
              }\n\
              impl E { y = a[0x7f] and b[0b11]; }\n",
         );
@@ -4176,20 +4176,20 @@ mod tests {
         let warns = |src: &str| diag_codes(src).iter().any(|c| c.contains("W-P008"));
         // Bit / Logic / enum vs a bare integer literal → W-P008.
         assert!(
-            warns("module m;\nentity E { in b: Bit; out y: Bit; }\nimpl E { y = if b == 1 { '1' } else { '0' }; }\n"),
+            warns("module m;\nentity E { b: Bit in, y: Bit out, }\nimpl E { y = if b == 1 { '1' } else { '0' }; }\n"),
             "Bit == 1 should warn"
         );
         assert!(
-            warns("module m;\nenum State { Idle, Run }\nentity E { out y: Bit; }\nimpl E { let s: State; y = if s == 0 { '1' } else { '0' }; }\n"),
+            warns("module m;\nenum State { Idle, Run }\nentity E { y: Bit out, }\nimpl E { let s: State; y = if s == 0 { '1' } else { '0' }; }\n"),
             "enum == 0 should warn"
         );
         // Numeric vector vs integer, and Bit vs a value literal → no warning.
         assert!(
-            !warns("module m;\nentity E { in a: unsigned[8]; out y: Bit; }\nimpl E { y = if a == 5 { '1' } else { '0' }; }\n"),
+            !warns("module m;\nentity E { a: unsigned[8] in, y: Bit out, }\nimpl E { y = if a == 5 { '1' } else { '0' }; }\n"),
             "unsigned == 5 must not warn"
         );
         assert!(
-            !warns("module m;\nentity E { in b: Bit; out y: Bit; }\nimpl E { y = if b == '1' { '1' } else { '0' }; }\n"),
+            !warns("module m;\nentity E { b: Bit in, y: Bit out, }\nimpl E { y = if b == '1' { '1' } else { '0' }; }\n"),
             "Bit == '1' must not warn"
         );
     }
@@ -4201,8 +4201,8 @@ mod tests {
         let bad = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             view Source for S { out valid; in ready; }\n\
-             entity P { bus: Source S; }\n\
+             view Source for S { valid out, ready in }\n\
+             entity P { bus: S Source }\n\
              impl P { bus.valid = '1'; bus.ready = '1'; }\n",
         );
         assert_eq!(bad, 1, "driving the `in` leaf bus.ready must error");
@@ -4211,8 +4211,8 @@ mod tests {
         let ok = check_src(
             "module m;\n\
              struct S { valid: Bit, ready: Bit, }\n\
-             view Source for S { out valid; in ready; }\n\
-             entity P { bus: Source S; out r: Bit; }\n\
+             view Source for S { valid out, ready in }\n\
+             entity P { bus: S Source, r: Bit out }\n\
              impl P { bus.valid = '1'; r = bus.ready; }\n",
         );
         assert_eq!(ok, 0, "driving out leaves + reading in leaves is fine");
@@ -4225,16 +4225,16 @@ mod tests {
              trait Send<T> { fn send(self, value: T); }\n\
              struct Stream { data: Bit, ready: Bit }\n\
              struct Queue { data: Bit, full: Bit }\n\
-             view Source for Stream { out data; in ready; }\n\
-             view Source for Queue { out data; in full; }\n\
-             impl Send<Bit> for Source Stream {\n\
+             view Source for Stream { data out, ready in }\n\
+             view Source for Queue { data out, full in }\n\
+             impl Send<Bit> for Stream Source {\n\
                fn send(self, value: Bit) { self.data = value; }\n\
              }\n\
-             impl Send<Bit> for Source Queue {\n\
+             impl Send<Bit> for Queue Source {\n\
                fn send(self, value: Bit) { self.data = value; }\n\
              }\n\
-             entity StreamProducer { bus: Source Stream; }\n\
-             entity QueueProducer { bus: Source Queue; }\n",
+             entity StreamProducer { bus: Stream Source }\n\
+             entity QueueProducer { bus: Queue Source }\n",
         );
         assert_eq!(errors, 0, "the view/backing pair is the nominal identity");
     }
@@ -4246,7 +4246,7 @@ mod tests {
         let bad = "module m;\n\
             struct S { v: Logic, }\n\
             impl S { fn ready(self) -> Logic { return self.v; } }\n\
-            entity E { out o: Logic; }\n\
+            entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
         assert_eq!(
             check_src(bad),
@@ -4258,7 +4258,7 @@ mod tests {
         let good = "module m;\n\
             struct S { v: Logic, }\n\
             impl S { fn ready(self) -> Bool { return true; } }\n\
-            entity E { out o: Logic; }\n\
+            entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
         assert_eq!(
             check_src(good),
@@ -4345,7 +4345,7 @@ mod tests {
 
     #[test]
     fn unreachable_match_arms_warn() {
-        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { out y: Bit; }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
+        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { y: Bit out, }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
         // An arm after `_` is unreachable.
         assert_eq!(
             warnings(
@@ -4377,7 +4377,7 @@ mod tests {
 
     #[test]
     fn non_exhaustive_enum_match_warns() {
-        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { out y: Bit; }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
+        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { y: Bit out, }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
         // Missing `Done` and no `_` -> one warning.
         assert_eq!(
             warnings(
@@ -4412,25 +4412,25 @@ mod tests {
 
     #[test]
     fn rejects_phase2_ddt() {
-        let errors = check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  y = x'ddt;\n}\n");
+        let errors = check_src("module m;\nentity E { y: Bit out, }\nimpl E {\n  y = x'ddt;\n}\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
     fn accepts_digital_sysattrs() {
         let errors = check_src(
-            "module m;\nentity E { in clk: Bit; out q: Bit; }\nimpl E {\n  if clk.rising() {\n    q = clk'old;\n  }\n}\n",
+            "module m;\nentity E { clk: Bit in, q: Bit out, }\nimpl E {\n  if clk.rising() {\n    q = clk'old;\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }
 
     #[test]
     fn edge_detected_reset_warns() {
-        let src = "module m;\nentity E { in reset: Bit; out q: Bit; }\n\
+        let src = "module m;\nentity E { reset: Bit in, q: Bit out, }\n\
                    impl E { if reset.rising() { q = '0'; } }\n";
         assert_eq!(warnings(src, codes::SUSPICIOUS_RESET), 1);
 
-        let level = "module m;\nentity E { in clk: Bit; in reset: Bit; out q: Bit; }\n\
+        let level = "module m;\nentity E { clk: Bit in, reset: Bit in, q: Bit out, }\n\
                      impl E { if clk.rising() { if reset { q = '0'; } } }\n";
         assert_eq!(warnings(level, codes::SUSPICIOUS_RESET), 0);
     }
@@ -4438,7 +4438,7 @@ mod tests {
     #[test]
     fn rejects_write_to_input_port() {
         let errors = check_src(
-            "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  en = '1';\n  y = en;\n}\n",
+            "module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  en = '1';\n  y = en;\n}\n",
         );
         assert_eq!(errors, 1);
     }
@@ -4446,7 +4446,7 @@ mod tests {
     #[test]
     fn writing_output_is_fine() {
         let errors =
-            check_src("module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en;\n}\n");
+            check_src("module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  y = en;\n}\n");
         assert_eq!(errors, 0);
     }
 
@@ -4454,7 +4454,7 @@ mod tests {
     fn rejects_write_to_plain_input_field_or_index() {
         // A field/index of a *plain* `in` port is read-only too.
         let errors = check_src(
-            "module m;\nstruct P { x: Bit }\nentity E { in a: Bit; in p: P; out y: Bit; }\n\
+            "module m;\nstruct P { x: Bit }\nentity E { a: Bit in, p: P in, y: Bit out, }\n\
              impl E {\n  a = '1';\n  p.x = '1';\n  y = a;\n}\n",
         );
         assert_eq!(errors, 2, "bare `a` and field `p.x` are both rejected");
@@ -4463,7 +4463,7 @@ mod tests {
     #[test]
     fn bare_logic_condition_is_rejected() {
         let errors = check_src(
-            "module m;\nentity E { in rst: Logic; out y: Bit; }\nimpl E {\n  if rst {\n    y = '0';\n  }\n}\n",
+            "module m;\nentity E { rst: Logic in, y: Bit out, }\nimpl E {\n  if rst {\n    y = '0';\n  }\n}\n",
         );
         assert_eq!(errors, 1);
     }
@@ -4472,7 +4472,7 @@ mod tests {
     fn compared_logic_and_bit_conditions_are_fine() {
         // `rst == '1'` is a comparison (-> Bool); `en` is a Bit. Both valid.
         let errors = check_src(
-            "module m;\nentity E { in rst: Logic; in en: Bit; out y: Bit; }\nimpl E {\n  if rst == '1' {\n    y = '0';\n  }\n  if en {\n    y = '1';\n  }\n}\n",
+            "module m;\nentity E { rst: Logic in, en: Bit in, y: Bit out, }\nimpl E {\n  if rst == '1' {\n    y = '0';\n  }\n  if en {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -4480,20 +4480,20 @@ mod tests {
     #[test]
     fn attribute_on_wrong_target_is_rejected() {
         // `keep` is declared for `let, port`, not `entity`.
-        let errors = check_src("module m;\n#[keep]\nentity E { out y: Bit; }\n");
+        let errors = check_src("module m;\n#[keep]\nentity E { y: Bit out, }\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
     fn attribute_on_right_target_is_fine() {
-        let errors = check_src("module m;\n#[top]\nentity E { out y: Bit; }\n");
+        let errors = check_src("module m;\n#[top]\nentity E { y: Bit out, }\n");
         assert_eq!(errors, 0);
     }
 
     #[test]
     fn assigning_bool_to_a_bit_port_is_rejected() {
         let errors = check_src(
-            "module m;\nentity E { in en: Bit; out y: Bit; }\nimpl E {\n  y = en == en;\n}\n",
+            "module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  y = en == en;\n}\n",
         );
         // `en == en` is Bool; `y` is Bit.
         assert_eq!(errors, 1);
@@ -4503,7 +4503,7 @@ mod tests {
     fn integer_and_logic_literals_are_polymorphic() {
         // signed literal -> any unsigned; '1' -> Bit or Logic. No conversions needed.
         let errors = check_src(
-            "module m;\nentity E { out count: unsigned[8]; out q: Bit; out clk: Bit; }\nimpl E {\n  let value: unsigned[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
+            "module m;\nentity E { count: unsigned[8] out, q: Bit out, clk: Bit out, }\nimpl E {\n  let value: unsigned[8] = 0;\n  count = value;\n  q = '1';\n  clk = '0';\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -4517,7 +4517,7 @@ mod tests {
              }\n\
              struct Flags(Bit[]);\n\
              impl Vector for Flags {}\n\
-             entity E { in a: Flags[4]; in b: Flags[4]; out y: Flags[4]; }\n\
+             entity E { a: Flags[4] in, b: Flags[4] in, y: Flags[4] out }\n\
              impl E { y = a and b; }\n",
         );
         assert_eq!(errors, 0);
@@ -4533,7 +4533,7 @@ mod tests {
              }\n\
              struct Cells(Cell[]);\n\
              impl Vector for Cells {}\n\
-             entity E { in a: Cells[4]; in b: Cells[4]; out y: Cells[4]; }\n\
+             entity E { a: Cells[4] in, b: Cells[4] in, y: Cells[4] out }\n\
              impl E { y = a and b; }\n",
         );
         assert_eq!(errors, 1);
@@ -4554,7 +4554,7 @@ mod tests {
     #[test]
     fn enum_assignment_uses_the_enum_type() {
         let errors = check_src(
-            "module m;\nenum State { Idle, Run }\nentity E { out s: State; }\nimpl E {\n  s = State::Idle;\n}\n",
+            "module m;\nenum State { Idle, Run }\nentity E { s: State out, }\nimpl E {\n  s = State::Idle;\n}\n",
         );
         assert_eq!(errors, 0);
     }
@@ -4562,7 +4562,7 @@ mod tests {
     #[test]
     fn bad_initializer_type_is_rejected() {
         let errors = check_src(
-            "module m;\nentity E { out y: Bit; }\nimpl E {\n  let flag: Bool = 5;\n  y = '0';\n}\n",
+            "module m;\nentity E { y: Bit out, }\nimpl E {\n  let flag: Bool = 5;\n  y = '0';\n}\n",
         );
         assert_eq!(errors, 1);
     }
@@ -4570,15 +4570,15 @@ mod tests {
     #[test]
     fn attribute_value_type_is_checked() {
         // `name` expects a string; giving it an signed is an error.
-        let bad = check_src("module m;\n#[name = 5]\nentity E { out y: Bit; }\n");
+        let bad = check_src("module m;\n#[name = 5]\nentity E { y: Bit out, }\n");
         assert_eq!(bad, 1);
-        let good = check_src("module m;\n#[name = \"dut\"]\nentity E { out y: Bit; }\n");
+        let good = check_src("module m;\n#[name = \"dut\"]\nentity E { y: Bit out, }\n");
         assert_eq!(good, 0);
     }
 
     #[test]
     fn operators_on_user_types_need_an_impl() {
-        let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { in p: V; in q: V; out y: Bit; }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
+        let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { p: V in, q: V in, y: Bit out, }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
         // Without an impl, `+` on a struct is rejected.
         assert_eq!(check_src(&base.replace("OPIMPL\n", "")), 1);
         // With `impl Operator<"+", V, V> for V`, it is accepted.
@@ -4597,7 +4597,7 @@ mod tests {
         // A Suffix impl's symbol defines the literal's type: Time = 5s passes.
         assert_eq!(
             check_src(&format!(
-                "module m;\n{time}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
+                "module m;\n{time}entity E {{ y: Bit out, }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
             )),
             0
         );
@@ -4605,7 +4605,7 @@ mod tests {
         // cascading init mismatch is separate).
         let score = "struct Score { p: unsigned[8] }\nimpl Suffix<\"s\", integer> for Score {}\n";
         let src = format!(
-            "module m;\n{time}{score}entity E {{ out y: Bit; }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
+            "module m;\n{time}{score}entity E {{ y: Bit out, }}\nimpl E {{\n  let t: Time = 5s;\n  y = '0';\n}}\n"
         );
         assert_eq!(warnings(&src, codes::UNKNOWN_NAME), 1);
     }
@@ -4615,24 +4615,24 @@ mod tests {
         // Known unit suffixes and valid bit-strings pass.
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
+                "module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  let t: integer = 10ns;\n  let f: integer = 100MHz;\n  y = x\"AB\";\n}\n"
             ),
             0
         );
         // An unknown suffix is an error.
         assert_eq!(
-            check_src("module m;\nentity E { out y: Bit; }\nimpl E {\n  let c: integer = 5i;\n  y = '0';\n}\n"),
+            check_src("module m;\nentity E { y: Bit out, }\nimpl E {\n  let c: integer = 5i;\n  y = '0';\n}\n"),
             1
         );
         // Bad digits for the base are an error (`G` is not a hex digit).
         assert_eq!(
-            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = x\"1G\";\n}\n"),
+            check_src("module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  y = x\"1G\";\n}\n"),
             1
         );
         // An unknown prefix (no `impl Prefix` declares `q`) is an error.
         assert_eq!(
             check_src(
-                "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = q\"1010\";\n}\n"
+                "module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  y = q\"1010\";\n}\n"
             ),
             1
         );
@@ -4642,13 +4642,13 @@ mod tests {
     fn user_type_opts_into_condition_via_boolean() {
         // Without an `impl Boolean for State`, `if state` is rejected.
         let without = check_src(
-            "module m;\nenum State { Idle, Run }\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
+            "module m;\nenum State { Idle, Run }\nentity E { y: Bit out, }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(without, 1);
 
         // With it, the enum becomes usable as a condition.
         let with = check_src(
-            "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  fn as_bool(self) -> Bool {\n    match self {\n      State::Idle => return false,\n      _ => return true,\n    }\n  }\n}\nentity E { out y: Bit; }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
+            "module m;\nenum State { Idle, Run }\nimpl Boolean for State {\n  fn as_bool(self) -> Bool {\n    match self {\n      State::Idle => return false,\n      _ => return true,\n    }\n  }\n}\nentity E { y: Bit out, }\nimpl E {\n  let state: State;\n  if state {\n    y = '1';\n  }\n}\n",
         );
         assert_eq!(with, 0);
     }
@@ -4658,17 +4658,17 @@ mod tests {
         // Bare: '0' is a Char.  Annotated / if-expr context: it takes the
         // target type (Bit/Logic), including through an if-expression.
         assert_eq!(
-            check_src("module m;\nentity E { out y: Bit; }\nimpl E { y = '0'; }\n"),
+            check_src("module m;\nentity E { y: Bit out, }\nimpl E { y = '0'; }\n"),
             0,
             "'0' assigns to a Bit output"
         );
         assert_eq!(
-            check_src("module m;\nentity E { out y: Logic; }\nimpl E { y = '1'; }\n"),
+            check_src("module m;\nentity E { y: Logic out, }\nimpl E { y = '1'; }\n"),
             0,
             "'1' assigns to a Logic output"
         );
         assert_eq!(
-            check_src("module m;\nentity E { in c: Bit; out y: Bit; }\nimpl E { y = if c { '1' } else { '0' }; }\n"),
+            check_src("module m;\nentity E { c: Bit in, y: Bit out, }\nimpl E { y = if c { '1' } else { '0' }; }\n"),
             0,
             "char literals in if-expr branches read through the Bit target"
         );
@@ -4715,30 +4715,30 @@ mod tests {
     fn boolean_ops_reject_non_bit_types() {
         // `and`/`or`/`not` are boolean-per-bit: bit-derived / Boolean only.
         assert_eq!(
-            check_src("module m;\nentity E { in a: real; in b: real; out y: real; }\nimpl E { y = a and b; }\n"),
+            check_src("module m;\nentity E { a: real in, b: real in, y: real out, }\nimpl E { y = a and b; }\n"),
             1,
             "`and` on real is rejected"
         );
         assert_eq!(
-            check_src("module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a and b; }\n"),
+            check_src("module m;\nentity E { a: unsigned[8] in, b: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = a and b; }\n"),
             0,
             "`and` on a bit array is fine (per-bit, returns the array)"
         );
         // integer is a number, not bits — no boolean operators on it.
         assert_eq!(
-            check_src("module m;\nentity E { in a: integer; in b: integer; out y: integer; }\nimpl E { y = a and b; }\n"),
+            check_src("module m;\nentity E { a: integer in, b: integer in, y: integer out, }\nimpl E { y = a and b; }\n"),
             1,
             "`and` on integer variables is rejected"
         );
         // ...but a literal mask coerces to the bit operand's width.
         assert_eq!(
-            check_src("module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a and 15; }\n"),
+            check_src("module m;\nentity E { a: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = a and 15; }\n"),
             0,
             "`b and 15` (literal mask) is fine"
         );
         // comparison results are Bool, so boolean ops chain them.
         assert_eq!(
-            check_src("module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: Bool; }\nimpl E { y = (a > b) and (a != b); }\n"),
+            check_src("module m;\nentity E { a: unsigned[8] in, b: unsigned[8] in, y: Bool out, }\nimpl E { y = (a > b) and (a != b); }\n"),
             0,
             "boolean ops on comparison results are fine"
         );
@@ -4753,7 +4753,7 @@ mod tests {
             impl Operator<\"and\", Right, Result> for Left {\n\
               fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
-            entity E { in a: Left; in b: Right; out y: Result; }\n\
+            entity E { a: Left in, b: Right in, y: Result out }\n\
             impl E { y = a and b; }\n";
         assert_eq!(
             check_src(src),
@@ -4772,11 +4772,11 @@ mod tests {
             impl Operator<\"merge\", Right, Result> for Left {\n\
               fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
-            entity E { in a: Left; in b: Right; out y: Result; }\n\
+            entity E { a: Left in, b: Right in, y: Result out }\n\
             impl E { y = a merge b; }\n";
         assert_eq!(check_src(ok), 0);
 
-        let bad = ok.replace("in b: Right", "in b: Left");
+        let bad = ok.replace("b: Right in", "b: Left in");
         assert_eq!(
             check_src(&bad),
             1,
@@ -4789,7 +4789,7 @@ mod tests {
     /// silently passed. The wrapped-expression case must still be allowed.
     #[test]
     fn out_of_range_comparison_literal_is_rejected() {
-        let ent = "module m;\nentity E { in q: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
+        let ent = "module m;\nentity E { q: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = ";
         assert_eq!(
             check_src(&format!("{ent}if q == 600 {{ 1 }} else {{ 0 }}; }}\n")),
             1,
@@ -4819,7 +4819,7 @@ mod tests {
     #[test]
     fn overflowing_conversion_constant_does_not_panic() {
         let src = "module m;\n\
-            entity E { out y: unsigned[64]; }\n\
+            entity E { y: unsigned[64] out }\n\
             impl E { y = unsigned[64](9223372036854775807 + 1); }\n";
         let _ = check_src(src);
     }
@@ -4827,17 +4827,17 @@ mod tests {
     #[test]
     fn unrepresentable_type_layouts_are_rejected_before_lowering() {
         let range = "module m;\n\
-            entity E { out y: Logic[-9223372036854775807..9223372036854775807]; }\n\
+            entity E { y: Logic[-9223372036854775807..9223372036854775807] out }\n\
             impl E {}\n";
         assert_eq!(check_src(range), 1, "the range length exceeds u32");
 
         let width = "module m;\n\
-            entity E { out y: unsigned[4294967296]; }\n\
+            entity E { y: unsigned[4294967296] out }\n\
             impl E {}\n";
         assert_eq!(check_src(width), 1, "the width exceeds u32");
 
         let negative = "module m;\n\
-            entity E { out y: unsigned[-1]; }\n\
+            entity E { y: unsigned[-1] out }\n\
             impl E {}\n";
         assert_eq!(check_src(negative), 1, "negative widths are invalid");
     }
@@ -4857,17 +4857,17 @@ mod tests {
     /// "a named type".
     #[test]
     fn duplicate_literal_field_and_named_type_rendering() {
-        let dup = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { out y: Bit; }\n\
+        let dup = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { y: Bit out, }\n\
                    impl E { let q: P = { .a = '1', .a = '0' }; y = q.a; }\n";
         assert_eq!(check_src(dup), 1);
 
-        let ok = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { out y: Bit; }\n\
+        let ok = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { y: Bit out, }\n\
                   impl E { let q: P = { .a = '1', .b = '0' }; y = q.a; }\n";
         assert_eq!(check_src(ok), 0);
 
         // The bound diagnostic names the offending type.
         let bound = "module m;\nfn f<T: Operator>(a: T) -> T { return a; }\n\
-                     struct Q { z: Bit }\nentity E { out y: Bit; }\n\
+                     struct Q { z: Bit }\nentity E { y: Bit out, }\n\
                      impl E { let q: Q; y = f(q).z; }\n";
         let mut sink = DiagnosticSink::new();
         let src = format!("{bound}{VEC}");
@@ -4894,7 +4894,7 @@ mod tests {
     fn unknown_field_and_method_are_reported() {
         let st =
             "module m;\nstruct P { a: Bit }\nimpl P { fn get(self) -> Bit { return self.a; } }\n\
-                  entity E { out y: Bit; }\nimpl E { let p: P; y = ";
+                  entity E { y: Bit out }\nimpl E { let p: P; y = ";
         assert_eq!(
             check_src(&format!("{st}p.nosuch; }}\n")),
             1,
@@ -4915,7 +4915,7 @@ mod tests {
 
         // A newtype's fields are its base's, so they count as present.
         let derived = "module m;\nstruct A { x: Bit }\nstruct B(A);\n\
-                       entity E { out o: Bit; }\nimpl E { let b: B; o = b.x; }\n";
+                       entity E { o: Bit out }\nimpl E { let b: B; o = b.x; }\n";
         assert_eq!(check_src(derived), 0, "newtype field");
     }
 
@@ -4953,7 +4953,7 @@ mod tests {
     /// runtime range assert saw an in-range value and the violation vanished.
     #[test]
     fn ranged_numeric_assignment_is_checked() {
-        let ent = "module m;\nentity E { out y: integer<0..10>; }\nimpl E { y = ";
+        let ent = "module m;\nentity E { y: integer<0..10> out, }\nimpl E { y = ";
         assert_eq!(check_src(&format!("{ent}50; }}\n")), 1, "above the range");
         assert_eq!(
             check_src(&format!("{ent}0 - 1; }}\n")),
@@ -4963,7 +4963,7 @@ mod tests {
         assert_eq!(check_src(&format!("{ent}7; }}\n")), 0, "inside");
         assert_eq!(check_src(&format!("{ent}10; }}\n")), 0, "the top bound");
         // An impl-level ranged local is covered the same way.
-        let local = "module m;\nentity E { out y: integer<0..10>; }\n\
+        let local = "module m;\nentity E { y: integer<0..10> out, }\n\
                      impl E { let k: integer<0..10>; k = 99; y = k; }\n";
         assert_eq!(check_src(local), 1);
     }
@@ -4975,7 +4975,7 @@ mod tests {
     fn call_arity_must_match_the_declaration() {
         let base = "module m;\nfn add2(a: integer, b: integer) -> integer { return a + b; }\n\
                     extern \"C\" { fn ext(a: integer, b: integer) -> integer; }\n\
-                    entity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
+                    entity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = ";
         assert_eq!(check_src(&format!("{base}add2(a); }}\n")), 1, "too few");
         assert_eq!(
             check_src(&format!("{base}add2(a, a, a); }}\n")),
@@ -5053,7 +5053,7 @@ mod tests {
     #[test]
     fn newtype_variant_has_the_named_enums_type() {
         let src = |body: &str| {
-            format!("module m;\nenum Base {{ A, B }}\nenum Mid(Base);\nenum Top(Mid);\nentity E {{ out m: Mid; out t: Top; }}\nimpl E {{ {body} }}\n")
+            format!("module m;\nenum Base {{ A, B }}\nenum Mid(Base);\nenum Top(Mid);\nentity E {{ m: Mid out, t: Top out, }}\nimpl E {{ {body} }}\n")
         };
         assert_eq!(
             check_src(&src("m = Mid::B; t = Top::A;")),
@@ -5079,7 +5079,7 @@ mod tests {
     #[test]
     fn match_expression_exhaustiveness_is_checked() {
         let src = |arms: &str| {
-            format!("module m;\nenum Base {{ A, B, C }}\nentity E {{ in sel: Base; out y: unsigned[8]; }}\nimpl E {{ y = match sel {{ {arms} }}; }}\n")
+            format!("module m;\nenum Base {{ A, B, C }}\nentity E {{ sel: Base in, y: unsigned[8] out, }}\nimpl E {{ y = match sel {{ {arms} }}; }}\n")
         };
         assert_eq!(
             warnings(
@@ -5108,7 +5108,7 @@ mod tests {
     fn signal_width_has_no_global_word_limit() {
         let at = |w: u32| {
             check_src(&format!(
-                "module m;\nentity E {{ out y: unsigned[{w}]; }}\nimpl E {{ y = 1; }}\n"
+                "module m;\nentity E {{ y: unsigned[{w}] out, }}\nimpl E {{ y = 1; }}\n"
             ))
         };
         assert_eq!(at(129), 0);
@@ -5124,7 +5124,7 @@ mod tests {
     fn literal_width_bounds_do_not_overflow_at_the_top_widths() {
         let cmp = |w: u32, v: &str| {
             check_src(&format!(
-                "module m;\nentity E {{ in a: unsigned[{w}]; out y: unsigned[8]; }}\nimpl E {{ if a == {v} {{ y = 1; }} }}\n"
+                "module m;\nentity E {{ a: unsigned[{w}] in, y: unsigned[8] out, }}\nimpl E {{ if a == {v} {{ y = 1; }} }}\n"
             ))
         };
         // Reaching these at all is the regression: they used to panic. `1`
@@ -5146,7 +5146,7 @@ mod tests {
     fn unknown_system_attribute_is_reported() {
         let attr = |a: &str| {
             check_src(&format!(
-                "module m;\nentity E {{ in x: unsigned[8]; out y: unsigned[8]; }}\nimpl E {{ y = x'{a}; }}\n"
+                "module m;\nentity E {{ x: unsigned[8] in, y: unsigned[8] out, }}\nimpl E {{ y = x'{a}; }}\n"
             ))
         };
         // Every implemented attribute still passes.
@@ -5164,22 +5164,22 @@ mod tests {
     #[test]
     fn return_outside_a_function_is_reported() {
         let hw =
-            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; return; }\n");
+            check_src("module m;\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; return; }\n");
         assert_eq!(hw, 1, "hardware statement position");
         let free_fn = check_src(
             "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { return x + 1; }\n\
-             entity E { out y: unsigned[8]; }\nimpl E { y = f(1); }\n",
+             entity E { y: unsigned[8] out }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(free_fn, 0, "a free function may return");
         let method = check_src(
             "module m;\nstruct S { v: unsigned[8] }\n\
              impl S { fn get(self) -> unsigned[8] { return self.v; } }\n\
-             entity E { out y: unsigned[8]; }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
+             entity E { y: unsigned[8] out }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
         );
         assert_eq!(method, 0, "a method may return");
         let nested = check_src(
             "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { if x == 0 { return 1; } return x; }\n\
-             entity E { out y: unsigned[8]; }\nimpl E { y = f(1); }\n",
+             entity E { y: unsigned[8] out }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(nested, 0, "including inside a nested block");
     }
@@ -5191,7 +5191,7 @@ mod tests {
     fn stimulus_outside_a_testbench_is_reported() {
         let hw = |body: &str| {
             check_src(&format!(
-                "module m;\nentity E {{ out y: unsigned[8]; }}\nimpl E {{ y = 1; {body} }}\n"
+                "module m;\nentity E {{ y: unsigned[8] out, }}\nimpl E {{ y = 1; {body} }}\n"
             ))
         };
         assert_eq!(hw("await 1ns;"), 1, "await needs simulation time");
@@ -5218,18 +5218,18 @@ mod tests {
     fn attributes_with_no_effect_are_flagged() {
         let n = |src: &str| warnings(src, codes::UNIMPLEMENTED_ATTR);
         assert_eq!(
-            n("module m;\n#[name = \"x\"]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            n("module m;\n#[name = \"x\"]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
             1,
             "`name` is reserved, not implemented"
         );
         assert_eq!(
-            n("module m;\n#[library = \"work\"]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            n("module m;\n#[library = \"work\"]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
             1,
             "so is `library`"
         );
         // The implemented ones stay quiet.
         assert_eq!(
-            n("module m;\n#[top]\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; }\n"),
+            n("module m;\n#[top]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
             0,
             "`top` is acted on"
         );
@@ -5242,7 +5242,7 @@ mod tests {
     #[test]
     fn bare_name_is_not_a_pattern() {
         let m = |arms: &str| {
-            format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} }} }}\n")
+            format!("module m;\nenum State {{ Idle, Run }}\nentity E {{ v: unsigned[8] in, r: unsigned[8] out, }}\nimpl E {{ match v {{ {arms} }} }}\n")
         };
         assert_eq!(
             warnings(
@@ -5287,7 +5287,7 @@ mod tests {
     #[test]
     fn malformed_bit_pattern_is_rejected() {
         let m = |arms: &str| {
-            format!("module m;\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+            format!("module m;\nentity E {{ v: unsigned[8] in, r: unsigned[8] out, }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
         };
         for bad in ["\"2\"", "x\"G\"", "o\"8\""] {
             assert_eq!(
@@ -5316,7 +5316,7 @@ mod tests {
     #[test]
     fn unreachable_range_arm_warns_only_when_fully_covered() {
         let m = |arms: &str| {
-            format!("module m;\nentity E {{ in v: unsigned[8]; out r: unsigned[8]; }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
+            format!("module m;\nentity E {{ v: unsigned[8] in, r: unsigned[8] out, }}\nimpl E {{ match v {{ {arms} _ => {{ r = 9; }} }} }}\n")
         };
         assert_eq!(
             warnings(
@@ -5356,7 +5356,7 @@ mod tests {
     /// `Unknown` and only failed later with a generic engine message.
     #[test]
     fn out_of_bounds_constant_index_is_rejected() {
-        let ent = "module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = ";
+        let ent = "module m;\nentity E { a: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = ";
         assert_eq!(
             check_src(&format!("{ent}a[9]; }}\n")),
             1,
@@ -5369,7 +5369,7 @@ mod tests {
         );
         assert_eq!(
             check_src(
-                "module m;\nentity E { in a: unsigned[8]; out y: Logic; }\n\
+                "module m;\nentity E { a: unsigned[8] in, y: Logic out, }\n\
                  impl E { y = a[7]; }\n"
             ),
             0,
@@ -5381,15 +5381,15 @@ mod tests {
             "a full-width slice"
         );
         // A runtime index can't be checked statically and must stay allowed.
-        let dynamic = "module m;\nentity E { in a: unsigned[8]; in i: unsigned[8]; out y: Logic; }\nimpl E { y = a[i]; }\n";
+        let dynamic = "module m;\nentity E { a: unsigned[8] in, i: unsigned[8] in, y: Logic out, }\nimpl E { y = a[i]; }\n";
         assert_eq!(check_src(dynamic), 0);
 
         // An instance array is declared with a plain count, so it is 0-based
         // and checkable the same way.
         let inst = |i: u32| {
             format!(
-                "module m;\nentity Sub {{ in a: unsigned[8]; out y: unsigned[8]; }}\nimpl Sub {{ y = a; }}\n\
-                 entity E {{ in a: unsigned[8]; out y: unsigned[8]; }}\nimpl E {{ let s: Sub[4]; y = s[{i}].y; }}\n"
+                "module m;\nentity Sub {{ a: unsigned[8] in, y: unsigned[8] out, }}\nimpl Sub {{ y = a; }}\n\
+                 entity E {{ a: unsigned[8] in, y: unsigned[8] out, }}\nimpl E {{ let s: Sub[4]; y = s[{i}].y; }}\n"
             )
         };
         assert_eq!(check_src(&inst(9)), 1, "instance 9 of a Sub[4]");
@@ -5400,9 +5400,9 @@ mod tests {
     /// yielded 0 with no complaint.
     #[test]
     fn constant_zero_divisor_is_rejected() {
-        let src = "module m;\nentity E { in a: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a / 0; }\n";
+        let src = "module m;\nentity E { a: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = a / 0; }\n";
         assert_eq!(check_src(src), 1);
-        let ok = "module m;\nentity E { in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\nimpl E { y = a / b; }\n";
+        let ok = "module m;\nentity E { a: unsigned[8] in, b: unsigned[8] in, y: unsigned[8] out, }\nimpl E { y = a / b; }\n";
         assert_eq!(check_src(ok), 0, "a runtime divisor is fine");
     }
 
@@ -5410,15 +5410,15 @@ mod tests {
     /// later driver overrides within a context, so it silently did nothing.
     #[test]
     fn dead_assignment_warns_but_defaults_do_not() {
-        let dead = "module m;\nentity E { out y: unsigned[8]; }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
+        let dead = "module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
         assert_eq!(warnings(dead, codes::DEAD_ASSIGNMENT), 1);
 
         // A conditional override is the normal `default then override` shape.
-        let guarded = "module m;\nentity E { in c: Bit; out y: unsigned[8]; }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
+        let guarded = "module m;\nentity E { c: Bit in, y: unsigned[8] out, }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
         assert_eq!(warnings(guarded, codes::DEAD_ASSIGNMENT), 0);
 
         // Distinct targets are unrelated.
-        let distinct = "module m;\nentity E { out y: unsigned[8]; out z: unsigned[8]; }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
+        let distinct = "module m;\nentity E { y: unsigned[8] out, z: unsigned[8] out, }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
         assert_eq!(warnings(distinct, codes::DEAD_ASSIGNMENT), 0);
     }
 

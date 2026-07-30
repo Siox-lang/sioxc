@@ -229,11 +229,11 @@ Valid:
 
 ```siox
 entity Counter<W: integer> {
-    in clk: Bit;
-    in rst: Logic;
-    in en: Bit;
+    clk: Bit in,
+    rst: Logic in,
+    en: Bit in,
 
-    out count: unsigned[W];
+    count: unsigned[W] out
 }
 ```
 
@@ -241,11 +241,11 @@ Invalid:
 
 ```siox
 entity Counter {
-    const W: integer;      // invalid in entity body
-    let value: unsigned[8];  // invalid in entity body
+    const W: integer,      // invalid in entity body
+    let value: unsigned[8],  // invalid in entity body
 
-    in clk: Bit;
-    out count: unsigned[W];
+    clk: Bit in,
+    count: unsigned[W] out
 }
 ```
 
@@ -263,7 +263,7 @@ Valid:
 
 ```siox
 entity Counter<W: integer> {
-    out count: unsigned[W];
+    count: unsigned[W] out
 }
 ```
 
@@ -310,7 +310,7 @@ Valid:
 const DEFAULT_WIDTH: integer = 8;
 
 entity Counter<W: integer> {
-    out count: unsigned[W];
+    count: unsigned[W] out
 }
 ```
 
@@ -326,8 +326,8 @@ Invalid:
 
 ```siox
 entity Counter {
-    const W: integer;
-    out count: unsigned[W];
+    const W: integer,
+    count: unsigned[W] out
 }
 ```
 
@@ -377,7 +377,7 @@ Usage:
 ```siox
 #[top]
 entity Top {
-    in clk: Bit;
+    clk: Bit in
 }
 ```
 
@@ -502,7 +502,7 @@ Valid:
 ```siox
 struct Packet<T> {
     valid: Bit,
-    data: T,
+    data: T
 }
 ```
 
@@ -510,8 +510,8 @@ Invalid:
 
 ```siox
 struct Packet<T> {
-    in valid: Bit,  // invalid: directions do not belong in normal struct fields
-    out data: T,
+    valid: Bit in,  // invalid: directions do not belong in normal struct fields
+    data: T out
 }
 ```
 
@@ -530,7 +530,7 @@ enum State {
     Idle,
     Start,
     Shift,
-    Done,
+    Done
 }
 ```
 
@@ -542,7 +542,7 @@ enum State {
     Idle  = 0,
     Start = 1,
     Shift = 2,
-    Done  = 3,
+    Done  = 3
 }
 ```
 
@@ -607,7 +607,7 @@ Struct example:
 ```siox
 struct Packet {
     valid: Bit,
-    data: unsigned[32],
+    data: unsigned[32]
 }
 
 let p: Packet;
@@ -1041,11 +1041,23 @@ Directions define who may drive/read a field at an entity boundary.
 
 They are not normal runtime values.
 
+A port is written like a struct field — `name: Type` — with the slot after
+the type holding the direction, and the whole list comma-separated so every
+brace-delimited declaration in the language reads the same way. That slot
+takes a **view** instead when the port carries a bus (§3.19), since a view
+is what supplies direction for a struct.
+
+The comma separates members rather than terminating them, so the last port
+carries none. A trailing comma is still accepted — in ports, struct fields,
+view fields and enum variants alike — but the canonical form printed by
+`sioxc --emit source` omits it.
+
 Valid:
 
 ```siox
 entity Producer {
-    out data: unsigned[8];
+    data: unsigned[8] out,
+    bus: Stream Source,          // a view in the direction slot
 }
 ```
 
@@ -1069,12 +1081,12 @@ A view always projects a reusable struct:
 ```siox
 struct Handshake {
     valid: Bit,
-    ready: Bit,
+    ready: Bit
 }
 
 view Source for Handshake {
-    out valid;
-    in ready;
+    valid out,
+    ready in
 }
 ```
 
@@ -1089,7 +1101,7 @@ struct Stream<T> {
     rst: Logic,
     valid: Bit,
     ready: Bit,
-    data: T,
+    data: T
 }
 ```
 
@@ -1097,11 +1109,11 @@ Source role:
 
 ```siox
 view StreamSource<T> for Stream<T> {
-    in clk;
-    in rst;
-    out valid;
-    out data;
-    in ready;
+    clk in,
+    rst in,
+    valid out,
+    data out,
+    ready in
 }
 ```
 
@@ -1109,11 +1121,11 @@ Sink role:
 
 ```siox
 view StreamSink<T> for Stream<T> {
-    in clk;
-    in rst;
-    in valid;
-    in data;
-    out ready;
+    clk in,
+    rst in,
+    valid in,
+    data in,
+    ready out
 }
 ```
 
@@ -1121,11 +1133,11 @@ Usage:
 
 ```siox
 entity Producer {
-    bus: StreamSource Stream<unsigned[32]>;
+    bus: Stream<unsigned[32]> StreamSource
 }
 
 entity Consumer {
-    bus: StreamSink Stream<unsigned[32]>;
+    bus: Stream<unsigned[32]> StreamSink
 }
 ```
 
@@ -1134,13 +1146,13 @@ The applied type always writes the view first and its backing struct second:
 trait impls:
 
 ```siox
-impl StreamSource Stream<T> {
+impl Stream<T> StreamSource {
     fn can_send(self) -> Bit {
         return self.ready;
     }
 }
 
-impl Source<T> for StreamSource Stream<T> {
+impl Source<T> for Stream<T> StreamSource {
     fn send(self, value: T) {
         self.valid = '1';
         self.data = value;
@@ -1153,22 +1165,22 @@ the same role name without creating a global-name collision:
 
 ```siox
 view Source for Stream {
-    out valid;
-    out data;
-    in ready;
+    valid out,
+    data out,
+    ready in
 }
 
 view Source for Queue {
-    out data;
-    in full;
+    data out,
+    full in
 }
 
-impl Send<Byte> for Source Stream { /* ... */ }
-impl Send<Byte> for Source Queue  { /* ... */ }
+impl Send<Byte> for Stream Source { /* ... */ }
+impl Send<Byte> for Queue Source  { /* ... */ }
 ```
 
-The nominal identity is the pair `(view, backing struct)`. `Source Stream` and
-`Source Queue` are therefore distinct types even though both views are named
+The nominal identity is the pair `(backing struct, view)`. `Stream Source` and
+`Queue Source` are therefore distinct types even though both views are named
 `Source`.
 
 ```siox
@@ -1202,7 +1214,7 @@ trait Source<T> {
 Implementation:
 
 ```siox
-impl Source<T> for StreamSource Stream<T> {
+impl Source<T> for Stream<T> StreamSource {
     fn send(self, value: T) {
         self.valid = '1';
         self.data = value;
@@ -1354,7 +1366,7 @@ implementations.
 
 ```siox
 pub using string = Char[];   // std::text
-in s: string[5];             // the use supplies the range: Char[5]
+s: string[5] in,             // the use supplies the range: Char[5]
 ```
 
 Using an unconstrained array where a concrete size is needed (a port, a
@@ -1383,7 +1395,7 @@ usable in both type and slice position:
 
 ```siox
 const BYTE: range = 7..0;
-in b: Logic[BYTE];
+b: Logic[BYTE] in,
 z = w[BYTE];
 ```
 
@@ -2552,7 +2564,7 @@ error[E-P0XX]: cannot assign to input port `ready`
   --> stream.siox:42:9
    |
 42 |         self.ready = '1';
-   |         ^^^^^^^^^^ input fields are read-only in `StreamSource Stream<T>`
+   |         ^^^^^^^^^^ input fields are read-only in `Stream<T> StreamSource`
 help: `ready` is declared as `in ready;` in this view
 ```
 
@@ -2632,19 +2644,19 @@ Canonical declarations:
 ```siox
 pub enum Bit {
     '0',
-    '1',
+    '1'
 }
 
 pub enum Logic {
     '0',
     '1',
     'Z',
-    'X',
+    'X'
 }
 
 pub enum Bool {
     false,
-    true,
+    true
 }
 ```
 

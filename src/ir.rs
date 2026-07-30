@@ -7610,7 +7610,7 @@ mod tests {
     fn integer_literals_keep_all_words() {
         let d = lower_src(
             "module m;
-             #[top] entity E { out y: unsigned[192]; }
+             #[top] entity E { y: unsigned[192] out, }
              impl E { y = 1020847100762815390427017310442723737601; }",
         );
         assert!(matches!(
@@ -7624,9 +7624,9 @@ mod tests {
         let design = lower_src(
             "module m;
              #[top] entity E {
-                 out plain: integer;
-                 out constrained: integer<-10..10>;
-                 out bits: unsigned[8];
+                 plain: integer out,
+                 constrained: integer<-10..10> out,
+                 bits: unsigned[8] out,
              }
              impl E { plain = -8; constrained = -3; bits = 255; }",
         );
@@ -7649,7 +7649,7 @@ mod tests {
             src.push_str(&format!("struct S{i}(S{});\n", i - 1));
         }
         src.push_str(
-            "#[top] entity E { out y: S79; }
+            "#[top] entity E { y: S79 out, }
              impl E { y = S79(); }",
         );
         let d = lower_src(&src);
@@ -7663,9 +7663,9 @@ mod tests {
     fn struct_literal_initializer_seeds_field_inits() {
         let d = lower_src(
             "module m; struct P { a: unsigned[8], b: unsigned[8] }\n\
-             entity E { out x: unsigned[8]; out y: unsigned[8]; }\n\
+             entity E { x: unsigned[8] out, y: unsigned[8] out }\n\
              impl E { let p: P = { .a = 11, .b = 22 }; x = p.a; y = p.b; }\n\
-             #[top] entity H { out x: unsigned[8]; out y: unsigned[8]; }\n\
+             #[top] entity H { x: unsigned[8] out, y: unsigned[8] out, }\n\
              impl H { let d: E = { .x = x, .y = y }; }",
         );
         let init = |suffix: &str| {
@@ -7688,9 +7688,9 @@ mod tests {
     fn concat_assignment_target_width_must_match() {
         let src = |rhs: &str| {
             format!(
-                "module m;\nentity E {{ in a: unsigned[8]; out y: unsigned[4]; out z: unsigned[4]; }}\n\
+                "module m;\nentity E {{ a: unsigned[8] in, y: unsigned[4] out, z: unsigned[4] out, }}\n\
                  impl E {{ {{y, z}} = {rhs}; }}\n\
-                 #[top] entity H {{ in a: unsigned[8]; out y: unsigned[4]; out z: unsigned[4]; }}\n\
+                 #[top] entity H {{ a: unsigned[8] in, y: unsigned[4] out, z: unsigned[4] out, }}\n\
                  impl H {{ let d: E = {{ .a = a, .y = y, .z = z }}; }}\n"
             )
         };
@@ -7716,11 +7716,11 @@ mod tests {
     fn conflicting_drivers_name_the_conflict_and_its_sites() {
         let src = "module m;\n\
             struct Stream { valid: Bit, data: unsigned[8] }\n\
-            view Source for Stream { out valid; out data; }\n\
-            entity Producer { bus: Source Stream; in value: unsigned[8]; }\n\
+            view Source for Stream { valid out, data out }\n\
+            entity Producer { bus: Stream Source, value: unsigned[8] in }\n\
             impl Producer { bus.valid = '1'; bus.data = value; }\n\
             #[top]\n\
-            entity BadLink { in a: unsigned[8]; in b: unsigned[8]; }\n\
+            entity BadLink { a: unsigned[8] in, b: unsigned[8] in }\n\
             impl BadLink {\n\
               let wire: Stream;\n\
               let p1: Producer = { .bus = wire, .value = a };\n\
@@ -7794,9 +7794,9 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              struct HandshakeBus { valid: Bit, ready: Bit }\n\
-             view Handshake for HandshakeBus { out valid; in ready; }\n\
-             impl Handshake HandshakeBus { fn assert_valid(self) { self.valid = '1'; } }\n\
-             #[top] entity Producer { bus: Handshake HandshakeBus; out observed: Bit; }\n\
+             view Handshake for HandshakeBus { valid out, ready in }\n\
+             impl HandshakeBus Handshake { fn assert_valid(self) { self.valid = '1'; } }\n\
+             #[top] entity Producer { bus: HandshakeBus Handshake, observed: Bit out, }\n\
              impl Producer { bus.assert_valid(); observed = bus.ready; }",
         );
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));
@@ -7812,15 +7812,15 @@ mod tests {
              fn read<Bus: Readable, Value>(bus: Bus) -> Value { return bus.read(); }\n\
              fn write<Bus: Writable, Value>(bus: Bus, value: Value) { bus.write(value); }\n\
              struct Spi { tx: unsigned[8], rx: unsigned[8] }\n\
-             view Controller for Spi { out tx; in rx; }\n\
-             impl Readable<unsigned[8]> for Controller Spi {\n\
+             view Controller for Spi { tx out, rx in }\n\
+             impl Readable<unsigned[8]> for Spi Controller {\n\
                fn read(self) -> unsigned[8] { return self.rx; }\n\
              }\n\
-             impl Writable<unsigned[8]> for Controller Spi {\n\
+             impl Writable<unsigned[8]> for Spi Controller {\n\
                fn write(self, value: unsigned[8]) { self.tx = value; }\n\
              }\n\
              entity Device {\n\
-               bus: Controller Spi; in source: unsigned[8]; out sampled: unsigned[8];\n\
+               bus: Spi Controller, source: unsigned[8] in, sampled: unsigned[8] out,\n\
              }\n\
              impl Device { write(bus, source); sampled = read(bus); }\n\
              #[top] entity Link {}\n\
@@ -7917,7 +7917,7 @@ mod tests {
             "module m;\n\
              enum Phase { Idle = 2, Run = 3 }\n\
              #[top]\n\
-             entity E { out y: Phase; out z: unsigned[8]; }\n\
+             entity E { y: Phase out, z: unsigned[8] out }\n\
              impl E { y = Phase(); z = unsigned[8](); }\n",
         );
         let drv = |suffix: &str| -> u64 {
@@ -7951,7 +7951,7 @@ mod tests {
              struct Header { flag: Bit, ph: Phase }\n\
              struct Packet { header: Header, data: unsigned[8] }\n\
              #[top]\n\
-             entity E { out o: Packet; }\n\
+             entity E { o: Packet out }\n\
              impl E { o = Packet(); }\n",
         );
         let drv = |suffix: &str| -> u64 {
@@ -7987,9 +7987,9 @@ mod tests {
             "module m;\n\
              #[top]\n\
              entity E {\n\
-               in dn: unsigned[7..0]; in up: unsigned[8];\n\
-               out a: unsigned[8]; out b: unsigned[8]; out c: unsigned[8]; out e: unsigned[8];\n\
-               out f: unsigned[8]; out g: unsigned[8]; out h: unsigned[8];\n\
+               dn: unsigned[7..0] in, up: unsigned[8] in,\n\
+               a: unsigned[8] out, b: unsigned[8] out, c: unsigned[8] out, e: unsigned[8] out,\n\
+               f: unsigned[8] out, g: unsigned[8] out, h: unsigned[8] out,\n\
              }\n\
              impl E {\n\
                a = dn'left; b = dn'right; c = dn'high; e = dn'low;\n\
@@ -8026,7 +8026,7 @@ mod tests {
         // `forgotten` is never assigned; `driven` is. Only the former warns.
         let diags = lower_diags(
             "module m;\n\
-             entity E { in a: unsigned[8]; out driven: unsigned[8]; out forgotten: unsigned[8]; }\n\
+             entity E { a: unsigned[8] in, driven: unsigned[8] out, forgotten: unsigned[8] out }\n\
              impl E { driven = a + 1; }\n\
              #[top]\n\
              entity T {}\n\
@@ -8051,7 +8051,7 @@ mod tests {
         // `konst` has an initializer, so neither does.
         let diags = lower_diags(
             "module m;\n\
-             entity E { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
              impl E {\n  let used: unsigned[8];\n  let dead: unsigned[8];\n  let konst: unsigned[8] = 5;\n\
                used = a + 1;\n  y = used + konst;\n }\n\
              #[top]\n\
@@ -8070,7 +8070,7 @@ mod tests {
     fn unused_internal_signal_warns_without_runner_false_positives() {
         let diags = lower_diags(
             "module m;\n\
-             entity E { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
              impl E { let dead: unsigned[8]; dead = a + 1; y = a; }\n\
              #[test] entity T {}\n\
              impl T { let a: unsigned[8]; let observed: unsigned[8];\n\
@@ -8087,7 +8087,7 @@ mod tests {
         // no possible-latch warning — but one assigned only in the `if` is.
         let covered = lower_diags(
             "module m;\n\
-             entity M { in c: Bit; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
+             entity M { c: Bit in, a: unsigned[8] in, b: unsigned[8] in, y: unsigned[8] out }\n\
              impl M { if c { y = a; } else { y = b; } }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
@@ -8102,7 +8102,7 @@ mod tests {
 
         let latch = lower_diags(
             "module m;\n\
-             entity M { in c: Bit; in a: unsigned[8]; out y: unsigned[8]; }\n\
+             entity M { c: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
              impl M { if c { y = a; } }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
@@ -8123,7 +8123,7 @@ mod tests {
         // width mismatch surfaced by IR lowering.
         let bad = lower_diags(
             "module m;\n\
-             entity E { in b: unsigned[W]; out y: unsigned[8]; }\n\
+             entity E { b: unsigned[W] in, y: unsigned[8] out }\n\
              impl E { y = b; }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
@@ -8137,7 +8137,7 @@ mod tests {
         // (8) equals the target (8).
         let ok = lower_diags(
             "module m;\n\
-             entity E { in b: unsigned[W]; out y: unsigned[8]; }\n\
+             entity E { b: unsigned[W] in, y: unsigned[8] out }\n\
              impl E { y = b[7..0]; }\n\
              #[test] entity Tb {}\n\
              impl Tb {\n\
@@ -8151,7 +8151,7 @@ mod tests {
         // wide. Retained checker types keep it distinct from the vector.
         let one = lower_diags(
             "module m;\n\
-             entity E { in b: unsigned[1]; out y: Logic; }\n\
+             entity E { b: unsigned[1] in, y: Logic out }\n\
              impl E { y = b[0]; }\n",
         );
         assert!(!one.iter().any(|d| d.contains("width mismatch")), "{one:?}");
@@ -8163,7 +8163,7 @@ mod tests {
         // (`y = x + 1`) is not.
         let diags = lower_diags(
             "module m;\n\
-             entity L { in a: unsigned[8]; out y: unsigned[8]; }\n\
+             entity L { a: unsigned[8] in, y: unsigned[8] out }\n\
              impl L { let t: unsigned[8]; t = t + a; y = t; }\n\
              #[top] entity Top {}\n\
              impl Top { let a: unsigned[8]; let y: unsigned[8]; let d: L = { .a = a, .y = y }; }\n",
@@ -8174,7 +8174,7 @@ mod tests {
 
         let ok = lower_diags(
             "module m;\n\
-             entity C { in x: unsigned[8]; out y: unsigned[8]; }\n\
+             entity C { x: unsigned[8] in, y: unsigned[8] out }\n\
              impl C { y = x + 1; }\n\
              #[top] entity Top {}\n\
              impl Top { let x: unsigned[8]; let y: unsigned[8]; let d: C = { .x = x, .y = y }; }\n",
@@ -8191,7 +8191,7 @@ mod tests {
         // unconditional default and must not be flagged.
         let diags = lower_diags(
             "module m;\n\
-             entity L { in c: Logic; in a: unsigned[8]; out y: unsigned[8]; out z: unsigned[8]; }\n\
+             entity L { c: Logic in, a: unsigned[8] in, y: unsigned[8] out, z: unsigned[8] out }\n\
              impl L { if c == '1' { y = a; } z = a; }\n\
              #[top] entity Top {}\n\
              impl Top { let c: Logic; let a: unsigned[8]; let y: unsigned[8]; let z: unsigned[8];\n\
@@ -8211,7 +8211,7 @@ mod tests {
             "module m;\n\
              enum Logic { '0', '1', 'Z', 'X' }\n\
              enum State { Idle, Run }\n\
-             entity E { in a: Logic; out s: State; }\n\
+             entity E { a: Logic in, s: State out }\n\
              impl E { s = State::Idle; }\n\
              #[top] entity Top {}\n\
              impl Top { let a: Logic; let s: State; let e: E = { .a = a, .s = s }; }\n",
@@ -8231,10 +8231,10 @@ mod tests {
 
     const COUNTER: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Bit;\n\
-          in rst: Logic;\n\
-          in en: Bit;\n\
-          out count: unsigned[W];\n\
+          clk: Bit in,\n\
+          rst: Logic in,\n\
+          en: Bit in,\n\
+          count: unsigned[W] out,\n\
         }\n\
         impl Counter<W: integer> {\n\
           let value: unsigned[W] = 0;\n\
@@ -8277,9 +8277,9 @@ mod tests {
         // Add2 instantiates two Add1s wired through `mid`. Each instance must
         // get its own signals, and every port connection must become a driver.
         let src = "module m;\n\
-            entity Add1 { in a: unsigned[8]; out y: unsigned[8]; }\n\
+            entity Add1 { a: unsigned[8] in, y: unsigned[8] out }\n\
             impl Add1 { y = a + 1; }\n\
-            entity Add2 { in a: unsigned[8]; out y: unsigned[8]; }\n\
+            entity Add2 { a: unsigned[8] in, y: unsigned[8] out }\n\
             impl Add2 {\n\
               let mid: unsigned[8];\n\
               let s1: Add1 = { .a = a, .y = mid };\n\
@@ -8319,7 +8319,7 @@ mod tests {
     fn if_expression_lowers_to_select() {
         let d = lower_src(
             "module m;\n\
-             entity Mux { in sel: Bit; in a: unsigned[8]; in b: unsigned[8]; out y: unsigned[8]; }\n\
+             entity Mux { sel: Bit in, a: unsigned[8] in, b: unsigned[8] in, y: unsigned[8] out }\n\
              impl Mux { y = if sel { a } else { b }; }\n\
              #[test] entity T {}\n\
              impl T { let sel: Bit; let a: unsigned[8]; let b: unsigned[8]; let y: unsigned[8];\n\
@@ -8421,7 +8421,7 @@ mod tests {
             "module m;\n\
              enum S { A, B, C }\n\
              struct P { flag: Bit, val: unsigned[8] }\n\
-             entity E { in p: P; in a: Bit[3]; out s: S; }\n\
+             entity E { p: P in, a: Bit[3] in, s: S out }\n\
              impl E {}\n\
              #[top] entity H {}\n\
              impl H { let p: P; let a: Bit[3]; let s: S; let dut: E = { .p = p, .a = a, .s = s }; }\n",
@@ -8439,7 +8439,7 @@ mod tests {
         // `y = 0; y[3..0] = a` merges: low nibble = a, high bits held from 0.
         let d = lower_src(
             "module m;\n\
-             entity E { in a: unsigned[4]; out y: unsigned[8]; }\n\
+             entity E { a: unsigned[4] in, y: unsigned[8] out }\n\
              impl E { y = 0; y[3..0] = a; }\n\
              #[top] entity H {}\n\
              impl H { let a: unsigned[4]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
@@ -8467,7 +8467,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Code { Lo = 1, Hi = 9 }\n\
-             entity E { out c: Code; }\n\
+             entity E { c: Code out }\n\
              impl E { c = Code::Hi; }\n\
              #[top] entity H {}\n\
              impl H { let c: Code; let dut: E = { .c = c }; }\n",
@@ -8484,7 +8484,7 @@ mod tests {
             "module m;\n\
              enum Base { A, B, C, D }\n\
              enum Ext(Base);\n\
-             entity E { out x: Ext; }\n\
+             entity E { x: Ext out }\n\
              impl E { x = Ext::A; }\n\
              #[top] entity H {}\n\
              impl H { let x: Ext; let dut: E = { .x = x }; }\n",
@@ -8504,7 +8504,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Base { A, B, C }\n\
-             entity E { in sel: Base; out y: unsigned[8]; }\n\
+             entity E { sel: Base in, y: unsigned[8] out }\n\
              impl E { y = match sel { Base::A => 1, Base::B => 2, Base::C => 3 }; }\n\
              #[top] entity H {}\n\
              impl H { let sel: Base; let y: unsigned[8]; let e: E = { .sel = sel, .y = y }; }",
@@ -8549,7 +8549,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              fn neg(v: signed[8]) -> signed[8] { return 0 - v; }\n\
-             entity E { in s: signed[8]; out lt: unsigned[8]; }\n\
+             entity E { s: signed[8] in, lt: unsigned[8] out }\n\
              impl E { lt = if neg(s) < 0 { 1 } else { 0 }; }\n\
              #[top] entity H {}\n\
              impl H { let s: signed[8]; let lt: unsigned[8]; \
@@ -8567,7 +8567,7 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              fn width_of(v: integer) -> integer { return v'length; }\n\
-             entity E { in s: signed[8]; out y: unsigned[8]; }\n\
+             entity E { s: signed[8] in, y: unsigned[8] out }\n\
              impl E { y = width_of(s); }\n\
              #[top] entity H {}\n\
              impl H { let s: signed[8]; let y: unsigned[8]; let e: E = { .s = s, .y = y }; }",
@@ -8589,7 +8589,7 @@ mod tests {
         let src = |arg: &str| {
             format!(
                 "module m;\n\
-                 entity Inc<W: integer> {{ in a: unsigned[W]; out y: unsigned[W]; }}\n\
+                 entity Inc<W: integer> {{ a: unsigned[W] in, y: unsigned[W] out, }}\n\
                  impl Inc<W: integer> {{ y = a + 1; }}\n\
                  #[top] entity H {{}}\n\
                  impl H {{ let a: unsigned[4]; let y: unsigned[4]; \
@@ -8613,7 +8613,7 @@ mod tests {
             "module m;\n\
              struct A { x: Bit, y: unsigned[4] }\n\
              struct B { a: A, z: unsigned[4] }\n\
-             entity E { out oy: unsigned[4]; }\n\
+             entity E { oy: unsigned[4] out }\n\
              impl E {\n\
                let base: B;\n\
                base = B { .a = A { .x = '1', .y = 9 }, .z = 2 };\n\
@@ -8644,7 +8644,7 @@ mod tests {
             "module m;\n\
              struct Header { valid: Bit, kind: unsigned[4] }\n\
              struct Packet { header: Header, data: unsigned[8] }\n\
-             entity E { out p: Packet; }\n\
+             entity E { p: Packet out }\n\
              impl E {}\n\
              #[top] entity H {}\n\
              impl H { let p: Packet; let dut: E = { .p = p }; }\n",
@@ -8662,7 +8662,7 @@ mod tests {
             "module m;\n\
              enum Base { A, B, C }\n\
              enum Alias(Base);\n\
-             entity E { out x: Alias; }\n\
+             entity E { x: Alias out }\n\
              impl E { x = Alias::B; }\n\
              #[top] entity H {}\n\
              impl H { let x: Alias; let dut: E = { .x = x }; }\n",
@@ -8677,7 +8677,7 @@ mod tests {
         // `std_ulogic` value bit (X = disc 3, low bit 1) instead of collapsing
         // to 0. `"1X10"` -> value bits 1110 = 14.
         let d = lower_src(
-            "module m; entity E { out y: unsigned[4]; out z: unsigned[4]; }\n\
+            "module m; entity E { y: unsigned[4] out, z: unsigned[4] out, }\n\
              impl E { y = \"1010\"; z = \"1X10\"; }\n\
              #[top] entity T {}\n\
              impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
@@ -8695,7 +8695,7 @@ mod tests {
         // `let v: unsigned[4] = "1010"` seeds the signal init to 10 (was 0 — no
         // string-init arm in const_init_value).
         let d = lower_src(
-            "module m; entity E { out y: unsigned[4]; }\n\
+            "module m; entity E { y: unsigned[4] out, }\n\
              impl E { let v: unsigned[4] = \"1010\"; y = v; }\n\
              #[top] entity T {}\n\
              impl T { let y: unsigned[4]; let dut: E = { .y = y }; }",
@@ -8713,7 +8713,7 @@ mod tests {
         // A metavalue init spawns a `$meta` companion recording the X element;
         // a plain 2-value init does not.
         let d = lower_src(
-            "module m; entity E { out y: unsigned[4]; out z: unsigned[4]; }\n\
+            "module m; entity E { y: unsigned[4] out, z: unsigned[4] out, }\n\
              impl E { let v: unsigned[4] = \"1X10\"; let w: unsigned[4] = \"1010\"; y = v; z = w; }\n\
              #[top] entity T {}\n\
              impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
@@ -8763,7 +8763,7 @@ mod tests {
 
         let driven = lower_src(
             "module m;\n\
-             #[top] entity E { out v: unsigned[17]; }\n\
+             #[top] entity E { v: unsigned[17] out, }\n\
              impl E { v = \"X0000000000000000\"; }\n",
         );
         let cid = *driven.meta_of.values().next().expect("driven companion");
@@ -8782,7 +8782,7 @@ mod tests {
         let design = lower_src(
             "module m;\n\
              const FAR: integer = 1 << 64;\n\
-             #[top] entity E { out y: unsigned[128]; }\n\
+             #[top] entity E { y: unsigned[128] out, }\n\
              impl E { y = FAR; }\n",
         );
         assert_eq!(design.drivers.len(), 1);
@@ -8793,11 +8793,11 @@ mod tests {
         let design = lower_src(
             "module m;\n\
              #[top] entity E {\n\
-                 in a: integer<-16..15>;\n\
-                 in b: integer<-16..15>;\n\
-                 out lt: Bit;\n\
-                 out q: integer<-16..15>;\n\
-                 out shr: integer<-16..15>;\n\
+                 a: integer<-16..15> in,\n\
+                 b: integer<-16..15> in,\n\
+                 lt: Bit out,\n\
+                 q: integer<-16..15> out,\n\
+                 shr: integer<-16..15> out,\n\
              }\n\
              impl E {\n\
                  lt = if a < b { '1' } else { '0' };\n\
@@ -8843,8 +8843,8 @@ mod tests {
     fn ranged_integer_assignment_can_change_storage_width() {
         let src = "module m;\n\
              #[top] entity E {\n\
-                 in narrow: integer<-16..15>;\n\
-                 out wide: integer<-128..127>;\n\
+                 narrow: integer<-16..15> in,\n\
+                 wide: integer<-128..127> out,\n\
              }\n\
              impl E { wide = narrow; }\n";
         let diagnostics = lower_diags(src);
@@ -8878,7 +8878,7 @@ mod tests {
              using Alias = Small;\n\
              using Chars = Char[];\n\
              using Text = Chars;\n\
-             #[top] entity E { in x: Alias; out y: Alias; }\n\
+             #[top] entity E { x: Alias in, y: Alias out, }\n\
              impl E { let text: Text[3] = \"abc\"; y = x; }\n",
         );
         for suffix in [".x", ".y"] {
@@ -8908,8 +8908,8 @@ mod tests {
              using CInteger = CWord;\n\
              extern \"C\" { pub fn labs(v: CInteger) -> CInteger; }\n\
              #[top] entity E {\n\
-                 in x: integer<-128..127>;\n\
-                 out y: integer<-128..127>;\n\
+                 x: integer<-128..127> in,\n\
+                 y: integer<-128..127> out,\n\
              }\n\
              impl E { y = labs(x); }\n",
         );

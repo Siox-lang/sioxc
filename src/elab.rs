@@ -1203,9 +1203,9 @@ mod tests {
 
     const HARNESS: &str = "module m;\n\
         entity Counter<W: integer> {\n\
-          in clk: Bit;\n\
-          in rst: Logic;\n\
-          out count: unsigned[W];\n\
+          clk: Bit in,\n\
+          rst: Logic in,\n\
+          count: unsigned[W] out,\n\
         }\n\
         impl Counter<W: integer> {\n\
           let value: unsigned[W] = 0;\n\
@@ -1253,7 +1253,7 @@ mod tests {
         // A sub-instance with a forgotten `in` connection holds its default
         // value (§3.29) — a warning (W-P012), not an error.
         let src = "module m;\n\
-            entity Sub { in a: Bit; in b: Bit; out y: Bit; }\n\
+            entity Sub { a: Bit in, b: Bit in, y: Bit out }\n\
             impl Sub { y = a and b; }\n\
             #[top]\n\
             entity T {}\n\
@@ -1290,7 +1290,7 @@ mod tests {
         // instantiation (and IR lowering then recursed forever). `s` must be a
         // signal: `Buf` has no child instances.
         let src = "module m;\n\
-            entity Buf<T> { in a: T; out y: T; }\n\
+            entity Buf<T> { a: T in, y: T out }\n\
             impl Buf<T> {\n\
               let s: T;\n\
               s = a;\n\
@@ -1341,7 +1341,7 @@ mod tests {
     fn connection_width_mismatch_is_reported() {
         // Port `a` is unsigned[8] (W=8) but the local signal `a` is unsigned[4].
         let src = "module m;\n\
-            entity Sub<W: integer> { in a: unsigned[W]; out b: unsigned[W]; }\n\
+            entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
             impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
@@ -1357,7 +1357,7 @@ mod tests {
     #[test]
     fn matching_widths_are_fine() {
         let src = "module m;\n\
-            entity Sub<W: integer> { in a: unsigned[W]; out b: unsigned[W]; }\n\
+            entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
             impl Sub<W: integer> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
@@ -1375,7 +1375,7 @@ mod tests {
         // `rst` is left unconnected — a warning (it holds its default), not an
         // error (§3.29). See `unconnected_input_warns_not_errors` for the code.
         let src = "module m;\n\
-            entity Counter<W: integer> { in clk: Bit; in rst: Logic; out count: unsigned[W]; }\n\
+            entity Counter<W: integer> { clk: Bit in, rst: Logic in, count: unsigned[W] out }\n\
             impl Counter<W: integer> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
@@ -1391,7 +1391,7 @@ mod tests {
     #[test]
     fn unknown_port_is_reported() {
         let src = "module m;\n\
-            entity Counter { out count: unsigned[8]; }\n\
+            entity Counter { count: unsigned[8] out }\n\
             impl Counter { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
@@ -1409,8 +1409,8 @@ mod tests {
     /// bind to a type, not a number.
     #[test]
     fn value_parameters_must_be_bound_at_instantiation() {
-        let base = "module m;\nentity S<W: integer> { out y: unsigned[W]; }\nimpl S<W: integer> { y = 0; }\n\
-                    #[top] entity E { out y: unsigned[8]; }\n";
+        let base = "module m;\nentity S<W: integer> { y: unsigned[W] out, }\nimpl S<W: integer> { y = 0; }\n\
+                    #[top] entity E { y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
         assert_eq!(errs, 1, "`W` was never given a value");
 
@@ -1420,7 +1420,7 @@ mod tests {
         assert_eq!(errs, 0, "bound");
 
         // A *type* parameter has no numeric value and must not be demanded.
-        let generic = "module m;\nentity Buf<T> { in a: T; out y: T; }\n\
+        let generic = "module m;\nentity Buf<T> { a: T in, y: T out, }\n\
                        impl Buf<T> { y = a; }\n#[top] entity H {}\n\
                        impl H { let a: unsigned[8]; let y: unsigned[8]; \
                        let d: Buf<unsigned[8]> = { .a = a, .y = y }; }\n";
@@ -1432,8 +1432,8 @@ mod tests {
     /// bound anyway, so a typo silently did nothing.
     #[test]
     fn unknown_generic_argument_is_reported() {
-        let base = "module m;\nentity S<W: integer> { in a: unsigned[W]; out y: unsigned[W]; }\n\
-                    impl S<W: integer> { y = a; }\n#[top] entity E { in a: unsigned[8]; out y: unsigned[8]; }\n";
+        let base = "module m;\nentity S<W: integer> { a: unsigned[W] in, y: unsigned[W] out, }\n\
+                    impl S<W: integer> { y = a; }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!(
             "{base}impl E {{ let d: S<W = 8, Z = 3> = {{ .a = a, .y = y }}; }}\n"
         ));
@@ -1448,7 +1448,7 @@ mod tests {
     #[test]
     fn extern_entity_is_a_black_box() {
         let src = "module m;\n\
-            extern entity Ram<W: integer> { in addr: unsigned[W]; out data: unsigned[8]; }\n\
+            extern entity Ram<W: integer> { addr: unsigned[W] in, data: unsigned[8] out }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\

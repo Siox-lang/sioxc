@@ -111,9 +111,9 @@ fn native_range_checks_each_clock_settle() {
         &source,
         "module transient_range;
          entity PulseRange {
-             in clk: Bit;
-             in bad: integer<0..3>;
-             out n: integer<0..1>;
+             clk: Bit in,
+             bad: integer<0..3> in,
+             n: integer<0..1> out
          }
          impl PulseRange {
              let value: integer<0..1> = 0;
@@ -172,8 +172,8 @@ fn native_range_checks_external_stimulus_before_truncation() {
         &source,
         "module input_range;
          entity InputRange {
-             in x: integer<0..1>;
-             out y: integer<0..1>;
+             x: integer<0..1> in,
+             y: integer<0..1> out
          }
          impl InputRange { y = x; }
          #[test] entity RangeTest {}
@@ -231,9 +231,9 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          using std::bits::unsigned;
          enum State { Idle, Run }
          entity Values {
-             out scalar: Logic;
-             out bus: unsigned[4];
-             out state: State;
+             scalar: Logic out,
+             bus: unsigned[4] out,
+             state: State out
          }
          impl Values {
              scalar = 'Z';
@@ -302,7 +302,7 @@ fn nominal_time_and_real_frequency_run_natively() {
     std::fs::write(
         &source,
         "module units;
-         entity Units { out t: time; out f: frequency; }
+         entity Units { t: time out, f: frequency out }
          impl Units { t = 2ns; f = 2.5MHz; }
          #[test] entity UnitTest {}
          impl UnitTest {
@@ -351,7 +351,7 @@ fn extreme_layouts_fail_cleanly_instead_of_panicking() {
         &source,
         "module extreme_range;
          #[top] entity E {
-             out y: Logic[-9223372036854775807..9223372036854775807];
+             y: Logic[-9223372036854775807..9223372036854775807] out,
          }
          impl E {}",
     )
@@ -369,7 +369,7 @@ fn extreme_layouts_fail_cleanly_instead_of_panicking() {
     std::fs::write(
         &source,
         "module extreme_width;
-         #[top] entity E { out y: unsigned[4294967295]; }
+         #[top] entity E { y: unsigned[4294967295] out, }
          impl E { y = 0; }",
     )
     .unwrap();
@@ -496,7 +496,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              impl RealBox {{
                  fn half(self) -> real {{ return self.value / 2.0; }}
              }}
-             entity SignedSource {{ out value: integer<-10..10>; }}
+             entity SignedSource {{ value: integer<-10..10> out, }}
              impl SignedSource {{ value = -3; }}
              #[test] entity T {{}}
              impl T {{

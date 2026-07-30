@@ -4,12 +4,12 @@ using std::ops::{Operator};
 
 pub enum Flag {
     Off,
-    On,
+    On
 }
 
 pub enum Other {
     No,
-    Yes,
+    Yes
 }
 
 #[precedence = 45]
@@ -37,13 +37,13 @@ impl Operator<"^^", Flag, Bool> for Flag {
 }
 
 entity OperatorDut {
-    in a: unsigned[4];
-    in b: unsigned[4];
-    out xor_y: unsigned[4];
-    out nand_y: unsigned[4];
-    out nor_y: unsigned[4];
-    out xnor_y: unsigned[4];
-    out not_y: unsigned[4];
+    a: unsigned[4] in,
+    b: unsigned[4] in,
+    xor_y: unsigned[4] out,
+    nand_y: unsigned[4] out,
+    nor_y: unsigned[4] out,
+    xnor_y: unsigned[4] out,
+    not_y: unsigned[4] out
 }
 
 impl OperatorDut {

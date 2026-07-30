@@ -4,7 +4,7 @@ module std::math;
 // are the kernel base type `real` (f64 in simulation).
 pub struct Complex {
     re: real,
-    im: real,
+    im: real
 }
 
 impl Operator<"+", Complex, Complex> for Complex {

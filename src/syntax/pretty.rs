@@ -121,8 +121,9 @@ impl Printer {
             params(&s.params)
         ));
         self.indent += 1;
-        for f in &s.fields {
-            self.line(&format!("{}: {},", f.name.text, type_str(&f.ty)));
+        for (i, f) in s.fields.iter().enumerate() {
+            let sep = sep(i, s.fields.len());
+            self.line(&format!("{}: {}{sep}", f.name.text, type_str(&f.ty)));
         }
         self.indent -= 1;
         self.line("}");
@@ -138,8 +139,9 @@ impl Printer {
             target
         ));
         self.indent += 1;
-        for f in &v.fields {
-            self.line(&format!("{} {};", dir_str(f.dir), f.name.text));
+        for (i, f) in v.fields.iter().enumerate() {
+            let sep = sep(i, v.fields.len());
+            self.line(&format!("{} {}{sep}", f.name.text, dir_str(f.dir)));
         }
         self.indent -= 1;
         self.line("}");
@@ -154,10 +156,11 @@ impl Printer {
         }
         self.line(&format!("{kw}enum {} {{", e.name.text));
         self.indent += 1;
-        for v in &e.variants {
+        for (i, v) in e.variants.iter().enumerate() {
+            let sep = sep(i, e.variants.len());
             match &v.value {
-                Some(val) => self.line(&format!("{} = {},", v.name.text, expr(val))),
-                None => self.line(&format!("{},", v.name.text)),
+                Some(val) => self.line(&format!("{} = {}{sep}", v.name.text, expr(val))),
+                None => self.line(&format!("{}{sep}", v.name.text)),
             }
         }
         self.indent -= 1;
@@ -176,12 +179,18 @@ impl Printer {
         head.push_str(&format!("entity {}{} {{", e.name.text, params(&e.params)));
         self.line(&head);
         self.indent += 1;
-        for port in &e.ports {
+        for (i, port) in e.ports.iter().enumerate() {
+            // `name: Type direction` — a port reads like a struct field.
             let dir = match port.dir {
-                Some(d) => format!("{} ", dir_str(d)),
+                Some(d) => format!(" {}", dir_str(d)),
                 None => String::new(),
             };
-            self.line(&format!("{dir}{}: {};", port.name.text, type_str(&port.ty)));
+            let sep = sep(i, e.ports.len());
+            self.line(&format!(
+                "{}: {}{dir}{sep}",
+                port.name.text,
+                type_str(&port.ty)
+            ));
         }
         self.indent -= 1;
         self.line("}");
@@ -382,6 +391,17 @@ fn pub_kw(is_pub: bool) -> &'static str {
     }
 }
 
+/// The comma between two members of a brace-delimited list. Commas separate
+/// rather than terminate, so the last member of a struct, view, enum, or
+/// entity body carries none.
+fn sep(i: usize, len: usize) -> &'static str {
+    if i + 1 == len {
+        ""
+    } else {
+        ","
+    }
+}
+
 fn dir_str(d: Direction) -> &'static str {
     match d {
         Direction::In => "in",
@@ -492,7 +512,8 @@ pub fn type_str(t: &Type) -> String {
             let inner = args.iter().map(generic_arg).collect::<Vec<_>>().join(", ");
             format!("{}<{inner}>", type_str(base))
         }
-        Type::View { view, target, .. } => format!("{} {}", path(view), type_str(target)),
+        // `Stream Source`: the backing type leads, the view follows it.
+        Type::View { view, target, .. } => format!("{} {}", type_str(target), path(view)),
     }
 }
 
@@ -777,8 +798,8 @@ mod tests {
             "module std::text;\n\
              pub using string = Char[];\n\
              entity E {\n\
-               in s: string[5];\n\
-               in c: Char;\n\
+               s: string[5] in,\n\
+               c: Char in,\n\
              }\n",
         );
     }
@@ -803,7 +824,7 @@ mod tests {
     fn roundtrips_suffix_and_bitstring_literals() {
         roundtrip(
             "module m;\n\
-             entity E { out y: unsigned[8]; }\n\
+             entity E { y: unsigned[8] out }\n\
              impl E {\n\
                let t = 10ns;\n\
                let f = 100MHz;\n\
@@ -827,7 +848,7 @@ mod tests {
     fn roundtrips_concat_and_nameless_struct_literal() {
         roundtrip(
             "module m;\n\
-             entity E { out y: unsigned[8]; }\n\
+             entity E { y: unsigned[8] out }\n\
              impl E {\n\
                let p: Packet = { .valid = '1', .data = 5 };\n\
                y = {a, b, c};\n\
@@ -846,9 +867,9 @@ mod tests {
              enum State {  Idle = 0, Start = 1, Done = 2 }\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Bit;\n\
-               bus: Source Stream<unsigned[32]>;\n\
-               out count: unsigned[W];\n\
+               clk: Bit in,\n\
+               bus: Stream<unsigned[32]> Source,\n\
+               count: unsigned[W] out,\n\
              }\n\
              impl Counter<W: integer> {\n\
                const MAX: unsigned[W] = (1 << W) - 1;\n\

@@ -1298,7 +1298,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing std::lib::{Used, Dead};\nentity E { in a: Used; }\n",
+            "module m;\nusing std::lib::{Used, Dead};\nentity E { a: Used in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -1327,7 +1327,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing a::{Secret, Public};\nentity E { in s: Secret; in p: Public; }\n",
+            "module m;\nusing a::{Secret, Public};\nentity E { s: Secret in, p: Public in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -1358,7 +1358,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nentity E { in s: a::Secret; in p: a::Public; }\n",
+            "module m;\nentity E { s: a::Secret in, p: a::Public in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -1378,7 +1378,7 @@ mod tests {
             crate::syntax::parse_module(FileId(0), "module a;\npub using Word = Bit;\n", &mut sink);
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing a::Word;\nentity E { in w: Word; }\n",
+            "module m;\nusing a::Word;\nentity E { w: Word in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -1414,7 +1414,7 @@ mod tests {
     fn declaration_params_merge_uses_from_impls() {
         let sink = diagnostics(
             "module m;\n\
-             entity E<T, U> { out value: T; }\n\
+             entity E<T, U> { value: T out }\n\
              impl E<T, U> { let cached: T; }\n\
              struct Pair<A, B> { first: A }\n\
              trait Convert<X, Y> { fn apply(self, value: X) -> X; }\n",
@@ -1504,21 +1504,21 @@ mod tests {
         let (_, errs) = resolve_src("module m;\nstruct P { x: Bit, x: Bit }\n");
         assert_eq!(errs, 1, "duplicate struct field");
 
-        let (_, errs) = resolve_src("module m;\nentity E { in a: Bit; in a: Bit; out y: Bit; }\n");
+        let (_, errs) = resolve_src("module m;\nentity E { a: Bit in, a: Bit in, y: Bit out, }\n");
         assert_eq!(errs, 1, "duplicate port");
 
         // Distinct members, and the same name in *different* declarations, are
         // both fine.
         let (_, errs) = resolve_src(
             "module m;\nenum S { A, B }\nenum T { A, B }\nstruct P { x: Bit, y: Bit }\n\
-             entity E { in a: Bit; out y: Bit; }\n",
+             entity E { a: Bit in, y: Bit out }\n",
         );
         assert_eq!(errs, 0);
     }
 
     #[test]
     fn unknown_type_suggests_a_close_name() {
-        let sink = diagnostics("module m;\nstruct Packet { a: Bit }\nentity E { out y: Packe; }\n");
+        let sink = diagnostics("module m;\nstruct Packet { a: Bit }\nentity E { y: Packe out, }\n");
         let d = sink
             .diagnostics()
             .iter()
@@ -1553,9 +1553,9 @@ mod tests {
              struct unsigned(Logic[]);\n\
              #[top]\n\
              entity Counter<W: integer> {\n\
-               in clk: Bit;\n\
-               in rst: Logic;\n\
-               out count: unsigned[W];\n\
+               clk: Bit in,\n\
+               rst: Logic in,\n\
+               count: unsigned[W] out,\n\
              }\n\
              impl Counter<W: integer> {\n\
                let value: unsigned[W] = 0;\n\
@@ -1570,7 +1570,7 @@ mod tests {
 
     #[test]
     fn unknown_type_is_reported() {
-        let (_, errors) = resolve_src("module m;\nentity E { out y: Bogus; }\n");
+        let (_, errors) = resolve_src("module m;\nentity E { y: Bogus out, }\n");
         assert_eq!(errors, 1);
     }
 
@@ -1602,11 +1602,11 @@ mod tests {
 
     #[test]
     fn undeclared_attribute_is_reported_but_declared_is_ok() {
-        let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { out y: Bit; }\n");
+        let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { y: Bit out, }\n");
         assert_eq!(errors, 1);
 
         let (_, errors) = resolve_src(
-            "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { out y: Bit; }\n",
+            "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { y: Bit out, }\n",
         );
         assert_eq!(errors, 0);
     }

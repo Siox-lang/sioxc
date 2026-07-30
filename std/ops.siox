@@ -34,7 +34,7 @@ pub trait Suffix<char: string, T> {
 // object's declared bounds before dispatch.
 pub struct Range {
     left: integer,
-    right: integer,
+    right: integer
 }
 
 // `value[index]` falls back to Index when `value` is not an intrinsic packed
@@ -164,7 +164,7 @@ impl Operator<"xnor", Bit, Bit> for Bit {
 pub enum Ordering {
     Less,
     Equal,
-    Greater,
+    Greater
 }
 
 pub trait Boolean {

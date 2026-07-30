@@ -23,7 +23,7 @@ module std::logic;
 // Two-valued scalar (VHDL `bit`).
 pub enum Bit {
     '0',
-    '1',
+    '1'
 }
 
 // Nine-valued scalar (VHDL `std_ulogic`, IEEE 1076-2019 / std_logic_1164): the
@@ -47,7 +47,7 @@ pub enum ULogic {
     'W',
     'L',
     'H',
-    '-',
+    '-'
 }
 
 // `Bit` is a subset of `ULogic`'s value domain, so widening is total — but the
@@ -70,7 +70,7 @@ pub enum Logic(ULogic);
 // Condition results and metadata values (VHDL `boolean`).
 pub enum Bool {
     false,
-    true,
+    true
 }
 
 // There is no dedicated clock type: any `Logic` (or `Bit`) signal is a clock

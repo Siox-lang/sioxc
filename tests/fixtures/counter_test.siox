@@ -4,10 +4,10 @@ using std::logic::{Bit, Logic};
 using std::bits::unsigned;
 
 entity Counter<W: integer> {
-    in clk: Bit;
-    in rst: Logic;
-    in en: Bit;
-    out count: unsigned[W];
+    clk: Bit in,
+    rst: Logic in,
+    en: Bit in,
+    count: unsigned[W] out
 }
 
 impl Counter<W: integer> {

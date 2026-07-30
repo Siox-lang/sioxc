@@ -108,7 +108,7 @@ pub struct StructDecl {
     pub span: Span,
 }
 
-/// `view Source<T> for Stream<T> { out valid; in ready; }`.
+/// `view Source<T> for Stream<T> { valid out, ready in, }`.
 ///
 /// A view is a named, storage-free directional projection of a struct. It is
 /// a nominal type for method/trait lookup and reuses its target's fields and
@@ -158,7 +158,7 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-/// `entity Counter<W: integer> { in clk: Bit; out count: unsigned[W]; }`.
+/// `entity Counter<W: integer> { clk: Bit in, count: unsigned[W] out, }`.
 ///
 /// Entity bodies are interface-only (spec 3.1): ports and bus/interface
 /// fields, never state or behavior.

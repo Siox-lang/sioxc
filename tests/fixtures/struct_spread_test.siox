@@ -6,7 +6,7 @@ using std::bits::unsigned;
 
 struct Pkt { a: unsigned[8], b: unsigned[8], c: unsigned[8] }
 
-entity Bump { in inp: Pkt; out outp: Pkt; }
+entity Bump { inp: Pkt in, outp: Pkt out }
 impl Bump {
     outp = { ..inp, .b = 99 };   // a,c from inp; b forced to 99
 }

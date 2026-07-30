@@ -411,17 +411,20 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let fstart = self.span();
-            let Some(dir) = self.eat_direction() else {
-                self.error_here("expected `in`, `out`, or `inout` in a view");
-                self.bump();
-                continue;
-            };
+            // `name direction` — the name leads, as everywhere else.
             let name = self.parse_ident();
             if self.eat(TokenKind::Colon) {
                 self.error_here("view fields inherit their types from the backing struct");
                 let _ = self.parse_type();
             }
-            self.expect(TokenKind::Semi, "after a view field");
+            let Some(dir) = self.eat_direction() else {
+                self.error_here("expected `in`, `out`, or `inout` after a view field name");
+                self.bump();
+                continue;
+            };
+            if !self.at(TokenKind::RBrace) {
+                self.expect(TokenKind::Comma, "after a view field");
+            }
             fields.push(ViewField {
                 dir,
                 name,
@@ -543,13 +546,16 @@ impl<'a> Parser<'a> {
     /// earlier (`in a Bit;`), so the caller must not then skip the next port.
     fn parse_port(&mut self) -> (Port, bool) {
         let start = self.span();
-        // A leading direction keyword is the port direction (`in clk: Bit`).
-        // Otherwise direction comes from the type's bus mode (`bus: in Packet`).
-        let dir = self.eat_direction();
+        // `name: Type direction` — a port reads like a struct field, with the
+        // slot after the type holding either a direction (`clk: Bit in`) or a
+        // view (`bus: Stream Source`, consumed by `parse_type`).
         let name = self.parse_ident();
         self.expect(TokenKind::Colon, "before a port type");
         let ty = self.parse_type();
-        let terminated = self.expect(TokenKind::Semi, "after a port");
+        let dir = self.eat_direction();
+        // A trailing comma on the last port is optional, as in a struct.
+        let terminated =
+            self.at(TokenKind::RBrace) || self.expect(TokenKind::Comma, "after a port");
         let port = Port {
             dir,
             name,
@@ -560,10 +566,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Panic-mode recovery inside an entity body: consume through the next
-    /// `;` so the following port is parsed from a clean start.
+    /// `,` so the following port is parsed from a clean start.
     fn recover_to_port_boundary(&mut self) {
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            if self.eat(TokenKind::Semi) {
+            if self.eat(TokenKind::Comma) {
                 return;
             }
             self.bump();
@@ -638,19 +644,20 @@ impl<'a> Parser<'a> {
                 span: head_span,
             };
         }
-        // A view applied to its backing struct: `impl Source Stream<T>`.
+        // A view applied to its backing struct: `impl Stream<T> Source`. The
+        // backing type leads and the view follows, as in a port's type slot.
         if !self.at(TokenKind::LBrace) {
-            let view = match target {
+            let backing = target;
+            let view = match self.parse_type_core() {
                 Type::Path(p) => p,
                 _ => {
-                    self.error_here("a view name before its backing type cannot have arguments");
+                    self.error_here("a view name after its backing type cannot have arguments");
                     Path {
                         segments: Vec::new(),
                         span: head_span,
                     }
                 }
             };
-            let backing = self.parse_type_core();
             target = Type::View {
                 view,
                 target: Box::new(backing),
@@ -1761,19 +1768,22 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> Type {
         let start = self.span();
         let first = self.parse_type_core();
-        // Two adjacent type names form an applied view: `Source Stream<T>`.
+        // Two adjacent type names form an applied view: `Stream<T> Source`.
+        // The backing type comes first and the view follows it, matching a
+        // port's `name: Type direction` shape — the slot after the type holds
+        // either a direction or a view.
         if matches!(self.kind(), TokenKind::Ident) && self.cur_text() != "where" {
-            let view = match first {
+            let view_ty = self.parse_type_core();
+            let view = match view_ty {
                 Type::Path(p) => p,
                 _ => {
-                    self.error_here("a view name before its backing type cannot have arguments");
+                    self.error_here("a view name after its backing type cannot have arguments");
                     return first;
                 }
             };
-            let target = self.parse_type_core();
             return Type::View {
                 view,
-                target: Box::new(target),
+                target: Box::new(first),
                 span: start.to(self.prev_span()),
             };
         }
@@ -2239,7 +2249,7 @@ mod tests {
     /// body ran out (14 errors for one mistake). Recovery skips to the `;`.
     #[test]
     fn malformed_port_reports_once() {
-        let (_, errors) = parse("module m;\nentity E { in a: Bit; y = 1; }\n");
+        let (_, errors) = parse("module m;\nentity E { a: Bit in, y = 1; }\n");
         assert!(errors <= 3, "one bad port should not cascade, got {errors}");
     }
 
@@ -2247,7 +2257,7 @@ mod tests {
     /// `;` is a clean boundary, so the ports after it still parse.
     #[test]
     fn recovery_keeps_the_ports_after_a_bad_one() {
-        let (m, _) = parse("module m;\nentity E { in a Bit; in b: Bit; out c: Bit; }\n");
+        let (m, _) = parse("module m;\nentity E { a Bit in, b: Bit in, c: Bit out, }\n");
         let Some(Item::Entity(e)) = m.items.first() else {
             panic!("expected an entity")
         };
@@ -2269,7 +2279,7 @@ mod tests {
     #[test]
     fn entity_with_params_and_ports() {
         let m = parse_ok(
-            "module m;\nentity Counter<W: integer> {\n  in clk: Bit;\n  in rst: Logic;\n  in en: Bit;\n  out count: unsigned[W];\n}\n",
+            "module m;\nentity Counter<W: integer> {\n  clk: Bit in,\n  rst: Logic in,\n  en: Bit in,\n  count: unsigned[W] out,\n}\n",
         );
         let Item::Entity(e) = &m.items[0] else {
             panic!("expected entity")
@@ -2400,15 +2410,19 @@ mod tests {
     #[test]
     fn expected_token_is_named_in_source_spelling() {
         let mut sink = DiagnosticSink::new();
-        crate::syntax::parse_module(FileId(0), "module m;\nentity E { in a: Bit\n}\n", &mut sink);
+        crate::syntax::parse_module(
+            FileId(0),
+            "module m;\nentity E { a: Bit in\nb: Bit in,\n}\n",
+            &mut sink,
+        );
         let msgs: Vec<_> = sink
             .diagnostics()
             .iter()
             .map(|d| d.message.clone())
             .collect();
         assert!(
-            msgs.iter().any(|m| m.contains("`;`")),
-            "want a `;` spelling, got {msgs:?}"
+            msgs.iter().any(|m| m.contains("`,`")),
+            "want a `,` spelling, got {msgs:?}"
         );
         assert!(
             !msgs.iter().any(|m| m.contains("Semi")),
@@ -2476,7 +2490,7 @@ mod tests {
     #[test]
     fn bus_modes_and_construction() {
         let m = parse_ok(
-            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  in clk;\n  out valid;\n  in ready;\n  out data;\n}\nimpl Source Stream<T> { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Source Stream<unsigned[32]>;\n}\n",
+            "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
         );
         let Item::View(v) = &m.items[1] else {
             panic!("expected view")
@@ -2494,7 +2508,7 @@ mod tests {
     fn direction_keywords_cannot_be_view_names() {
         for name in ["in", "out", "inout"] {
             let src = format!(
-                "module m;\nstruct Bus {{ bit: Bit }}\nview {name} for Bus {{ in bit; }}\n"
+                "module m;\nstruct Bus {{ bit: Bit }}\nview {name} for Bus {{ bit in, }}\n"
             );
             let (_, errors) = parse(&src);
             assert!(
@@ -2644,7 +2658,7 @@ mod tests {
     #[test]
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
-            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  out y: Bit;\n}\nextern entity BlackBox<W: integer> {\n  in a: unsigned[W];\n  out b: unsigned[W];\n}\n",
+            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
         );
         let Item::AttrDecl(a) = &m.items[0] else {
             panic!("expected attr decl")
@@ -2689,7 +2703,7 @@ mod tests {
 
     #[test]
     fn recovers_after_a_bad_item() {
-        let (m, errors) = parse("module m;\n@@@ junk\nentity Good { out y: Bit; }\n");
+        let (m, errors) = parse("module m;\n@@@ junk\nentity Good { y: Bit out, }\n");
         assert!(errors > 0);
         // The good entity after the junk still parses.
         assert!(m

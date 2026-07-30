@@ -11,5 +11,5 @@ pub enum Severity {
     Note,
     Warning,
     Error,
-    Failure,
+    Failure
 }
