@@ -1529,6 +1529,13 @@ impl Ctx<'_> {
                 .borrow_mut()
                 .insert(name.clone(), head.to_string());
         }
+        // The file is read here, at build time, so the element count is known
+        // — but it was only ever spent laying out storage and then dropped, so
+        // `'length` on the local had nothing to consult and failed as "not
+        // known at compile time" for a length this function had in hand.
+        self.local_indices
+            .borrow_mut()
+            .insert(name.clone(), (0..codes.len() as i64).collect());
         for (i, &code) in codes.iter().enumerate() {
             let key = format!("{name}[{i}]");
             if !bytes {
@@ -4391,7 +4398,7 @@ impl Ctx<'_> {
             // array's element count, or a name's bit width (they coincide for a
             // flat vector) — VHDL `'length`.
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
-                let path = expr_path(base).ok_or("::length needs a named base")?;
+                let path = expr_path(base).ok_or("`'length` needs a named base")?;
                 if let Some(v) = self
                     .fn_env
                     .borrow()
@@ -4403,7 +4410,17 @@ impl Ctx<'_> {
                 if let Some(n) = self.array_len(&path) {
                     return Ok(format!("{n}ULL"));
                 }
-                format!("{}ULL", self.name_width(&path).ok_or("unknown ::length")?)
+                // Neither a declared width nor an element count. The message
+                // named neither the value nor the attribute, and spelled the
+                // attribute with the internal `::` key rather than the `'`
+                // the language uses.
+                format!(
+                    "{}ULL",
+                    self.name_width(&path).ok_or_else(|| format!(
+                        "`{path}'length` is not known here: `{path}` has no declared \
+                         width and no element count in the testbench"
+                    ))?
+                )
             }
             // Range bounds (VHDL `'left`/`'right`/`'high`/`'low`/`'ascending`).
             // A name reads as ascending `0..width-1`; hardware bounds are

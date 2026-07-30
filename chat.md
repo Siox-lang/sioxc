@@ -2027,3 +2027,43 @@ than no test: `SIOXC_FEATURES=no_such_feature` fails the whole corpus (so
 the variable is really reaching cargo), and the same substitution inside
 `ci-local.sh` fails there too (so it survives the `step` wrapper). Both
 restored afterwards.
+
+## 2026-07-30 (cont.) — a length computed, used, and thrown away
+
+Probing file I/O. `read_to_string` and `exists` work; the import diagnostic
+for `using std::fs::{read_to_string}` is genuinely good ("`std::fs` functions
+are runtime-provided: call `read_to_string(..)` directly"). Then `s'length`
+on a file-read string:
+
+    sioxc --test: unknown ::length
+
+No name, no span, and it spells the attribute with the internal `::` env key
+rather than the `'` the language has used since the sigil split. Two of those
+messages existed; every other `::` in that file is a real env key and
+correctly left alone.
+
+Rewriting the message is where it got interesting. I wrote a helpful hint —
+"bind it to a sized local first" — then tested that advice and it failed the
+same way: `let sized: Char[4] = read_to_string("f")` also had no length. So
+the hint was wrong, which sent me to look at why rather than at the wording.
+
+`try_declare_fs_read_local` reads the file **at build time** — its own doc
+comment says so — and lays out one C local per element. It has `codes.len()`
+in hand. It records `local_types` for formatting, and never records the
+element count, so `array_len` had nothing to consult and the length that
+function had just computed was reported as "not known at compile time". One
+line to record it.
+
+The lesson is the same shape as the exhaustive-match one earlier: the first
+fix I reached for was to the message, and the message was only wrong because
+the thing it described was wrong. Writing the hint, and then *testing the
+hint*, is what surfaced it.
+
+`fs_test.siox` now asserts the length, so the path is covered.
+
+**Still open** (logged, not decided): `let sized: Char[4] = read_to_string(f)`
+on a 10-character file silently stores 10 elements and reports `'length` as
+10, ignoring the declared `Char[4]`. Under the strict assignment-width rule
+that should be an error, or a truncation — but the entity path
+(`let mem: unsigned[8][4] = read("rom.bin")`, the corpus idiom) may already
+truncate, and picking one is a semantics decision rather than a fix.
