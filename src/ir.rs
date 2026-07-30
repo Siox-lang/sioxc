@@ -314,6 +314,7 @@ pub fn lower_in(
         l.lower_entity(name);
     }
     l.report_depth_exceeded();
+    l.report_unresolved_names();
     l.lint_possible_latches();
     l.resolve_driver_contexts();
     l.propagate_metavalues();
@@ -386,6 +387,13 @@ struct Lowering<'a> {
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
     depth_exceeded: std::cell::RefCell<Vec<String>>,
+    /// Value names that resolved to nothing while lowering. Name
+    /// resolution deliberately leaves plain value identifiers to later
+    /// stages, and this is the stage that knows every signal, constant
+    /// and parameter — so an unmatched name here is a genuine typo. It
+    /// used to become a silent `Unknown`, which `check` reported as ok
+    /// and a build reported as "driver 0 contains an Unknown".
+    unresolved_names: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
     /// The receiver signal bound to `self` while inlining a method body, so a
     /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
@@ -532,6 +540,7 @@ impl<'a> Lowering<'a> {
             inline_depth: std::cell::Cell::new(0),
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
+            unresolved_names: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             param_widths: std::cell::RefCell::new(HashMap::new()),
@@ -1660,6 +1669,28 @@ impl<'a> Lowering<'a> {
                 ))
                 .with_code(crate::diag::codes::POSSIBLE_LATCH)
                 .help("give it an unconditional default assignment"),
+            );
+        }
+    }
+
+    /// Report value names that matched no signal, constant or parameter.
+    /// Resolution leaves plain value identifiers alone by design, so this is
+    /// the first stage with the whole picture — and it used to drop them into
+    /// an `Unknown` that made `check` pass and a build fail with a driver
+    /// index instead of the name.
+    fn report_unresolved_names(&mut self) {
+        let mut names = std::mem::take(&mut *self.unresolved_names.borrow_mut());
+        names.sort_by_key(|(name, span)| (span.start, name.clone()));
+        names.dedup();
+        for (name, span) in names {
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!("no value named `{name}` is in scope"))
+                    .with_code(crate::diag::codes::UNKNOWN_NAME)
+                    .at(span)
+                    .help(
+                        "a value has to be a port, a `let` signal or local, a \
+                         constant, or a parameter of the enclosing entity",
+                    ),
             );
         }
     }
@@ -3625,6 +3656,12 @@ impl<'a> Lowering<'a> {
                 if let Some(&f) = self.consts_real.get(name) {
                     return Expr::Real(f);
                 }
+                // Nothing declares this name. Every signal, constant and
+                // in-scope parameter is known here, so record it rather than
+                // lowering to a silent `Unknown` that `check` called ok.
+                self.unresolved_names
+                    .borrow_mut()
+                    .push((name.clone(), p.span));
                 Expr::Unknown
             }
             // `Enum::Variant` lowers to its discriminant constant.

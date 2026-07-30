@@ -1763,3 +1763,42 @@ root cause: there is no expression -> type map, so every stage that needs a
 type re-derives it from shape, and each copy learns a different subset of
 shapes. Populating `Typed` with a real map would delete all four functions.
 Until then, every new `Expr` variant is a latent bug in four places.
+
+## 2026-07-30 (cont.) — `check ok` on a name that does not exist
+
+A probe of mine accidentally referenced an out-of-scope name, and the
+compiler said `check ok`. That is worth more than the probe was.
+
+`resolve.rs` documents the split: type references, enum-variant paths and
+attribute names resolve strictly, while "plain value identifiers (signals,
+ports, locals) are resolved best-effort and never produce a false 'unknown
+name' — full value/port/field scoping lands with type checking." The
+deferral is deliberate and sound. What never landed is the other half: type
+checking does not do it either. So a plain typo passed every stage.
+
+It surfaced instead as `driver 0 expr: contains an Unknown (unlowered)
+expression` — no name, no span, no line — and only on a build, never on
+`check`, which is precisely the command you run to find this class of
+mistake.
+
+The fix is where the information is, not where the symptom is. IR lowering
+knows every signal, constant and in-scope parameter; when a single-segment
+path matches none of them, that is a typo and nothing else. It now records
+the name and span and reports `E-P001` — mirroring the existing
+`depth_exceeded` mechanism, since lowering runs behind `&self`. `check`
+elaborates and lowers already, so it now catches these.
+
+The testbench half had its own version: the native emitter reported an
+unknown name through `unsup`, whose wording is "which siox build cannot
+translate yet". A reader with a typo was told to wait for a compiler
+feature. Undeclared names now get their own message; `unsup` keeps the cases
+that really are gaps (`v[0]` on a testbench local is one).
+
+Validated against the 101-file corpus and std: no false positives, which is
+the check that matters for a new "this name does not exist" error.
+
+**Still open**: an entity that is never instantiated is never lowered, so
+its bodies are never checked at all. `entity Pick { .. } impl Pick { y =
+nonexistent; }` alone in a file still reports `check ok`. Reaching it means
+either elaborating uninstantiated entities speculatively or doing the value
+scoping in `types.rs` as the resolve comment intended.

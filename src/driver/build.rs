@@ -4402,7 +4402,12 @@ impl Ctx<'_> {
                 } else if let Some(value) = self.const_exprs.get(&p.segments[0].text) {
                     value.clone()
                 } else {
-                    return Err(unsup(&p.segments[0].text));
+                    // Every binder has been consulted by now — a function
+                    // parameter, a testbench local, a connected signal, a
+                    // constant — so the name simply does not exist. Saying
+                    // "cannot translate yet" here blamed the compiler for
+                    // the reader's typo.
+                    return Err(unknown_value(&p.segments[0].text));
                 }
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
@@ -4411,7 +4416,12 @@ impl Ctx<'_> {
                     .enums
                     .get(&p.segments[0].text)
                     .and_then(|m| m.get(&p.segments[1].text))
-                    .ok_or_else(|| unsup(&p.segments[1].text))?;
+                    .ok_or_else(|| {
+                        format!(
+                            "`{}` is not a variant of `{}`",
+                            p.segments[1].text, p.segments[0].text
+                        )
+                    })?;
                 format!("{d}ULL")
             }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
@@ -4563,8 +4573,19 @@ impl Ctx<'_> {
     }
 }
 
+/// A form the emitter has no translation for — a real gap in the tool.
 fn unsup(name: &str) -> String {
     format!("testbench references `{name}`, which siox build cannot translate yet")
+}
+
+/// A name nothing declares — a mistake in the source, not a gap in the tool.
+/// The two used to share `unsup`'s wording, which told a reader with a typo
+/// to go wait for a compiler feature.
+fn unknown_value(name: &str) -> String {
+    format!(
+        "no value named `{name}` is in scope: it has to be a testbench local, \
+         a connected signal, a constant, or a parameter"
+    )
 }
 
 /// Map a siox binary operator to its C spelling. Word-logical ops become
