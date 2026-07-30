@@ -4798,7 +4798,10 @@ impl<'a> Lowering<'a> {
                 // parameter, and without this it saw none.
                 let w = self.ast_width(a);
                 if w > 0 {
-                    saved_widths.push((n.text.clone(), self.param_widths.borrow_mut().insert(n.text.clone(), w)));
+                    saved_widths.push((
+                        n.text.clone(),
+                        self.param_widths.borrow_mut().insert(n.text.clone(), w),
+                    ));
                 }
             }
         }
@@ -4943,7 +4946,10 @@ impl<'a> Lowering<'a> {
                 // parameter, and without this it saw none.
                 let w = self.ast_width(a);
                 if w > 0 {
-                    saved_widths.push((n.text.clone(), self.param_widths.borrow_mut().insert(n.text.clone(), w)));
+                    saved_widths.push((
+                        n.text.clone(),
+                        self.param_widths.borrow_mut().insert(n.text.clone(), w),
+                    ));
                 }
             }
         }
@@ -8503,7 +8509,10 @@ mod tests {
              let e: E = { .s = s, .lt = lt }; }",
         );
         let text = d.to_ir_string();
-        assert!(text.contains("and 255"), "masked to the return width:\n{text}");
+        assert!(
+            text.contains("and 255"),
+            "masked to the return width:\n{text}"
+        );
     }
 
     #[test]

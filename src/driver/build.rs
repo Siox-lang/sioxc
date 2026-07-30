@@ -3532,16 +3532,11 @@ impl Ctx<'_> {
         }
         // A connected name records no local width — the signal it is wired to
         // carries it — so fall back to that rather than losing the family.
-        let width = self
-            .local_widths
-            .borrow()
-            .get(&path)
-            .copied()
-            .or_else(|| {
-                self.map
-                    .get(&path)
-                    .map(|id| self.design.signals[id.0 as usize].width)
-            })?;
+        let width = self.local_widths.borrow().get(&path).copied().or_else(|| {
+            self.map
+                .get(&path)
+                .map(|id| self.design.signals[id.0 as usize].width)
+        })?;
         (width > 0 && width <= 64).then_some(width)
     }
 

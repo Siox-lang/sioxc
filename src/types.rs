@@ -121,7 +121,14 @@ const PHASE2_ATTRS: &[&str] = &["ddt"];
 /// to pass every stage and become an `Unknown` in the IR, surfacing only as
 /// "no engine can run this design" with nothing naming the attribute.
 const SYS_ATTRS: &[&str] = &[
-    "event", "old", "length", "high", "low", "left", "right", "ascending",
+    "event",
+    "old",
+    "length",
+    "high",
+    "low",
+    "left",
+    "right",
+    "ascending",
 ];
 
 /// A port as seen by the checker: its name, resolved type, and direction.
@@ -333,9 +340,10 @@ impl<'a> Checker<'a> {
                             range: self.declared_range(&p.ty),
                         })
                         .collect();
-                    if e.attrs.iter().any(|a| {
-                        a.name.segments.last().map(|s| s.text.as_str()) == Some("test")
-                    }) {
+                    if e.attrs
+                        .iter()
+                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("test"))
+                    {
                         self.test_entities.insert(e.name.text.clone());
                     }
                     self.entities.insert(e.name.text.clone(), ports);
@@ -1341,9 +1349,9 @@ impl<'a> Checker<'a> {
     fn check_impl(&mut self, im: &ImplDecl) {
         // Stimulus primitives are meaningful in a testbench; in an entity body
         // lowering dropped them without a word.
-        let saved_tb = self.in_testbench.replace(
-            type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)),
-        );
+        let saved_tb = self
+            .in_testbench
+            .replace(type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)));
         self.check_impl_inner(im);
         self.in_testbench.set(saved_tb);
     }
@@ -2371,7 +2379,10 @@ impl<'a> Checker<'a> {
                     self.ty_display(&got),
                     self.ty_display(&want)
                 ),
-                format!("wrap it in a conversion, e.g. `{}(...)`", self.ty_display(&want)),
+                format!(
+                    "wrap it in a conversion, e.g. `{}(...)`",
+                    self.ty_display(&want)
+                ),
             );
         }
     }
@@ -5152,9 +5163,8 @@ mod tests {
     /// return from. It stays legal inside a function.
     #[test]
     fn return_outside_a_function_is_reported() {
-        let hw = check_src(
-            "module m;\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; return; }\n",
-        );
+        let hw =
+            check_src("module m;\nentity E { out y: unsigned[8]; }\nimpl E { y = 1; return; }\n");
         assert_eq!(hw, 1, "hardware statement position");
         let free_fn = check_src(
             "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { return x + 1; }\n\
@@ -5185,7 +5195,11 @@ mod tests {
             ))
         };
         assert_eq!(hw("await 1ns;"), 1, "await needs simulation time");
-        assert_eq!(hw(r#"assert!(y == 1, "x");"#), 1, "an assertion needs a run");
+        assert_eq!(
+            hw(r#"assert!(y == 1, "x");"#),
+            1,
+            "an assertion needs a run"
+        );
         assert_eq!(hw(r#"print!("hi");"#), 1, "printing needs a run");
         assert_eq!(hw(""), 0, "plain hardware is unaffected");
 
