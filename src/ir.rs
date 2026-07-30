@@ -5141,6 +5141,17 @@ impl<'a> Lowering<'a> {
     /// enum, or `integer` for a bare numeric literal.
     fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
         match e {
+            // A branch-valued expression is whatever its branches are; the
+            // checker has already made them agree. Without this an `if`/`match`
+            // over `signed` values had no family and compared unsigned, while
+            // a struct field or a conversion in the same position did not.
+            ast::Expr::IfExpr { then, els, .. } => self
+                .operand_type_name(then)
+                .or_else(|| self.operand_type_name(els)),
+            ast::Expr::Match { arms, .. } => arms
+                .iter()
+                .filter_map(|a| a.value_expr())
+                .find_map(|v| self.operand_type_name(v)),
             ast::Expr::Int { .. } => Some("integer".to_string()),
             ast::Expr::SuffixLit { suffix, .. } => self
                 .suffix_impls
