@@ -1422,6 +1422,25 @@ impl<'a> Parser<'a> {
                 },
                 _ => match self.custom_operator_at() {
                     Some(found) => found,
+                    // Punctuation that is not core syntax can only have been
+                    // meant as an operator, so breaking here would end the
+                    // expression and report the leftovers instead of the
+                    // cause. Name it, and bind it tightest so it is always
+                    // consumed at the innermost level — one diagnostic, and
+                    // the rest of the expression still parses.
+                    None if self.at(TokenKind::CustomOp) => {
+                        let symbol = self.cur_text().to_string();
+                        self.undeclared_operator(&symbol);
+                        (
+                            BinOp::Custom {
+                                symbol,
+                                precedence: u8::MAX,
+                            },
+                            u8::MAX,
+                            u8::MAX,
+                            1,
+                        )
+                    }
                     None => break,
                 },
             };
@@ -1440,6 +1459,23 @@ impl<'a> Parser<'a> {
             };
         }
         lhs
+    }
+
+    /// Punctuation used as an operator that no `impl Operator<..>` declares.
+    /// The parser learns its operators from those impls, so an undeclared one
+    /// is indistinguishable from the end of an expression — which is why the
+    /// symbol itself has to be named here rather than left to the caller.
+    fn undeclared_operator(&mut self, symbol: &str) {
+        let span = self.span();
+        self.sink.emit(
+            Diagnostic::error(format!("no operator `{symbol}` is declared"))
+                .at(span)
+                .help(format!(
+                    "operators come from the standard library, not the grammar: \
+                     declare one with `#[precedence = N] impl Operator<\"{symbol}\", \
+                     Rhs, Output> for Lhs`"
+                )),
+        );
     }
 
     /// Longest declared custom operator beginning at the current token. This
@@ -2382,6 +2418,21 @@ mod tests {
         let diags = diagnostics("module m;\nentity E {\n  clk: Bit in;\n  q: Bit out\n}\n");
         assert_eq!(diags.len(), 1, "got {diags:#?}");
         assert!(diags[0].message.contains("`,`, not `;`"));
+    }
+
+    /// The parser learns its operators from `impl Operator<..>`, so an
+    /// undeclared one looked exactly like the end of an expression: `a % b`
+    /// reported "expected `;` after a `let`" and left the reader hunting a
+    /// punctuation error. Eleven diagnostics for one unknown symbol.
+    #[test]
+    fn an_undeclared_operator_is_named() {
+        let diags = diagnostics("module m;\nimpl E { let a: integer = 1 % 2; }\n");
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("no operator `%` is declared"));
+        assert!(diags[0]
+            .help
+            .as_ref()
+            .is_some_and(|h| h.contains("impl Operator<\"%\"")));
     }
 
     /// A stray statement in an entity body used to be retried as a fresh port

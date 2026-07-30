@@ -2299,15 +2299,32 @@ impl Ctx<'_> {
                 .iter()
                 .filter_map(|a| a.value_expr())
                 .find_map(|v| self.dispatch_operand_family(v)),
+            // Arithmetic keeps its operands' family, so `(a - b) < 0` has to
+            // dispatch the same `Ord` that `d < 0` does after `let d = a - b`.
+            // Without this the inline form fell through to an unsigned compare
+            // and a negative result tested as positive.
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => self
+                .dispatch_operand_family(lhs)
+                .or_else(|| self.dispatch_operand_family(rhs)),
             _ => {
-                let name = expr_path(e)?;
-                let family = self
-                    .local_families
-                    .borrow()
-                    .get(&name)
-                    .cloned()
-                    .or_else(|| self.local_types.borrow().get(&name).cloned())?;
-                Some((family, self.name_width(&name)))
+                // Any named value: a plain local, or a struct leaf like `p.x`
+                // (an `Expr::Field`, which a shape match misses — a connected
+                // `signed` field then compared unsigned).
+                if let Some(name) = expr_path(e) {
+                    let family = self
+                        .local_families
+                        .borrow()
+                        .get(&name)
+                        .cloned()
+                        .or_else(|| self.local_types.borrow().get(&name).cloned())?;
+                    return Some((family, self.name_width(&name)));
+                }
+                // A call has no name to look up, so its declared return type
+                // supplies both family and width; without it a call never
+                // dispatched an impl and `neg(x) < 0` compared unsigned.
+                let ret = self.call_return_type(e)?;
+                let head = type_head_name(&ret)?;
+                Some((head.to_string(), self.declared_width(&ret)))
             }
         }
     }
@@ -2319,65 +2336,12 @@ impl Ctx<'_> {
         rhs: &ast::Expr,
     ) -> Result<Option<String>, String> {
         // The family decides which operator impl runs; the width is only ever
-        // needed to bind `self'length` inside it. A call has no name to look
-        // either up by, so its declared return type supplies both — without
-        // this a call never dispatched an impl at all and `neg(x) < 0` fell
-        // back to an unsigned compare.
-        let (fam, lwidth) = match lhs {
-            // Branch-valued shapes carry their branches' family.
-            ast::Expr::IfExpr { then, els, .. } => {
-                let inner = self
-                    .dispatch_operand_family(then)
-                    .or_else(|| self.dispatch_operand_family(els));
-                match inner {
-                    Some(v) => v,
-                    None => return Ok(None),
-                }
-            }
-            ast::Expr::Match { arms, .. } => {
-                let inner = arms
-                    .iter()
-                    .filter_map(|a| a.value_expr())
-                    .find_map(|v| self.dispatch_operand_family(v));
-                match inner {
-                    Some(v) => v,
-                    None => return Ok(None),
-                }
-            }
-            // Any named value: a plain local, or a struct leaf like `p.x`
-            // (an `Expr::Field`, which this matched on shape and so missed —
-            // a connected `signed` field then compared unsigned).
-            _ if expr_path(lhs).is_some() => {
-                let name = expr_path(lhs).unwrap();
-                let family = self
-                    .local_families
-                    .borrow()
-                    .get(&name)
-                    .cloned()
-                    .or_else(|| self.local_types.borrow().get(&name).cloned());
-                match family {
-                    Some(f) => {
-                        let w = self.name_width(&name);
-                        (f, w)
-                    }
-                    None => return Ok(None),
-                }
-            }
-            ast::Expr::Call { .. } if self.conversion_target(lhs).is_some() => {
-                // A conversion names its own family and width.
-                let (fam, w) = self.conversion_target(lhs).unwrap();
-                (fam, Some(w))
-            }
-            ast::Expr::Call { .. } => {
-                let Some(ret) = self.call_return_type(lhs) else {
-                    return Ok(None);
-                };
-                let Some(head) = type_head_name(&ret) else {
-                    return Ok(None);
-                };
-                (head.to_string(), self.declared_width(&ret))
-            }
-            _ => return Ok(None),
+        // needed to bind `self'length` inside it. Both come from the one
+        // place that knows how each expression shape carries a family —
+        // asking the question here a second time is how `Expr::Field` and
+        // then `Expr::Binary` ended up answered in one and not the other.
+        let Some((fam, lwidth)) = self.dispatch_operand_family(lhs) else {
+            return Ok(None);
         };
         let op_str = siox::syntax::pretty::bin_op(op);
         // `==`/`!=`: bit equality at the type's width (mask both sides).
@@ -3496,6 +3460,15 @@ impl Ctx<'_> {
                     .iter()
                     .filter_map(|a| a.value_expr())
                     .find_map(|v| self.signed_vector_width(v));
+            }
+            // Arithmetic keeps its operands' family and width, so an unbound
+            // `a - b` renders as the signed value it is. Binding it first
+            // (`let d: signed[8] = a - b;`) printed correctly while the inline
+            // form showed the raw pattern — -9 came out as 247.
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
+                return self
+                    .signed_vector_width(lhs)
+                    .or_else(|| self.signed_vector_width(rhs));
             }
             _ => {}
         }

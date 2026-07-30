@@ -1723,3 +1723,43 @@ form parses and the corpus is migrated. The old form is still out there in
 every file the change has not touched, and it is the error message — not the
 grammar — that decides whether the change costs someone an afternoon. Probing
 the syntax you just removed is part of the change, not a follow-up.
+
+## 2026-07-30 (cont.) — a signed expression that was only signed once named
+
+Probing arithmetic with known-correct expected values turned up one wrong
+answer and, behind it, a third instance of a pattern already in this log.
+
+**`(a - b) < 0` was false for -9.** Bound first — `let d: signed[8] = a - b;
+d < 0` — it was true. Same value, same width, same operator; the only
+difference was whether the expression had a name. The comparison dispatches
+on the operand's *family*, and the function that answers "what family is
+this expression" matched on AST shape: it knew `Path`, `Field`, `IfExpr`,
+`Match`, conversions and calls, and had never been taught `Binary`. So an
+unbound arithmetic expression had no family and fell back to an unsigned
+compare. A design writing `if (a - b) < 0` took the wrong branch, silently.
+
+The same gap in the printer showed `-9` as `247`, and in the argument
+coercion passed the raw pattern into `integer` parameters.
+
+**Three copies of the same question.** `dispatch_operand_family`,
+`signed_vector_width` and `operand_type_name` each walked the same shapes to
+answer the same thing, and `c_dispatch_binop` had a *fourth*, inline copy —
+which is why `Expr::Field` was fixed in one and not the others earlier, and
+why `Expr::Binary` was missing from all four. Fixing it four times would
+have preserved the thing that caused it. `c_dispatch_binop` now delegates to
+`dispatch_operand_family` (that copy is gone, ~50 lines), and the operator
+predicate lives once on `BinOp::keeps_operand_family`.
+
+**Also fixed: an undeclared operator was a syntax error about semicolons.**
+`a % b` produced eleven diagnostics beginning "expected `;` after a `let`".
+siox has no built-in `%`; operators come from `impl Operator<"sym", ..>`, so
+an undeclared symbol is indistinguishable from the end of an expression. It
+now says `no operator `%` is declared` and shows the impl that would declare
+one. (`%` works fine once declared — the language is consistent here, the
+diagnostic was not.)
+
+**The lesson, restated.** Two of the last three bug hunts landed on the same
+root cause: there is no expression -> type map, so every stage that needs a
+type re-derives it from shape, and each copy learns a different subset of
+shapes. Populating `Typed` with a real map would delete all four functions.
+Until then, every new `Expr` variant is a latent bug in four places.

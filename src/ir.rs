@@ -5188,6 +5188,26 @@ impl<'a> Lowering<'a> {
                 .iter()
                 .filter_map(|a| a.value_expr())
                 .find_map(|v| self.operand_type_name(v)),
+            // An arithmetic or shift expression is whatever its operands are;
+            // the checker has already required them to agree. Comparisons and
+            // the logical operators yield `Bool` and so carry no numeric
+            // family, and a custom operator's result comes from its impl.
+            //
+            // Without this a binary expression had no family at all, so
+            // `print!("{}", a / b)` rendered a `signed` result as unsigned
+            // (-3 came out as 253) while `let q: signed[8] = a / b;` — the
+            // same value, merely bound first — printed correctly.
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
+                let l = self.operand_type_name(lhs);
+                let r = self.operand_type_name(rhs);
+                // An integer literal takes the family of the other side, so
+                // `0 - q` reads as `q`'s family rather than plain `integer`.
+                match (l, r) {
+                    (Some(l), _) if l != "integer" => Some(l),
+                    (_, Some(r)) if r != "integer" => Some(r),
+                    (l, r) => l.or(r),
+                }
+            }
             ast::Expr::Int { .. } => Some("integer".to_string()),
             ast::Expr::SuffixLit { suffix, .. } => self
                 .suffix_impls
