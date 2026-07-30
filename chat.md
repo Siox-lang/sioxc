@@ -1693,3 +1693,33 @@ things visible rather than quiet):
 `cargo fmt --all --check`, and scripted edits do not go through rustfmt. I had
 been running `cargo test`, the corpus and a bare `cargo clippy` — none cover
 formatting. Running the workflow's own recipe is the check that matters.
+
+## 2026-07-30 — migration diagnostics for the new header syntax
+
+After flipping entity ports and view fields to the struct-like form, I probed
+the compiler with the *old* syntax — because that is what every file written
+before today looks like, and a bad diagnostic there is the first thing anyone
+hitting the change will see.
+
+Three findings, all fixed:
+
+- **`in clk: Bit;` cascaded four errors** and never mentioned the change.
+  `in` failed as a port name, then `:` was missing, then the name, then the
+  separator — four diagnostics for one line, none of them the actual cause.
+  The parser now recognizes a leading direction, reports the move once with
+  the corrected line spelled out, and parses the port anyway so later stages
+  still see the entity. The same held for view fields (`out valid;` produced
+  *six* errors for two fields); same treatment.
+- **`;` between members** reported the accurate but unhelpful "expected `,`".
+  It now names the replacement, since a reader seeing it has a whole file to
+  convert, not one typo.
+- **`impl V S`** (the old view-first order) was rejected, but by a message
+  that read backwards from what was written: "view `S` is not declared for
+  struct `V`". When the reversed pair *is* declared, the error now says which
+  order to write.
+
+The pattern worth remembering: a syntax change is not finished when the new
+form parses and the corpus is migrated. The old form is still out there in
+every file the change has not touched, and it is the error message — not the
+grammar — that decides whether the change costs someone an afternoon. Probing
+the syntax you just removed is part of the change, not a follow-up.

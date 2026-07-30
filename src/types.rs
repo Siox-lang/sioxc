@@ -1160,11 +1160,26 @@ impl<'a> Checker<'a> {
         };
         let key = format!("{view_name}@{target_name}");
         if !self.views.contains_key(&key) {
-            self.error(
-                codes::TYPE_MISMATCH,
-                *span,
-                format!("view `{view_name}` is not declared for struct `{target_name}`"),
-            );
+            let msg = format!("view `{view_name}` is not declared for struct `{target_name}`");
+            // The two names in the reverse order is the pre-migration spelling
+            // (`impl Source Stream`). Naming that outright beats a message that
+            // reads backwards from what was written.
+            if self
+                .views
+                .contains_key(&format!("{target_name}@{view_name}"))
+            {
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    *span,
+                    msg,
+                    format!(
+                        "write `{view_name} {target_name}` — the backing type leads \
+                         and the view follows it, as in a port's `name: Type view`"
+                    ),
+                );
+            } else {
+                self.error(codes::TYPE_MISMATCH, *span, msg);
+            }
         }
     }
 

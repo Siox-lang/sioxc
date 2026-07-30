@@ -402,7 +402,9 @@ fn sep(i: usize, len: usize) -> &'static str {
     }
 }
 
-fn dir_str(d: Direction) -> &'static str {
+/// The source spelling of a direction. Public because diagnostics quote it
+/// when suggesting the corrected form of a port.
+pub fn dir_str(d: Direction) -> &'static str {
     match d {
         Direction::In => "in",
         Direction::Out => "out",

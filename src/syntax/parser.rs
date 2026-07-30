@@ -411,7 +411,31 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let fstart = self.span();
-            // `name direction` — the name leads, as everywhere else.
+            // `name direction` — the name leads, as everywhere else. A leading
+            // direction is the older `out valid;` form; name the move once
+            // instead of failing on `out` as a field name and cascading.
+            if let Some(dir) = self.eat_direction() {
+                let dir_span = self.prev_span();
+                let name = self.parse_ident();
+                self.sink.emit(
+                    Diagnostic::error("a view field's direction goes after its name")
+                        .at(dir_span.to(self.prev_span()))
+                        .help(format!(
+                            "write `{} {}` — the name leads, as it does in a port",
+                            name.text,
+                            crate::syntax::pretty::dir_str(dir),
+                        )),
+                );
+                if !self.at(TokenKind::RBrace) && !self.eat(TokenKind::Semi) {
+                    self.expect(TokenKind::Comma, "after a view field");
+                }
+                fields.push(ViewField {
+                    dir,
+                    name,
+                    span: fstart.to(self.prev_span()),
+                });
+                continue;
+            }
             let name = self.parse_ident();
             if self.eat(TokenKind::Colon) {
                 self.error_here("view fields inherit their types from the backing struct");
@@ -423,7 +447,7 @@ impl<'a> Parser<'a> {
                 continue;
             };
             if !self.at(TokenKind::RBrace) {
-                self.expect(TokenKind::Comma, "after a view field");
+                self.expect_member_separator("view field");
             }
             fields.push(ViewField {
                 dir,
@@ -542,22 +566,82 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses one port. The flag reports whether it reached its terminating
-    /// `;` — a port that did is a clean stopping point even if it errored
-    /// earlier (`in a Bit;`), so the caller must not then skip the next port.
+    /// `,` — a port that did is a clean stopping point even if it errored
+    /// earlier (`a Bit,`), so the caller must not then skip the next port.
     fn parse_port(&mut self) -> (Port, bool) {
         let start = self.span();
         // `name: Type direction` — a port reads like a struct field, with the
         // slot after the type holding either a direction (`clk: Bit in`) or a
         // view (`bus: Stream Source`, consumed by `parse_type`).
+        //
+        // A leading direction is the older `in clk: Bit;` form. Recognize it
+        // and report the move once, rather than letting `in` fail as a port
+        // name and cascade three more diagnostics across the same line.
+        if let Some(dir) = self.eat_direction() {
+            return self.legacy_leading_direction_port(start, dir);
+        }
         let name = self.parse_ident();
         self.expect(TokenKind::Colon, "before a port type");
         let ty = self.parse_type();
         let dir = self.eat_direction();
         // A trailing comma on the last port is optional, as in a struct.
-        let terminated =
-            self.at(TokenKind::RBrace) || self.expect(TokenKind::Comma, "after a port");
+        let terminated = self.at(TokenKind::RBrace) || self.expect_member_separator("port");
         let port = Port {
             dir,
+            name,
+            ty,
+            span: start.to(self.prev_span()),
+        };
+        (port, terminated)
+    }
+
+    /// The `,` between two members of a brace-delimited body. A `;` there is
+    /// the pre-migration separator, so it is consumed with a diagnostic that
+    /// names the replacement — the alternative, "expected `,`", is accurate
+    /// but leaves the reader to guess that the whole form changed.
+    fn expect_member_separator(&mut self, what: &str) -> bool {
+        if self.at(TokenKind::Semi) {
+            let span = self.span();
+            self.bump();
+            self.sink.emit(
+                Diagnostic::error(format!("a {what} is followed by `,`, not `;`"))
+                    .at(span)
+                    .help(
+                        "every brace-delimited declaration in the language separates \
+                         its members with commas, and the last one carries none",
+                    ),
+            );
+            return true;
+        }
+        self.expect(TokenKind::Comma, &format!("after a {what}"))
+    }
+
+    /// The pre-migration port form, `in clk: Bit;`. Parsed in full so the
+    /// entity still elaborates and later stages report on it, with one
+    /// diagnostic naming the move instead of a cascade. The old `;` is
+    /// accepted here as a terminator for the same reason — a file written
+    /// against the old syntax should produce the one error that explains it.
+    fn legacy_leading_direction_port(&mut self, start: Span, dir: Direction) -> (Port, bool) {
+        let dir_span = self.prev_span();
+        let name = self.parse_ident();
+        self.expect(TokenKind::Colon, "before a port type");
+        let ty = self.parse_type();
+        self.sink.emit(
+            Diagnostic::error("a port's direction goes after its type")
+                .at(dir_span.to(self.prev_span()))
+                .help(format!(
+                    "write `{}: {} {}` — a port reads like a struct field, with \
+                     the slot after the type holding the direction",
+                    name.text,
+                    crate::syntax::pretty::type_str(&ty),
+                    crate::syntax::pretty::dir_str(dir),
+                )),
+        );
+        let terminated = self.at(TokenKind::RBrace)
+            || self.eat(TokenKind::Semi)
+            || self.expect(TokenKind::Comma, "after a port");
+        let port = Port {
+            dir: Some(dir),
             name,
             ty,
             span: start.to(self.prev_span()),
@@ -2242,6 +2326,62 @@ mod tests {
         let (m, errors) = parse(src);
         assert_eq!(errors, 0, "unexpected parse errors in:\n{src}");
         m
+    }
+
+    fn diagnostics(src: &str) -> Vec<Diagnostic> {
+        let mut sink = DiagnosticSink::new();
+        crate::syntax::parse_module(FileId(0), src, &mut sink);
+        sink.diagnostics().to_vec()
+    }
+
+    /// The pre-migration port form. `in` is not a port name, so without a
+    /// dedicated diagnostic it failed four times across one line and never
+    /// mentioned that the direction had moved. One error, naming the fix.
+    #[test]
+    fn leading_direction_on_a_port_reports_the_move_once() {
+        let diags = diagnostics("module m;\nentity E {\n  in clk: Bit;\n  out q: Bit;\n}\n");
+        assert_eq!(diags.len(), 2, "one per port, got {diags:#?}");
+        assert!(diags[0].message.contains("direction goes after its type"));
+        assert!(diags[0]
+            .help
+            .as_ref()
+            .is_some_and(|h| h.contains("clk: Bit in")));
+    }
+
+    /// The old form still yields a usable entity, per the best-effort rule:
+    /// later stages report on it rather than seeing an empty port list.
+    #[test]
+    fn leading_direction_still_produces_the_ports() {
+        let (m, _) = parse("module m;\nentity E {\n  in clk: Bit;\n  out q: Bit;\n}\n");
+        let Some(Item::Entity(e)) = m.items.first() else {
+            panic!("expected an entity")
+        };
+        let got: Vec<_> = e
+            .ports
+            .iter()
+            .map(|p| (p.name.text.as_str(), p.dir))
+            .collect();
+        assert_eq!(
+            got,
+            [("clk", Some(Direction::In)), ("q", Some(Direction::Out))]
+        );
+    }
+
+    #[test]
+    fn leading_direction_on_a_view_field_reports_the_move_once() {
+        let diags = diagnostics("module m;\nview V for S {\n  out a;\n  in b;\n}\n");
+        assert_eq!(diags.len(), 2, "one per field, got {diags:#?}");
+        assert!(diags[0].message.contains("direction goes after its name"));
+        assert!(diags[0].help.as_ref().is_some_and(|h| h.contains("a out")));
+    }
+
+    /// A `;` between members is the old separator, and "expected `,`" alone
+    /// left the reader to infer that the whole form had changed.
+    #[test]
+    fn semicolon_between_members_names_the_comma() {
+        let diags = diagnostics("module m;\nentity E {\n  clk: Bit in;\n  q: Bit out\n}\n");
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("`,`, not `;`"));
     }
 
     /// A stray statement in an entity body used to be retried as a fresh port
