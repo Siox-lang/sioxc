@@ -3189,26 +3189,16 @@ impl<'a> Lowering<'a> {
     /// `scrutinee == pattern` guard.
     fn lower_match_expr(&self, scrutinee: &ast::Expr, arms: &[ast::MatchArm]) -> Expr {
         let scrut = self.lower_expr(scrutinee);
-        // A match naming every variant of its scrutinee needs no `_`, and the
-        // last arm's guard is then redundant — one of them must hold. Without
-        // dropping it the chain bottoms out in `Unknown`, which no engine will
-        // run, so the exhaustive spelling (the one the non-exhaustive lint
-        // asks for) produced a design that could not execute at all.
-        let exhaustive = self
-            .operand_type_name(scrutinee)
-            .and_then(|t| self.enum_variants.get(&t))
-            .is_some_and(|vars| {
-                let covered: std::collections::HashSet<&str> = arms
-                    .iter()
-                    .filter_map(|a| match &a.pattern {
-                        ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                            Some(p.segments[1].text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                vars.keys().all(|v| covered.contains(v.as_str()))
-            });
+        // Every match needs a base case. With no `_`, the last arm is it: its
+        // guard is redundant when the arms cover the scrutinee, and when they
+        // do not this is at least a defined value rather than an `Unknown` no
+        // engine can run. The checker warns about the uncovered case.
+        //
+        // This was computed from enum variants alone, so the exhaustive
+        // spelling of a *numeric* match — `0 | 1 => a, 2..3 => b` on
+        // `unsigned[2]`, and even `0..3 => a` — lowered to an expression that
+        // could not execute, while the same shape over an enum was fine.
+        let exhaustive = !arms.iter().any(|a| pattern_has_wildcard(&a.pattern));
         let mut result: Option<Expr> = None;
         for (i, arm) in arms.iter().enumerate().rev() {
             let val = arm
@@ -6241,6 +6231,16 @@ fn not(e: Expr) -> Expr {
     Expr::Unary {
         op: UnOp::Not,
         rhs: Box::new(e),
+    }
+}
+
+/// Whether a pattern matches everything, including a `_` written inside an
+/// alternation (`A | _`).
+fn pattern_has_wildcard(p: &ast::Pattern) -> bool {
+    match p {
+        ast::Pattern::Wildcard => true,
+        ast::Pattern::Or { alts, .. } => alts.iter().any(pattern_has_wildcard),
+        _ => false,
     }
 }
 

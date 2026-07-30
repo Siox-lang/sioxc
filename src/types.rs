@@ -1772,6 +1772,77 @@ impl<'a> Checker<'a> {
     /// Shared by the statement and expression forms. A match *expression* was
     /// not checked at all, so a missing variant drew no diagnostic and only
     /// surfaced much later as a design no engine would run.
+    /// The inclusive value range a numeric scrutinee can hold, or `None` when
+    /// it is unbounded (`integer`) or not numeric at all.
+    fn numeric_domain(&self, ty: &Ty) -> Option<(i128, i128)> {
+        let Ty::Array { len, family, .. } = ty else {
+            return None;
+        };
+        let width = *len;
+        // Beyond 127 bits the domain no longer fits the arithmetic here, and a
+        // match over it could not be spelled out arm by arm anyway.
+        if width == 0 || width > 127 {
+            return None;
+        }
+        match family.as_deref() {
+            Some("signed") => {
+                let half = 1i128 << (width - 1);
+                Some((-half, half - 1))
+            }
+            Some("unsigned") => Some((0, (1i128 << width) - 1)),
+            _ => None,
+        }
+    }
+
+    /// Warn when a match on a numeric value leaves part of its domain
+    /// uncovered. The enum form of this has always been checked; the numeric
+    /// form was not, so a missing case was silent — and lowering then had no
+    /// base arm for it.
+    fn check_numeric_arms_exhaustive(&mut self, ty: &Ty, arms: &[MatchArm], span: Span) {
+        let Some((lo, hi)) = self.numeric_domain(ty) else {
+            return;
+        };
+        // Collect covered intervals. A bit pattern carries don't-cares, whose
+        // coverage is not an interval, so its presence makes the answer
+        // unknown and the check steps aside rather than guessing.
+        let mut covered: Vec<(i128, i128)> = Vec::new();
+        for arm in arms {
+            if !collect_pattern_ranges(&arm.pattern, &mut covered) {
+                return;
+            }
+        }
+        covered.sort_unstable();
+        // Walk the domain, consuming intervals that touch or overlap the
+        // frontier. The first interval starting beyond it opens the gap; if
+        // none does, the gap runs to the top of the domain.
+        let mut frontier = lo;
+        let mut gap_end = hi;
+        for (start, end) in covered {
+            if start > frontier {
+                gap_end = (start - 1).min(hi);
+                break;
+            }
+            frontier = frontier.max(end.saturating_add(1));
+            if frontier > hi {
+                return;
+            }
+        }
+        if frontier > hi {
+            return;
+        }
+        let missing = if frontier == gap_end {
+            format!("`{frontier}`")
+        } else {
+            format!("`{frontier}..{gap_end}`")
+        };
+        self.sink.emit(
+            Diagnostic::warning(format!("non-exhaustive match: {missing} is not covered"))
+                .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                .at(span)
+                .help("add the missing arms, or a `_` wildcard"),
+        );
+    }
+
     fn check_arms_exhaustive(
         &mut self,
         scrutinee: &Expr,
@@ -1779,7 +1850,13 @@ impl<'a> Checker<'a> {
         span: Span,
         sym: &HashMap<String, Ty>,
     ) {
-        let Ty::Named(id) = self.type_of(scrutinee, sym) else {
+        let ty = self.type_of(scrutinee, sym);
+        let Ty::Named(id) = ty else {
+            // A numeric scrutinee has a domain rather than a variant list.
+            // Only enums were ever checked, so `match s { 0 => .. }` on an
+            // `unsigned[2]` passed silently while the same hole over an enum
+            // was reported.
+            self.check_numeric_arms_exhaustive(&ty, arms, span);
             return;
         };
         let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else {
@@ -3814,6 +3891,30 @@ impl<'a> Checker<'a> {
 }
 
 /// The base name of a type (`Counter<W>` -> `Counter`, `out S::Source` -> `S`).
+/// Append the value ranges a numeric pattern covers. Returns false when the
+/// pattern's coverage is not expressible as intervals — a bit pattern's
+/// don't-care bits scatter across the domain — so the caller can step aside
+/// instead of reporting a hole it cannot see.
+fn collect_pattern_ranges(p: &Pattern, out: &mut Vec<(i128, i128)>) -> bool {
+    match p {
+        Pattern::Wildcard => {
+            out.push((i128::MIN, i128::MAX));
+            true
+        }
+        Pattern::Range { lo, hi, .. } => {
+            let (lo, hi) = (i128::from(*lo), i128::from(*hi));
+            // `3..0` is written descending in some sources; a range covers the
+            // same values either way.
+            out.push((lo.min(hi), lo.max(hi)));
+            true
+        }
+        Pattern::Or { alts, .. } => alts.iter().all(|a| collect_pattern_ranges(a, out)),
+        // An enum path against a numeric scrutinee is a type error reported
+        // elsewhere; a bit pattern is not an interval.
+        Pattern::Path(_) | Pattern::BitPattern { .. } => false,
+    }
+}
+
 /// A pattern's covered enum-variant names and whether it contains a wildcard,
 /// flattening or-patterns (`A | B` covers both; `A | _` is a wildcard).
 fn pattern_covers(p: &Pattern) -> (Vec<String>, bool) {
@@ -4133,6 +4234,69 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    /// Exhaustiveness was only ever computed over enum variants, so a hole in
+    /// a numeric match was silent. Warnings do not count as errors here, so
+    /// these assert on the diagnostic text.
+    #[test]
+    fn a_numeric_match_reports_the_range_it_leaves_out() {
+        let cases = [
+            ("0 => 5", "`1..3`"),
+            ("0 | 1 => 5", "`2..3`"),
+            ("0..2 => 5", "`3`"),
+            ("1..3 => 5", "`0`"),
+            ("0 => 5, 2..3 => 7", "`1`"),
+        ];
+        for (arms, expected) in cases {
+            let src = format!(
+                "module m;\nentity F {{ s: unsigned[2] in, z: unsigned[8] out }}\n\
+                 impl F {{ z = match s {{ {arms} }}; }}\n{VEC}"
+            );
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            let found = sink
+                .diagnostics()
+                .iter()
+                .any(|d| d.message.contains("non-exhaustive") && d.message.contains(expected));
+            assert!(
+                found,
+                "`{arms}` should report {expected}: {:?}",
+                sink.diagnostics()
+            );
+        }
+    }
+
+    /// Covering the domain by alternation, by range, or value by value is as
+    /// exhaustive as a `_`, and must not warn.
+    #[test]
+    fn a_numeric_match_covering_its_domain_is_quiet() {
+        for arms in [
+            "0 | 1 => 5, 2..3 => 7",
+            "0..3 => 5",
+            "0 => 5, 1 => 6, 2 => 7, 3 => 8",
+            "0 => 5, _ => 7",
+        ] {
+            let src = format!(
+                "module m;\nentity F {{ s: unsigned[2] in, z: unsigned[8] out }}\n\
+                 impl F {{ z = match s {{ {arms} }}; }}\n{VEC}"
+            );
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            let warned = sink
+                .diagnostics()
+                .iter()
+                .any(|d| d.message.contains("non-exhaustive"));
+            assert!(
+                !warned,
+                "`{arms}` covers its domain: {:?}",
+                sink.diagnostics()
+            );
+        }
     }
 
     /// A bus port types as its *view*, which owns no fields, so the field

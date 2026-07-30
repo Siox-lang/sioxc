@@ -1932,3 +1932,42 @@ correct.
 instantiated *is* type-checked (that half works) but never elaborated or
 lowered, so the lowering-stage diagnostics — the unresolved-name check added
 earlier today among them — do not see it. The gap is narrower than logged.
+
+## 2026-07-30 (cont.) — the exhaustive match that could not run
+
+`z = match s { 0 | 1 => 5, 2..3 => 7 };` on an `unsigned[2]` — every value
+covered, no `_` — failed with `driver 1 expr: contains an Unknown (unlowered)
+expression`. So did `0 => 5, 1 => 6, 2 => 7, 3 => 8`, and so did the single
+arm `0..3 => 5`. The type checker reported nothing.
+
+Two bugs facing each other.
+
+**Lowering.** A match chain needs a base case, taken from the `_` arm. With
+no wildcard it bottomed out in `Unknown`. There was already a fix for this —
+for enums:
+
+> A match naming every variant of its scrutinee needs no `_`, and the last
+> arm's guard is then redundant [...] the exhaustive spelling (the one the
+> non-exhaustive lint asks for) produced a design that could not execute at
+> all.
+
+Exactly the bug, written down, fixed by counting *enum variants* and never
+extended to numbers. Fourth instance of the pattern today. The replacement
+is smaller than what it replaces: with no wildcard, the last arm is the base.
+That holds for enums and numerics alike, so the variant-counting goes away.
+
+**The checker.** I first tried to have lowering trust the checker's
+exhaustiveness result — then probed and found `match s { 0 => 5 }` on an
+`unsigned[2]` reports `check ok`. Numeric exhaustiveness was never checked at
+all; only enums were. So the lowering fix alone would have turned a hard
+failure into a silent wrong answer, which is worse. Both halves had to land
+together: the checker now computes the covered interval union against the
+scrutinee's domain and warns with the gap (`1..3`, or `1`, precisely — not
+the whole domain). Bit patterns carry don't-cares that are not intervals, so
+their presence makes the check step aside rather than report a hole it
+cannot see.
+
+The lesson is about the order I nearly did this in. "Lowering is too strict,
+relax it" was the obvious reading of the symptom, and it would have been a
+regression. The check that saved it was probing whether the stage I wanted to
+trust actually did the thing I was about to trust it for.
