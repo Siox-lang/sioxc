@@ -2464,3 +2464,36 @@ feature they describe is only partly exercised. The conversion block was wrong
 because signedness moved to the library; this block was wrong because only its
 implicit half was ever run. `default_construction_test.siox` now runs all six
 forms in both engines.
+
+## 2026-07-31 (cont.) — the one-bit write the spec documents
+
+Third spec section audited, third defect. §3.13 documents partial assignment
+with two examples:
+
+    y[3..0] = a;          // low nibble = a, high nibble stays 0
+    status[7] = err;      // set one bit
+
+The first works. The second was rejected outright — `cannot assign to
+`bit7[7]``.
+
+The asymmetry is precise, and it is what made this worth fixing rather than
+documenting away: **reading** one bit works, **writing** the same bit does
+not, and writing `y[7..7] = e` — the identical operation with a redundant
+range — works too. So the value, the machinery and the read path were all
+there; only the write path failed to recognise a bare index as the one-bit
+slice it is. `slice_target` matched a range shape and nothing else.
+
+Now it treats a constant index as `y[n..n]`. Arrays are unaffected because the
+function already required the base itself to be a single signal — an array's
+elements are separate signals and resolve through the element path, which the
+existing `arrays2` probe confirms.
+
+A side effect worth noting: E-P017's help, added two ticks ago, says "chaining
+runtime indexes is not lowered yet". Before this fix that message also greeted
+`y[7] = e`, where it was simply wrong. Now the only writes reaching it are
+genuinely chained ones, so the help is true of everything it describes. Fixing
+the feature fixed the message — the reverse of the usual direction.
+
+All four of §3.13's claims now hold, including the clocked read-modify-write
+(0xAA with the low nibble set to 5 gives 0xA5). `slice_assign_test.siox` pins
+them.

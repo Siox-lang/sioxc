@@ -3544,8 +3544,20 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Index { base, index, .. } = target else {
             return None;
         };
-        let (a, b) = self.slice_bounds(base, index)?;
+        // The base has to be one signal — a packed vector. An array's elements
+        // are separate signals and `mem[2] = v` resolves through those instead.
         let sig = *self.locals.get(&expr_path(base)?)?;
+        let (a, b) = match self.slice_bounds(base, index) {
+            Some(range) => range,
+            // A single constant index is the one-bit slice `y[n..n]`, which is
+            // how the spec writes `status[7] = err`. Reading one bit already
+            // worked and writing it did not, because only a range shape was
+            // recognised here.
+            None => {
+                let n = eval_const(index, &self.cur_env)?;
+                (n, n)
+            }
+        };
         Some((sig, a.max(b) as u32, a.min(b) as u32))
     }
 
