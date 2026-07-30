@@ -2234,3 +2234,39 @@ Two things I checked rather than assumed:
 `sioxc build` and `--test` are untouched: they root where they always did.
 Only `check` widens, which is the one command whose job is to tell you about
 code you have not run yet.
+
+## 2026-07-30 (cont.) — re-running probes the previous fix unmasked
+
+First, confirming the previous change did what it claimed. `undef.siox` — a
+probe from earlier today that reported `check ok` and which I noted at the
+time "needs instantiation to be caught" — now reports the unresolved name
+without being instantiated. Sweeping mistakes that live only in an
+uninstantiated entity: unknown port, undriven signal, combinational loop,
+multiple drivers, unconnected input, write to an input port, unknown name,
+and an undriven *output* port (a W-P011 variant I had not seen fire) are all
+reported. Clean code stays clean. Eight classes of mistake in library code
+that were silent this morning.
+
+Then a new area: how a design spans files. It does not. `std_file` returns
+`None` for any path whose first segment is not `std`, so only the standard
+library is read from disk, and a compilation is one source file plus `std`.
+That is the current model by design — the project layer is a separate future
+repo — and it is not what the compiler *said*:
+
+    using mylib::{Inc};
+    error[E-P011]: unresolved import: no `Inc` in `mylib`
+
+The module was never opened. The message describes a module that exists and
+lacks the name, which sends the reader to check `mylib`'s contents and its
+`pub` markers — the two things that are not the problem. It now reads `no
+module `mylib` was loaded`, with the model spelled out in the help.
+
+The distinction has to survive: a module that *was* loaded and genuinely
+lacks the name keeps the old message, and there is a test for each so the two
+cannot collapse into one.
+
+The pattern here is the same one as the range-check message and the `'length`
+hint: a diagnostic that is true about the compiler's internal state
+("resolution found no `Inc`") and false about the user's situation ("your
+import list is wrong"). Those read as correct in code review and mislead in
+practice.

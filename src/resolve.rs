@@ -109,6 +109,17 @@ impl Resolved {
 pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     let mut r = Resolver::new(sink);
     r.seed_builtins();
+    r.loaded_modules = modules
+        .iter()
+        .map(|m| {
+            m.path
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::")
+        })
+        .collect();
     for m in modules {
         for item in &m.items {
             r.collect_item(item);
@@ -175,6 +186,11 @@ struct Resolver<'a> {
     decl_params: HashMap<(String, String), DefId>,
     impl_used_decl_params: HashSet<DefId>,
     current_impl_owner: Option<String>,
+    /// The `module` path of every source that was actually loaded. A `using`
+    /// naming a path absent from this set imports from a file the compiler
+    /// never read, which is a different mistake from importing a name the
+    /// module does not have — and used to be reported as the latter.
+    loaded_modules: HashSet<String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -193,6 +209,7 @@ impl<'a> Resolver<'a> {
             decl_params: HashMap::new(),
             impl_used_decl_params: HashSet::new(),
             current_impl_owner: None,
+            loaded_modules: HashSet::new(),
         }
     }
 
@@ -467,6 +484,25 @@ impl<'a> Resolver<'a> {
                         .map(|s| s.text.as_str())
                         .collect::<Vec<_>>()
                         .join("::");
+                    // A module that was never loaded is a different mistake
+                    // from a module that lacks the name. Only `std::` paths
+                    // are read from disk, so `using mylib::{Inc}` reported
+                    // "no `Inc` in `mylib`" — blaming the import list for a
+                    // file the compiler had never opened.
+                    if !base.segments.is_empty() && !self.loaded_modules.contains(&base_str) {
+                        self.sink.emit(
+                            Diagnostic::error(format!("no module `{base_str}` was loaded"))
+                                .with_code(codes::UNRESOLVED_IMPORT)
+                                .at(base.span)
+                                .help(
+                                    "a compilation is one source file plus the standard \
+                                     library: only `std::` paths are read from disk (via \
+                                     `--std <dir>`), so a module declared in another file \
+                                     is not visible here",
+                                ),
+                        );
+                        continue;
+                    }
                     let mut diag = Diagnostic::error(format!(
                         "unresolved import: no `{}` in `{base_str}`",
                         n.text
@@ -1274,6 +1310,42 @@ mod tests {
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
         (resolved, sink.error_count())
+    }
+
+    /// Only `std::` paths are read from disk, so importing from a module in
+    /// another file named one that was never opened. Reporting it as "no `Inc`
+    /// in `mylib`" blamed the import list for a file the compiler had not read.
+    #[test]
+    fn importing_from_an_unloaded_module_says_so() {
+        let sink = diagnostics("module m;\nusing mylib::{Inc};\n");
+        let d = sink
+            .diagnostics()
+            .iter()
+            .find(|d| d.message.contains("mylib"))
+            .expect("a diagnostic naming the module");
+        assert!(
+            d.message.contains("no module `mylib` was loaded"),
+            "{:?}",
+            d.message
+        );
+        assert!(d.help.as_ref().is_some_and(|h| h.contains("--std")));
+    }
+
+    /// A module that *was* loaded and lacks the name keeps the message that
+    /// describes that, so the two failures stay distinguishable.
+    #[test]
+    fn importing_a_missing_name_from_a_loaded_module_is_unchanged() {
+        let sink = diagnostics("module m;\nusing m::{NoSuch};\n");
+        let d = sink
+            .diagnostics()
+            .iter()
+            .find(|d| d.message.contains("NoSuch"))
+            .expect("a diagnostic naming the import");
+        assert!(
+            d.message.contains("unresolved import: no `NoSuch` in `m`"),
+            "{:?}",
+            d.message
+        );
     }
 
     /// Resolve and return the raw diagnostics, for inspecting help/labels.
