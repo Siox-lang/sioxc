@@ -2227,6 +2227,15 @@ impl Ctx<'_> {
                         let (signal, destination) = &target[&suffix];
                         if *signal {
                             b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                            // The spread half of `{ ..base, .x = v }` copies
+                            // fields, and those need the same fan-out as every
+                            // other seed: the overridden field reached both
+                            // instances while the copied ones reached one.
+                            for extra in
+                                self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
+                            {
+                                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                            }
                         } else {
                             b.push_str(&format!("{ind}{destination} = {expression};\n"));
                         }

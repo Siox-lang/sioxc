@@ -2909,3 +2909,28 @@ about seeding, and seeding happens in five places. Fixing one instance of a
 duplicated pattern and moving on is how the other four survive — the same
 lesson as the parser's list contexts, which took two rounds for the same
 reason.
+
+## 2026-07-31 (cont.) — auditing the duplication instead of tripping over it
+
+Twice in a row a fix had landed on one site of a several-way duplication, so
+this round audited the emitter's write sites directly: every place that emits
+`sx_set`, checked for whether it fans out to the aliases a connected name
+feeds.
+
+One left: the **spread half** of `{ ..base, .x = v }`. The overridden field
+went through the field writer (fixed last commit) and reached both instances;
+the *copied* fields went through their own loop and reached one.
+
+    let bumped: Cfg = { ..base, .hi = 9 };   ->  9, 10
+
+The audit is what made this cheap. Rather than waiting for a probe to fail, a
+short script listed each `sx_set` emission and flagged those with no
+`alias_ids_beyond` nearby; six sites had one, one did not, and the two
+remaining hits were the fan-out loops themselves. That is a complete answer
+rather than a hopeful one — the same question I had been answering
+probabilistically for two rounds.
+
+Reads deliberately stay single-lookup: every alias of a name holds the same
+value, so reading one is correct and reading all would be noise. Worth
+stating, because "fan out everywhere" would have been the wrong lesson to
+draw from six write-side bugs.
