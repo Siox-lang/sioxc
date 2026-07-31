@@ -1416,6 +1416,7 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Let(l) => {
                     self.require_let_annotation(l);
+                    self.check_signal_reset_value(l);
                     // Per-instance attributes: valid for `let` targets or when
                     // a named target matches the declaration's type (the
                     // instance's entity, or the annotated type head).
@@ -1840,6 +1841,32 @@ impl<'a> Checker<'a> {
                 .with_code(codes::NON_EXHAUSTIVE_MATCH)
                 .at(span)
                 .help("add the missing arms, or a `_` wildcard"),
+        );
+    }
+
+    /// A signal's initializer is its **reset value** (spec 3.4), so it has to
+    /// be a constant. A runtime expression there was silently dropped — the
+    /// signal simply kept its default, and `let v: unsigned[8] = if c { 7 }
+    /// else { 9 };` read 0 with nothing said. A testbench `let` is sequential
+    /// storage, where a computed initial value is meaningful and is evaluated.
+    fn check_signal_reset_value(&mut self, l: &LetDecl) {
+        if self.in_testbench.get() {
+            return;
+        }
+        let Some(value) = &l.value else { return };
+        // An instance's connection block, a struct/array literal and a
+        // constant expression are all fine; anything that reads a signal is
+        // not, because there is no time at which a reset value could sample it.
+        if !matches!(value, Expr::IfExpr { .. } | Expr::Match { .. }) {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            expr_span(value),
+            format!("`{}`'s initial value is not constant", l.name.text),
+            "a signal's initializer is its reset value, so it must be constant; \
+             drive it instead (`let x: T; x = <expr>;`)"
+                .to_string(),
         );
     }
 

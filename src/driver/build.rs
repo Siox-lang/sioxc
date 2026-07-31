@@ -1844,6 +1844,48 @@ impl Ctx<'_> {
                 .collect(),
             _ => HashMap::new(),
         };
+        // A struct-valued branch initializer (`let r: P = if c { a } else { b };`)
+        // has no path to copy from, so every field kept its default and `r.a`
+        // silently read 0. Give each field its own select between the
+        // branches' corresponding fields.
+        let branch_fields: Vec<(String, ast::Expr)> = match &l.value {
+            Some(ast::Expr::IfExpr {
+                cond,
+                then,
+                els,
+                span,
+            }) if expr_path(then).is_some() && expr_path(els).is_some() => fields
+                .iter()
+                .map(|(fname, _)| {
+                    let field_of = |base: &ast::Expr| ast::Expr::Field {
+                        base: Box::new(base.clone()),
+                        field: ast::Ident {
+                            text: fname.clone(),
+                            span: *span,
+                        },
+                        span: *span,
+                    };
+                    (
+                        fname.clone(),
+                        ast::Expr::IfExpr {
+                            cond: cond.clone(),
+                            then: Box::new(field_of(then)),
+                            els: Box::new(field_of(els)),
+                            span: *span,
+                        },
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let init: HashMap<&str, &ast::Expr> = if branch_fields.is_empty() {
+            init
+        } else {
+            branch_fields
+                .iter()
+                .map(|(name, value)| (name.as_str(), value))
+                .collect()
+        };
         // `{ ..base, .x = v }`: fields not overridden are copied from `base`.
         let spread_base: Option<String> = match &l.value {
             Some(ast::Expr::Construct {

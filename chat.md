@@ -2750,3 +2750,36 @@ That last one is the useful negative result of the day. Widening a predicate
 is only a fix when everything behind it can cope; otherwise it moves the
 error somewhere worse. Checking the layer underneath before relaxing the
 layer on top would have saved the round trip.
+
+## 2026-07-31 (cont.) — struct values, and a reset that was not one
+
+The predicate audit covered scalars; a struct-valued expression goes through
+`Val::Fields` instead, which none of it touched. Two bugs there, and they are
+different kinds.
+
+**`let r: Pair = if t { p } else { q };` then `r.a` read 0** — in both
+engines. A plain copy (`let c: Pair = p;`) works, because the initializer path
+takes a *path* to copy fields from; a branch has none, so every field kept its
+default. Silent, and identical in both engines, so nothing comparing them
+would have shown it. Each field now gets its own select between the branches'
+corresponding fields.
+
+**The entity case was not the same bug**, which is the part worth recording.
+`let sv: unsigned[8] = if t { 7 } else { 9 };` inside an entity also read 0 —
+but a signal's initializer is its *reset value* (§3.4), and a reset value
+cannot sample a signal, because there is no time at which it would. The right
+answer is not to make it work; it is to say so. It now reports, with the
+suggestion to drive the signal instead. Nothing in the corpus used the form,
+so the new error costs nothing.
+
+I nearly "fixed" the entity case the same way as the testbench case. They look
+identical from the outside — same declaration, same silent 0 — and mean
+opposite things. The testbench `let` is sequential storage, where a computed
+initial value is ordinary; the entity `let` is a signal declaration, where it
+is a category error. Reading the spec line that calls it a reset value is what
+separated them.
+
+Also probed and left alone: a field off a struct-valued expression
+(`(if c { p } else { q }).a`) is unsupported in both engines, reported as
+E-P017 in hardware and by a vaguer message in the testbench. The bound form
+now works, which is the natural spelling anyway.
