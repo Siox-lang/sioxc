@@ -3469,3 +3469,32 @@ assigned to``. That is the same misleading shape as the array-operator bug —
 the target is innocent and the right-hand side is what has no form. Logged
 rather than fixed; it wants the same elementwise treatment extended to
 `IfExpr`.
+
+## 2026-07-31 (cont.) — closing the logged gap
+
+The array-valued if-expression from last tick:
+
+    y = if c { a } else { b };   // Logic[4]  ->  `y` cannot be assigned to
+
+Same shape as the operator bug and the same fix: the condition is a scalar
+shared by every element, so only the branches lift per element. Fifteen lines
+across the two engines, because the elementwise machinery from the previous
+two ticks was already in place — the third use of it, and each one has been
+smaller than the last.
+
+Checked against a truth table rather than against the compiler: selection
+takes the whole branch per element (`0011` / `0101`), a branch may itself be
+element-wise (`if c { a xor b } else { a and b }` gives `0110` / `0001`),
+`else if` chains work, and the testbench agrees with the hardware.
+
+Non-vacuity checked by deleting the new match arm and rebuilding: the corpus
+test then fails to build, naming both new signals. That is the check that
+cannot fool itself, unlike mutating the test source.
+
+Worth noting what these three ticks have in common. Every one of them was a
+right-hand side with no lowering, reported as `E-P018 <target> cannot be
+assigned to` — a message that names the innocent half of the statement. It
+found three real gaps in a row precisely *because* it is misleading: an error
+blaming a target that plainly works is a reliable signal that the value side
+is unimplemented. The message itself deserves fixing, but it has been a
+better bug-finder than most probes.

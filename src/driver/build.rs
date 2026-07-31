@@ -2399,6 +2399,19 @@ impl Ctx<'_> {
                 rhs: Box::new(self.elementwise_at(rhs, k, len)?),
                 span: *span,
             }),
+            // The condition is scalar and shared; only the branches are
+            // per-element. Mirrors lowering so the engines agree.
+            ast::Expr::IfExpr {
+                cond,
+                then,
+                els,
+                span,
+            } => Some(ast::Expr::IfExpr {
+                cond: cond.clone(),
+                then: Box::new(self.elementwise_at(then, k, len)?),
+                els: Box::new(self.elementwise_at(els, k, len)?),
+                span: *span,
+            }),
             ast::Expr::Unary { op, rhs, span } => Some(ast::Expr::Unary {
                 op: *op,
                 rhs: Box::new(self.elementwise_at(rhs, k, len)?),
