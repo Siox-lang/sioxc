@@ -2934,3 +2934,42 @@ Reads deliberately stay single-lookup: every alias of a name holds the same
 value, so reading one is correct and reading all would be noise. Worth
 stating, because "fan out everywhere" would have been the wrong lesson to
 draw from six write-side bugs.
+
+## 2026-07-31 (cont.) — the same audit, one layer down
+
+The audit that worked on the emitter's write sites transfers to the two
+lowering paths. `lower_expr` (hardware) and `lower_val_env` (env-aware,
+for inlined operands) handle overlapping sets of `ast::Expr` shapes, so the
+question "which arms does one have that the other lacks?" is answerable by
+reading, not probing. `Match` was missing from the env-aware side.
+
+That predicted the bug before running anything, and the probe confirmed it:
+
+    let picked: Pair = if c { p } else { q };      .a=1 .b=2   correct
+    let picked: Pair = match k { A => p, B => q }; .a=0 .b=0   wrong
+
+A struct-typed local is split into one C local per field, and the splitter
+knew how to push a field selection through an `if` and not through a `match`.
+Fixed by synthesizing the per-field `match` the same way, with the field
+projection factored out into `field_of` so the two shapes cannot drift again.
+
+### A duplicate `let` was not an error
+
+Extending the corpus test for the above, I reused a local name by accident
+and got this instead of a diagnostic:
+
+    sim.c:177:14: note: previous definition is here
+      uint64_t sxl_other_b = sx_mask((((f) ? (sxl_p_b) : (sxl_q_b))), 8);
+    sioxc --test: clang failed to link the simulator
+
+Two `let`s of one name passed `check`. For a scalar the second silently
+shadowed the first; for a struct each field local was emitted twice and the
+failure surfaced as a clang error naming a mangled symbol the user never
+wrote. `E-P002` already existed for exactly this, so the fix was to track
+declared names per body and report the second one at its own span.
+
+The find is incidental — my own typo, not a probe — but it is the kind of
+thing a corpus of only-correct programs cannot surface. Worth remembering
+that writing *wrong* code on purpose is a distinct technique from writing
+awkward-but-valid code, and it was the shadowing that hid the scalar case:
+the program still ran, just not the program that was written.

@@ -1455,6 +1455,19 @@ fn literal_fits_word(text: &str) -> bool {
     parsed.is_ok_and(|v| v <= u128::from(u64::MAX))
 }
 
+/// `base.field`, synthesized so a struct-valued branch can be rewritten into
+/// one selection per field.
+fn field_of(base: &ast::Expr, field: &str, span: siox::diag::Span) -> ast::Expr {
+    ast::Expr::Field {
+        base: Box::new(base.clone()),
+        field: ast::Ident {
+            text: field.to_string(),
+            span,
+        },
+        span,
+    }
+}
+
 fn mask_c(e: &str, w: u32) -> String {
     if w > 0 {
         format!("sx_mask(({e}), {w})")
@@ -1863,25 +1876,59 @@ impl Ctx<'_> {
             }) if expr_path(then).is_some() && expr_path(els).is_some() => fields
                 .iter()
                 .map(|(fname, _)| {
-                    let field_of = |base: &ast::Expr| ast::Expr::Field {
-                        base: Box::new(base.clone()),
-                        field: ast::Ident {
-                            text: fname.clone(),
-                            span: *span,
-                        },
-                        span: *span,
-                    };
+                    let of = |base: &ast::Expr| field_of(base, fname, *span);
                     (
                         fname.clone(),
                         ast::Expr::IfExpr {
                             cond: cond.clone(),
-                            then: Box::new(field_of(then)),
-                            els: Box::new(field_of(els)),
+                            then: Box::new(of(then)),
+                            els: Box::new(of(els)),
                             span: *span,
                         },
                     )
                 })
                 .collect(),
+            // The same for a `match`: each arm's value is a struct, so each
+            // field selects between the arms' corresponding fields. Teaching
+            // only the `if` shape left `let r: P = match k { .. };` with every
+            // field at its default.
+            Some(ast::Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            }) if arms
+                .iter()
+                .all(|a| a.value_expr().and_then(expr_path).is_some()) =>
+            {
+                fields
+                    .iter()
+                    .map(|(fname, _)| {
+                        let arms = arms
+                            .iter()
+                            .map(|a| ast::MatchArm {
+                                pattern: a.pattern.clone(),
+                                body: ast::Block {
+                                    stmts: vec![ast::Stmt::Expr(field_of(
+                                        a.value_expr().expect("checked above"),
+                                        fname,
+                                        *span,
+                                    ))],
+                                    span: a.body.span,
+                                },
+                                span: a.span,
+                            })
+                            .collect();
+                        (
+                            fname.clone(),
+                            ast::Expr::Match {
+                                scrutinee: scrutinee.clone(),
+                                arms,
+                                span: *span,
+                            },
+                        )
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         };
         let init: HashMap<&str, &ast::Expr> = if branch_fields.is_empty() {
