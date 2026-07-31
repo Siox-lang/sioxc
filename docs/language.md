@@ -2106,9 +2106,9 @@ Source:
 
 ```siox
 let c: Counter<W = 8> = {
-    .clk,
-    .rst,
-    .en,
+    .clk = clk,
+    .rst = rst,
+    .en = en,
     .count = count8,
 };
 ```
@@ -2418,8 +2418,8 @@ one meaning everywhere.) So an index loop over an `N`-element array runs to
 ```siox
 let acc: unsigned[8] = 0;
 for x in xs { acc = acc + x; }          // element iteration (no bounds needed)
-for i in 0..xs::len - 1 { acc = acc + xs[i]; }   // 0,1,...,len-1
-for i in xs::len - 1..0 { acc = acc + xs[i]; }   // same, high index first
+for i in 0..xs'length - 1 { acc = acc + xs[i]; }   // 0,1,...,length-1
+for i in xs'length - 1..0 { acc = acc + xs[i]; }   // same, high index first
 ```
 
 For edge/level-driven stimulus (mirroring cocotb's async model), `await` waits
@@ -2451,10 +2451,10 @@ impl CounterTest {
     let count: unsigned[8];
 
     let dut: Counter<W = 8> = {
-        .clk,
-        .rst,
-        .en,
-        .count,
+        .clk = clk,
+        .rst = rst,
+        .en = en,
+        .count = count,
     };
 
     clk = not clk after 5ns;   // background clock, 10ns period

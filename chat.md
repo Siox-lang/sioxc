@@ -3738,3 +3738,41 @@ testbench, when by that point the earlier steps had left `a = 0`. Fourth time
 today. The habit that actually prevents it is not "check the values" but
 "drive the inputs you are asserting about, in the assertion's own step" —
 which is what the test does now.
+
+## 2026-07-31 (cont.) — checking the source of truth against itself
+
+CLAUDE.md calls `docs/language.md` the authority for syntax and semantics, and
+stale documentation has cost me twice today through stale *memories* of it. So
+this tick compiled the spec's own examples: 114 fenced `siox` blocks, of which
+54 are item-level and can be wrapped and fed to the compiler.
+
+34 produced errors, and most are artifacts of the extraction rather than the
+doc — counterexamples the prose labels "invalid in entity body", blocks whose
+types are declared in an earlier block, examples that redeclare a std type,
+`...` and `…` placeholders. Filtering those left three real ones.
+
+**The spec contradicts itself about connection shorthand.** §3.12 says
+plainly: "Every `.port` takes a value; there is no bare `.port`
+name-shorthand." Two examples use exactly that:
+
+    let dut: Counter<W = 8> = { .clk, .rst, .en, .count };
+
+and the first of them *mixes* it with an explicit `.count = count8` in one
+block, which §3.12 forbids separately. The compiler rejects both with a
+targeted error. Same stale claim I found in a corpus test comment earlier
+today, from the same removal — the shorthand went and its uses did not.
+
+**Two examples still use `xs::len`,** three pages after the text explaining
+that `::len` and `::width` collapsed into `'length`. Fixed, and the corrected
+loop verified to run and sum to 10.
+
+Both corrected forms were compiled rather than eyeballed: the Stage 8
+testbench example, wrapped with a `Counter` to instantiate, now reports
+`check ok`.
+
+Worth being honest about the limit of this method. The extraction cannot tell
+a counterexample from a mistake, so a run needs a human pass over the
+failures; automating it properly would mean marking which blocks are meant to
+compile, and annotating 114 of them is not a change to make unilaterally.
+What it *is* good for is exactly what happened — a one-off sweep after a long
+period of language churn, which is when a doc drifts furthest.
