@@ -3697,3 +3697,44 @@ shapes carrying a meaning and not the rest.
 The regression test now covers the enum spelling both ways round, plus a
 legitimate derivation chain — std derives `Logic` from `ULogic` in precisely
 this form, so the check has to tell a chain from a cycle.
+
+## 2026-07-31 (cont.) — a "bug" that was the spec, and a task that was already done
+
+Type-boundary sweep: 50 cases over widths 1, 8, 16, 32, 63 and 64 — wraparound
+at the top of each width, shifts at and beyond the width, multiply overflow.
+All matched. Then 90 conversion and signed-extreme cases, of which three
+disagreed:
+
+    signed[16](s)   where s = -1     gave 255, model said -1
+
+Both engines agreed with each other and disagreed with me, which is the shape
+of either a shared bug or a wrong model. It was the model. Spec 3.17 says it
+outright: *"A conversion is a raw resize: zero-extend or truncate, whatever
+the families involved. The compiler tracks no signedness, so it cannot know
+that a widening should copy a sign bit — sign extension is the library
+function `std::bits::sext`."* And `signed[16](sext(s))` gives -1, -128, 77
+exactly as documented.
+
+I considered warning on a plain widening of a `signed` value, since it loses
+the sign silently. Then found `signed_widen_test.siox`, which deliberately
+tests *both* forms with the rationale in a comment. A warning would fire on
+that test's intentional line. No action: the behaviour is documented, tested,
+and correct.
+
+### Task #41 was finished and nobody had noticed
+
+"Wide signals: 128-bit end to end" sat pending. It works: 55 cases across
+add, subtract, and, or, xor, shift left, shift right, multiply, and three
+comparisons, at values including 2^64, 2^128-1, and operands whose product
+spans both words — all matching the model. Multiply is the one that could
+plausibly have been left half-done, since 128 bits needs a partial-product
+expansion rather than one instruction, and it is right.
+
+`wide_test.siox` covered add, subtract, shift, struct fields and arrays but
+not multiply or comparison, so those are in it now, and the task is closed.
+
+Writing that test I asserted against the operand values from the *top* of the
+testbench, when by that point the earlier steps had left `a = 0`. Fourth time
+today. The habit that actually prevents it is not "check the values" but
+"drive the inputs you are asserting about, in the assertion's own step" —
+which is what the test does now.
