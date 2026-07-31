@@ -3869,16 +3869,9 @@ impl<'a> Lowering<'a> {
                         }
                         _ => false,
                     };
-                    if is_vector_ref {
-                        let w = self.ast_width(rhs);
-                        if w > 1 && w <= 64 {
-                            let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
-                            return Expr::Binary {
-                                op: BinOp::Sub,
-                                lhs: Box::new(Expr::Const(mask)),
-                                rhs: Box::new(self.lower_expr(rhs)),
-                            };
-                        }
+                    let _ = is_vector_ref;
+                    if let Some(v) = self.vector_not(rhs, |e| self.lower_expr(e)) {
+                        return v;
                     }
                 }
                 Expr::Unary {
@@ -4060,6 +4053,10 @@ impl<'a> Lowering<'a> {
                 .map(|v| self.ast_width(v))
                 .max()
                 .unwrap_or(1),
+            // `not x` is as wide as `x`. Without this the fallback gave 1, so
+            // `sext(not s)` bound `x'length` to 1 and returned 0 where the
+            // testbench — which does look through the unary — said 55.
+            ast::Expr::Unary { rhs, .. } => self.ast_width(rhs),
             // Arithmetic and shifts are as wide as their operands. Without
             // this the fallback below gave 1, so `sext(s + 0)` bound
             // `x'length` to 1 and tested bit 0 for the sign: -56 came back
@@ -5485,6 +5482,39 @@ impl<'a> Lowering<'a> {
 
     /// Lower an expression to a [`Val`], with fn parameters substituted from
     /// `env`. Struct-typed locals and struct literals become per-field values.
+    /// `not` over a bit vector: every bit inverted, lowered as `mask - x` so
+    /// no engine needs width knowledge. `None` when the operand is not a
+    /// vector reference — a 1-bit operand keeps the boolean form (identical
+    /// either way), and a compound expression or enum-typed signal has its
+    /// own `not`.
+    fn vector_not(&self, rhs: &ast::Expr, lower: impl Fn(&ast::Expr) -> Expr) -> Option<Expr> {
+        let is_vector_ref = match rhs {
+            // A slice is always a bit vector.
+            ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
+                true
+            }
+            ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                expr_path(rhs)
+                    .and_then(|p| self.locals.get(&p))
+                    .map(|&id| self.out.signals[id.0 as usize].enum_type.is_none())
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+        if !is_vector_ref {
+            return None;
+        }
+        let w = self.ast_width(rhs);
+        (w > 1 && w <= 64).then(|| {
+            let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+            Expr::Binary {
+                op: BinOp::Sub,
+                lhs: Box::new(Expr::Const(mask)),
+                rhs: Box::new(lower(rhs)),
+            }
+        })
+    }
+
     fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
             // `self::length` inside an operator-impl body: the bound operand's
@@ -5667,6 +5697,14 @@ impl<'a> Lowering<'a> {
                 if *op == ast::UnOp::Not {
                     if let Some(v) = self.inline_unary("not", rhs) {
                         return v;
+                    }
+                    // `not` on a vector is `mask - x`, not a bitwise
+                    // complement. `lower_expr` knew that and this path did
+                    // not, so `unsigned[8](not s)` — the same operand inside
+                    // a conversion — lowered to a raw `not` and read 0 where
+                    // the bare `not s` gave 55.
+                    if let Some(v) = self.vector_not(rhs, |e| self.lower_scalar_env(e, env)) {
+                        return Val::Scalar(v);
                     }
                 }
                 Val::Scalar(Expr::Unary {

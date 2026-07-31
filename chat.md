@@ -2711,3 +2711,42 @@ the structural default — says both should be `'U'`; the packed `unsigned`
 /`signed` case is the one that is `'0'` by design. Changing it moves the
 power-on state of every Logic array, so it wants a decision rather than a
 quiet fix.
+
+## 2026-07-31 (cont.) — sweeping for the pattern instead of the bugs
+
+Four functions had needed the same lesson, so this round went looking for the
+shape rather than waiting for a fifth report: every predicate that decides a
+type-dependent behaviour, checked for which expression forms it understands.
+
+    is_real_operand    Unary Binary IfExpr Match     — complete
+    is_integer_operand Unary Binary IfExpr Match     — complete
+    is_char_operand    <none>                        — compensated at the call site
+    receiver_type      <none>                        — real restriction
+    ast_width          Binary IfExpr Match           — missing Unary
+    is_real_expr       Binary                        — untested shapes fine in practice
+
+Probing each: `Char` is fine everywhere, because `c_format` asks
+`type_witness` (which does look through shapes) before it asks
+`is_char_operand`. A narrow predicate is harmless when something wider stands
+in front of it — worth knowing, since it means the table above overstates the
+problem.
+
+Two were real:
+
+- **`sext(not s)`: 0 in hardware, 55 in the testbench.** `ast_width` had no
+  `Unary` arm, so the argument bound `x'length = 1`. Adding it fixed the
+  width and *not* the value, which turned out to be a second bug hiding
+  behind the first: `unsigned[8](not s)` lowered to a raw bitwise complement
+  while a bare `not s` lowered to `mask - x`. Two paths, one of which knew
+  that `not` on a vector is not `~`. They share a `vector_not` helper now.
+- **A method on an expression receiver** (`(if c { a } else { b }).doubled()`)
+  works in hardware and fails in a testbench. I widened `receiver_type` to
+  fix it and the next layer failed instead — a method body reads `self.field`
+  through the receiver's mangled local name, so the receiver has to *be* a
+  name there. Reverted: the honest failure is better than a deeper, vaguer
+  one. The message now says which shape is missing and to bind it first.
+
+That last one is the useful negative result of the day. Widening a predicate
+is only a fix when everything behind it can cope; otherwise it moves the
+error somewhere worse. Checking the layer underneath before relaxing the
+layer on top would have saved the round trip.

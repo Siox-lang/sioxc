@@ -4078,9 +4078,20 @@ impl Ctx<'_> {
         method: &str,
         args: &[ast::Expr],
     ) -> Result<String, String> {
-        let ty = self
-            .receiver_type(recv)
-            .ok_or_else(|| format!("cannot resolve the receiver type of `.{method}()`"))?;
+        let ty = self.receiver_type(recv).ok_or_else(|| {
+            // A method body reads `self.field` by the receiver's mangled
+            // local name, so the receiver has to *be* a name here. The
+            // hardware path substitutes values and accepts an expression,
+            // so say which shape is missing and what to do about it.
+            if expr_path(recv).is_none() {
+                format!(
+                    "a method on an expression receiver is not lowered in a \
+                         testbench yet: bind it first (`let r: T = ...; r.{method}()`)"
+                )
+            } else {
+                format!("cannot resolve the receiver type of `.{method}()`")
+            }
+        })?;
         let f = self
             .methods
             .get(&(ty.clone(), method.to_string()))
