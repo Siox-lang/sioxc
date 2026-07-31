@@ -3776,3 +3776,37 @@ failures; automating it properly would mean marking which blocks are meant to
 compile, and annotating 114 of them is not a change to make unilaterally.
 What it *is* good for is exactly what happened — a one-off sweep after a long
 period of language churn, which is when a doc drifts furthest.
+
+## 2026-07-31 — closing the loop
+
+Last bounded pass: std's own public functions, ranked by corpus usage. Two had
+none — `clog2` and `min` — and `clog2` is the one a design calls to size an
+address bus from a depth, where an off-by-one mis-sizes hardware silently and
+nothing complains.
+
+It is correct. Checked against `ceil(log2(n))` computed separately at the
+powers of two and both neighbours of each, at 1024, 65536, and 1000000 — the
+last of which also confirms that recursing once per bit does not reach the
+inliner's depth guard in ordinary use. Degenerate inputs (0, negative) return
+0 rather than looping. `min`/`max` are right across zero and on equal
+operands. All now in the corpus, including `clog2` used where it matters: as
+the declared width of a port.
+
+### Where this leaves things
+
+Four ticks without a compiler defect. The seams that produced the session's
+fixes are swept: behavioural differentials over expressions, sequential
+designs, waveforms, timing and the AOT object path; type boundaries and
+conversions; hostile-input robustness; documentation against behaviour; and
+std's own functions.
+
+What produced the most, in order: auditing parallel implementations against
+each other rather than probing them; independent oracles, which are the only
+thing that catches an error both engines share; deliberately-wrong programs,
+which a corpus of correct ones cannot substitute for; and asking what the
+corpus never says, which predicted the last several finds outright.
+
+What remains is not bug-hunting. The LSP is a skeleton, cocotb integration is
+a feature, and making the spec's examples compile in CI needs 114 code blocks
+annotated with whether they are meant to. Each is a decision rather than a
+fix, so the loop stops here rather than picking one unilaterally.
