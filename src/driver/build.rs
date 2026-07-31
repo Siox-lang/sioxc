@@ -2983,6 +2983,13 @@ impl Ctx<'_> {
                 continue;
             }
             let key = format!("{}.{}", l.name.text, port);
+            // A struct-typed port is one signal per leaf field, so a struct
+            // literal has no single key to drive and the scalar path below
+            // skipped it in silence.
+            if self.write_composite(&key, value, b, "    ")? {
+                b.push_str("    sx_settle();\n");
+                continue;
+            }
             if !self.map.contains_key(&key) {
                 continue;
             }

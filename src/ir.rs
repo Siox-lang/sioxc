@@ -1392,6 +1392,34 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
+                // A composite (struct/array) port connected to a *literal*
+                // has no parent signal to wire leaf-by-leaf, so drive each
+                // leaf from the matching field. Without this the whole
+                // connection was dropped in silence and the port kept its
+                // default — a scalar port has always accepted a value here.
+                if expr_path(value).is_none() {
+                    if let ast::Expr::Construct { args, .. } = value {
+                        let mut fields: HashMap<String, &ast::Expr> = HashMap::new();
+                        literal_leaves(args, "", &mut fields);
+                        for (k, child_id, dir) in &leaves {
+                            if *dir == Some(ast::Direction::Out) {
+                                continue;
+                            }
+                            let Some(field_value) = fields.get(&k[field.len()..]) else {
+                                continue;
+                            };
+                            let expr = self.lower_expr(field_value);
+                            let ctx = self.next_ctx_at(ast::expr_span(field_value));
+                            self.out.drivers.push(Driver {
+                                target: *child_id,
+                                cond: None,
+                                expr,
+                                ctx,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 // A composite (struct/array) port: wire each leaf to the matching
                 // leaf of the parent signal (`.s = link` -> `s.valid`<->`link.valid`).
                 // The parent side must be a signal path.
@@ -7126,6 +7154,27 @@ pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
 /// arguments, and connection expressions. Plain `let` instances inside the loop
 /// body are handled too; nested loops recurse. Non-instance statements are
 /// left for the behavioural pass.
+/// Flatten a struct literal into `suffix -> value` (".valid", ".inner.x"),
+/// named the way a composite port's leaves are.
+fn literal_leaves<'a>(
+    args: &'a [ast::ConnectArg],
+    prefix: &str,
+    out: &mut HashMap<String, &'a ast::Expr>,
+) {
+    for a in args {
+        let (Some(name), Some(value)) = (a.field.as_ref(), a.value.as_ref()) else {
+            continue;
+        };
+        let key = format!("{prefix}.{}", name.text);
+        match value {
+            ast::Expr::Construct { args: inner, .. } => literal_leaves(inner, &key, out),
+            _ => {
+                out.insert(key, value);
+            }
+        }
+    }
+}
+
 /// The instance type + connections a `let` declares, in either form:
 /// - `let x: Entity = { .. }` (type on the construct),
 /// - `let x: Entity = { .. }` (type from the annotation, name-less construct),

@@ -3146,3 +3146,33 @@ Worth noting the pattern in where these keep coming from: connection blocks
 are one syntax serving two directions and two forms, and nearly every bug
 found here has been some pair of those four combinations sharing code that
 only handles one of them.
+
+### The last combination: composite ports
+
+Connection blocks are one syntax serving two directions (`in`/`out`) and two
+value kinds (a name / a value), across scalar and composite ports. Nearly
+every bug in this area has been some cell of that grid sharing code with a
+cell it doesn't fit. The one still unfilled:
+
+    let s: TakesStruct = { .p = { .valid = '1', .data = 42 } };   // 0
+
+A **struct-typed port connected to a struct literal** was dropped by both
+engines. The lowering says so plainly once you find it:
+
+    // The parent side must be a signal path.
+    let Some(base) = expr_path(value) else { continue };
+
+A composite port wires leaf-to-leaf against a parent signal, and a literal has
+no parent signal, so the whole connection fell out of the loop. A *scalar*
+port two branches above accepts any expression — which is why literals
+"worked" and this looked like it should too.
+
+Fixed in both: flatten the literal to `suffix -> value` (".valid",
+".body.hi") the way the port's leaves are named, and drive each leaf from its
+match. Nesting works because the flattening recurses; the corpus test checks
+two levels and both branches of a tag field.
+
+Found by the differential, and only because I had fixed the testbench side
+first — with both engines wrong the two agreed and nothing showed. That is
+the standing weakness of parity testing and the reason the independent
+oracle is worth keeping in rotation.
