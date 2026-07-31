@@ -2632,3 +2632,40 @@ gate that runs *similar* commands is not a gate. This one had the right
 commands, the right flags and the right order, and was still answering a
 different question because a lint set is part of the compiler, not part of
 the command line.
+
+## 2026-07-31 (cont.) — an oracle instead of a mirror
+
+Comparing engines finds disagreements, not wrongness — `s / (0 - 2)` was 0 in
+both. So this round generated expectations in Python (wrap to width, two's
+complement, division truncating toward zero) and asserted against those.
+
+The reassuring part first: **1404 testbench assertions** across widths 4/8/16
+covering unsigned and signed `+ - * /`, shifts to and past the width, and
+comparisons — all pass. Then **168 more through a DUT**, the same values with
+the arithmetic done in hardware — also all pass, including `-128 / -1` and
+every sign combination. Today's division fixes are correct, not merely
+self-consistent.
+
+Then distilling those into a compact corpus test found a new one, because a
+hand-written boundary case used literals where the generator had used typed
+locals:
+
+    (0 - 7) / 2   ->  9223372036854775804
+    7 / (0 - 2)   ->  0
+
+A pure-literal expression is a kernel integer, and division dispatched on
+`is_integer_operand`, which does not recognise one — so it took `sx_udiv` and
+read `0 - 7` as a huge unsigned. Same root as the rendering bug fixed last
+round, in the arithmetic rather than the printer.
+
+And I made the same mistake fixing it that I made last time, one commit apart:
+wrote `is_literal(lhs) || is_literal(rhs)`, which let the narrow `1` in
+`18446744073709551616 + 1` qualify the pair and truncate the wide literal —
+`shift_edge_test` caught it, again. The predicate is about the *whole*
+expression; asking it of either side is a different question. It is `&&` now,
+with the reason in the comment so the third occurrence does not happen.
+
+Worth noting what the generated sweep did *not* find: every case it covered
+used typed locals, because that is what a generator naturally emits. The bug
+lived one step outside that shape. Generated breadth and hand-written
+awkwardness find different things.

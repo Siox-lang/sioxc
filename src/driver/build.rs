@@ -4764,7 +4764,17 @@ impl Ctx<'_> {
                     return Ok(v);
                 }
                 let (a, o, c) = (self.expr(lhs)?, c_binop(op)?, self.expr(rhs)?);
-                if self.is_integer_operand(lhs) || self.is_integer_operand(rhs) {
+                // A pure-literal expression is a kernel integer too, so
+                // `(0 - 7) / 2` takes the signed division rather than the
+                // unsigned one — it read 0 - 7 as a huge unsigned and
+                // returned 9223372036854775804. *Both* sides must qualify:
+                // `or` here would let the narrow `1` in
+                // `18446744073709551616 + 1` drag the wide literal onto the
+                // 64-bit path, which is how it truncated to 1 once already.
+                if self.is_integer_operand(lhs)
+                    || self.is_integer_operand(rhs)
+                    || (Self::is_literal_integer_expr(lhs) && Self::is_literal_integer_expr(rhs))
+                {
                     let signed_a = self.c_integer_operand(lhs, &a);
                     let signed_c = self.c_integer_operand(rhs, &c);
                     match op {
