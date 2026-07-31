@@ -3124,6 +3124,26 @@ impl<'a> Lowering<'a> {
                                     }
                                     return;
                                 }
+                                // `tpath` is a perfectly good target — the
+                                // *value* has no array form. Falling through
+                                // reached the scalar path, which failed on the
+                                // target and reported it as unassignable,
+                                // naming the innocent half of the statement.
+                                self.sink.emit(
+                                    crate::diag::Diagnostic::error(format!(
+                                        "`{}` has no element-wise form, so `{tpath}` \
+                                         cannot be driven from it",
+                                        crate::syntax::pretty::expr_string(v)
+                                    ))
+                                    .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                                    .at(ast::expr_span(v))
+                                    .help(
+                                        "an array is driven by another array, an array \
+                                         literal, or an element-wise expression over \
+                                         arrays of the same length",
+                                    ),
+                                );
+                                return;
                             }
                         }
                     }
@@ -6026,6 +6046,32 @@ impl<'a> Lowering<'a> {
                 els: Box::new(self.elementwise_at(els, k, len)?),
                 span: *span,
             }),
+            // `match` selects a whole branch the way `if` does; the two
+            // share `MatchArm` and have drifted apart before, so they are
+            // lifted together here.
+            ast::Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                let mut lifted = Vec::with_capacity(arms.len());
+                for a in arms {
+                    let value = self.elementwise_at(a.value_expr()?, k, len)?;
+                    lifted.push(ast::MatchArm {
+                        pattern: a.pattern.clone(),
+                        body: ast::Block {
+                            stmts: vec![ast::Stmt::Expr(value)],
+                            span: a.body.span,
+                        },
+                        span: a.span,
+                    });
+                }
+                Some(ast::Expr::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms: lifted,
+                    span: *span,
+                })
+            }
             ast::Expr::Unary { op, rhs, span } => Some(ast::Expr::Unary {
                 op: *op,
                 rhs: Box::new(self.elementwise_at(rhs, k, len)?),

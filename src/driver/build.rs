@@ -2412,6 +2412,32 @@ impl Ctx<'_> {
                 els: Box::new(self.elementwise_at(els, k, len)?),
                 span: *span,
             }),
+            // `match` selects a whole branch the way `if` does; the two
+            // share `MatchArm` and have drifted apart before, so they are
+            // lifted together here.
+            ast::Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                let mut lifted = Vec::with_capacity(arms.len());
+                for a in arms {
+                    let value = self.elementwise_at(a.value_expr()?, k, len)?;
+                    lifted.push(ast::MatchArm {
+                        pattern: a.pattern.clone(),
+                        body: ast::Block {
+                            stmts: vec![ast::Stmt::Expr(value)],
+                            span: a.body.span,
+                        },
+                        span: a.span,
+                    });
+                }
+                Some(ast::Expr::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms: lifted,
+                    span: *span,
+                })
+            }
             ast::Expr::Unary { op, rhs, span } => Some(ast::Expr::Unary {
                 op: *op,
                 rhs: Box::new(self.elementwise_at(rhs, k, len)?),

@@ -3498,3 +3498,27 @@ found three real gaps in a row precisely *because* it is misleading: an error
 blaming a target that plainly works is a reliable signal that the value side
 is unimplemented. The message itself deserves fixing, but it has been a
 better bug-finder than most probes.
+
+### The message that kept finding bugs, and the last sibling
+
+`E-P018 <target> cannot be assigned to` has now pointed at three separate
+gaps, every time by blaming the wrong half of the statement. Fixed: when an
+array target is fine and the *value* has no element-wise form, the error names
+the value and says what an array can be driven from.
+
+Writing that message immediately turned up the last sibling. A match over
+arrays —
+
+    y = match s { Sel::A => a, Sel::B => b, Sel::C => a xor b };
+
+— had no form either. `if` and `match` share `MatchArm`, and this is the third
+time in this session they have drifted apart (struct-valued selection, then
+unreachable-arm checking, now arrays). Lifted together, in the same place, so
+the next shape added has one site rather than two.
+
+Verified against a truth table across all three arms, including one that is
+itself an element-wise operation, with the testbench agreeing.
+
+The elementwise lift now covers paths, unary and binary operators, `if`, and
+`match` — added over four ticks, each smaller than the last, and each found
+by the same misleading error.
