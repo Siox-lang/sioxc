@@ -3668,3 +3668,32 @@ Two crashes in two ticks from this class, after two ticks of behavioural
 sweeps found nothing. Both were reachable by writing something wrong rather
 than something exotic, which is the part worth remembering: the question
 "what happens when the input is bad" had simply never been asked.
+
+## 2026-07-31 (cont.) — the same check, one declaration form short
+
+Cyclic and self-referential shapes across the remaining declaration forms.
+Most are handled, and handled well: a cyclic newtype and a self-newtype both
+report `E-P002`, alias cycles and self-aliases likewise, and a generic entity
+that instantiates itself — even with a growing parameter, `R<(N + 1)>` —
+is caught as cyclic instantiation rather than specializing forever.
+
+One gap:
+
+    enum A(B);
+    enum B(A);          // check ok
+
+`check_declaration_cycles` builds its edge list from `Item::Using` and
+`Item::Struct`. `Item::Enum` was never added, so the enum spelling of a cycle
+the struct spelling catches reported nothing. An enum derives its variants
+from its base exactly as a struct derives its fields, so the cycle is just as
+meaningless — `A` has whatever variants `B` has, which are whatever `A` has.
+
+The function's own doc comment says it exists because such cycles "made every
+later stage recurse until the stack overflowed". That is the tell: the check
+was written for a crash, and one of the three forms that can express the crash
+was left out of it. Third time this session that a check covered some of the
+shapes carrying a meaning and not the rest.
+
+The regression test now covers the enum spelling both ways round, plus a
+legitimate derivation chain — std derives `Logic` from `ULogic` in precisely
+this form, so the check has to tell a chain from a cycle.

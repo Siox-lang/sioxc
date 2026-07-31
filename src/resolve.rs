@@ -548,6 +548,16 @@ impl<'a> Resolver<'a> {
                             edges.insert(st.name.text.as_str(), (head, st.name.span, "type"));
                         }
                     }
+                    // An enum derives its variants from its base the way a
+                    // struct derives its fields, so a cycle is just as
+                    // meaningless — and this arm was missing, so
+                    // `enum A(B); enum B(A);` reported nothing at all while
+                    // the struct spelling of it was caught here.
+                    Item::Enum(en) => {
+                        if let Some(head) = en.repr.as_ref().and_then(type_head) {
+                            edges.insert(en.name.text.as_str(), (head, en.name.span, "enum"));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1548,6 +1558,20 @@ mod tests {
         // A self-reference is the one-step case.
         let (_, errs) = resolve_src("module m;\nusing A = A;\n");
         assert!(errs >= 1, "self-alias");
+
+        // An enum derives its variants from its base the way a struct derives
+        // its fields, and this arm was missing: the enum spelling of the same
+        // cycle reported nothing while the struct spelling was caught.
+        let (_, errs) = resolve_src("module m;\nenum A(B);\nenum B(A);\n");
+        assert!(errs >= 1, "enum derivation cycle");
+
+        let (_, errs) = resolve_src("module m;\nenum E(E);\n");
+        assert!(errs >= 1, "self-deriving enum");
+
+        // A legitimate derivation chain stays legal — std derives `Logic`
+        // from `ULogic` exactly this way.
+        let (_, errs) = resolve_src("module m;\nenum P { A, B }\nenum Q(P);\nenum R(Q);\n");
+        assert_eq!(errs, 0, "a derivation chain is not a cycle");
 
         // Legitimate chains are untouched.
         let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B(A);\nusing C = B;\n");
