@@ -3145,20 +3145,44 @@ impl<'a> Checker<'a> {
                 if let BinOp::Custom { symbol, .. } = op {
                     let lhs_ty = self.type_of(lhs, sym);
                     let rhs_ty = self.type_of(rhs, sym);
+                    // An integer literal on the right coerces to a
+                    // Self-typed parameter, as it does for the symbolic
+                    // operators — `a + 255` worked and `a xor 255` did not,
+                    // purely because the textual half dispatches here.
+                    let rhs_literal = matches!(
+                        rhs.as_ref(),
+                        Expr::Int { .. } | Expr::SuffixLit { .. } | Expr::BitStrLit { .. }
+                    );
                     let matching = self
                         .ty_head(&lhs_ty)
                         .zip(self.ty_head(&rhs_ty))
                         .is_some_and(|(owner, input)| {
                             self.operator_sigs
-                                .get(&(symbol.clone(), owner))
+                                .get(&(symbol.clone(), owner.clone()))
                                 .is_some_and(|sigs| {
                                     sigs.iter().any(|(declared, _)| {
                                         declared.as_deref() == Some(input.as_str())
                                             || declared.as_deref() == Some("Self")
+                                            || (rhs_literal
+                                                && declared.as_deref() == Some(owner.as_str()))
                                     })
                                 })
                         });
-                    if !matching {
+                    // A plain array has no type head, so the exact
+                    // `(symbol, owner)` lookup above cannot see the blanket
+                    // `for T[]` impl that lifts the element's operator.
+                    // `and`/`or` never reach here — they are built-in
+                    // operators with their own array handling — which is why
+                    // only the textual half of the logic family failed on
+                    // arrays.
+                    let lifted = is_liftable_array_key(symbol)
+                        && self
+                            .array_operand_element(&lhs_ty)
+                            .zip(self.array_operand_element(&rhs_ty))
+                            .is_some_and(|(left, right)| {
+                                left == right && self.has_operator_impl(symbol, &left)
+                            });
+                    if !matching && !lifted {
                         self.error(
                             codes::TYPE_MISMATCH,
                             *span,
@@ -3763,6 +3787,29 @@ impl<'a> Checker<'a> {
         targets.next().is_none().then(|| first.to_string())
     }
 
+    /// The element type head of a *plain* array operand (`Logic[3]` ->
+    /// `Logic`). A nominal vector family has its own head and is handled by
+    /// the ordinary lookup.
+    fn array_operand_element(&self, t: &Ty) -> Option<String> {
+        match t {
+            Ty::Array {
+                elem, family: None, ..
+            } => self.ty_head(elem),
+            _ => None,
+        }
+    }
+
+    /// Whether `owner` implements the operator `symbol` on itself.
+    fn has_operator_impl(&self, symbol: &str, owner: &str) -> bool {
+        self.operator_sigs
+            .get(&(symbol.to_string(), owner.to_string()))
+            .is_some_and(|sigs| {
+                sigs.iter().any(|(declared, _)| {
+                    declared.as_deref() == Some(owner) || declared.as_deref() == Some("Self")
+                })
+            })
+    }
+
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
             Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
@@ -4298,8 +4345,15 @@ fn blanket_requirement(im: &ImplDecl) -> Option<String> {
     }
 }
 
+/// Keys whose element-wise array forwarding lowering can perform. std may
+/// declare a blanket `for T[]` impl only for these; the list had `and`/`or`/
+/// `not` and not the rest of the logic family, so `Logic[3] xor Logic[3]` had
+/// no implementation at all while `and` on the same operands worked.
 fn is_liftable_array_key(key: &str) -> bool {
-    matches!(key, "Resolve" | "and" | "or" | "not")
+    matches!(
+        key,
+        "Resolve" | "and" | "or" | "not" | "xor" | "nand" | "nor" | "xnor"
+    )
 }
 
 /// Width of a bracketed type index when it is a literal (`unsigned[8]` -> 8);
@@ -5178,14 +5232,22 @@ mod tests {
 
     #[test]
     fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
-        let errors = check_src(
-            "module m;\n\
-             #[precedence = 35]\n\
-             impl<T: Operator<\"xor\", T, T>> Operator<\"xor\", T, T> for T[] {\n\
-               fn apply(self, rhs: T[]) -> T[] { return self; }\n\
-             }\n",
-        );
-        assert_eq!(errors, 1);
+        let blanket = |op: &str| {
+            format!(
+                "module m;\n\
+                 #[precedence = 35]\n\
+                 impl<T: Operator<\"{op}\", T, T>> Operator<\"{op}\", T, T> for T[] {{\n\
+                   fn apply(self, rhs: T[]) -> T[] {{ return self; }}\n\
+                 }}\n"
+            )
+        };
+        // The whole logic family lowers element-wise now, so `xor` is
+        // accepted alongside `and`/`or` rather than held back.
+        assert_eq!(check_src(&blanket("xor")), 0);
+        assert_eq!(check_src(&blanket("nand")), 0);
+        // Arithmetic has no element-wise lowering, and saying so beats
+        // accepting an impl nothing would call.
+        assert_eq!(check_src(&blanket("+")), 1);
     }
 
     #[test]

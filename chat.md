@@ -3415,3 +3415,57 @@ compiler: `-128 >> 2 = -32`, `-128 / -1 = -128` (overflow wraps to itself),
 `-128 + (-1) = 127`. My first draft asserted `-128 + 255 - 254`, which is
 -127, not 127 — arithmetic dressed up as an explanation is still arithmetic
 that can be wrong.
+
+## 2026-07-31 (cont.) — sequential differential, and a second-class operator family
+
+Extended the generator from expressions to *state*: eight small clocked
+designs (counter, down-counter, accumulator, shift, load register, saturating
+counter, toggle, a parity-dependent step), each driven through the same
+fifteen-cycle stimulus and compared against a Python model of the same
+machine. Seven matched exactly. The eighth would not build:
+
+    v = v xor 255;   // error: custom operator `xor` has no implementation
+
+Pulling that thread found a clean split in the logic family:
+
+| | `unsigned op unsigned` | `unsigned op 255` | `Logic[3] op Logic[3]` |
+|---|---|---|---|
+| `and`, `or` | ok | ok | ok |
+| `xor`, `nand`, `nor`, `xnor` | ok | **fail** | **fail** |
+
+`and`/`or`/`not` are built-in `BinOp` variants with their own array and
+literal handling. The rest of the family are *textual* operators, dispatched
+as `BinOp::Custom` by an exact `(symbol, type-head)` lookup — and a plain
+array has no type head, while an integer literal's head is `integer`, which no
+impl declares. Same operators, same truth tables, two entirely different
+dispatch paths, and only one of them complete.
+
+Three layers had to agree:
+
+- **std** declared blanket `for T[]` impls for `and`/`or`/`not` and not the
+  other four; added, with the `#[precedence]` the textual ones require.
+- **`is_liftable_array_key`** was a hardcoded allowlist of what lowering can
+  forward element-wise — `Resolve | and | or | not`.
+- **custom dispatch** now looks through a plain array to its element type,
+  and coerces an integer literal to a Self-typed parameter, which is the rule
+  the symbolic operators already follow (`a + 255` worked, `a xor 255` did
+  not, purely because of which path each took).
+
+A unit test asserted the old rejection, named
+`..._is_rejected_until_it_can_lower`. Rather than delete it I checked whether
+the "until" had arrived: `(a xor b) and c` lowers and matches the truth table,
+and so does the testbench. The one position that fails — `y = if c { a } else
+{ b }` on arrays — fails identically for `and`, so it is a separate gap and
+not a reason to keep `xor` out. Test updated to assert the family is accepted
+and that arithmetic, which genuinely has no element-wise lowering, still is
+not.
+
+Values checked against truth tables computed separately, not read back from
+the compiler. All eight sequential designs match the model afterwards.
+
+**Open, found on the way:** an array-valued if-expression
+(`y = if c { a } else { b }` where `y` is `Logic[4]`) reports `` `y` cannot be
+assigned to``. That is the same misleading shape as the array-operator bug —
+the target is innocent and the right-hand side is what has no form. Logged
+rather than fixed; it wants the same elementwise treatment extended to
+`IfExpr`.

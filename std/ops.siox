@@ -226,6 +226,42 @@ impl<T: Operator<"or", T, T>> Operator<"or", T, T> for T[] {
     }
 }
 
+#[precedence = 35]
+impl<T: Operator<"xor", T, T>> Operator<"xor", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] xor rhs[i]; }
+        return result;
+    }
+}
+
+#[precedence = 40]
+impl<T: Operator<"nand", T, T>> Operator<"nand", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] nand rhs[i]; }
+        return result;
+    }
+}
+
+#[precedence = 30]
+impl<T: Operator<"nor", T, T>> Operator<"nor", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] nor rhs[i]; }
+        return result;
+    }
+}
+
+#[precedence = 35]
+impl<T: Operator<"xnor", T, T>> Operator<"xnor", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] xnor rhs[i]; }
+        return result;
+    }
+}
+
 impl<T: Operator<"not", T, T>> Operator<"not", T, T> for T[] {
     fn apply(self) -> T[] {
         let result: T[] = self;
