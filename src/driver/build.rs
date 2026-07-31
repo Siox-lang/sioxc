@@ -501,6 +501,17 @@ pub fn build(
             .iter()
             .map(|&c| hier.instance(c).name.clone())
             .collect();
+        let entity_ports: HashMap<String, Vec<String>> = modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|it| match it {
+                ast::Item::Entity(e) => Some((
+                    e.name.text.clone(),
+                    e.ports.iter().map(|p| p.name.text.clone()).collect(),
+                )),
+                _ => None,
+            })
+            .collect();
         let ctx = Ctx {
             design,
             map: &map,
@@ -533,6 +544,7 @@ pub fn build(
             fn_env: Default::default(),
             fn_type_env: Default::default(),
             instance_names,
+            entity_ports,
             value_bits,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
@@ -913,6 +925,9 @@ struct Ctx<'a> {
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
     instance_names: std::collections::HashSet<String>,
+    /// Entity name -> its port names in declaration order, so a *positional*
+    /// connection (`{ x, 4 }`) can be resolved to the port it fills.
+    entity_ports: HashMap<String, Vec<String>>,
     /// Harness-wide `_BitInt` width, also the upper bound for decimal
     /// formatting capacity.
     value_bits: u32,
@@ -2932,19 +2947,42 @@ impl Ctx<'_> {
     /// bind for `{ .n = 7 }`; the `<inst>.<port>` key reaches the port signal
     /// either way.
     fn seed_valued_connections(&self, l: &ast::LetDecl, b: &mut String) -> Result<(), String> {
-        let Some(ast::Expr::Construct { args, .. }) = &l.value else {
-            return Ok(());
+        // A positional connection fills ports in declaration order. It also
+        // *parses* as a concatenation — a brace list with no leading `.` is
+        // ambiguous by shape and only the declared type tells them apart —
+        // so both forms arrive here.
+        let ports =
+            l.ty.as_ref()
+                .and_then(type_head_name)
+                .and_then(|head| self.entity_ports.get(head));
+        let by_position = |i: usize| ports.and_then(|ps| ps.get(i)).cloned();
+        let pairs: Vec<(String, &ast::Expr)> = match &l.value {
+            Some(ast::Expr::Construct { args, .. }) => args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| {
+                    let value = c.value.as_ref()?;
+                    let port = match &c.field {
+                        Some(f) => f.text.clone(),
+                        None => by_position(i)?,
+                    };
+                    Some((port, value))
+                })
+                .collect(),
+            Some(ast::Expr::Concat { parts, .. }) => parts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| Some((by_position(i)?, p)))
+                .collect(),
+            _ => return Ok(()),
         };
-        for c in args {
-            let (Some(field), Some(value)) = (&c.field, &c.value) else {
-                continue;
-            };
+        for (port, value) in pairs {
             // A plain name is already bound, and re-driving it here would
             // fight the binding.
             if expr_path(value).is_some() {
                 continue;
             }
-            let key = format!("{}.{}", l.name.text, field.text);
+            let key = format!("{}.{}", l.name.text, port);
             if !self.map.contains_key(&key) {
                 continue;
             }

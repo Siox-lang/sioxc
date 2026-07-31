@@ -3085,3 +3085,30 @@ occupies one bit and a `Logic` four — the latter because `Logic` is a newtype
 over nine-valued `ULogic`, and lowering sizes an enum to hold its largest
 discriminant. Mirroring that rule makes both engines agree (`4081` on each),
 and the check is in the corpus now rather than in my head.
+
+### The same bug had a second spelling
+
+Sweeping the three connection forms of spec 3.12 against each other, the
+positional one still read `3` where the others read `7`:
+
+    let byName: Add = { .a = x, .b = 4 };   // 7
+    let byPosition: Add = { x, 4 };        // 3  — `.b` never arrived
+    let byPost: Add = {}; byPost.a = x; …  // 7
+
+The literal-connection fix was written against `Expr::Construct`, and a
+positional connection is not one. A brace list with no leading `.` **parses as
+a concatenation** — the two are ambiguous by shape and only the declared type
+tells them apart, so a positional connection reaches the emitter as
+`Expr::Concat` and my match skipped it.
+
+This is the fix-one-site-and-move-on failure again, and it is the third time
+this session. The pattern is specific enough to name: when a fix keys off an
+AST shape, ask which *other* shapes carry the same meaning before ask
+whether the fix works. Here "connection" spans two variants for a reason
+documented in the spec, and reading spec 3.12 would have been quicker than
+the probe that caught it.
+
+Both forms are handled through one list of `(port, value)` pairs now, so a
+third spelling would have one place to be added rather than two to be kept in
+step. Verified against a hardware instance using the same positional form:
+`7` on both sides.
