@@ -3592,3 +3592,45 @@ worth pinning: spec 3.13's next-state rule must apply *per field*, so
 exchanges the two fields instead of one overwriting the other. It does. Now
 tested, along with two fields advancing on one edge and a value derived from
 both seeing a consistent pair.
+
+## 2026-07-31 (cont.) — the compiler could be crashed
+
+Two ticks of behavioural sweeps had found nothing, so this one changed class
+entirely: instead of asking whether the answers are right, ask whether the
+tool survives input it was not expecting.
+
+Failure reporting is right — three tests, the middle one failing, all three
+still run, the failure is named with its message, and the exit code is 1. The
+AOT path is right too: an emitted object exports a clean C ABI (`sx_reset`,
+`sx_set`, `sx_read`, `sx_settle`), and driving three designs through it from C
+matched their models. I had started writing that up as an uncovered path
+before finding `tests/aot_object.rs`, which already does exactly that —
+the second time today that reading the existing tests first would have saved
+the work.
+
+Ten hostile inputs then passed cleanly: 3000-character identifiers, a
+400-digit literal, 2000 signals, 60-deep struct types, unicode strings, a
+truncated file, embedded NUL bytes. Pushing harder found real crashes:
+
+    y = ((((… 2000 deep …))));      stack overflow, SIGABRT, no diagnostic
+    if a > 0 { if a > 0 { … } }     same
+    y = (((( … unclosed            same
+
+**The parser had no depth bound.** Recursive descent recurses as deep as the
+input nests, so deeply nested — or merely *unbalanced* — input walked off the
+stack and aborted the process without a word. The unclosed-paren case is the
+one a person could actually hit; the others matter for generated code, and all
+of them matter for the LSP, which shares this parser and would take the
+editor's language server down with it.
+
+Bounded at 128 levels with a single diagnostic. The number came from
+measurement rather than taste, and the measurement corrected me twice: 256
+survived on the main thread and still overflowed inside a Rust *test* thread,
+whose stack is 2MB against the main thread's 8MB. A limit is only as good as
+the smallest stack the parser runs on, and a language-server worker is closer
+to the test thread than to `main`. Real programs nest single digits deep, so
+128 costs nothing and leaves a wide margin.
+
+The regression test covers both a run that must still parse and both crashing
+shapes — closed *and* unclosed, since the unbalanced case reaches the limit by
+a different route.

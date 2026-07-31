@@ -87,12 +87,27 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
     out
 }
 
+/// How deeply expressions and blocks may nest. A recursive-descent parser has
+/// no natural bound, so deeply nested input — or *unbalanced* input that looks
+/// deeply nested, like a run of unclosed `(` — recursed until the stack
+/// overflowed and the process aborted, with no diagnostic at all. Real
+/// programs nest single digits deep. The bound has to hold on the *smallest*
+/// stack the parser runs on, not the main thread's: a 2MB thread (a Rust test
+/// thread, and plausibly a language-server worker) gives out well before the
+/// 8MB main thread does, so this is set from the former.
+const MAX_NESTING: u32 = 128;
+
 pub struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
     pos: usize,
     sink: &'a mut DiagnosticSink,
     custom_operators: HashMap<String, u8>,
+    /// Current expression/block nesting, against `MAX_NESTING`.
+    depth: u32,
+    /// Whether the depth limit has already been reported, so one over-deep
+    /// expression yields one diagnostic rather than one per level.
+    depth_reported: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -116,6 +131,8 @@ impl<'a> Parser<'a> {
             pos: 0,
             sink,
             custom_operators: HashMap::new(),
+            depth: 0,
+            depth_reported: false,
         }
     }
 
@@ -1018,6 +1035,19 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Block {
         let start = self.span();
+        if self.enter_nesting() {
+            self.expect(TokenKind::LBrace, "to open a block");
+            return Block {
+                stmts: Vec::new(),
+                span: start,
+            };
+        }
+        let parsed = self.parse_block_inner(start);
+        self.depth -= 1;
+        parsed
+    }
+
+    fn parse_block_inner(&mut self, start: crate::diag::Span) -> Block {
         self.expect(TokenKind::LBrace, "to open a block");
         let mut stmts = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -1348,6 +1378,20 @@ impl<'a> Parser<'a> {
 
     fn parse_expr(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
+        if self.enter_nesting() {
+            // Too deep: stop descending and hand back a placeholder. The
+            // caller's error recovery consumes the rest.
+            return Expr::Int {
+                text: String::new(),
+                span: start,
+            };
+        }
+        let parsed = self.parse_expr_inner(no_struct, start);
+        self.depth -= 1;
+        parsed
+    }
+
+    fn parse_expr_inner(&mut self, no_struct: bool, start: crate::diag::Span) -> Expr {
         if self.eat(TokenKind::DotDot) {
             if self.eat(TokenKind::Eq) {
                 self.error_here("Siox ranges are already inclusive; use `..` instead of `..=`");
@@ -2322,6 +2366,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Take one level of nesting. Returns true when the limit is reached, in
+    /// which case the caller must not descend further.
+    fn enter_nesting(&mut self) -> bool {
+        if self.depth >= MAX_NESTING {
+            if !self.depth_reported {
+                self.depth_reported = true;
+                self.error_here(format!(
+                    "expression or block nests more than {MAX_NESTING} levels deep"
+                ));
+            }
+            return true;
+        }
+        self.depth += 1;
+        false
+    }
+
     fn error_here(&mut self, msg: impl Into<String>) {
         let span = self.span();
         self.error_at(span, msg);
@@ -2370,6 +2430,37 @@ fn unescape(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A recursive-descent parser has no natural depth bound: 2000 nested
+    /// parentheses — or the same run left *unclosed* — overflowed the stack
+    /// and aborted the process with no diagnostic. The LSP shares this parser,
+    /// so that took the editor's language server down with it.
+    #[test]
+    fn deep_nesting_is_reported_rather_than_overflowing_the_stack() {
+        let nest = |n: usize, closed: bool| {
+            format!(
+                "module m;\nentity E {{ a: Bit in, y: Bit out }}\nimpl E {{ y = {}a{}; }}\n",
+                "(".repeat(n),
+                if closed { ")".repeat(n) } else { String::new() }
+            )
+        };
+        // Real programs nest single digits deep; this much still parses.
+        let mut sink = DiagnosticSink::new();
+        crate::syntax::parse_module(FileId(0), &nest(100, true), &mut sink);
+        assert_eq!(sink.error_count(), 0, "100 levels must still parse");
+
+        // Past the limit it is a diagnostic, and only one of them.
+        for closed in [true, false] {
+            let mut sink = DiagnosticSink::new();
+            crate::syntax::parse_module(FileId(0), &nest(2000, closed), &mut sink);
+            let deep = sink
+                .diagnostics()
+                .iter()
+                .filter(|d| d.message.contains("nests more than"))
+                .count();
+            assert_eq!(deep, 1, "one depth diagnostic, closed={closed}");
+        }
+    }
     use super::*;
     use crate::diag::FileId;
 
