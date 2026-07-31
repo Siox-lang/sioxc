@@ -5390,6 +5390,8 @@ impl<'a> Lowering<'a> {
             // `print!("{}", a / b)` rendered a `signed` result as unsigned
             // (-3 came out as 253) while `let q: signed[8] = a / b;` — the
             // same value, merely bound first — printed correctly.
+            // `not x` is whatever `x` is, in hardware as in the testbench.
+            ast::Expr::Unary { rhs, .. } => self.operand_type_name(rhs),
             ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
                 let l = self.operand_type_name(lhs);
                 let r = self.operand_type_name(rhs);
@@ -5656,10 +5658,22 @@ impl<'a> Lowering<'a> {
                     self.binary_uses_kernel_integer(lhs, rhs),
                 ))
             }
-            ast::Expr::Unary { op, rhs, .. } => Val::Scalar(Expr::Unary {
-                op: lower_unop(*op),
-                rhs: Box::new(self.lower_scalar_env(rhs, env)),
-            }),
+            ast::Expr::Unary { op, rhs, .. } => {
+                // `not x` on an enum operand inlines its impl, as it does in
+                // `lower_expr`. Building a raw unary here negated the
+                // discriminant instead of consulting `Logic`'s table, so
+                // `(not a) and b` gave '1' where 'X' was meant — while
+                // `let t = not a; t and b`, the same thing named, was right.
+                if *op == ast::UnOp::Not {
+                    if let Some(v) = self.inline_unary("not", rhs) {
+                        return v;
+                    }
+                }
+                Val::Scalar(Expr::Unary {
+                    op: lower_unop(*op),
+                    rhs: Box::new(self.lower_scalar_env(rhs, env)),
+                })
+            }
             ast::Expr::SuffixLit { .. } => self.inline_suffix(e).unwrap_or_else(|| {
                 Val::Scalar(self.lower_expr(e)) // fixed fs/Hz table fallback
             }),

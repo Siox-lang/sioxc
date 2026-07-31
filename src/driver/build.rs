@@ -2367,6 +2367,11 @@ impl Ctx<'_> {
             ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => self
                 .dispatch_operand_family(lhs)
                 .or_else(|| self.dispatch_operand_family(rhs)),
+            // `not x` is whatever `x` is. Without this `(not x) and y` lost
+            // the family and fell back to a bitwise `and` over discriminants:
+            // `'X'` came out as `'1'`, where the same value bound to a name
+            // first gave `'X'`.
+            ast::Expr::Unary { rhs, .. } => self.dispatch_operand_family(rhs),
             _ => {
                 // Any named value: a plain local, or a struct leaf like `p.x`
                 // (an `Expr::Field`, which a shape match misses — a connected
@@ -2512,30 +2517,18 @@ impl Ctx<'_> {
     }
 
     fn c_dispatch_not(&self, rhs: &ast::Expr) -> Result<Option<String>, String> {
-        let ast::Expr::Path(p) = rhs else {
+        // Any operand that carries a family, not only a bare name: asking for
+        // a `Path` here meant `not (a and b)` skipped `Logic`'s table and
+        // negated the discriminant, giving '0' where hardware said 'X'.
+        let Some((family, operand_width)) = self.dispatch_operand_family(rhs) else {
             return Ok(None);
         };
-        if p.segments.len() != 1 {
-            return Ok(None);
-        }
-        let name = p.segments[0].text.clone();
-        let family = self
-            .local_families
-            .borrow()
-            .get(&name)
-            .cloned()
-            .or_else(|| self.local_types.borrow().get(&name).cloned());
-        let Some(family) = family else {
-            return Ok(None);
-        };
+        let width = operand_width.unwrap_or(0);
         // A packed Vector forwards the blanket `T[]` implementation of core
         // `not`; the native harness performs that element-wise operation
         // directly at the concrete width.
-        if self.families.contains(&family) {
-            let width = self.name_width(&name).unwrap_or(0);
-            if width > 0 {
-                return Ok(Some(mask_c(&format!("~({})", self.expr(rhs)?), width)));
-            }
+        if self.families.contains(&family) && width > 0 {
+            return Ok(Some(mask_c(&format!("~({})", self.expr(rhs)?), width)));
         }
         let Some((f, _)) = self
             .op_impls
@@ -2547,7 +2540,6 @@ impl Ctx<'_> {
         let Some(body) = f.body.as_ref() else {
             return Ok(None);
         };
-        let width = self.name_width(&name).unwrap_or(0);
         let mut env = HashMap::new();
         env.insert("self".to_string(), format!("({})", self.expr(rhs)?));
         env.insert("self::length".to_string(), format!("{width}ULL"));
@@ -3593,6 +3585,7 @@ impl Ctx<'_> {
                     .signed_vector_width(lhs)
                     .or_else(|| self.signed_vector_width(rhs));
             }
+            ast::Expr::Unary { rhs, .. } => return self.signed_vector_width(rhs),
             _ => {}
         }
         // A conversion names its target directly: `signed[8](x)` is a Call

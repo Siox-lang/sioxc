@@ -2669,3 +2669,45 @@ Worth noting what the generated sweep did *not* find: every case it covered
 used typed locals, because that is what a generator naturally emits. The bug
 lived one step outside that shape. Generated breadth and hand-written
 awkwardness find different things.
+
+## 2026-07-31 (cont.) — the operand that is not a name
+
+Applied the oracle method to the two areas it had not touched.
+
+**Logic**: the std_logic_1164 tables transcribed from the LRM, all 9x9 of
+`and`/`or`/`xor` plus `not` — 253 assertions. The first run failed on `U or
+0`, and the fault was mine: I had mis-transcribed the `or` row, putting the
+forcing `1` in the wrong column. Checking the oracle before blaming the
+compiler is the whole discipline; with the row corrected, std passes every
+cell.
+
+**Timing**: a counter on a 10ns clock sampled at 12 points, expected counts
+computed from "rising edges land at 5, 15, 25…" rather than read off the
+simulator. Exact-edge and just-after boundaries included. All correct.
+
+So both oracles agreed — and then the hand-written awkward cases found two
+bugs the generators never would, because a generator writes `let t = not x;`
+and a person writes `(not x) and y`:
+
+- `(not x) and one` gave `'1'` where the table says `'X'`. Three functions
+  answer "what family is this operand" and all three knew `IfExpr`, `Match`
+  and `Binary` — I added `Binary` to them earlier today — and none knew
+  `Unary`. Added there.
+- That fixed the dispatch but not the value, because `lower_val_env` built a
+  *raw* `Expr::Unary` for a bound operand instead of inlining the impl the way
+  `lower_expr` does. So the discriminant was negated arithmetically.
+- `not (a and b)` was right in hardware and `'0'` in the testbench:
+  `c_dispatch_not` required its operand to be a bare `Path`. It asks
+  `dispatch_operand_family` now, which walks every shape.
+
+Same shape as the whole day: a property derived for named operands and left
+undone for expressions. Four separate functions have now needed the same
+lesson.
+
+**Logged, not changed**: an undriven scalar `Logic` powers on at `'U'` (via
+`impl New for Logic`) while an element of `Logic[4]` powers on at `'0'`. The
+spec's rule — "an array → each element defaulted", and `impl New` overrides
+the structural default — says both should be `'U'`; the packed `unsigned`
+/`signed` case is the one that is `'0'` by design. Changing it moves the
+power-on state of every Logic array, so it wants a decision rather than a
+quiet fix.
