@@ -3134,7 +3134,7 @@ impl Ctx<'_> {
             } else if is_char {
                 cfmt.push_str("%s");
                 cargs.push(format!("sx_utf8(({}), (char[5]){{0}})", self.expr(a)?));
-            } else if self.is_literal_integer_expr(a) || self.is_integer_operand(a) {
+            } else if Self::is_literal_integer_expr(a) || self.is_integer_operand(a) {
                 cfmt.push_str("%lld");
                 let rendered = self.expr(a)?;
                 cargs.push(format!(
@@ -3646,15 +3646,15 @@ impl Ctx<'_> {
     /// `is_integer_operand`'s recursion: that walks a `Binary` with `or`, so a
     /// narrow literal beside a wide one would drag the pair onto the 64-bit
     /// path and truncate it.
-    fn is_literal_integer_expr(&self, e: &ast::Expr) -> bool {
+    fn is_literal_integer_expr(e: &ast::Expr) -> bool {
         match e {
             // A literal too wide for the native word keeps the wide path: the
             // integer rendering casts to `long long`, which would truncate
             // `18446744073709551616 + 1` to 1.
             ast::Expr::Int { text, .. } => !text.contains('.') && literal_fits_word(text),
-            ast::Expr::Unary { rhs, .. } => self.is_literal_integer_expr(rhs),
+            ast::Expr::Unary { rhs, .. } => Self::is_literal_integer_expr(rhs),
             ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
-                self.is_literal_integer_expr(lhs) && self.is_literal_integer_expr(rhs)
+                Self::is_literal_integer_expr(lhs) && Self::is_literal_integer_expr(rhs)
             }
             _ => false,
         }
