@@ -3364,3 +3364,54 @@ One overflow to fix on the way — an existing test uses a range wide enough to
 overflow `hi - lo`, so the subtraction is checked and falls back to "unknown",
 which is what rejects it later anyway. The test suite caught that immediately;
 the corpus never would have.
+
+## 2026-07-31 (cont.) — automating the differential
+
+Hand-written probes had stopped paying, so this round automated the
+comparison: a generator emitting one program per expression shape, each
+computing the same expression in hardware and in the testbench and printing
+both. Twenty-eight shapes across four value vectors — 112 cases in one run.
+
+Eight disagreed, and they were all the same bug:
+
+    s + t   where s = 0, t = -100    hw=156  tb=-100
+    s - t   where s = -128, t = -1   hw=129  tb=-127
+    s / t   where s = 50,  t = -7    hw=249  tb=-7
+    s >> 2  where s = -128           hw=224  tb=-32
+
+Every pair is the same eight bits read with different signedness, which is
+what pointed at the cause rather than at four separate arithmetic faults.
+
+**A `signed[N]` value read back through an instance port lost its family.**
+A testbench local records its vector family from its own declaration; a port
+accessed as `dut.y` had no such record, so it compared and printed unsigned.
+The sharpest symptom is the one an assertion found:
+
+    assert!(d.y == tb,   ...)   // passes — identical bits
+    assert!(d.y == -100, ...)   // fails  — compared unsigned
+
+Both halves of that are true at once, which is exactly why the bug survived:
+any testbench that checks a DUT output against another computed value agrees
+with itself, and only a comparison against a written-out negative literal
+disagrees. Fixed by giving each `<instance>.<port>` the family its declared
+type carries. All 112 cases agree afterwards, and a widened rerun of 108 more
+(multiply, negate, abs, conversions, mixed selects) found nothing further.
+
+### Verifying the test, properly this time
+
+My first attempt to prove the new test could fail was itself broken: I mutated
+the port to `unsigned[8]` in a copy whose imports I had already narrowed to
+`signed`, so the type did not resolve and the "mutant" was not testing what I
+thought. The test passed and I nearly recorded that as reassurance.
+
+The reliable check is to disable the *fix* rather than deform the test: with
+`record_instance_port_families` commented out, the test fails on exactly the
+assertion about the negative literal. That is worth the rebuild — a mutation
+of the test source can miscompile into a tautology, while removing the code
+under test cannot.
+
+Expected values came from a separate two's-complement model, not from the
+compiler: `-128 >> 2 = -32`, `-128 / -1 = -128` (overflow wraps to itself),
+`-128 + (-1) = 127`. My first draft asserted `-128 + 255 - 254`, which is
+-127, not 127 — arithmetic dressed up as an explanation is still arithmetic
+that can be wrong.

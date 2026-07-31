@@ -501,13 +501,16 @@ pub fn build(
             .iter()
             .map(|&c| hier.instance(c).name.clone())
             .collect();
-        let entity_ports: HashMap<String, Vec<String>> = modules
+        let entity_ports: HashMap<String, Vec<(String, ast::Type)>> = modules
             .iter()
             .flat_map(|m| &m.items)
             .filter_map(|it| match it {
                 ast::Item::Entity(e) => Some((
                     e.name.text.clone(),
-                    e.ports.iter().map(|p| p.name.text.clone()).collect(),
+                    e.ports
+                        .iter()
+                        .map(|p| (p.name.text.clone(), p.ty.clone()))
+                        .collect(),
                 )),
                 _ => None,
             })
@@ -925,9 +928,10 @@ struct Ctx<'a> {
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
     instance_names: std::collections::HashSet<String>,
-    /// Entity name -> its port names in declaration order, so a *positional*
-    /// connection (`{ x, 4 }`) can be resolved to the port it fills.
-    entity_ports: HashMap<String, Vec<String>>,
+    /// Entity name -> its ports in declaration order, so a *positional*
+    /// connection (`{ x, 4 }`) resolves to the port it fills and an
+    /// instance's ports can be given the family their type declares.
+    entity_ports: HashMap<String, Vec<(String, ast::Type)>>,
     /// Harness-wide `_BitInt` width, also the upper bound for decimal
     /// formatting capacity.
     value_bits: u32,
@@ -2849,6 +2853,7 @@ impl Ctx<'_> {
                 // port kept its default and the testbench read 0 while
                 // hardware lowered the same connection to a constant driver.
                 ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {
+                    self.record_instance_port_families(l);
                     self.seed_valued_connections(l, &mut b)?;
                 }
                 ast::ImplItem::Let(l) if self.try_declare_fs_read_local(l, &mut b)? => {}
@@ -2997,6 +3002,28 @@ impl Ctx<'_> {
         Some((u64::BITS - max.leading_zeros()).max(1))
     }
 
+    /// Give each `<instance>.<port>` the vector family its declared type
+    /// carries. A local records this from its own declaration; a port read
+    /// through the instance had no entry, so `d.y` on a `signed[8]` port
+    /// compared and printed as unsigned — `d.y == -100` was false while
+    /// `d.y == tb` against an identical local was true.
+    fn record_instance_port_families(&self, l: &ast::LetDecl) {
+        let Some(ports) =
+            l.ty.as_ref()
+                .and_then(type_head_name)
+                .and_then(|head| self.entity_ports.get(head))
+        else {
+            return;
+        };
+        for (port, ty) in ports {
+            if let Some((family, _)) = self.declared_family(ty) {
+                self.local_families
+                    .borrow_mut()
+                    .insert(format!("{}.{}", l.name.text, port), family);
+            }
+        }
+    }
+
     /// Seed the ports of an instance whose connection is a value rather than
     /// a name. Elaboration binds `{ .n = sig }` by name and has nothing to
     /// bind for `{ .n = 7 }`; the `<inst>.<port>` key reaches the port signal
@@ -3010,7 +3037,7 @@ impl Ctx<'_> {
             l.ty.as_ref()
                 .and_then(type_head_name)
                 .and_then(|head| self.entity_ports.get(head));
-        let by_position = |i: usize| ports.and_then(|ps| ps.get(i)).cloned();
+        let by_position = |i: usize| ports.and_then(|ps| ps.get(i)).map(|(n, _)| n.clone());
         let pairs: Vec<(String, &ast::Expr)> = match &l.value {
             Some(ast::Expr::Construct { args, .. }) => args
                 .iter()
