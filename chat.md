@@ -2783,3 +2783,37 @@ Also probed and left alone: a field off a struct-valued expression
 (`(if c { p } else { q }).a`) is unsupported in both engines, reported as
 E-P017 in hardware and by a vaguer message in the testbench. The bound form
 now works, which is the natural spelling anyway.
+
+## 2026-07-31 (cont.) — a newtype four bits wide
+
+Finishing the aggregate sweep. Array copy, derived-enum copy and derived-enum
+branch selection are all correct. The newtype-over-a-vector is not, and it was
+four separate faults stacked on one declaration:
+
+    struct Byte(unsigned[8]);
+    let b: Byte = Byte(200);     // read 4, then 0, then 200
+
+1. **The signal was four bits.** `enum_representation` walks a field-less
+   struct to its base looking for an enum, and `Byte` -> `unsigned[8]` ->
+   `unsigned` -> `Logic[]` -> `Logic` ends at one, four bits wide. It stepped
+   *through* the vector into its element type. A newtype over an array is a
+   derived vector, so the walk stops there now. Every `Byte` signal had been
+   silently truncating.
+2. **The constructor lowered to nothing.** `lower_conversion` treats a
+   newtype as value-transparent only when it derives from a kernel scalar
+   (`time(v)`, `frequency(v)`); one over a vector matched no conversion shape
+   and became `Unknown`.
+3. **The initializer seeded nothing.** `const_init_value` ends in
+   `eval_const_fns`, which has no rule for a call, so `let b: Byte = Byte(200)`
+   left the signal at its default.
+4. **The testbench had no case either**, reporting "unsupported call `Byte`" —
+   the one-argument sibling of the zero-argument `T()` gap fixed earlier.
+
+Worth noting how the first one hid: `by'length` reported 8 all along, because
+the testbench computes widths from `derived_widths` while hardware asks
+`enum_representation`. Two sources for one number, agreeing everywhere except
+the case that mattered. Asking the language for the width would never have
+found it; only reading the emitted IR did.
+
+The corpus never declared a newtype over a vector, which is why four
+independent faults could sit on the same declaration undisturbed.

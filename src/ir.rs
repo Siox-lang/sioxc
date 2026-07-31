@@ -2133,6 +2133,16 @@ impl<'a> Lowering<'a> {
             // flattens and never lands here.
             ast::Expr::StrLit { text, .. } => Some(self.decode_bit_string('b', text).0),
             // --- integer / const-fn arithmetic ---
+            // A newtype constructor is value-transparent, so `let b: Byte =
+            // Byte(200);` seeds 200. `eval_const_fns` has no rule for a call,
+            // so the signal kept its default and read 0.
+            ast::Expr::Call { callee, args, .. }
+                if expr_path(callee)
+                    .and_then(|name| self.structs.get(&name).cloned())
+                    .is_some_and(|s| s.fields.is_empty() && s.base.is_some()) =>
+            {
+                self.const_init_value(args.first()?, target)
+            }
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
     }
@@ -2675,7 +2685,15 @@ impl<'a> Lowering<'a> {
             if !declaration.fields.is_empty() {
                 return None;
             }
-            name = type_head_name(declaration.base.as_ref()?)?;
+            let base = declaration.base.as_ref()?;
+            // A newtype over an *array* is a derived vector, not an enum
+            // wearing a new name: `struct Byte(unsigned[8])` is eight bits.
+            // Walking on reached `unsigned` -> `Logic[]` -> `Logic` and took
+            // the element's four, so every `Byte` signal silently truncated.
+            if matches!(base, ast::Type::Indexed { .. }) {
+                return None;
+            }
+            name = type_head_name(base)?;
         }
         None
     }
@@ -5310,6 +5328,31 @@ impl<'a> Lowering<'a> {
                 });
                 if scalar_newtype {
                     return Some(self.lower_scalar_env(args.first()?, env));
+                }
+                // A field-less struct over a *vector* (`struct Byte(unsigned[8])`)
+                // is the same idea at a width: the constructor keeps the value
+                // and the type fixes how many bits of it there are. Without
+                // this `Byte(200)` matched no conversion shape at all and
+                // lowered to `Unknown`.
+                if let Some(base) = self
+                    .structs
+                    .get(target)
+                    .filter(|s| s.fields.is_empty())
+                    .and_then(|s| s.base.as_ref())
+                {
+                    if matches!(base, ast::Type::Indexed { .. }) {
+                        let w = type_width(base, &self.cur_env, &self.free_fns, &self.structs);
+                        let v = self.lower_scalar_env(args.first()?, env);
+                        return Some(if w > 0 && w < 64 {
+                            Expr::Slice {
+                                base: Box::new(v),
+                                hi: w - 1,
+                                lo: 0,
+                            }
+                        } else {
+                            v
+                        });
+                    }
                 }
             }
         }

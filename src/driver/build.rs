@@ -4200,6 +4200,21 @@ impl Ctx<'_> {
                 return Ok(v);
             }
         }
+        // `Byte(200)` — a newtype constructor is value-transparent, narrowed
+        // to the width its base fixes. Hardware treats it as a conversion;
+        // here it fell through to "unsupported call `Byte`".
+        if args.len() == 1 {
+            if let Some(name) = expr_path(callee) {
+                if let Some(&width) = self.derived_widths.get(&name) {
+                    let v = self.expr(&args[0])?;
+                    return Ok(if width > 0 && width < 64 {
+                        mask_c(&v, width)
+                    } else {
+                        v
+                    });
+                }
+            }
+        }
         // A bare name, or `Type::name` for a static associated fn.
         let Some(key) = siox::ir::call_fn_key(callee) else {
             return Err("unsupported call in testbench expression".into());
