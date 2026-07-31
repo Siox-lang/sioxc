@@ -27,20 +27,29 @@ step() {
     printf '%-44s ' "$name"
     if "$@" >/tmp/ci-local.log 2>&1; then
         echo "ok"
-    else
-        echo "FAIL"
-        tail -20 /tmp/ci-local.log | sed 's/^/    /'
-        fail=1
+        return 0
     fi
+    echo "FAIL"
+    tail -20 /tmp/ci-local.log | sed 's/^/    /'
+    fail=1
+    return 1
 }
 step "fmt"                       "${cargo[@]}" fmt --all --check
 step "check (frontend only)"     "${cargo[@]}" check --locked --no-default-features --lib
 step "clippy (frontend only)"    "${cargo[@]}" clippy --locked --no-default-features --lib -- -D warnings
-step "build"                     "${cargo[@]}" build --locked
+# The corpus steps run the *binary on disk*. If the build failed, that binary
+# is whatever the last good build left there, and the corpus would report on
+# code that is no longer in the tree — a green line for a red run.
+built=0
+step "build" "${cargo[@]}" build --locked && built=1
 step "test"                      "${cargo[@]}" test --locked
 step "test (bitpack)"            "${cargo[@]}" test --locked --features bitpack
 step "clippy (all targets)"      "${cargo[@]}" clippy --locked --all-targets --all-features -- -D warnings
-step "corpus"                    bash "$(dirname "$0")/test-corpus.sh" "$corpus"
-SIOXC_FEATURES=bitpack \
-step "corpus (bitpack)"          bash "$(dirname "$0")/test-corpus.sh" "$corpus"
+if [ "$built" = 1 ]; then
+    step "corpus"                bash "$(dirname "$0")/test-corpus.sh" "$corpus"
+    SIOXC_FEATURES=bitpack \
+    step "corpus (bitpack)"      bash "$(dirname "$0")/test-corpus.sh" "$corpus"
+else
+    printf '%-44s %s\n' "corpus" "SKIPPED (build failed; the binary on disk is stale)"
+fi
 exit $fail
