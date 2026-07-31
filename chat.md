@@ -2846,3 +2846,35 @@ the decimal path. Fixed where the other enum-rendering rules live.
 So the "two sources" sweep found one small bug and confirmed three quantities
 sound. Worth the pass: those are exactly the places where a wrong answer would
 have gone unnoticed, since every consumer of a wrong-but-shared value agrees.
+
+## 2026-07-31 (cont.) — one local, three instances, two answers
+
+Moved from values to structure. Instance chains, instance independence,
+generate-`for`, nested generics, generate-`if`, instance arrays and three-level
+nesting — and for a while it looked like three of those were broken. They were
+not. One bug underneath them was.
+
+**A testbench local wired to several instances only reached the last one.**
+
+    let a: unsigned[8] = 10;
+    let i1: Inc = { .a = a, .y = y1 };
+    let i2: Inc = { .a = a, .y = y2 };
+    let i3: Inc = { .a = a, .y = y3 };
+    -> 1, 1, 11
+
+A connected name has one entry in `map` and every port it feeds in `aliases`.
+The assignment path drives them all — that is task #23, "multi-port write
+fanout" — and the *initializer* path drove only the `map` entry. So `a = 20;`
+worked and `let a = 10;` did not, on the same three instances, which is why
+the failure looked like three unrelated structural bugs: an instance array
+reading 4 instead of 14, a generate-`if` giving 1/0 instead of 11/10, a
+generic chain off by its input. Every one of them was `a` arriving as 0.
+
+One clock or reset feeding two DUTs is the ordinary shape of this, and the
+corpus never wrote it — its multi-instance tests chain output to input, where
+each local feeds exactly one port.
+
+The thing worth remembering: I was three probes into recording separate
+structural bugs before noticing the outputs were all *exactly* what they would
+be with the input at zero. Reading the numbers as a set rather than one at a
+time is what turned three reports into one fix.

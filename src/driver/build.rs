@@ -2718,6 +2718,22 @@ impl Ctx<'_> {
                             if let Some(v) = value {
                                 let e = self.value_for(id, v)?;
                                 b.push_str(&format!("    sx_set({}, {e});\n", id.0));
+                                // A name connected to several instance ports
+                                // has one entry in `map` and all of them in
+                                // `aliases`. Seeding only the first left every
+                                // other instance reading its default: three
+                                // `Inc`s fed by one local gave 1, 1, 11. The
+                                // assignment path already drives them all.
+                                for a in self
+                                    .aliases
+                                    .get(&l.name.text)
+                                    .map(|v| v.as_slice())
+                                    .unwrap_or(&[])
+                                {
+                                    if *a != id {
+                                        b.push_str(&format!("    sx_set({}, {e});\n", a.0));
+                                    }
+                                }
                             }
                         } else {
                             let e = match value {
