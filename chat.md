@@ -3034,3 +3034,54 @@ All five of the batch are closed. The technique earns its place: ten broken
 programs took a few minutes to write and found four wrong answers and one bad
 message, in areas the corpus covers well. Correct programs cannot report on
 the handling of incorrect ones, and the compiler is judged on both.
+
+## 2026-07-31 (cont.) — a probe that used the wrong syntax found a real bug
+
+Sweeping which expression shapes the testbench emitter can translate that
+hardware already lowers. Twelve shapes; ten worked and matched hand-computed
+values. Two did not:
+
+- `{ a, b }` — "unsupported testbench expression". Hardware has always
+  lowered concatenation.
+- `{ hi, lo } = src` as an assignment *target* — "unsupported assignment
+  target". Also fine in hardware.
+
+One probe reported `` `length` is not a variant of `v` `` because I wrote
+`v::length`. That was my error — the sigil split moved attributes to the tick,
+so it is `v'length`, which works. Worth noting that the message for the old
+spelling is confusing, and worth noting more that I had a stale note about
+the syntax and trusted it over the corpus.
+
+Both gaps are now implemented, with the first element most significant in each
+direction. Rather than write a second signal-write path for the multi-target
+form, the fan-out moved into `drive_signal` and both callers use it — six of
+this session's bugs were a duplicated write site missing the alias loop, so
+the shared function is the point.
+
+### The differential caught what the implementation hid
+
+With the target form working, the testbench gave `165 12` and hardware gave
+`0 0` for the same design. Not a concat bug at all: the plain slice version
+`hi = src[11..4]` was also `0 0`, and the common factor was the connection
+`{ .src = 0xA5C }`.
+
+**A port connected to a literal read zero in a testbench.** Elaboration binds
+a connection by the *name* it references, and a value has no name to bind, so
+the port kept its default — while hardware lowers the identical connection to
+a constant driver and gets it right. `let d: D = { .n = 7 }` is an ordinary
+way to write a testbench and it silently ran against zeros; every assertion
+downstream of it was checking the wrong design.
+
+It survived because the corpus never connects a literal to a port — 117 files
+and each one passes its stimulus through a local first. The bug needed a
+program nobody had written yet, which is the same reason the wrong-programs
+batch worked earlier today.
+
+### Enum widths, measured rather than assumed
+
+Concatenating a `Bit` needed the emitter to know a scalar enum's width, which
+only vectors record. Instead of deriving a rule I measured hardware: a `Bit`
+occupies one bit and a `Logic` four — the latter because `Logic` is a newtype
+over nine-valued `ULogic`, and lowering sizes an enum to hold its largest
+discriminant. Mirroring that rule makes both engines agree (`4081` on each),
+and the check is in the corpus now rather than in my head.

@@ -2773,9 +2773,14 @@ impl Ctx<'_> {
         let mut started = false;
         for item in items {
             match item {
-                // A DUT instance (any declaration form) is wired by
-                // elaboration; the testbench let emits nothing.
-                ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {}
+                // A DUT instance is wired by elaboration, which binds each
+                // port to the *name* it is connected to. A connection given a
+                // value instead — `{ .n = 7 }` — has no name to bind, so the
+                // port kept its default and the testbench read 0 while
+                // hardware lowered the same connection to a constant driver.
+                ast::ImplItem::Let(l) if self.instance_names.contains(&l.name.text) => {
+                    self.seed_valued_connections(l, &mut b)?;
+                }
                 ast::ImplItem::Let(l) if self.try_declare_fs_read_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_string_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_array_local(l, &mut b)? => {}
@@ -2905,6 +2910,65 @@ impl Ctx<'_> {
         Ok(b)
     }
 
+    /// The width of a scalar enum part of a concatenation. Vector locals
+    /// record a declared width; an enum local does not, so mirror the rule
+    /// lowering uses — enough bits to hold the largest discriminant, which
+    /// makes `Bit` one bit and nine-valued `Logic` four.
+    fn enum_part_width(&self, e: &ast::Expr) -> Option<u32> {
+        let head = match e {
+            ast::Expr::Path(p) if p.segments.len() == 1 => self
+                .local_types
+                .borrow()
+                .get(&p.segments[0].text)
+                .cloned()?,
+            _ => return None,
+        };
+        let max = *self.enums.get(&head)?.values().max()?;
+        Some((u64::BITS - max.leading_zeros()).max(1))
+    }
+
+    /// Seed the ports of an instance whose connection is a value rather than
+    /// a name. Elaboration binds `{ .n = sig }` by name and has nothing to
+    /// bind for `{ .n = 7 }`; the `<inst>.<port>` key reaches the port signal
+    /// either way.
+    fn seed_valued_connections(&self, l: &ast::LetDecl, b: &mut String) -> Result<(), String> {
+        let Some(ast::Expr::Construct { args, .. }) = &l.value else {
+            return Ok(());
+        };
+        for c in args {
+            let (Some(field), Some(value)) = (&c.field, &c.value) else {
+                continue;
+            };
+            // A plain name is already bound, and re-driving it here would
+            // fight the binding.
+            if expr_path(value).is_some() {
+                continue;
+            }
+            let key = format!("{}.{}", l.name.text, field.text);
+            if !self.map.contains_key(&key) {
+                continue;
+            }
+            let e = self.expr(value)?;
+            self.drive_signal(&key, &e, b, "    ")?;
+        }
+        Ok(())
+    }
+
+    /// Drive one name and every port it connects to (`sx_set` masks to each
+    /// signal's own width). Extracted so a multi-target write cannot grow a
+    /// second copy of the fan-out.
+    fn drive_signal(&self, name: &str, e: &str, b: &mut String, ind: &str) -> Result<(), String> {
+        if !self.map.contains_key(name) {
+            return Err(format!("unknown signal `{name}`"));
+        }
+        b.push_str(&format!("{ind}{{ sx_value _v = {e};"));
+        for a in self.aliases.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
+            b.push_str(&format!(" sx_set({}, _v);", a.0));
+        }
+        b.push_str(&format!(" }}\n{ind}sx_settle();\n"));
+        Ok(())
+    }
+
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
@@ -2933,6 +2997,42 @@ impl Ctx<'_> {
                     }
                     return Ok(());
                 }
+                // `{ hi, lo } = src` — hardware has always lowered this and
+                // the testbench refused it. Split into one write per part so
+                // the alias fan-out stays in `drive_signal` rather than
+                // growing a second copy, which is where this emitter has
+                // been wrong before.
+                if let ast::Expr::Concat { parts, .. } = target {
+                    let mut targets = Vec::with_capacity(parts.len());
+                    for part in parts {
+                        let name = expr_path(part).ok_or("unsupported assignment target")?;
+                        let width = self
+                            .name_width(&name)
+                            .ok_or_else(|| format!("the width of `{name}` is not known here"))?;
+                        targets.push((name, width));
+                    }
+                    let whole = self.expr(value)?;
+                    let k = self.tmp.get();
+                    self.tmp.set(k + 1);
+                    b.push_str(&format!("{ind}sx_value _c{k} = {whole};\n"));
+                    // First part is most significant, so it shifts down by the
+                    // total width of everything after it.
+                    for (i, (name, width)) in targets.iter().enumerate() {
+                        let shift: u32 = targets[i + 1..].iter().map(|(_, w)| *w).sum();
+                        let part = if shift == 0 {
+                            format!("_c{k}")
+                        } else {
+                            format!("(_c{k} >> {shift})")
+                        };
+                        let e = format!("sx_mask({part}, {width})");
+                        if self.locals.borrow().contains(name) {
+                            b.push_str(&format!("{ind}{} = {e};\n", c_local_ident(name)));
+                        } else {
+                            self.drive_signal(name, &e, b, &ind)?;
+                        }
+                    }
+                    return Ok(());
+                }
                 let name = expr_path(target).ok_or("unsupported assignment target")?;
                 // A string or struct literal writes several element/field
                 // signals (`s = "hi"`, `a = { .re = 3 }`).
@@ -2954,14 +3054,7 @@ impl Ctx<'_> {
                     .get(&name)
                     .ok_or_else(|| format!("unknown signal `{name}`"))?;
                 let e = self.value_for(id, value)?;
-                // Drive every port this name connects to (sx_set masks to each
-                // signal's width).
-                b.push_str(&format!("{ind}{{ sx_value _v = {e};"));
-                for a in self.aliases.get(&name).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    b.push_str(&format!(" sx_set({}, _v);", a.0));
-                }
-                b.push_str(&format!(" }}\n{ind}sx_settle();\n"));
-                let _ = id;
+                self.drive_signal(&name, &e, b, &ind)?;
             }
             ast::Stmt::Expr(ast::Expr::Call {
                 callee, args, bang, ..
@@ -4987,6 +5080,39 @@ impl Ctx<'_> {
                     ast::BinOp::Shr => format!("sx_shr(({a}), ({c}))"),
                     _ => format!("({a} {o} {c})"),
                 }
+            }
+            // The first element is the most significant, so each part shifts
+            // left by the total width of everything after it. Hardware has
+            // always lowered this; only the testbench refused it.
+            ast::Expr::Concat { parts, .. } => {
+                let mut widths = Vec::with_capacity(parts.len());
+                for part in parts {
+                    // A part of unknown width cannot be placed, and guessing
+                    // one would silently misalign every part to its left.
+                    match self.arg_width(part).or_else(|| self.enum_part_width(part)) {
+                        Some(w) if w > 0 => widths.push(w),
+                        _ => {
+                            return Err(format!(
+                                "unsupported testbench expression: `{}` — the width of \
+                                 `{}` is not known here",
+                                siox::syntax::pretty::expr_string(e),
+                                siox::syntax::pretty::expr_string(part)
+                            ))
+                        }
+                    }
+                }
+                let mut terms = Vec::with_capacity(parts.len());
+                for (i, part) in parts.iter().enumerate() {
+                    let value = self.expr(part)?;
+                    let masked = format!("sx_mask(({value}), {})", widths[i]);
+                    let shift: u32 = widths[i + 1..].iter().sum();
+                    terms.push(if shift == 0 {
+                        masked
+                    } else {
+                        format!("(({masked}) << {shift})")
+                    });
+                }
+                format!("({})", terms.join(" | "))
             }
             other => {
                 // Say WHICH expression, so the report is actionable.
