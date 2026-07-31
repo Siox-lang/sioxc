@@ -2601,3 +2601,34 @@ reason written down.
 
 Four sign combinations, two dividend shapes and the wide-literal case all
 agree now. The corpus test carries them.
+
+## 2026-07-31 (cont.) — the local gate was not running CI's compiler
+
+CI went red on the previous push: `clippy::only_used_in_recursion` on
+`is_literal_integer_expr`, whose `&self` existed only to make the recursive
+call. Same lint and same fix as `type_witness` this morning — I wrote the
+identical mistake twice in one session, which is its own note.
+
+The interesting part is why `ci-local.sh` said ok. Not caching, and not the
+coloured-output trap the script's own header warns about. **CI pins Rust
+1.90.0** (`dtolnay/rust-toolchain@1.90.0`, matching `rust-version` in
+Cargo.toml) and this machine has 1.96. The lint fires on 1.90 and does not on
+1.96. So the gate was running a different compiler from the one whose verdict
+matters, and had been all session — the earlier clippy catches were luck, not
+coverage.
+
+Confirmed rather than assumed: `cargo +1.90.0 clippy` on the reverted commit
+reproduces the CI error exactly, and `cargo clippy` on 1.96 stays silent even
+with a forced recheck.
+
+`ci-local.sh` now reads the pin out of the workflow file and runs every cargo
+step under it, so the two cannot drift when CI's pin moves. Without that
+toolchain installed it still runs, printing the version it is missing and the
+`rustup` line to fix it. Verified by putting the `&self` back: the gate now
+fails the same step CI failed.
+
+The general lesson is narrower than "mirror CI" and worth stating exactly: a
+gate that runs *similar* commands is not a gate. This one had the right
+commands, the right flags and the right order, and was still answering a
+different question because a lint set is part of the compiler, not part of
+the command line.
