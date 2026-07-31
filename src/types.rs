@@ -4305,6 +4305,22 @@ fn is_liftable_array_key(key: &str) -> bool {
 /// Width of a bracketed type index when it is a literal (`unsigned[8]` -> 8);
 /// otherwise `0`, meaning "parametric / not yet known".
 fn width_of(index: &Expr) -> u32 {
+    // A declared range states a length too: `Bit[3..0]` is four elements, in
+    // either direction. Without this it measured 0, so a range-declared array
+    // rejected an array-literal initializer as `Bit[0]` — while the same type
+    // took a *string* literal, which is sized from the literal instead.
+    if let Expr::Range { lo, hi, .. } = index {
+        if let (Some(lo), Some(hi)) = (signed_lit(lo), signed_lit(hi)) {
+            // A range wide enough to overflow is unrepresentable anyway; 0
+            // keeps it "not yet known", which is what rejects it later.
+            return hi
+                .checked_sub(lo)
+                .and_then(i64::checked_abs)
+                .and_then(|len| len.checked_add(1))
+                .and_then(|len| u32::try_from(len).ok())
+                .unwrap_or(0);
+        }
+    }
     signed_lit(index)
         .and_then(|width| u32::try_from(width).ok())
         .unwrap_or(0)

@@ -3315,3 +3315,52 @@ the first had system attributes on `::` instead of the tick. Both were written
 before a change and never revisited. Checking `std/` first would have settled
 either in seconds, and that is the cheaper habit: the source is the record,
 the note is a hint.
+
+## 2026-07-31 (cont.) — the bottom of the coverage list paid twice
+
+Finishing the zero-coverage items. `#[keep]` behaves well — `W-P015 attribute
+'keep' has no effect yet`, which is exactly the "say what is not implemented"
+behaviour. Explicit enum discriminants (`enum Code { Lo = 1, Hi = 9 }`)
+round-trip correctly.
+
+The last one, blanket array impls, was broken. std declares
+
+    impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] { ... }
+
+so an operator lifts to arrays elementwise. Neither engine had a form for the
+result:
+
+    y = a and b;    // Logic[3]  ->  error: `y` cannot be assigned to
+    y = a;          // same target -> fine
+
+The message is the tell. `y` is a perfectly good target; the *right-hand side*
+had no lowering, and the assignment fell through the array branch (which
+handles a string literal, an array literal, and a copy from a named array) to
+the scalar path, which failed on the target and blamed it. An error that
+accuses the innocent half of the statement is worth treating as a clue about
+where the real gap is.
+
+Both engines now lift the expression per element — every path naming an array
+of the same length becomes that array's k-th element, paired by *position* so
+a descending range keeps its own indices. That covers `and`, `or`, `not`,
+nesting like `(not a) and b`, and a user element type: an enum with its own
+`Operator<"and">` impl gets lifted to `Tri[3]` and produces its own answers,
+including `Unk`, which std has no rule for.
+
+### And the test for it found a second bug
+
+Writing the descending-range case, `let da: Logic[7..5] = ['0','1','1'];` was
+rejected as `cannot initialize Logic[0] with Char[3]`. A **range-declared
+array measured zero elements**: `width_of` read a literal index and returned 0
+for a `Range`. The same type accepted a *string* literal, because that path
+sizes from the literal instead — which is why `ranged_local_test` has passed
+all along with `Bit[3..0] = "1010"` and never noticed.
+
+Zero means "not yet known" and is assumed compatible, so the length was not
+merely wrong, it was unchecked: `Bit[3..0] = ['1','0']` was accepted too. With
+the range measured, that is now a length mismatch.
+
+One overflow to fix on the way — an existing test uses a range wide enough to
+overflow `hi - lo`, so the subtraction is checked and falls back to "unknown",
+which is what rejects it later anyway. The test suite caught that immediately;
+the corpus never would have.

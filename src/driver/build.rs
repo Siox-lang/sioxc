@@ -2345,7 +2345,62 @@ impl Ctx<'_> {
                 }
                 Ok(true)
             }
-            _ => Ok(false),
+            // An elementwise operator over arrays (`let y: Logic[3] = not a;`).
+            // std declares these as blanket impls over `T[]`; lowering lifts
+            // them per element and this is the same lift, so the two engines
+            // agree instead of one refusing what the other computes.
+            other => {
+                let Some(indices) = self.local_indices.borrow().get(name).cloned() else {
+                    return Ok(false);
+                };
+                let mut writes = Vec::with_capacity(indices.len());
+                for k in 0..indices.len() {
+                    let Some(element) = self.elementwise_at(other, k, indices.len()) else {
+                        return Ok(false);
+                    };
+                    writes.push((format!("{name}[{}]", indices[k]), element));
+                }
+                for (target, element) in writes {
+                    self.write_composite_field(&target, &element, b, ind)?;
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// One position of an elementwise array expression, mirroring lowering's
+    /// rule: every path naming an array of the same length becomes that
+    /// array's `k`-th element, paired by position so a descending range keeps
+    /// its own indices.
+    fn elementwise_at(&self, e: &ast::Expr, k: usize, len: usize) -> Option<ast::Expr> {
+        match e {
+            ast::Expr::Path(_) => {
+                let path = expr_path(e)?;
+                let borrowed = self.local_indices.borrow();
+                let indices = borrowed.get(&path)?;
+                let index = *indices.get(k).filter(|_| indices.len() == len)?;
+                let span = ast::expr_span(e);
+                Some(ast::Expr::Index {
+                    base: Box::new(e.clone()),
+                    index: Box::new(ast::Expr::Int {
+                        text: index.to_string(),
+                        span,
+                    }),
+                    span,
+                })
+            }
+            ast::Expr::Binary { op, lhs, rhs, span } => Some(ast::Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(self.elementwise_at(lhs, k, len)?),
+                rhs: Box::new(self.elementwise_at(rhs, k, len)?),
+                span: *span,
+            }),
+            ast::Expr::Unary { op, rhs, span } => Some(ast::Expr::Unary {
+                op: *op,
+                rhs: Box::new(self.elementwise_at(rhs, k, len)?),
+                span: *span,
+            }),
+            _ => None,
         }
     }
 

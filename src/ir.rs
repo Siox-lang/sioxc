@@ -3086,6 +3086,44 @@ impl<'a> Lowering<'a> {
                                         return;
                                     }
                                 }
+                                // An elementwise operator over arrays
+                                // (`y = a and b`, `y = not a`). std declares
+                                // these as blanket impls over `T[]`, and
+                                // lowering had no form for them: the
+                                // assignment fell through to the scalar path,
+                                // which reported the *target* as unassignable
+                                // even though `y = a` is fine.
+                                let mut lowered = Vec::with_capacity(indices.len());
+                                for (k, i) in indices.iter().enumerate() {
+                                    let element = self.elementwise_at(v, k, indices.len());
+                                    let signal = self.locals.get(&format!("{tpath}[{i}]"));
+                                    match (element, signal) {
+                                        (Some(element), Some(&signal)) => {
+                                            let expr = self.coerce_to_target(
+                                                signal,
+                                                self.lower_expr(&element),
+                                            );
+                                            lowered.push((signal, expr));
+                                        }
+                                        // Not elementwise after all; leave the
+                                        // existing paths to diagnose it.
+                                        _ => {
+                                            lowered.clear();
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !lowered.is_empty() {
+                                    for (target, expr) in lowered {
+                                        self.out.drivers.push(Driver {
+                                            target,
+                                            cond: cond.clone(),
+                                            expr,
+                                            ctx: self.cur_ctx,
+                                        });
+                                    }
+                                    return;
+                                }
                             }
                         }
                     }
@@ -5941,6 +5979,44 @@ impl<'a> Lowering<'a> {
             "event" => Expr::Event(sig),
             "old" => Expr::Old(sig),
             _ => Expr::Unknown,
+        }
+    }
+
+    /// One position of an elementwise array expression: every path naming an
+    /// array of the same length becomes that array's `k`-th element, so
+    /// `a and b` at position 0 is `a[a0] and b[b0]` — paired by position, so
+    /// a descending range keeps its own indices. `None` when an operand is
+    /// not such an array, which leaves the existing paths to report it.
+    fn elementwise_at(&self, e: &ast::Expr, k: usize, len: usize) -> Option<ast::Expr> {
+        match e {
+            ast::Expr::Path(_) => {
+                let indices = self.local_array.get(&expr_path(e)?)?;
+                let index = *indices.get(k).filter(|_| indices.len() == len)?;
+                if index < 0 {
+                    return None;
+                }
+                let span = ast::expr_span(e);
+                Some(ast::Expr::Index {
+                    base: Box::new(e.clone()),
+                    index: Box::new(ast::Expr::Int {
+                        text: index.to_string(),
+                        span,
+                    }),
+                    span,
+                })
+            }
+            ast::Expr::Binary { op, lhs, rhs, span } => Some(ast::Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(self.elementwise_at(lhs, k, len)?),
+                rhs: Box::new(self.elementwise_at(rhs, k, len)?),
+                span: *span,
+            }),
+            ast::Expr::Unary { op, rhs, span } => Some(ast::Expr::Unary {
+                op: *op,
+                rhs: Box::new(self.elementwise_at(rhs, k, len)?),
+                span: *span,
+            }),
+            _ => None,
         }
     }
 
