@@ -1493,6 +1493,7 @@ impl<'a> Checker<'a> {
     /// write check) and a name -> type table (ports + impl-level lets/consts).
     fn impl_env(&self, im: &ImplDecl) -> ImplEnvironment {
         let mut illegal = HashSet::new();
+        let mut consts: HashSet<String> = HashSet::new();
         let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();
         let mut ranged: HashMap<String, (i64, i64)> = HashMap::new();
@@ -1563,6 +1564,7 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Const(c) => {
                     sym.insert(c.name.text.clone(), self.ast_ty(&c.ty));
+                    consts.insert(c.name.text.clone());
                 }
                 _ => {}
             }
@@ -1571,6 +1573,7 @@ impl<'a> Checker<'a> {
             PortDirs {
                 illegal,
                 plain_in_roots,
+                consts,
             },
             sym,
             ranged,
@@ -1618,6 +1621,7 @@ impl<'a> Checker<'a> {
             PortDirs {
                 illegal: HashSet::new(),
                 plain_in_roots: HashSet::new(),
+                consts: HashSet::new(),
             },
             HashMap::new(),
         );
@@ -2094,6 +2098,19 @@ impl<'a> Checker<'a> {
             .filter(|n| dirs.illegal.contains(*n))
             .map(str::to_string)
             .or_else(|| root.filter(|r| dirs.plain_in_roots.contains(r)));
+        if let Some(root) = target_root_name(target) {
+            if dirs.consts.contains(&root) {
+                self.error_with_help(
+                    codes::INVALID_ASSIGN_TARGET,
+                    expr_span(target),
+                    format!("cannot assign to `{root}`, which is a `const`"),
+                    "a `const` is fixed at elaboration; declare it as a `let` \
+                     if it needs to be driven"
+                        .to_string(),
+                );
+                return;
+            }
+        }
         if let Some(name) = bad {
             self.sink.emit(
                 Diagnostic::error(format!("cannot assign to input port `{name}`"))
@@ -4211,6 +4228,10 @@ struct PortDirs {
     /// Plain (non-bus-mode) `in` ports — writing *any* field/index of one is
     /// illegal too (it has no writable parts).
     plain_in_roots: HashSet<String>,
+    /// `const`s declared in this impl. A write to one is not storage at all,
+    /// and reached the emitter as "unknown signal `K`" — a message naming
+    /// something the author had in fact declared.
+    consts: HashSet<String>,
 }
 
 /// The view/backing pair of an applied view type, for looking up per-leaf
@@ -4851,6 +4872,23 @@ mod tests {
             .iter()
             .filter(|d| d.code == Some(code))
             .count()
+    }
+
+    #[test]
+    fn assigning_to_a_const_is_rejected() {
+        let has = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P018"));
+        // This reached the emitter as "unknown signal `K`" — a message naming
+        // something the author had in fact declared.
+        assert!(has(
+            "module m;\nentity E { y: Bit out, }\nimpl E { const K: Bit = '1'; K = '0'; y = K; }\n"
+        ));
+        assert!(!has(
+            "module m;\nentity E { y: Bit out, }\nimpl E { const K: Bit = '1'; y = K; }\n"
+        ));
+        // A `let` of the same shape is storage and stays writable.
+        assert!(!has(
+            "module m;\nentity E { y: Bit out, }\nimpl E { let k: Bit; k = '0'; y = k; }\n"
+        ));
     }
 
     #[test]

@@ -3025,3 +3025,12 @@ what it is doing and leaves the rule alone. Zero hits across the corpus, so
 it is not noise. `K = 2` on a const still reports late, from the emitter,
 as "unknown signal `K`" — real but a worse message than it should be, and
 next.
+
+Const assignment now reports at the write, as `E-P018`, instead of arriving
+at the emitter as "unknown signal `K`" — a message that named something the
+author had in fact declared, and pointed at the wrong stage while doing it.
+
+All five of the batch are closed. The technique earns its place: ten broken
+programs took a few minutes to write and found four wrong answers and one bad
+message, in areas the corpus covers well. Correct programs cannot report on
+the handling of incorrect ones, and the compiler is judged on both.
