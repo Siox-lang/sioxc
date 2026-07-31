@@ -3560,3 +3560,35 @@ saved a wrong assertion.
 
 Also learned, from the same print: `for i in 0..9` runs ten times. Ranges here
 are inclusive.
+
+## 2026-07-31 (cont.) — a tick that found nothing, recorded anyway
+
+Four sweeps, no defects. Worth writing down as plainly as the finds, because
+"where is it solid" is information too.
+
+**Sequential designs, sixteen in all, against Python models of the same
+machines.** A two-stage pipeline of instances; a struct as register state; a
+32-bit vector with multiply and shift; an array of registers shifted along; a
+generic entity instantiated twice at different parameters, each with its own
+state; a three-level hierarchy; signed state accumulating negative; two
+instances of one entity fed different inputs. Every one matched.
+
+**Waveforms against runs.** Sixteen VCDs re-read and their final `dut.q`
+compared with what the same binary printed — all agreeing. The corpus checks
+VCD *values* for five named profiles and structure for the rest, so this was
+worth doing once; it says the waveform is not a separate opinion.
+
+**Time.** A self-toggling clock at a 5ns half period gives exactly ten rising
+edges in 100ns and fifteen in 150ns; two clocks at 4ns and 20ns periods give
+50 and 10 edges in 200ns; `await fast.rising()` advances by exactly one. All
+linear and exact.
+
+The one thing this produced was coverage rather than a fix. **A struct held as
+clocked state was not in the corpus at all**, and it has a sharp property
+worth pinning: spec 3.13's next-state rule must apply *per field*, so
+
+    if clk.rising() { p.a = p.b; p.b = p.a; }
+
+exchanges the two fields instead of one overwriting the other. It does. Now
+tested, along with two fields advancing on one edge and a value derived from
+both seeing a consistent pair.
