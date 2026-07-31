@@ -1784,6 +1784,20 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LBrace, "to open a concatenation");
         let mut parts = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            // `{ x, .b = 4 }` — spec 3.12: a connection block is all
+            // positional or all `.port = value`, never both. Without this the
+            // `.` restarted expression parsing and one mistake cascaded into
+            // nine errors, none of which named the actual rule.
+            if self.at(TokenKind::Dot) {
+                self.error_here(
+                    "a connection block is either all positional or all `.port = value`",
+                );
+                // Consume the rest of the block so the file still parses.
+                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                    self.bump();
+                }
+                break;
+            }
             parts.push(self.parse_expr(false));
             if !self.eat(TokenKind::Comma) {
                 break;

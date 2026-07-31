@@ -763,6 +763,32 @@ impl<'a> Elaborator<'a> {
             // `signal`. A value-less arg only reaches here on parser recovery
             // (already diagnosed), so skip it.
             let Some(e) = &arg.value else { continue };
+            // An `out`/`inout` port *drives* whatever it is connected to, so
+            // that has to name something assignable. `.y = 9` produced a
+            // connection to a signal literally named "9", which then flowed
+            // on in silence — an `in` port takes a value quite legitimately,
+            // and nothing distinguished the two.
+            if let Some(port_decl) = edecl.ports.iter().find(|p| p.name.text == port) {
+                let dir = port_decl.dir;
+                if matches!(dir, Some(Direction::Out) | Some(Direction::Inout))
+                    && !is_connection_target(e)
+                {
+                    let dir = if dir == Some(Direction::Out) {
+                        "out"
+                    } else {
+                        "inout"
+                    };
+                    self.error(
+                        codes::INVALID_ASSIGN_TARGET,
+                        arg.span,
+                        format!(
+                            "`{port}` is an `{dir}` port, so it must be connected to a \
+                             signal it can drive, not to a value"
+                        ),
+                    );
+                    continue;
+                }
+            }
             let signal = render_signal(e, render_env);
             let ty = concrete_ty(port_ty, env, &self.families);
             connected.insert(port.clone());
@@ -1181,6 +1207,16 @@ fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
     }
 }
 
+/// Whether an expression names storage a port can drive. Mirrors the shapes
+/// `render_signal` can turn into a signal path.
+fn is_connection_target(e: &Expr) -> bool {
+    match e {
+        Expr::Path(_) => true,
+        Expr::Index { base, .. } | Expr::Field { base, .. } => is_connection_target(base),
+        _ => false,
+    }
+}
+
 fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
         Expr::Path(p) => p
@@ -1260,6 +1296,28 @@ mod tests {
         let before = sink.error_count();
         elaborate_for_check(modules, &typed, &mut sink);
         sink.error_count() - before
+    }
+
+    #[test]
+    fn an_out_port_must_connect_to_a_signal() {
+        let base = "module m;\n\
+            entity Sub { a: Bit in, y: Bit out }\n\
+            impl Sub { y = a; }\n\
+            entity Top { a: Bit in, y: Bit out }\n\
+            impl Top { let d: Sub = { .a = a, .y = CONN }; y = a; }\n";
+        // A value there produced a connection to a signal literally named
+        // "'1'", which then flowed on in silence.
+        assert_eq!(check_src(&base.replace("CONN", "'1'")), 1);
+        // Naming a signal for the port to drive is the whole point of the
+        // form, and stays legal.
+        assert_eq!(check_src(&base.replace("CONN", "y")), 0);
+        // An `in` port takes a value quite legitimately.
+        let in_port = "module m;\n\
+            entity Sub { a: Bit in, y: Bit out }\n\
+            impl Sub { y = a; }\n\
+            entity Top { y: Bit out }\n\
+            impl Top { let d: Sub = { .a = '1' }; y = d.y; }\n";
+        assert_eq!(check_src(in_port), 0);
     }
 
     /// Structural analysis only sees what elaboration reaches, so an entity

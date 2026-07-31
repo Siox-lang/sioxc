@@ -3112,3 +3112,37 @@ Both forms are handled through one list of `(port, value)` pairs now, so a
 third spelling would have one place to be added rather than two to be kept in
 step. Verified against a hardware instance using the same positional form:
 `7` on both sides.
+
+## 2026-07-31 (cont.) — reading the spec as a checklist
+
+The connection-form area kept paying, so this round took spec 3.12 and tested
+each claim it makes rather than guessing at shapes.
+
+| spec says | was |
+| --- | --- |
+| forms may be combined (block + post-declaration) | works |
+| a positional block binds by declaration order | works (after the last fix) |
+| too many positional args is an error | good message |
+| an unconnected input warns | W-P012 fires |
+| all-explicit **or** all-positional, never mixed | nine parse errors |
+| — | `.y = 9` on an **out** port: silent |
+
+**An `out` port connected to a value was accepted.** An output *drives* what
+it is connected to, so the connection has to name storage; `.y = 9` produced a
+`Connection` whose signal was the string `"9"` and everything downstream
+carried on with it. The reason nothing caught it is that an `in` port takes a
+value perfectly legitimately — the two arrive at the same code and only the
+direction separates them, and the direction was not being consulted. Both
+engines accepted it.
+
+The mixed-form case is not a wrong answer, just a bad one: one mistake
+produced nine errors, none of which named the rule the spec states outright.
+The `.` restarted expression parsing inside a concatenation, so the cascade
+came from recovery rather than from the mistake. Detecting a leading `.` at
+element position and consuming the block gives one error that says what the
+rule is.
+
+Worth noting the pattern in where these keep coming from: connection blocks
+are one syntax serving two directions and two forms, and nearly every bug
+found here has been some pair of those four combinations sharing code that
+only handles one of them.
