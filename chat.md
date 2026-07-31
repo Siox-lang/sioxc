@@ -2817,3 +2817,32 @@ found it; only reading the emitted IR did.
 
 The corpus never declared a newtype over a vector, which is why four
 independent faults could sit on the same declaration undisturbed.
+
+## 2026-07-31 (cont.) — checking the quantities computed twice
+
+The newtype bug hid behind `'length` reporting 8 while the signal was 4:
+two sources for one number, agreeing everywhere except where it mattered. So
+this round went looking for other doubly-computed quantities and checked the
+pairs against each other.
+
+- **Enum discriminants** (ir.rs, types.rs, build.rs): explicit `= n`, the
+  implicit successor after one, a derived enum inheriting values, and the VCD
+  symbol table — all agree with the declaration.
+- **Struct field order** (positional literal, named-in-any-order, hardware
+  flattening, VCD scope): agree. The VCD nests fields under `$scope module q`,
+  so two structs with an `a` are not ambiguous — worth checking, since a flat
+  namespace there would be silently misleading.
+- **Range attributes**, where the code says outright that there are two
+  implementations ("hardware bounds are const-folded in the IR, so this covers
+  only bounds in emitted testbench code"). Values agree in both directions,
+  descending and ascending, for `'left`/`'right`/`'high`/`'low`/`'length`.
+
+One disagreement, in rendering rather than value: `print!("{}", x'ascending)`
+printed `0`/`1` in a testbench where hardware printed `false`/`true`.
+`'ascending` is the only range attribute that is not a number, so
+`is_integer_operand` covers its four siblings and leaves it to fall through to
+the decimal path. Fixed where the other enum-rendering rules live.
+
+So the "two sources" sweep found one small bug and confirmed three quantities
+sound. Worth the pass: those are exactly the places where a wrong answer would
+have gone unnoticed, since every consumer of a wrong-but-shared value agrees.

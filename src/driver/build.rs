@@ -3126,6 +3126,17 @@ impl Ctx<'_> {
                     self.design.enum_syms.contains_key(&head).then_some(head)
                 })
                 .or_else(|| {
+                    // `x'ascending` is a `Bool`, and the only range attribute
+                    // that is not a number — the others are covered by
+                    // `is_integer_operand`. Without this it printed its
+                    // discriminant, 0 or 1, where hardware said false/true.
+                    let ast::Expr::SysAttr { attr, .. } = w else {
+                        return None;
+                    };
+                    (attr.text == "ascending" && self.design.enum_syms.contains_key("Bool"))
+                        .then(|| "Bool".to_string())
+                })
+                .or_else(|| {
                     // The variant itself names its enum: `print!("{}",
                     // State::Done)`. Everything reached through a name
                     // rendered as `Done` while the literal variant — the one
