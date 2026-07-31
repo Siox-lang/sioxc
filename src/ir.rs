@@ -395,6 +395,11 @@ struct Lowering<'a> {
     /// used to become a silent `Unknown`, which `check` reported as ok
     /// and a build reported as "driver 0 contains an Unknown".
     unresolved_names: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Names declared by a `let` *inside* a nested block. Lowering has no
+    /// scoped temporary, so it skips them and their uses arrive at
+    /// `report_unresolved_names` looking like misspellings — spec 3.13
+    /// documents the form and it works in a testbench.
+    block_lets: std::cell::RefCell<HashSet<String>>,
     /// Field/index expressions with no hardware form — a nested dynamic index
     /// (`m[i][j]`) is the usual one. Recorded here with the source spelling,
     /// which the IR no longer has by the time validation sees an `Unknown`.
@@ -551,6 +556,7 @@ impl<'a> Lowering<'a> {
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
+            block_lets: std::cell::RefCell::new(HashSet::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
@@ -1464,6 +1470,7 @@ impl<'a> Lowering<'a> {
             self.cur_ctx += 1;
             for item in &im.items {
                 if let ast::ImplItem::Stmt(stmt) = item {
+                    collect_block_lets(stmt, false, &mut self.block_lets.borrow_mut());
                     self.lower_stmt(stmt, None);
                 }
             }
@@ -1755,15 +1762,31 @@ impl<'a> Lowering<'a> {
         names.sort_by_key(|(name, span)| (span.start, name.clone()));
         names.dedup();
         for (name, span) in names {
-            self.sink.emit(
+            // A `let` inside a block is a real form (spec 3.13) that lowering
+            // skips, so saying the name is unknown blames the author for
+            // something they got right.
+            let diag = if self.block_lets.borrow().contains(&name) {
+                crate::diag::Diagnostic::error(format!(
+                    "`{name}` is declared by a `let` inside a block, which is not \
+                     lowered to hardware yet"
+                ))
+                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                .at(span)
+                .help(
+                    "declare it beside the entity's other signals instead; a \
+                     block-local `let` works in a testbench, where statements run \
+                     in sequence",
+                )
+            } else {
                 crate::diag::Diagnostic::error(format!("no value named `{name}` is in scope"))
                     .with_code(crate::diag::codes::UNKNOWN_NAME)
                     .at(span)
                     .help(
                         "a value has to be a port, a `let` signal or local, a \
                          constant, or a parameter of the enclosing entity",
-                    ),
-            );
+                    )
+            };
+            self.sink.emit(diag);
         }
     }
 
@@ -7154,6 +7177,44 @@ pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
 /// arguments, and connection expressions. Plain `let` instances inside the loop
 /// body are handled too; nested loops recurse. Non-instance statements are
 /// left for the behavioural pass.
+/// Collect names declared by a `let` nested inside a block. The top level of
+/// an impl body is not nested — those are ordinary signals.
+fn collect_block_lets(stmt: &ast::Stmt, nested: bool, out: &mut HashSet<String>) {
+    let block = |b: &ast::Block, out: &mut HashSet<String>| {
+        for s in &b.stmts {
+            collect_block_lets(s, true, out);
+        }
+    };
+    match stmt {
+        ast::Stmt::Let(l) if nested => {
+            out.insert(l.name.text.clone());
+        }
+        ast::Stmt::For { body, .. } => block(body, out),
+        ast::Stmt::If(iff) => {
+            block(&iff.then, out);
+            let mut branch = iff.else_.as_deref();
+            while let Some(b) = branch {
+                match b {
+                    ast::ElseBranch::Block(bl) => {
+                        block(bl, out);
+                        branch = None;
+                    }
+                    ast::ElseBranch::If(inner) => {
+                        block(&inner.then, out);
+                        branch = inner.else_.as_deref();
+                    }
+                }
+            }
+        }
+        ast::Stmt::Match(m) => {
+            for arm in &m.arms {
+                block(&arm.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Flatten a struct literal into `suffix -> value` (".valid", ".inner.x"),
 /// named the way a composite port's leaves are.
 fn literal_leaves<'a>(

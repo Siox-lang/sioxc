@@ -3101,6 +3101,73 @@ impl Ctx<'_> {
                 let e = self.value_for(id, value)?;
                 self.drive_signal(&name, &e, b, &ind)?;
             }
+            // A `let` inside a block (spec 3.13). Testbench statements are
+            // sequential C, so this is a C local in the same scope and C's
+            // own braces give it the right lifetime. It passed `check` and
+            // then failed at build claiming the name was unknown.
+            ast::Stmt::Let(l) => {
+                let name = &l.name.text;
+                let family = l.ty.as_ref().and_then(|t| self.declared_family(t));
+                let width = family
+                    .as_ref()
+                    .map(|&(_, w)| w)
+                    .or_else(|| l.ty.as_ref().and_then(|t| self.declared_width(t)));
+                // A composite local is one C variable per leaf, which the
+                // top-level declarators build; inside a block only the scalar
+                // case is handled, and saying so beats emitting one variable
+                // for something that needs several.
+                let composite = l.ty.as_ref().is_some_and(|t| {
+                    // A vector family is itself a newtype struct (`struct
+                    // unsigned(Logic[])`), so "is a struct" is not the
+                    // question — "has fields to spread" is.
+                    type_head_name(t)
+                        .and_then(|h| self.structs.get(h))
+                        .is_some_and(|fields| !fields.is_empty())
+                        || is_single_string_type(t)
+                        // `array_parts` is None for a packed vector and Some
+                        // for a real array.
+                        || self.array_parts(t).is_some()
+                });
+                if composite {
+                    return Err(format!(
+                        "`let {name}` inside a block is only supported for scalar \
+                         values; declare a struct, array or string local at the top \
+                         of the testbench"
+                    ));
+                }
+                self.locals.borrow_mut().insert(name.clone());
+                if let Some((fam, _)) = family {
+                    self.local_families.borrow_mut().insert(name.clone(), fam);
+                }
+                if let Some(w) = width {
+                    self.local_widths.borrow_mut().insert(name.clone(), w);
+                }
+                if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+                    self.local_types
+                        .borrow_mut()
+                        .insert(name.clone(), head.to_string());
+                }
+                let init = match &l.value {
+                    Some(v) => self.value_for_local(name, v)?,
+                    // Uninitialized: the type's `new()` default, as a
+                    // top-level local gets.
+                    None => {
+                        l.ty.as_ref()
+                            .and_then(type_head_name)
+                            .and_then(|h| self.design.new_defaults.get(h))
+                            .map(|v| format!("{v}ULL"))
+                            .unwrap_or_else(|| "0".to_string())
+                    }
+                };
+                let init = match self.local_widths.borrow().get(name) {
+                    Some(&w) => mask_c(&init, w),
+                    None => init,
+                };
+                b.push_str(&format!(
+                    "{ind}sx_value {} = {init};\n",
+                    c_local_ident(name)
+                ));
+            }
             ast::Stmt::Expr(ast::Expr::Call {
                 callee, args, bang, ..
             }) => {

@@ -3176,3 +3176,48 @@ Found by the differential, and only because I had fixed the testbench side
 first — with both engines wrong the two agreed and nothing showed. That is
 the standing weakness of parity testing and the reason the independent
 oracle is worth keeping in rotation.
+
+## 2026-07-31 (cont.) — spec 3.13 as a checklist
+
+Next-state semantics themselves are correct. The spec's own example —
+
+    if clk.rising() { ra = rb; rb = ra; }
+
+— swaps, and swaps back on the following edge, which is the whole point of
+the rule. What the section documents next did not exist:
+
+    if clk.rising() {
+        let tmp: unsigned[8] = a;     // "local variables update immediately"
+        a = b;
+        b = tmp;
+    }
+
+**A `let` inside a block was unsupported in both engines**, in a clocked
+block, a combinational `if`, and a `for` body alike. Neither `lower_stmt` nor
+the emitter's `stmt` has a `Let` arm, so the declaration was skipped and only
+the *use* failed — as `no value named 'tmp' is in scope`, with help listing
+the kinds of thing a value may be. That message blames the author for a
+naming mistake they did not make; they wrote a form the spec documents.
+
+Two different answers, because the two engines are not in the same position:
+
+- **Testbench**: statements run in sequence and compile to C, so a block local
+  is a C local and C's braces give it the right lifetime. Implemented. It
+  masks to its declared width like any other local (250 + 10 = 4 in eight
+  bits, matching a top-level local), re-initializes per loop iteration, and
+  does not leak out of its block. Composite types (struct, array, string) need
+  one C variable per leaf and are refused by name rather than half-emitted.
+- **Hardware**: a correct implementation needs the value *at that point in
+  the block*, which is not substitution — `r = 5; let t = r; r = t + 1;` must
+  give 6, and substituting `t -> r` gives old_r + 1. Getting that wrong would
+  put a silent wrong answer into core simulation semantics, which is the worst
+  place to have one. So lowering now says what is true: the form is not
+  lowered to hardware yet, declare the signal at impl level.
+
+The guard on which types are composite took three tries, and each wrong
+answer was informative. `unsigned` is itself a newtype struct
+(`struct unsigned(Logic[])`), so "is a struct" says yes to `unsigned[8]`;
+"has a declared width" was wrong for a different reason; the question that
+actually separates them is whether the struct **has fields to spread**, which
+is what the existing note about empty-field structs being leaves already
+said. Reading that first would have been quicker than deriving it three times.
