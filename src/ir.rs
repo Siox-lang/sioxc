@@ -3888,6 +3888,14 @@ impl<'a> Lowering<'a> {
             // resolves to its flattened signal; a *dynamic* array index
             // (`mem[addr]`) becomes a mux tree over the element signals.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                // `p'old.valid` / `xs'old[0]`: a struct or array is stored as
+                // leaf signals, so there is no one signal to take the previous
+                // value of. The attribute belongs on the leaf, and
+                // `p.valid'old` means the same thing (spec 3.9 writes the
+                // first form).
+                if let Some(sunk) = sunk_sysattr(e) {
+                    return self.lower_expr(&sunk);
+                }
                 if let Some(id) = expr_path(e).and_then(|p| self.locals.get(&p).copied()) {
                     return Expr::Current(id);
                 }
@@ -5948,7 +5956,9 @@ impl<'a> Lowering<'a> {
                 return self.locals.get(&p.segments[0].text).copied();
             }
         }
-        None
+        // A struct field or array element is a signal in its own right, named
+        // by its flattened path (`p.valid`, `xs[0]`).
+        self.locals.get(&expr_path(base)?).copied()
     }
 }
 
@@ -7838,6 +7848,41 @@ fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
         },
         ast::Type::Path(_) => t.clone(),
     }
+}
+
+/// `p'old.valid` -> `p.valid'old`, `xs'old[0]` -> `xs[0]'old`. Only the two
+/// value primitives move: `'length` and the range bounds describe the whole
+/// aggregate, so pushing them at a leaf would change what is asked.
+fn sunk_sysattr(e: &ast::Expr) -> Option<ast::Expr> {
+    let (base, rebuild): (&ast::Expr, &dyn Fn(Box<ast::Expr>) -> ast::Expr) = match e {
+        ast::Expr::Field { base, field, span } => (base, &|inner| ast::Expr::Field {
+            base: inner,
+            field: field.clone(),
+            span: *span,
+        }),
+        ast::Expr::Index { base, index, span } => (base, &|inner| ast::Expr::Index {
+            base: inner,
+            index: index.clone(),
+            span: *span,
+        }),
+        _ => return None,
+    };
+    let ast::Expr::SysAttr {
+        base: inner,
+        attr,
+        span,
+    } = base
+    else {
+        return None;
+    };
+    if attr.text != "old" && attr.text != "event" {
+        return None;
+    }
+    Some(ast::Expr::SysAttr {
+        base: Box::new(rebuild(inner.clone())),
+        attr: attr.clone(),
+        span: *span,
+    })
 }
 
 fn expr_path(e: &ast::Expr) -> Option<String> {

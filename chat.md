@@ -3221,3 +3221,58 @@ answer was informative. `unsigned` is itself a newtype struct
 actually separates them is whether the struct **has fields to spread**, which
 is what the existing note about empty-field structs being leaves already
 said. Reading that first would have been quicker than deriving it three times.
+
+## 2026-07-31 (cont.) — asking the corpus what it never says
+
+Section 3.19 (views) turned out to be entirely correct: leaf directions
+enforced, views overloading by backing struct, one wire shared between
+opposite roles carrying data one way and `ready` back, two drivers on a leaf
+caught as `E-P014`. It is also the most heavily covered area in the corpus —
+a 169-line `view_bus_test` plus two more files.
+
+That correlation is the useful part. Every bug found today has been somewhere
+the corpus is thin, and views are thick. So instead of picking spec sections,
+I counted corpus files per construct and looked at the bottom of the list.
+
+**`'old` had zero corpus files.** It is one of the two compiler primitives the
+entire clock system is built on — `clk.rising()` *is*
+`clk'event and clk'old == '0' and clk == '1'` — and nothing tested it directly.
+
+The primitives themselves are sound: a hand-written composition counts exactly
+the edges `clk.rising()` counts, rising and falling both. What did not exist
+were the aggregate spellings the spec writes:
+
+    if p'old.valid == '0' and p.valid == '1' { ... }   // spec 3.9
+    xs'old[0]
+
+Both were `E-P017 has no hardware form`, with help text about chaining runtime
+array indices — advice with nothing to do with a struct field. A struct or
+array is stored as leaf signals, so there is no single signal whose previous
+value could be taken; but `p'old.valid` and `p.valid'old` denote the same
+thing, so the attribute pushes down to the leaf. Only `'old`/`'event` move:
+`'length` and the range bounds describe the aggregate, and pushing those at a
+leaf would change the question.
+
+### Two tests I nearly shipped that proved nothing
+
+The first version counted transitions with `if p'old.valid == '0' and p.valid
+== '1' { a = a + 1; }` and asserted 2. It got 4. The condition has no `'event`
+term, so it is not an edge — the counter feeds itself combinationally and has
+no settled value. The compiler said exactly that (`W-P010`, `W-P002`) and I
+had filtered the warnings out of my own probe output. Adding `'event` makes it
+a real edge-triggered register: 2, and no warning.
+
+The second version dodged the loop by making the detector combinational and
+asserting only that the two spellings agree. That passed — and was worthless:
+both read `'0'` at every sample point, because after a settle `'old` equals
+the current value, so the assertions would hold with both spellings broken to
+a constant. Printing the values before trusting the green is what caught it.
+
+Third version counts real edges with well-defined values. The array count is
+3 rather than 2, because the connection driving a port from its default to
+the local's initial value is itself a change — that is correct, so the test
+records it rather than being bent to 2.
+
+Also fixed: spec 3.19 said the applied type "writes the view first and its
+backing struct second: `<view> <struct>`", which contradicts every example
+beneath it and the syntax that parses. Stale from the header restyle.

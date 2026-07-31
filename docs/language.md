@@ -1151,9 +1151,9 @@ entity Consumer {
 }
 ```
 
-The applied type always writes the view first and its backing struct second:
-`<view> <struct>`. The same spelling is used for ports, inherent impls, and
-trait impls:
+The applied type always writes the backing struct first and its view second:
+`<struct> <view>` — the view sits after the type, as a port's direction does.
+The same spelling is used for ports, inherent impls, and trait impls:
 
 ```siox
 impl Stream<T> StreamSource {
