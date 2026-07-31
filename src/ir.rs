@@ -4035,10 +4035,13 @@ impl<'a> Lowering<'a> {
     /// literal operand is as wide as the value it is used with, the same rule
     /// its *family* already follows.
     fn literal_aware_width(&self, e: &ast::Expr, other: u32) -> u32 {
-        match e {
-            ast::Expr::Int { .. } if other > 0 => other,
-            _ => self.ast_width(e),
+        // Any constant expression, not just a bare literal: `0 - 2` is two
+        // bits by its operands' own reckoning, so a negative literal divisor
+        // failed the sign test the same way a positive one passed it.
+        if other > 0 && eval_const(e, &self.cur_env).is_some() {
+            return other;
         }
+        self.ast_width(e)
     }
 
     fn ast_width(&self, e: &ast::Expr) -> u32 {

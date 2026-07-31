@@ -1441,6 +1441,20 @@ fn emit_c_real_const(
 }
 
 /// Wrap a C expression so it masks to `w` bits (wrap at 2^w).
+/// Whether an integer literal's value fits a 64-bit word, so it can take the
+/// kernel-integer rendering rather than the arbitrary-width one.
+fn literal_fits_word(text: &str) -> bool {
+    let clean = text.replace('_', "");
+    let parsed = if let Some(hex) = clean.strip_prefix("0x").or(clean.strip_prefix("0X")) {
+        u128::from_str_radix(hex, 16)
+    } else if let Some(bin) = clean.strip_prefix("0b").or(clean.strip_prefix("0B")) {
+        u128::from_str_radix(bin, 2)
+    } else {
+        clean.parse::<u128>()
+    };
+    parsed.is_ok_and(|v| v <= u128::from(u64::MAX))
+}
+
 fn mask_c(e: &str, w: u32) -> String {
     if w > 0 {
         format!("sx_mask(({e}), {w})")
@@ -2456,7 +2470,19 @@ impl Ctx<'_> {
 
         let w = lwidth.unwrap_or(0);
         let mut env = HashMap::new();
-        env.insert("self".to_string(), format!("({})", self.expr(lhs)?));
+        // Narrow each operand to its own width before the body sees it. A
+        // signal already holds exactly that many bits, but an *expression*
+        // does not: `0 - s` is computed full-width, so signed division read
+        // -200 rather than the 56 the same expression gives in hardware.
+        let narrow = |v: String, width: u32| {
+            if width > 0 && width < 64 {
+                mask_c(&v, width)
+            } else {
+                v
+            }
+        };
+        let lhs_c = narrow(format!("({})", self.expr(lhs)?), w);
+        env.insert("self".to_string(), lhs_c);
         env.insert("self::length".to_string(), format!("{w}ULL"));
         if let Some(pdecl) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &pdecl.name {
@@ -2466,7 +2492,8 @@ impl Ctx<'_> {
                     }
                     _ => w,
                 };
-                env.insert(n.text.clone(), format!("({})", self.expr(rhs)?));
+                let rhs_c = narrow(format!("({})", self.expr(rhs)?), rw);
+                env.insert(n.text.clone(), rhs_c);
                 env.insert(format!("{}::length", n.text), format!("{rw}ULL"));
             }
         }
@@ -3107,7 +3134,7 @@ impl Ctx<'_> {
             } else if is_char {
                 cfmt.push_str("%s");
                 cargs.push(format!("sx_utf8(({}), (char[5]){{0}})", self.expr(a)?));
-            } else if self.is_integer_operand(a) {
+            } else if self.is_literal_integer_expr(a) || self.is_integer_operand(a) {
                 cfmt.push_str("%lld");
                 let rendered = self.expr(a)?;
                 cargs.push(format!(
@@ -3607,6 +3634,30 @@ impl Ctx<'_> {
                 .map(|id| self.design.signals[id.0 as usize].width)
         })?;
         (width > 0 && width <= 64).then_some(width)
+    }
+
+    /// An expression whose every leaf is an integer literal that fits a word.
+    /// It has no declared type to consult, so nothing marked it as a kernel
+    /// integer and `print!("{}", 0 - 2)` went through the unsigned decimal
+    /// path and printed 2^64 - 2, while the same value bound to a `signed[8]`
+    /// printed -2.
+    ///
+    /// Asked only at the rendering decision, never inside
+    /// `is_integer_operand`'s recursion: that walks a `Binary` with `or`, so a
+    /// narrow literal beside a wide one would drag the pair onto the 64-bit
+    /// path and truncate it.
+    fn is_literal_integer_expr(&self, e: &ast::Expr) -> bool {
+        match e {
+            // A literal too wide for the native word keeps the wide path: the
+            // integer rendering casts to `long long`, which would truncate
+            // `18446744073709551616 + 1` to 1.
+            ast::Expr::Int { text, .. } => !text.contains('.') && literal_fits_word(text),
+            ast::Expr::Unary { rhs, .. } => self.is_literal_integer_expr(rhs),
+            ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
+                self.is_literal_integer_expr(lhs) && self.is_literal_integer_expr(rhs)
+            }
+            _ => false,
+        }
     }
 
     fn is_integer_operand(&self, e: &ast::Expr) -> bool {

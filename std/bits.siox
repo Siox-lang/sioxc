@@ -171,16 +171,21 @@ impl Operator<"*", signed, signed> for signed {
 // negative operand tests as all-ones and never equals 1. (`Shr` and `Ord`
 // below spell it the short way safely — a `>>` nested inside those bodies is
 // the built-in shift, not a re-entry into this dispatch.)
+//
+// `resize(x, x'length)` narrows the operand to its own width first. A signal
+// already holds exactly that many bits, but a constant operand does not:
+// `0 - 2` is computed full-width, so its bit 7 was clear and a negative
+// literal divisor tested as positive.
 impl Operator<"/", signed, signed> for signed {
     fn apply(self, rhs: signed) -> signed {
-        if ((integer(self) >> (self'length - 1)) == 1)
-            and ((integer(rhs) >> (rhs'length - 1)) == 1) {
+        if ((integer(resize(self, self'length)) >> (self'length - 1)) == 1)
+            and ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) == 1) {
             return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
         }
-        if (integer(self) >> (self'length - 1)) == 1 {
+        if (integer(resize(self, self'length)) >> (self'length - 1)) == 1 {
             return 0 - (resize(0 - self, self'length) / rhs);
         }
-        if (integer(rhs) >> (rhs'length - 1)) == 1 {
+        if (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) == 1 {
             return 0 - (self / resize(0 - rhs, rhs'length));
         }
         return self / rhs;

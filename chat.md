@@ -2568,3 +2568,36 @@ raw form.
   remembering when reading the ok lines above.
 - `(0 - 2)` prints as 18446744073709551614 in a testbench: an expression of
   two integer literals has no signed family, so it renders unsigned.
+
+## 2026-07-31 (cont.) — the answer both engines agreed was wrong
+
+Two items left from the parity sweep, and the first is the one differential
+testing structurally cannot find: `s / (0 - 2)` returned **0 in both engines**
+where 28 is meant. Agreement is not correctness, and a harness that only
+compares would have printed `ok`.
+
+Two causes stacked. The literal-width rule from last commit covered a bare
+`Int`; `0 - 2` is a `Binary` over two literals, so `rhs'length` was still 2 —
+now any constant-foldable expression takes the width of the value it is used
+with. That fixed the *branch selection*, and the answer stayed 0, because the
+operand was still compared un-narrowed: `0 - 2` is computed full-width, so
+its bit 7 was clear. std's division now narrows each operand with
+`resize(x, x'length)` before the sign test. A signal already holds exactly its
+width; a constant does not, and that difference is the whole bug.
+
+Then the mirror in the emitter: with the dividend an *expression*,
+`(0 - s) / 2` gave 28 in hardware and -100 in the testbench — the testbench
+divided -200 because it never narrowed `0 - s` to eight bits. Operands of an
+inlined impl are masked to their width there now.
+
+The second item — `print!("{}", 0 - 2)` showing 2^64 - 2 — cost me a
+regression worth recording. A pure-literal expression is a kernel integer, so
+I said so inside `is_integer_operand`. That function walks a `Binary` with
+`or`, so `18446744073709551616 + 1` suddenly had an integer leaf, took the
+`(long long)` path, and truncated to 1 — caught by `shift_edge_test`, whose
+assertion exists for exactly that. The rule belongs at the rendering decision,
+not inside a recursion that ors its way up a tree. Moved there, with the
+reason written down.
+
+Four sign combinations, two dividend shapes and the wide-literal case all
+agree now. The corpus test carries them.
