@@ -272,4 +272,8 @@ pub mod codes {
     /// An attribute `std::attrs` declares and resolution accepts, but which no
     /// stage reads: writing it has no effect and nothing else would say so.
     pub const UNIMPLEMENTED_ATTR: &str = "W-P015";
+    /// A struct literal that names only some of the type's fields. The rest
+    /// take their default, which is usually intended — but silently, and a
+    /// literal is also where a field is most often forgotten.
+    pub const INCOMPLETE_STRUCT_LITERAL: &str = "W-P016";
 }

@@ -225,6 +225,13 @@ struct Checker<'a> {
     prefix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
+    /// Data-array local -> its inclusive index bounds. A packed vector is
+    /// bound-checked from its width, but an array's bounds are not in `Ty`:
+    /// `Logic[15..8]` and `Logic[8]` have the same length and are indexed
+    /// `8..15` and `0..7` respectively, so the declared form is the only
+    /// place the answer exists. Without it `v[9]` on a 4-element array
+    /// silently read `v[3]`.
+    array_bounds: std::cell::RefCell<HashMap<String, (i64, i64)>>,
     /// Aliases currently being expanded, so a cycle (`using A = B; using B =
     /// A`) is caught instead of recursing until the stack overflows.
     expanding: std::cell::RefCell<HashSet<String>>,
@@ -285,6 +292,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
+            array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             vector_families: HashSet::new(),
             vector_elements: HashMap::new(),
@@ -1417,7 +1425,9 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Let(l) => {
                     self.require_let_annotation(l);
+                    self.check_struct_literal_fields(l);
                     self.check_signal_reset_value(l);
+                    self.check_struct_literal_fields(l);
                     // Two `let`s of one name in the same body: the second
                     // silently shadowed a scalar, and for a struct produced C
                     // with the field locals defined twice, which failed at
@@ -1486,6 +1496,8 @@ impl<'a> Checker<'a> {
         let mut plain_in_roots = HashSet::new();
         let mut sym = HashMap::new();
         let mut ranged: HashMap<String, (i64, i64)> = HashMap::new();
+        // Names are impl-local, so this starts empty for each one.
+        self.array_bounds.borrow_mut().clear();
         if im.trait_.is_none() {
             if let Some(ports) = type_head_name(&im.target).and_then(|n| self.entities.get(n)) {
                 for p in ports {
@@ -1542,6 +1554,11 @@ impl<'a> Checker<'a> {
                     sym.insert(l.name.text.clone(), ty);
                     if let Some(r) = l.ty.as_ref().and_then(|t| self.declared_range(t)) {
                         ranged.insert(l.name.text.clone(), r);
+                    }
+                    if let Some(b) = l.ty.as_ref().and_then(|t| self.declared_index_bounds(t)) {
+                        self.array_bounds
+                            .borrow_mut()
+                            .insert(l.name.text.clone(), b);
                     }
                 }
                 ImplItem::Const(c) => {
@@ -1652,7 +1669,7 @@ impl<'a> Checker<'a> {
             Stmt::If(i) => self.check_if(i, dirs, sym, ranged),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
-                self.check_unreachable_arms(m);
+                self.check_unreachable_arms(&m.arms);
                 for arm in &m.arms {
                     self.check_pattern_form(&arm.pattern);
                 }
@@ -1986,12 +2003,12 @@ impl<'a> Checker<'a> {
 
     /// Warn (spec Stage 10) on arms that can never match: anything after a `_`
     /// wildcard, or a variant already covered by an earlier arm.
-    fn check_unreachable_arms(&mut self, m: &MatchStmt) {
+    fn check_unreachable_arms(&mut self, arms: &[MatchArm]) {
         let mut after_wildcard = false;
         let mut seen: HashSet<String> = HashSet::new();
         // Inclusive integer ranges already matched (a bare literal is lo==hi).
         let mut ranges: Vec<(i64, i64)> = Vec::new();
-        for arm in &m.arms {
+        for arm in arms {
             let reason = if after_wildcard {
                 Some("a previous `_` already matches everything".to_string())
             } else {
@@ -2693,36 +2710,44 @@ impl<'a> Checker<'a> {
         // declared with a plain count, so it is 0-based too — unlike a data
         // array, which may carry a declared range (`Logic[15..8]`) and is
         // therefore left alone.
-        let (len, noun) = match self.type_of(base, sym) {
+        let (lo, hi, noun) = match self.type_of(base, sym) {
             Ty::Array {
                 len,
                 family: Some(_),
                 ..
-            } => (len, "bit"),
+            } => (0, len as i64 - 1, "bit"),
             Ty::Array {
                 elem,
                 len,
                 family: None,
-            } if self.is_entity_ty(&elem) => (len, "instance"),
+            } if self.is_entity_ty(&elem) => (0, len as i64 - 1, "instance"),
+            // A data array's bounds come from its declaration, not its
+            // length: `Logic[15..8]` is indexed `8..15`.
+            Ty::Array { family: None, .. } => match declared_bounds_of(base, &self.array_bounds) {
+                Some((lo, hi)) => (lo, hi, "element"),
+                None => return,
+            },
             _ => return,
         };
-        if len == 0 {
+        if hi < lo {
             return; // parametric: not known yet
         }
+        let len = hi - lo + 1;
         let mut check = |v: i64, e: &Expr| {
-            if v < 0 || v >= len as i64 {
+            if v < lo || v > hi {
                 self.error(
                     codes::TYPE_MISMATCH,
                     expr_span(e),
                     match noun {
-                        "bit" => format!(
-                            "bit {v} is outside `0..{}` of this {len}-bit vector",
-                            len - 1
+                        "bit" => {
+                            format!("bit {v} is outside `{lo}..{hi}` of this {len}-bit vector")
+                        }
+                        "instance" => format!(
+                            "instance {v} is outside `{lo}..{hi}` of this {len}-instance array"
                         ),
-                        _ => format!(
-                            "instance {v} is outside `0..{}` of this {len}-instance array",
-                            len - 1
-                        ),
+                        _ => {
+                            format!("index {v} is outside `{lo}..{hi}` of this {len}-element array")
+                        }
                     },
                 );
             }
@@ -2978,6 +3003,10 @@ impl<'a> Checker<'a> {
                 // so a missing variant matters at least as much here as in a
                 // statement — and this form was not checked at all.
                 self.check_arms_exhaustive(scrutinee, arms, *span, sym);
+                // Unreachability was statement-only for the same reason
+                // exhaustiveness was: the two forms share `MatchArm` but not
+                // the code that walks it.
+                self.check_unreachable_arms(arms);
                 for arm in arms {
                     self.check_pattern_form(&arm.pattern);
                     if let Some(v) = arm.value_expr() {
@@ -3799,6 +3828,102 @@ impl<'a> Checker<'a> {
         Some((signed_lit(lo)?, signed_lit(hi)?))
     }
 
+    /// Field names in a struct literal, against the declared type. Instance
+    /// construction reuses `Construct`, so this only fires when the target
+    /// names a known struct — an entity is not in `structs`.
+    fn check_struct_literal_fields(&mut self, l: &LetDecl) {
+        let Some(ty) = &l.ty else { return };
+        let Some(Expr::Construct {
+            args, spread, span, ..
+        }) = &l.value
+        else {
+            return;
+        };
+        let Some(head) = type_head_name(ty) else {
+            return;
+        };
+        if !self.structs.contains_key(head) {
+            return;
+        }
+        let head = head.to_string();
+        let fields = self.base_struct_fields(ty);
+        if fields.is_empty() {
+            return;
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut positional = false;
+        for c in args {
+            match &c.field {
+                // A misspelled name was dropped whole: the field kept its
+                // default and the literal still type-checked.
+                Some(f) if !fields.iter().any(|n| n == &f.text) => self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    f.span,
+                    format!("struct `{head}` has no field `{}`", f.text),
+                    format!("`{head}` has: {}", fields.join(", ")),
+                ),
+                Some(f) => {
+                    seen.insert(f.text.clone());
+                }
+                None => positional = true,
+            }
+        }
+        // A spread supplies the rest, and the positional form is bound by
+        // ordinal elsewhere.
+        if spread.is_some() || positional {
+            return;
+        }
+        let missing: Vec<&str> = fields
+            .iter()
+            .filter(|f| !seen.contains(*f))
+            .map(|f| f.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.sink.emit(
+                Diagnostic::warning(format!(
+                    "literal for `{head}` leaves {} at the default value",
+                    missing
+                        .iter()
+                        .map(|f| format!("`{f}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .with_code(codes::INCOMPLETE_STRUCT_LITERAL)
+                .at(*span)
+                .help("give every field a value, or copy the rest with `{ ..base, .x = v }`"),
+            );
+        }
+    }
+
+    /// The inclusive index bounds of a *data array* declaration: `Logic[15..8]`
+    /// is `(8, 15)` and `unsigned[8][4]` is `(0, 3)`. `None` for a packed
+    /// vector (`unsigned[8]`, checked from its width instead), an instance
+    /// array, and anything parametric.
+    fn declared_index_bounds(&self, decl_ty: &Type) -> Option<(i64, i64)> {
+        let Type::Indexed {
+            index: Some(ix), ..
+        } = decl_ty
+        else {
+            return None;
+        };
+        match self.ast_ty(decl_ty) {
+            Ty::Array {
+                elem, family: None, ..
+            } if !self.is_entity_ty(&elem) => {}
+            _ => return None,
+        }
+        match ix.as_ref() {
+            Expr::Range { lo, hi, .. } => {
+                let (a, b) = (signed_lit(lo)?, signed_lit(hi)?);
+                Some((a.min(b), a.max(b)))
+            }
+            other => {
+                let n = Self::const_literal(other)?;
+                (n > 0).then_some((0, n - 1))
+            }
+        }
+    }
+
     /// `y = 50` where `y: integer<0..10>`. The initializer form was checked,
     /// the assignment form was not — and the value wraps to the storage width
     /// (50 -> 2), so the runtime range assert saw an in-range value and the
@@ -4258,6 +4383,19 @@ fn ty_name(t: &Ty) -> String {
 }
 
 /// The value of an integer literal, allowing a leading unary minus.
+/// Only a plain local name can be looked up; a field or nested index has no
+/// entry, and is skipped rather than guessed at.
+fn declared_bounds_of(
+    base: &Expr,
+    bounds: &std::cell::RefCell<HashMap<String, (i64, i64)>>,
+) -> Option<(i64, i64)> {
+    let Expr::Path(p) = base else { return None };
+    let [seg] = p.segments.as_slice() else {
+        return None;
+    };
+    bounds.borrow().get(&seg.text).copied()
+}
+
 fn signed_lit(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int { text, .. } => i64::try_from(unsigned_lit_text(text)?).ok(),
@@ -4713,6 +4851,79 @@ mod tests {
             .iter()
             .filter(|d| d.code == Some(code))
             .count()
+    }
+
+    #[test]
+    fn struct_literal_field_names_are_checked() {
+        let has = |src: &str, code: &str| diag_codes(src).iter().any(|c| c.contains(code));
+        let base = "module m;\nstruct S { a: Bit, b: Bit }\nentity E { y: Bit out, }\nimpl E { let s: S = LIT; y = s.a; }\n";
+        // A misspelled name was dropped whole and the literal still checked.
+        assert!(has(
+            &base.replace("LIT", "{ .a = '1', .zz = '0' }"),
+            "E-P003"
+        ));
+        assert!(!has(
+            &base.replace("LIT", "{ .a = '1', .b = '0' }"),
+            "E-P003"
+        ));
+        // Omitting one is legal (it defaults) but worth saying out loud.
+        assert!(has(&base.replace("LIT", "{ .a = '1' }"), "W-P016"));
+        assert!(!has(
+            &base.replace("LIT", "{ .a = '1', .b = '0' }"),
+            "W-P016"
+        ));
+        // A spread supplies the rest, so nothing is left implicit.
+        let with_base = "module m;\nstruct S { a: Bit, b: Bit }\nentity E { y: Bit out, }\nimpl E { let p: S = { .a = '1', .b = '0' }; let s: S = { ..p, .a = '0' }; y = s.a; }\n";
+        assert!(!has(with_base, "W-P016"));
+    }
+
+    #[test]
+    fn duplicate_let_is_an_error() {
+        let has = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P002"));
+        // A scalar silently shadowed; a struct emitted its field locals twice
+        // and failed at link with a clang error naming a mangled symbol.
+        assert!(has(
+            "module m;\nentity E { y: Bit out, }\nimpl E { let a: Bit; let a: Bit; y = a; }\n"
+        ));
+        assert!(!has(
+            "module m;\nentity E { y: Bit out, }\nimpl E { let a: Bit; let b: Bit; y = a and b; }\n"
+        ));
+    }
+
+    #[test]
+    fn unreachable_arms_warn_in_a_match_expression() {
+        // The two match forms share `MatchArm` but not the code walking it,
+        // so this was statement-only.
+        let base = "module m;\nenum State { Idle, Run, Done }\nentity E { y: Bit out, }\nimpl E {\n  let s: State;\n  y = match s { ARMS };\n}\n";
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "State::Idle => '0', State::Idle => '1', _ => '0'"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
+            1
+        );
+        assert_eq!(
+            warnings(
+                &base.replace("ARMS", "State::Idle => '0', _ => '1'"),
+                codes::UNREACHABLE_MATCH_ARM
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn data_array_index_is_bound_checked() {
+        let oob = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P003"));
+        // A plain count is 0-based: `v[9]` used to read `v[3]` in silence.
+        let plain = "module m;\nentity E { y: Bit out, }\nimpl E {\n  let v: Logic[4];\n  y = if v[IX] == '0' { '1' } else { '0' };\n}\n";
+        assert!(oob(&plain.replace("IX", "9")));
+        assert!(!oob(&plain.replace("IX", "3")));
+        // A declared range is indexed by that range, not by `0..len-1`.
+        let ranged = "module m;\nentity E { y: Bit out, }\nimpl E {\n  let v: Logic[15..8];\n  y = if v[IX] == '0' { '1' } else { '0' };\n}\n";
+        assert!(!oob(&ranged.replace("IX", "15")));
+        assert!(!oob(&ranged.replace("IX", "8")));
+        assert!(oob(&ranged.replace("IX", "7")));
+        assert!(oob(&ranged.replace("IX", "16")));
     }
 
     #[test]

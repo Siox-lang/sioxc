@@ -2973,3 +2973,55 @@ thing a corpus of only-correct programs cannot surface. Worth remembering
 that writing *wrong* code on purpose is a distinct technique from writing
 awkward-but-valid code, and it was the shadowing that hid the scalar case:
 the program still ran, just not the program that was written.
+
+## 2026-07-31 (cont.) — writing wrong programs on purpose
+
+The duplicate-`let` find was an accident: I typo'd a name in a corpus test and
+got a clang error instead of a diagnostic. That is a technique, though, and
+not one the corpus can supply — 117 files of *correct* programs say nothing
+about what happens to an incorrect one. So this round was a batch of
+deliberately-broken programs, one per way of being wrong.
+
+Ten shapes; five were already caught (duplicate field, duplicate variant,
+duplicate port, duplicate literal field, wrong argument count — all with good
+messages). The other five:
+
+| written                              | was                        |
+| ------------------------------------ | -------------------------- |
+| `{ .a = 1, .zz = 2 }`                | silent, `.zz` dropped      |
+| `{ .a = 1 }` on a two-field struct   | silent, `.b` defaulted     |
+| `match e { E::A => 1, E::A => 2 }`   | silent, first arm wins     |
+| `v[9]` on a 4-element array          | silent, **read `v[3]`**    |
+| `K = 2` where `K` is a const         | "unknown signal `K`"       |
+
+Three of these are the same shape as the struct-`match` bug found an hour
+earlier, which is the useful part. Unreachable-arm checking ran on match
+*statements* and not match *expressions* — and the exhaustiveness check right
+beside it carries a comment saying it had been fixed for exactly that reason,
+on exactly that pair. Two forms sharing `MatchArm` but not the code that walks
+it. The fix was to take `&[MatchArm]` instead of `&MatchStmt` so there is one
+walker to wire up next time.
+
+### The array index was the real one
+
+`v[9]` on a 4-element array read `v[3]` and asserted happily. Bit-indexing a
+packed vector *was* bounds-checked; data arrays were skipped, with a comment
+explaining why: an array may declare a range, and `Logic[15..8]` is genuinely
+indexed `8..15`, so checking it against `0..7` would be a false positive. I
+confirmed that first — a signal in that array reports as `v[15]`, not `v[7]` —
+because the comment could have been stale caution and it wasn't.
+
+`Ty::Array` carries a length but no offset, so the two are indistinguishable
+by the time the checker sees them. The bounds therefore come from the
+declaration, recorded per impl, and both forms now check against their own
+range rather than one being assumed for the other.
+
+### Where I stopped short
+
+Missing struct fields are a **warning**, not an error. Defaulting them is
+defensible and matches "always initialized"; whether a literal must be
+complete is a language decision rather than a bug, so the compiler now says
+what it is doing and leaves the rule alone. Zero hits across the corpus, so
+it is not noise. `K = 2` on a const still reports late, from the emitter,
+as "unknown signal `K`" — real but a worse message than it should be, and
+next.
