@@ -3276,3 +3276,42 @@ records it rather than being bent to 2.
 Also fixed: spec 3.19 said the applied type "writes the view first and its
 backing struct second: `<view> <struct>`", which contradicts every example
 beneath it and the syntax that parses. Stale from the header restyle.
+
+## 2026-07-31 (cont.) — a tick that found no bugs, and two mistakes of mine
+
+Continuing down the coverage list. Nothing was broken this time, which is
+worth writing down as plainly as the finds.
+
+**User-defined operators work.** `impl Operator<"sym", Rhs, Out> for T` on a
+user newtype dispatches `+` correctly, and a single `"<=>"` returning
+`Ordering` really does drive all six comparisons — verified across Less,
+Greater *and* Equal (the first probe only exercised two of the three, which
+would have missed an `Equal` branch bug entirely). Both engines agree. Zero
+corpus files covered this; now one does, and breaking the impl makes it fail,
+which I checked rather than assumed.
+
+Two things I got wrong, both mine:
+
+**I had added a duplicate corpus test.** `connect_forms_test.siox` already
+existed and covered the three connection forms; earlier today I added
+`connection_forms_test.siox` next to it without looking. The unique part of
+mine — a block connection carrying a *value* rather than a name — is now
+folded into the existing file and the duplicate is gone. The lesson is
+cheaper than the cleanup was: grep the corpus for the topic before adding a
+file to it, not just for the symptom.
+
+While merging I found the older file's header describing "three struct-style
+forms: explicit, name shorthand (`.a`), or positional". Spec 3.12 says there
+is no bare `.port` shorthand, and the compiler agrees — it rejects `{ .a, .b }`
+with a message pointing at `.a = x`. The comment was describing a form that
+does not exist; corrected.
+
+**A memory of mine was actively wrong.** I had recorded that operators use
+Rust-style named traits with `Ord::cmp` deriving comparisons. They do not:
+`impl Add for T` reports `unknown type 'Add'`. That design was reversed in
+favour of the generic `Operator<"sym", In, Out>` trait, and `std/bits.siox`
+has said so all along. This is the second stale note to mislead me today —
+the first had system attributes on `::` instead of the tick. Both were written
+before a change and never revisited. Checking `std/` first would have settled
+either in seconds, and that is the cheaper habit: the source is the record,
+the note is a hint.
