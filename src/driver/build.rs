@@ -1582,6 +1582,9 @@ impl Ctx<'_> {
             // its own C variable, registered so `name[i]` reads resolve to it.
             if let Some(&id) = self.map.get(&key) {
                 b.push_str(&format!("    sx_set({}, {code}ULL);\n", id.0));
+                for extra in self.alias_ids_beyond(&key, &id.0.to_string()) {
+                    b.push_str(&format!("    sx_set({extra}, {code}ULL);\n"));
+                }
             } else {
                 b.push_str(&format!(
                     "    uint64_t {} = {code}ULL;\n",
@@ -1652,6 +1655,9 @@ impl Ctx<'_> {
             // locals.
             if let Some(&id) = self.map.get(&key) {
                 b.push_str(&format!("    sx_set({}, {value});\n", id.0));
+                for extra in self.alias_ids_beyond(&key, &id.0.to_string()) {
+                    b.push_str(&format!("    sx_set({extra}, {value});\n"));
+                }
             } else {
                 b.push_str(&format!(
                     "    uint64_t {} = {value};\n",
@@ -2052,6 +2058,14 @@ impl Ctx<'_> {
                     let (signal, destination) = &target[&suffix];
                     if *signal {
                         b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                        // The same fan-out the scalar path needs: a composite
+                        // feeding two instances has one destination in `map`
+                        // per field and the rest in `aliases`, so only the
+                        // last instance saw the value.
+                        for extra in self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
+                        {
+                            b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                        }
                     } else {
                         b.push_str(&format!("{ind}{destination} = {expression};\n"));
                     }
@@ -2086,9 +2100,17 @@ impl Ctx<'_> {
                             source.len()
                         ));
                     }
-                    for ((signal, destination), expression) in target.iter().zip(source) {
+                    for (index, ((signal, destination), expression)) in
+                        target.iter().zip(source).enumerate()
+                    {
                         if *signal {
                             b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                            // Each element fans out to every instance it feeds,
+                            // as the scalar and field paths do.
+                            let element = format!("{name}[{index}]");
+                            for extra in self.alias_ids_beyond(&element, destination) {
+                                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                            }
                         } else {
                             b.push_str(&format!("{ind}{destination} = {expression};\n"));
                         }
@@ -2124,11 +2146,11 @@ impl Ctx<'_> {
                         continue;
                     }
                     if let Some(&id) = self.map.get(&element) {
-                        b.push_str(&format!(
-                            "{ind}sx_set({}, {});\n",
-                            id.0,
-                            self.value_for(id, value)?
-                        ));
+                        let expression = self.value_for(id, value)?;
+                        b.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
+                        for extra in self.alias_ids_beyond(&element, &id.0.to_string()) {
+                            b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                        }
                     } else {
                         let expression = self.value_for_local(&element, value)?;
                         let expression = match self.local_widths.borrow().get(&element) {
@@ -2162,6 +2184,9 @@ impl Ctx<'_> {
                     let value = self.char_value_for_target(&element, ch);
                     if let Some(&id) = self.map.get(&element) {
                         b.push_str(&format!("{ind}sx_set({}, {value}ULL);\n", id.0));
+                        for extra in self.alias_ids_beyond(&element, &id.0.to_string()) {
+                            b.push_str(&format!("{ind}sx_set({extra}, {value}ULL);\n"));
+                        }
                     } else if self.locals.borrow().contains(&element) {
                         let expression = match self.local_widths.borrow().get(&element) {
                             Some(&width) => mask_c(&format!("{value}ULL"), width),
@@ -2264,11 +2289,14 @@ impl Ctx<'_> {
             return Ok(true);
         }
         if let Some(&id) = self.map.get(field) {
-            b.push_str(&format!(
-                "{ind}sx_set({}, {});\n",
-                id.0,
-                self.value_for(id, value)?
-            ));
+            let expression = self.value_for(id, value)?;
+            b.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
+            // A composite feeding two instances has one destination per field
+            // in `map` and the rest in `aliases`, so only the last instance
+            // saw the value — the field-wise twin of the scalar fan-out.
+            for extra in self.alias_ids_beyond(field, &id.0.to_string()) {
+                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+            }
             return Ok(true);
         }
         if self.locals.borrow().contains(field) {
@@ -2311,6 +2339,20 @@ impl Ctx<'_> {
     }
 
     /// Scalar descendant write destinations keyed like `composite_reads`.
+    /// The other signals a connected name feeds. `map` records one; a name
+    /// wired to several instance ports has them all in `aliases`.
+    fn alias_ids_beyond(&self, path: &str, primary: &str) -> Vec<String> {
+        self.aliases
+            .get(path)
+            .map(|ids| {
+                ids.iter()
+                    .map(|id| id.0.to_string())
+                    .filter(|id| id != primary)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn composite_targets(&self, prefix: &str) -> BTreeMap<String, (bool, String)> {
         let mut targets = BTreeMap::new();
         for (name, id) in self.map {

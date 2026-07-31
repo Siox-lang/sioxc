@@ -2878,3 +2878,34 @@ The thing worth remembering: I was three probes into recording separate
 structural bugs before noticing the outputs were all *exactly* what they would
 be with the input at zero. Reading the numbers as a set rather than one at a
 time is what turned three reports into one fix.
+
+## 2026-07-31 (cont.) — the same fan-out, five times over
+
+Continuing the structural sweep. Bus/view ports across two instances carry
+data and back-pressure correctly; tristate resolution inside an entity gives
+'1', '0', 'Z' and 'X' exactly as IEEE 1164 says. (An `inout` net shared
+between *testbench* instances is still refused by E-P008, which is the
+diagnostic added earlier when the mutual-driver attempt produced a
+combinational loop.)
+
+Then the obvious follow-up to the previous commit: if a *scalar* local's
+initializer reached only one instance, what about the composite ones? All of
+them, as it turned out:
+
+    let cfg: Cfg = { .lo = 3, .hi = 4 };  ->  0, 7
+    let xs: unsigned[8][3] = [1, 2, 3];   ->  0, 4
+    let msg: Char[2] = "Hi";              ->  0, 72
+
+Five separate sites write a seed value, one per initializer shape — scalar,
+struct field, array element, string element, file-read element — and each one
+looked its destination up in `map`, which holds a single signal per name. The
+fan-out list has been in `aliases` all along; only the assignment path
+consulted it.
+
+The fix is the same three lines at each site, so it now goes through one
+helper. That is the interesting part: the previous commit fixed the scalar
+site and I wrote its comment as though the bug were *about* scalars. It was
+about seeding, and seeding happens in five places. Fixing one instance of a
+duplicated pattern and moving on is how the other four survive — the same
+lesson as the parser's list contexts, which took two rounds for the same
+reason.
