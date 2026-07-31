@@ -103,6 +103,7 @@ impl Typed {
 pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink) -> Typed {
     let mut checker = Checker::new(sink, resolved);
     checker.collect(modules);
+    checker.check_struct_field_cycles();
     for m in modules {
         for item in &m.items {
             checker.check_item(item);
@@ -195,6 +196,11 @@ struct Checker<'a> {
     enum_bases: HashMap<String, String>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
+    /// Struct name -> each field's `(name, declared type head, span)`. A
+    /// struct that transitively contains itself has no finite layout, and
+    /// flattening one in elaboration recursed until the stack gave out with
+    /// typecheck reporting nothing at all.
+    struct_field_types: HashMap<String, Vec<(String, String, Span)>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
     /// Structs opting into packed numeric storage through `impl Vector`.
@@ -292,6 +298,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
+            struct_field_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             vector_families: HashSet::new(),
@@ -631,6 +638,19 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
                     .insert(st.name.text.clone(), (st.base.clone(), fields));
+                self.struct_field_types.insert(
+                    st.name.text.clone(),
+                    st.fields
+                        .iter()
+                        .filter_map(|f| {
+                            Some((
+                                f.name.text.clone(),
+                                type_head_name(&f.ty)?.to_string(),
+                                f.name.span,
+                            ))
+                        })
+                        .collect(),
+                );
             }
             Item::View(v) => {
                 let key = declared_view_key(v);
@@ -971,6 +991,67 @@ impl<'a> Checker<'a> {
     /// catch source constants that cannot fit the compiler's `u32` layout
     /// representation and would otherwise truncate or attempt an impossible
     /// allocation during error recovery.
+    /// A struct that contains itself, directly or through other structs, has
+    /// no finite layout. Elaboration flattens a struct into leaf signals, so
+    /// one of these recursed until the process aborted with no diagnostic —
+    /// `struct A { f: B } struct B { f: A }` was enough.
+    fn check_struct_field_cycles(&mut self) {
+        let mut names: Vec<String> = self.struct_field_types.keys().cloned().collect();
+        names.sort();
+        let mut found = Vec::new();
+        for name in &names {
+            if let Some((field, span, through)) = self.self_containing(name) {
+                found.push((name.clone(), field, span, through));
+            }
+        }
+        for (name, field, span, through) in found {
+            let path = if through == name {
+                format!("`{name}` contains itself")
+            } else {
+                format!("`{name}` contains itself through `{through}`")
+            };
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!("{path}, so it has no finite layout"),
+                format!(
+                    "field `{field}` would have to hold another `{name}`, without end; \
+                     hardware has no indirection to break the cycle"
+                ),
+            );
+        }
+    }
+
+    /// The field that closes a containment cycle back to `start`, with the
+    /// struct it goes through. Breadth-first so the shortest cycle is found.
+    fn self_containing(&self, start: &str) -> Option<(String, Span, String)> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut queue: Vec<(String, String, Span, String)> = self
+            .struct_field_types
+            .get(start)?
+            .iter()
+            .map(|(f, head, span)| (head.clone(), f.clone(), *span, head.clone()))
+            .collect();
+        while !queue.is_empty() {
+            let mut next = Vec::new();
+            for (current, field, span, through) in queue {
+                if current == start {
+                    return Some((field, span, through));
+                }
+                if !seen.insert(current.clone()) {
+                    continue;
+                }
+                if let Some(fields) = self.struct_field_types.get(&current) {
+                    for (_, head, _) in fields {
+                        next.push((head.clone(), field.clone(), span, through.clone()));
+                    }
+                }
+            }
+            queue = next;
+        }
+        None
+    }
+
     fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -4983,6 +5064,29 @@ mod tests {
         // A spread supplies the rest, so nothing is left implicit.
         let with_base = "module m;\nstruct S { a: Bit, b: Bit }\nentity E { y: Bit out, }\nimpl E { let p: S = { .a = '1', .b = '0' }; let s: S = { ..p, .a = '0' }; y = s.a; }\n";
         assert!(!has(with_base, "W-P016"));
+    }
+
+    #[test]
+    fn a_struct_containing_itself_is_rejected() {
+        let bad = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P003"));
+        // Elaboration flattens a struct into leaf signals, so each of these
+        // recursed until the process aborted — with typecheck reporting
+        // nothing at all. Four lines was enough.
+        assert!(bad(
+            "module m;\nstruct S { f: S }\nentity E { y: Bit out, }\nimpl E { let v: S; y = '0'; }\n"
+        ));
+        assert!(bad(
+            "module m;\nstruct A { f: B }\nstruct B { f: A }\nentity E { y: Bit out, }\nimpl E { let v: A; y = '0'; }\n"
+        ));
+        // Through an array element, which is just as infinite.
+        assert!(bad(
+            "module m;\nstruct A { f: A[2] }\nentity E { y: Bit out, }\nimpl E { let v: A; y = '0'; }\n"
+        ));
+        // Ordinary nesting, and the same struct used twice, stay legal.
+        assert!(!bad(
+            "module m;\nstruct I { x: Bit }\nstruct O { a: I, b: I }\n\
+             entity E { y: Bit out, }\nimpl E { let v: O; y = v.a.x; }\n"
+        ));
     }
 
     #[test]

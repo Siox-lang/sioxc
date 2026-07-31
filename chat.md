@@ -3634,3 +3634,37 @@ to the test thread than to `main`. Real programs nest single digits deep, so
 The regression test covers both a run that must still parse and both crashing
 shapes — closed *and* unclosed, since the unbalanced case reaches the limit by
 a different route.
+
+## 2026-07-31 (cont.) — four lines that killed the compiler
+
+Continuing in the robustness class, now on the recursion the parser bound does
+not protect: item-level structure, which nests through declarations rather
+than through expressions.
+
+Most of it holds. A 400-deep instance hierarchy elaborates. 500 nested struct
+types are fine. An 800-link `using` alias chain resolves. A recursive function
+already has a depth guard and reports `E-P015`. But:
+
+    struct A { f: B }
+    struct B { f: A }
+
+**Stack overflow, SIGABRT, no diagnostic.** Typecheck reported zero problems
+and then elaboration flattened `A` into leaf signals — `A` contains a `B`
+contains an `A`, without end. Four lines, and nothing about them looks
+dangerous; a cyclic data structure is an ordinary thing to write by accident
+when you are used to languages that have pointers.
+
+The type has no finite layout, which is a typecheck matter, so that is where
+it is caught now: each struct's field type heads are recorded at collection,
+and a breadth-first walk finds the shortest cycle back to the struct itself.
+The message names the field that closes the loop and says why hardware cannot
+have it — there is no indirection to break the cycle with.
+
+Direct (`struct S { f: S }`), mutual, three-way, and through an array element
+(`struct A { f: A[2] }`, just as infinite) are all caught. Ordinary nesting and
+using the same struct twice in one parent stay legal, which the test pins.
+
+Two crashes in two ticks from this class, after two ticks of behavioural
+sweeps found nothing. Both were reachable by writing something wrong rather
+than something exotic, which is the part worth remembering: the question
+"what happens when the input is bad" had simply never been asked.
