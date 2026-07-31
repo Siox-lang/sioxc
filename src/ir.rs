@@ -42,6 +42,10 @@ pub struct Design {
     /// (including `std`). Consumers render a `Signal::enum_type` value as its
     /// symbol (`'X'`, `Idle`) instead of a bare number.
     pub enum_syms: HashMap<String, HashMap<u64, String>>,
+    /// Vector family -> its element enum (`unsigned` -> `Logic`). A *bit* of a
+    /// packed vector is not a signal of its own, so an operator on one has no
+    /// type to dispatch by unless the family says what its elements are.
+    pub vector_element_of_family: HashMap<String, String>,
     /// Type name -> its `impl New for T` uninitialized default value (`Logic` ->
     /// `'U'`), so testbench-local seeding matches the hardware signal default.
     pub new_defaults: HashMap<String, u64>,
@@ -271,6 +275,16 @@ pub fn lower_in(
         .collect();
     l.enum_reprs = enum_reprs(modules);
     l.vector_families = vector_families(modules);
+    // Record what each family's elements are, so a consumer that sees only
+    // the finished `Design` (the testbench emitter) can type a bit of a
+    // packed vector the same way lowering does.
+    for family in &l.vector_families {
+        if let Some(element) = l.vector_element_enum(family) {
+            l.out
+                .vector_element_of_family
+                .insert(family.clone(), element);
+        }
+    }
     {
         let enums = enum_index(modules);
         for (name, e) in &enums {
@@ -5597,6 +5611,26 @@ impl<'a> Lowering<'a> {
                 .enum_variants
                 .contains_key(&p.segments[0].text)
                 .then(|| p.segments[0].text.clone()),
+            // An *array* element is a signal in its own right and resolves by
+            // its flattened name. A *bit* of a packed vector is not, so it
+            // reads as the vector's element type — otherwise it had no type
+            // at all and no operator impl could be found for it: `v[7] xor
+            // v[5]` did not lower, while `v[7] and v[5]` did, because `and`
+            // is a built-in with its own lowering and needs no impl.
+            ast::Expr::Index { base, .. } => {
+                if let Some(name) = expr_path(e) {
+                    if let Some(found) = self
+                        .local_enum
+                        .get(&name)
+                        .or_else(|| self.local_struct.get(&name))
+                        .or_else(|| self.local_numeric.get(&name))
+                    {
+                        return Some(found.clone());
+                    }
+                }
+                let family = self.operand_type_name(base)?;
+                self.vector_element_enum(&family)
+            }
             _ => {
                 let p = expr_path(e)?;
                 // A generic-fn parameter reads as its caller's concrete family.
@@ -9060,6 +9094,7 @@ mod tests {
             base_dir: Default::default(),
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
+            vector_element_of_family: Default::default(),
         };
         let issues = bad.validate();
         assert!(

@@ -2625,6 +2625,36 @@ impl Ctx<'_> {
             // `'X'` came out as `'1'`, where the same value bound to a name
             // first gave `'X'`.
             ast::Expr::Unary { rhs, .. } => self.dispatch_operand_family(rhs),
+            // A *bit* of a packed vector is not a named local, so it has no
+            // family of its own; it reads as the vector's element type, which
+            // is what an operator impl on that element is keyed by. Mirrors
+            // lowering, where `v[7] xor v[5]` had the same gap: `and` worked
+            // on the same operands because it is a built-in needing no impl.
+            ast::Expr::Index { base, .. } => {
+                if let Some(name) = expr_path(e) {
+                    if let Some(family) = self
+                        .local_families
+                        .borrow()
+                        .get(&name)
+                        .cloned()
+                        .or_else(|| self.local_types.borrow().get(&name).cloned())
+                    {
+                        return Some((family, self.name_width(&name)));
+                    }
+                }
+                let base_name = expr_path(base)?;
+                // A connected signal knows its element directly; a pure local
+                // has no signal, so go through its declared family.
+                let element = self
+                    .map
+                    .get(&base_name)
+                    .and_then(|id| self.design.vector_element_enums.get(&id.0))
+                    .or_else(|| {
+                        let family = self.local_families.borrow().get(&base_name).cloned()?;
+                        self.design.vector_element_of_family.get(&family)
+                    })?;
+                Some((element.clone(), None))
+            }
             _ => {
                 // Any named value: a plain local, or a struct leaf like `p.x`
                 // (an `Expr::Field`, which a shape match misses — a connected

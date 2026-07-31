@@ -3522,3 +3522,41 @@ itself an element-wise operation, with the testbench agreeing.
 The elementwise lift now covers paths, unary and binary operators, `if`, and
 `match` — added over four ticks, each smaller than the last, and each found
 by the same misleading error.
+
+## 2026-07-31 (cont.) — the shape an LFSR needs
+
+Second-generation sequential sweep: an enum FSM driven by `match`, a register
+file written and read through a runtime index, a wrap counter, and an LFSR.
+Three matched their models on the first run — the FSM and the register file
+are substantial features and both were exactly right.
+
+The LFSR would not build. Narrowing took five probes and landed on something
+small and specific:
+
+    y = v[7] and v[5];    // ok
+    y = v[7] xor v[5];    // Unknown (unlowered)
+
+Not conversions, not `Logic`, not `xor` — all of those work in isolation.
+**A textual operator over two bits of a packed vector.** A bit of a vector is
+not a signal of its own, so `operand_type_name` had nothing to look up and
+returned `None`; with no operand type there is no impl to inline, and the
+expression lowered to `Unknown`. `and` on the identical operands works
+because it is a built-in with its own lowering and needs no impl at all —
+the same built-in/textual split as the previous tick, one layer down.
+
+A bit of a vector reads as the vector's *element* type, which the family
+already knows (`unsigned` is `Logic[]`). Both engines now say so. The emitter
+needed one extra piece: a connected signal carries its element enum, but a
+pure testbench local has no signal, so `Design` now records family → element
+and the emitter goes through that when the name is not connected.
+
+The corpus test is written from the model's sequence — 1, 2, 4, 8, 16, 32,
+**65**, 130, 5 — not from what the compiler printed. My first draft asserted
+64 at the seventh step, having mis-predicted when the feedback bit arrives:
+at 32 the tapped bits are bit 5 set and bit 7 clear, so the tap is already
+high and the next value carries the 1 back in. siox had it right and I did
+not, which is the third time today that printing the values first would have
+saved a wrong assertion.
+
+Also learned, from the same print: `for i in 0..9` runs ten times. Ranges here
+are inclusive.

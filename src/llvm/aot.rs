@@ -118,6 +118,7 @@ mod tests {
             base_dir: Default::default(),
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
+            vector_element_of_family: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));
@@ -198,6 +199,7 @@ signed main(void) {
             base_dir: Default::default(),
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
+            vector_element_of_family: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_wide_{}", std::process::id()));
