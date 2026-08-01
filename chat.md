@@ -3903,3 +3903,26 @@ Worth recording what made this cheap to get right: the corpus round-trips
 every file through the printer, so the moment the printer and parser disagreed
 about the new form, five tests said so at once. A syntax change without that
 check would have shipped a printer that emits source its own parser rejects.
+
+### The binder means "for any", and siox has no other case
+
+Asked whether the repetition in `impl<W: integer> Counter<W>` is redundant.
+In Rust it is not: the binder is what makes the argument a *variable* rather
+than a *type*, and that distinction buys partial implementations —
+
+    impl<T> Vec<T> { }        // for every T
+    impl Vec<i32> { }         // only for Vec<i32>
+
+siox has no such thing. `impl Counter<8>` is not a specialisation and two
+implementations of one entity are not selected between. So the second mention
+carries no information the declaration does not already give, and the
+repetition is ceremony rather than meaning.
+
+Probing that turned up a hole in the check added an hour ago. It verified
+*arity* but not that the arguments are the bound names, so this was accepted:
+
+    impl<W: integer> Counter<8> { y = a + W; }
+
+`W` resolved to the instantiating value (7) while the target claimed 8 —
+a statement that contradicts itself, silently. Each argument must now be one
+of the names the `impl` binds.

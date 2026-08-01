@@ -1268,6 +1268,44 @@ impl<'a> Resolver<'a> {
                 .at(span)
                 .help("every parameter applied to the target must be bound by the `impl`"),
             );
+            return;
+        }
+        // Each argument must BE one of the bound names. siox has no partial
+        // implementations, so a concrete argument (`impl<W: integer>
+        // Counter<8>`) says nothing the declaration does not — and it was
+        // accepted, leaving `W` to mean the instance's value while the target
+        // claimed 8.
+        let bound: HashSet<&str> = im
+            .params
+            .params
+            .iter()
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let Type::Generic { args, .. } = &im.target else {
+            return;
+        };
+        for arg in args {
+            let named = match arg {
+                GenericArg::Positional(Expr::Path(path)) => match path.segments.as_slice() {
+                    [seg] => bound.contains(seg.text.as_str()),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !named {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "`{owner}` must be applied to the parameters this `impl` binds"
+                    ))
+                    .with_code(codes::TYPE_MISMATCH)
+                    .at(span)
+                    .help(
+                        "siox has no per-value implementations: write \
+                         `impl<W: ..> Owner<W>`, not a concrete argument",
+                    ),
+                );
+                return;
+            }
         }
     }
 
