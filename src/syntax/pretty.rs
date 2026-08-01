@@ -225,7 +225,10 @@ impl Printer {
                 };
                 format!("impl{} {name}{args} for {} {{", params(&i.params), target)
             }
-            None => format!("impl {}{} {{", target, params(&i.params)),
+            // The binder comes first, as Rust writes it: `impl<W: integer>
+            // Counter<W>`. Printing it after the target produced
+            // `impl Counter<W><W: integer>`, which no longer re-parses.
+            None => format!("impl{} {target} {{", params(&i.params)),
         };
         self.line(&head);
         self.indent += 1;
@@ -905,7 +908,7 @@ mod tests {
                bus: Stream<unsigned[32]> Source,\n\
                count: unsigned[W] out,\n\
              }\n\
-             impl Counter<W: integer> {\n\
+             impl<W: integer> Counter<W> {\n\
                const MAX: unsigned[W] = (1 << W) - 1;\n\
                let value: unsigned[W] = 0;\n\
                if clk.rising() {\n\

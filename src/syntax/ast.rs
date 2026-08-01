@@ -190,7 +190,7 @@ pub enum Direction {
     Inout,
 }
 
-/// `impl Counter<W: integer> { ... }` or `impl Trait for Type { ... }`.
+/// `impl<W: integer> Counter<W> { ... }` or `impl Trait for Type { ... }`.
 #[derive(Clone, Debug)]
 pub struct ImplDecl {
     /// Metadata on an implementation. Custom operators use `precedence` here.

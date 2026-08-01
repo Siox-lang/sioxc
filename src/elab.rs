@@ -1354,7 +1354,7 @@ mod tests {
     fn check_is_quiet_about_a_correct_generic_entity() {
         let src = "module m;\n\
             entity Shift<W: integer> { clk: Bit in, d: unsigned[W] in, q: unsigned[W] out }\n\
-            impl Shift<W: integer> {\n\
+            impl<W: integer> Shift<W> {\n\
               let r: unsigned[W] = 0;\n\
               if clk.rising() { r = d; }\n\
               q = r;\n\
@@ -1368,7 +1368,7 @@ mod tests {
           rst: Logic in,\n\
           count: unsigned[W] out,\n\
         }\n\
-        impl Counter<W: integer> {\n\
+        impl<W: integer> Counter<W> {\n\
           let value: unsigned[W] = 0;\n\
           count = value;\n\
         }\n\
@@ -1503,7 +1503,7 @@ mod tests {
         // Port `a` is unsigned[8] (W=8) but the local signal `a` is unsigned[4].
         let src = "module m;\n\
             entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
-            impl Sub<W: integer> { b = a; }\n\
+            impl<W: integer> Sub<W> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
@@ -1519,7 +1519,7 @@ mod tests {
     fn matching_widths_are_fine() {
         let src = "module m;\n\
             entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
-            impl Sub<W: integer> { b = a; }\n\
+            impl<W: integer> Sub<W> { b = a; }\n\
             #[top]\n\
             entity Top {}\n\
             impl Top {\n\
@@ -1537,7 +1537,7 @@ mod tests {
         // error (§3.29). See `unconnected_input_warns_not_errors` for the code.
         let src = "module m;\n\
             entity Counter<W: integer> { clk: Bit in, rst: Logic in, count: unsigned[W] out }\n\
-            impl Counter<W: integer> { count = 0; }\n\
+            impl<W: integer> Counter<W> { count = 0; }\n\
             #[top]\n\
             entity H {}\n\
             impl H {\n\
@@ -1570,7 +1570,7 @@ mod tests {
     /// bind to a type, not a number.
     #[test]
     fn value_parameters_must_be_bound_at_instantiation() {
-        let base = "module m;\nentity S<W: integer> { y: unsigned[W] out, }\nimpl S<W: integer> { y = 0; }\n\
+        let base = "module m;\nentity S<W: integer> { y: unsigned[W] out, }\nimpl<W: integer> S<W> { y = 0; }\n\
                     #[top] entity E { y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
         assert_eq!(errs, 1, "`W` was never given a value");
@@ -1594,7 +1594,7 @@ mod tests {
     #[test]
     fn unknown_generic_argument_is_reported() {
         let base = "module m;\nentity S<W: integer> { a: unsigned[W] in, y: unsigned[W] out, }\n\
-                    impl S<W: integer> { y = a; }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out, }\n";
+                    impl<W: integer> S<W> { y = a; }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!(
             "{base}impl E {{ let d: S<W = 8, Z = 3> = {{ .a = a, .y = y }}; }}\n"
         ));

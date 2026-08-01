@@ -10,7 +10,7 @@ entity Counter<W: integer> {
     count: unsigned[W] out
 }
 
-impl Counter<W: integer> {
+impl<W: integer> Counter<W> {
     let value: unsigned[W] = 0;
 
     if clk.rising() {

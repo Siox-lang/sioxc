@@ -3861,3 +3861,45 @@ Also noticed on the way: there is no `mod`/`rem` operator in std at all, so
 `(p.wr + 1) mod DEPTH` does not parse. A conditional wrap is what hardware
 does anyway, but a design note I hold claims textual operators are the
 extensibility path, and none are defined.
+
+## 2026-08-01 — generic implementations bind their parameters, as Rust does
+
+User decision: keep siox parallel to Rust, strictly, with renaming allowed.
+Before this, four spellings were accepted and none was canonical:
+
+    impl<W: integer> Counter<W>   // Rust form
+    impl Counter<W: integer>      // uses W without binding it
+    impl Counter<W>               // same
+    impl Counter                  // parameters implicit
+
+They also disagreed in behaviour, which is how the whole thread started: the
+bare form tripped a false "unused parameter" warning, because resolution never
+saw the parameter it was computing with.
+
+**The rule now.** An inherent implementation of a generic entity binds its
+parameters and applies them to the target. The binder introduces the names, so
+they are the implementation's own and are matched to the declaration **by
+position** — `impl<M: integer> Reg<M>` is the same implementation as
+`impl<W: integer> Reg<W>` under another name. The other three spellings are
+errors, with the message naming which half is missing.
+
+Renaming had to reach further than it first appeared. The parameter env is
+keyed by the *entity's* names, and everything consults it — not only
+expressions but signal widths. Aliasing only the expression env made
+`unsigned[M]` come out zero-width while `a + M` was already right, so the
+extension happens to the env itself, before anything reads it. `'length` on a
+renamed storage signal now reports 4 and 8 for the two instances.
+
+Three other places had to learn the same positional rule: the unused-parameter
+lint (which looked the declaration up by name and so saw a rename as unused),
+the pretty-printer (which emitted `impl Counter<W><W: integer>` — the binder
+belongs first, and the printed source has to re-parse), and the spec.
+
+Migration was small because std never used the old form: its generics are all
+blanket trait impls, already in Rust shape. Seven corpus sites, sixteen Rust
+test fixtures, two `.siox` fixtures and one spec example.
+
+Worth recording what made this cheap to get right: the corpus round-trips
+every file through the printer, so the moment the printer and parser disagreed
+about the new form, five tests said so at once. A syntax change without that
+check would have shipped a printer that emits source its own parser rejects.

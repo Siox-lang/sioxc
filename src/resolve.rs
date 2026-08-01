@@ -184,6 +184,13 @@ struct Resolver<'a> {
     /// Declaration generic `(owner, name)` -> its definition, used to merge
     /// uses from a separate `impl Owner<T>` parameter scope.
     decl_params: HashMap<(String, String), DefId>,
+    /// Owner -> its declared parameters in order, so an impl binder that
+    /// *renames* (`impl<M> Counter<M>` for `entity Counter<W>`) can be matched
+    /// to the declaration by position, the way Rust matches it.
+    decl_param_order: HashMap<String, Vec<DefId>>,
+    /// Inside the current impl: its binder's names mapped to the declaration
+    /// parameters they stand for.
+    current_impl_renames: HashMap<String, DefId>,
     impl_used_decl_params: HashSet<DefId>,
     current_impl_owner: Option<String>,
     /// The `module` path of every source that was actually loaded. A `using`
@@ -207,6 +214,8 @@ impl<'a> Resolver<'a> {
             import_sites: Vec::new(),
             param_sites: Vec::new(),
             decl_params: HashMap::new(),
+            decl_param_order: HashMap::new(),
+            current_impl_renames: HashMap::new(),
             impl_used_decl_params: HashSet::new(),
             current_impl_owner: None,
             loaded_modules: HashSet::new(),
@@ -781,32 +790,6 @@ impl<'a> Resolver<'a> {
                 ImplItem::Stmt(_) => {}
             }
         }
-        // `impl Counter { .. }` — no parameter list *and* no generic arguments
-        // on the target — still sees the entity's parameters: elaboration
-        // binds them and the body computes with them correctly. Resolution
-        // did not, so a parameter used only as a *value* (`a + W`) recorded
-        // no use and the unused-parameter lint told the author to delete a
-        // parameter their design depends on. A type-position use
-        // (`unsigned[W]`) was already fine because the port type mentions it.
-        //
-        // A target that *does* carry arguments (`impl E<T, U>`) is left alone:
-        // the target necessarily mentions them, and counting that as a use is
-        // what the snapshot below exists to avoid.
-        if im.params.params.is_empty() && generic_target.is_none() {
-            if let Some(owner) = type_head(&im.target) {
-                let inherited: Vec<(String, DefId)> = self
-                    .decl_params
-                    .iter()
-                    .filter(|((entity, _), _)| entity == owner)
-                    .map(|((_, name), &id)| (name.clone(), id))
-                    .collect();
-                for (name, id) in inherited {
-                    if self.lookup(&name).is_none() {
-                        self.bind(&name, id);
-                    }
-                }
-            }
-        }
         self.resolve_type(&im.target);
         for attr in &im.attrs {
             self.resolve_attr(attr);
@@ -836,6 +819,29 @@ impl<'a> Resolver<'a> {
                 (name.clone(), id, uses)
             })
             .collect();
+        // `impl<M: integer> Counter<M>`: the binder names are the impl's own,
+        // matched to the declaration by position. Without this the lint looked
+        // the declaration's `W` up by the *name* `M` and found nothing, so a
+        // renamed parameter counted as unused.
+        let saved_renames = std::mem::take(&mut self.current_impl_renames);
+        if let Some(owner) = type_head(&im.target) {
+            if let Some(order) = self.decl_param_order.get(owner).cloned() {
+                let args = match &im.target {
+                    Type::Generic { args, .. } => args.as_slice(),
+                    _ => &[],
+                };
+                for (i, arg) in args.iter().enumerate() {
+                    let GenericArg::Positional(Expr::Path(path)) = arg else {
+                        continue;
+                    };
+                    let ([seg], Some(&decl_id)) = (path.segments.as_slice(), order.get(i)) else {
+                        continue;
+                    };
+                    self.current_impl_renames.insert(seg.text.clone(), decl_id);
+                }
+            }
+        }
+        self.check_impl_binder(im);
         let saved_impl_owner = self
             .current_impl_owner
             .replace(type_head(&im.target).unwrap_or_default().to_string());
@@ -843,6 +849,7 @@ impl<'a> Resolver<'a> {
             self.resolve_impl_item(it);
         }
         self.current_impl_owner = saved_impl_owner;
+        self.current_impl_renames = saved_renames;
         if let Some(owner) = type_head(&im.target) {
             for (name, impl_id, before) in impl_params {
                 let after = self
@@ -1199,6 +1206,71 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// A generic entity's inherent impl must bind its parameters the way Rust
+    /// does: `impl<W: integer> Counter<W>` introduces `W` and applies it to
+    /// the target. Two shapes used to be accepted and are not equivalent —
+    /// `impl<W: integer> Counter<W>` uses `W` without binding it, and bare
+    /// `impl Counter` leaves the parameters implicit. Only view-applied
+    /// targets (`impl Stream<T> StreamSource`) and trait impls are exempt.
+    fn check_impl_binder(&mut self, im: &ImplDecl) {
+        if im.trait_.is_some() || matches!(im.target, Type::View { .. }) {
+            return;
+        }
+        let Some(owner) = type_head(&im.target) else {
+            return;
+        };
+        let Some(declared) = self.decl_param_order.get(owner).map(Vec::len) else {
+            return;
+        };
+        if declared == 0 {
+            return;
+        }
+        let owner = owner.to_string();
+        let span = im.span;
+        let args = match &im.target {
+            Type::Generic { args, .. } => args.len(),
+            _ => 0,
+        };
+        if args == 0 {
+            let message = if im.params.params.is_empty() {
+                format!("missing generic arguments for `{owner}`")
+            } else {
+                format!("`{owner}` is written without its generic arguments here")
+            };
+            self.sink.emit(
+                Diagnostic::error(message)
+                    .with_code(codes::TYPE_MISMATCH)
+                    .at(span)
+                    .help(format!(
+                        "bind the parameters and apply them: \
+                         `impl<..> {owner}<..>`, as `impl<T> Vec<T>` does in Rust"
+                    )),
+            );
+            return;
+        }
+        if args != declared {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`{owner}` declares {declared} parameter(s) but {args} were applied here"
+                ))
+                .with_code(codes::TYPE_MISMATCH)
+                .at(span),
+            );
+            return;
+        }
+        if im.params.params.len() != declared {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`impl` binds {} parameter(s) but applies {args} to `{owner}`",
+                    im.params.params.len()
+                ))
+                .with_code(codes::TYPE_MISMATCH)
+                .at(span)
+                .help("every parameter applied to the target must be bound by the `impl`"),
+            );
+        }
+    }
+
     fn mark_impl_param_use(&mut self, id: DefId) {
         if self.out.kind_of(id) != Some(DefKind::Param) {
             return;
@@ -1209,6 +1281,10 @@ impl<'a> Resolver<'a> {
         let Some(name) = self.out.def(id).map(|def| def.name.clone()) else {
             return;
         };
+        if let Some(&decl_id) = self.current_impl_renames.get(&name) {
+            self.impl_used_decl_params.insert(decl_id);
+            return;
+        }
         if let Some(&decl_id) = self.decl_params.get(&(owner.to_string(), name)) {
             self.impl_used_decl_params.insert(decl_id);
         }
@@ -1263,6 +1339,10 @@ impl<'a> Resolver<'a> {
                 if let Some(owner) = owner {
                     self.decl_params
                         .insert((owner.to_string(), p.name.text.clone()), id);
+                    self.decl_param_order
+                        .entry(owner.to_string())
+                        .or_default()
+                        .push(id);
                 }
             }
             if let Some(bound) = &p.bound {
@@ -1528,9 +1608,9 @@ mod tests {
     }
 
     /// A parameter used only as a *value* recorded no use, so the lint told
-    /// the author to delete a parameter the design computes with. Elaboration
-    /// bound it correctly all along, so the code worked and the advice would
-    /// have broken it.
+    /// the author to delete a parameter the design computes with. With a
+    /// Rust-style binder the name is the implementation's own, so the lint
+    /// also has to follow a *rename* back to the declaration by position.
     #[test]
     fn a_parameter_used_as_a_value_counts_as_used() {
         let unused = |src: &str| {
@@ -1540,34 +1620,61 @@ mod tests {
                 .filter(|d| d.code == Some(codes::UNUSED_PARAM))
                 .count()
         };
-        // Value position, with and without the parameter list repeated.
         assert_eq!(
             unused(
                 "module m;\n\
                  entity E<N: integer> { a: Bit in, y: Bit out }\n\
-                 impl E { y = if a == N { '1' } else { '0' }; }\n"
+                 impl<N: integer> E<N> { y = if a == N { '1' } else { '0' }; }\n"
             ),
             0,
-            "bare impl, value use"
+            "value use under the declaration's own name"
         );
+        // The binder renames; the declaration's parameter is still used.
         assert_eq!(
             unused(
                 "module m;\n\
                  entity E<N: integer> { a: Bit in, y: Bit out }\n\
-                 impl E<N: integer> { y = if a == N { '1' } else { '0' }; }\n"
+                 impl<M: integer> E<M> { y = if a == M { '1' } else { '0' }; }\n"
             ),
             0,
-            "repeated params, value use"
+            "value use under a renamed binder"
         );
-        // A genuinely unused parameter is still reported, either way.
+        // A genuinely unused parameter is still reported.
         assert_eq!(
             unused(
                 "module m;\n\
                  entity E<N: integer> { a: Bit in, y: Bit out }\n\
-                 impl E { y = a; }\n"
+                 impl<N: integer> E<N> { y = a; }\n"
             ),
             1,
-            "bare impl, unused"
+            "unused"
+        );
+    }
+
+    /// Rust binds a generic implementation's parameters and applies them to
+    /// the target; siox used to accept three spellings that are not
+    /// equivalent, one of which left the parameters implicit entirely.
+    #[test]
+    fn a_generic_impl_must_bind_and_apply_its_parameters() {
+        let errs = |src: &str| resolve_src(src).1;
+        // `unsigned` is not in this helper's prelude, so the parameter is
+        // exercised as a value rather than as a width.
+        let entity = "module m;\nentity E<W: integer> { a: Bit in, y: Bit out }\n";
+        let with = |head: &str, param: &str| {
+            format!("{entity}impl {head} {{ y = if a == {param} {{ '1' }} else {{ '0' }}; }}\n")
+        };
+        // The canonical form, and the same implementation renamed.
+        assert_eq!(errs(&with("<W: integer> E<W>", "W")), 0);
+        assert_eq!(errs(&with("<M: integer> E<M>", "M")), 0);
+        // Using a parameter without binding it, and leaving them implicit.
+        assert!(errs(&with("E<W: integer>", "W")) >= 1);
+        assert!(errs(&with("E", "W")) >= 1);
+        // Arity has to agree with the declaration.
+        assert!(errs(&with("<W: integer> E<W, W>", "W")) >= 1);
+        // A non-generic entity is untouched.
+        assert_eq!(
+            errs("module m;\nentity F { y: Bit out }\nimpl F { y = '0'; }\n"),
+            0
         );
     }
 
@@ -1732,7 +1839,7 @@ mod tests {
                rst: Logic in,\n\
                count: unsigned[W] out,\n\
              }\n\
-             impl Counter<W: integer> {\n\
+             impl<W: integer> Counter<W> {\n\
                let value: unsigned[W] = 0;\n\
                if clk.rising() {\n\
                  value = value + 1;\n\

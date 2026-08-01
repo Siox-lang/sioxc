@@ -314,10 +314,18 @@ entity Counter<W: integer> {
 }
 ```
 
+An implementation **binds** the parameters it uses and applies them to the
+target, as Rust's `impl<T> Vec<T>` does: `impl<W: integer> Counter<W>`. The
+binder introduces the names, so they are the implementation's own — writing
+`impl<N: integer> Counter<N>` is the same implementation under a different
+name, matched to the declaration by position. Neither
+`impl Counter<W: integer>` (which uses `W` without binding it) nor a bare
+`impl Counter` (which leaves the parameters implicit) is accepted.
+
 Valid inside implementation if used as a local compile-time value:
 
 ```siox
-impl Counter<W: integer> {
+impl<W: integer> Counter<W> {
     const MAX: unsigned[W] = (1 << W) - 1;
 }
 ```

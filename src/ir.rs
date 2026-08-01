@@ -976,6 +976,42 @@ impl<'a> Lowering<'a> {
         let saved_char = std::mem::take(&mut self.local_char);
         let saved_array = std::mem::take(&mut self.local_array);
         let saved_numeric = std::mem::take(&mut self.local_numeric);
+        // A Rust-style binder may rename: `impl<M: integer> Counter<M>` calls
+        // the entity's first parameter `M` inside its own body. Every lookup
+        // below — signal widths as much as expressions — goes through `env`,
+        // which is keyed by the entity's declared names, so extend it with
+        // each impl's names bound by position, as Rust binds them.
+        let mut renamed = env.clone();
+        let mut renamed_types = type_env.clone();
+        {
+            let bodies: Vec<&ast::ImplDecl> = self.impls.get(ename).cloned().unwrap_or_default();
+            for im in bodies {
+                let ast::Type::Generic { args, .. } = &im.target else {
+                    continue;
+                };
+                for (i, arg) in args.iter().enumerate() {
+                    let ast::GenericArg::Positional(ast::Expr::Path(path)) = arg else {
+                        continue;
+                    };
+                    let ([seg], Some(param)) =
+                        (path.segments.as_slice(), edecl.params.params.get(i))
+                    else {
+                        continue;
+                    };
+                    if seg.text == param.name.text {
+                        continue;
+                    }
+                    if let Some(&value) = env.get(&param.name.text) {
+                        renamed.insert(seg.text.clone(), value);
+                    }
+                    if let Some(ty) = type_env.get(&param.name.text) {
+                        renamed_types.insert(seg.text.clone(), ty.clone());
+                    }
+                }
+            }
+        }
+        let env = &renamed;
+        let type_env = &renamed_types;
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
         let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
         self.lower_stack.push(ename.to_string());
@@ -8917,7 +8953,7 @@ mod tests {
           en: Bit in,\n\
           count: unsigned[W] out,\n\
         }\n\
-        impl Counter<W: integer> {\n\
+        impl<W: integer> Counter<W> {\n\
           let value: unsigned[W] = 0;\n\
           if clk.rising() {\n\
             if rst == '1' {\n\
@@ -9338,7 +9374,7 @@ mod tests {
             format!(
                 "module m;\n\
                  entity Inc<W: integer> {{ a: unsigned[W] in, y: unsigned[W] out, }}\n\
-                 impl Inc<W: integer> {{ y = a + 1; }}\n\
+                 impl<W: integer> Inc<W> {{ y = a + 1; }}\n\
                  #[top] entity H {{}}\n\
                  impl H {{ let a: unsigned[4]; let y: unsigned[4]; \
                  let i: Inc<{arg}> = {{ .a = a, .y = y }}; }}"

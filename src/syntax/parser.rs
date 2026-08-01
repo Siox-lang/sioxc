@@ -692,7 +692,7 @@ impl<'a> Parser<'a> {
 
         // Rust-style trait-impl parameters precede the trait:
         // `impl<T: Resolve> Resolve for T[]`. Keep the older target-impl form
-        // `impl Counter<W: integer> { ... }` below, where the parameters follow
+        // `impl<W: integer> Counter<W> { ... }` below, where the parameters follow
         // the target name.
         let mut params = if self.at(TokenKind::Lt) {
             self.parse_params()
@@ -2739,7 +2739,7 @@ mod tests {
     #[test]
     fn impl_with_state_and_sequential_block() {
         let m = parse_ok(
-            "module m;\nimpl Counter<W: integer> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else {
             panic!("expected impl")
