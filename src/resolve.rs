@@ -1527,7 +1527,6 @@ mod tests {
         assert!(unused[0].contains("`T`"), "flags the dead T: {unused:?}");
     }
 
-    #[test]
     /// A parameter used only as a *value* recorded no use, so the lint told
     /// the author to delete a parameter the design computes with. Elaboration
     /// bound it correctly all along, so the code worked and the advice would
