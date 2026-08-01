@@ -781,6 +781,32 @@ impl<'a> Resolver<'a> {
                 ImplItem::Stmt(_) => {}
             }
         }
+        // `impl Counter { .. }` — no parameter list *and* no generic arguments
+        // on the target — still sees the entity's parameters: elaboration
+        // binds them and the body computes with them correctly. Resolution
+        // did not, so a parameter used only as a *value* (`a + W`) recorded
+        // no use and the unused-parameter lint told the author to delete a
+        // parameter their design depends on. A type-position use
+        // (`unsigned[W]`) was already fine because the port type mentions it.
+        //
+        // A target that *does* carry arguments (`impl E<T, U>`) is left alone:
+        // the target necessarily mentions them, and counting that as a use is
+        // what the snapshot below exists to avoid.
+        if im.params.params.is_empty() && generic_target.is_none() {
+            if let Some(owner) = type_head(&im.target) {
+                let inherited: Vec<(String, DefId)> = self
+                    .decl_params
+                    .iter()
+                    .filter(|((entity, _), _)| entity == owner)
+                    .map(|((_, name), &id)| (name.clone(), id))
+                    .collect();
+                for (name, id) in inherited {
+                    if self.lookup(&name).is_none() {
+                        self.bind(&name, id);
+                    }
+                }
+            }
+        }
         self.resolve_type(&im.target);
         for attr in &im.attrs {
             self.resolve_attr(attr);
@@ -1499,6 +1525,51 @@ mod tests {
             .collect();
         assert_eq!(unused.len(), 1, "one unused-param warning: {unused:?}");
         assert!(unused[0].contains("`T`"), "flags the dead T: {unused:?}");
+    }
+
+    #[test]
+    /// A parameter used only as a *value* recorded no use, so the lint told
+    /// the author to delete a parameter the design computes with. Elaboration
+    /// bound it correctly all along, so the code worked and the advice would
+    /// have broken it.
+    #[test]
+    fn a_parameter_used_as_a_value_counts_as_used() {
+        let unused = |src: &str| {
+            diagnostics(src)
+                .diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::UNUSED_PARAM))
+                .count()
+        };
+        // Value position, with and without the parameter list repeated.
+        assert_eq!(
+            unused(
+                "module m;\n\
+                 entity E<N: integer> { a: Bit in, y: Bit out }\n\
+                 impl E { y = if a == N { '1' } else { '0' }; }\n"
+            ),
+            0,
+            "bare impl, value use"
+        );
+        assert_eq!(
+            unused(
+                "module m;\n\
+                 entity E<N: integer> { a: Bit in, y: Bit out }\n\
+                 impl E<N: integer> { y = if a == N { '1' } else { '0' }; }\n"
+            ),
+            0,
+            "repeated params, value use"
+        );
+        // A genuinely unused parameter is still reported, either way.
+        assert_eq!(
+            unused(
+                "module m;\n\
+                 entity E<N: integer> { a: Bit in, y: Bit out }\n\
+                 impl E { y = a; }\n"
+            ),
+            1,
+            "bare impl, unused"
+        );
     }
 
     #[test]

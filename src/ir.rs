@@ -3870,12 +3870,28 @@ impl<'a> Lowering<'a> {
                 if let Some(&f) = self.consts_real.get(name) {
                     return Expr::Real(f);
                 }
-                // Nothing declares this name. Every signal, constant and
-                // in-scope parameter is known here, so record it rather than
-                // lowering to a silent `Unknown` that `check` called ok.
-                self.unresolved_names
-                    .borrow_mut()
-                    .push((name.clone(), p.span));
+                // A generic parameter of the entity being lowered has no
+                // value when that entity is analysed on its own rather than
+                // through an instantiation — `check` roots every
+                // uninstantiated entity so library code is analysed too. That
+                // is parametric, not unknown, and the same parameter in *type*
+                // position (`unsigned[N]`) has always been tolerated this way;
+                // only the value position reported the author's own parameter
+                // as an undeclared name.
+                let parametric = self
+                    .lower_stack
+                    .last()
+                    .and_then(|entity| self.entities.get(entity.as_str()))
+                    .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == *name));
+                if !parametric {
+                    // Nothing declares this name. Every signal, constant and
+                    // in-scope parameter is known here, so record it rather
+                    // than lowering to a silent `Unknown` that `check` called
+                    // ok.
+                    self.unresolved_names
+                        .borrow_mut()
+                        .push((name.clone(), p.span));
+                }
                 Expr::Unknown
             }
             // An element of a constant lookup table (`TAB[2]`, `TAB[addr]`).

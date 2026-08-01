@@ -3810,3 +3810,54 @@ What remains is not bug-hunting. The LSP is a skeleton, cocotb integration is
 a feature, and making the spec's examples compile in CI needs 114 code blocks
 annotated with whether they are meant to. Each is a decision rather than a
 fix, so the loop stops here rather than picking one unilaterally.
+
+## 2026-08-01 — combining features, and two ways a parameter goes missing
+
+Back to hunting, on the observation that this session's bugs came from feature
+*interactions* while most of my probing tested features alone. So: a FIFO
+written from scratch combining a generic depth, a struct as clocked state, an
+array with runtime indexing, a view over a struct port, and an enum status.
+
+It did not compile, for two reasons that turned out to be unrelated to each
+other and both real.
+
+**A generic parameter used as a value failed to check unless something
+instantiated the entity.**
+
+    entity E<N: integer> { y: unsigned[8] out }
+    impl E { y = N; }        // error: no value named `N` is in scope
+
+That is a library entity — the whole point of generics — and the message
+blames the author for a name declared in the header two lines above. `check`
+roots every uninstantiated entity precisely so library code gets analysed, and
+in that pass a parameter has no value; the *type* position (`unsigned[N]`) has
+always tolerated exactly that, and only the value position reported it. A
+parameter of the entity being lowered is now treated as parametric rather than
+unknown, and a genuine typo is still caught.
+
+**The unused-parameter lint counted only type-position uses.** With the above
+fixed, the FIFO compiled and warned `unused type parameter: 'K'` about a
+parameter used in `y = a + K`. Following that advice deletes something the
+design computes with. Resolution leaves plain value identifiers alone by
+design, so no *use* was recorded — and when the impl repeats `<K: integer>`
+the parameter is in scope and it works, which is why the corpus never saw it:
+every corpus impl repeats its parameters.
+
+Fixing that meant binding the entity's parameters into a bare `impl E { .. }`,
+and the first attempt broke an existing test. `impl E<T, U>` parses its
+arguments as *target* generics rather than as a parameter list, so my branch
+fired there too and the target's own mention of `U` started counting as a use
+— which is exactly what the snapshot logic in that function exists to prevent,
+and its comment says so. Restricted to the genuinely bare form: no parameter
+list and no arguments on the target.
+
+Worth noting the shape: both bugs are "handled in type position, missed in
+value position", in two different stages, found by one program. And the FIFO
+then ran correctly against a hand model at every step — push, wrap, pop,
+level, and the enum status — so the features do compose once they are visible
+to each other.
+
+Also noticed on the way: there is no `mod`/`rem` operator in std at all, so
+`(p.wr + 1) mod DEPTH` does not parse. A conditional wrap is what hardware
+does anyway, but a design note I hold claims textual operators are the
+extensibility path, and none are defined.
