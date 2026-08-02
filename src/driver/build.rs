@@ -4939,6 +4939,12 @@ impl Ctx<'_> {
                 "((({scrut}) >= {}ULL) && (({scrut}) <= {}ULL))",
                 *lo as u64, *hi as u64
             )),
+            // A character literal names a variant of a char-valued enum, the
+            // same discriminant a `== '0'` comparison uses here.
+            ast::Pattern::CharLit { ch, .. } => Some(format!(
+                "(({scrut}) == {}ULL)",
+                logic_lit_value(*ch, self.enums)
+            )),
             _ => Some("0".to_string()),
         })
     }

@@ -2157,6 +2157,11 @@ impl<'a> Checker<'a> {
                         (!seen.insert(var.clone()))
                             .then(|| format!("`{var}` is already matched by an earlier arm"))
                     }
+                    Pattern::CharLit { ch, .. } => {
+                        let var = format!("'{ch}'");
+                        (!seen.insert(var.clone()))
+                            .then(|| format!("`{var}` is already matched by an earlier arm"))
+                    }
                     // A range (or bare literal) wholly inside one already
                     // matched can never be reached — first match wins.
                     Pattern::Range { lo, hi, .. } => {
@@ -4389,7 +4394,7 @@ fn collect_pattern_ranges(p: &Pattern, out: &mut Vec<(i128, i128)>) -> bool {
         Pattern::Or { alts, .. } => alts.iter().all(|a| collect_pattern_ranges(a, out)),
         // An enum path against a numeric scrutinee is a type error reported
         // elsewhere; a bit pattern is not an interval.
-        Pattern::Path(_) | Pattern::BitPattern { .. } => false,
+        Pattern::Path(_) | Pattern::BitPattern { .. } | Pattern::CharLit { .. } => false,
     }
 }
 
@@ -4399,6 +4404,9 @@ fn pattern_covers(p: &Pattern) -> (Vec<String>, bool) {
     match p {
         Pattern::Wildcard => (Vec::new(), true),
         Pattern::Path(pp) if pp.segments.len() >= 2 => (vec![pp.segments[1].text.clone()], false),
+        // A char-valued enum declares its variants as character literals
+        // (`enum Logic { '0', '1', … }`), so the pattern names one directly.
+        Pattern::CharLit { ch, .. } => (vec![format!("'{ch}'")], false),
         Pattern::Or { alts, .. } => {
             let mut vars = Vec::new();
             let mut wild = false;

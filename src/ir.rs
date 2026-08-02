@@ -3587,6 +3587,12 @@ impl<'a> Lowering<'a> {
                     Some(and(Some(ge), le))
                 }
             }
+            // A character literal names a variant of a char-valued enum
+            // (`Logic` above all). `Expr::Logic` carries the character and is
+            // resolved against the scrutinee's type downstream — exactly what
+            // `l == '0'` in expression position already lowers to, so the two
+            // spellings cannot disagree.
+            ast::Pattern::CharLit { ch, .. } => Some(eq(scrut.clone(), Expr::Logic(*ch))),
             // A wildcard matches anything.
             _ => None,
         }

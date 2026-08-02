@@ -4656,3 +4656,44 @@ wins, `step + 2`).
 The remaining flagged gap, `For` in function bodies, is missing from *both* the
 IR inliner and the C emitter — consistent, which is why it fails loudly rather
 than silently, and a separate piece of work.
+
+## 2026-08-02 (cont.) — you could not `match` on a `Logic`
+
+Ran the enumeration technique on two more axes. The **expression** walkers came
+back clean: `ir::lower_expr` and `build::expr` handle exactly the same set,
+and so do the two `elementwise_at`s. The hardware/testbench asymmetry that
+produced most of this session's bugs is closed at that level.
+
+A first pass at the **pattern** axis looked alarming — `CharLit`, `Int`,
+`SuffixLit`, `BitStrLit` handled by nobody — and was my own error: the variant
+extraction ran past the end of `enum Pattern` into `enum Expr`. `Pattern` has
+five variants and all three walkers handle all five. Worth writing down,
+because a bad enumeration is more convincing than no enumeration.
+
+But the probe I wrote to test it found something real:
+
+    match l { '0' => …, '1' => …, 'Z' => … }   // error: expected an identifier
+
+**There was no way to `match` on a `Logic`.** The bare char literal is a parse
+error in pattern position; `Logic::'0'` does not parse either (a path segment
+cannot be a character); and a bare-string pattern cannot express `"Z"` at all —
+it is per-bit, so it could not tell a metavalue from a driven bit even where it
+does parse. The same literal works in *expression* position — `l == '0'` is
+fine and distinguishes `'Z'` correctly — so this was an expression/pattern
+asymmetry on the one enum every design uses, against a spec that says Phase 1
+supports `match` over enums.
+
+Added `Pattern::CharLit` and handled it in all five places that need it:
+parser, pretty-printer (the corpus round-trips through it), IR lowering,
+the C emitter, and the type checker's three pattern helpers. The IR arm emits
+`eq(scrut, Expr::Logic(ch))` — literally what `l == '0'` already lowers to — so
+the two spellings cannot drift apart.
+
+Exhaustiveness and unreachability came along for free once `pattern_covers`
+knew the spelling: a duplicate `'0'` arm is `W-P006`, and a match without a
+wildcard reports `missing '\''Z'\'', '\''X'\'', '\''U'\'', '\''W'\'', '\''L'\'', '\''H'\'', '\''-'\''` — all seven remaining
+`std_ulogic` values, which is also the check that the variant names line up.
+
+The test compares every arm against the `==` chain it replaces, and the
+hardware against the testbench on the same value, so nothing is measured
+against itself.

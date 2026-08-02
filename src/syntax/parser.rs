@@ -1329,6 +1329,17 @@ impl<'a> Parser<'a> {
                     span: p.span.to(t.span),
                 }
             }
+            // A character literal (`'0'`, `'Z'`) selects a variant of a
+            // char-valued enum, `Logic` above all. The same literal already
+            // works in expression position (`l == '0'`), and a `match` over an
+            // enum is spec 3.22; without this arm `Logic` — the one enum every
+            // design uses — could not be matched on at all.
+            TokenKind::CharacterLit => {
+                let t = self.bump();
+                let text = self.text_of(t.span);
+                let ch = text.chars().nth(1).unwrap_or('?');
+                Pattern::CharLit { ch, span: t.span }
+            }
             // A bare-string bit pattern `"1-1-0000"` (spec 3.22): each char is
             // one bit, `-` (the `std_ulogic` don't-care) matches either value.
             // This replaces the old `b"…"` prefix form.

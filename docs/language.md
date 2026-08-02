@@ -1333,6 +1333,21 @@ match opcode {
 }
 ```
 
+A character literal matches a variant of a character-valued enum, `Logic`
+above all — the same spelling that works in expression position (`l == '0'`),
+and the only one that can tell a metavalue from a driven bit:
+
+```siox
+match line {
+    '0' | '1' => level = Level::Driven,
+    'Z'       => level = Level::HighZ,
+    _         => level = Level::Unknown,
+}
+```
+
+A bit pattern cannot express this: it tests the value bit only, so `'Z'` and
+`'0'` are indistinguishable to it.
+
 A bare string in pattern position is a per-bit pattern: `0`/`1` are fixed and
 `-` (the `std_ulogic` don't-care) matches either value. A radix-prefixed
 string (`x"A?"` / `o"7?"`) masks a whole group (nibble/triad) with `?`. These

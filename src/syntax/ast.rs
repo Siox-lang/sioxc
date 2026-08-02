@@ -385,6 +385,13 @@ pub enum Pattern {
         hi: i64,
         span: Span,
     },
+    /// A character literal (`'0'`, `'Z'`) naming a variant of a char-valued
+    /// enum — `Logic` above all. Like the expression form it has no intrinsic
+    /// value: the variant it selects comes from the scrutinee's type.
+    CharLit {
+        ch: char,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
