@@ -322,6 +322,16 @@ name, matched to the declaration by position. Neither
 `impl Counter<W: integer>` (which uses `W` without binding it) nor a bare
 `impl Counter` (which leaves the parameters implicit) is accepted.
 
+Writing the parameter twice is deliberate. In Rust the binder is what makes an
+argument a *variable* rather than a *type*, which is what allows
+`impl Vec<i32>` to implement one case only; siox has no such partial
+implementations, so the second mention adds no information here and the
+repetition is a cost paid for familiarity rather than for meaning. It is kept
+so that anyone who reads Rust reads this correctly on sight. Because there is
+only ever the "for any" reading, every argument must be one of the bound
+names — a concrete `impl Counter<8>` is rejected rather than treated as a
+specialisation.
+
 Valid inside implementation if used as a local compile-time value:
 
 ```siox
