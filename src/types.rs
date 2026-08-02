@@ -1604,7 +1604,21 @@ impl<'a> Checker<'a> {
                         body_dirs.plain_in_roots.retain(|n| !shadowed(n));
                         body_dirs.consts.retain(|n| !shadowed(n));
                         body_ranged.retain(|n, _| !shadowed(n));
-                        self.check_block_with(b, &body_dirs, &body_ranged);
+                        // Types for what the function itself declares: its
+                        // parameters, and `self` as the impl's target. Without
+                        // them the body had no types at all, so the strict
+                        // assignment-width rule never fired inside a method —
+                        // `self.data = wide` silently truncated a 16-bit
+                        // argument into an 8-bit field.
+                        let mut body_sym: HashMap<String, Ty> = HashMap::new();
+                        for param in &f.params {
+                            if param.is_self {
+                                body_sym.insert("self".to_string(), self.ast_ty(self_ty(im)));
+                            } else if let (Some(n), Some(t)) = (&param.name, &param.ty) {
+                                body_sym.insert(n.text.clone(), self.ast_ty(t));
+                            }
+                        }
+                        self.check_block_with(b, &body_dirs, &body_ranged, &body_sym);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -1743,7 +1757,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_block(&mut self, b: &Block) {
-        self.check_block_with(b, &PortDirs::default(), &HashMap::new());
+        self.check_block_with(b, &PortDirs::default(), &HashMap::new(), &HashMap::new());
     }
 
     /// A method body whose `self` carries directions — an impl on a view
@@ -1757,11 +1771,12 @@ impl<'a> Checker<'a> {
         b: &Block,
         view_dirs: &PortDirs,
         bounds: &HashMap<String, (i64, i64)>,
+        names: &HashMap<String, Ty>,
     ) {
         // Every caller of this is a function body — a trait method, a free
         // function, or an impl method — so `return` is legal inside it.
         let saved = self.in_fn_body.replace(true);
-        let (dirs, sym) = (view_dirs.clone(), HashMap::new());
+        let (dirs, sym) = (view_dirs.clone(), names.clone());
         let ranged = bounds.clone();
         self.lint_dead_assignments(b.stmts.iter());
         for s in &b.stmts {
@@ -4601,6 +4616,15 @@ fn view_key(ty: &Type, views: &HashMap<String, Type>) -> Option<String> {
     views.contains_key(&key).then_some(key)
 }
 
+/// The type `self` has inside an impl: the backing struct for a view-applied
+/// target (`impl Bus BusOut` -> `Bus`), the target itself otherwise.
+fn self_ty(im: &ImplDecl) -> &Type {
+    match &im.target {
+        Type::View { target, .. } => target,
+        other => other,
+    }
+}
+
 fn declared_view_key(view: &ViewDecl) -> String {
     let target = type_head_name(&view.target).unwrap_or("<error>");
     format!("{}@{target}", view.name.text)
@@ -6449,6 +6473,52 @@ mod tests {
             ),
             0,
             "a parameter named `y` is not the ranged port"
+        );
+    }
+
+    /// The last of the three things a function body was denied: types. It was
+    /// walked with an empty symbol table, so the strict assignment-width rule
+    /// had nothing to compare and never fired inside a method. A method's own
+    /// parameters are declared right there, and typing them is enough for the
+    /// rule to work on them.
+    #[test]
+    fn an_impl_function_checks_widths_of_its_own_parameters() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.message.contains("without an explicit conversion"))
+                .count()
+        };
+        assert_eq!(
+            count(
+                "module m;\nstruct S { }\n\
+                 impl S { fn f(self, wide: unsigned[16], narrow: unsigned[8]) \
+                 { narrow = wide; } }\n"
+            ),
+            1,
+            "a 16-bit parameter assigned into an 8-bit one"
+        );
+        assert_eq!(
+            count(
+                "module m;\nstruct S { }\n\
+                 impl S { fn f(self, a: unsigned[8], b: unsigned[8]) { b = a; } }\n"
+            ),
+            0,
+            "matching widths are fine"
+        );
+        assert_eq!(
+            count(
+                "module m;\nstruct S { }\n\
+                 impl S { fn f(self, wide: unsigned[16], narrow: unsigned[8]) \
+                 { narrow = unsigned[8](wide); } }\n"
+            ),
+            0,
+            "an explicit conversion is the way through"
         );
     }
 

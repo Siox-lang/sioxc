@@ -4974,3 +4974,40 @@ about other people's code, so it is worth owning here.
 
 Three mutants: bounds withheld from the body (range test fails), shadowing
 removed (both tests fail), and the earlier directions mutant still stands.
+
+## 2026-08-02 (cont.) — the third thing a function body was denied, and one it still is
+
+Same checklist, last item. `impl_env` produces three things — directions,
+bounds, and a symbol table — and `check_block` handed a function body none of
+them. Directions and bounds are now restored; this round is `sym`, and it is
+the one that matters most, because without types the **strict
+assignment-width rule has nothing to compare**:
+
+    let wide: unsigned[16] = 0;
+    y = wide;                    // error: cannot assign unsigned[16] to unsigned[8]
+    fn drive() { z = wide; }     // accepted
+
+And in the shape that actually inlines — a view method — it is silent and
+wrong, not merely unchecked:
+
+    impl Bus BusOut { fn load(self, wide: unsigned[16]) { self.data = wide; } }
+    impl P { bus.load(0x1234); }        // data reads 52 (0x34): truncated
+
+A method's parameters are declared in the method itself, so typing those is
+both safe and enough for the rule to work on them: a 16-bit parameter assigned
+into an 8-bit one is now rejected, and an explicit conversion is the way
+through. `self` is typed too, as the impl's target (the backing struct for a
+view-applied one).
+
+**What is still not fixed, stated plainly.** The *field* target above —
+`self.data = wide` — remains unchecked, so that exact truncation still
+compiles. `type_of` cannot type a struct field access: `self.structs` records
+field *names*, and the `Expr::Field` arm only resolves method-call receivers,
+falling to `Ty::Error` for data. Typing field access needs a field→type map
+the checker does not have, which is a feature-sized change with corpus-wide
+false-positive risk, not a safe end-of-round edit. I have taken the half I
+could verify (zero corpus errors, mutation-proved) and left the half I could
+not, rather than half-doing the risky one.
+
+Four rounds, one root cause, and the general statement was right each time: a
+function body is checked with less context than the body it inlines into.
