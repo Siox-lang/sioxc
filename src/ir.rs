@@ -188,6 +188,11 @@ pub enum Expr {
 pub enum UnOp {
     Not,
     Neg,
+    /// `integer(x)` on a `real`: the f64 *value* truncated toward zero, not
+    /// its bit pattern. Every other conversion is a raw resize, and a real
+    /// reaching that path reinterpreted its bits — `integer(3.5)` gave the low
+    /// word of `0x400C000000000000`, i.e. 0.
+    RealToInt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4285,10 +4290,7 @@ impl<'a> Lowering<'a> {
                         return v;
                     }
                 }
-                Expr::Unary {
-                    op: lower_unop(*op),
-                    rhs: Box::new(self.lower_expr(rhs)),
-                }
+                self.make_unary(*op, self.lower_expr(rhs))
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its
@@ -4969,6 +4971,24 @@ impl<'a> Lowering<'a> {
                 }
             }
             e => e,
+        }
+    }
+
+    /// A unary node, switching negation to float form when the operand is
+    /// real. `UnOp::Neg` negates a *word*, and a real carries f64 bits, so
+    /// `-2.5` produced the two's-complement of the bit pattern — a different
+    /// number entirely, and one that compared unequal to `0.0 - 2.5`.
+    fn make_unary(&self, op: ast::UnOp, rhs: Expr) -> Expr {
+        if matches!(op, ast::UnOp::Neg) && self.is_real_expr(&rhs) {
+            return Expr::Binary {
+                op: BinOp::FSub,
+                lhs: Box::new(Expr::Real(0.0)),
+                rhs: Box::new(rhs),
+            };
+        }
+        Expr::Unary {
+            op: lower_unop(op),
+            rhs: Box::new(rhs),
         }
     }
 
@@ -5823,7 +5843,16 @@ impl<'a> Lowering<'a> {
         let arg = args.first()?;
         // Conversions are a raw resize (zero-extend / truncate). Signed
         // widening is the library `std::bits::sext`, not the compiler's job.
-        let v = self.lower_scalar_env(arg, env);
+        let mut v = self.lower_scalar_env(arg, env);
+        // ...except crossing out of `real`, which is a value conversion: the
+        // operand carries f64 bits, and resizing them keeps a mantissa slice
+        // rather than the number.
+        if self.is_real_expr(&v) {
+            v = Expr::Unary {
+                op: UnOp::RealToInt,
+                rhs: Box::new(v),
+            };
+        }
         Some(match target_w {
             Some(w) if w > 0 && w < 64 => Expr::Slice {
                 base: Box::new(v),
@@ -6241,10 +6270,7 @@ impl<'a> Lowering<'a> {
                         return Val::Scalar(v);
                     }
                 }
-                Val::Scalar(Expr::Unary {
-                    op: lower_unop(*op),
-                    rhs: Box::new(self.lower_scalar_env(rhs, env)),
-                })
+                Val::Scalar(self.make_unary(*op, self.lower_scalar_env(rhs, env)))
             }
             ast::Expr::SuffixLit { .. } => self.inline_suffix(e).unwrap_or_else(|| {
                 Val::Scalar(self.lower_expr(e)) // fixed fs/Hz table fallback
@@ -7146,6 +7172,7 @@ fn un_sym(op: UnOp) -> &'static str {
     match op {
         UnOp::Not => "not ",
         UnOp::Neg => "-",
+        UnOp::RealToInt => "integer",
     }
 }
 

@@ -5144,3 +5144,47 @@ Checked for regressions, since this arm previously ignored everything it did
 not recognise: a value-returning function called as a statement and discarded,
 a function whose body is an `if`/`else`, and a function calling another
 function all behave as a hand-written model says (0, 9/0, 4).
+
+## 2026-08-02 (cont.) — `integer(x)` on a real returned its bit pattern
+
+The procedure from last round first: enumerate every shape reaching the arm I
+had just fixed. Four shapes — method on a path receiver, free function, method
+on an array element, static associated function — all work, in the testbench
+*and* in hardware. Clean, which is what the procedure is for.
+
+Then `real`, never swept. std::math has only integer helpers, so `real` is the
+base type plus operators, and Python is an exact oracle for f64.
+
+**Three separate defects, all silent.**
+
+*`integer(x)` on a real returned its bit pattern.* Every conversion in the
+compiler is a raw resize, and a real carries f64 bits, so `integer(3.5)` kept
+the low word of `0x400C000000000000` — zero. The real values themselves were
+never wrong: `a > 3.0`, `a < 4.0` and `a == 3.5` were all true on the same
+signal, which is what localised it to the crossing. Fixed in both engines:
+`UnOp::RealToInt` (LLVM `fptosi`) and, in the emitter, `(int64_t)sx_f64(...)`.
+
+*Unary minus on a real negated the bit pattern.* `UnOp::Neg` negates a word,
+so `-2.5` was the two's complement of the f64 bits, and `-2.5 == 0.0 - 2.5`
+was **false**. `make_unary` now emits `0.0 - x` for a real operand, reusing
+`FSub` rather than adding another node.
+
+*The emitter had the same conversion bug*, which the corpus test caught after
+the hardware half was fixed — the test asserts both engines, so the second
+half could not hide. It also needed `c_real_operand`: `self.expr` renders the
+literal `2.9` as the integer 2, whose bits are a denormal, so the first
+version of the fix returned 0 for a literal and the right answer for
+everything else.
+
+**Left open, deliberately:** `let p: real = a * 2.0;` — a real local
+*initialized from an expression* does not hold the value (`p == 7.0` is
+false), while the same value *driven* (`q = a * 2.0;`) is correct and a
+literal initializer is correct. That is the initializer/driver split that also
+produced the wide-bit-string bug, in a third place. It is a separate fix and
+this entry is already three.
+
+Also corrected a stale diagnostic: reading a real DUT signal from a testbench
+reported "siox build does not support real testbenches yet (compile with
+`sioxc --test`)" — advice impossible to follow, since that *is* the `--test`
+emitter. Real locals and real arithmetic work there; only reading a real
+signal does not, and the message now says so.

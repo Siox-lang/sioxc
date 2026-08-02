@@ -1226,6 +1226,24 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                         self.fit(z, self.value_ty(width))
                     }
                     UnOp::Neg => self.builder.build_int_neg(a, "neg").unwrap(),
+                    // The operand carries f64 bits; take the number it denotes,
+                    // truncated toward zero, and put it back in a word.
+                    UnOp::RealToInt => {
+                        let f = self
+                            .builder
+                            .build_bit_cast(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "rbits",
+                            )
+                            .unwrap()
+                            .into_float_value();
+                        let i = self
+                            .builder
+                            .build_float_to_signed_int(f, self.ctx.i64_type(), "rtoi")
+                            .unwrap();
+                        self.fit(i, self.value_ty(width))
+                    }
                 }
             }
             Expr::Binary { op, lhs, rhs } => {

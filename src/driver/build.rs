@@ -5146,6 +5146,19 @@ impl Ctx<'_> {
                         if p.segments.len() == 1
                             && matches!(p.segments[0].text.as_str(), "integer" | "Char") =>
                     {
+                        // Crossing out of `real` is a value conversion, not a
+                        // pass-through: the operand holds f64 bits, so handing
+                        // them on unchanged returned the bit pattern —
+                        // `integer(3.5)` read 4615063718147915776. Truncate
+                        // toward zero, as the hardware side does.
+                        if p.segments[0].text == "integer" && self.is_real_operand(arg) {
+                            // `c_real_operand` renders the operand as a C
+                            // double; `self.expr` would render a literal like
+                            // `2.9` as the integer 2, whose bits are a
+                            // denormal.
+                            let d = self.c_real_operand(arg)?;
+                            return Ok(format!("((sx_value)(int64_t)({d}))"));
+                        }
                         return Ok(format!("({v})"));
                     }
                     // An enum-derivation conversion (`Logic(u)`, `ULogic(x)`):
@@ -5608,8 +5621,10 @@ impl Ctx<'_> {
         let s = &self.design.signals[id.0 as usize];
         if s.real {
             return Err(format!(
-                "signal `{}` is real; siox build does not support real testbenches \
-                 yet (compile with `sioxc --test`)",
+                "signal `{}` is real: a real DUT signal cannot be read from a \
+                 testbench yet — real *locals* and arithmetic work, so compute \
+                 with them here, or expose the value as an integer port \
+                 (`integer(x)`)",
                 s.path
             ));
         }
