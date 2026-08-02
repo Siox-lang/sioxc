@@ -5114,3 +5114,33 @@ The corpus test now runs every call twice, once in an entity body and once in
 the testbench, and asserts the two agree. Both mutants caught: dropping the
 generic type name fails to build, dropping the testbench inline fails the
 assertion.
+
+## 2026-08-02 (cont.) — the other half of the same arm
+
+Last round I fixed a method call written as a testbench statement: the
+emitter's call dispatch matches the callee's leading path segment against
+`await`/`print`/`assert`, a method's callee is a field, so nothing matched and
+the arm was `_ => {}`. I fixed the field shape and stopped.
+
+The same arm swallows a **free function** call, whose callee is a path that
+matches none of the builtin names:
+
+    fn store(r: Reg, x: unsigned[8]) { r.v = x; }
+    store(r, 7);        // entity body: 7.  Testbench: 0.
+
+Identical symptom, identical cause, one `else` away from the code I had just
+written. I have now written "read the general statement back as a checklist"
+in this log twice, and this is the third round in a row where the next bug was
+the unexamined sibling of the last one. The lesson is not landing as a habit;
+what actually works is mechanical — after fixing an arm, enumerate the other
+shapes that reach it *before* moving on.
+
+`free_fn_body` mirrors `method_body`: substitute parameters, emit the body's
+statements. The value path (`c_fn_call`) could not be reused — it folds
+constants and flattens returns into a C expression, which a procedure has none
+of.
+
+Checked for regressions, since this arm previously ignored everything it did
+not recognise: a value-returning function called as a statement and discarded,
+a function whose body is an `if`/`else`, and a function calling another
+function all behave as a hand-written model says (0, 9/0, 4).

@@ -3771,6 +3771,15 @@ impl Ctx<'_> {
                             self.stmt(stmt, b, depth)?;
                         }
                     }
+                // A user free function in statement position (`store(r, 7)`)
+                // reaches here too: its callee is a path that matches none of
+                // the builtin names above, so it fell out of the dispatch
+                // silently, exactly as the method form did. Hardware inlines
+                // it (`lower_free_stmt`); so does this now.
+                } else if let Some(stmts) = self.free_fn_body(callee, args) {
+                    for stmt in &stmts? {
+                        self.stmt(stmt, b, depth)?;
+                    }
                 }
             }
         }
@@ -4584,6 +4593,31 @@ impl Ctx<'_> {
         })?;
         let (stmts, real) = self.method_body(&ty, method, recv, args)?;
         self.c_fn_stmts(&stmts, real)
+    }
+
+    /// A free function's body with its parameters substituted, for a call in
+    /// statement position (`store(r, 7)`). The value path (`c_fn_call`) folds
+    /// constants and flattens returns into an expression, which a procedure
+    /// has none of; this is the same substitution `method_body` does.
+    fn free_fn_body(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+    ) -> Option<Result<Vec<ast::Stmt>, String>> {
+        let key = siox::ir::call_fn_key(callee)?;
+        let f = self.fns.get(key.as_str())?;
+        let body = f.body.as_ref()?;
+        let mut map: HashMap<String, ast::Expr> = HashMap::new();
+        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(n) = &p.name {
+                map.insert(n.text.clone(), a.clone());
+            }
+        }
+        Some(Ok(body
+            .stmts
+            .iter()
+            .map(|s| siox::ir::subst_stmt_paths(s, &map))
+            .collect()))
     }
 
     /// A method's body with `self` and the parameters substituted, plus
