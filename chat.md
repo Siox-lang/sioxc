@@ -4212,7 +4212,7 @@ fallback, and an arm that returns nothing (`_ => {}`) falling through to the
 statements after the match. Nine values checked against a model across three
 scrutinee values, and the engines agree.
 
-`for` in a function body is left: unrolling it needs assignment to a名 local,
+`for` in a function body is left: unrolling it needs assignment to a local,
 which is a different question from substitution and worth its own decision.
 
 Everything here was narrowed through `-o object` rather than
