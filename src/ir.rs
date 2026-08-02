@@ -256,9 +256,14 @@ pub fn lower_in(
     l.expr_types = hier.expr_types.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
-    l.collect(modules);
+    // Enum discriminants first: `collect` folds constants, and a constant may
+    // *be* a variant (`const M: Mode = Mode::Fast;`). Populating the map
+    // afterwards left the fold with nothing to look the variant up in, so the
+    // constant never entered the tables and every read of it reported the
+    // name as unknown.
     l.enum_variants = enum_discriminants(modules);
     l.enum_first_disc = enum_first_discriminants(modules);
+    l.collect(modules);
     l.new_defaults = l.compute_new_defaults();
     l.out.new_defaults = l.new_defaults.clone();
     // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
@@ -944,6 +949,22 @@ impl<'a> Lowering<'a> {
                 return true;
             }
         } else if let ast::Expr::Path(path) = &constant.value {
+            // `const M: Mode = Mode::Fast;` — an enum variant is a value like
+            // any other. Only a single-segment path was folded, so the
+            // constant never entered the tables and every read of it reported
+            // the name as unknown; binding it to a signal first happened to
+            // work, which is what made it look supported.
+            if path.segments.len() == 2 {
+                if let Some(&disc) = self
+                    .enum_variants
+                    .get(&path.segments[0].text)
+                    .and_then(|variants| variants.get(&path.segments[1].text))
+                {
+                    self.consts.insert(name.clone(), disc as i64);
+                    self.const_values.insert(name.clone(), Expr::Const(disc));
+                    return true;
+                }
+            }
             if path.segments.len() == 1 {
                 let source = &path.segments[0].text;
                 if let Some(value) = self.const_values.get(source).cloned() {

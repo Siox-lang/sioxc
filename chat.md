@@ -4237,3 +4237,42 @@ attribute "elaboration root" and `docs/README.md` says `sioxc <file>` compiles
 definition. Then my own new gate flagged a file, and I treated that as
 confirmation rather than as a test of the premise — the signal was
 independent, and I spent it agreeing with myself.
+
+## 2026-08-02 (cont.) — auditing the if/match split instead of tripping over it
+
+The `if`/`match` divergence has produced four bugs, so this pass counted the
+sites rather than waiting for a fifth: every file that matches on `Stmt::If`,
+against every file that matches on `Stmt::Match`. Two asymmetries, and neither
+was what I expected.
+
+`elab.rs` gathers instances from a generate-`for` and a generate-`if` and not
+from a `match` — which is **correct**: spec §"Generate constructs" defines
+exactly those two, and a `match` is not one. An instance written inside a
+match arm is reported (`s.y` has no hardware form), not silently dropped. So
+the asymmetry is the language's, not a bug.
+
+But the probe that established it failed on its *first* line, for an unrelated
+reason:
+
+    const M: Mode = Mode::Fast;
+    y = if M == Mode::Fast { 1 } else { 0 };   // no value named `M`
+
+**A constant whose value is an enum variant could not be read.** Constant
+folding handled a single-segment path and stopped; `Mode::Fast` is two, so the
+constant never entered the tables. Binding it to a signal first
+(`let m: Mode = M;`) worked, which is what made it look supported.
+
+The immediate cause was ordering. Adding the variant arm changed nothing,
+because `enum_variants` — the discriminant map the arm looks in — was built
+one line *after* the `collect` that folds constants. The fold had an empty map
+to consult. Moving the map ahead of the collect fixed it, and the arm then did
+its job.
+
+Verified against a model rather than the compiler: `SPEED = Mode::Slow` picks
+20 in an expression and 5 through a generate-`if`, `DEFAULT = Mode::Fast`
+picks 10, and the signal-bound spelling still gives 30.
+
+Worth noting the failure mode: my first attempt looked correct and did
+nothing, and only a second look at *when* the data is available explained it.
+A fix that compiles and changes no behaviour is easy to mistake for a wrong
+diagnosis of the bug.
