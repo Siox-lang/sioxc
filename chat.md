@@ -4521,3 +4521,46 @@ stands.
 The lesson is narrow and worth keeping: when a new check duplicates the walk
 of an existing one, the existing one's *exclusions* are part of the walk. I
 copied the traversal and not the filter.
+
+## 2026-08-02 (cont.) — a range report that contradicted itself
+
+Two things this round. First an audit the previous bug suggested, then a real
+find in an unswept area.
+
+**The audit found nothing live.** Yesterday's mistake was copying a walk
+without its exclusion, so I grepped every site that asks "is this type an
+entity?" — thirteen of them. One is a near-duplicate of `gather_let`:
+`ir::instance_let_parts`, and it does *not* exclude bare type parameters. But
+its reachable callers either make the exclusion themselves (`ir.rs:1171`, with
+a comment saying why) or cannot hit it (`lower_testbench_duts` — a testbench
+has no type parameters). So the filter sits at the call site instead of in the
+helper, which is a trap rather than a bug. Said so and moved on.
+
+**Ranged integers** are barely covered (4 corpus files) and the generated C has
+a `sx_check_ranges` nothing had exercised. Spec §3.x makes sharp claims: the
+check runs *before* truncation to the destination, and covers both the engine's
+update path and a post-settle scan. Both hold. But:
+
+    let t: integer<-8..7> = 0;
+    if clk.rising() { t = t + step; }   // 5 + 5 = 10
+
+    `Transient.a.t` left its range -8..7 (it was -6)
+
+**-6 is inside -8..7.** The message contradicts itself in the same sentence.
+The engine records only the *signal id* when it flags a violation, so the C
+runtime rebuilt the message by reading the signal back — after truncation to
+four bits, where 10 has become -6. The one number a reader needs is the one
+number the report could not show.
+
+The engine now keeps the offending value beside the id (a `range_value` global,
+reset with the error, selected under the same `record` predicate so it captures
+the *first* violation and no later one), exported as `sx_range_value()`. The
+post-settle scan is unchanged: there the stored value really is the offending
+one.
+
+Checked against a model rather than the compiler: overflow reports 10 (not -6),
+underflow -10 (not 6), and a violation that is representable — `0..5` stored in
+three bits, value 6 — still reports 6 through the scan path. The test also
+parses every "left its range" line it produced and asserts the number really
+does fall outside the bounds quoted next to it, which is the invariant that was
+broken rather than any particular number.

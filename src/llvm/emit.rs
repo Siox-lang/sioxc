@@ -255,6 +255,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i32_type(), None, "range_error");
         range_error.set_initializer(&self.ctx.i32_type().const_zero());
         range_error.set_linkage(Linkage::Internal);
+        // The offending value, recorded with the id. Rebuilding the message
+        // from the stored signal reports the value *after* truncation to the
+        // destination width, which can land back inside the declared domain:
+        // `t + step` of 10 into `integer<-8..7>` stores -6 and read
+        // "`t` left its range -8..7 (it was -6)".
+        let range_value = self
+            .module
+            .add_global(self.ctx.i64_type(), None, "range_value");
+        range_value.set_initializer(&self.ctx.i64_type().const_zero());
+        range_value.set_linkage(Linkage::Internal);
         self.state_globals();
         self.accessors();
         self.settle();
@@ -264,6 +274,13 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.module
             .get_global("range_error")
             .expect("range error global")
+            .as_pointer_value()
+    }
+
+    fn range_value_ptr(&self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("range_value")
+            .expect("range value global")
             .as_pointer_value()
     }
 
@@ -509,6 +526,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder
             .build_store(self.range_error_ptr(), i32.const_zero())
             .unwrap();
+        self.builder
+            .build_store(self.range_value_ptr(), self.ctx.i64_type().const_zero())
+            .unwrap();
         for id in 0..self.n {
             let signal = &self.design.signals[id as usize];
             let init = self
@@ -533,6 +553,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap()
             .into_int_value();
         self.builder.build_return(Some(&error)).unwrap();
+
+        // i64 sx_range_value(void): the value that broke the domain, as it was
+        // before truncation to the destination width.
+        let f = self
+            .module
+            .add_function("sx_range_value", i64.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
+        let kept = self
+            .builder
+            .build_load(i64, self.range_value_ptr(), "rvalue")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&kept)).unwrap();
 
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
@@ -948,6 +982,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .into_int_value();
         self.builder
             .build_store(self.range_error_ptr(), next)
+            .unwrap();
+        // Keep the value that actually broke the domain, before `fit` narrows
+        // it to the destination width.
+        let i64_ty = self.ctx.i64_type();
+        let offending = self
+            .builder
+            .build_int_s_extend_or_bit_cast(value, i64_ty, "roff")
+            .unwrap();
+        let kept = self
+            .builder
+            .build_load(i64_ty, self.range_value_ptr(), "rvprev")
+            .unwrap()
+            .into_int_value();
+        let stored = self
+            .builder
+            .build_select(record, offending, kept, "rvnext")
+            .unwrap()
+            .into_int_value();
+        self.builder
+            .build_store(self.range_value_ptr(), stored)
             .unwrap();
     }
 

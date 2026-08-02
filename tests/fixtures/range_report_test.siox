@@ -1,0 +1,66 @@
+// A ranged signal driven out of its domain by arithmetic that overflows the
+// destination's storage. The value the runtime reports must be the one that
+// broke the domain, not what survived truncation to the destination width.
+//
+// `t + step` reaches 10, which does not fit `integer<-8..7>`'s four bits and
+// stores as -6 — a number inside the very range the message says was left.
+module range_report_test;
+
+using std::logic::{Bit};
+
+entity Acc {
+    clk: Bit in,
+    step: integer<-8..7> in,
+    total: integer<-8..7> out
+}
+impl Acc {
+    let t: integer<-8..7> = 0;
+    if clk.rising() { t = t + step; }
+    total = t;
+}
+
+// 0..5 needs three bits, whose domain reaches 7, so 6 is out of range *and*
+// representable — the post-settle scan's case rather than the engine's.
+entity Narrow {
+    clk: Bit in,
+    step: integer<0..5> in,
+    total: integer<0..5> out
+}
+impl Narrow {
+    let n: integer<0..5> = 0;
+    if clk.rising() { n = n + step; }
+    total = n;
+}
+
+#[test]
+entity Overflows {}
+impl Overflows {
+    let clk: Bit = '0';
+    let step: integer<-8..7> = 5;
+    let a: Acc = { .clk = clk, .step = step };
+    await 1ns;
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // 5, in range
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // 10, out of range
+}
+
+#[test]
+entity Underflows {}
+impl Underflows {
+    let clk: Bit = '0';
+    let step: integer<-8..7> = -5;
+    let a: Acc = { .clk = clk, .step = step };
+    await 1ns;
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // -5, in range
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // -10, out of range
+}
+
+#[test]
+entity Representable {}
+impl Representable {
+    let clk: Bit = '0';
+    let step: integer<0..5> = 3;
+    let d: Narrow = { .clk = clk, .step = step };
+    await 1ns;
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // 3, in range
+    clk = '1'; await 1ns; clk = '0'; await 1ns;   // 6, out of range
+}

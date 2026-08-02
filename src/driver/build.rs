@@ -180,6 +180,7 @@ pub fn build(
     prog.push_str("extern void sx_set_word(uint32_t, uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read_word(uint32_t, uint32_t);\n");
     prog.push_str("extern uint32_t sx_range_error(void);\n");
+    prog.push_str("extern int64_t sx_range_value(void);\n");
     prog.push_str("static signed sx_check_ranges(void);\n");
     let abi_words = design
         .signals
@@ -382,13 +383,16 @@ pub fn build(
             )
         };
 
-        prog.push_str("    if (e) { switch (e) {\n");
+        // The engine flagged this *before* the value was narrowed to the
+        // destination, so take the value it kept. Decoding the signal here
+        // reported the truncated one, which can be back inside the domain the
+        // message says was left.
+        prog.push_str("    if (e) { v = sx_range_value(); switch (e) {\n");
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
             prog.push_str(&format!(
-                "    case {}: {{ {} {} }} break;\n",
+                "    case {}: {{ {} }} break;\n",
                 id + 1,
-                decode(*id, sig, lo),
                 report(*id, sig, lo, hi)
             ));
         }
