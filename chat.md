@@ -5290,3 +5290,40 @@ Banked as `ffi_real_test`, labelled coverage rather than a fix — the f64 half
 of the C ABI was exercised by nothing. Proved non-vacuous by disabling the
 bit-cast of real arguments in the LLVM backend, which fails it. `-lm` is on
 the link line, so the libm symbols are not a portability gamble.
+
+## 2026-08-02 (cont.) — a clean sweep: constant folding (and two questions for the user)
+
+**No bug found.** Swept constant folding, which is a parallel pair I had not
+compared: `eval_const_fns` seeds a signal's power-on value during lowering,
+and the emitter folds the same source for a testbench local. Two
+implementations of one rule is the shape most of this session's bugs had.
+
+Sixteen expressions — arithmetic, precedence, parenthesisation, shifts,
+nesting four deep — written identically in both places. All agree, and all
+match hand-computed values. Banked as `const_fold_test` (coverage, labelled
+as such), proved non-vacuous by making hardware folding multiply via
+`checked_add`, which fails it.
+
+Two things surfaced that are **not mine to decide**, so they are questions
+rather than fixes:
+
+**1. `and`/`or` mean different things by operand type, silently.**
+
+    let m: unsigned[16] = 0b1100 and 0b1010;   // 1
+    let p: unsigned[16] = 0b1100;
+    let q: unsigned[16] = 0b1010;
+    let n: unsigned[16] = p and q;             // 8
+
+Bare literals are `integer`, where `and`/`or` are *logical* (non-zero → 1);
+typed vectors dispatch std's `Operator<"and", unsigned, unsigned>`, which is
+*bitwise*. Both readings are defensible and the notation does not distinguish
+them, so `0b1100 and 0b1010` silently yields 1 where a hardware author would
+read a mask. Rust separates these (`&` vs `&&`); siox overloads by type.
+
+`xor`, `nand`, `nor` and `xnor` are not defined for bare integers at all, so
+they error where `and`/`or` quietly do something else — the same expression
+shape, three different outcomes.
+
+**2. There is no remainder operator.** `%` is undeclared, and `rem`/`mod` do
+not parse. VHDL has both, and division exists, so this looks like an omission
+rather than a decision.
