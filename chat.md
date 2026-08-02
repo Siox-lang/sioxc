@@ -5542,3 +5542,44 @@ passing test that proved nothing. I caught it because the assertion I expected
 to fail was absent from the output rather than present-and-failing. Worth
 keeping: when a mutation script asserts its own edit landed, check the
 assertion fired, not just that the test ran.
+
+## 2026-08-03 (cont.) — a clean sweep: `await`, and the emitter was already ahead
+
+**No bug found.** Two areas, both clean.
+
+First the both-engines check on the last three rounds of seeding work: do an
+array literal, a string literal, a spread and a nested literal work as struct
+*testbench* locals? All four do, and always did. The emitter's
+`write_composite` handles what hardware lowering did not — which is probably
+why those hardware bugs survived so long: a testbench exercising the same
+struct behaves correctly, and that is where people look.
+
+Then `await`. Of ~257 in the corpus, all but six are `await <duration>`, so
+the edge and condition forms — the scheduler's actual work, and the surface
+cocotb will sit on — were barely covered. Checked against a hand-computed
+timing model (`fast` rises at 5, 15, 25…; `slow` at 20, 60, 100…), eleven
+behaviours, every one correct:
+
+- an already-true condition returns without advancing time,
+- one rising edge is exactly one count, and three more are three,
+- a falling edge waits but does not advance a rising-edge counter,
+- `'event` takes the next edge in either direction,
+- a condition stops the first moment it holds, not an edge late,
+- a compound condition over two signals does the same,
+- and two clocks at different periods interleave correctly on one scheduler.
+
+Banked as `await_forms_test`, labelled coverage. Proved non-vacuous by
+changing the slow clock from 20ns to 10ns, which the model rejects.
+
+**I wrote a wrong assertion and it was mine, not the compiler's.** The
+two-clock checks first sat at the end of a long sequence of awaits, so time had
+already advanced to 85ns and the slow clock had passed the edges I was
+predicting from t = 0. They are now a separate `#[test]`, which starts at zero:
+a test whose expected values depend on where the previous section left off is
+not reviewable, and the split is worth more than the shared setup it costs.
+
+And the mutation trap from last round recurred exactly as described: my second
+perturbation did not apply, and the run after it printed "2 passed" from the
+*unmutated* binary. The first perturbation had already proved the point, so
+nothing rested on it — but the failure mode is now confirmed as a pattern
+rather than a one-off.
