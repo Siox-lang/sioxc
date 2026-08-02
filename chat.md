@@ -3956,3 +3956,29 @@ Also checked the permuted case, since positional binding invites it:
 `B` binds to `LO` and `A` to `HI`, and the values come out 3 and 9 as the
 positions say. Confusing to read, correct to run, and legal in Rust for the
 same reason.
+
+### Two more, neither of them mine
+
+Probing the binder further turned up two failures that reproduce **identically
+with and without a rename** — so not regressions from that work, just things
+nothing had exercised.
+
+**A constant declared inside an implementation was never collected.** Only
+module-level `const` items were gathered, so
+
+    impl Plain { const LIMIT: unsigned[8] = 5; y = LIMIT; }
+
+compiled the declaration and then reported `no value named 'LIMIT' is in
+scope` at the read — the name the author had declared one line above. Spec 3.3
+shows this form explicitly, with `const MAX: unsigned[W] = (1 << W) - 1;`
+inside a generic implementation.
+
+That example is why the fix folds them **per body** rather than globally: the
+value depends on the entity's parameters, so one declaration is a different
+number in each instantiation. `Sized<W = 4>` and `Sized<W = 6>` now give 15
+and 63 from the same line. Order-independence comes along for free by reusing
+the fixed point the module-level constants already use, so a constant may be
+written in terms of one declared below it.
+
+**An instance array sized by a parameter** (`let cells: Cell[N] = {}`) becomes
+`Cell[0]`. Same with or without a rename; not yet fixed, and next.
