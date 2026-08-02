@@ -726,74 +726,8 @@ impl<'a> Lowering<'a> {
         for _ in 0..=constant_decls.len() {
             let mut progressed = false;
             for constant in &constant_decls {
-                let name = &constant.name.text;
-                if self.const_ranges.contains_key(name)
-                    || self.consts.contains_key(name)
-                    || self.consts_real.contains_key(name)
-                    || self.const_values.contains_key(name)
-                    || self.const_arrays.contains_key(name)
-                {
-                    continue;
-                }
-                if let ast::Expr::Range { lo, hi, .. } = &constant.value {
-                    if let (Some(left), Some(right)) =
-                        (eval_const(lo, &self.consts), eval_const(hi, &self.consts))
-                    {
-                        self.const_ranges.insert(name.clone(), (left, right));
-                        progressed = true;
-                    }
-                } else if let ast::Expr::Array { elems, .. } = &constant.value {
-                    // A constant lookup table. Every element has to fold, or
-                    // the table is left for a later round of the fixed point
-                    // (an element may name a constant not yet resolved).
-                    let values: Option<Vec<Expr>> = elems
-                        .iter()
-                        .map(|e| lower_const_value(e, &self.const_values, &self.consts))
-                        .collect();
-                    if let Some(values) = values {
-                        self.const_arrays.insert(name.clone(), values);
-                        progressed = true;
-                    }
-                } else if let ast::Expr::Int { text, .. } = &constant.value {
-                    if text.contains('.') {
-                        if let Ok(value) = text.replace('_', "").parse::<f64>() {
-                            self.consts_real.insert(name.clone(), value);
-                            progressed = true;
-                        }
-                    } else if let Some(value) = integer_const(text) {
-                        if let Expr::Const(word) = value {
-                            if let Ok(narrow) = i64::try_from(word) {
-                                self.consts.insert(name.clone(), narrow);
-                            }
-                            self.const_values.insert(name.clone(), Expr::Const(word));
-                        } else {
-                            self.const_values.insert(name.clone(), value);
-                        }
-                        progressed = true;
-                    }
-                } else if let ast::Expr::Path(path) = &constant.value {
-                    if path.segments.len() == 1 {
-                        let source = &path.segments[0].text;
-                        if let Some(value) = self.const_values.get(source).cloned() {
-                            self.const_values.insert(name.clone(), value);
-                            progressed = true;
-                        } else if let Some(&value) = self.consts.get(source) {
-                            self.consts.insert(name.clone(), value);
-                            progressed = true;
-                        }
-                    }
-                } else if let Some(value) =
-                    lower_const_value(&constant.value, &self.const_values, &self.consts)
-                {
-                    self.const_values.insert(name.clone(), value);
-                    if let Some(narrow) = eval_const(&constant.value, &self.consts) {
-                        self.consts.insert(name.clone(), narrow);
-                    }
-                    progressed = true;
-                } else if let Some(value) = eval_const(&constant.value, &self.consts) {
-                    self.consts.insert(name.clone(), value);
-                    progressed = true;
-                }
+                let scope = self.consts.clone();
+                progressed |= self.fold_const(constant, &scope);
             }
             if !progressed {
                 break;
@@ -956,6 +890,83 @@ impl<'a> Lowering<'a> {
     /// lowered recursively under `path.s` and their port connections become
     /// drivers. Returns each port's (signal, direction) so a parent can wire to
     /// it. Runs in a fresh name scope, restoring the caller's on return.
+    /// Fold one constant declaration into the constant tables, returning
+    /// whether it produced a value. `scope` is what integer expressions
+    /// evaluate against: module constants see the constant table, an
+    /// implementation's own constants also see the entity's parameters.
+    ///
+    /// Shared so the two callers cannot diverge by *kind* — the first version
+    /// of implementation constants folded integers only, so a `const` holding
+    /// a lookup table or a real reported its own name as unknown while the
+    /// module-level spelling of it worked.
+    fn fold_const(&mut self, constant: &ast::ConstDecl, scope: &HashMap<String, i64>) -> bool {
+        let name = &constant.name.text;
+        if self.const_ranges.contains_key(name)
+            || self.consts.contains_key(name)
+            || self.consts_real.contains_key(name)
+            || self.const_values.contains_key(name)
+            || self.const_arrays.contains_key(name)
+        {
+            return false;
+        }
+        if let ast::Expr::Range { lo, hi, .. } = &constant.value {
+            if let (Some(left), Some(right)) = (eval_const(lo, scope), eval_const(hi, scope)) {
+                self.const_ranges.insert(name.clone(), (left, right));
+                return true;
+            }
+        } else if let ast::Expr::Array { elems, .. } = &constant.value {
+            // A constant lookup table. Every element has to fold, or the table
+            // is left for a later round of the fixed point (an element may
+            // name a constant not yet resolved).
+            let values: Option<Vec<Expr>> = elems
+                .iter()
+                .map(|e| lower_const_value(e, &self.const_values, scope))
+                .collect();
+            if let Some(values) = values {
+                self.const_arrays.insert(name.clone(), values);
+                return true;
+            }
+        } else if let ast::Expr::Int { text, .. } = &constant.value {
+            if text.contains('.') {
+                if let Ok(value) = text.replace('_', "").parse::<f64>() {
+                    self.consts_real.insert(name.clone(), value);
+                    return true;
+                }
+            } else if let Some(value) = integer_const(text) {
+                if let Expr::Const(word) = value {
+                    if let Ok(narrow) = i64::try_from(word) {
+                        self.consts.insert(name.clone(), narrow);
+                    }
+                    self.const_values.insert(name.clone(), Expr::Const(word));
+                } else {
+                    self.const_values.insert(name.clone(), value);
+                }
+                return true;
+            }
+        } else if let ast::Expr::Path(path) = &constant.value {
+            if path.segments.len() == 1 {
+                let source = &path.segments[0].text;
+                if let Some(value) = self.const_values.get(source).cloned() {
+                    self.const_values.insert(name.clone(), value);
+                    return true;
+                } else if let Some(&value) = self.consts.get(source) {
+                    self.consts.insert(name.clone(), value);
+                    return true;
+                }
+            }
+        } else if let Some(value) = lower_const_value(&constant.value, &self.const_values, scope) {
+            self.const_values.insert(name.clone(), value);
+            if let Some(narrow) = eval_const(&constant.value, scope) {
+                self.consts.insert(name.clone(), narrow);
+            }
+            return true;
+        } else if let Some(value) = eval_const(&constant.value, scope) {
+            self.consts.insert(name.clone(), value);
+            return true;
+        }
+        false
+    }
+
     fn lower_body(
         &mut self,
         ename: &str,
@@ -1039,18 +1050,15 @@ impl<'a> Lowering<'a> {
             for _ in 0..=body_consts.len() {
                 let mut progressed = false;
                 for c in &body_consts {
-                    let name = &c.name.text;
-                    if renamed.contains_key(name) {
-                        continue;
-                    }
                     let mut scope = self.consts.clone();
                     scope.extend(renamed.iter().map(|(k, v)| (k.clone(), *v)));
-                    if let Some(value) = eval_const(&c.value, &scope) {
-                        renamed.insert(name.clone(), value);
-                        self.consts.insert(name.clone(), value);
-                        self.const_values
-                            .insert(name.clone(), Expr::Const(value as u64));
+                    if self.fold_const(c, &scope) {
                         progressed = true;
+                        // Array sizes and slice bounds resolve through the
+                        // env, so an integer constant has to reach it too.
+                        if let Some(&value) = self.consts.get(&c.name.text) {
+                            renamed.insert(c.name.text.clone(), value);
+                        }
                     }
                 }
                 if !progressed {
@@ -2713,7 +2721,7 @@ impl<'a> Lowering<'a> {
             self.add_signal(
                 entity,
                 name,
-                type_width(ty, env, &self.free_fns, &self.structs),
+                type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges),
             );
             // A Logic-vector family `F[N]` dispatches its operators to
             // `impl _ for F` (spec 3.25). unsigned/signed are recognized the same way
@@ -4338,7 +4346,15 @@ impl<'a> Lowering<'a> {
                 _ => call_fn_key(callee)
                     .and_then(|k| self.free_fns.get(&k))
                     .and_then(|f| f.ret.as_ref())
-                    .map(|ret| type_width(ret, &self.cur_env, &self.free_fns, &self.structs))
+                    .map(|ret| {
+                        type_width(
+                            ret,
+                            &self.cur_env,
+                            &self.free_fns,
+                            &self.structs,
+                            &self.const_ranges,
+                        )
+                    })
                     .filter(|w| *w > 0)
                     .unwrap_or(64),
             },
@@ -5316,7 +5332,13 @@ impl<'a> Lowering<'a> {
         if type_head_name(ret).is_some_and(|h| matches!(h, "real" | "integer")) {
             return v;
         }
-        let w = type_width(ret, &self.cur_env, &self.free_fns, &self.structs);
+        let w = type_width(
+            ret,
+            &self.cur_env,
+            &self.free_fns,
+            &self.structs,
+            &self.const_ranges,
+        );
         if w == 0 || w >= 64 {
             return v;
         }
@@ -5573,7 +5595,13 @@ impl<'a> Lowering<'a> {
                     .and_then(|s| s.base.as_ref())
                 {
                     if matches!(base, ast::Type::Indexed { .. }) {
-                        let w = type_width(base, &self.cur_env, &self.free_fns, &self.structs);
+                        let w = type_width(
+                            base,
+                            &self.cur_env,
+                            &self.free_fns,
+                            &self.structs,
+                            &self.const_ranges,
+                        );
                         let v = self.lower_scalar_env(args.first()?, env);
                         return Some(if w > 0 && w < 64 {
                             Expr::Slice {
@@ -7059,8 +7087,9 @@ fn type_width(
     env: &HashMap<String, i64>,
     fns: &HashMap<String, &ast::FnDecl>,
     structs: &HashMap<String, &ast::StructDecl>,
+    ranges: &HashMap<String, (i64, i64)>,
 ) -> u32 {
-    type_width_at(t, env, fns, structs, &mut HashSet::new())
+    type_width_at(t, env, fns, structs, ranges, &mut HashSet::new())
 }
 
 /// `type_width` with cycle detection. A cyclic derivation
@@ -7071,6 +7100,7 @@ fn type_width_at(
     env: &HashMap<String, i64>,
     fns: &HashMap<String, &ast::FnDecl>,
     structs: &HashMap<String, &ast::StructDecl>,
+    ranges: &HashMap<String, (i64, i64)>,
     seen: &mut HashSet<String>,
 ) -> u32 {
     match t {
@@ -7087,7 +7117,7 @@ fn type_width_at(
                 let width = structs
                     .get(name)
                     .and_then(|s| s.base.as_ref())
-                    .map(|b| type_width_at(b, env, fns, structs, seen))
+                    .map(|b| type_width_at(b, env, fns, structs, ranges, seen))
                     .unwrap_or(0);
                 seen.remove(name);
                 width
@@ -7114,12 +7144,26 @@ fn type_width_at(
                     _ => 0,
                 }
             }
+            // A *range* constant used as the index (`unsigned[SPAN]` where
+            // `const SPAN: range = 7..0`) states a span, not a width. Falling
+            // through to the integer path found no integer and produced a
+            // zero-width signal in silence — the literal `unsigned[7..0]`
+            // spelling of the same thing was eight bits.
+            ast::Expr::Path(p)
+                if p.segments.len() == 1 && ranges.contains_key(&p.segments[0].text) =>
+            {
+                let (a, b) = ranges[&p.segments[0].text];
+                u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
+                    .ok()
+                    .and_then(|width| width.checked_add(1))
+                    .unwrap_or(0)
+            }
             e => eval_const_fns(e, env, fns, 0)
                 .map(|v| v.max(0) as u32)
                 .unwrap_or(0),
         },
         ast::Type::Generic { base, .. } | ast::Type::View { target: base, .. } => {
-            type_width(base, env, fns, structs)
+            type_width(base, env, fns, structs, ranges)
         }
     }
 }
@@ -7300,7 +7344,7 @@ pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
             let w = s
                 .base
                 .as_ref()
-                .map(|b| type_width(b, &empty_env, &empty_fns, &structs))
+                .map(|b| type_width(b, &empty_env, &empty_fns, &structs, &HashMap::new()))
                 .unwrap_or(0);
             (w > 0).then_some((name.clone(), w))
         })
@@ -8240,7 +8284,13 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
             .as_ref()
             .filter(|_| enum_base_name(e, &enums).is_none())
         {
-            type_width(repr, &empty, &HashMap::new(), &HashMap::new())
+            type_width(
+                repr,
+                &empty,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
         } else {
             let variants = effective_variants(name, &enums, &mut Vec::new());
             let n = variants.len().max(1) as u32;

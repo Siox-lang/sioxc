@@ -4028,3 +4028,48 @@ once, a combinational loop with no settled value. `W-P010` said exactly that,
 and I had filtered warnings out of my own probe output. Second time this
 session I have hidden the answer from myself that way. The corpus test drives
 a *different element* per iteration instead, which is the accumulating form.
+
+## 2026-08-02 (cont.) — predicting the next table instead of finding it
+
+Two passes running, the same shape has produced the bug: a name has to be
+known by every stage and every *table* keyed on names. So this time I used it
+as a prediction rather than waiting for a probe to trip over it. The
+implementation-constant fold handled integers; siox keeps constants in five
+tables (`consts`, `const_values`, `const_ranges`, `const_arrays`,
+`consts_real`). Predicted: the other kinds fail inside an implementation and
+work at module level.
+
+Both did:
+
+    impl E { const TAB: unsigned[8][3] = [10, 20, 30]; y = TAB[1]; }  // no hardware form
+    impl E { const PI: real = 3.5; y = PI; }                          // name unknown
+
+Fixed by extracting the module-level folding into one routine both callers
+share, so the two cannot diverge by kind again — which is the actual defect,
+the duplication rather than the two missing arms.
+
+### The range constant was worse than a missing arm
+
+Checking the kinds turned up something the compile-only probe had passed:
+
+    const SPAN: range = 7..0;
+    let v: unsigned[SPAN];      // eight bits?  no — zero
+
+It **compiled**, and produced a signal with no bits at all; `'length` said 0.
+The literal spelling of the same thing, `unsigned[7..0]`, is eight bits. This
+one is not from the constant work at all — module-level and implementation
+ranges failed identically, so it predates both.
+
+Width resolution handles a *literal* range index and otherwise evaluates the
+index as an integer. A range constant is not an integer, so the evaluation
+returned nothing and the width fell to zero, quietly. It also had no access to
+the range table, so the fix threads that through the six call sites: a path
+index naming a range now states a span. Descending `7..0` is 8, ascending
+`0..15` is 16, and the literal form is unchanged.
+
+Caught while verifying: my first attempt to prove the regression test could
+fail silently did nothing — the removal script had been written against text
+`cargo fmt` then reformatted, so it deleted nothing and the "pass" meant
+nothing. The second attempt deleted the arm by line and the test failed on
+exactly the assertion about a range width. A mutation that reports success
+without applying is worse than no mutation at all.
