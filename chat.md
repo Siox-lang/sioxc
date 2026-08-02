@@ -4934,3 +4934,43 @@ are different failures and I checked which one this was rather than assuming.
 
 Zero corpus false positives; outputs and locals stay writable, which is the
 whole point of a helper.
+
+## 2026-08-02 (cont.) — finishing the checklist, and a false positive of my own
+
+Last entry ended by noting that a root cause written in a commit message is a
+checklist, and I had ticked one item of three. This round I read it back.
+
+`check_block` hands a function body an empty `PortDirs` **and** an empty
+`ranged` map. Two rounds ago I restored the directions. The bounds were still
+missing:
+
+    entity E { y: integer<0..7> out }
+    impl E {
+        y = 20;                    // error: value 20 is outside the range 0..7
+        fn drive() { y = 20; }     // accepted
+    }
+
+The spec calls an out-of-range constant a compile-time error. Inside a
+function of the same impl it was not checked at all.
+
+**And the fix I shipped last round introduced two false positives.** A
+parameter that repeats an impl-level name shadows it, and I had inherited the
+restrictions without saying so:
+
+    impl E {                                   // entity has `a: unsigned[8] in`
+        fn twice(a: unsigned[8]) { a = a + a; }  // wrongly: "cannot assign to
+    }                                            //  input port `a`"
+
+Same for a parameter named after a `const`. Both now excluded by root name, so
+`bus` as a parameter shadows `bus.ready` too, and the same exclusion applies to
+the bounds map.
+
+Being straight about the blast radius: every shadowing case involves *writing*
+a parameter, and assigning to a parameter does not lower yet — it fails with
+"contains an Unknown". So the false positive only ever hit programs that were
+already broken, and what it actually cost was preempting the real diagnosis
+with a wrong one. That is the same complaint I have now logged four times
+about other people's code, so it is worth owning here.
+
+Three mutants: bounds withheld from the body (range test fails), shadowing
+removed (both tests fail), and the earlier directions mutant still stands.

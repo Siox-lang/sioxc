@@ -1587,7 +1587,24 @@ impl<'a> Checker<'a> {
                             .plain_in_roots
                             .extend(dirs.plain_in_roots.iter().cloned());
                         body_dirs.consts.extend(dirs.consts.iter().cloned());
-                        self.check_block_with(b, &body_dirs);
+                        let mut body_ranged = ranged.clone();
+                        // A parameter shadows the impl-level name it repeats,
+                        // so `fn twice(a: unsigned[8]) { a = a + a; }` writes
+                        // its own argument, not the entity's `in` port `a`.
+                        let params: HashSet<&str> = f
+                            .params
+                            .iter()
+                            .filter_map(|p| p.name.as_ref())
+                            .map(|n| n.text.as_str())
+                            .collect();
+                        let shadowed = |name: &String| {
+                            params.contains(name.split(['.', '[']).next().unwrap_or(name))
+                        };
+                        body_dirs.illegal.retain(|n| !shadowed(n));
+                        body_dirs.plain_in_roots.retain(|n| !shadowed(n));
+                        body_dirs.consts.retain(|n| !shadowed(n));
+                        body_ranged.retain(|n, _| !shadowed(n));
+                        self.check_block_with(b, &body_dirs, &body_ranged);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -1726,7 +1743,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_block(&mut self, b: &Block) {
-        self.check_block_with(b, &PortDirs::default());
+        self.check_block_with(b, &PortDirs::default(), &HashMap::new());
     }
 
     /// A method body whose `self` carries directions — an impl on a view
@@ -1735,12 +1752,17 @@ impl<'a> Checker<'a> {
     /// were checked with no directions at all, so the same write hidden in
     /// `fn bad(self) { self.ready = '1'; }` was accepted *and driven*, which
     /// defeats the point of a view.
-    fn check_block_with(&mut self, b: &Block, view_dirs: &PortDirs) {
+    fn check_block_with(
+        &mut self,
+        b: &Block,
+        view_dirs: &PortDirs,
+        bounds: &HashMap<String, (i64, i64)>,
+    ) {
         // Every caller of this is a function body — a trait method, a free
         // function, or an impl method — so `return` is legal inside it.
         let saved = self.in_fn_body.replace(true);
         let (dirs, sym) = (view_dirs.clone(), HashMap::new());
-        let ranged = HashMap::new();
+        let ranged = bounds.clone();
         self.lint_dead_assignments(b.stmts.iter());
         for s in &b.stmts {
             self.check_stmt(s, &dirs, &sym, &ranged);
@@ -6362,6 +6384,71 @@ mod tests {
             ),
             0,
             "reading it is fine"
+        );
+        // A parameter shadows the impl-level name it repeats, so this writes
+        // its own argument and not the `const`. Inheriting the restrictions
+        // without this exclusion rejected it.
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: unsigned[8] out }\n\
+                 impl E { const K: unsigned[8] = 5; \
+                 fn shadow(K: unsigned[8]) -> unsigned[8] { K = K + 1; return K; } \
+                 y = E::shadow(1); }\n"
+            ),
+            0,
+            "a parameter named `K` is not the `const`"
+        );
+    }
+
+    /// The ranged-integer bounds shared the same hole: `y = 20` on an
+    /// `integer<0..7>` is a compile-time error written inline, and inside a
+    /// function of the same impl it was not checked at all, because the body
+    /// walk was handed an empty bounds map along with its empty directions.
+    #[test]
+    fn an_impl_function_checks_ranged_assignments() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.message.contains("outside the range"))
+                .count()
+        };
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: integer<0..7> out }\n\
+                 impl E { fn drive() { y = 20; } }\n"
+            ),
+            1,
+            "an out-of-range constant inside a function"
+        );
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: integer<0..7> out }\n\
+                 impl E { fn drive(e: Bit) { if e == '1' { y = 20; } } }\n"
+            ),
+            1,
+            "and one nested in control flow"
+        );
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: integer<0..7> out }\n\
+                 impl E { fn drive() { y = 5; } }\n"
+            ),
+            0,
+            "a value inside the range is fine"
+        );
+        // Again the shadowing rule: the parameter has its own type.
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: integer<0..7> out }\n\
+                 impl E { fn wide(y: unsigned[8]) -> unsigned[8] { y = 20; return y; } }\n"
+            ),
+            0,
+            "a parameter named `y` is not the ranged port"
         );
     }
 
