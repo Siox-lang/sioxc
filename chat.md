@@ -4828,3 +4828,37 @@ round produced anything.
 The regression test asserts the aggregate against the OR of its own leaves —
 the spec's definition, and an invariant that holds whatever the delta schedule
 does — before asserting any count.
+
+## 2026-08-02 (cont.) — following up my own aggregate-`'event` fix (no new bug)
+
+**No new bug this round.** Attacking the change I had just made, since fixing
+one engine and leaving the other is this session's most common failure and I
+had touched only `ir.rs`.
+
+The first check was the one that mattered: does aggregate `'event` work in a
+*testbench*? It does not — but neither does `s'event`, `s'old`,
+`pk.valid'event` or `pk.data'old`. **The emitter supports no history attribute
+at any shape**, and says so ("unsupported testbench expression"). So this is a
+uniform pre-existing limitation, cleanly diagnosed, and my hardware-only fix
+did not open a divergence. Worth knowing, and left alone: every spec example
+puts `'event`/`'old` in a design, and both corpus tests latch their
+observations inside the design because that is the only place the attributes
+are meaningful.
+
+Then the part of my fix most likely to be wrong — `aggregate_leaves` finds an
+aggregate's leaves by scanning flattened signal names for a prefix, which is
+exactly the kind of thing that breaks on nesting. Probed and all correct:
+
+- a struct inside a struct: the outer sees every leaf beneath it, the inner
+  sees only its own,
+- an array of structs (`cs[0].v`) and a struct holding an array (`bx.xs[1]`),
+- a sibling sharing a name prefix (`op` next to `o`) counted for neither,
+- reached through a sub-instance's port (`s.p'event`),
+- inside a clocked block, where it correctly reports nothing when the data
+  settles before the edge rather than in the same delta.
+
+The corpus test I committed last round covered only a flat struct and a flat
+array, so it is now extended with the nested shapes and the prefix-sharing
+sibling. Proved non-vacuous by mutating the scan to drop the separator
+(`starts_with(path)` instead of `starts_with("path.")`), which sweeps `op` into
+`o`'s leaves and fails the test.
