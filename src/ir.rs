@@ -4389,7 +4389,7 @@ impl<'a> Lowering<'a> {
             }
             // A bit-string literal has an explicit digit-count width.
             ast::Expr::BitStrLit { base, digits, .. } => {
-                (digits.len() as u32 * bits_per_digit(*base)).max(1)
+                (digits.len() as u32 * crate::syntax::bits_per_digit(*base)).max(1)
             }
             // A signal reference (name, struct field, constant array element).
             _ => expr_path(e)
@@ -4678,16 +4678,14 @@ impl<'a> Lowering<'a> {
     /// nibble per source element respectively.
     fn decode_bit_string_words(&self, base: char, digits: &str) -> (Vec<u64>, Vec<u64>) {
         // Radix-expanded 2-value strings: hex is 4 bits/digit, octal 3.
-        if let Some(bits) = match base {
-            'x' => Some(4usize),
-            'o' => Some(3),
-            _ => None,
-        } {
+        if let Some(bits) = crate::syntax::is_radix_prefix(base)
+            .then(|| crate::syntax::bits_per_digit(base) as usize)
+        {
             let width = digits.len().saturating_mul(bits);
             let mut value = vec![0u64; width.div_ceil(64).max(1)];
             let mut discs = vec![0u64; width.saturating_mul(4).div_ceil(64).max(1)];
             for (digit_index, ch) in digits.chars().rev().enumerate() {
-                let digit = ch.to_digit(if base == 'x' { 16 } else { 8 }).unwrap_or(0);
+                let digit = ch.to_digit(crate::syntax::radix_of(base)).unwrap_or(0);
                 for bit in 0..bits {
                     let pos = digit_index * bits + bit;
                     let value_bit = u64::from((digit & (1 << bit)) != 0);
@@ -6496,16 +6494,6 @@ pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
         [f] => Some(f.text.clone()),
         [ty, f] => Some(format!("{}::{}", ty.text, f.text)),
         _ => None,
-    }
-}
-
-/// Bits contributed by one digit of a bit-string literal: hex 4, octal 3,
-/// binary (and per-char logic strings) 1.
-fn bits_per_digit(base: char) -> u32 {
-    match base {
-        'x' => 4,
-        'o' => 3,
-        _ => 1,
     }
 }
 

@@ -1308,8 +1308,15 @@ impl<'a> Parser<'a> {
             // A radix bit pattern `x"A?"` / `o"7?"` (spec 3.22): a one-letter
             // prefix glued to a string; `?` masks one radix group (nibble/triad)
             // as a don't-care.
+            //
+            // Any letter parses, exactly as in expression position: which
+            // prefixes exist is std's to say, and which the compiler can
+            // evaluate is `RADIX_PREFIXES`'. Type checking rejects the rest —
+            // an undecodable pattern is already an error there. Matching
+            // `"x" | "o"` here made an unsupported prefix a raw parse error in
+            // a `match` and a clean diagnostic in an expression.
             TokenKind::Ident
-                if matches!(self.cur_text(), "x" | "o")
+                if is_prefix_letter(self.cur_text())
                     && self.kind_at(self.pos + 1) == &TokenKind::StrLit
                     && self.span_at(self.pos + 1).start == self.span().end =>
             {

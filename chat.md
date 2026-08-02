@@ -4315,3 +4315,43 @@ as a low-coverage construct off a corpus count of 11 files; all 11 were the
 English word in comments. `while` is not a siox construct at all.
 
 Whole corpus: zero false positives.
+
+## 2026-08-02 (cont.) — one table for the radix prefixes
+
+Reported by the user: `src/syntax/mod.rs` hardcodes the bit-string prefixes.
+It did, and so did five other places, in four different shapes:
+
+| site | spelling |
+| --- | --- |
+| `syntax/mod.rs` `bit_pattern_mask` | `"" => 1, "o" => 3, "x" => 4` |
+| `syntax/parser.rs` pattern position | `matches!(text, "x" \| "o")` |
+| `ir.rs` `bits_per_digit` | `'x' => 4, 'o' => 3, _ => 1` |
+| `ir.rs` `decode_bit_string_words` | `'x' => Some(4), 'o' => Some(3)` + `if base == 'x' { 16 } else { 8 }` |
+| `build.rs` `expr_width` | `'b' => 1, 'o' => 3, 'x' => 4, _ => 1` |
+| `build.rs` C literal | `'x' => 16, 'o' => 8, _ => 2` (radix, not bits) |
+| `types.rs` | `is_ascii_hexdigit` / `'0'..='7'`, and a second copy for the width |
+
+The design is already "std owns which prefixes exist" (`impl Prefix<"x",
+string> for unsigned`) with evaluation as a compiler intrinsic — so the
+compiler does need *a* list. It needed one, not seven.
+
+**The duplication had already produced a defect.** Expression position accepts
+any letter (`is_prefix_letter`) and lets type checking reject it; pattern
+position matched `"x" | "o"` literally. So the same prefix reported two
+different things three lines apart:
+
+    y = d"42";                       // error: prefix `d` has no compiler evaluation yet
+    match s { d"42" => y = 1, ... }  // error: expected `=>` after a match pattern
+
+A raw parse error for a construct that parses fine one line above. Type
+checking already rejects an undecodable pattern (`E-P009`), so widening the
+parser trades the parse error for the real diagnostic.
+
+Everything now reads `RADIX_PREFIXES: &[(char, u32)]` — and only the width is
+stored, since the radix is `1 << bits` and the alphabet is "whatever
+`to_digit` accepts at that radix", which is where `is_ascii_hexdigit` and
+`'0'..='7'` came from anyway. Changing one entry (octal 3 → 5) now fails three
+tests in three modules, which is the property worth having.
+
+`docs/language.md` §3.24 records that a new radix takes two steps: the `impl
+Prefix` in std, and the table entry.

@@ -936,12 +936,7 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
         match expression {
             Expr::Int { text, .. } | Expr::SuffixLit { text, .. } => literal_width(text),
             Expr::BitStrLit { base, digits, .. } => {
-                let bits = match base.to_ascii_lowercase() {
-                    'b' => 1,
-                    'o' => 3,
-                    'x' => 4,
-                    _ => 1,
-                };
+                let bits = siox::syntax::bits_per_digit(base.to_ascii_lowercase());
                 u32::try_from(digits.chars().count())
                     .ok()
                     .and_then(|count| count.checked_mul(bits))
@@ -4980,11 +4975,7 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::BitStrLit { base, digits, .. } => {
-                let radix = match *base {
-                    'x' => 16,
-                    'o' => 8,
-                    _ => 2,
-                };
+                let radix = siox::syntax::radix_of(*base);
                 c_word_literal(&parse_digits_words(digits, radix))
             }
             ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),

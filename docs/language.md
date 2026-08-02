@@ -1529,7 +1529,11 @@ let m: unsigned[8]  = "01010101";   // no prefix: a string of logic values
 ```
 
 `x"…"` and `o"…"` are 2-value radix expansions. A prefix that no `impl Prefix`
-declares is an error. There is no binary `b"…"` prefix: a plain string is
+declares is an error, and so is one std declares but the compiler cannot yet
+evaluate — a new radix therefore takes two steps, the `impl Prefix` in std and
+an entry in the compiler's `RADIX_PREFIXES` (`src/syntax/mod.rs`), which
+supplies the digit width and, through it, the alphabet. Both positions report
+it the same way. There is no binary `b"…"` prefix: a plain string is
 already a sequence of `std_ulogic` values (metavalues too — `"01X0"`), read as
 a Logic array by context (§3.17), so it covers the binary case directly. Digits
 must be valid for the base; widths participate in the strict

@@ -3516,18 +3516,20 @@ impl<'a> Checker<'a> {
                 }
                 // Evaluation is a compiler intrinsic until const string ops
                 // exist, so only the known radix prefixes carry an alphabet.
-                let (ok, kind) = match *base {
-                    'x' => (digits.chars().all(|c| c.is_ascii_hexdigit()), "hex"),
-                    'o' => (digits.chars().all(|c| ('0'..='7').contains(&c)), "octal"),
-                    _ => {
-                        self.error(
-                            codes::TYPE_MISMATCH,
-                            *span,
-                            format!("bit-string prefix `{base}` has no compiler evaluation yet"),
-                        );
-                        return;
-                    }
-                };
+                // The alphabet follows from the radix rather than being listed
+                // again: a digit is well-formed exactly when `to_digit`
+                // accepts it there.
+                if !crate::syntax::is_radix_prefix(*base) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!("bit-string prefix `{base}` has no compiler evaluation yet"),
+                    );
+                    return;
+                }
+                let radix = crate::syntax::radix_of(*base);
+                let ok = digits.chars().all(|c| c.is_digit(radix));
+                let kind = if radix == 16 { "hex" } else { "octal" };
                 if digits.is_empty() || !ok {
                     self.error(
                         codes::TYPE_MISMATCH,
@@ -3606,11 +3608,10 @@ impl<'a> Checker<'a> {
                 // Only the intrinsic radix prefixes have a known width; an
                 // unknown prefix is `Ty::Error` so its diagnostic doesn't
                 // cascade into a spurious width mismatch.
-                let bits = match *base {
-                    'x' => 4,
-                    'o' => 3,
-                    _ => return Ty::Error,
-                };
+                if !crate::syntax::is_radix_prefix(*base) {
+                    return Ty::Error;
+                }
+                let bits = crate::syntax::bits_per_digit(*base);
                 Ty::Array {
                     elem: Box::new(self.ty_from_head("Logic")),
                     family: Some("unsigned".to_string()),
@@ -6014,6 +6015,31 @@ mod tests {
              entity E { y: unsigned[8] out }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(nested, 0, "including inside a nested block");
+    }
+
+    /// A bit-string prefix the compiler cannot evaluate is a type error, and
+    /// must be one in pattern position too. The pattern parser recognized
+    /// `"x" | "o"` where expression position accepts any letter, so the same
+    /// prefix produced a clean diagnostic in `y = d"42";` and a raw parse
+    /// error in `match s { d"42" => .. }`. `check_src` asserts the source
+    /// parses, which is the property that regressed.
+    #[test]
+    fn an_unevaluable_prefix_is_a_diagnostic_in_pattern_position_too() {
+        let pattern = check_src(
+            "module m;\nentity E { s: unsigned[8] in, y: unsigned[8] out }\n\
+             impl E { match s { d\"42\" => y = 1, _ => y = 0, } }\n",
+        );
+        assert_eq!(pattern, 1, "reported, not a parse failure");
+        let expression =
+            check_src("module m;\nentity E { y: unsigned[8] out }\nimpl E { y = d\"42\"; }\n");
+        assert_eq!(expression, 1, "and expression position is unchanged");
+
+        // The prefixes the table does list still work in both positions.
+        let ok = check_src(
+            "module m;\nentity E { s: unsigned[8] in, y: unsigned[8] out }\n\
+             impl E { match s { x\"A?\" => y = 1, o\"7?\" => y = 2, _ => y = x\"0F\", } }\n",
+        );
+        assert_eq!(ok, 0, "`x` and `o` are in RADIX_PREFIXES");
     }
 
     /// A statement expression that is not a call was dropped by lowering's
