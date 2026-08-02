@@ -1574,8 +1574,20 @@ impl<'a> Checker<'a> {
                     if let Some(b) = &f.body {
                         let saved =
                             self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
-                        let view = self.self_view_dirs(&im.target);
-                        self.check_block_with(b, &view);
+                        // A method inlines into the body it is called from,
+                        // so everything that body may not drive, it may not
+                        // drive either: the entity's `in` ports and its
+                        // `const`s, plus the `in` leaves of a view's role.
+                        // Method bodies were checked with no restrictions at
+                        // all, so each of those was accepted inside a method
+                        // and rejected three lines away, written inline.
+                        let mut body_dirs = self.self_view_dirs(&im.target);
+                        body_dirs.illegal.extend(dirs.illegal.iter().cloned());
+                        body_dirs
+                            .plain_in_roots
+                            .extend(dirs.plain_in_roots.iter().cloned());
+                        body_dirs.consts.extend(dirs.consts.iter().cloned());
+                        self.check_block_with(b, &body_dirs);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -6285,6 +6297,71 @@ mod tests {
             ),
             0,
             "a plain struct method writes any field"
+        );
+
+        // The same hole, one target over: a function in an *entity* impl
+        // inlines into that entity's body, so the entity's own `in` ports and
+        // `const`s are off limits there too. Both were accepted inside a
+        // function and rejected written inline.
+        const ENT: &str = "module m;\n\
+            entity E { a: unsigned[8] in, y: unsigned[8] out }\n";
+        assert_eq!(
+            count(&format!(
+                "{ENT}impl E {{ fn writes() {{ a = 99; }} y = a; }}\n"
+            )),
+            1,
+            "an entity function driving an `in` port"
+        );
+        assert_eq!(
+            count(&format!(
+                "{ENT}impl E {{ fn deep(e: Bit) {{ if e == '1' {{ a = 99; }} }} y = a; }}\n"
+            )),
+            1,
+            "and one nested in control flow"
+        );
+        // Outputs and locals stay writable, or a helper could not do anything.
+        assert_eq!(
+            count(&format!(
+                "{ENT}impl E {{ fn plus(n: unsigned[8]) -> unsigned[8] {{ return n + 1; }}\n\
+                 y = E::plus(a); }}\n"
+            )),
+            0,
+            "a helper that reads its argument and returns"
+        );
+    }
+
+    /// The `const` half of the same hole: a `const` declared in an impl is
+    /// fixed at elaboration, and assigning to it is `E-P018` written inline.
+    /// Inside a function of that impl it was accepted.
+    #[test]
+    fn an_impl_function_cannot_assign_to_a_const() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::INVALID_ASSIGN_TARGET))
+                .count()
+        };
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: unsigned[8] out }\n\
+                 impl E { const K: unsigned[8] = 5; fn bad() { K = 1; } y = K; }\n"
+            ),
+            1,
+            "a function assigning to its impl's `const`"
+        );
+        assert_eq!(
+            count(
+                "module m;\nentity E { y: unsigned[8] out }\n\
+                 impl E { const K: unsigned[8] = 5; fn ok() -> unsigned[8] { return K; } \
+                 y = E::ok(); }\n"
+            ),
+            0,
+            "reading it is fine"
         );
     }
 

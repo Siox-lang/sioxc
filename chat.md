@@ -4896,3 +4896,41 @@ keyed the same way the port-side check keys it, and `check_block_with` carries
 it into the body. Both corpus view tests still compile, and the Source's own
 outputs stay writable — otherwise `send` would break, which is the whole
 reason to write a view method.
+
+## 2026-08-02 (cont.) — the same hole, two targets over
+
+Last round's fix was narrower than its own root cause. `check_block` passed an
+empty `PortDirs` to *every* function body, and `PortDirs` carries three
+restrictions; I had reinstated one of them, for views only. So I went back for
+the rest:
+
+    impl E {
+        const K: unsigned[8] = 5;
+        fn writes()  { a = 99; }   // `a` is an `in` port  — accepted
+        fn writesk() { K = 1; }    // `K` is a const       — accepted
+    }
+
+Both are rejected written inline (`E-P004`, `E-P018`), three lines away. A
+function in an entity impl inlines into that entity's body, so whatever the
+body may not drive, the function may not drive either. The method-body check
+now inherits the impl's own restrictions as well as the view's.
+
+**Characterising it honestly.** Which of these shapes is live?
+
+- A *static* entity function (`fn plus(n)`, no `self`) is callable as
+  `E::plus(a)` and does inline — `y = E::plus(a)` gives 4 for `a = 3`. The
+  port and const writes above are in exactly this shape, so the check guards
+  real code.
+- An entity *method* (`fn bump(self)`) called from a parent as `c.bump()` does
+  **not** inline: the child's output stays undriven and the compiler says so
+  (`W-P011`). The check covers it, but it is guarding dead code.
+- The write that started all this — a *view* method — is fully live: `bus.bad()`
+  drove `ready` to `'1'` before the fix.
+
+Worth writing down because the entity-port write was silently *dropped*
+(`y = 3`, the driven value, not 99), not silently honoured. Either way the
+program should not compile, but "accepted and ignored" and "accepted and wrong"
+are different failures and I checked which one this was rather than assuming.
+
+Zero corpus false positives; outputs and locals stay writable, which is the
+whole point of a helper.
