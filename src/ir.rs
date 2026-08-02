@@ -1317,7 +1317,8 @@ impl<'a> Lowering<'a> {
                             // The field's own enum type resolves a character
                             // literal (`.state = 'Z'`) to its variant.
                             let en = self.out.signals[id.0 as usize].enum_type.clone();
-                            if let Some(v) = self.const_init_value(value, en.as_deref()) {
+                            let is_char = self.out.signals[id.0 as usize].char;
+                            if let Some(v) = self.const_init_value(value, en.as_deref(), is_char) {
                                 self.out.signals[id.0 as usize].init = vec![v];
                             } else {
                                 self.report_non_constant_init(
@@ -1341,7 +1342,8 @@ impl<'a> Lowering<'a> {
                             // The element's own enum type resolves a character
                             // literal (`['0', '1']`) to its variant.
                             let en = self.out.signals[id.0 as usize].enum_type.clone();
-                            if let Some(v) = self.const_init_value(elem, en.as_deref()) {
+                            let is_char = self.out.signals[id.0 as usize].char;
+                            if let Some(v) = self.const_init_value(elem, en.as_deref(), is_char) {
                                 self.out.signals[id.0 as usize].init = vec![v];
                             } else {
                                 self.report_non_constant_init(
@@ -1446,7 +1448,8 @@ impl<'a> Lowering<'a> {
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
                         let en = self.out.signals[id.0 as usize].enum_type.clone();
-                        if let Some(bits) = self.const_init_value(v, en.as_deref()) {
+                        let is_char = self.out.signals[id.0 as usize].char;
+                        if let Some(bits) = self.const_init_value(v, en.as_deref(), is_char) {
                             let w = self.out.signals[id.0 as usize].width;
                             let masked = if w > 0 && w < 64 {
                                 bits & ((1u64 << w) - 1)
@@ -2368,7 +2371,7 @@ impl<'a> Lowering<'a> {
     /// discriminant. An integer or const-fn expression folds through
     /// `eval_const_fns`. A string initializer is a `Char` array, not a scalar,
     /// so it is written element-wise elsewhere, not here.
-    fn const_init_value(&self, e: &ast::Expr, target: Option<&str>) -> Option<u64> {
+    fn const_init_value(&self, e: &ast::Expr, target: Option<&str>, is_char: bool) -> Option<u64> {
         match e {
             // --- literals: a value read as bits ---
             ast::Expr::Int { text, .. } if text.contains('.') => {
@@ -2376,6 +2379,14 @@ impl<'a> Lowering<'a> {
             }
             // A character reads by its position in the target enum (VHDL
             // `T'pos`), else std's default logic type. No value table here.
+            // A `Char` target reads it through the Unicode table (its code
+            // point), as `typed_char_literal` does for an operand. Only the
+            // enum paths were tried here, and `Char` is a kernel type with no
+            // variants, so `let c: Char = 'A';` folded to nothing — and once
+            // a non-constant initializer became an error, that turned into
+            // "the initializer for `c` is not a constant" on an obviously
+            // constant character.
+            ast::Expr::CharLit { ch, .. } if is_char => Some(*ch as u32 as u64),
             ast::Expr::CharLit { ch, .. } => target
                 .and_then(|en| self.char_disc(*ch, en))
                 .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
@@ -2403,7 +2414,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|name| self.structs.get(&name).cloned())
                     .is_some_and(|s| s.fields.is_empty() && s.base.is_some()) =>
             {
-                self.const_init_value(args.first()?, target)
+                self.const_init_value(args.first()?, target, is_char)
             }
             _ => eval_const_fns(e, &self.cur_env, &self.free_fns, 0).map(|v| v as u64),
         }
@@ -2427,7 +2438,9 @@ impl<'a> Lowering<'a> {
                 if let Some(body) = &f.body {
                     for st in &body.stmts {
                         if let ast::Stmt::Return { value: Some(e), .. } = st {
-                            if let Some(v) = self.const_init_value(e, Some(ty)) {
+                            let is_char =
+                                ty == "Char" || struct_derives_kernel(ty, "Char", &self.structs);
+                            if let Some(v) = self.const_init_value(e, Some(ty), is_char) {
                                 out.insert(ty.clone(), v);
                             }
                         }

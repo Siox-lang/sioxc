@@ -5439,3 +5439,40 @@ declaration is accepted and both survive into the tree, so which value a
 backend takes is unspecified. Repeated attributes are meaningful in some
 tools, so whether that is an error, a last-wins rule, or a list is a design
 decision rather than a defect.
+
+## 2026-08-02 (cont.) — a regression of mine: `let c: Char = 'A';`
+
+Swept `Char`/`string`. The working parts first, since they are most of it: a
+5-character string ROM indexed at runtime, characters compared with `>=`/`<=`,
+and std's encoding tables — 25 values across five indices, every one matching
+Python's `ord`. `char_of(unicode(c)) == c` round-trips, and `ascii` agrees with
+`unicode` below 128.
+
+Then a batch of deliberately-wrong programs to test the documented invariant
+that a `Char` is non-numeric. Every one of them failed on the *same* line, and
+not for the reason I was testing:
+
+    let c: Char = 'A';      // error[E-P021]: the initializer for `c` is not a constant
+
+**A false positive I introduced three rounds ago.** `const_init_value` resolves
+a character literal by looking it up as an enum variant — right for `Logic` and
+`Bit`, whose variants *are* characters — and `Char` is a kernel type with no
+variants, so it folded to nothing. That was invisible while a failed fold
+silently left the signal at its default; once I made a non-constant initializer
+an error, it started rejecting an obviously constant character.
+
+The compiler already knew the answer: `typed_char_literal` reads a `Char`
+counterpart through the Unicode table, and a `Char` signal carries a `char`
+flag. The seeding path just never asked. All four call sites now pass it.
+
+The corpus did not catch this — no file declares a `Char` local with a
+character initializer, which is exactly the coverage gap my notes say to look
+for, and I had the whole `Char` area marked as unswept while shipping a change
+that broke it.
+
+Two things this says about the E-P021 work. It was right to convert a silent
+drop into an error — this bug *existed* before, as `let c: Char = 'A';`
+seeding 0, and nobody would have found it. But turning a silent path loud
+exposes every case that path was quietly mishandling, and I should have swept
+the shapes that reach it *before* making it fatal, not two rounds later
+because a probe aimed elsewhere tripped over it.
