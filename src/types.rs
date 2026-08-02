@@ -2037,6 +2037,51 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// A character pattern names a variant of a character-valued enum, so it
+    /// is only meaningful against one. Expression position has always rejected
+    /// the rest — `s == '0'` on a numeric or a `State` is "a character literal
+    /// has no numeric identity" — but pattern position was checked by nobody
+    /// when char patterns landed, and a character has no intrinsic value, so
+    /// the arm compared two unrelated discriminants and *matched*:
+    /// `match s { '0' => .. }` on `enum State { Idle, Run }` selected the arm,
+    /// because `State::Idle` and `'0'` are both 0.
+    fn check_char_patterns(&mut self, ty: &Ty, arms: &[MatchArm]) {
+        let variants = match ty {
+            Ty::Named(id) => self
+                .resolved
+                .def(*id)
+                .map(|d| d.name.clone())
+                .and_then(|name| self.enum_variants.get(&name).map(|v| (name, v.clone()))),
+            _ => None,
+        };
+        let mut bad: Vec<(char, Span)> = Vec::new();
+        for arm in arms {
+            collect_char_patterns(&arm.pattern, &mut bad);
+        }
+        for (ch, span) in bad {
+            match &variants {
+                None => self.error(
+                    codes::TYPE_MISMATCH,
+                    span,
+                    "a character literal has no numeric identity; convert it \
+                     through an encoding table (std::text)"
+                        .to_string(),
+                ),
+                Some((name, vs)) if !vs.iter().any(|v| v == &format!("'{ch}'")) => self
+                    .error_with_help(
+                        codes::INVALID_PATTERN,
+                        span,
+                        format!("`'{ch}'` is not a variant of enum `{name}`"),
+                        format!(
+                            "`{name}` names its variants without quotes; a character pattern \
+                             only matches an enum declared with character literals, like `Logic`"
+                        ),
+                    ),
+                Some(_) => {}
+            }
+        }
+    }
+
     fn check_arms_exhaustive(
         &mut self,
         scrutinee: &Expr,
@@ -2045,6 +2090,7 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) {
         let ty = self.type_of(scrutinee, sym);
+        self.check_char_patterns(&ty, arms);
         let Ty::Named(id) = ty else {
             // A numeric scrutinee has a domain rather than a variant list.
             // Only enums were ever checked, so `match s { 0 => .. }` on an
@@ -4398,6 +4444,19 @@ fn collect_pattern_ranges(p: &Pattern, out: &mut Vec<(i128, i128)>) -> bool {
     }
 }
 
+/// Every character pattern in a pattern tree, flattening or-patterns.
+fn collect_char_patterns(p: &Pattern, out: &mut Vec<(char, Span)>) {
+    match p {
+        Pattern::CharLit { ch, span } => out.push((*ch, *span)),
+        Pattern::Or { alts, .. } => {
+            for a in alts {
+                collect_char_patterns(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A pattern's covered enum-variant names and whether it contains a wildcard,
 /// flattening or-patterns (`A | B` covers both; `A | _` is a wildcard).
 fn pattern_covers(p: &Pattern) -> (Vec<String>, bool) {
@@ -6120,6 +6179,74 @@ mod tests {
              impl E { match s { x\"A?\" => y = 1, o\"7?\" => y = 2, _ => y = x\"0F\", } }\n",
         );
         assert_eq!(ok, 0, "`x` and `o` are in RADIX_PREFIXES");
+    }
+
+    /// A character pattern names a variant of a character-valued enum, so it
+    /// is meaningless against anything else. Expression position has always
+    /// rejected that (`s == '0'` on a `State` is "no numeric identity"), but
+    /// when char patterns landed nothing checked pattern position — and since
+    /// a character has no intrinsic value the arm compared two unrelated
+    /// discriminants and *matched*, because `State::Idle` and `'0'` are both 0.
+    #[test]
+    fn a_character_pattern_needs_a_character_valued_enum() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| {
+                    d.code == Some(codes::INVALID_PATTERN) || d.code == Some(codes::TYPE_MISMATCH)
+                })
+                .count()
+        };
+        const STATE: &str = "module m;\nenum State { Idle, Run }\n";
+
+        assert_eq!(
+            count(&format!(
+                "{STATE}entity E {{ s: State in, a: unsigned[8] out }}\n\
+                 impl E {{ match s {{ '0' => a = 1, _ => a = 2, }} }}\n"
+            )),
+            1,
+            "a character against a name-valued enum"
+        );
+        assert_eq!(
+            count(
+                "module m;\nentity E { n: unsigned[4] in, a: unsigned[8] out }\n\
+                 impl E { match n { '0' => a = 1, _ => a = 2, } }\n"
+            ),
+            1,
+            "a character against a numeric scrutinee"
+        );
+        assert_eq!(
+            count(
+                "module m;\nentity E { l: Logic in, a: unsigned[8] out }\n\
+                 impl E { match l { 'Q' => a = 1, _ => a = 2, } }\n"
+            ),
+            1,
+            "a character that is not one of the enum's variants"
+        );
+        // Inside an alternation, where the pattern walk has to recurse.
+        assert_eq!(
+            count(&format!(
+                "{STATE}entity E {{ s: State in, a: unsigned[8] out }}\n\
+                 impl E {{ match s {{ State::Idle | '0' => a = 1, _ => a = 2, }} }}\n"
+            )),
+            1,
+            "and one hidden in an or-pattern"
+        );
+
+        // The spelling that is meant to work.
+        assert_eq!(
+            count(
+                "module m;\nentity E { l: Logic in, a: unsigned[8] out }\n\
+                 impl E { match l { '0' | '1' => a = 1, 'Z' => a = 2, _ => a = 3, } }\n"
+            ),
+            0,
+            "characters against `Logic`, alternation included"
+        );
     }
 
     /// An entity may be instantiated at the root layer of another entity's

@@ -3436,6 +3436,17 @@ impl<'a> Lowering<'a> {
                 // Combinational match: each arm becomes conditional drivers
                 // guarded by `scrutinee == variant` with first-match priority.
                 let scrut = self.lower_expr(&m.scrutinee);
+                // A match naming every variant of its scrutinee's enum is as
+                // complete as one ending in `_`, so a signal every arm assigns
+                // is driven on every path and is not a latch. Only the wildcard
+                // half was implemented, so the natural spelling of an
+                // exhaustive FSM decode drew an inferred-latch warning and the
+                // fix people apply to it is a redundant `_` arm. The `if`
+                // walker has had the general form all along
+                // (`if_covered_targets`).
+                for id in self.match_covered_targets(m) {
+                    self.lint_defaulted.insert(id);
+                }
                 let mut remaining = cond;
                 for arm in &m.arms {
                     let mc = self.arm_match_cond(&arm.pattern, &scrut);
@@ -3958,6 +3969,36 @@ impl<'a> Lowering<'a> {
             None => return BTreeSet::new(),
         };
         then.intersection(&els).copied().collect()
+    }
+
+    /// Signals assigned by *every* arm of a match that names every variant of
+    /// its scrutinee's enum — the match equivalent of a terminal `else`. Empty
+    /// when the scrutinee is not an enum, when a variant is unmatched, or when
+    /// the match already has a wildcard (which the caller handles).
+    fn match_covered_targets(&self, m: &ast::MatchStmt) -> std::collections::BTreeSet<u32> {
+        use std::collections::BTreeSet;
+        let Some(ty) = self.operand_type_name(&m.scrutinee) else {
+            return BTreeSet::new();
+        };
+        let Some(variants) = self.enum_variants.get(&ty) else {
+            return BTreeSet::new();
+        };
+        let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for arm in &m.arms {
+            collect_named_variants(&arm.pattern, &mut named);
+        }
+        if !variants.keys().all(|v| named.contains(v)) {
+            return BTreeSet::new();
+        }
+        let mut covered: Option<BTreeSet<u32>> = None;
+        for arm in &m.arms {
+            let here = self.block_covered_targets(&arm.body);
+            covered = Some(match covered {
+                Some(prev) => prev.intersection(&here).copied().collect(),
+                None => here,
+            });
+        }
+        covered.unwrap_or_default()
     }
 
     /// Signals a block assigns on every path: its direct assignment targets,
@@ -6593,6 +6634,26 @@ pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
     }
 }
 
+/// The enum-variant names a pattern tree names directly (`State::Idle`, `'0'`),
+/// flattening or-patterns. A wildcard names none — the caller treats it
+/// separately.
+fn collect_named_variants(p: &ast::Pattern, out: &mut std::collections::HashSet<String>) {
+    match p {
+        ast::Pattern::Path(path) if path.segments.len() >= 2 => {
+            out.insert(path.segments[1].text.clone());
+        }
+        ast::Pattern::CharLit { ch, .. } => {
+            out.insert(format!("'{ch}'"));
+        }
+        ast::Pattern::Or { alts, .. } => {
+            for a in alts {
+                collect_named_variants(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 // --- per-element logical metavalue builders (0/1-valued Exprs) --------------
 
 /// `a & b` (bitwise; on 0/1 operands this is logical and).
@@ -8537,6 +8598,62 @@ mod tests {
         impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
         trait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\n\
         impl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
+
+    /// A match naming every variant of its scrutinee is as complete as one
+    /// ending in `_`, so a signal every arm assigns is not a latch. Only the
+    /// wildcard half was implemented, so the natural spelling of an exhaustive
+    /// decode drew an inferred-latch warning whose suggested fix is a
+    /// redundant `_` arm.
+    #[test]
+    fn an_exhaustive_match_is_not_an_inferred_latch() {
+        let latches = |src: &str| {
+            lower_diags(src)
+                .into_iter()
+                .filter(|d| d.contains("inferred latch"))
+                .count()
+        };
+        const ENUM: &str = "module m;\nenum State { Idle, Run }\n";
+
+        // Every variant named, every arm assigning `a`.
+        assert_eq!(
+            latches(&format!(
+                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out }}\n\
+                 impl E {{ match s {{ State::Idle => a = 10, State::Run => a = 20, }} }}\n"
+            )),
+            0,
+            "a match over every variant drives on every path"
+        );
+
+        // The same over a character-valued enum.
+        assert_eq!(
+            latches(
+                "module m;\n#[top] entity E { b: Bit in, a: unsigned[8] out }\n\
+                 impl E { match b { '0' => a = 10, '1' => a = 20, } }\n"
+            ),
+            0,
+            "and over `Bit`, whose variants are character literals"
+        );
+
+        // A variant left out is a genuine latch.
+        assert_eq!(
+            latches(&format!(
+                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out }}\n\
+                 impl E {{ match s {{ State::Idle => a = 10, }} }}\n"
+            )),
+            1,
+            "an unmatched variant still holds the previous value"
+        );
+
+        // Exhaustive, but one arm does not assign the signal.
+        assert_eq!(
+            latches(&format!(
+                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out, k: unsigned[8] out }}\n\
+                 impl E {{ a = 0; match s {{ State::Idle => k = 1, State::Run => a = 2, }} }}\n"
+            )),
+            1,
+            "a signal only one arm assigns is a latch even when the match is complete"
+        );
+    }
 
     fn lower_src(src: &str) -> Design {
         // unsigned/signed are library types (attribute-marked vectors), not seeded.

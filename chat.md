@@ -4697,3 +4697,52 @@ wildcard reports `missing '\''Z'\'', '\''X'\'', '\''U'\'', '\''W'\'', '\''L'\'',
 The test compares every arm against the `==` chain it replaces, and the
 hardware against the testbench on the same value, so nothing is measured
 against itself.
+
+## 2026-08-02 (cont.) — attacking my own char patterns, and a lint that cried latch
+
+Two findings, one mine and one old.
+
+**Mine, an hour old.** Char patterns were added without any check that the
+scrutinee can hold a character. Expression position has always rejected the
+rest — `s == '0'` on a `State` or a numeric is "a character literal has no
+numeric identity" — but pattern position was checked by nobody:
+
+    match s { '0' => a = 1, _ => a = 2, }   // enum State { Idle, Run }
+
+This compiled clean and **matched**: a character has no intrinsic value, so
+the arm compared two unrelated discriminants, and `State::Idle` and `'0'` are
+both 0. The same on an `unsigned[4]` scrutinee also matched. Not a wrong
+diagnostic this time — a wrong *answer*, from a feature I shipped between the
+last two entries.
+
+`check_arms_exhaustive` is where the scrutinee's type and the arms are both in
+hand, so the check goes there: a character pattern against a non-enum reuses
+the expression-position message, and against the wrong enum says so by name
+(`'0'` is not a variant of enum `State`) with a help line explaining which
+enums accept the spelling. Or-patterns recurse.
+
+**Old, and independent.** Probing that, a `Bit` match drew an inferred-latch
+warning:
+
+    match b { '0' => a = 10, '1' => a = 20, }
+    // W-P002: `a` is only assigned under a condition (inferred latch)
+
+`Bit` has exactly two variants, so the match is complete and `a` is driven on
+every path — the exhaustiveness checker says so in the same run. The latch
+lint marks a signal defaulted when a *wildcard* arm assigns it, and a match
+that is exhaustive by naming every variant has no wildcard, so nothing was
+marked. The `if` walker has had the general form all along
+(`if_covered_targets`, "assigned on every path"); the match walker implemented
+only the wildcard half.
+
+Now a match naming every variant defaults the signals *every* arm assigns —
+the intersection, so a signal one arm skips is still a latch. Worth fixing
+because the suggested remedy for this warning is to add a redundant `_` arm,
+which is exactly the wrong lesson.
+
+**A test of mine was vacuous and its own control caught it.** The first
+version of the latch test asserted 0 warnings for two exhaustive matches and
+passed — because `lower_diags` only elaborates `#[top]`/`#[test]` roots, and
+my entity had neither, so it produced no diagnostics at all. The third case,
+which asserts a warning *is* produced, failed and exposed it. Always include
+the case that must fail.
