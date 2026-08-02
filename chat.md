@@ -5620,3 +5620,38 @@ A CI run in between failed with `slice_width` reported as never used — build
 residue from the mutation loop, not a real state. A clean rebuild and full CI
 pass. Worth noting rather than hiding: a green run after a mutation session
 means less than a green run from a clean tree.
+
+## 2026-08-03 (cont.) — a clean sweep: signed arithmetic, reference forms, range attributes
+
+**No bug found.** Three differentials, thirty-six checks, every one agreeing
+between the two engines and matching an oracle outside the compiler.
+
+*Signed arithmetic*, fifteen shapes against Python two's complement: wrapping
+add/subtract/multiply, all four division sign combinations, arithmetic right
+shift, negation, and signed comparison including against a negative literal.
+Division truncates toward zero — `-100 / 7` is -14, not -15 — which is the
+case a language that rounded down would get wrong while passing the other
+three.
+
+*Reference forms*, eleven shapes: `'length`/`'left`/`'right`/`'high`/`'low`,
+a match expression, a nested `if`/`else if`, a struct field read, an array
+element read, a free call, and `'length` on an array. Both engines identical.
+
+*Range direction*, three declarations: `Logic[7..0]` gives left 7, right 0,
+not ascending; `Logic[0..3]` gives 0, 3, ascending; and a width-only
+`unsigned[12]` gives 0, 11, ascending.
+
+**My oracle was wrong once, not the compiler.** I predicted `unsigned[12]`
+would have `'left` 11 — thinking of it as descending like VHDL's usual
+`(11 downto 0)`. Spec 3.23 says a width-only index is *ascending*, so 0..11 is
+correct and both engines had it right. Checking the spec rather than filing it
+is the only reason that did not become a false report; the direction probe
+above exists because I wanted the rule pinned rather than remembered.
+
+Banked the signed differential as coverage: std's `impl Operator<"/", signed,
+signed>` divides magnitudes and restores the sign in hand-written source whose
+comments record earlier mistakes, and no both-engines test pinned its four
+cases. Proved non-vacuous by removing the sign restoration for a negative
+dividend (detected), with a no-op comment edit as the negative control (not
+detected) — the mutation helper now demonstrably reports both ways round after
+yesterday's fix to it.
