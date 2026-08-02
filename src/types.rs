@@ -2502,13 +2502,42 @@ impl<'a> Checker<'a> {
 
     /// Spec 3.5: an attribute's value must match the type its declaration gives.
     fn check_attr_value(&mut self, a: &Attr) {
-        let Some(value) = &a.value else { return };
         let name = a
             .name
             .segments
             .last()
             .map(|s| s.text.as_str())
             .unwrap_or("");
+        let Some(value) = &a.value else {
+            // A declared attribute with a value type needs one. A bare `#[speed]`
+            // on `attr speed: integer` used to pass unexamined and was carried
+            // through elaboration into `--emit tree` as `#[speed]`, so a
+            // synthesis or constraint backend reading it found an attribute with
+            // no number in it. `Bool` is exempt: a bare flag reads as `true`, the
+            // way the marker attributes (`#[top]`, `#[test]`) do.
+            match self.attr_value_kinds.get(name).copied() {
+                Some(AttrValueTy::Integer) => self.error_with_help(
+                    codes::INVALID_ATTR_VALUE_TYPE,
+                    a.name.span,
+                    format!("attribute `{name}` needs an integer value"),
+                    format!(
+                        "write `#[{name} = <n>]`; it is declared with a value type, \
+                             so a bare `#[{name}]` carries nothing to the backend"
+                    ),
+                ),
+                Some(AttrValueTy::Str) => self.error_with_help(
+                    codes::INVALID_ATTR_VALUE_TYPE,
+                    a.name.span,
+                    format!("attribute `{name}` needs a string value"),
+                    format!(
+                        "write `#[{name} = \"…\"]`; it is declared with a value type, \
+                             so a bare `#[{name}]` carries nothing to the backend"
+                    ),
+                ),
+                _ => {}
+            }
+            return;
+        };
         let expected = self.attr_value_kinds.get(name).copied();
         let ok = match expected {
             Some(AttrValueTy::Bool) => {
@@ -6371,6 +6400,57 @@ mod tests {
     /// directions at all, so the same write hidden behind a method was
     /// accepted *and driven* — `fn bad(self) { self.ready = '1'; }` on a
     /// Source, whose `ready` is an input, defeated the whole point of the view.
+    /// A declared attribute with a value type needs one. `check_attr_value`
+    /// returned immediately when an attribute had no value, so a bare
+    /// `#[speed]` on `attr speed: integer` passed unexamined and was carried
+    /// through elaboration into `--emit tree` as `#[speed]` — an attribute a
+    /// synthesis backend reads with no number in it. `Bool` is exempt: a bare
+    /// flag reads as `true`, as the marker attributes do.
+    #[test]
+    fn a_value_typed_attribute_needs_a_value() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::INVALID_ATTR_VALUE_TYPE))
+                .count()
+        };
+        const DECL: &str = "module m;\n\
+            pub attr speed: integer for Pll;\n\
+            pub attr vendor: string for Pll;\n\
+            pub attr flag: Bool for Pll;\n\
+            entity Pll { clk: Bit in, locked: Bit out }\nimpl Pll { locked = clk; }\n";
+
+        let body = |attr: &str| {
+            count(&format!(
+                "{DECL}entity E {{ c: Bit in, y: Bit out }}\n\
+                 impl E {{ {attr} let p: Pll = {{ .clk = c }}; y = p.locked; }}\n"
+            ))
+        };
+
+        assert_eq!(body("#[speed]"), 1, "an integer attribute needs a number");
+        assert_eq!(body("#[vendor]"), 1, "a string attribute needs a string");
+
+        // The forms that carry a value are unaffected.
+        assert_eq!(body("#[speed = 42]"), 0, "a number satisfies it");
+        assert_eq!(body("#[vendor = \"acme\"]"), 0, "and a string");
+        assert_eq!(body("#[flag = Bool::true]"), 0, "and an explicit Bool");
+
+        // A bare Bool flag stays legal: it reads as `true`, like `#[top]`.
+        assert_eq!(body("#[flag]"), 0, "a bare Bool flag is still a flag");
+
+        // The wrong *type* was already reported, and still is.
+        assert_eq!(
+            body("#[speed = \"fast\"]"),
+            1,
+            "a string where a number belongs"
+        );
+    }
+
     #[test]
     fn a_view_method_cannot_drive_an_input_leaf() {
         let count = |src: &str| {

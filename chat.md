@@ -5400,3 +5400,42 @@ to 9 against the default's 5.
 
 Mutants: hardware drops them → `staticTag` is an unlowered Unknown; the
 emitter drops them → `unsupported call Thing::tag`.
+
+## 2026-08-02 (cont.) — a value-typed attribute with no value
+
+Swept user-defined attributes with a batch of deliberately wrong programs.
+Most of the checking is there and works: applying an attribute to the wrong
+target is `E-P006`, an undeclared name is `E-P001`, and the wrong value *type*
+is `E-P007`.
+
+**I misread my own output first.** My batch printed only the first diagnostic
+per file, and an `unused import` warning sat in front of three of them, so I
+briefly had three "silent acceptances" that were nothing of the kind. Filtering
+the noise left one real gap — and this is the second time this session a
+`head -1` has invented a finding, which is a cheap mistake with an expensive
+shape: it manufactures work.
+
+The genuine gap:
+
+    pub attr speed: integer for Pll;
+    #[speed] let p: Pll = { .clk = c };     // accepted
+
+`check_attr_value` opens with `let Some(value) = &a.value else { return };`, so
+an attribute with no value was never examined. It then survived elaboration
+into `--emit tree` as `#[speed]` — a synthesis or constraint backend reads an
+attribute declared to carry a number and finds none. Now `E-P007`, for the
+types where no default is possible (`integer`, `string`).
+
+`Bool` is deliberately exempt: a bare `#[flag]` reads as `true`, the way the
+marker attributes `#[top]` and `#[test]` do. I did not invent a value for it.
+
+Root selection confounded a measurement again — `--emit tree` was empty for my
+first probes because their entities had no `#[top]`. Third time this session.
+The tell is an *empty* result rather than a wrong one, which is worth
+remembering as its own signal.
+
+**Left for the user, not fixed:** `#[speed = 1] #[speed = 2]` on one
+declaration is accepted and both survive into the tree, so which value a
+backend takes is unspecified. Repeated attributes are meaningful in some
+tools, so whether that is an error, a last-wins rule, or a list is a design
+decision rather than a defect.
