@@ -4746,3 +4746,48 @@ passed — because `lower_diags` only elaborates `#[top]`/`#[test]` roots, and
 my entity had neither, so it produced no diagnostics at all. The third case,
 which asserts a warning *is* produced, failed and exposed it. Always include
 the case that must fail.
+
+## 2026-08-02 (cont.) — a clean sweep: tristate resolution
+
+**No bug found this round.** Recording it because the area is now genuinely
+checked rather than merely untested.
+
+First, an audit prompted by last round's mistake: root selection had silently
+emptied a unit test twice, so I checked whether any *existing* test has the
+same hole — an entity with no `#[top]`/`#[test]` never elaborates, so
+assertions about lowering output would be vacuous. A script over the test
+modules flagged four, all in `elab.rs`, and all four are fine: they use
+`check_src`, which routes through `elaborate_for_check`, a different selector
+that deliberately analyses uninstantiated entities. The names say so
+(`check_analyses_an_entity_nothing_instantiates`). No existing test is
+vacuous; mine was the only one.
+
+Then tristate resolution, one corpus file and never swept. std's
+`impl Resolve for Logic` is written in siox source, so I checked it against the
+IEEE 1076-2019 `resolution_table` transcribed from the standard — all nine rows
+agree, including the cases the code reaches by falling through
+(`'W'`/`'L'`/`'H'` pairs land on the final `return 'W'`).
+
+Then the compiler, which is the part that could differ:
+
+| probe | result |
+| --- | --- |
+| two parallel drivers, all 81 pairs | 81/81 |
+| three parallel drivers, all 729 folds | 729/729 — the fold is associative |
+| `Logic[4]` vector net, per element | correct, contention isolated to one index |
+| two `inout` pads across instances, 81 pairs | 81/81 |
+
+Nothing to fix. The gap was coverage: every existing test drives only `'0'`,
+`'1'`, `'Z'` and `'X'`, so the weak levels, `'U'` and `'-'` were resolved by
+code nothing checked. `resolve_table_test` now pins the parts of the table that
+distinguish a correct implementation from a plausible one — a forcing level
+beating a weak one, `'L' + 'H'` giving weak-unknown rather than `'X'`, `'U'`
+dominating a driven value, and `'-'` resolving as unknown rather than
+deferring. Expected values transcribed from the standard, not from the
+compiler. Proved non-vacuous by perturbing std's `Resolve` (`'L' + 'H'` → `'X'`)
+and watching it fail.
+
+One limitation met and left, cleanly diagnosed rather than silent: an
+if-*expression* with string-literal branches has no element-wise form
+(`E-P017`), because `elementwise_at` handles `IfExpr` but not `StrLit`. Both
+engines lack it identically, so it is a consistent gap, not a divergence.
