@@ -5011,3 +5011,36 @@ not, rather than half-doing the risky one.
 
 Four rounds, one root cause, and the general statement was right each time: a
 function body is checked with less context than the body it inlines into.
+
+## 2026-08-02 (cont.) — closing the field-target gap I left open
+
+Last round I found a live, silent truncation and could not fix it safely:
+
+    impl Bus BusOut { fn load(self, wide: unsigned[16]) { self.data = wide; } }
+    impl P { bus.load(0x1234); }        // data reads 52 (0x34)
+
+`type_of` returned `Ty::Error` for *any* data field access, and `Ty::Error`
+suppresses every check that consults it, so the strict assignment-width rule
+had nothing to compare. I logged it rather than half-do it. This round it is
+fixed.
+
+The checker already had a `struct_field_types` map, but it stores each field's
+type *head* — `unsigned[16]` becomes `"unsigned"` — which names a type and
+cannot compare a width. `field_decl_types` now keeps the full declared type
+alongside it, and `field_decl_ty` walks the derivation chain so an inherited
+field types like its own.
+
+**I fixed the wrong arm first.** There are two `Expr::Field` arms in `type_of`:
+one nested under `Expr::Call`, which types a method *call* receiver, and the
+outer one that types a plain access. I edited the nested one, rebuilt, saw the
+corpus stay clean — and the truncation still compiled. The tell was that
+nothing changed at all, which is the same signal as the enum-constant fix
+weeks of entries ago: *a change that compiles and alters no behaviour usually
+means the diagnosis was right and the location wrong.*
+
+This is the largest false-positive risk I have taken this session, because it
+turns `Ty::Error` into a real type everywhere and un-suppresses checks across
+the whole compiler. Measured rather than assumed: zero errors across all 138
+corpus files and std, and a probe of legitimate field writes — matching
+widths, explicit conversions, nested fields, and polymorphic literals
+(`self.data = 200`) — all still compile and run.

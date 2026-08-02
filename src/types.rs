@@ -209,6 +209,12 @@ struct Checker<'a> {
     /// flattening one in elaboration recursed until the stack gave out with
     /// typecheck reporting nothing at all.
     struct_field_types: HashMap<String, Vec<(String, String, Span)>>,
+    /// Struct name -> field name -> the field's *full* declared type. The map
+    /// above keeps only the head name (`unsigned[16]` -> `unsigned`), which is
+    /// enough to name a type and not enough to compare a width — so a field
+    /// target typed as `Ty::Error` and the strict assignment-width rule had
+    /// nothing to check.
+    field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
     /// Structs opting into packed numeric storage through `impl Vector`.
@@ -309,6 +315,7 @@ impl<'a> Checker<'a> {
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
             struct_field_types: HashMap::new(),
+            field_decl_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
             vector_families: HashSet::new(),
@@ -648,6 +655,13 @@ impl<'a> Checker<'a> {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
                     .insert(st.name.text.clone(), (st.base.clone(), fields));
+                self.field_decl_types.insert(
+                    st.name.text.clone(),
+                    st.fields
+                        .iter()
+                        .map(|f| (f.name.text.clone(), f.ty.clone()))
+                        .collect(),
+                );
                 self.struct_field_types.insert(
                     st.name.text.clone(),
                     st.fields
@@ -828,6 +842,33 @@ impl<'a> Checker<'a> {
             seen.remove(head);
         }
         out
+    }
+
+    /// A struct field's declared type, following the derivation chain so a
+    /// field inherited from a base struct types the same as its own.
+    fn field_decl_ty(&self, head: &str, field: &str) -> Option<Type> {
+        let mut current = head.to_string();
+        let mut seen: HashSet<String> = HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return None;
+            }
+            if let Some(ty) = self
+                .field_decl_types
+                .get(&current)
+                .and_then(|m| m.get(field))
+            {
+                return Some(ty.clone());
+            }
+            match self
+                .structs
+                .get(&current)
+                .and_then(|(base, _)| base.clone())
+            {
+                Some(base) => current = type_head_name(&base)?.to_string(),
+                None => return None,
+            }
+        }
     }
 
     /// Whether `name` opted into packed numeric storage through `Vector`, or
@@ -4077,7 +4118,21 @@ impl<'a> Checker<'a> {
                 }
                 _ => Ty::Error,
             },
-            Expr::Field { .. } => Ty::Error,
+            // A data field access (`p.data`, `self.data`): the field's declared
+            // type. This was `Ty::Error`, which suppresses every check that
+            // consults it — so the strict assignment-width rule had nothing to
+            // compare and `self.data = wide` truncated a 16-bit value into an
+            // 8-bit field in silence.
+            Expr::Field { base, field, .. } => {
+                let recv = self.type_of(base, sym);
+                match self
+                    .ty_head(&recv)
+                    .and_then(|head| self.field_decl_ty(&head, &field.text))
+                {
+                    Some(ty) => self.ast_ty(&ty),
+                    None => Ty::Error,
+                }
+            }
         }
     }
 
@@ -6519,6 +6574,47 @@ mod tests {
             ),
             0,
             "an explicit conversion is the way through"
+        );
+
+        // The target that matters: a struct *field*. `type_of` returned
+        // `Ty::Error` for any data field access, which suppresses every check
+        // that consults it, so this truncated 0x1234 into eight bits in
+        // silence — through a view method, which does inline.
+        const BUS: &str = "module m;\nstruct Inner { v: unsigned[8] }\n\
+            struct Bus { data: unsigned[8], flag: Bit, inner: Inner }\n";
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Bus {{ fn load(self, wide: unsigned[16]) {{ self.data = wide; }} }}\n"
+            )),
+            1,
+            "a wide parameter into a narrow field"
+        );
+        assert_eq!(
+            count(&format!(
+                "{BUS}view BusOut for Bus {{ data out, flag out, inner out }}\n\
+                 impl Bus BusOut {{ fn load(self, wide: unsigned[16]) {{ self.data = wide; }} }}\n"
+            )),
+            1,
+            "and the same through a view, where `self` is the backing struct"
+        );
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Bus {{ fn deep(self, wide: unsigned[16]) {{ self.inner.v = wide; }} }}\n"
+            )),
+            1,
+            "a nested field types too"
+        );
+
+        // Legitimate field writes must stay legal, or every method breaks.
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Bus {{ fn ok(self, v: unsigned[8]) {{ self.data = v; }}\n\
+                 fn conv(self, w: unsigned[16]) {{ self.data = unsigned[8](w); }}\n\
+                 fn nest(self, v: unsigned[8]) {{ self.inner.v = v; }}\n\
+                 fn lit(self) {{ self.data = 200; self.flag = '1'; }} }}\n"
+            )),
+            0,
+            "matching widths, conversions, nesting and literals are all fine"
         );
     }
 
