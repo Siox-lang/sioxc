@@ -5583,3 +5583,40 @@ perturbation did not apply, and the run after it printed "2 passed" from the
 *unmutated* binary. The first perturbation had already proved the point, so
 nothing rested on it — but the failure mode is now confirmed as a pattern
 rather than a one-off.
+
+## 2026-08-03 (cont.) — a concat of slices, and a tool that made my own mistake
+
+Ran the differential my notes rank second and I had not done this session: the
+same expression computed in hardware and in a testbench, thirty shapes, each
+asserted against a hand-computed value *and* against the other engine.
+Twenty-nine agreed. One did not compile at all:
+
+    y = unsigned[8]({a[3..0], b[3..0]});     // hardware: 141
+    let t: unsigned[8] = unsigned[8]({a[3..0], b[3..0]});
+    // sioxc --test: the width of `a[3..0]` is not known here
+
+The emitter places each concat part by width, and `arg_width` knew a named
+value's width and a conversion's but not a slice's — though `c_bit_slice_of`
+computes exactly that (`hi - lo + 1`) two hundred lines away to read the bits.
+The bound resolution is now shared (`slice_bounds`), so the width a part is
+placed at and the bits it reads come from one rule rather than two.
+
+**The mutation helper I wrote to stop a recurring mistake made that mistake.**
+Twice now a mutation had failed to apply and I had read the following
+(unmutated) run as a result, so I wrote a helper that asserts its edit landed
+and the rebuild was clean. Its first real use reported "NOT DETECTED — test
+still passes" for a mutation that in fact broke everything. The check command
+ends `sioxc … && ./binary`, so a *compile* rejection short-circuits and never
+prints "FAILED" — and the helper's criterion was the word FAILED. It now asks
+whether the test *passed*, which is the question, and the bad-anchor control
+aborts as designed.
+
+I only caught it because the result was surprising enough to check by hand:
+removing the fix could not plausibly leave the test passing. That is the same
+instinct that has been doing the real work all session, and the tool is worth
+having precisely because it does not depend on the result being surprising.
+
+A CI run in between failed with `slice_width` reported as never used — build
+residue from the mutation loop, not a real state. A clean rebuild and full CI
+pass. Worth noting rather than hiding: a green run after a mutation session
+means less than a green run from a clean tree.

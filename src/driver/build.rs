@@ -2843,6 +2843,9 @@ impl Ctx<'_> {
         if let Some(w) = expr_path(a).and_then(|p| self.name_width(&p)) {
             return Some(w);
         }
+        if let Some(w) = self.slice_width(a) {
+            return Some(w);
+        }
         // Only a *named* argument had a width, so `x'length` inside an inlined
         // body had nothing to consult when the argument was an expression:
         // `sext(a)` worked and `sext(a + 0)` did not, though both are the same
@@ -5597,9 +5600,18 @@ impl Ctx<'_> {
         if !self.locals.borrow().contains(&path) && !self.map.contains_key(&path) {
             return None;
         }
+        let (a, b) = self.slice_bounds(&path, index)?;
+        Some(self.c_bit_slice_of(&path, a, b))
+    }
+
+    /// The resolved `(a, b)` bit bounds of `base[index]`: an explicit range, a
+    /// partial one completed from the declared range, or a single bit. Shared
+    /// with `slice_width`, so the width a concat places a part at and the bits
+    /// it actually reads come from one rule.
+    fn slice_bounds(&self, path: &str, index: &ast::Expr) -> Option<(i64, i64)> {
         let konst = |e: &ast::Expr| siox::ir::eval_const_fns(e, &HashMap::new(), self.fns, 0);
-        let declared = self.local_ranges.borrow().get(&path).copied();
-        let (a, b) = match index {
+        let declared = self.local_ranges.borrow().get(path).copied();
+        Some(match index {
             ast::Expr::Range { lo, hi, .. } => (konst(lo)?, konst(hi)?),
             ast::Expr::PartialRange { lo, hi, .. } => {
                 let (left, right) = declared?;
@@ -5618,8 +5630,27 @@ impl Ctx<'_> {
                 let n = konst(index)?;
                 (n, n)
             }
+        })
+    }
+
+    /// The bit width of a slice expression `base[index]`, inclusive of both
+    /// bounds and independent of direction (spec 3.13). `arg_width` knew a
+    /// named value's width and a conversion's, but not a slice's, so a concat
+    /// of slices — which hardware lowers fine — was rejected in a testbench as
+    /// "the width of `a[3..0]` is not known here".
+    fn slice_width(&self, e: &ast::Expr) -> Option<u32> {
+        let ast::Expr::Index { base, index, .. } = e else {
+            return None;
         };
-        Some(self.c_bit_slice_of(&path, a, b))
+        let path = expr_path(base)?;
+        if !self.array_elements(&path).is_empty() {
+            return None;
+        }
+        if !self.locals.borrow().contains(&path) && !self.map.contains_key(&path) {
+            return None;
+        }
+        let (a, b) = self.slice_bounds(&path, index)?;
+        u32::try_from(a.max(b) - a.min(b) + 1).ok()
     }
 
     /// The C expression for bits `a..b` of `path`. A descending range is the
