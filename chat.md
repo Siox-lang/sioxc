@@ -4194,3 +4194,46 @@ symptom: *any* `let` failed, not just one initialised from an if-expression.
 The mutation this time was verified before being believed — `MUTATION
 APPLIED`, a clean build, and then four unlowered drivers named. That is the
 third pass in a row where the check-your-check step earned its keep.
+
+## 2026-08-02 (cont.) — the other two statement shapes
+
+Attacking last pass's own fix. The function-body inliners handled `return`
+and `if`; `let` was added last pass. The remaining shapes:
+
+    match s { Sel::A => { return 1; } … }   Unknown (unlowered)
+    for i in 0..2 { … }                     Unknown (unlowered)
+
+The `match` one is the exact sibling of the `if` arm that *is* handled — the
+fourth time this session the two forms have been found apart, after
+struct-valued selection, unreachable-arm checking and the array lift. Both
+engines now fold the arms in reverse, so an earlier arm wins, with two cases
+the `if` shape never needed: an exhaustive match whose last arm is the
+fallback, and an arm that returns nothing (`_ => {}`) falling through to the
+statements after the match. Nine values checked against a model across three
+scrutinee values, and the engines agree.
+
+`for` in a function body is left: unrolling it needs assignment to a名 local,
+which is a different question from substitution and worth its own decision.
+
+Everything here was narrowed through `-o object` rather than
+`--emit metadata`, per the correction two passes ago — `metadata` would have
+called all six shapes fine.
+
+### A correction from the user, and three things undone
+
+Earlier this pass I built a corpus gate that emitted an object for any file
+carrying `#[top]`, watched it flag `counter.siox`, and "fixed" the corpus to
+match — then added a `check`-time error rejecting a parametric `#[top]`.
+
+All three were wrong. **`#[top]` is metadata for external tooling** — Vivado,
+Quartus, cocotb, VUnit — naming the entity *they* should take as top. It is
+not siox's build directive, and a parametric `#[top]` is entirely legitimate
+because those tools supply generics themselves. Reverted before anything was
+committed.
+
+What produced the mistake is worth keeping: `std/attrs.siox` comments the
+attribute "elaboration root" and `docs/README.md` says `sioxc <file>` compiles
+"the `#[top]` design". Both describe the CLI's default, and I read them as a
+definition. Then my own new gate flagged a file, and I treated that as
+confirmation rather than as a test of the premise — the signal was
+independent, and I spent it agreeing with myself.

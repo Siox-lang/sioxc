@@ -5799,6 +5799,33 @@ impl<'a> Lowering<'a> {
                 };
                 Some(select_val(cond, then, els))
             }
+            // A `match` whose arms return is the same shape as an `if`
+            // chain, and only the `if` form was handled — the two share
+            // `MatchArm` and have drifted apart repeatedly. First-match
+            // priority comes from folding the arms in reverse.
+            [ast::Stmt::Match(m), rest @ ..] => {
+                let scrut = self.lower_scalar_env(&m.scrutinee, env);
+                // What the body yields when no arm returns.
+                let after = self.inline_block(rest, env);
+                let mut acc: Option<Val> = after.clone();
+                for arm in m.arms.iter().rev() {
+                    let value = match self.inline_block(&arm.body.stmts, env) {
+                        Some(value) => value,
+                        // An arm that returns nothing (`_ => {}`) falls
+                        // through to the statements after the match.
+                        None => after.clone()?,
+                    };
+                    acc = Some(match (self.arm_match_cond(&arm.pattern, &scrut), acc) {
+                        // A wildcard covers everything that follows it.
+                        (None, _) => value,
+                        // Nothing follows: an exhaustive match ends here, so
+                        // this arm is the fallback.
+                        (Some(_), None) => value,
+                        (Some(cond), Some(otherwise)) => select_val(cond, value, otherwise),
+                    });
+                }
+                acc
+            }
             // `let t: T = expr;` names a value for the statements that
             // follow. Without this arm the body matched neither shape and the
             // whole call lowered to an `Unknown` — and silently, because

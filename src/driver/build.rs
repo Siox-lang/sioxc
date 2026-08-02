@@ -4820,6 +4820,36 @@ impl Ctx<'_> {
                 };
                 Ok(format!("(({c}) ? {t} : {e})"))
             }
+            // A `match` whose arms return is the same shape as an `if`
+            // chain. Folded in reverse so an earlier arm wins, matching how
+            // lowering inlines the same body.
+            Some(ast::Stmt::Match(m)) => {
+                let scrut = self.expr(&m.scrutinee)?;
+                // What the body yields when no arm returns.
+                let after = self.c_fn_stmts(&stmts[1..], real_return);
+                let mut acc: Option<String> = after.as_ref().ok().cloned();
+                for arm in m.arms.iter().rev() {
+                    let value = match self.c_fn_stmts(&arm.body.stmts, real_return) {
+                        Ok(value) => value,
+                        // An arm that returns nothing falls through to the
+                        // statements after the match.
+                        Err(_) => match acc.clone() {
+                            Some(_) => after.clone()?,
+                            None => return Err("a match arm yields no value".into()),
+                        },
+                    };
+                    acc = Some(match (self.pattern_cond(&arm.pattern, &scrut)?, acc) {
+                        // A wildcard covers everything after it.
+                        (None, _) => value,
+                        // Nothing follows: an exhaustive match ends here.
+                        (Some(_), None) => value,
+                        (Some(cond), Some(otherwise)) => {
+                            format!("(({cond}) ? {value} : {otherwise})")
+                        }
+                    });
+                }
+                acc.ok_or_else(|| "a match with no arms yields no value".to_string())
+            }
             // `let t: T = expr;` names a value for the statements that
             // follow. The body compiles to one C expression, so the name is
             // substituted rather than declared — matching how lowering
