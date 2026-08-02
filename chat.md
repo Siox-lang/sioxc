@@ -5226,3 +5226,33 @@ which pins the value every folding shape seeds. The accepting half needed
 covering precisely because the rejecting half now exists.
 
 Zero corpus false positives.
+
+## 2026-08-02 (cont.) — the same drop at the two aggregate initializer sites
+
+The procedure, applied without waiting to be reminded: `const_init_value` is
+called from three places, and last round I added the missing `else` to one of
+them. The other two are the struct-field and array-element seeds, and both
+dropped a non-constant the same way:
+
+    let p: P = { .x = 7, .y = src + 1 };      // p.y stayed 0
+    let arr: unsigned[8][2] = [9, src + 2];   // arr[1] stayed 0
+
+Worse than the scalar case in two respects. First, driving `src` from 10 to
+100 moved neither, so nothing was created at all — and second, the undriven
+lint does not reach a struct leaf or an array element, so unlike a plain
+signal there was not even a `W-P011` to hint at it. Silent in every direction.
+
+**A comment in the code asserted the opposite.** The struct-field site read
+"Only constants seed an init; anything else is an ordinary driver and is
+lowered as one." No driver is lowered; the value tracks nothing. I have
+treated in-tree comments as evidence before and been wrong before
+(`#[top]`), so this one is now corrected to say what the code does.
+
+All three sites share `report_non_constant_init`, so the wording and the code
+cannot drift, and the leaf is named — `p.y`, `arr[1]` — rather than the
+declaration.
+
+The corpus test grew the aggregate half too: a struct literal folding `K + 2`
+and a character, an array literal folding a constant and `3 * 4`. That matters
+more than usual here, because the rejecting half now exists and an over-broad
+`const_init_value` would silently start rejecting working designs.

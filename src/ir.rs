@@ -1263,8 +1263,12 @@ impl<'a> Lowering<'a> {
                             let (Some(field), Some(value)) = (field, arg.value.as_ref()) else {
                                 continue;
                             };
-                            // Only constants seed an init; anything else is an
-                            // ordinary driver and is lowered as one.
+                            // Only constants seed an init. A non-constant is
+                            // *not* lowered as a driver here, whatever this
+                            // comment used to claim: `{ .y = src + 1 }` left
+                            // `p.y` at 0 for every value of `src`, and the
+                            // undriven lint does not reach a struct leaf, so
+                            // nothing said anything at all.
                             let Some(&id) = self.locals.get(&format!("{}.{field}", l.name.text))
                             else {
                                 continue;
@@ -1274,6 +1278,11 @@ impl<'a> Lowering<'a> {
                             let en = self.out.signals[id.0 as usize].enum_type.clone();
                             if let Some(v) = self.const_init_value(value, en.as_deref()) {
                                 self.out.signals[id.0 as usize].init = vec![v];
+                            } else {
+                                self.report_non_constant_init(
+                                    &format!("{}.{field}", l.name.text),
+                                    l.span,
+                                );
                             }
                         }
                     }
@@ -1293,6 +1302,11 @@ impl<'a> Lowering<'a> {
                             let en = self.out.signals[id.0 as usize].enum_type.clone();
                             if let Some(v) = self.const_init_value(elem, en.as_deref()) {
                                 self.out.signals[id.0 as usize].init = vec![v];
+                            } else {
+                                self.report_non_constant_init(
+                                    &format!("{}[{i}]", l.name.text),
+                                    l.span,
+                                );
                             }
                         }
                     }
@@ -1400,26 +1414,7 @@ impl<'a> Lowering<'a> {
                             };
                             self.out.signals[id.0 as usize].init = vec![masked];
                         } else {
-                            // An initializer is a power-on value, folded here.
-                            // One that reads another signal cannot fold, and
-                            // used to be dropped in silence: the signal kept
-                            // its type's default, so `let i: unsigned[8] = a + 1;`
-                            // read 0 while `i = a + 1;` — a driver, and a
-                            // different thing — read what it should.
-                            let name = l.name.text.clone();
-                            self.sink.emit(
-                                crate::diag::Diagnostic::error(format!(
-                                    "the initializer for `{name}` is not a constant"
-                                ))
-                                .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
-                                .at(l.span)
-                                .help(format!(
-                                    "an initializer is the signal's power-on value and is \
-                                     folded at elaboration. To compute it from other \
-                                     signals, drive it instead: `let {name}: …;` then \
-                                     `{name} = …;`"
-                                )),
-                            );
+                            self.report_non_constant_init(&l.name.text, l.span);
                         }
                         // A metavalue-carrying string init (`"01X0"`) needs a
                         // companion signal to record which elements are `'X'`/… —
@@ -2301,6 +2296,27 @@ impl<'a> Lowering<'a> {
             Some(ast::Expr::StrLit { text, .. }) => Some(text),
             _ => None,
         }
+    }
+
+    /// An initializer is a power-on value, folded at elaboration (spec 3.29).
+    /// One that reads another signal cannot fold, and every site that seeds an
+    /// init — scalar, struct field, array element — used to drop it in
+    /// silence, leaving the signal at its type's default. A driver is the
+    /// spelling that computes from other signals, and is a different thing:
+    /// continuous rather than once.
+    fn report_non_constant_init(&mut self, name: &str, span: crate::diag::Span) {
+        self.sink.emit(
+            crate::diag::Diagnostic::error(format!(
+                "the initializer for `{name}` is not a constant"
+            ))
+            .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
+            .at(span)
+            .help(format!(
+                "an initializer is the signal's power-on value and is folded at \
+                 elaboration. To compute it from other signals, drive it instead: \
+                 declare `{name}` without a value, then assign it"
+            )),
+        );
     }
 
     /// The initial value of a constant `let` initializer, folded at compile
@@ -8742,6 +8758,39 @@ mod tests {
             ),
             0,
             "literals, constants, folds and const calls all seed"
+        );
+
+        // The aggregate sites seed inits the same way and dropped a
+        // non-constant the same way — and there, no undriven lint reaches a
+        // struct leaf or an array element, so nothing was reported at all.
+        assert_eq!(
+            count(
+                "module m;\nstruct P { x: unsigned[8], y: unsigned[8] }\n\
+                 #[top] entity E { src: unsigned[8] in, y: unsigned[8] out }\n\
+                 impl E { let p: P = { .x = 7, .y = src + 1 }; y = p.y; }\n"
+            ),
+            1,
+            "a struct-field initializer reading a signal"
+        );
+        assert_eq!(
+            count(
+                "module m;\n#[top] entity E { src: unsigned[8] in, y: unsigned[8] out }\n\
+                 impl E { let arr: unsigned[8][2] = [9, src + 2]; y = arr[1]; }\n"
+            ),
+            1,
+            "an array-element initializer reading a signal"
+        );
+        // Constant aggregates keep seeding.
+        assert_eq!(
+            count(
+                "module m;\nconst K: unsigned[8] = 5;\n\
+                 struct P { x: unsigned[8], y: unsigned[8] }\n\
+                 #[top] entity E { y: unsigned[8] out }\n\
+                 impl E { let p: P = { .x = K + 2, .y = 3 };\n\
+                 let arr: unsigned[8][2] = [1, 3 * 4]; y = p.x + arr[1]; }\n"
+            ),
+            0,
+            "a constant struct literal and array literal still seed"
         );
     }
 
