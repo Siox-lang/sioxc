@@ -5256,3 +5256,37 @@ The corpus test grew the aggregate half too: a struct literal folding `K + 2`
 and a character, an array literal folding a constant and `3 * 4`. That matters
 more than usual here, because the rejecting half now exists and an over-broad
 `const_init_value` would silently start rejecting working designs.
+
+## 2026-08-02 (cont.) — a clean sweep: real-typed FFI (and E-P021 vindicated)
+
+**No new bug this round.**
+
+First, the risk in what I shipped last round. In a testbench, `let sum: T =
+a + b;` is sequential code that must compute — the opposite of a power-on
+seed — so `E-P021` rejecting it would have been a bad false positive.
+Checked: testbench locals compute (30, 12) and are not touched. The check
+applies to hardware bodies only, which I verified rather than assumed.
+
+Then `extern "C"`, three corpus files and all of them integer-only.
+
+The first probe *looked* like a false positive of mine:
+
+    let r: real = sqrt(16.0);       // error[E-P021]: not a constant
+
+A C call cannot fold at elaboration, so the check is right — but "right by
+argument" is not evidence, so I disabled the check and reran. Before it, that
+line produced `r != 4.0`: a silently wrong value. `E-P021` converts a silent
+wrong answer into a diagnostic here, which is a better outcome for the
+previous round's work than anything I could have shown at the time.
+
+With the values driven rather than initialized, real FFI is correct in both
+engines across every shape I could construct: real-only arguments, an integer
+return, two real arguments, and a mixed `(double, int)` list where the two
+travel in different registers under the C ABI. Sixteen assertions, all exact
+in binary floating point, all matching what the C library is specified to
+return.
+
+Banked as `ffi_real_test`, labelled coverage rather than a fix — the f64 half
+of the C ABI was exercised by nothing. Proved non-vacuous by disabling the
+bit-cast of real arguments in the LLVM backend, which fails it. `-lm` is on
+the link line, so the libm symbols are not a portability gamble.
