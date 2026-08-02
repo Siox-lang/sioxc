@@ -168,6 +168,10 @@ struct Checker<'a> {
     /// belongs to a function; in hardware statement position there is nothing
     /// to return from, and lowering silently dropped it.
     in_fn_body: std::cell::Cell<bool>,
+    /// Whether the walk is inside a `match` arm. An entity may be instantiated
+    /// at the root of another entity's body, or inside a generate `for`/`if` —
+    /// a `match` is neither, and elaboration never gathered instances from one.
+    in_match_arm: std::cell::Cell<bool>,
     sink: &'a mut DiagnosticSink,
     resolved: &'a Resolved,
     /// Entity name -> its ports.
@@ -284,6 +288,7 @@ impl<'a> Checker<'a> {
             test_entities: HashSet::new(),
             in_testbench: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),
+            in_match_arm: std::cell::Cell::new(false),
             sink,
             resolved,
             entities: HashMap::new(),
@@ -1723,6 +1728,7 @@ impl<'a> Checker<'a> {
     ) {
         match s {
             Stmt::Let(l) => {
+                self.check_instance_placement(l);
                 self.require_let_annotation(l);
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
@@ -1759,11 +1765,13 @@ impl<'a> Checker<'a> {
                     self.check_pattern_form(&arm.pattern);
                 }
                 self.check_expr(&m.scrutinee, sym);
+                let saved = self.in_match_arm.replace(true);
                 for arm in &m.arms {
                     for s in &arm.body.stmts {
                         self.check_stmt(s, dirs, sym, ranged);
                     }
                 }
+                self.in_match_arm.set(saved);
             }
             Stmt::For {
                 var, range, body, ..
@@ -2767,6 +2775,45 @@ impl<'a> Checker<'a> {
         // receiver supplies: if any type implements a method of this name it
         // is not an unknown *function*.
         self.methods.keys().any(|(_, m)| m == name)
+    }
+
+    /// An entity may be instantiated only at the root layer of another
+    /// entity's body, or inside a generate `for`/`if`. A `match` arm and a
+    /// function body are neither.
+    ///
+    /// Both used to be accepted and then quietly dropped: elaboration gathers
+    /// instances from the root, from a generate-`for` and from a generate-`if`
+    /// and from nothing else, so an instance in a `match` arm simply never
+    /// existed — the design compiled and ran without it. A function was worse,
+    /// failing much later with "the driver for `y` contains an Unknown", which
+    /// names neither the function nor the instantiation.
+    ///
+    /// Instantiating from a function would also mean a function could bring a
+    /// process into being, which only an entity may do.
+    fn check_instance_placement(&mut self, l: &LetDecl) {
+        let Some(head) = l.ty.as_ref().and_then(type_head_name) else {
+            return;
+        };
+        if !self.entities.contains_key(head) {
+            return;
+        }
+        let context = if self.in_fn_body.get() {
+            "a function"
+        } else if self.in_match_arm.get() {
+            "a `match` arm"
+        } else {
+            return;
+        };
+        self.error_with_help(
+            codes::INSTANCE_PLACEMENT,
+            l.span,
+            format!("an entity cannot be instantiated in {context}"),
+            "hardware is structural: instantiate at the top of an entity body, \
+             or inside a generate `for`/`if` whose condition folds to a \
+             constant. A `match` on a signal selects a value at run time, and \
+             cannot bring an instance into being"
+                .to_string(),
+        );
     }
 
     /// Whether `t` names an entity — i.e. an array of it is an *instance*
@@ -6043,6 +6090,55 @@ mod tests {
              impl E { match s { x\"A?\" => y = 1, o\"7?\" => y = 2, _ => y = x\"0F\", } }\n",
         );
         assert_eq!(ok, 0, "`x` and `o` are in RADIX_PREFIXES");
+    }
+
+    /// An entity may be instantiated at the root layer of another entity's
+    /// body, or inside a generate `for`/`if` — nowhere else. A `match` arm and
+    /// a function body used to be accepted and then quietly dropped by
+    /// elaboration, so the design ran as though the instance had never been
+    /// written; a function failed later still, with "contains an Unknown".
+    #[test]
+    fn an_entity_cannot_be_instantiated_outside_a_generate() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::INSTANCE_PLACEMENT))
+                .count()
+        };
+        const CELL: &str = "module m;\nentity Cell { i: unsigned[8] in, o: unsigned[8] out }\n\
+                            impl Cell { o = i; }\n";
+
+        let in_match = count(&format!(
+            "{CELL}entity E {{ s: unsigned[2] in, y: unsigned[8] out }}\n\
+             impl E {{ y = 0; match s {{ 0 => {{ let c: Cell = {{ .i = 5 }}; }} _ => {{ y = 1; }} }} }}\n"
+        ));
+        assert_eq!(in_match, 1, "a `match` arm");
+
+        let in_fn = count(&format!(
+            "{CELL}fn helper(x: unsigned[8]) -> unsigned[8] {{ let c: Cell = {{ .i = x }}; return 1; }}\n\
+             entity E {{ y: unsigned[8] out }}\nimpl E {{ y = helper(5); }}\n"
+        ));
+        assert_eq!(in_fn, 1, "a function body");
+
+        // The legal placements: root layer, and a generate `for`/`if`. The
+        // behavioural-`if` case is elaboration's to report, not this stage's.
+        let root = count(&format!(
+            "{CELL}entity E {{ y: unsigned[8] out }}\n\
+             impl E {{ let c: Cell = {{ .i = 5 }}; y = c.o; }}\n"
+        ));
+        assert_eq!(root, 0, "the root layer of an entity body");
+
+        let generate = count(&format!(
+            "{CELL}entity E {{ y: unsigned[8] out }}\n\
+             impl E {{ let s: Cell[2]; for i in 0..1 {{ s[i] = Cell {{ .i = i }}; }}\n\
+             if 1 == 1 {{ let g: Cell = {{ .i = 3 }}; y = g.o; }} else {{ y = 0; }} }}\n"
+        ));
+        assert_eq!(generate, 0, "a generate `for` and a generate `if`");
     }
 
     /// A statement expression that is not a call was dropped by lowering's

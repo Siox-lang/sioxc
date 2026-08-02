@@ -235,6 +235,7 @@ fn elaborate_roots(
 ) -> Hierarchy {
     let mut e = Elaborator {
         sink,
+        misplaced: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
         families: HashSet::new(),
@@ -267,11 +268,18 @@ fn elaborate_roots(
             }
         }
     }
+    e.report_misplaced();
     e.out
 }
 
 struct Elaborator<'a> {
     sink: &'a mut DiagnosticSink,
+    /// Instances found where structural elaboration cannot reach them: inside
+    /// a behavioural `if`, whose condition is not a constant and so is a
+    /// process, not a generate. Recorded during gathering (which borrows
+    /// `&self`) and reported once, deduplicated by span — one entity is
+    /// elaborated once per instantiation of it.
+    misplaced: std::cell::RefCell<Vec<(String, Span)>>,
     entities: HashMap<String, &'a EntityDecl>,
     /// Entity name -> its inherent impls (where instances live).
     impls: HashMap<String, Vec<&'a ImplDecl>>,
@@ -631,6 +639,67 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Emit one error per instantiation elaboration could not reach. An
+    /// entity is elaborated once per instantiation of *it*, so the same
+    /// source line can be recorded several times.
+    fn report_misplaced(&mut self) {
+        let mut seen: Vec<(String, Span)> = self.misplaced.borrow().clone();
+        seen.sort_by_key(|(_, span)| (span.file.0, span.start));
+        seen.dedup_by_key(|(_, span)| (span.file.0, span.start));
+        for (name, span) in seen {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "an entity cannot be instantiated in a process: `{name}`"
+                ))
+                .with_code(codes::INSTANCE_PLACEMENT)
+                .at(span)
+                .help(
+                    "this `if` tests a signal, so it is a process, not a \
+                     generate. Instantiate at the top of the entity body, or \
+                     inside a generate `if` whose condition folds to a \
+                     constant, and drive the instance's ports from the process",
+                ),
+            );
+        }
+    }
+
+    /// Record every entity instantiation inside a block that elaboration will
+    /// not walk, so it can be reported rather than silently dropped. Nested
+    /// `if`/`for`/`match` bodies count too: none of them is reachable once the
+    /// enclosing `if` is behavioural.
+    fn note_misplaced(&self, b: &Block) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let(l) => {
+                    if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+                        if self.entities.contains_key(head) {
+                            self.misplaced
+                                .borrow_mut()
+                                .push((l.name.text.clone(), l.span));
+                        }
+                    }
+                }
+                Stmt::If(inner) => self.note_misplaced_if(inner),
+                Stmt::For { body, .. } => self.note_misplaced(body),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        self.note_misplaced(&arm.body);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn note_misplaced_if(&self, iff: &IfStmt) {
+        self.note_misplaced(&iff.then);
+        match iff.else_.as_deref() {
+            Some(ElseBranch::Block(b)) => self.note_misplaced(b),
+            Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner),
+            None => {}
+        }
+    }
+
     fn gather_if(
         &self,
         iff: &'a IfStmt,
@@ -653,8 +722,17 @@ impl<'a> Elaborator<'a> {
                     self.gather_stmt(st, env, tparams, out);
                 }
             }
-            // Non-constant condition: behavioral, no instances gathered here.
-            ParamValue::Unknown => {}
+            // A non-constant condition is behavioural — a process, not a
+            // generate. Instances here were dropped without a word, so the
+            // design ran as though they had never been written.
+            ParamValue::Unknown => {
+                self.note_misplaced(&iff.then);
+                match iff.else_.as_deref() {
+                    Some(ElseBranch::Block(b)) => self.note_misplaced(b),
+                    Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner),
+                    None => {}
+                }
+            }
         }
     }
 
@@ -1336,6 +1414,53 @@ mod tests {
         let before = sink.error_count();
         elaborate_for_check(modules, &typed, &mut sink);
         sink.error_count() - before
+    }
+
+    /// An entity instantiated inside a *behavioural* `if` — one whose
+    /// condition tests a signal, i.e. a process — was gathered by nothing and
+    /// dropped without a word: the design compiled, ran, and behaved as though
+    /// the instance had never been written. Only a generate `if`, whose
+    /// condition folds to a constant, may hold one.
+    #[test]
+    fn an_entity_cannot_be_instantiated_in_a_process() {
+        const CELL: &str = "module m;\n\
+            entity Cell { i: Bit in, o: Bit out }\n\
+            impl Cell { o = i; }\n";
+
+        // A process: the condition tests a signal, so it cannot fold.
+        let (_, process) = elaborate_src(&format!(
+            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }}\n"
+        ));
+        assert_eq!(process, 1, "reported, not silently dropped");
+
+        // Nested inside a process, at depth.
+        let (_, nested) = elaborate_src(&format!(
+            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+        ));
+        assert_eq!(
+            nested, 1,
+            "a generate inside a process is still unreachable"
+        );
+
+        // The `else` branch of a process counts too.
+        let (_, else_arm) = elaborate_src(&format!(
+            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }}\n"
+        ));
+        assert_eq!(else_arm, 1, "the else branch of a process");
+
+        // A generate `if` folds, so its instance is real and legal.
+        let (hier, generate) = elaborate_src(&format!(
+            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }}\n"
+        ));
+        assert_eq!(generate, 0, "a generate `if` may hold an instance");
+        assert!(
+            hier.instances.iter().any(|i| i.name.ends_with('c')),
+            "and that instance is elaborated"
+        );
     }
 
     #[test]

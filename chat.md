@@ -4433,3 +4433,58 @@ reading an elementwise `Logic[8]` **port** from a testbench ("cannot
 translate yet"), and printing a whole `Logic[8]` local, which misreports as
 `no value named d` even though `d[0]` reads fine. The second is a bad message
 for a real limitation, worth a look when the print path is next open.
+
+## 2026-08-02 (cont.) — where an entity may be instantiated (E-P020)
+
+**New language rule from the user:** an entity may be instantiated only at the
+root layer of another entity's body, or inside a generate `for`/`if`. Not in a
+process, not in a function. Their reasoning: a function that could instantiate
+could bring a *process* into being, and only an entity may do that.
+
+Elaboration already implemented the *permissive* half of this rule exactly —
+`gather_stmt` walks the root, a `for` over a constant range, and an `if` whose
+condition folds; `ParamValue::Unknown => {}` drops everything else. What was
+missing was any word about it. All three illegal placements failed badly:
+
+| placement | before |
+| --- | --- |
+| process (`if clk.rising()`) | **silently dropped** — design ran without the instance |
+| `match` arm | **silently dropped** |
+| function body | "the driver for `y` contains an Unknown", naming neither |
+
+The silent cases are the dangerous ones. A `Cell` instantiated in a clocked
+block and never read compiled clean and produced `y=8`, exactly as if the line
+were not there.
+
+The check is split to match where the knowledge is. `types` handles the two
+*structural* cases — a `match` arm and a function body are illegal regardless
+of any parameter, so no folding is needed. The process case belongs to `elab`,
+because deciding it *is* constant folding: putting it anywhere else would mean
+a second copy of the generate/behavioural predicate that could disagree with
+the one that actually elaborates. `gather_if`'s `Unknown` arm now records the
+instances it is about to drop (including nested `for`/`if`/`match` bodies, none
+of which is reachable once the enclosing `if` is behavioural) and elaboration
+reports them, deduplicated by span since an entity is elaborated once per
+instantiation of it.
+
+Verified the legal placements still build and elaborate independently: root,
+generate-`for`, and a generate-`if` whose branch is chosen by a parameter —
+`Chain<1>` gives 101 and `Chain<0>` gives 201 from the same source. Zero
+false positives across the corpus.
+
+### Sweep that found nothing: VCD output
+
+Before the rule arrived I swept the waveform path, which the corpus barely
+touches (two files mention VCD at all). I wrote an FSM + counter + 96-bit
+vector + tristate design, dumped a VCD, and parsed it with an independent
+Python reader rather than trusting the compiler's own view. It agreed with the
+testbench's prints at every timestamp. Also checked, all correct: metavalues
+per bit (`"10XZ01UW"` → `1 0 x z 0 1 x x`, U and W collapsing to x because VCD
+has only four symbols), the IEEE-1164 mapping including `L`→0 and `H`→1, and
+two `#[test]` entities sharing one file, where the second test's time base is
+offset past the first so timestamps stay monotonic.
+
+I also re-checked wide values end to end, since I had just changed that code:
+a 128-bit shifter seeded from a separated hex literal, rotated three times,
+with slices straddling the 64-bit boundary, and 128-bit add/sub/compare across
+the carry. Every value matched Python. Nothing found in either area.

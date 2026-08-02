@@ -36,6 +36,14 @@ precise reference.
   with a compile-time-constant condition selects which branch is built. The two
   nest, so hardware structure can be parameterized: `for i { if i < N { stage[i]
   = Sub { .. } } }`. A non-constant condition stays a behavioral `if`.
+- **Where an entity may be instantiated.** Only at the root layer of another
+  entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
+  a signal), not in a `match` arm, not in a function. Those are `E-P020`.
+  Instantiation is structural and happens once, at elaboration, so a construct
+  that selects at run time cannot bring hardware into being; and a function
+  that could instantiate could bring a *process* into being, which only an
+  entity may do. Drive an instance's ports from a process instead of
+  instantiating inside one.
 
 ### Logic
 

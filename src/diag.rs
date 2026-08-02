@@ -252,6 +252,11 @@ pub mod codes {
     /// `continue;`. Only a call has an effect, so lowering's catch-all dropped
     /// every other shape without a word and a misspelled name compiled clean.
     pub const NO_EFFECT_STATEMENT: &str = "E-P019";
+    /// An entity instantiated somewhere structural elaboration cannot reach:
+    /// a `match` arm, a function body, or a behavioural (non-generate) `if`.
+    /// Instances are gathered from an entity's root layer and from generate
+    /// `for`/`if` only, so these used to vanish without a word.
+    pub const INSTANCE_PLACEMENT: &str = "E-P020";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";
