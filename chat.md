@@ -5369,3 +5369,34 @@ writes `ClockLike`'s three methods out verbatim for `Logic` and again for
 Three mutants, one per table, each with its own distinctive failure —
 `E-P008` from the checker, an unlowered `Unknown` from hardware, `unknown
 method` from the emitter.
+
+## 2026-08-02 (cont.) — the `self`-less half of trait defaults
+
+Straight to the procedure on last round's fix: which *impl targets* reach the
+three method tables I changed? Four shapes, tested rather than reasoned about.
+
+Three already worked with the new inheritance: a **view-applied** impl
+(`impl Proto for Stream Src` — 21/42, and the riskiest of the four, since the
+tables key a view differently from a struct), an **enum** implementor, and a
+**generic** trait (`trait Holder<T>`).
+
+The fourth did not:
+
+    trait Named { fn tag() -> unsigned[8] { return 77; } }
+    impl Named for Thing { }
+    Thing::tag()        // contains an Unknown / unsupported call
+
+A default with no `self` is an *associated function*, and it travels through a
+different table again — `free_fns` in lowering, `fns` in the emitter, both
+keyed `Type::name` and both filled from impl items only. So last round's fix
+covered methods and missed statics, in exactly the way the previous round's
+fix covered one call shape and missed its sibling. The difference this time is
+that the procedure found it in the same sitting rather than the next one.
+
+Both tables now take a trait's `self`-less defaults for its implementors, as a
+post-pass (a trait may be declared after the impl) and with `or_insert` so an
+impl's own static wins — pinned by `Thing::other()`, which the impl overrides
+to 9 against the default's 5.
+
+Mutants: hardware drops them → `staticTag` is an unlowered Unknown; the
+emitter drops them → `unsupported call Thing::tag`.

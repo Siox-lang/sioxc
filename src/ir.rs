@@ -748,6 +748,29 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        // A trait's `self`-less defaults are associated functions the
+        // implementing type inherits, callable as `Thing::tag()`. Registering
+        // them needs every trait declaration, so it waits until collection is
+        // done — a trait may be written after the impl that implements it.
+        let inherited: Vec<(String, &'a ast::FnDecl)> = self
+            .implemented_traits
+            .iter()
+            .flat_map(|(ty, traits)| traits.iter().map(move |tr| (ty.clone(), tr)))
+            .filter_map(|(ty, tr)| self.trait_decls.get(tr.as_str()).map(|t| (ty, *t)))
+            .flat_map(|(ty, t)| {
+                t.items
+                    .iter()
+                    .filter(|f| f.body.is_some() && !f.params.iter().any(|p| p.is_self))
+                    .map(move |f| (ty.clone(), f))
+            })
+            .collect();
+        for (ty, f) in inherited {
+            // The impl's own statics went in during collection, so this only
+            // supplies what it omitted.
+            self.free_fns
+                .entry(format!("{ty}::{}", f.name.text))
+                .or_insert(f);
+        }
         // Constants are order-independent. Keep the narrow signed value table
         // for widths/generate conditions, and a separate exact literal table
         // for signal values so a 128-bit constant never passes through i64.

@@ -105,6 +105,8 @@ pub fn build(
         .collect();
     let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
     let mut extern_fns = std::collections::HashSet::new();
+    let mut trait_decls: HashMap<&str, &ast::TraitDecl> = HashMap::new();
+    let mut static_defaults: Vec<(String, &str)> = Vec::new();
     for m in modules {
         for item in &m.items {
             match item {
@@ -132,9 +134,31 @@ pub fn build(
                             }
                         }
                     }
+                    if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
+                        static_defaults.push((ty.to_string(), tr.text.as_str()));
+                    }
+                }
+                ast::Item::Trait(t) => {
+                    trait_decls.insert(t.name.text.as_str(), t);
                 }
                 _ => {}
             }
+        }
+    }
+    // A trait's `self`-less defaults are associated functions the implementing
+    // type inherits (`Thing::tag()`). This waits until every trait is known,
+    // since one may be declared after the impl; `or_insert` keeps the impl's
+    // own static, so an override wins.
+    for (ty, tr) in static_defaults {
+        let Some(t) = trait_decls.get(tr) else {
+            continue;
+        };
+        for f in t
+            .items
+            .iter()
+            .filter(|f| f.body.is_some() && !f.params.iter().any(|p| p.is_self))
+        {
+            fns.entry(format!("{ty}::{}", f.name.text)).or_insert(f);
         }
     }
     // Module consts (LOW/HIGH, user consts), to a fixpoint so order-independent.
