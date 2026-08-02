@@ -6352,6 +6352,22 @@ impl<'a> Lowering<'a> {
             return Expr::Unknown;
         }
         let Some(sig) = self.base_signal(base) else {
+            // An aggregate has no signal of its own — elaboration flattens it
+            // into one leaf per field or element. `'old` still lands on a leaf
+            // (`p'old.data` sinks to `p.data'old`, `a'old[0]` indexes first),
+            // but `'event` has nothing to sink to and returned `Unknown`, so
+            // `p'event` and `a'event` failed to lower at all. The spec defines
+            // both: "any field changed" / "any element changed" — which is the
+            // OR over the leaves.
+            if attr == "event" {
+                if let Some(leaves) = self.aggregate_leaves(base) {
+                    return leaves
+                        .into_iter()
+                        .map(Expr::Event)
+                        .reduce(or_expr)
+                        .unwrap_or(Expr::Const(0));
+                }
+            }
             return Expr::Unknown;
         };
         match attr {
@@ -6361,6 +6377,25 @@ impl<'a> Lowering<'a> {
             "old" => Expr::Old(sig),
             _ => Expr::Unknown,
         }
+    }
+
+    /// The leaf signals a struct or array path flattens into, in signal order
+    /// so the lowered expression is stable. `None` when the path names no
+    /// aggregate (an unknown name, or a scalar handled by `base_signal`).
+    fn aggregate_leaves(&self, base: &ast::Expr) -> Option<Vec<SignalId>> {
+        let path = expr_path(base)?;
+        let (field, element) = (format!("{path}."), format!("{path}["));
+        let mut leaves: Vec<SignalId> = self
+            .locals
+            .iter()
+            .filter(|(name, _)| name.starts_with(&field) || name.starts_with(&element))
+            .map(|(_, id)| *id)
+            .collect();
+        if leaves.is_empty() {
+            return None;
+        }
+        leaves.sort_by_key(|id| id.0);
+        Some(leaves)
     }
 
     /// One position of an elementwise array expression: every path naming an

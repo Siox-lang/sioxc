@@ -4791,3 +4791,40 @@ One limitation met and left, cleanly diagnosed rather than silent: an
 if-*expression* with string-literal branches has no element-wise form
 (`E-P017`), because `elementwise_at` handles `IfExpr` but not `StrLit`. Both
 engines lack it identically, so it is a consistent gap, not a divergence.
+
+## 2026-08-02 (cont.) — `'event` on a struct or array did not lower
+
+Swept `'old`/`'event`, one corpus file and historically a good hunting ground.
+The spec defines four aggregate behaviours; three work and one never lowered:
+
+| spelling | before |
+| --- | --- |
+| `s'event`, `s'old` (scalar) | ok |
+| `p'old.data`, `p.valid'old`, `p'old.valid` | ok |
+| `xs'old[0]` | ok |
+| **`p'event`, `xs'event`** | **`Unknown` — the design would not build** |
+
+An aggregate has no signal of its own: elaboration flattens it into one leaf
+per field or element. `'old` survives that because it lands on a leaf
+(`p'old.data` sinks to `p.data'old`, `xs'old[0]` indexes first), but `'event`
+has nothing to sink to, so `base_signal` failed and it became `Expr::Unknown`.
+The failure was loud — "contains an Unknown (unlowered) expression" — but named
+neither the attribute nor the aggregate.
+
+`p'event` now lowers to the OR of its leaves' `Event`s, which is what the spec
+says it is ("any field changed"), leaves taken in signal order so the IR is
+stable.
+
+**My first probe was wrong and I nearly filed it as a second bug.** I read
+`p'old.data` and `p'event` combinationally from the testbench after `await`,
+got "no change" everywhere, and had a tidy story about `'old` tracking the
+current value. It doesn't: `'event`/`'old` are only true during the delta in
+which the change propagates, and after a settle nothing is changing. The
+corpus test already latches its observations into counters for exactly this
+reason — reading it first would have saved the detour. The lowering failure
+was real and independent of the sampling error, which is the only reason the
+round produced anything.
+
+The regression test asserts the aggregate against the OR of its own leaves —
+the spec's definition, and an invariant that holds whatever the delta schedule
+does — before asserting any count.
