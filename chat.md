@@ -4073,3 +4073,34 @@ fail silently did nothing — the removal script had been written against text
 nothing. The second attempt deleted the arm by line and the test failed on
 exactly the assertion about a range width. A mutation that reports success
 without applying is worse than no mutation at all.
+
+## 2026-08-02 (cont.) — the same prediction, one stage over
+
+Range constants turned out to be handled everywhere else — array sizes, the
+range attributes, ascending direction, testbench locals all give the right
+answers — so that seam is closed. A combined probe was clean too: a generic
+protocol block with a view-typed port, an implementation constant derived from
+its parameter, a user `<=>` operator on a newtype and a clocked enum FSM
+saturates at 4 and 10 for `W = 2` and `W = 5`, as the model says.
+
+The prediction that paid was the stage one over. Implementation constants had
+been fixed for *entities*, and a testbench is not lowered — it is emitted by
+`driver/build.rs`, which gathered only `Item::Const`. So every kind of
+constant declared in `impl SomeTest` failed:
+
+    impl T { const K: integer = 7; print!("{}", K); }   // no value named `K`
+
+integer, width, lookup table, range and real alike. This is the third distinct
+place implementation constants had to be taught about, after lowering's
+constant tables and lowering's parameter environment.
+
+The emitter folded its constants in five separate loops, so rather than
+extend each one per testbench I extracted them into a single `const_tables`
+routine and call it **per testbench**, over the module's constants plus that
+testbench's own. Per-testbench rather than global because two testbenches may
+each declare `LIMIT`; the corpus test has exactly that, one holding 3 and the
+other 99, and each sees its own.
+
+Extracting first also deleted the outer fold entirely — once every caller is
+scoped, the global one has no users left, which is a decent sign the shape was
+right.

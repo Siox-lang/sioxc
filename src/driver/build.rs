@@ -146,87 +146,8 @@ pub fn build(
             _ => None,
         })
         .collect();
-    let real_consts: std::collections::HashSet<String> = const_decls
-        .iter()
-        .filter(|declaration| resolved_type_name(&declaration.ty, &type_aliases) == Some("real"))
-        .map(|declaration| declaration.name.text.clone())
-        .collect();
-    let integer_consts: std::collections::HashSet<String> = const_decls
-        .iter()
-        .filter(|declaration| resolved_type_name(&declaration.ty, &type_aliases) == Some("integer"))
-        .map(|declaration| declaration.name.text.clone())
-        .collect();
-    let const_ranges: HashMap<String, (i64, i64)> = const_decls
-        .iter()
-        .filter(|declaration| type_head_name(&declaration.ty) == Some("range"))
-        .filter_map(|declaration| {
-            let ast::Expr::Range { lo, hi, .. } = &declaration.value else {
-                return None;
-            };
-            Some((
-                declaration.name.text.clone(),
-                (signed_index_bound(lo)?, signed_index_bound(hi)?),
-            ))
-        })
-        .collect();
-    let mut consts: HashMap<String, u128> = HashMap::new();
-    for _ in 0..=const_decls.len() {
-        let mut progressed = false;
-        for c in &const_decls {
-            if consts.contains_key(&c.name.text) {
-                continue;
-            }
-            if let Some(v) = eval_c_const(&c.value, &consts, &enums, &fns) {
-                consts.insert(c.name.text.clone(), v);
-                progressed = true;
-            }
-        }
-        if !progressed {
-            break;
-        }
-    }
-    // Preserve the source expression separately from the narrow evaluator.
-    // `_BitInt` accepts the resulting arbitrary-width C expression directly,
-    // so testbench references never inherit the u128 helper's ceiling.
-    let mut const_exprs: HashMap<String, String> = HashMap::new();
-    for _ in 0..=const_decls.len() {
-        let mut progressed = false;
-        for declaration in &const_decls {
-            if const_exprs.contains_key(&declaration.name.text) {
-                continue;
-            }
-            let expression = if real_consts.contains(&declaration.name.text) {
-                emit_c_real_const(&declaration.value, &const_exprs, &real_consts, &enums)
-                    .map(|value| format!("sx_b64((double)({value}))"))
-            } else {
-                emit_c_const(&declaration.value, &const_exprs, &enums)
-            };
-            if let Some(expression) = expression {
-                const_exprs.insert(declaration.name.text.clone(), expression);
-                progressed = true;
-            }
-        }
-        if !progressed {
-            break;
-        }
-    }
-    // Constant lookup tables, one emitted expression per element. The scalar
-    // table above holds a single entry per name, so an indexed read of a
-    // `const` array found nothing there and was called untranslatable.
-    let mut const_array_exprs: HashMap<String, Vec<String>> = HashMap::new();
-    for declaration in &const_decls {
-        let ast::Expr::Array { elems, .. } = &declaration.value else {
-            continue;
-        };
-        let values: Option<Vec<String>> = elems
-            .iter()
-            .map(|e| emit_c_const(e, &const_exprs, &enums))
-            .collect();
-        if let Some(values) = values {
-            const_array_exprs.insert(declaration.name.text.clone(), values);
-        }
-    }
-
+    // The tables are folded per testbench, below, so each sees its own
+    // constants as well as the module's.
     // Struct field layouts (base-first, inheritance flattened) so a struct-typed
     // testbench local can be materialized as one C local per leaf field. Every
     // impl method by (type head, name), for `recv.method(args)` in stimulus.
@@ -494,6 +415,22 @@ pub fn build(
         let qualified = qualified_test_name(modules, &name);
         let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, &name);
+        // A testbench's own constants. Folded per test so two entities that
+        // each declare `LIMIT` cannot collide in one table, and through the
+        // same routine as the module-level ones so the kinds cannot diverge.
+        let mut scoped_decls = const_decls.clone();
+        scoped_decls.extend(items.iter().filter_map(|item| match item {
+            ast::ImplItem::Const(c) => Some(c),
+            _ => None,
+        }));
+        let ConstTables {
+            real_consts,
+            integer_consts,
+            const_ranges,
+            consts,
+            const_exprs,
+            const_array_exprs,
+        } = const_tables(&scoped_decls, &enums, &fns, &type_aliases);
         let clocks = scan_clocks(&items, &aliases)?;
         let instance_names: std::collections::HashSet<String> = hier
             .instance(root)
@@ -5637,6 +5574,119 @@ fn is_test_entity(modules: &[Module], entity: &str) -> bool {
         }
     }
     false
+}
+
+/// The constant tables the emitter reads, folded from a set of declarations.
+///
+/// Extracted so module constants and a testbench's *own* constants go through
+/// exactly the same folding. They did not: only `Item::Const` was gathered, so
+/// a `const` declared inside `impl SomeTest` reported its own name as unknown
+/// at every use, in every kind. Folding per testbench also keeps two entities
+/// that each declare `LIMIT` from colliding in one flat table.
+struct ConstTables {
+    real_consts: std::collections::HashSet<String>,
+    integer_consts: std::collections::HashSet<String>,
+    const_ranges: HashMap<String, (i64, i64)>,
+    consts: HashMap<String, u128>,
+    const_exprs: HashMap<String, String>,
+    const_array_exprs: HashMap<String, Vec<String>>,
+}
+
+fn const_tables(
+    const_decls: &[&ast::ConstDecl],
+    enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &HashMap<String, &ast::FnDecl>,
+    type_aliases: &HashMap<String, ast::Type>,
+) -> ConstTables {
+    let real_consts: std::collections::HashSet<String> = const_decls
+        .iter()
+        .filter(|declaration| resolved_type_name(&declaration.ty, type_aliases) == Some("real"))
+        .map(|declaration| declaration.name.text.clone())
+        .collect();
+    let integer_consts: std::collections::HashSet<String> = const_decls
+        .iter()
+        .filter(|declaration| resolved_type_name(&declaration.ty, type_aliases) == Some("integer"))
+        .map(|declaration| declaration.name.text.clone())
+        .collect();
+    let const_ranges: HashMap<String, (i64, i64)> = const_decls
+        .iter()
+        .filter(|declaration| type_head_name(&declaration.ty) == Some("range"))
+        .filter_map(|declaration| {
+            let ast::Expr::Range { lo, hi, .. } = &declaration.value else {
+                return None;
+            };
+            Some((
+                declaration.name.text.clone(),
+                (signed_index_bound(lo)?, signed_index_bound(hi)?),
+            ))
+        })
+        .collect();
+    let mut consts: HashMap<String, u128> = HashMap::new();
+    for _ in 0..=const_decls.len() {
+        let mut progressed = false;
+        for c in const_decls {
+            if consts.contains_key(&c.name.text) {
+                continue;
+            }
+            if let Some(v) = eval_c_const(&c.value, &consts, enums, fns) {
+                consts.insert(c.name.text.clone(), v);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    // Preserve the source expression separately from the narrow evaluator.
+    // `_BitInt` accepts the resulting arbitrary-width C expression directly,
+    // so testbench references never inherit the u128 helper's ceiling.
+    let mut const_exprs: HashMap<String, String> = HashMap::new();
+    for _ in 0..=const_decls.len() {
+        let mut progressed = false;
+        for declaration in const_decls {
+            if const_exprs.contains_key(&declaration.name.text) {
+                continue;
+            }
+            let expression = if real_consts.contains(&declaration.name.text) {
+                emit_c_real_const(&declaration.value, &const_exprs, &real_consts, enums)
+                    .map(|value| format!("sx_b64((double)({value}))"))
+            } else {
+                emit_c_const(&declaration.value, &const_exprs, enums)
+            };
+            if let Some(expression) = expression {
+                const_exprs.insert(declaration.name.text.clone(), expression);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    // Constant lookup tables, one emitted expression per element. The scalar
+    // table above holds a single entry per name, so an indexed read of a
+    // `const` array found nothing there and was called untranslatable.
+    let mut const_array_exprs: HashMap<String, Vec<String>> = HashMap::new();
+    for declaration in const_decls {
+        let ast::Expr::Array { elems, .. } = &declaration.value else {
+            continue;
+        };
+        let values: Option<Vec<String>> = elems
+            .iter()
+            .map(|e| emit_c_const(e, &const_exprs, enums))
+            .collect();
+        if let Some(values) = values {
+            const_array_exprs.insert(declaration.name.text.clone(), values);
+        }
+    }
+
+    ConstTables {
+        real_consts,
+        integer_consts,
+        const_ranges,
+        consts,
+        const_exprs,
+        const_array_exprs,
+    }
 }
 
 fn build_map(
