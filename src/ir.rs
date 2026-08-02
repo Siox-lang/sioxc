@@ -1010,17 +1010,15 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let env = &renamed;
-        let type_env = &renamed_types;
-        let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
-        let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
-        self.lower_stack.push(ename.to_string());
         // Constants declared *inside* an implementation (spec 3.3) were never
         // collected — only module-level ones were — so `const MAX: unsigned[W]
-        // = (1 << W) - 1;` compiled and then every read of `MAX` reported the
-        // name as unknown. They fold here rather than globally because the
-        // spec's own example depends on the entity's parameters, which are
-        // only known per instance. Order-independent, like module constants.
+        // = (1 << W) - 1;` compiled and then every read reported the name as
+        // unknown. They fold here rather than globally because the spec's own
+        // example depends on the entity's parameters, so one declaration is a
+        // different number per instance. They go into the *env* as well as the
+        // constant tables: array sizes and slice bounds resolve through the
+        // env, so a constant missing from it left `let regs: unsigned[8][K]`
+        // with no elements at all.
         let saved_consts = self.consts.clone();
         let saved_const_values = self.const_values.clone();
         {
@@ -1042,12 +1040,13 @@ impl<'a> Lowering<'a> {
                 let mut progressed = false;
                 for c in &body_consts {
                     let name = &c.name.text;
-                    if self.consts.contains_key(name) {
+                    if renamed.contains_key(name) {
                         continue;
                     }
                     let mut scope = self.consts.clone();
-                    scope.extend(env.iter().map(|(k, v)| (k.clone(), *v)));
+                    scope.extend(renamed.iter().map(|(k, v)| (k.clone(), *v)));
                     if let Some(value) = eval_const(&c.value, &scope) {
+                        renamed.insert(name.clone(), value);
                         self.consts.insert(name.clone(), value);
                         self.const_values
                             .insert(name.clone(), Expr::Const(value as u64));
@@ -1059,7 +1058,11 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-
+        let env = &renamed;
+        let type_env = &renamed_types;
+        let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
+        let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
+        self.lower_stack.push(ename.to_string());
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
         // An `inout` port aliased to a parent net reuses that net's signal
         // instead of allocating its own: the body's `pin = expr` then drives the

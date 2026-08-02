@@ -3982,3 +3982,49 @@ written in terms of one declared below it.
 
 **An instance array sized by a parameter** (`let cells: Cell[N] = {}`) becomes
 `Cell[0]`. Same with or without a rename; not yet fixed, and next.
+
+## 2026-08-02 (cont.) — a false alarm, then the same constant one layer down
+
+Cleared the instance-array finding logged last tick: **it was my syntax
+error**, not a bug. An instance array is declared `let stage: Inc[3];` with no
+initializer and its elements assigned in a generate-for; I had written
+`= {}`, which is a struct literal and rightly rejected. With the corpus form,
+a parameter-sized instance array works, including three instances at depths
+1, 2 and 3 in one testbench giving 11, 12 and 13 — each elaborating its own
+loop bound and its own array from its own parameter.
+
+Worth saying plainly since I logged it as a bug: the compiler was right and
+the probe was wrong.
+
+**The impl-constant fix from an hour ago was half a fix.** Constants folded
+into the constant tables, which is enough to *read* one, and not enough to
+use one where a type or an index is resolved:
+
+    const K: integer = 3;
+    let regs: unsigned[8][K];   // no elements at all
+    y = v[K..0];                // `v[K..0]` has no hardware form
+
+Array sizes and slice bounds resolve through the parameter environment, not
+the constant tables, so a constant absent from the env sized the array at
+zero. Folding them into the env as well — the same place a renamed binder
+goes — makes all four positions work: value, vector width, array size, slice
+bound. `Shaped<W = 2>` and `Shaped<W = 4>` now size their arrays 3 and 5 from
+one declaration.
+
+That is the same shape as the binder work: a name has to be known by every
+stage and every table that keys on names, and fixing the first table that
+fails leaves the rest. Second time in two days.
+
+### And the compiler was right again
+
+The probe alongside it asserted a generate-for would accumulate:
+
+    let acc: unsigned[8] = 0;
+    for i in 0..N - 1 { acc = acc + 1; }
+
+It gave 164 for both widths instead of 3 and 5. That is override semantics —
+spec 3.14, later assignment wins — so the unrolled loop is `acc = acc + 1`
+once, a combinational loop with no settled value. `W-P010` said exactly that,
+and I had filtered warnings out of my own probe output. Second time this
+session I have hidden the answer from myself that way. The corpus test drives
+a *different element* per iteration instead, which is the accumulating form.
