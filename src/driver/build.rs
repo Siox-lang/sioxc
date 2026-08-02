@@ -4750,6 +4750,28 @@ impl Ctx<'_> {
                         }
                     }
                 }
+                // A struct argument has no single C expression — a struct
+                // local is one variable per leaf field — so bind the leaves
+                // instead: the body's `a.x` resolves through the same
+                // flattened name the environment is keyed by. Without this,
+                // `manhattan(p, q)` reported `p` as a name not in scope,
+                // though a *method* on the same struct inlined fine.
+                let composite =
+                    p.ty.as_ref()
+                        .and_then(type_head_name)
+                        .and_then(|head| self.structs.get(head))
+                        .is_some_and(|fields| !fields.is_empty());
+                if composite {
+                    if let Some(path) = expr_path(a) {
+                        let leaves = self.composite_reads(&path);
+                        if !leaves.is_empty() {
+                            for (suffix, value) in leaves {
+                                env.insert(format!("{}{suffix}", n.text), value);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 env.insert(n.text.clone(), format!("({})", self.expr(a)?));
                 // The argument's width travels with it, as at the operator and
                 // method inline sites. A nested inline reads `self'length` off
@@ -5150,6 +5172,17 @@ impl Ctx<'_> {
                         None => "unsupported field/index expression".to_string(),
                     }
                 })?;
+                // Inside an inlined function body, a struct parameter is
+                // bound one leaf at a time (`a.x`), so the environment answers
+                // before signals and locals do.
+                if let Some(bound) = self
+                    .fn_env
+                    .borrow()
+                    .last()
+                    .and_then(|environment| environment.get(&path))
+                {
+                    return Ok(bound.clone());
+                }
                 // A struct-field / array-element of a testbench local reads its
                 // mangled C local; otherwise it's a connected signal.
                 if self.locals.borrow().contains(&path) {

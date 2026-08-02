@@ -4104,3 +4104,51 @@ other 99, and each sees its own.
 Extracting first also deleted the outer fold entirely — once every caller is
 scoped, the global one has no users left, which is a decent sign the shape was
 right.
+
+## 2026-08-02 (cont.) — a struct as a call argument
+
+Two areas came up closed before the find: only one `module` per file is
+allowed, so cross-module visibility inside a file is not a thing to test; and
+range constants are handled everywhere I predicted they might not be.
+
+The find came from combining testbench features rather than testing them
+singly — a testbench calling a method, a free function, and iterating an array
+of structs. **A struct passed as a call argument fails in a testbench** while
+hardware has always lowered it:
+
+    fn spread(a: Point, b: Point) -> unsigned[8] { return a.x + a.y + b.x + b.y; }
+    spread(p, q)      // no value named `p` is in scope
+
+This was logged as a known limitation early in the session and is now fixed.
+The emitter binds one C expression per parameter; a struct local is one C
+variable per leaf field, so there is no single expression to bind and the
+argument's own name came back unknown. A *method* on the same struct inlines
+fine, which is what made structs look supported here.
+
+Fixed in two places, because the first alone moved the error rather than
+removing it: bind each leaf (`a.x`, `a.y`) into the inline environment, and
+let a field expression consult that environment before signals and locals.
+Verified against hardware — `spread` and a branching `pick` agree across the
+engines on the same values.
+
+### Three failed mutations before one that counted
+
+Proving the test could fail took four attempts, and the first three each
+reported a pass that meant nothing:
+
+1. an anchor `cargo fmt` had reformatted — the script raised and deleted
+   nothing;
+2. a line-range deletion that unbalanced the braces — the build failed, so the
+   test ran the *previous* binary;
+3. a string replace matching two sites — the assertion caught it before
+   writing.
+
+Only the fourth, uniquely anchored and confirmed with `MUTATION APPLIED` plus
+a clean build, actually tested the mutant. Every one of the first three would
+have printed a green result. The habit that saves this is asserting the edit
+applied *and* checking the build is clean before believing the run — a stale
+binary passes every test ever written.
+
+Also noticed on the way, not fixed: a free function whose body declares a
+`let` cannot be inlined in a testbench ("fn bodies compile as return/if chains
+only"). Clear message, real limitation.
