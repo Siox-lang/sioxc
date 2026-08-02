@@ -337,7 +337,7 @@ impl<'a> Elaborator<'a> {
             .get(entity_name)
             .map(|e| e.is_extern)
             .unwrap_or(true);
-        let env = param_env(&params);
+        let env = self.with_impl_binders(entity_name, param_env(&params));
         let specs = self.gather_instances(entity_name, is_extern, &env);
         // This instance's own signals (ports + impl lets), for width-checking the
         // connections of the children it instantiates.
@@ -402,6 +402,46 @@ impl<'a> Elaborator<'a> {
     }
 
     /// Collect the instance-construction sites inside an entity's impl bodies.
+    /// A generic implementation binds its own names for the entity's
+    /// parameters (`impl<M: integer> Outer<M>`), matched by position. The env
+    /// here is keyed by the *entity's* names, and everything downstream reads
+    /// it — including the arguments an instance passes to a child, so
+    /// `let child: Inner<K = M> = {}` could not evaluate `M` and reported the
+    /// child's parameter as unbound. Add each binder's names alongside.
+    fn with_impl_binders(
+        &self,
+        entity_name: &str,
+        mut env: HashMap<String, i64>,
+    ) -> HashMap<String, i64> {
+        let (Some(edecl), Some(impls)) = (
+            self.entities.get(entity_name).copied(),
+            self.impls.get(entity_name),
+        ) else {
+            return env;
+        };
+        for im in impls {
+            let Type::Generic { args, .. } = &im.target else {
+                continue;
+            };
+            for (i, arg) in args.iter().enumerate() {
+                let GenericArg::Positional(Expr::Path(path)) = arg else {
+                    continue;
+                };
+                let ([seg], Some(param)) = (path.segments.as_slice(), edecl.params.params.get(i))
+                else {
+                    continue;
+                };
+                if seg.text == param.name.text {
+                    continue;
+                }
+                if let Some(&value) = env.get(&param.name.text) {
+                    env.insert(seg.text.clone(), value);
+                }
+            }
+        }
+        env
+    }
+
     fn gather_instances(
         &self,
         entity_name: &str,

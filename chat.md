@@ -3926,3 +3926,33 @@ Probing that turned up a hole in the check added an hour ago. It verified
 `W` resolved to the instantiating value (7) while the target claimed 8 —
 a statement that contradicts itself, silently. Each argument must now be one
 of the names the `impl` binds.
+
+## 2026-08-02 — the rename had a second stage to reach
+
+Resumed testing by attacking the newest code, which is where the risk is: the
+generic binder landed yesterday. Two probes in, a regression of my own:
+
+    entity Outer<N: integer> { … }
+    impl<M: integer> Outer<M> {
+        let child: Inner<K = M> = {};   // `Inner` needs a value for `K`
+    }
+
+Yesterday's fix extended the parameter env in *lowering*. Elaboration keeps
+its own env — that is where an instance's arguments to a child are evaluated —
+and never saw the rename, so passing a renamed parameter down to a child
+failed while using it locally worked. Same aliasing, second stage.
+
+That is the third stage this one change has had to touch (resolution for the
+lint, lowering for values and widths, now elaboration for child arguments),
+which is worth remembering as the shape of the feature rather than as three
+separate oversights: a rename is a fact about a *name*, and every stage that
+keys something by that name needs telling.
+
+Also checked the permuted case, since positional binding invites it:
+
+    entity Pair<LO: integer, HI: integer> { … }
+    impl<A: integer, B: integer> Pair<B, A> { lo_out = B; hi_out = A; }
+
+`B` binds to `LO` and `A` to `HI`, and the values come out 3 and 9 as the
+positions say. Confusing to read, correct to run, and legal in Rust for the
+same reason.
