@@ -5327,3 +5327,45 @@ shape, three different outcomes.
 **2. There is no remainder operator.** `%` is undeclared, and `rem`/`mod` do
 not parse. VHDL has both, and division exists, so this looks like an omission
 rather than a decision.
+
+## 2026-08-02 (cont.) — trait default methods were accepted but not callable
+
+Swept traits. Dispatch itself is sound: two types implementing one trait with
+different bodies each get their own, called directly and through a bounded
+generic (`fn apply<S: Scale>(s: S, ..)`) — 60/15 both ways, tags 1/2.
+
+Then default bodies:
+
+    trait Meter {
+        fn raw(self) -> unsigned[8];
+        fn scaled(self) -> unsigned[8] { return self.raw() * 2; }
+    }
+    impl Meter for Plain { fn raw(self) -> unsigned[8] { return self.v; } }
+
+    p.scaled()      // error: `Plain` has no method `scaled`
+
+**The language accepted the implementation and then refused to let anyone call
+it.** `impl Meter for Plain` omitting `scaled` is *correct* — `trait_required`
+counts only the body-less methods, and omitting the required `raw` is properly
+rejected. So the contract half was deliberate and complete; only dispatch was
+missing.
+
+All three method tables — the checker's, lowering's, the emitter's — were
+built from `impl` items alone. Each now inherits a trait's defaulted methods
+for the types that implement it, with the impl's own entry winning (`or_insert`
+after the impl's, and a fallback *after* the existing lookups in
+`find_method`). The checker's is a second pass, since a trait may be declared
+after the impl that uses it.
+
+Two details the test pins because they are where an inheritance scheme usually
+goes wrong: a default that calls another trait method dispatches back to the
+*implementor's* version (`Plain.scaled` = 6, `Custom.scaled` = 30 from the same
+default source), and a type overriding one default still inherits the others.
+
+Corroboration that the feature was intended rather than invented by me: std
+writes `ClockLike`'s three methods out verbatim for `Logic` and again for
+`Bit`. That is what you do when defaults do not work.
+
+Three mutants, one per table, each with its own distinctive failure —
+`E-P008` from the checker, an unlowered `Unknown` from hardware, `unknown
+method` from the emitter.

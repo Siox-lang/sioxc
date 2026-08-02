@@ -1149,18 +1149,39 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
 /// mirroring the runner's `collect_methods`.
 fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
     let mut out = HashMap::new();
+    let mut traits: HashMap<&str, &ast::TraitDecl> = HashMap::new();
+    // (type head, trait name) for each `impl Trait for Type`.
+    let mut implemented: Vec<(String, &str)> = Vec::new();
     for m in modules {
         for item in &m.items {
-            if let ast::Item::Impl(im) = item {
-                if let Some(ty) = type_head_name(&im.target) {
-                    for it in &im.items {
-                        if let ast::ImplItem::Fn(f) = it {
-                            out.entry((ty.to_string(), f.name.text.clone()))
-                                .or_insert(f);
+            match item {
+                ast::Item::Trait(t) => {
+                    traits.insert(t.name.text.as_str(), t);
+                }
+                ast::Item::Impl(im) => {
+                    if let Some(ty) = type_head_name(&im.target) {
+                        for it in &im.items {
+                            if let ast::ImplItem::Fn(f) = it {
+                                out.entry((ty.to_string(), f.name.text.clone()))
+                                    .or_insert(f);
+                            }
+                        }
+                        if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
+                            implemented.push((ty.to_string(), tr.text.as_str()));
                         }
                     }
                 }
+                _ => {}
             }
+        }
+    }
+    // A trait method with a body is a default the impl may omit (spec 3.20),
+    // so the implementing type inherits it. The impl's own methods went in
+    // above, and `or_insert` keeps them, so an override always wins.
+    for (ty, tr) in implemented {
+        let Some(t) = traits.get(tr) else { continue };
+        for f in t.items.iter().filter(|f| f.body.is_some()) {
+            out.entry((ty.clone(), f.name.text.clone())).or_insert(f);
         }
     }
     out

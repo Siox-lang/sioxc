@@ -364,6 +364,13 @@ struct Lowering<'a> {
     lint_defaulted: std::collections::HashSet<u32>,
     entities: HashMap<String, &'a ast::EntityDecl>,
     impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
+    /// Trait name -> its declaration, for the defaulted methods an
+    /// implementing type inherits (spec 3.20: a trait body is a contract, and
+    /// a method *with* a body is a default the impl may omit — which the type
+    /// checker already allows, so dispatch has to find it).
+    trait_decls: HashMap<String, &'a ast::TraitDecl>,
+    /// Type head -> the traits it implements, for that fallback.
+    implemented_traits: HashMap<String, Vec<String>>,
     /// Entity name -> its instance's concrete parameter values.
     entity_params: HashMap<String, HashMap<String, i64>>,
     /// Enum name -> variant name -> discriminant value.
@@ -562,6 +569,8 @@ impl<'a> Lowering<'a> {
             lint_defaulted: std::collections::HashSet::new(),
             entities: HashMap::new(),
             impls: HashMap::new(),
+            trait_decls: HashMap::new(),
+            implemented_traits: HashMap::new(),
             entity_params: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_first_disc: HashMap::new(),
@@ -653,6 +662,9 @@ impl<'a> Lowering<'a> {
                             self.aliases.insert(name.text.clone(), ty.clone());
                         }
                     }
+                    ast::Item::Trait(t) => {
+                        self.trait_decls.insert(t.name.text.clone(), t);
+                    }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
                         if let Some(name) = type_head_name(&im.target) {
@@ -667,6 +679,12 @@ impl<'a> Lowering<'a> {
                     ast::Item::Impl(im) => {
                         let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
                         let target = type_head_name(&im.target);
+                        if let (Some(tr), Some(ty)) = (tr, target) {
+                            self.implemented_traits
+                                .entry(ty.to_string())
+                                .or_default()
+                                .push(tr.text.clone());
+                        }
                         self.register_static_fns(im);
                         if let (Some(tr), Some(ty)) = (tr, target) {
                             if tr.text == "Suffix" {
@@ -5578,7 +5596,8 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.op_impls
+        if let Some(f) = self
+            .op_impls
             .iter()
             .filter(|((_, t), _)| t == ty)
             .flat_map(|(_, fns)| fns.iter())
@@ -5587,6 +5606,18 @@ impl<'a> Lowering<'a> {
                     && input.is_none_or(|input| rhs.as_deref().is_none_or(|rhs| rhs == input))
             })
             .map(|(f, _)| *f)
+        {
+            return Some(f);
+        }
+        // Last: a defaulted method the type inherits from a trait it
+        // implements. The impl's own methods are found above, so an override
+        // always wins; this only supplies what the impl omitted.
+        self.implemented_traits
+            .get(ty)?
+            .iter()
+            .filter_map(|tr| self.trait_decls.get(tr.as_str()))
+            .flat_map(|t| t.items.iter())
+            .find(|f| f.name.text == name && f.body.is_some())
     }
 
     /// Lower a method call `recv.method(args)` (spec 3.20) by inlining the

@@ -186,6 +186,13 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<String, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// Trait name -> its defaulted methods (name -> declared return type). A
+    /// trait method *with* a body is a default the impl may omit — which
+    /// `trait_required` already allows — so the implementing type has to be
+    /// able to call it.
+    trait_defaults: HashMap<String, Vec<(String, Option<Type>)>>,
+    /// Type identity -> the traits it implements, for that inheritance.
+    trait_impls_by_type: HashMap<String, Vec<String>>,
     /// Trait name -> the methods an implementation must provide (those the
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
@@ -306,6 +313,8 @@ impl<'a> Checker<'a> {
             attr_targets,
             attr_value_kinds,
             trait_impls: HashMap::new(),
+            trait_defaults: HashMap::new(),
+            trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
@@ -356,6 +365,23 @@ impl<'a> Checker<'a> {
         // A field-less struct deriving from another vector family is itself one
         // (`struct Byte : unsigned[8]`); resolve that transitively before typing
         // ports, so such a type is treated as a numeric vector.
+        // A trait's defaulted methods belong to every type that implements it
+        // and did not provide its own. Collection order is not guaranteed — a
+        // trait may be declared after the impl — so this is a second pass.
+        let mut inherited: Vec<(String, String, Option<Type>)> = Vec::new();
+        for (ty, traits) in &self.trait_impls_by_type {
+            for tr in traits {
+                let Some(methods) = self.trait_defaults.get(tr) else {
+                    continue;
+                };
+                for (name, ret) in methods {
+                    inherited.push((ty.clone(), name.clone(), ret.clone()));
+                }
+            }
+        }
+        for (ty, name, ret) in inherited {
+            self.methods.entry((ty, name)).or_insert(ret);
+        }
         self.resolve_transitive_vector_families();
         self.resolve_vector_elements();
         for m in modules {
@@ -414,6 +440,14 @@ impl<'a> Checker<'a> {
                 }
                 // Record `impl Trait for Type` so trait-driven checks (e.g.
                 // conditions) can ask "does T implement Trait?".
+                if let (Some(tr), Some(ty)) = (&im.trait_, type_identity(&im.target)) {
+                    if let Some(name) = tr.segments.last() {
+                        self.trait_impls_by_type
+                            .entry(ty)
+                            .or_default()
+                            .push(name.text.clone());
+                    }
+                }
                 if let Some(tr) = &im.trait_ {
                     let trait_name = tr.segments.last().map(|s| s.text.clone());
                     let target = type_identity(&im.target);
@@ -602,6 +636,14 @@ impl<'a> Checker<'a> {
                     .map(|f| f.name.text.clone())
                     .collect();
                 self.trait_required.insert(t.name.text.clone(), required);
+                self.trait_defaults.insert(
+                    t.name.text.clone(),
+                    t.items
+                        .iter()
+                        .filter(|f| f.body.is_some())
+                        .map(|f| (f.name.text.clone(), f.ret.clone()))
+                        .collect(),
+                );
             }
             Item::Enum(e) => {
                 let vars: Vec<String> = e.variants.iter().map(|v| v.name.text.clone()).collect();
