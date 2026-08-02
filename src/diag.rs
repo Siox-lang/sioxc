@@ -248,6 +248,10 @@ pub mod codes {
     /// The left of an assignment is not a place: `f(x) = v`. A target is a
     /// signal, a field, an index, a slice, or a concatenation of those.
     pub const INVALID_ASSIGN_TARGET: &str = "E-P018";
+    /// A statement that cannot do anything: `x;`, `a + 1;`, a stray
+    /// `continue;`. Only a call has an effect, so lowering's catch-all dropped
+    /// every other shape without a word and a misspelled name compiled clean.
+    pub const NO_EFFECT_STATEMENT: &str = "E-P019";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

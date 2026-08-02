@@ -1783,6 +1783,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
+                self.check_no_effect(e);
                 self.check_stimulus_context(e);
                 self.check_expr(e, sym);
             }
@@ -1803,6 +1804,34 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// A statement expression that is not a call cannot do anything: siox has
+    /// no side-effecting operators, so `x;` and `a + 1;` compute a value and
+    /// discard it. Lowering's catch-all dropped every non-call shape without a
+    /// word, so a misspelled name compiled clean — and `continue;`, a Rust
+    /// habit siox does not have, looked accepted while a `for` body ran every
+    /// iteration anyway. (`break;` was at least a parse error.)
+    fn check_no_effect(&mut self, e: &Expr) {
+        if matches!(e, Expr::Call { .. }) {
+            return;
+        }
+        let loop_keyword = matches!(e, Expr::Path(p) if p.segments.len() == 1
+            && matches!(p.segments[0].text.as_str(), "continue" | "break"));
+        let help = if loop_keyword {
+            "siox has no loop control — a `for` is unrolled at elaboration, so \
+             every iteration exists in the hardware. Guard the body with an \
+             `if` instead"
+        } else {
+            "a statement has an effect only if it assigns (`y = ...`) or calls \
+             something (`assert!(...)`, `s.send(v)`)"
+        };
+        self.error_with_help(
+            codes::NO_EFFECT_STATEMENT,
+            crate::syntax::ast::expr_span(e),
+            "this statement has no effect".to_string(),
+            help.to_string(),
+        );
     }
 
     /// `await`, `assert!`, `print!` and `warn!` drive and observe a simulation;
@@ -5985,6 +6014,53 @@ mod tests {
              entity E { y: unsigned[8] out }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(nested, 0, "including inside a nested block");
+    }
+
+    /// A statement expression that is not a call was dropped by lowering's
+    /// catch-all without a word, so a misspelled name compiled clean and a
+    /// stray `continue;` — a Rust habit siox does not have — looked accepted
+    /// while the `for` body ran every iteration anyway.
+    #[test]
+    fn a_statement_with_no_effect_is_reported() {
+        // Count E-P019 alone: `q + 1;` also trips the width checker, and this
+        // test is about the statement being reported at all, not about what
+        // else the discarded expression happens to be wrong about.
+        let no_effect = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::NO_EFFECT_STATEMENT))
+                .count()
+        };
+        let body = |stmts: &str| {
+            no_effect(&format!(
+                "module m;\nentity E {{ y: unsigned[8] out }}\n\
+                 impl E {{ let q: unsigned[8] = 3; {stmts} y = q; }}\n"
+            ))
+        };
+        assert_eq!(body("zzz_undefined_name;"), 1, "a misspelled bare name");
+        assert_eq!(body("q;"), 1, "a name that does resolve is still dead");
+        assert_eq!(body("q + 1;"), 1, "a computed value that goes nowhere");
+        assert_eq!(
+            body("for i in 0..2 { continue; }"),
+            1,
+            "`continue` has no meaning in an unrolled loop"
+        );
+        assert_eq!(body("if q == 3 { zzz; }"), 1, "nested in a block");
+
+        // A call is the one statement shape that does something.
+        assert_eq!(body(""), 0, "the same body without the dead statement");
+        let call = no_effect(
+            "module m;\nstruct S { v: unsigned[8] }\n\
+             impl S { fn bump(self) { self.v = self.v + 1; } }\n\
+             entity E { y: unsigned[8] out }\n\
+             impl E { let s: S = { .v = 3 }; s.bump(); y = s.v; }\n",
+        );
+        assert_eq!(call, 0, "a method call as a statement");
     }
 
     /// Stimulus in an entity body was dropped by lowering without a word —

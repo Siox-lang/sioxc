@@ -4276,3 +4276,42 @@ Worth noting the failure mode: my first attempt looked correct and did
 nothing, and only a second look at *when* the data is available explained it.
 A fix that compiles and changes no behaviour is easy to mistake for a wrong
 diagnosis of the bug.
+
+## 2026-08-02 (cont.) — a statement that does nothing, and says nothing
+
+Using rustc as the reference — the languages have converged enough that "what
+does the equivalent Rust program do" is a better question than "what does the
+siox spec say" — I wrote five programs around Rust habits a person would carry
+over. One found something:
+
+    for i in 0..5 { if i == 2 { continue; } s = s + i; }   // s=15
+
+15 is the sum of *all* of `0..5`. The `continue` compiled, ran, and skipped
+nothing. `break` in the sibling probe was a parse error, so the two Rust loop
+keywords behaved differently for no reason.
+
+`continue` turned out to be incidental. The real hole is wider:
+
+    zzz_undefined_name;    // compiles clean, no error, no warning
+
+**Any statement that is not a call is dropped in silence** — in a testbench,
+in a hardware body, at any nesting depth. Lowering's catch-all ends with
+`_ => {}` under the comment "other statement forms are not lowered yet", and
+"no value named `x`" is only ever emitted *by lowering*, so a statement that
+is never lowered can never report the name it fails to find. A misspelled
+signal name is dead text that type-checks.
+
+The check belongs in `types`, next to `check_stimulus_context`, which already
+catches the neighbouring mistake (`assert!` in a design body). siox has no
+side-effecting operators, so a statement has an effect only if it assigns or
+calls — every other shape is a mistake, and `E-P019` now says so. `continue`
+and `break` get a help line explaining there is no loop control because a
+`for` is unrolled at elaboration.
+
+Two things I nearly got wrong. I first tried the check in `resolve`, which is
+where rustc reports E0425 — it fired on 400+ corpus names, because resolve's
+scope table holds no ports, signals, locals, or macros. And I picked `while`
+as a low-coverage construct off a corpus count of 11 files; all 11 were the
+English word in comments. `while` is not a siox construct at all.
+
+Whole corpus: zero false positives.
