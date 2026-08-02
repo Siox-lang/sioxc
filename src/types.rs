@@ -3528,9 +3528,12 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 let radix = crate::syntax::radix_of(*base);
-                let ok = digits.chars().all(|c| c.is_digit(radix));
+                // `_` separates digits (`x"AB_CD"`) as it does in `0xAB_CD`;
+                // a literal of nothing but separators is still empty.
+                let significant: String = crate::syntax::radix_digits(digits).collect();
+                let ok = !significant.is_empty() && significant.chars().all(|c| c.is_digit(radix));
                 let kind = if radix == 16 { "hex" } else { "octal" };
-                if digits.is_empty() || !ok {
+                if !ok {
                     self.error(
                         codes::TYPE_MISMATCH,
                         *span,
@@ -3615,7 +3618,7 @@ impl<'a> Checker<'a> {
                 Ty::Array {
                     elem: Box::new(self.ty_from_head("Logic")),
                     family: Some("unsigned".to_string()),
-                    len: digits.len() as u32 * bits,
+                    len: crate::syntax::radix_digits(digits).count() as u32 * bits,
                 }
             }
             // A char literal defaults to `Char`; an annotation/target

@@ -1535,8 +1535,12 @@ an entry in the compiler's `RADIX_PREFIXES` (`src/syntax/mod.rs`), which
 supplies the digit width and, through it, the alphabet. Both positions report
 it the same way. There is no binary `b"…"` prefix: a plain string is
 already a sequence of `std_ulogic` values (metavalues too — `"01X0"`), read as
-a Logic array by context (§3.17), so it covers the binary case directly. Digits
-must be valid for the base; widths participate in the strict
+a Logic array by context (§3.17), so it covers the binary case directly.
+
+`_` is a digit separator in a prefixed literal, as it is in `0xAB_CD` and in a
+bit pattern: `x"AB_CD"` is `x"ABCD"`, same value and same width. It is *not* a
+separator in a plain string, where every character is a `std_ulogic` value (or
+a `Char`) and `_` would be one of them. Digits must be valid for the base; widths participate in the strict
 assignment/connection width rules (3.17) and in concatenation sizing.
 
 ---

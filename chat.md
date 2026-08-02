@@ -4355,3 +4355,44 @@ tests in three modules, which is the property worth having.
 
 `docs/language.md` §3.24 records that a new radix takes two steps: the `impl
 Prefix` in std, and the table entry.
+
+## 2026-08-02 (cont.) — a literal that fits in a signal but not in a driver
+
+Sweeping the bit-string paths I had just touched. The entry point was digit
+separators: `_` works in `0xAB_CD` and in a bit pattern, and the emitter's
+`parse_digits_words` filters it — but the hardware path and the type checker
+did not. `x"AB_CD"` reported *two* errors, one of them a width:
+
+    error: cannot assign unsigned[20] to unsigned[16]      // 5 chars x 4 bits
+    error: invalid hex bit-string literal `x"AB_CD"`
+
+Five sites counted `_` as a digit. Now one helper, `radix_digits`, and only
+prefixed strings get it — a plain string is `std_ulogic` values or `Char`s,
+where `_` is a character like any other and filtering it would corrupt text.
+
+The interesting bug was underneath. While checking separators against a
+96-bit value I found the two spellings disagreeing:
+
+    let a: unsigned[96] = x"DEADBEEF0123456789ABCDEF";  // 68915718005617500482515488239
+    y = x"DEADBEEF0123456789ABCDEF";                    //            81985529216486895
+
+**A bit-string literal wider than one word kept only its low word in driver
+position.** `81985529216486895` is `0x0123456789ABCDEF` — the top half gone,
+silently, in a design that compiles without a warning. The initializer path
+decodes to words; the driver path called `decode_bit_string`, which returns
+`.0`, the low word, into an `Expr::Const(u64)`. `Expr::WideConst` and
+`words_const` were right there.
+
+The plain-string arm two lines below had it worse: a 73-character logic
+string drove **3**, its low two bits.
+
+Verified against Python, and the regression test asserts against the
+*decimal* spelling of each value — base-10 accumulation rather than nibble
+packing, so a shared decoding mistake cannot make both sides agree. Three
+separate mutants, one per fix: hex driver → test fails, string driver → test
+fails, separator counting → the design stops compiling at `unsigned[116]`,
+which is the right symptom.
+
+Worth noting where this came from: not from probing wide literals, which I
+would not have thought to do. It came from needing a value big enough to make
+a separator miscount visible.

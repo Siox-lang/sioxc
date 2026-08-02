@@ -3961,13 +3961,21 @@ impl<'a> Lowering<'a> {
                         .unwrap_or(0),
                 ),
             },
+            // Keep every word: `decode_bit_string` returns the low one, so a
+            // literal past 64 bits used to lose its top half in driver
+            // position while the same literal as an initializer (which
+            // already decoded to words) kept it — `w = x"DEADBEEF0123..."`
+            // drove `0x0123...` and `let w: unsigned[96] = x"DEADBEEF0123..."`
+            // did not.
             ast::Expr::BitStrLit { base, digits, .. } => {
-                Expr::Const(self.decode_bit_string(*base, digits).0)
+                words_const(self.decode_bit_string_words(*base, digits).0)
             }
             // A plain string in value position is a logic-value vector
             // (`out = "1X10"`) — decode it per-char like a binary bit string.
             // (Char/enum arrays are filled element-wise before reaching here.)
-            ast::Expr::StrLit { text, .. } => Expr::Const(self.decode_bit_string('b', text).0),
+            ast::Expr::StrLit { text, .. } => {
+                words_const(self.decode_bit_string_words('b', text).0)
+            }
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
@@ -4388,9 +4396,10 @@ impl<'a> Lowering<'a> {
                 (u64::BITS - parse_int(text).unwrap_or(0).leading_zeros()).max(1)
             }
             // A bit-string literal has an explicit digit-count width.
-            ast::Expr::BitStrLit { base, digits, .. } => {
-                (digits.len() as u32 * crate::syntax::bits_per_digit(*base)).max(1)
-            }
+            ast::Expr::BitStrLit { base, digits, .. } => (crate::syntax::radix_digits(digits)
+                .count() as u32
+                * crate::syntax::bits_per_digit(*base))
+            .max(1),
             // A signal reference (name, struct field, constant array element).
             _ => expr_path(e)
                 .and_then(|p| self.locals.get(&p))
@@ -4681,10 +4690,14 @@ impl<'a> Lowering<'a> {
         if let Some(bits) = crate::syntax::is_radix_prefix(base)
             .then(|| crate::syntax::bits_per_digit(base) as usize)
         {
-            let width = digits.len().saturating_mul(bits);
+            // `_` is a separator, not a digit: it contributes no bits and
+            // must not shift the ones after it.
+            let width = crate::syntax::radix_digits(digits)
+                .count()
+                .saturating_mul(bits);
             let mut value = vec![0u64; width.div_ceil(64).max(1)];
             let mut discs = vec![0u64; width.saturating_mul(4).div_ceil(64).max(1)];
-            for (digit_index, ch) in digits.chars().rev().enumerate() {
+            for (digit_index, ch) in crate::syntax::radix_digits(digits).rev().enumerate() {
                 let digit = ch.to_digit(crate::syntax::radix_of(base)).unwrap_or(0);
                 for bit in 0..bits {
                     let pos = digit_index * bits + bit;

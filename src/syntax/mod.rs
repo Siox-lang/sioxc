@@ -80,6 +80,15 @@ pub fn is_radix_prefix(base: char) -> bool {
     RADIX_PREFIXES.iter().any(|(prefix, _)| *prefix == base)
 }
 
+/// The significant digits of a *radix* bit-string literal: `_` is a separator
+/// and carries no bits, as it does in `0xAB_CD` and in bit patterns (§3.22).
+///
+/// Only for prefixed strings. A plain string is a sequence of `std_ulogic`
+/// values or `Char`s, where `_` is a character like any other.
+pub fn radix_digits(digits: &str) -> impl DoubleEndedIterator<Item = char> + '_ {
+    digits.chars().filter(|c| *c != '_')
+}
+
 /// Decode a bit-pattern literal (`"1-1-"` / `x"A?"`, spec 3.22) into a
 /// `(mask, value)` pair: an input matches when `input & mask == value`.
 /// A bare string (empty prefix) is per-bit, using `-` (the `std_ulogic`
@@ -176,5 +185,16 @@ mod tests {
         );
         // A letter std may declare but the compiler cannot evaluate.
         assert_eq!(bit_pattern_mask("d\"42\""), None);
+
+        // `_` separates digits and contributes no bits, so a separated
+        // literal is the same value and the same width as the plain one.
+        assert_eq!(radix_digits("AB_CD").collect::<String>(), "ABCD");
+        assert_eq!(radix_digits("_1_2_3_4_").count(), 4);
+        assert_eq!(radix_digits("ABCD").collect::<String>(), "ABCD");
+        assert_eq!(
+            bit_pattern_mask("x\"A_?\""),
+            bit_pattern_mask("x\"A?\""),
+            "a separator does not shift the digits after it"
+        );
     }
 }

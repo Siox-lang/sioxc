@@ -937,7 +937,7 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
             Expr::Int { text, .. } | Expr::SuffixLit { text, .. } => literal_width(text),
             Expr::BitStrLit { base, digits, .. } => {
                 let bits = siox::syntax::bits_per_digit(base.to_ascii_lowercase());
-                u32::try_from(digits.chars().count())
+                u32::try_from(siox::syntax::radix_digits(digits).count())
                     .ok()
                     .and_then(|count| count.checked_mul(bits))
                     .unwrap_or(u32::MAX)
@@ -1460,7 +1460,7 @@ fn parse_word_literal(text: &str) -> Vec<u64> {
 
 fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
     let mut words = Vec::<u64>::new();
-    for digit in digits.chars().filter(|c| *c != '_') {
+    for digit in siox::syntax::radix_digits(digits) {
         let Some(digit) = digit.to_digit(radix) else {
             return vec![0];
         };
