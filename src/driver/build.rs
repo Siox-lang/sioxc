@@ -4820,6 +4820,34 @@ impl Ctx<'_> {
                 };
                 Ok(format!("(({c}) ? {t} : {e})"))
             }
+            // `let t: T = expr;` names a value for the statements that
+            // follow. The body compiles to one C expression, so the name is
+            // substituted rather than declared — matching how lowering
+            // inlines the same body.
+            Some(ast::Stmt::Let(l)) => {
+                let value = l
+                    .value
+                    .as_ref()
+                    .ok_or("a `let` inside a fn body needs a value")?;
+                let rendered = format!("({})", self.expr(value)?);
+                let width =
+                    l.ty.as_ref()
+                        .and_then(|t| self.declared_family(t).map(|(_, w)| w))
+                        .or_else(|| l.ty.as_ref().and_then(|t| self.declared_width(t)));
+                let bound = match width {
+                    Some(w) if w > 0 && w < 64 => mask_c(&rendered, w),
+                    _ => rendered,
+                };
+                let mut scoped = self.fn_env.borrow().last().cloned().unwrap_or_default();
+                if let Some(w) = width {
+                    scoped.insert(format!("{}::length", l.name.text), format!("{w}ULL"));
+                }
+                scoped.insert(l.name.text.clone(), bound);
+                self.fn_env.borrow_mut().push(scoped);
+                let out = self.c_fn_stmts(&stmts[1..], real_return);
+                self.fn_env.borrow_mut().pop();
+                out
+            }
             _ => Err("fn bodies compile as return/if chains only".into()),
         }
     }

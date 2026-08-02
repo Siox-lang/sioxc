@@ -5799,6 +5799,21 @@ impl<'a> Lowering<'a> {
                 };
                 Some(select_val(cond, then, els))
             }
+            // `let t: T = expr;` names a value for the statements that
+            // follow. Without this arm the body matched neither shape and the
+            // whole call lowered to an `Unknown` — and silently, because
+            // `check` and `--emit ir` both pass on it and only code
+            // generation reports the unlowered driver.
+            [ast::Stmt::Let(l), rest @ ..] => {
+                let value = l.value.as_ref()?;
+                let mut scoped = env.clone();
+                scoped.insert(l.name.text.clone(), self.lower_val_env(value, env));
+                scoped.insert(
+                    format!("{}::length", l.name.text),
+                    Val::Scalar(Expr::Const(self.ast_width(value) as u64)),
+                );
+                self.inline_block(rest, &scoped)
+            }
             _ => None,
         }
     }

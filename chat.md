@@ -4152,3 +4152,45 @@ binary passes every test ever written.
 Also noticed on the way, not fixed: a free function whose body declares a
 `let` cannot be inlined in a testbench ("fn bodies compile as return/if chains
 only"). Clear message, real limitation.
+
+## 2026-08-02 (cont.) — a `let` in a function body, and a check that does not check
+
+Chasing the limitation noticed last pass. **A free function whose body names
+an intermediate value did not lower — in either engine.**
+
+    fn absdiff(a: unsigned[8], b: unsigned[8]) -> unsigned[8] {
+        let hi: unsigned[8] = if a > b { a } else { b };
+        let lo: unsigned[8] = if a > b { b } else { a };
+        return hi - lo;
+    }
+
+Both inliners handled exactly two shapes, `return` and `if` chains; anything
+else produced `None`, which becomes an `Unknown` in the middle of a driver.
+The body compiles to one expression in both engines, so the fix is the same in
+both: bind the name and continue with the statements after it. The emitter
+also applies the declared width to the name, so `let small: unsigned[4]`
+truncates as it would anywhere else.
+
+### The narrowing was wrong twice before it was right
+
+First I concluded "both engines fail", from an error naming a signal inside
+the testbench. Then I concluded the design was fine under `#[top]`, because
+`--emit metadata` said `check ok`. Both were wrong, and for the same reason:
+
+    --emit metadata   check ok
+    --emit ir         6 signals, 4 drivers, 0 diagnostics
+    -o design.o       the driver for `Top.u.d` contains an Unknown
+
+**Two of the three ways to ask report success on a design that cannot be
+built.** `metadata` stops before code generation by definition, and `ir`
+counts diagnostics rather than inspecting what it produced. Every narrowing
+step I had run through `--emit metadata` was answering a different question
+than the one I was asking — the earlier probe that told me `let` in a function
+body was fine was doing exactly that.
+
+Redone through the object path, the answer was broader than the original
+symptom: *any* `let` failed, not just one initialised from an if-expression.
+
+The mutation this time was verified before being believed — `MUTATION
+APPLIED`, a clean build, and then four unlowered drivers named. That is the
+third pass in a row where the check-your-check step earned its keep.
