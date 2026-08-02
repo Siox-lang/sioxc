@@ -2035,6 +2035,7 @@ impl<'a> Parser<'a> {
             } else {
                 args.push(GenericArg::Positional(self.parse_generic_value()));
             }
+            self.check_generic_operand();
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -2060,6 +2061,35 @@ impl<'a> Parser<'a> {
             };
         }
         lo
+    }
+
+    /// A generic argument is a postfix expression, so `Bank<K * 2>` stops
+    /// after `K` and the list then fails to close — reported as "expected `>`",
+    /// which says nothing about the cause or the cure. The restriction is
+    /// deliberate (`Bank<K > 2>` would otherwise be ambiguous, the problem
+    /// Rust solves by requiring braces), and parentheses already work, so
+    /// point at them.
+    fn check_generic_operand(&mut self) {
+        let operator = match self.kind() {
+            TokenKind::Plus => "+",
+            TokenKind::Minus => "-",
+            TokenKind::Star => "*",
+            TokenKind::Slash => "/",
+            TokenKind::Shl => "<<",
+            // `>>` is deliberately absent: `close_generic` splits it into two
+            // closing brackets so a bound like `struct Wrap<T: Meter<8>>`
+            // parses, and reading it as a shift here would reject every one.
+            _ => return,
+        };
+        let span = self.span();
+        self.error_at(
+            span,
+            format!("`{operator}` needs parentheses here: write `(a {operator} b)`"),
+        );
+        // Consume the rest of the expression so the list can still close and
+        // the parse keeps going (best-effort, per the stage conventions).
+        self.bump();
+        let _ = self.parse_generic_atom();
     }
 
     fn parse_generic_atom(&mut self) -> Expr {

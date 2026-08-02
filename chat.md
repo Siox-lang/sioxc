@@ -5655,3 +5655,75 @@ cases. Proved non-vacuous by removing the sign restoration for a negative
 dividend (detected), with a no-op comment edit as the negative control (not
 detected) — the mutation helper now demonstrably reports both ways round after
 yesterday's fix to it.
+
+## Generic arguments: a hint that names the spelling that works
+
+A generic argument is parsed as a *single term* — `parse_generic_value` reads
+one postfix expression. The restriction is deliberate: `Bank<K > 2>` would
+otherwise be ambiguous between closing the list and comparing, the problem
+Rust solves by requiring braces. Parentheses already sidestep it, and
+`Bank<(K * 2)>` elaborates to 6 exactly as intended.
+
+Nothing said so. `Bank<K * 2>` stopped after `K` and then reported
+
+    error: expected `>` to close a generic argument list
+
+pointing at the `*` as though the list were malformed rather than the
+expression unparenthesised. The cure was one character away and
+undiscoverable from the message. Confirmed by isolation: literal `6`,
+bare `K`, `(K)` and named `N = 6` all parse; `K * 2`, `K + 1` and
+`N = K + 1` all fail — while `(K * 2)` and `(K + 1)` parse and give 6 and 4.
+
+`parse_generic_args` now checks the token after each argument and, on an
+arithmetic operator, reports
+
+    error: `*` needs parentheses here: write `(a * b)`
+
+then consumes the rest of the expression so the list still closes and the
+parse continues — the hint is the only error, not the head of a cascade.
+
+**The fix nearly shipped with a regression I introduced myself.** My first
+operator set included `>>`. But `>>` is not a shift at that position: it is
+two closing brackets, split in place by `close_generic` so a bound like
+`struct Wrap<T: Meter<8>>` parses. Every working generic in the file started
+reporting "`>>` needs parentheses". Caught by re-running the *valid* forms
+after the invalid ones — checking only that the bad input now errors would
+have missed it entirely. `tests/generic_argument_operator.rs` asserts both
+directions plus the `>>` bound, and documents why.
+
+Documented the rule in `docs/language.md` §3.2, which described named and
+positional arguments but never said an argument is a single term.
+
+### The measurement was broken for three commands and I read it anyway
+
+Between the fix and the test, `cargo test` reported the hint followed by a
+four-error cascade, so I tightened the test to demand the hint be the only
+error — and then watched three CLI runs agree with the cascade. All of it was
+false. `mutate.py` restores its backup with `shutil.move`, and the backup came
+from `shutil.copy`, which does *not* preserve mtime. The restored file
+therefore looked older than the mutated build, cargo judged it up to date, and
+the binary kept the last mutation — recovery removed — for every command that
+followed.
+
+This is the same failure I recorded yesterday as "CI green after a mutation
+session is untrustworthy", except inverted: the stale binary manufactured a
+defect instead of hiding one, and I was about to design around it. Only
+instrumenting the parser — which forced a rebuild — showed the recovery had
+been working the whole time. The helper now calls `os.utime` after restoring;
+the rule is that a mutation harness must invalidate the build both on the way
+in and on the way out.
+
+Mutations, re-run after the fix: removing the check, dropping `*` from the
+set, removing the recovery, and re-adding `>>` — all four detected, each by
+the assertion aimed at it.
+
+### Found, not fixed: a generic argument cannot itself be generic
+
+`Wrap<Cell<8>>` does not parse, and neither does the spaced `Wrap<Cell<8> >`,
+so this is not the `>>` split. `Wrap<Cell>` and `Wrap<unsigned[8]>` both work,
+as do `Cell<8>` as a field type and `Meter<8>` as a bound — those go through
+`parse_type`. Only the generic-argument position is limited, because a
+`GenericArg` holds an `Expr` and there is no expression shape for a generic
+application; every consumer in resolve, elab, types and ir matches
+`Positional(Expr::Path(p))`. Giving type arguments their own representation is
+a feature, not a parser tweak, and no doc or std source uses the shape today.

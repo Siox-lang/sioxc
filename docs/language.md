@@ -291,6 +291,17 @@ let c: Counter<8> = {
 };
 ```
 
+An argument that is more than a single term must be parenthesized. A bare `>`
+would otherwise be ambiguous between "close the argument list" and "greater
+than" — the problem Rust solves by requiring braces — so an argument is parsed
+as one term and parentheses restore the rest:
+
+```siox
+Counter<(W * 2)>        // valid
+Counter<W = (W + 1)>    // valid, named
+Counter<W * 2>          // invalid: `*` needs parentheses
+```
+
 Recommended Phase 1 restriction: do not allow mixing named and positional parameters in the same specialization.
 
 Valid:
