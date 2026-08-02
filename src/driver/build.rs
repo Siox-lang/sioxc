@@ -3757,7 +3757,22 @@ impl Ctx<'_> {
                     "{ind}if (!({c})) {{ {set} fprintf(stderr, \"warning: %s\\n\", g_msg); g_warnings++; }}\n"
                 ));
             }
-            _ => {}
+            // A method call in statement position (`r.set(7)`): the callee is
+            // a field, so it never matched a name above and fell out of this
+            // dispatch without a word. Hardware inlines it as drivers; the
+            // testbench has to inline it as statements, or a mutating method
+            // does nothing at all here while the identical call works in an
+            // entity body.
+            _ => {
+                if let ast::Expr::Field { base, field, .. } = callee {
+                    if let Some(ty) = self.receiver_type(base) {
+                        let (stmts, _) = self.method_body(&ty, &field.text, base, args)?;
+                        for stmt in &stmts {
+                            self.stmt(stmt, b, depth)?;
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -4567,9 +4582,24 @@ impl Ctx<'_> {
                 format!("cannot resolve the receiver type of `.{method}()`")
             }
         })?;
+        let (stmts, real) = self.method_body(&ty, method, recv, args)?;
+        self.c_fn_stmts(&stmts, real)
+    }
+
+    /// A method's body with `self` and the parameters substituted, plus
+    /// whether it returns a `real`. Shared by the value path (`p.sum()`) and
+    /// the statement path (`r.set(7)`), so a method means the same thing in
+    /// both — the statement path used to mean nothing at all.
+    fn method_body(
+        &self,
+        ty: &str,
+        method: &str,
+        recv: &ast::Expr,
+        args: &[ast::Expr],
+    ) -> Result<(Vec<ast::Stmt>, bool), String> {
         let f = self
             .methods
-            .get(&(ty.clone(), method.to_string()))
+            .get(&(ty.to_string(), method.to_string()))
             .ok_or_else(|| format!("unknown method `{ty}::{method}`"))?;
         let body = f.body.as_ref().ok_or("method has no body")?;
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
@@ -4579,15 +4609,13 @@ impl Ctx<'_> {
                 map.insert(n.text.clone(), a.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> = body
+        let stmts = body
             .stmts
             .iter()
             .map(|s| siox::ir::subst_stmt_paths(s, &map))
             .collect();
-        self.c_fn_stmts(
-            &stmts,
-            f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real")),
-        )
+        let real = f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real"));
+        Ok((stmts, real))
     }
 
     /// A module-fn call as a C expression: bind the arguments, then flatten

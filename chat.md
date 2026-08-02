@@ -5079,3 +5079,38 @@ The regression test pairs every generic call with the identical call on a
 non-generic struct, so the two are compared against each other. Without the
 fix it does not merely fail: the value-returning `b.doubled()` becomes an
 `Unknown` and the design will not build.
+
+## 2026-08-02 (cont.) — a mutating method did nothing in a testbench
+
+Last round's bug was a `match ty` whose `Path`/`View` arms and catch-all
+swallowed `Type::Generic`. That is a shape, so I enumerated every type-dispatch
+site in the compiler and listed which variants each handles. Eleven have a
+catch-all and miss something; the one that looked most dangerous was the
+emitter's, since it would be the parallel-path twin of what I had just fixed.
+
+It was a false lead — the emitter's `type_head_name` recurses through
+`Generic` correctly. But testing it anyway found something else:
+
+    hardware=7  testbench=0  direct=9
+
+`r.set(7)` works in an entity body and does **nothing** in a testbench, while
+a direct field write on the same local works. Not generic-specific: the plain
+struct behaves identically, so the enumeration pointed at the right file for
+the wrong reason.
+
+The emitter dispatches a call statement by matching the callee's *leading path
+segment* against `await`, `print`, `assert` and friends. A method call's callee
+is an `Expr::Field`, so the name is empty, nothing matches, and the arm is
+`_ => {}`. The value form (`p.sum()`) was fine because it goes through the
+expression path; only statement position vanished.
+
+Fixed by inlining the body as statements, sharing the substitution with the
+value path (`method_body`) rather than writing a second copy — the same
+discipline as the earlier `method_stmt_body` split in `ir`, and for the same
+reason: two copies of "what a method call means" is how this family of bugs
+starts.
+
+The corpus test now runs every call twice, once in an entity body and once in
+the testbench, and asserts the two agree. Both mutants caught: dropping the
+generic type name fails to build, dropping the testbench inline fails the
+assertion.
