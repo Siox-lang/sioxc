@@ -172,6 +172,10 @@ struct Checker<'a> {
     /// at the root of another entity's body, or inside a generate `for`/`if` —
     /// a `match` is neither, and elaboration never gathered instances from one.
     in_match_arm: std::cell::Cell<bool>,
+    /// Generic parameter names in scope (an impl's binder, a fn's own). A
+    /// parameter is never an entity instantiation even when an entity happens
+    /// to share its name — elaboration excludes them the same way.
+    type_params: std::cell::RefCell<HashSet<String>>,
     sink: &'a mut DiagnosticSink,
     resolved: &'a Resolved,
     /// Entity name -> its ports.
@@ -289,6 +293,7 @@ impl<'a> Checker<'a> {
             in_testbench: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),
             in_match_arm: std::cell::Cell::new(false),
+            type_params: std::cell::RefCell::new(HashSet::new()),
             sink,
             resolved,
             entities: HashMap::new(),
@@ -969,7 +974,10 @@ impl<'a> Checker<'a> {
             Item::Trait(t) => {
                 for f in &t.items {
                     if let Some(b) = &f.body {
+                        let saved =
+                            self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
                         self.check_block(b);
+                        *self.type_params.borrow_mut() = saved;
                     }
                 }
             }
@@ -1473,7 +1481,9 @@ impl<'a> Checker<'a> {
         let saved_tb = self
             .in_testbench
             .replace(type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)));
+        let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
         self.check_impl_inner(im);
+        *self.type_params.borrow_mut() = saved_params;
         self.in_testbench.set(saved_tb);
     }
 
@@ -1562,7 +1572,10 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Fn(f) => {
                     if let Some(b) = &f.body {
+                        let saved =
+                            self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
                         self.check_block(b);
+                        *self.type_params.borrow_mut() = saved;
                     }
                 }
                 ImplItem::ModeField { .. } => {}
@@ -2777,6 +2790,15 @@ impl<'a> Checker<'a> {
         self.methods.keys().any(|(_, m)| m == name)
     }
 
+    /// Bring `names` into scope as generic parameters, returning the previous
+    /// set for the caller to restore.
+    fn push_type_params<'n>(&self, names: impl Iterator<Item = &'n String>) -> HashSet<String> {
+        let mut scope = self.type_params.borrow_mut();
+        let saved = scope.clone();
+        scope.extend(names.cloned());
+        saved
+    }
+
     /// An entity may be instantiated only at the root layer of another
     /// entity's body, or inside a generate `for`/`if`. A `match` arm and a
     /// function body are neither.
@@ -2794,7 +2816,7 @@ impl<'a> Checker<'a> {
         let Some(head) = l.ty.as_ref().and_then(type_head_name) else {
             return;
         };
-        if !self.entities.contains_key(head) {
+        if !self.entities.contains_key(head) || self.type_params.borrow().contains(head) {
             return;
         }
         let context = if self.in_fn_body.get() {
@@ -6139,6 +6161,34 @@ mod tests {
              if 1 == 1 {{ let g: Cell = {{ .i = 3 }}; y = g.o; }} else {{ y = 0; }} }}\n"
         ));
         assert_eq!(generate, 0, "a generate `for` and a generate `if`");
+
+        // A generic parameter names data, never an instance, even when an
+        // entity happens to share its name. Checking the head against the
+        // entity table alone rejected `let held: T` in a generic method.
+        let shadowed_method = count(
+            "module m;\nentity T { i: unsigned[8] in, o: unsigned[8] out }\nimpl T { o = i; }\n\
+             struct Box<T> { v: T }\n\
+             impl<T> Box<T> { fn get(self) -> T { let held: T = self.v; return held; } }\n",
+        );
+        assert_eq!(shadowed_method, 0, "`T` here is the impl's parameter");
+
+        let shadowed_match = count(
+            "module m;\nentity T { i: unsigned[8] in, o: unsigned[8] out }\nimpl T { o = i; }\n\
+             entity Sel<T> { s: unsigned[2] in, d: T in, y: T out }\n\
+             impl<T> Sel<T> { y = d; match s { 0 => { let a: T; y = d; } _ => { y = d; } } }\n",
+        );
+        assert_eq!(
+            shadowed_match, 0,
+            "and in a `match` arm of a generic entity"
+        );
+
+        // The entity is still an entity outside that binder.
+        let unshadowed = count(
+            "module m;\nentity T { i: unsigned[8] in, o: unsigned[8] out }\nimpl T { o = i; }\n\
+             entity E { s: unsigned[2] in, y: unsigned[8] out }\n\
+             impl E { y = 0; match s { 0 => { let a: T = { .i = 1 }; } _ => { y = 1; } } }\n",
+        );
+        assert_eq!(unshadowed, 1, "no binder in scope, so `T` is the entity");
     }
 
     /// A statement expression that is not a call was dropped by lowering's

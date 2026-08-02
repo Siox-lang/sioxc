@@ -4488,3 +4488,36 @@ I also re-checked wide values end to end, since I had just changed that code:
 a 128-bit shifter seeded from a separated hex literal, rotated three times,
 with slices straddling the 64-bit boundary, and 128-bit add/sub/compare across
 the carry. Every value matched Python. Nothing found in either area.
+
+## 2026-08-02 (cont.) — the check I shipped an hour ago was wrong
+
+Attacked my own newest code first: the `E-P020` instance-placement check. It
+decides "is this an entity?" by looking the type head up in the entity table,
+and that is not the question. A generic binder shadows the name:
+
+    entity T { i: unsigned[8] in, o: unsigned[8] out }   // an entity called T
+    impl<T> Box<T> {
+        fn get(self) -> T { let held: T = self.v; return held; }
+    }
+    // error[E-P020]: an entity cannot be instantiated in a function
+
+`held` is data of the impl's parameter type. `gather_instances` has excluded
+bare type parameters all along — its comment says so in as many words, "even
+when an entity happens to be named `T`" — and I read that code, copied the
+shape of the walk, and left the exclusion behind. Both halves had it: `types`
+for the `match`/function cases, `elab` for the process case.
+
+Three shapes were rejected wrongly. None of them compiled for *other* reasons
+(a block-local `let` in a process is not lowered yet), so no working program
+broke — but the message was false and it preempted the real diagnosis, which
+is the same complaint I made about `no value named d` two sweeps ago.
+
+Now both consult the enclosing binder: `types` keeps a scoped set pushed at
+`check_impl` and around each fn/trait-method body, `elab` threads the
+`tparams` set `gather_instances` already computes. A fourth case pins the
+other direction — with no binder in scope, `T` *is* the entity and the error
+stands.
+
+The lesson is narrow and worth keeping: when a new check duplicates the walk
+of an existing one, the existing one's *exclusions* are part of the walk. I
+copied the traversal and not the filter.

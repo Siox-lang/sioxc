@@ -667,23 +667,26 @@ impl<'a> Elaborator<'a> {
     /// not walk, so it can be reported rather than silently dropped. Nested
     /// `if`/`for`/`match` bodies count too: none of them is reachable once the
     /// enclosing `if` is behavioural.
-    fn note_misplaced(&self, b: &Block) {
+    fn note_misplaced(&self, b: &Block, tparams: &HashSet<String>) {
         for st in &b.stmts {
             match st {
                 Stmt::Let(l) => {
                     if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
-                        if self.entities.contains_key(head) {
+                        // A bare type parameter names data, not an instance,
+                        // even when an entity happens to share its name — the
+                        // same exclusion `gather_instances` makes.
+                        if self.entities.contains_key(head) && !tparams.contains(head) {
                             self.misplaced
                                 .borrow_mut()
                                 .push((l.name.text.clone(), l.span));
                         }
                     }
                 }
-                Stmt::If(inner) => self.note_misplaced_if(inner),
-                Stmt::For { body, .. } => self.note_misplaced(body),
+                Stmt::If(inner) => self.note_misplaced_if(inner, tparams),
+                Stmt::For { body, .. } => self.note_misplaced(body, tparams),
                 Stmt::Match(m) => {
                     for arm in &m.arms {
-                        self.note_misplaced(&arm.body);
+                        self.note_misplaced(&arm.body, tparams);
                     }
                 }
                 _ => {}
@@ -691,11 +694,11 @@ impl<'a> Elaborator<'a> {
         }
     }
 
-    fn note_misplaced_if(&self, iff: &IfStmt) {
-        self.note_misplaced(&iff.then);
+    fn note_misplaced_if(&self, iff: &IfStmt, tparams: &HashSet<String>) {
+        self.note_misplaced(&iff.then, tparams);
         match iff.else_.as_deref() {
-            Some(ElseBranch::Block(b)) => self.note_misplaced(b),
-            Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner),
+            Some(ElseBranch::Block(b)) => self.note_misplaced(b, tparams),
+            Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner, tparams),
             None => {}
         }
     }
@@ -726,10 +729,10 @@ impl<'a> Elaborator<'a> {
             // generate. Instances here were dropped without a word, so the
             // design ran as though they had never been written.
             ParamValue::Unknown => {
-                self.note_misplaced(&iff.then);
+                self.note_misplaced(&iff.then, tparams);
                 match iff.else_.as_deref() {
-                    Some(ElseBranch::Block(b)) => self.note_misplaced(b),
-                    Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner),
+                    Some(ElseBranch::Block(b)) => self.note_misplaced(b, tparams),
+                    Some(ElseBranch::If(inner)) => self.note_misplaced_if(inner, tparams),
                     None => {}
                 }
             }
@@ -1461,6 +1464,19 @@ mod tests {
             hier.instances.iter().any(|i| i.name.ends_with('c')),
             "and that instance is elaborated"
         );
+
+        // A bare type parameter names data, not an instance, even when an
+        // entity shares its name — `gather_instances` already excludes them,
+        // and the report has to make the same exclusion or it invents a
+        // violation out of `let held: T`.
+        let (_, shadowed) = elaborate_src(
+            "module m;\nentity T { i: Bit in, o: Bit out }\nimpl T { o = i; }\n\
+             entity Buf<T> { clk: Bit in, d: T in, q: T out }\n\
+             impl<T> Buf<T> { q = d; if clk.rising() { let held: T; } }\n\
+             #[top] entity Top { clk: Bit in, y: Bit out }\n\
+             impl Top { let b: Buf<Bit> = { .clk = clk, .d = clk }; y = b.q; }\n",
+        );
+        assert_eq!(shadowed, 0, "`T` here is the entity's type parameter");
     }
 
     #[test]
