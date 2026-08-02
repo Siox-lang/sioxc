@@ -1288,9 +1288,15 @@ impl<'a> Lowering<'a> {
                     // seeds each field signal. The testbench interpreter has
                     // always honoured this; hardware lowering did not, so an
                     // entity-level struct local silently powered on at 0.
-                    if let Some(ast::Expr::Construct { args, .. }) = &l.value {
+                    if let Some(ast::Expr::Construct { args, spread, .. }) = &l.value {
                         let head = l.ty.as_ref().and_then(type_head_name).map(str::to_string);
-                        self.seed_struct_literal(&l.name.text, head.as_deref(), args, l.span);
+                        self.seed_struct_literal(
+                            &l.name.text,
+                            head.as_deref(),
+                            args,
+                            spread.as_deref(),
+                            l.span,
+                        );
                     }
                     // An array-literal initializer (`let rom: unsigned[8][4] =
                     // [1, 2, 3, 4]`) seeds each element, as the string and
@@ -2317,8 +2323,29 @@ impl<'a> Lowering<'a> {
         prefix: &str,
         struct_name: Option<&str>,
         args: &[ast::ConnectArg],
+        spread: Option<&ast::Expr>,
         span: crate::diag::Span,
     ) {
+        // `{ ..base, .x = v }` takes every leaf from `base` first, so the
+        // explicit fields below overwrite what they name. Without this the
+        // fields the literal did not mention powered on at 0 rather than at
+        // the base's value, while the ones it did name seeded correctly.
+        if let Some(base) = spread.and_then(expr_path) {
+            let from = format!("{base}.");
+            let leaves: Vec<(String, SignalId)> = self
+                .locals
+                .iter()
+                .filter(|(name, _)| name.starts_with(&from))
+                .map(|(name, id)| (name.clone(), *id))
+                .collect();
+            for (name, src) in leaves {
+                let target = format!("{prefix}.{}", &name[from.len()..]);
+                if let Some(&dst) = self.locals.get(&target) {
+                    let init = self.out.signals[src.0 as usize].init.clone();
+                    self.out.signals[dst.0 as usize].init = init;
+                }
+            }
+        }
         let fields: Vec<(String, ast::Type)> = struct_name
             .and_then(|h| self.structs.get(h))
             .map(|sd| {
@@ -2338,15 +2365,50 @@ impl<'a> Lowering<'a> {
                 continue;
             };
             let path = format!("{prefix}.{field}");
-            // A nested literal seeds its own leaves under this field's name.
-            if let ast::Expr::Construct { args: inner, .. } = value {
-                let inner_ty = fields
-                    .iter()
-                    .find(|(n, _)| *n == field)
-                    .and_then(|(_, t)| type_head_name(t))
-                    .map(str::to_string);
-                self.seed_struct_literal(&path, inner_ty.as_deref(), inner, span);
-                continue;
+            // A field whose value is itself an aggregate names no leaf of its
+            // own, so each of these used to fall through the lookup below and
+            // seed nothing — silently, and without even reaching the
+            // non-constant check.
+            match value {
+                ast::Expr::Construct {
+                    args: inner,
+                    spread: inner_spread,
+                    ..
+                } => {
+                    let inner_ty = fields
+                        .iter()
+                        .find(|(n, _)| *n == field)
+                        .and_then(|(_, t)| type_head_name(t))
+                        .map(str::to_string);
+                    self.seed_struct_literal(
+                        &path,
+                        inner_ty.as_deref(),
+                        inner,
+                        inner_spread.as_deref(),
+                        span,
+                    );
+                    continue;
+                }
+                // `{ .arr = [4, 5, 6] }` seeds `arr[0..2]`.
+                ast::Expr::Array { elems, .. } => {
+                    self.seed_elements(&path, elems.iter().collect::<Vec<_>>(), span);
+                    continue;
+                }
+                // `{ .name = "abc" }` seeds one element per character.
+                ast::Expr::StrLit { text, .. } => {
+                    let indices = self.local_array.get(&path).cloned().unwrap_or_default();
+                    for (c, i) in text.chars().zip(&indices) {
+                        if let Some(&id) = self.locals.get(&format!("{path}[{i}]")) {
+                            let en = self.out.signals[id.0 as usize].enum_type.clone();
+                            let v = en
+                                .and_then(|e| self.char_disc(c, &e))
+                                .unwrap_or(c as u32 as u64);
+                            self.out.signals[id.0 as usize].init = vec![v];
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
             }
             // Only constants seed an init. A non-constant is *not* lowered as
             // a driver here, whatever the comment used to claim: `{ .y = src +
@@ -2360,6 +2422,24 @@ impl<'a> Lowering<'a> {
             let en = self.out.signals[id.0 as usize].enum_type.clone();
             let is_char = self.out.signals[id.0 as usize].char;
             if let Some(v) = self.const_init_value(value, en.as_deref(), is_char) {
+                self.out.signals[id.0 as usize].init = vec![v];
+            } else {
+                self.report_non_constant_init(&path, span);
+            }
+        }
+    }
+
+    /// Seed each element of an array-valued field or local from a literal.
+    fn seed_elements(&mut self, prefix: &str, elems: Vec<&ast::Expr>, span: crate::diag::Span) {
+        let indices = self.local_array.get(prefix).cloned().unwrap_or_default();
+        for (elem, i) in elems.into_iter().zip(indices) {
+            let path = format!("{prefix}[{i}]");
+            let Some(&id) = self.locals.get(&path) else {
+                continue;
+            };
+            let en = self.out.signals[id.0 as usize].enum_type.clone();
+            let is_char = self.out.signals[id.0 as usize].char;
+            if let Some(v) = self.const_init_value(elem, en.as_deref(), is_char) {
                 self.out.signals[id.0 as usize].init = vec![v];
             } else {
                 self.report_non_constant_init(&path, span);

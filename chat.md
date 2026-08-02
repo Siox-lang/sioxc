@@ -5506,3 +5506,39 @@ of -3 — but I had measured it through `signed[8](n)`, and a conversion is a
 raw resize by documented design. Testing the value directly (`n == 0 - 3`,
 `n < 0`) shows the seed is -3 and always was. The instrument was wrong, not
 the compiler; worth the extra probe before filing it.
+
+## 2026-08-03 — every aggregate field value, not just the nested struct
+
+Last round ended on a structural point: the nested-struct bug survived three
+rounds of work on that code because it left the loop *earlier* than any check I
+had been adding. That `continue` — "look this field up as a leaf signal, skip
+it if it is not one" — is reached by every field value that is not a scalar.
+I had fixed one of them. Enumerating the rest found three more, all silent:
+
+    let a: WithArr = { .arr = [4, 5, 6], .n = 9 };   // arr[0] = 0, n = 9
+    let s: WithStr = { .name = "abc", .n = 8 };      // name[0] = 0, n = 8
+    let u: Base    = { ..base, .x = 7 };             // x = 7, y = 0
+
+In each the sibling *scalar* field seeded correctly, which is what made these
+survive: a design using such a struct looks half-right, and the half that works
+is the half you check first.
+
+The spread is the most interesting of the three. `{ ..base, .x = 7 }` is
+documented as "take every field from `base` and override the listed ones", and
+the override worked while the inheritance did not — so the feature appeared
+functional and quietly discarded exactly the fields the author did not think
+about.
+
+All four cases now go through one recursive seeder: a nested literal recurses
+(carrying the field's declared type so inner names resolve), an array literal
+seeds its elements, a string literal seeds one element per character, and a
+spread copies the base's leaves first so the named fields overwrite them.
+Verified composing to depth — an array inside a struct inside a struct seeds
+11, 22, 5, 3.
+
+A mutation of mine did not apply because `cargo fmt` had reflowed the line I
+was matching, and the run that followed printed the *unmutated* result: a
+passing test that proved nothing. I caught it because the assertion I expected
+to fail was absent from the output rather than present-and-failing. Worth
+keeping: when a mutation script asserts its own edit landed, check the
+assertion fired, not just that the test ran.
