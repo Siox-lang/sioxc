@@ -5476,3 +5476,33 @@ seeding 0, and nobody would have found it. But turning a silent path loud
 exposes every case that path was quietly mishandling, and I should have swept
 the shapes that reach it *before* making it fatal, not two rounds later
 because a probe aimed elsewhere tripped over it.
+
+## 2026-08-02 (cont.) — a struct inside a struct did not seed
+
+Acting on the lesson from last round rather than restating it: `E-P021` is
+fatal, so I swept every type that can be a `let` target and checked its
+constant initializer — twenty shapes, from `integer<-8..7>` and newtypes to
+nested structs, char arrays and `string[3]`. All twenty fold without error.
+
+Then the part the `Char` bug taught: **no error is not the same as the right
+value.** Checking the values of the shapes `initializer_seed_test` did not
+already pin found one real bug and one mistake of mine.
+
+**Real.** A struct literal nested inside a struct literal seeds nothing:
+
+    let dp: Deep = { .inner = { .x = 7, .y = 9 }, .flag = '1' };
+    dp.inner.x     // 0, and no diagnostic
+    dp.flag        // 1 — the sibling scalar field seeds fine
+
+The field loop looks each field up as a leaf, and `dp.inner` is not one (its
+leaves are `dp.inner.x` and `dp.inner.y`), so it `continue`d past — before
+reaching even the `E-P021` check, which is why this stayed silent through the
+last three rounds of work on exactly this code. Seeding is now a recursive
+helper that descends into a nested literal, carrying the field's declared type
+so the inner field names resolve.
+
+**Mine.** I first read `let n: integer<-8..7> = 0 - 3;` as seeding 13 instead
+of -3 — but I had measured it through `signed[8](n)`, and a conversion is a
+raw resize by documented design. Testing the value directly (`n == 0 - 3`,
+`n < 0`) shows the seed is -3 and always was. The instrument was wrong, not
+the compiler; worth the extra probe before filing it.

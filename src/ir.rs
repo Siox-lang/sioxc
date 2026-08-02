@@ -1289,44 +1289,8 @@ impl<'a> Lowering<'a> {
                     // always honoured this; hardware lowering did not, so an
                     // entity-level struct local silently powered on at 0.
                     if let Some(ast::Expr::Construct { args, .. }) = &l.value {
-                        let fields: Vec<String> =
-                            l.ty.as_ref()
-                                .and_then(type_head_name)
-                                .and_then(|h| self.structs.get(h))
-                                .map(|sd| sd.fields.iter().map(|f| f.name.text.clone()).collect())
-                                .unwrap_or_default();
-                        for (i, arg) in args.iter().enumerate() {
-                            // Named (`.a = 1`) or positional (bound by order).
-                            let field = match &arg.field {
-                                Some(f) => Some(f.text.clone()),
-                                None => fields.get(i).cloned(),
-                            };
-                            let (Some(field), Some(value)) = (field, arg.value.as_ref()) else {
-                                continue;
-                            };
-                            // Only constants seed an init. A non-constant is
-                            // *not* lowered as a driver here, whatever this
-                            // comment used to claim: `{ .y = src + 1 }` left
-                            // `p.y` at 0 for every value of `src`, and the
-                            // undriven lint does not reach a struct leaf, so
-                            // nothing said anything at all.
-                            let Some(&id) = self.locals.get(&format!("{}.{field}", l.name.text))
-                            else {
-                                continue;
-                            };
-                            // The field's own enum type resolves a character
-                            // literal (`.state = 'Z'`) to its variant.
-                            let en = self.out.signals[id.0 as usize].enum_type.clone();
-                            let is_char = self.out.signals[id.0 as usize].char;
-                            if let Some(v) = self.const_init_value(value, en.as_deref(), is_char) {
-                                self.out.signals[id.0 as usize].init = vec![v];
-                            } else {
-                                self.report_non_constant_init(
-                                    &format!("{}.{field}", l.name.text),
-                                    l.span,
-                                );
-                            }
-                        }
+                        let head = l.ty.as_ref().and_then(type_head_name).map(str::to_string);
+                        self.seed_struct_literal(&l.name.text, head.as_deref(), args, l.span);
                     }
                     // An array-literal initializer (`let rom: unsigned[8][4] =
                     // [1, 2, 3, 4]`) seeds each element, as the string and
@@ -2339,6 +2303,67 @@ impl<'a> Lowering<'a> {
         match args.first() {
             Some(ast::Expr::StrLit { text, .. }) => Some(text),
             _ => None,
+        }
+    }
+
+    /// Seed a struct literal's leaves, recursing into a nested literal.
+    ///
+    /// `{ .p = { .x = 7 } }` names no leaf at `p` — the leaves are `p.x` and
+    /// `p.y` — so the field loop used to `continue` past it and the inner
+    /// values were dropped without a word, while a sibling scalar field on the
+    /// same literal seeded correctly.
+    fn seed_struct_literal(
+        &mut self,
+        prefix: &str,
+        struct_name: Option<&str>,
+        args: &[ast::ConnectArg],
+        span: crate::diag::Span,
+    ) {
+        let fields: Vec<(String, ast::Type)> = struct_name
+            .and_then(|h| self.structs.get(h))
+            .map(|sd| {
+                sd.fields
+                    .iter()
+                    .map(|f| (f.name.text.clone(), f.ty.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (i, arg) in args.iter().enumerate() {
+            // Named (`.a = 1`) or positional (bound by declaration order).
+            let field = match &arg.field {
+                Some(f) => Some(f.text.clone()),
+                None => fields.get(i).map(|(n, _)| n.clone()),
+            };
+            let (Some(field), Some(value)) = (field, arg.value.as_ref()) else {
+                continue;
+            };
+            let path = format!("{prefix}.{field}");
+            // A nested literal seeds its own leaves under this field's name.
+            if let ast::Expr::Construct { args: inner, .. } = value {
+                let inner_ty = fields
+                    .iter()
+                    .find(|(n, _)| *n == field)
+                    .and_then(|(_, t)| type_head_name(t))
+                    .map(str::to_string);
+                self.seed_struct_literal(&path, inner_ty.as_deref(), inner, span);
+                continue;
+            }
+            // Only constants seed an init. A non-constant is *not* lowered as
+            // a driver here, whatever the comment used to claim: `{ .y = src +
+            // 1 }` left `p.y` at 0 for every value of `src`, and the undriven
+            // lint does not reach a struct leaf, so nothing said anything.
+            let Some(&id) = self.locals.get(&path) else {
+                continue;
+            };
+            // The field's own enum type resolves a character literal
+            // (`.state = 'Z'`) to its variant.
+            let en = self.out.signals[id.0 as usize].enum_type.clone();
+            let is_char = self.out.signals[id.0 as usize].char;
+            if let Some(v) = self.const_init_value(value, en.as_deref(), is_char) {
+                self.out.signals[id.0 as usize].init = vec![v];
+            } else {
+                self.report_non_constant_init(&path, span);
+            }
         }
     }
 
