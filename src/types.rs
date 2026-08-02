@@ -1574,7 +1574,8 @@ impl<'a> Checker<'a> {
                     if let Some(b) = &f.body {
                         let saved =
                             self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
-                        self.check_block(b);
+                        let view = self.self_view_dirs(&im.target);
+                        self.check_block_with(b, &view);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -1713,17 +1714,20 @@ impl<'a> Checker<'a> {
     }
 
     fn check_block(&mut self, b: &Block) {
+        self.check_block_with(b, &PortDirs::default());
+    }
+
+    /// A method body whose `self` carries directions — an impl on a view
+    /// (`impl Stream StreamSource`) — must respect them. Writing an `in` leaf
+    /// is rejected inline (`bus.ready = '1'` is `E-P004`), but method bodies
+    /// were checked with no directions at all, so the same write hidden in
+    /// `fn bad(self) { self.ready = '1'; }` was accepted *and driven*, which
+    /// defeats the point of a view.
+    fn check_block_with(&mut self, b: &Block, view_dirs: &PortDirs) {
         // Every caller of this is a function body — a trait method, a free
         // function, or an impl method — so `return` is legal inside it.
         let saved = self.in_fn_body.replace(true);
-        let (dirs, sym) = (
-            PortDirs {
-                illegal: HashSet::new(),
-                plain_in_roots: HashSet::new(),
-                consts: HashSet::new(),
-            },
-            HashMap::new(),
-        );
+        let (dirs, sym) = (view_dirs.clone(), HashMap::new());
         let ranged = HashMap::new();
         self.lint_dead_assignments(b.stmts.iter());
         for s in &b.stmts {
@@ -2839,6 +2843,25 @@ impl<'a> Checker<'a> {
         // receiver supplies: if any type implements a method of this name it
         // is not an unknown *function*.
         self.methods.keys().any(|(_, m)| m == name)
+    }
+
+    /// The write restrictions `self` carries inside an impl on a view: each
+    /// leaf the role declares `in` is an input there, so `self.<leaf>` cannot
+    /// be driven. Empty for any other impl target, where `self` is plain data.
+    fn self_view_dirs(&self, target: &Type) -> PortDirs {
+        let mut dirs = PortDirs::default();
+        let Some(key) = type_identity(target) else {
+            return dirs;
+        };
+        let Some(leaves) = self.view_dirs.get(&key) else {
+            return dirs;
+        };
+        for (field, dir) in leaves {
+            if *dir == Direction::In {
+                dirs.illegal.insert(format!("self.{field}"));
+            }
+        }
+        dirs
     }
 
     /// Bring `names` into scope as generic parameters, returning the previous
@@ -4518,6 +4541,7 @@ fn target_root_name(e: &Expr) -> Option<String> {
 }
 
 /// Port-direction facts for the write-to-input check within one impl.
+#[derive(Clone, Default)]
 struct PortDirs {
     /// Names whose write is illegal exactly: a bare `in` port, or an `in`
     /// bus-mode leaf (`bus.ready`).
@@ -6187,6 +6211,83 @@ mod tests {
     /// when char patterns landed nothing checked pattern position — and since
     /// a character has no intrinsic value the arm compared two unrelated
     /// discriminants and *matched*, because `State::Idle` and `'0'` are both 0.
+    /// A view gives each leaf of a role a direction, and writing an `in` leaf
+    /// is `E-P004` when written inline. Method bodies were checked with no
+    /// directions at all, so the same write hidden behind a method was
+    /// accepted *and driven* — `fn bad(self) { self.ready = '1'; }` on a
+    /// Source, whose `ready` is an input, defeated the whole point of the view.
+    #[test]
+    fn a_view_method_cannot_drive_an_input_leaf() {
+        let count = |src: &str| {
+            let src = format!("{src}{VEC}");
+            let mut sink = DiagnosticSink::new();
+            let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+            let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+            check(std::slice::from_ref(&module), &resolved, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::WRITE_TO_INPUT_PORT))
+                .count()
+        };
+        const BUS: &str = "module m;\n\
+            struct Stream { valid: Bit, data: unsigned[8], ready: Bit }\n\
+            view StreamSource for Stream { valid out, data out, ready in }\n\
+            view StreamSink for Stream { valid in, data in, ready out }\n";
+
+        // `ready` is an input for the Source role.
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Stream StreamSource {{ fn bad(self) {{ self.ready = '1'; }} }}\n"
+            )),
+            1,
+            "a Source method driving `ready`"
+        );
+        // The Sink role has the opposite polarity, so `valid` is its input.
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Stream StreamSink {{ fn bad(self) {{ self.valid = '1'; }} }}\n"
+            )),
+            1,
+            "a Sink method driving `valid`"
+        );
+        // Nested inside control flow, where the walk has to carry the context.
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Stream StreamSource {{ \
+                 fn bad(self, e: Bit) {{ if e == '1' {{ self.ready = '1'; }} }} }}\n"
+            )),
+            1,
+            "and one hidden inside an `if`"
+        );
+
+        // The outputs of each role stay writable — this is what methods are for.
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Stream StreamSource {{ \
+                 fn send(self, v: unsigned[8]) {{ self.valid = '1'; self.data = v; }} }}\n"
+            )),
+            0,
+            "a Source may drive `valid` and `data`"
+        );
+        assert_eq!(
+            count(&format!(
+                "{BUS}impl Stream StreamSink {{ fn accept(self) {{ self.ready = '1'; }} }}\n"
+            )),
+            0,
+            "and a Sink may drive `ready`"
+        );
+
+        // A plain struct carries no directions, so every field is writable.
+        assert_eq!(
+            count(
+                "module m;\nstruct Pair { a: unsigned[8], b: unsigned[8] }\n\
+                 impl Pair { fn set(self) { self.a = 1; self.b = 2; } }\n"
+            ),
+            0,
+            "a plain struct method writes any field"
+        );
+    }
+
     #[test]
     fn a_character_pattern_needs_a_character_valued_enum() {
         let count = |src: &str| {

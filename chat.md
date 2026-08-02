@@ -4862,3 +4862,37 @@ array, so it is now extended with the nested shapes and the prefix-sharing
 sibling. Proved non-vacuous by mutating the scan to drop the separator
 (`starts_with(path)` instead of `starts_with("path.")`), which sweeps `op` into
 `o`'s leaves and fails the test.
+
+## 2026-08-02 (cont.) — a view method could drive backwards through its role
+
+Swept views, four corpus files and untouched this session. The obvious probe —
+a view method called in statement position under a clock — is also the
+intersection with code I changed today, so it went first. It works, and matches
+a hand-written control field for field. Two earlier probes of mine "failed" and
+were my own errors: a `bus.idle()` driving `valid` combinationally against the
+clocked block's `'1'`, and expecting `bus.send(n)` to see the *updated* `n`
+when a clocked block reads `Current`. Both are the semantics established
+earlier today, not defects.
+
+Then direction enforcement, which is what views are for. Three deliberate
+violations were caught (`E-P004`, a Source writing `ready`, a Sink writing
+`valid`/`data`), and reading one's own `out` leaf is correctly allowed. The
+fourth was not:
+
+    impl Stream StreamSource {
+        fn bad(self) { self.ready = '1'; }   // `ready` is an INPUT for Source
+    }
+    impl P { bus.bad(); }                     // accepted, and `ready` reads '1'
+
+Written inline the same assignment is rejected. **`check_block` passed an
+empty `PortDirs` to every function body**, so no method body enforced any
+direction. For a plain struct that is right — a struct carries no directions —
+but an impl on a view gives `self` the role's directions, and a Source method
+could drive its own inputs. A view's whole purpose is to say who may drive
+what, and a method was a hole straight through it.
+
+`self_view_dirs` now derives the illegal set from the impl target's view,
+keyed the same way the port-side check keys it, and `check_block_with` carries
+it into the body. Both corpus view tests still compile, and the Source's own
+outputs stay writable — otherwise `send` would break, which is the whole
+reason to write a view method.
