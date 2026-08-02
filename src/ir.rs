@@ -3705,6 +3705,47 @@ impl<'a> Lowering<'a> {
                         };
                     }
                 }
+                // A generate `for` unrolls here exactly as it does in
+                // combinational position (spec: a loop unrolls over a static
+                // range, "instances *and* per-iteration drivers"). The
+                // combinational walker has always done this; the sequential
+                // one fell through its catch-all, so every driver a loop
+                // wrote inside a clocked block was dropped in silence —
+                // `if clk.rising() { for i in 0..2 { v = i; } }` left `v`
+                // at its initial value with no diagnostic.
+                ast::Stmt::For {
+                    var,
+                    range: ast::Expr::Range { lo, hi, .. },
+                    body,
+                    ..
+                } => {
+                    let (Some(a), Some(b)) =
+                        (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
+                    else {
+                        continue;
+                    };
+                    let saved = self.cur_env.get(&var.text).copied();
+                    for i in loop_range(a, b) {
+                        self.cur_env.insert(var.text.clone(), i);
+                        let unrolled = ast::Block {
+                            stmts: body
+                                .stmts
+                                .iter()
+                                .map(|st| subst_stmt(st, &var.text, i))
+                                .collect(),
+                            span: body.span,
+                        };
+                        self.lower_event_block(&unrolled, cond.clone(), out);
+                    }
+                    match saved {
+                        Some(v) => {
+                            self.cur_env.insert(var.text.clone(), v);
+                        }
+                        None => {
+                            self.cur_env.remove(&var.text);
+                        }
+                    }
+                }
                 _ => {}
             }
         }

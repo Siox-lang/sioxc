@@ -4564,3 +4564,50 @@ three bits, value 6 — still reports 6 through the scan path. The test also
 parses every "left its range" line it produced and asserts the number really
 does fall outside the bounds quoted next to it, which is the invariant that was
 broken rather than any particular number.
+
+## 2026-08-02 (cont.) — a `for` loop inside a clocked block does nothing
+
+Kept sweeping ranged integers, which turned out to be in good shape, and fell
+over something else on the way.
+
+**Ranged integers hold up.** Every carrier I could think of reports correctly,
+with the right hierarchical path and (since this morning) the right value: a
+plain signal, a struct field (`F.p.s.level`), a child instance's ranged *input*
+port driven from the parent (`Port.p.c.d`), and dynamic testbench stimulus
+computed so no constant check could see it (`Stim.s.d`). Both mechanisms work —
+the engine's pre-truncation flag and the post-settle scan for values that are
+out of range but representable. Nothing to fix there.
+
+**The bug was in the probe that was meant to test arrays:**
+
+    let buf: integer<0..5>[3];
+    if clk.rising() { for i in 0..2 { buf[i] = buf[i] + step; } }
+
+Every element stayed 0. Narrowing it away from ranges entirely:
+
+    let v: unsigned[8] = 99;
+    if clk.rising() { for i in 0..2 { v = i; } }     // v stays 99
+    if clk.rising() { vc = 0; vc = 1; vc = 2; }      // vc becomes 2
+
+**A generate `for` inside a clocked block is dropped in silence.** The spec is
+explicit — a loop over a static range unrolls "instances *and* per-iteration
+drivers" — and `lower_stmt`, the combinational walker, has always done it.
+`lower_event_block`, the sequential one, handles `Assign`, `If` and `Match` and
+then `_ => {}`. The fifth occurrence of the same shape this session: two
+walkers over the same statement set, one arm behind.
+
+Half-silent, in fact, and the halves point in different directions. With an
+array target the compiler *warns* `signal buf[0] is never driven` — true, and
+the strongest available hint. With a scalar target there is no diagnostic at
+all: the register simply holds its reset value.
+
+The regression test pairs every loop with a hand-unrolled control writing the
+same registers, so it compares the loop against written-out hardware rather
+than against the compiler's own idea of what a loop means. That also pins the
+semantics: three writes to one register in one edge are three `NextUpdate`s
+with one condition, each reading `Current`, so the last wins — `v = i` over
+`0..2` gives 2, and `acc = acc + i` over `1..3` gives `acc + 3`, not `acc + 6`.
+
+A neighbouring gap noticed and left: a `for` whose range does not fold to
+constants is silently skipped in *both* walkers. That deserves a diagnostic,
+but it is a separate change and this one is already load-bearing.
