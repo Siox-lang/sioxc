@@ -5188,3 +5188,41 @@ reported "siox build does not support real testbenches yet (compile with
 `sioxc --test`)" — advice impossible to follow, since that *is* the `--test`
 emitter. Real locals and real arithmetic work there; only reading a real
 signal does not, and the message now says so.
+
+## 2026-08-02 (cont.) — a `let` initializer that reads a signal was dropped
+
+Picked up the bug I logged open last round: a real local initialized from an
+expression did not hold its value. The first probe was to ask whether it was
+real-specific. It is not:
+
+    let ia: unsigned[8] = 3;
+    let ip: unsigned[8] = ia * 2;   // 0
+    let ra: real = 3.0;
+    let rp: real = ra * 2.0;        // not 6.0 either
+
+So the bug is wider than I logged, and finding that out cost one probe. Worth
+noting against my own summary from last round, which called it a real problem
+because that is where I met it.
+
+A matrix of every scalar initializer shape narrowed it exactly: a literal, a
+module constant, a folded expression, a const-evaluable call, a bit string, a
+character, an enum variant and a real all seed correctly — **only an
+initializer that reads another signal fails**, and it fails to zero, silently.
+
+Lowering says what it means, in a comment right above the code: "A constant
+initializer is the signal's reset value." An initializer is a power-on value
+folded at elaboration (§3.29), so one reading a signal cannot fold — and the
+`if let Some(bits) = …` simply had no `else`. The signal kept its type's
+default and nothing was said.
+
+Reported now as `E-P021`, with the help line naming the spelling that does
+what the author meant: declare then drive. That is not a rename — a driver is
+continuous and an initializer is once — which is exactly why silently
+conflating them was wrong.
+
+Two tests, because the rule has two halves: the diagnostic (a unit test, since
+an error cannot live in a passing corpus file) and `initializer_seed_test`,
+which pins the value every folding shape seeds. The accepting half needed
+covering precisely because the rejecting half now exists.
+
+Zero corpus false positives.

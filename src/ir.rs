@@ -1399,6 +1399,27 @@ impl<'a> Lowering<'a> {
                                 bits
                             };
                             self.out.signals[id.0 as usize].init = vec![masked];
+                        } else {
+                            // An initializer is a power-on value, folded here.
+                            // One that reads another signal cannot fold, and
+                            // used to be dropped in silence: the signal kept
+                            // its type's default, so `let i: unsigned[8] = a + 1;`
+                            // read 0 while `i = a + 1;` — a driver, and a
+                            // different thing — read what it should.
+                            let name = l.name.text.clone();
+                            self.sink.emit(
+                                crate::diag::Diagnostic::error(format!(
+                                    "the initializer for `{name}` is not a constant"
+                                ))
+                                .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
+                                .at(l.span)
+                                .help(format!(
+                                    "an initializer is the signal's power-on value and is \
+                                     folded at elaboration. To compute it from other \
+                                     signals, drive it instead: `let {name}: …;` then \
+                                     `{name} = …;`"
+                                )),
+                            );
                         }
                         // A metavalue-carrying string init (`"01X0"`) needs a
                         // companion signal to record which elements are `'X'`/… —
@@ -8679,6 +8700,51 @@ mod tests {
     /// wildcard half was implemented, so the natural spelling of an exhaustive
     /// decode drew an inferred-latch warning whose suggested fix is a
     /// redundant `_` arm.
+    /// An initializer is a signal's power-on value, folded at elaboration. One
+    /// that reads another signal cannot fold, and was dropped in silence: the
+    /// signal kept its type's default, so `let i: unsigned[8] = a + 1;` read 0
+    /// while `i = a + 1;` — a driver, and a different thing — read 201.
+    #[test]
+    fn a_non_constant_initializer_is_reported() {
+        let count = |src: &str| {
+            lower_diags(src)
+                .into_iter()
+                .filter(|d| d.contains("is not a constant"))
+                .count()
+        };
+        assert_eq!(
+            count(
+                "module m;\n#[top] entity E { y: unsigned[8] out }\n\
+                 impl E { let a: unsigned[8] = 200; let i: unsigned[8] = a + 1; y = i; }\n"
+            ),
+            1,
+            "an initializer reading another signal"
+        );
+        // Driving it is the spelling that means "compute this", and is fine.
+        assert_eq!(
+            count(
+                "module m;\n#[top] entity E { y: unsigned[8] out }\n\
+                 impl E { let a: unsigned[8] = 200; let i: unsigned[8]; i = a + 1; y = i; }\n"
+            ),
+            0,
+            "the driver spelling is not an initializer"
+        );
+        // Everything that can fold still seeds without complaint: a literal, a
+        // module constant, an arithmetic fold, and a const-evaluable call.
+        assert_eq!(
+            count(
+                "module m;\nconst K: unsigned[8] = 5;\n\
+                 fn twice(n: unsigned[8]) -> unsigned[8] { return n * 2; }\n\
+                 #[top] entity E { y: unsigned[8] out }\n\
+                 impl E { let a: unsigned[8] = 200; let b: unsigned[8] = K;\n\
+                 let c: unsigned[8] = 3 * 7; let d: unsigned[8] = twice(4);\n\
+                 y = a + b + c + d; }\n"
+            ),
+            0,
+            "literals, constants, folds and const calls all seed"
+        );
+    }
+
     #[test]
     fn an_exhaustive_match_is_not_an_inferred_latch() {
         let latches = |src: &str| {

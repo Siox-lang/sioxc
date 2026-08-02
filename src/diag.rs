@@ -257,6 +257,11 @@ pub mod codes {
     /// Instances are gathered from an entity's root layer and from generate
     /// `for`/`if` only, so these used to vanish without a word.
     pub const INSTANCE_PLACEMENT: &str = "E-P020";
+    /// A `let` initializer that is not a constant. An initializer is the
+    /// signal's power-on value, folded at elaboration; one that reads another
+    /// signal cannot be folded and was dropped, leaving the signal at its
+    /// type's default with no word said.
+    pub const NON_CONSTANT_INITIALIZER: &str = "E-P021";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";
