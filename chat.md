@@ -4396,3 +4396,40 @@ which is the right symptom.
 Worth noting where this came from: not from probing wide literals, which I
 would not have thought to do. It came from needing a value big enough to make
 a separator miscount visible.
+
+## 2026-08-02 (cont.) — a value the design can spell and the testbench cannot
+
+Following the asymmetry I flagged last sweep. A design may write
+
+    data = "10110011";      // a string of logic values is a logic vector (§3.24)
+
+and the testbench may not:
+
+    let data: unsigned[8] = "10110011";
+    // sioxc --test: no value named `data` is in scope
+
+Not a width thing — I first met this at 73 bits and assumed it was the wide-
+literal bug, but it fails at 8 bits too, and at every width.
+
+The emitter's `write_composite` has a `StrLit` arm that writes one C
+assignment per character, which is right for a `Char[]` or a `Logic[]`
+elaborated one signal per element. A packed vector has no `name[i]` storage,
+so the loop wrote **nothing** — and the arm still returned `Ok(true)`, meaning
+"handled, skip the scalar path". The caller obligingly skipped it, so the
+local was never declared. The bug is a success report from a branch that did
+no work.
+
+The arm now checks the target actually has per-element storage before
+claiming the value, and `expr` grew the packed decode it needed: MSB-first,
+one value bit per character discriminant, mirroring the hardware side rather
+than reimplementing it. Verified both directions against Python — 179 / 48 at
+8 bits, and 4722366482869645213699 for a 73-character string where a
+truncating decode reads 3 — and the test asserts hardware and testbench
+against each other *and* against the decimal spelling, so a shared mistake
+cannot pass.
+
+Two neighbouring gaps, both errors rather than wrong values, left alone:
+reading an elementwise `Logic[8]` **port** from a testbench ("cannot
+translate yet"), and printing a whole `Logic[8]` local, which misreports as
+`no value named d` even though `d[0]` reads fine. The second is a bad message
+for a real limitation, worth a look when the print path is next open.

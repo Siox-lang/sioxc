@@ -2171,6 +2171,22 @@ impl Ctx<'_> {
                     .get(name)
                     .cloned()
                     .unwrap_or_else(|| (0..source_len as i64).collect());
+                // Only a per-element target (a `Char[]`, or a `Logic[]`
+                // elaborated one signal per character) is written character by
+                // character. A packed vector has no `name[i]` storage, so the
+                // loop below wrote nothing and still reported the value
+                // handled: the caller skipped the scalar path and never
+                // declared the local, and `let v: unsigned[8] = "10000011";`
+                // failed with `no value named v`.
+                let per_element = self.local_types.borrow().get(name).map(String::as_str)
+                    == Some("string")
+                    || indices.iter().any(|index| {
+                        let element = format!("{name}[{index}]");
+                        self.map.contains_key(&element) || self.locals.borrow().contains(&element)
+                    });
+                if !per_element {
+                    return Ok(false);
+                }
                 if indices.len() != source_len {
                     return Err(format!(
                         "string assignment length mismatch: `{name}` has {} element(s), source has {source_len}",
@@ -4977,6 +4993,20 @@ impl Ctx<'_> {
             ast::Expr::BitStrLit { base, digits, .. } => {
                 let radix = siox::syntax::radix_of(*base);
                 c_word_literal(&parse_digits_words(digits, radix))
+            }
+            // A plain string on a packed vector is a per-character logic
+            // vector, MSB first — the same decode the hardware side does, one
+            // value bit per character discriminant. Without this a testbench
+            // could not spell a value the design itself accepts.
+            ast::Expr::StrLit { text, .. } => {
+                let chars: Vec<char> = text.chars().collect();
+                let mut words = vec![0u64; chars.len().div_ceil(64).max(1)];
+                for (i, ch) in chars.iter().enumerate() {
+                    let pos = chars.len() - 1 - i; // first character is the top bit
+                    let bit = logic_lit_value(*ch, self.enums) & 1;
+                    words[pos / 64] |= bit << (pos % 64);
+                }
+                c_word_literal(&words)
             }
             ast::Expr::CharLit { ch, .. } => logic_lit_value(*ch, self.enums).to_string(),
             // Conversions mask to the target width (testbench side).
