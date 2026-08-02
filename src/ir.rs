@@ -2683,6 +2683,19 @@ impl<'a> Lowering<'a> {
                     self.local_struct_repr
                         .insert(name.to_string(), p.segments[0].text.clone());
                 }
+                // A generic struct (`Box<unsigned[8]>`) dispatches on its head,
+                // exactly as the plain form does — methods are keyed by the
+                // struct name, not by the arguments. Without this the receiver
+                // had no type name at all, so `b.set(7)` found no method and
+                // was dropped without a word, while the same call on a
+                // non-generic struct worked.
+                ast::Type::Generic { base, .. } => {
+                    if let Some(head) = type_head_name(base) {
+                        self.local_struct.insert(name.to_string(), head.to_string());
+                        self.local_struct_repr
+                            .insert(name.to_string(), head.to_string());
+                    }
+                }
                 ast::Type::View { view, target, .. } => {
                     if let Some(role) = view.segments.last() {
                         self.local_struct

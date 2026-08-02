@@ -5044,3 +5044,38 @@ the whole compiler. Measured rather than assumed: zero errors across all 138
 corpus files and std, and a probe of legitimate field writes — matching
 widths, explicit conversions, nested fields, and polymorphic literals
 (`self.data = 200`) — all still compile and run.
+
+## 2026-08-02 (cont.) — a method on a generic struct did nothing
+
+Attacked the field-typing change from last round, since it is the newest and
+by far the riskiest thing in the tree. The case most likely to break it is a
+generic struct field, whose declared type is a parameter — so I wrote one:
+
+    struct Box<T> { v: T, tag: Bit }
+    impl<T> Box<T> { fn set(self, x: T) { self.v = x; } }
+
+    let b: Box<unsigned[8]> = { .v = 0, .tag = '0' };
+    b.set(7);
+    y = b.v;                         // y = 0
+
+No false positive — but no effect either. The identical calls on a
+non-generic `Plain` gave 7. **A method call on a generic struct local was
+dropped without a word.**
+
+Checked it was not mine before going further: reverting just the field-typing
+arm and rebuilding still gave `y = 0`, so the gap predates last round. Worth
+the two minutes — I have introduced two regressions in this session and
+assuming would have been the cheaper, wronger move.
+
+Lowering records a local's struct name — which is how a method call finds its
+impl — in a `match ty` with arms for `Type::Path` and `Type::View`, and a
+catch-all. `Box<unsigned[8]>` is `Type::Generic`, so nothing was recorded, the
+receiver had no type name, `find_method` was never reached, and
+`lower_method_stmt` quietly returned false. Methods are keyed by the struct
+head, not by the arguments, so the fix is to record the head — the same name
+the plain form records.
+
+The regression test pairs every generic call with the identical call on a
+non-generic struct, so the two are compared against each other. Without the
+fix it does not merely fail: the value-returning `b.doubled()` becomes an
+`Unknown` and the design will not build.
