@@ -4611,3 +4611,48 @@ with one condition, each reading `Current`, so the last wins — `v = i` over
 A neighbouring gap noticed and left: a `for` whose range does not fold to
 constants is silently skipped in *both* walkers. That deserves a diagnostic,
 but it is a separate change and this one is already load-bearing.
+
+## 2026-08-02 (cont.) — auditing the walkers instead of waiting for a sixth
+
+"One walker an arm behind" had happened five times, so this round I stopped
+probing for it and counted. A script pulls the `ast::Stmt::` arms out of each
+statement walker's body and diffs them:
+
+| walker | handles | missing |
+| --- | --- | --- |
+| `ir::lower_stmt` (combinational) | Assign If Match For Expr | Let Return |
+| `ir::lower_event_block` (sequential) | Assign If Match For | **Let Expr** Return |
+| `ir::inline_block` (fn inline) | Let If Match Return | Assign **For** Expr |
+| `build::c_fn_stmts` (fn in C) | Let If Match Return | Assign **For** Expr |
+| `types::check_stmt` | all seven | — |
+| `elab::gather_stmt` | Let Assign If For | Match Expr Return |
+
+Most gaps are correct or already diagnosed: `Let` in a hardware block is
+reported ("not lowered to hardware yet"), `Return` outside a function is
+`E-P008`, and `elab` skipping `Match` is the instance-placement rule from
+earlier today. The one that stood out was `Expr` in the sequential walker.
+
+**A call in statement position inside a clocked block does nothing:**
+
+    if clk.rising() { a.bump(step); }   // register stays 0
+    if clk.rising() { ac.n = ac.n + step; }   // control: 4, 8, ...
+
+No error, no warning, no driver. This is how a clocked protocol is naturally
+written — `fifo.push(x)` under an edge — so the silence is expensive: the
+design reads correctly and does nothing.
+
+Fixed by giving the sequential walker the arm, but *not* by copying the
+combinational one — that is how this family of bugs is born, and how I made
+one myself yesterday. The substitution that produces a call's inlined body is
+now `method_stmt_body` / `free_stmt_body`, shared, and each walker lowers the
+result in its own mode. A call means the same thing in both positions by
+construction.
+
+Checked against hand-written controls at every shape: a bare call, a free call,
+a call under an `if` inside the process (the guard composes — 0 while `en` is
+low, 4 after), and a call under a `for` inside the process (three writes, last
+wins, `step + 2`).
+
+The remaining flagged gap, `For` in function bodies, is missing from *both* the
+IR inliner and the C emitter — consistent, which is why it fails loudly rather
+than silently, and a separate piece of work.

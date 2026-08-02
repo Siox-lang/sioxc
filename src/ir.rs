@@ -3705,6 +3705,29 @@ impl<'a> Lowering<'a> {
                         };
                     }
                 }
+                // A call in statement position — `a.bump(step)`, or a free
+                // `write(bus, v)` — inlines its body under the edge condition,
+                // so its assignments become register updates. The
+                // combinational walker has always inlined these; the
+                // sequential one dropped them, so `if clk.rising() {
+                // a.bump(step); }` left the register at its reset value with
+                // no diagnostic. The body itself is shared, so a call means
+                // the same thing in both positions.
+                ast::Stmt::Expr(ast::Expr::Call {
+                    callee, args, span, ..
+                }) => {
+                    let inlined = match callee.as_ref() {
+                        ast::Expr::Field { base, field, .. } => {
+                            let (base, field) = (base.clone(), field.text.clone());
+                            self.method_stmt_body(&base, &field, args)
+                        }
+                        _ => self.free_stmt_body(callee, args),
+                    };
+                    if let Some(stmts) = inlined {
+                        let block = ast::Block { stmts, span: *span };
+                        self.lower_event_block(&block, cond.clone(), out);
+                    }
+                }
                 // A generate `for` unrolls here exactly as it does in
                 // combinational position (spec: a loop unrolls over a static
                 // range, "instances *and* per-iteration drivers"). The
@@ -5548,16 +5571,17 @@ impl<'a> Lowering<'a> {
     /// value;` drives the receiver's flattened field signals. Returns `false`
     /// when the receiver's type or the method can't be resolved (the caller
     /// then leaves the statement to the existing fall-through).
-    fn lower_method_stmt(
+    /// The body of a method call in statement position, with `self` and the
+    /// parameters substituted — shared by the combinational and sequential
+    /// walkers so a call means the same thing in both. `None` when the call is
+    /// not a known method with a body.
+    fn method_stmt_body(
         &mut self,
         recv: &ast::Expr,
         method: &str,
         args: &[ast::Expr],
-        cond: Option<Expr>,
-    ) -> bool {
-        let Some(ty) = self.operand_type_name(recv) else {
-            return false;
-        };
+    ) -> Option<Vec<ast::Stmt>> {
+        let ty = self.operand_type_name(recv)?;
         // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
         // lowering calls below.
         let input = args.first().and_then(|arg| match arg {
@@ -5566,12 +5590,8 @@ impl<'a> Lowering<'a> {
             }
             _ => self.operand_type_name(arg),
         });
-        let Some(f) = self.find_method(&ty, method, input.as_deref()) else {
-            return false;
-        };
-        let Some(body) = f.body.as_ref() else {
-            return false;
-        };
+        let f = self.find_method(&ty, method, input.as_deref())?;
+        let body = f.body.as_ref()?;
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         map.insert("self".to_string(), recv.clone());
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
@@ -5579,11 +5599,25 @@ impl<'a> Lowering<'a> {
                 map.insert(n.text.clone(), a.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> = body
-            .stmts
-            .iter()
-            .map(|s| subst_stmt_paths(s, &map))
-            .collect();
+        Some(
+            body.stmts
+                .iter()
+                .map(|s| subst_stmt_paths(s, &map))
+                .collect(),
+        )
+    }
+
+    /// Inline a method call in statement position as combinational drivers.
+    fn lower_method_stmt(
+        &mut self,
+        recv: &ast::Expr,
+        method: &str,
+        args: &[ast::Expr],
+        cond: Option<Expr>,
+    ) -> bool {
+        let Some(stmts) = self.method_stmt_body(recv, method, args) else {
+            return false;
+        };
         for s in &stmts {
             self.lower_stmt(s, cond.clone());
         }
@@ -5594,32 +5628,34 @@ impl<'a> Lowering<'a> {
     /// procedure-shaped counterpart of `lower_free_call`: parameters are
     /// substituted with their concrete expressions, then assignments and
     /// nested method calls are lowered as ordinary drivers.
-    fn lower_free_stmt(
-        &mut self,
-        callee: &ast::Expr,
-        args: &[ast::Expr],
-        cond: Option<Expr>,
-    ) -> bool {
-        let Some(name) = call_fn_key(callee) else {
-            return false;
-        };
-        let Some(f) = self.free_fns.get(&name).copied() else {
-            return false;
-        };
-        let Some(body) = f.body.as_ref() else {
-            return false;
-        };
+    fn free_stmt_body(&mut self, callee: &ast::Expr, args: &[ast::Expr]) -> Option<Vec<ast::Stmt>> {
+        let name = call_fn_key(callee)?;
+        let f = self.free_fns.get(&name).copied()?;
+        let body = f.body.as_ref()?;
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
             if let Some(name) = &param.name {
                 map.insert(name.text.clone(), arg.clone());
             }
         }
-        let stmts: Vec<ast::Stmt> = body
-            .stmts
-            .iter()
-            .map(|stmt| subst_stmt_paths(stmt, &map))
-            .collect();
+        Some(
+            body.stmts
+                .iter()
+                .map(|stmt| subst_stmt_paths(stmt, &map))
+                .collect(),
+        )
+    }
+
+    /// Inline a free call in statement position as combinational drivers.
+    fn lower_free_stmt(
+        &mut self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        cond: Option<Expr>,
+    ) -> bool {
+        let Some(stmts) = self.free_stmt_body(callee, args) else {
+            return false;
+        };
         for stmt in &stmts {
             self.lower_stmt(stmt, cond.clone());
         }
