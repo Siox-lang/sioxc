@@ -4166,6 +4166,36 @@ impl<'a> Lowering<'a> {
         result.unwrap_or(Expr::Unknown)
     }
 
+    /// [`Self::lower_match_expr`] at [`Val`] level: the same first-match
+    /// chain and the same exhaustiveness rule, folded with `select_val` so
+    /// struct-valued arms combine field by field.
+    fn lower_match_val(
+        &self,
+        scrutinee: &ast::Expr,
+        arms: &[ast::MatchArm],
+        env: &HashMap<String, Val>,
+    ) -> Val {
+        let scrut = self.lower_scalar_env(scrutinee, env);
+        let exhaustive = !arms.iter().any(|a| pattern_has_wildcard(&a.pattern));
+        let mut result: Option<Val> = None;
+        for (i, arm) in arms.iter().enumerate().rev() {
+            let val = arm
+                .value_expr()
+                .map(|v| self.lower_val_env(v, env))
+                .unwrap_or(Val::Scalar(Expr::Unknown));
+            let last = i + 1 == arms.len();
+            match self.arm_match_cond(&arm.pattern, &scrut) {
+                None => result = Some(val),
+                Some(_) if exhaustive && last => result = Some(val),
+                Some(cond) => {
+                    let els = result.take().unwrap_or(Val::Scalar(Expr::Unknown));
+                    result = Some(select_val(cond, val, els));
+                }
+            }
+        }
+        result.unwrap_or(Val::Scalar(Expr::Unknown))
+    }
+
     fn arm_match_cond(&self, pattern: &ast::Pattern, scrut: &Expr) -> Option<Expr> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
@@ -6848,6 +6878,16 @@ impl<'a> Lowering<'a> {
                     self.lower_val_env(els, env),
                 )
             }
+            // A match *expression* whose arms are struct values, folded per
+            // field the way `IfExpr` above is. Without this it fell through to
+            // the scalar lowering, which builds one `Select` chain over whole
+            // values and has nowhere to put a struct — so a decoder written as
+            // `c = match op { .. => Ctrl { .. } }` drove nothing at all, and
+            // said so only as "never driven" on each field. The equivalent
+            // `if`-expression and the statement form both worked.
+            ast::Expr::Match {
+                scrutinee, arms, ..
+            } => self.lower_match_val(scrutinee, arms, env),
             ast::Expr::Call { callee, args, .. } => {
                 // `T()` — the nullary constructor — resolves to the type's
                 // default (a struct yields per-field values) before any

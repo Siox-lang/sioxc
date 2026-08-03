@@ -2091,6 +2091,110 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Turn a struct-valued `match`/`if` expression into a struct literal
+    /// whose fields are each a scalar `match`/`if`.
+    ///
+    /// `match s { p => P { .a = x, .b = y }, .. }` becomes
+    /// `P { .a = match s { p => x, .. }, .b = match s { p => y, .. } }`.
+    /// Every branch has to be a literal of the same struct for this to be
+    /// meaningful; a branch that is a name or a call is left alone, and the
+    /// caller reports it rather than emitting something wrong.
+    fn distribute_struct_choice(&self, value: &ast::Expr) -> Option<ast::Expr> {
+        use ast::Expr as E;
+        // The branches, in order, and a way to rebuild the choice around new
+        // branch expressions.
+        let branches: Vec<&E> = match value {
+            E::Match { arms, .. } => arms.iter().map(|a| a.value_expr()).collect::<Option<_>>()?,
+            E::IfExpr { then, els, .. } => vec![then.as_ref(), els.as_ref()],
+            _ => return None,
+        };
+        // Each branch must be a struct literal naming the same fields.
+        let mut field_order: Vec<String> = Vec::new();
+        for (i, br) in branches.iter().enumerate() {
+            let E::Construct {
+                args, spread: None, ..
+            } = br
+            else {
+                return None;
+            };
+            let names: Vec<String> = args
+                .iter()
+                .map(|a| a.field.as_ref().map(|f| f.text.clone()))
+                .collect::<Option<_>>()?;
+            if i == 0 {
+                field_order = names;
+            } else if names != field_order {
+                return None;
+            }
+        }
+        if field_order.is_empty() {
+            return None;
+        }
+        let field_of = |br: &E, field: &str| -> Option<ast::Expr> {
+            let E::Construct { args, .. } = br else {
+                return None;
+            };
+            args.iter()
+                .find(|a| a.field.as_ref().is_some_and(|f| f.text == field))
+                .and_then(|a| a.value.clone())
+        };
+        let ty = match branches[0] {
+            E::Construct { ty, .. } => ty.clone(),
+            _ => None,
+        };
+        let span = siox::syntax::ast::expr_span(value);
+        let mut args = Vec::with_capacity(field_order.len());
+        for field in &field_order {
+            let per_field = match value {
+                E::Match {
+                    scrutinee, arms, ..
+                } => E::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms: arms
+                        .iter()
+                        .zip(&branches)
+                        .map(|(arm, br)| {
+                            let v = field_of(br, field)?;
+                            Some(ast::MatchArm {
+                                pattern: arm.pattern.clone(),
+                                body: ast::Block {
+                                    stmts: vec![ast::Stmt::Return {
+                                        value: Some(v),
+                                        span: arm.span,
+                                    }],
+                                    span: arm.span,
+                                },
+                                span: arm.span,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                    span,
+                },
+                E::IfExpr { cond, .. } => E::IfExpr {
+                    cond: cond.clone(),
+                    then: Box::new(field_of(branches[0], field)?),
+                    els: Box::new(field_of(branches[1], field)?),
+                    span,
+                },
+                _ => return None,
+            };
+            args.push(ast::ConnectArg {
+                field: Some(ast::Ident {
+                    text: field.clone(),
+                    span,
+                }),
+                value: Some(per_field),
+                span,
+            });
+        }
+        Some(E::Construct {
+            ty,
+            args,
+            spread: None,
+            span,
+        })
+    }
+
     /// The single expression a body returns, or `None` when the body is
     /// anything more than one `return`.
     fn sole_return<'b>(&self, f: &'b ast::FnDecl) -> Option<&'b ast::Expr> {
@@ -2300,6 +2404,13 @@ impl Ctx<'_> {
         writes: &mut String,
         ind: &str,
     ) -> Result<bool, String> {
+        // A struct-valued conditional distributes over the fields: one
+        // scalar conditional per field, which the emitter already handles.
+        // `p = match s { .. => P { .a = x, .b = y } }` cannot reduce to a
+        // single literal, since which arm applies is a runtime question.
+        if let Some(spread_out) = self.distribute_struct_choice(value) {
+            return self.write_composite_into(name, &spread_out, decls, writes, ind);
+        }
         // A computed struct value reduces to the literal its body returns,
         // which the `Construct` arm below already knows how to write.
         if let Some(rewritten) = self.struct_call_rewrite(value, 0) {

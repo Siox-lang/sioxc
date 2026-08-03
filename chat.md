@@ -6512,3 +6512,54 @@ looking for the failure mode of the fix I had just written, on the theory that
 compose. That is the third round running where re-attacking the previous
 round's change found the next bug, and it has been more productive than picking
 an untouched feature.
+
+## A decoder written as one `match` decoded nothing
+
+Re-attacked last round's change first, since that has been the productive
+move three rounds running. Staging inside a testbench `for` loop and inside a
+conditional — a buffer rotated each iteration, feeding a DUT, over six
+iterations — matches a Python model exactly on the buffer, the running total
+and the DUT's output. Nothing wrong there.
+
+So: match patterns, which had never been swept as a group. The corpus covers
+or-patterns, ranges, literals, wildcards and bit patterns individually. What it
+does not cover is a match that *produces a struct*, which is how any real
+decoder is written:
+
+```siox
+c = match op {
+    0 | 1  => Ctrl { .kind = Kind::Alu,   .writes = '1', .usesImm = '0' },
+    2..5   => Ctrl { .kind = Kind::Logic, .writes = '1', .usesImm = '0' },
+    ...
+};
+```
+
+Every field of `c` read as zero for all sixteen opcodes. The `Val` lowering has
+arms for `if`-expressions and struct literals and had none for `match`, so a
+struct-valued match fell through to the scalar lowering, which builds one
+`Select` chain over whole values and has nowhere to put a struct.
+
+The two neighbouring spellings both worked — the same decode as an
+`if`-expression chain, and as a `match` *statement* whose arms assign — which
+is what makes this a bug and not an unimplemented form. `lower_match_val` is
+now the `Val` twin of `lower_match_expr`: same first-match chain, same
+exhaustiveness rule, folded with `select_val` so struct arms combine field by
+field. All sixteen opcodes now match the table.
+
+The testbench could not run it either, for its own reason: it writes a
+composite from a name, a literal or a spread, and a conditional is none of
+those. A struct-valued conditional cannot reduce to one literal — which arm
+applies is a runtime question — so it distributes instead, into a literal whose
+fields are each a scalar `match`. Scalar matches and `if`s already emitted
+correctly, so that is the whole of it. The same rewrite fixes struct-valued
+`if`-expressions in a testbench, which had the same "unknown signal" failure.
+
+Four mutations, all detected: the `Val` match arm removed, the arms folded
+without their conditions, the testbench distribution removed, and the
+distribution restricted to `if` so `match` falls through.
+
+The corpus file checks each pattern form at both ends of its range, and picks
+arms that differ from a neighbour in *one* field — Alu and Imm differ only in
+the immediate flag — so a decode that collapsed the struct to a single field
+would still fail. It also compares the testbench's result against the DUT's for
+the same opcode, since the two engines reach it by different routes.
