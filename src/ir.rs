@@ -3870,18 +3870,18 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     if self.local_struct.contains_key(&tpath) {
-                        if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
-                            for (fname, expr) in fields {
-                                if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
-                                    let expr = self.coerce_to_target(sig, expr);
-                                    self.out.drivers.push(Driver {
-                                        target: sig,
-                                        cond: cond.clone(),
-                                        expr,
-                                        ctx: self.cur_ctx,
-                                    });
-                                }
-                            }
+                        // Same expansion the clocked path uses — one write per
+                        // leaf. Keeping two copies is how the clocked one came
+                        // to be missing in the first place.
+                        for (sig, expr) in
+                            self.struct_assign_leaves(target, value).unwrap_or_default()
+                        {
+                            self.out.drivers.push(Driver {
+                                target: sig,
+                                cond: cond.clone(),
+                                expr,
+                                ctx: self.cur_ctx,
+                            });
                         }
                         return;
                     }
@@ -4250,7 +4250,16 @@ impl<'a> Lowering<'a> {
                             .with_code(crate::diag::codes::TYPE_MISMATCH),
                         );
                     }
-                    if let Some(target) = self.target_signal(target) {
+                    if let Some(leaves) = self.struct_assign_leaves(target, value) {
+                        // A registered bus: one next-state update per leaf.
+                        for (sig, expr) in leaves {
+                            out.push(NextUpdate {
+                                target: sig,
+                                cond: cond.clone(),
+                                expr,
+                            });
+                        }
+                    } else if let Some(target) = self.target_signal(target) {
                         let expr = self.lower_expr(value);
                         out.push(NextUpdate {
                             target,
@@ -4524,6 +4533,39 @@ impl<'a> Lowering<'a> {
             lhs: Box::new(kept),
             rhs: Box::new(shifted),
         }
+    }
+
+    /// Expand a whole-struct assignment (`bus = Bus { .. }`, `mem[0] = E { .. }`)
+    /// into one write per leaf field.
+    ///
+    /// A struct signal is many leaves and no single id, so `target_signal`
+    /// returns `None` for it. The combinational path had this expansion and
+    /// the clocked path did not, so registering a bus — the ordinary way to
+    /// write a pipeline stage — failed with "`e` cannot be assigned to",
+    /// which reads as though the signal were an input.
+    ///
+    /// `Some` whenever the target *is* a struct path, so the caller stops
+    /// rather than falling through to a diagnostic about a different problem.
+    fn struct_assign_leaves(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+    ) -> Option<Vec<(SignalId, Expr)>> {
+        let tpath = self
+            .folded_elem_path(target)
+            .or_else(|| expr_path(target))?;
+        if !self.local_struct.contains_key(&tpath) {
+            return None;
+        }
+        let mut out = Vec::new();
+        if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
+            for (fname, expr) in fields {
+                if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
+                    out.push((sig, self.coerce_to_target(sig, expr)));
+                }
+            }
+        }
+        Some(out)
     }
 
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {

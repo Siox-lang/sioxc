@@ -6144,3 +6144,71 @@ contains a nested test run are simply not sound.
 Also worth noting: `cargo build` was clean while `cargo test` was not. Adding a
 field to `Design` broke `#[cfg(test)]` literals in `llvm/emit.rs` and
 `llvm/aot.rs`, which only the full gate compiles.
+
+## Registering a bus: the expansion existed on one path only
+
+Swept buffers and register files — the thing you build after an FSM. The
+existing FIFO test never fills to capacity, never wraps its pointers and never
+pushes and pops on the same edge, which is exactly where a circular buffer
+breaks. So I modelled the FIFO's stated behaviour in Python — next-state
+semantics, every branch reading the old state, last write winning — and drove
+a 16-step sequence covering fill-to-full, push-while-full, wraparound,
+simultaneous push+pop, drain and pop-while-empty.
+
+**The FIFO is correct.** All 16 steps match the model on `dout`, `full`,
+`empty` and occupancy, including the subtle ones: push+pop at count 0 enqueues
+without dequeuing, and at count 4 dequeues without enqueuing.
+
+The bug was in the next design. A packet buffer with struct entries:
+
+```siox
+let mem: Entry[4];
+if clk.rising() { if wr { mem[addr] = Entry { .tag = tagIn, .data = dataIn }; } }
+```
+
+A *runtime* index into a struct array is refused honestly (`E-P017`, "no
+hardware form") — a documented limitation, not a silent answer. But the static
+form failed too, and so did the simplest case there is:
+
+```siox
+let held: Entry;
+if clk.rising() { held = Entry { .tag = t, .data = d }; }   // E-P018
+```
+
+`E-P018` reads "`held` cannot be assigned to", which says the signal is
+read-only. It is not; the assignment simply has no case on this path. A struct
+signal is many leaves and no single id, so `target_signal` returns `None` and
+the arm falls through to a diagnostic about an unrelated problem. The
+combinational path expands the struct field by field; `lower_event_block` had
+no such case. The identical line one row outside the clocked block works, and
+so does the per-field spelling — which is what makes the message so misleading.
+
+Registering a bus is how you write a pipeline stage, so this is the shape a
+skid buffer or a packet queue is made of.
+
+One expansion now serves both paths. Writing a second copy is how the first one
+came to be missing, so the combinational path was moved onto the shared helper
+rather than left beside it.
+
+Mutations: removing the clocked expansion, removing the combinational one, and
+dropping the element-path fold — all detected.
+
+### Two things the mutations caught that I had wrong
+
+The element-path fold looked like dead code: with `expr_path` alone the tests
+still passed, because a generate loop substitutes its index into the AST before
+lowering, so `mem[i]` is already `mem[0]`. I nearly deleted it. An entity
+*parameter* is not substituted that way — it is bound in the environment — so
+`slot[N] = Entry { .. }` needs the fold, and that case is now in the corpus
+file. "The mutation passed" meant "my test was too narrow", not "the code is
+dead", for the second time in this log.
+
+And the width coercion inside the expansion is exercised by nothing — not by
+the new tests, not by the corpus at large; dropping it changes no result. It is
+pre-existing behaviour I preserved while extracting the helper rather than
+something I added, so I have kept it, but it is unverified either way and worth
+knowing about.
+
+Banked `registered_struct_test.siox`: a registered entry with an enable that
+holds when disabled, two array slots written independently, an unrolled loop
+writing whole struct elements, and a parameter-indexed slot.
