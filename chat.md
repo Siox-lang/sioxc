@@ -6594,3 +6594,27 @@ cannot pass.
 
 Nothing else found this round: the hardware side of last round's change is
 correct in every shape I could construct for it.
+
+### And the last shape: an arm that is a name
+
+Characterising what was still asymmetric rather than leaving it unknown turned
+up one more: an arm that is a plain *name* (`_ => x`) rather than a literal or
+a call. Hardware read the struct's fields directly; the testbench refused with
+the same "unknown signal". A name expands to a literal of its own fields
+(`x` -> `{ .a = x.a, .b = x.b }`), which is the reduction the other two branch
+shapes already get. Nested struct arms were correct in both engines already.
+
+Both mutations behaved: not expanding a name arm is detected. The
+`!f.is_empty()` guard I wrote alongside it was *not* — and this time it really
+was redundant, not merely untested: a field-less newtype expands to an empty
+literal, and the caller already returns `None` when it finds no fields to
+distribute. Checked against the whole corpus before removing it, since that is
+the distinction I have got wrong twice.
+
+**A process note.** I pushed the corpus repo this round through a command whose
+`&&` chain ran `ci-local.sh` from the wrong directory; the script was not found,
+the pipeline's exit status came from `tail`, and the push went ahead. The gate
+had in fact passed on that exact tree moments earlier and passed again
+immediately after, so nothing shipped unverified — but the ordering was not
+what the rule asks for, and a pipeline hides the failure of everything except
+its last stage.

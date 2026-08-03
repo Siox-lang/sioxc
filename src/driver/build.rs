@@ -2091,6 +2091,44 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Expand a name that holds a struct into a literal reading its fields:
+    /// `x` becomes `{ .a = x.a, .b = x.b }`. That is what lets an arm be a
+    /// plain name rather than a literal.
+    fn struct_name_literal(&self, e: &ast::Expr) -> Option<ast::Expr> {
+        let path = expr_path(e)?;
+        let ty = self.arg_type_name(e)?;
+        // A field-less newtype expands to an empty literal, which the
+        // caller already rejects when it finds no fields to distribute —
+        // no separate guard needed here.
+        let fields = self.structs.get(&ty)?;
+        let span = siox::syntax::ast::expr_span(e);
+        let ident = |t: &str| ast::Ident {
+            text: t.to_string(),
+            span,
+        };
+        let args = fields
+            .iter()
+            .map(|(field, _)| ast::ConnectArg {
+                field: Some(ident(field)),
+                value: Some(ast::Expr::Field {
+                    base: Box::new(ast::Expr::Path(ast::Path {
+                        segments: vec![ident(&path)],
+                        span,
+                    })),
+                    field: ident(field),
+                    span,
+                }),
+                span,
+            })
+            .collect();
+        Some(ast::Expr::Construct {
+            ty: None,
+            args,
+            spread: None,
+            span,
+        })
+    }
+
     /// Turn a struct-valued `match`/`if` expression into a struct literal
     /// whose fields are each a scalar `match`/`if`.
     ///
@@ -2108,12 +2146,15 @@ impl Ctx<'_> {
             E::IfExpr { then, els, .. } => vec![then.as_ref(), els.as_ref()],
             _ => return None,
         };
-        // An arm may be a *call* returning a struct rather than a literal
-        // (`_ => mk(6)`), so reduce each branch to its literal first.
-        // `reduced` owns the rewrites that `branches` borrows.
+        // An arm may be a *call* returning a struct (`_ => mk(6)`) or simply a
+        // *name* (`_ => x`) rather than a literal, so reduce each branch to a
+        // literal first. `reduced` owns the rewrites that `branches` borrows.
         let reduced: Vec<Option<ast::Expr>> = raw
             .iter()
-            .map(|br| self.struct_call_rewrite(br, 0))
+            .map(|br| {
+                self.struct_call_rewrite(br, 0)
+                    .or_else(|| self.struct_name_literal(br))
+            })
             .collect();
         let branches: Vec<&E> = raw
             .iter()
