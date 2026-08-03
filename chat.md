@@ -6409,3 +6409,58 @@ I built the pass-through shape to check whether the test was merely too narrow �
 as it has been four times in this log — and this time the code really was
 redundant. Removed, and the shape kept as coverage since it exercises the
 re-entry that replaces it.
+
+## A rotation rotated everything to the same value
+
+Went after last round's emitter rewrite. Width masking through it is right —
+narrow fields wrap identically in both engines (9+9 and 12+12 into
+`unsigned[4]` give 2 and 8; 9*3 and 12*5 give 11 and 12, matching Python).
+
+Then probed a self-referential assignment, expecting to find a hazard I had
+introduced, and found an older and much plainer one:
+
+```siox
+let a: unsigned[8][3] = [1, 2, 3];
+a = [a[2], a[0], a[1]];        // 3 3 3, not 3 1 2
+
+let t: P = { .a = 1, .b = 2 };
+t = P { .a = t.b, .b = t.a };  // (2, 2), not (2, 1)
+```
+
+No call is involved in either. `write_composite` writes a composite element by
+element with nothing evaluated in advance, so the second element reads the
+first one *after* it has been written: a rotation propagates one value through
+every slot, and an exchange duplicates a field instead of swapping. Hardware is
+right in both cases, because its drivers are concurrent — which is exactly the
+property a sequential emitter has to reproduce deliberately.
+
+Rotating an array is about as ordinary as testbench code gets, and it was
+silently wrong.
+
+Every right-hand side is now evaluated into a temporary before any of them is
+assigned, in three places: array elements to locals, struct fields to locals,
+and struct fields to signals. The corpus file rotates twice and exchanges twice
+— the second application is the check that the first really was a rotation and
+not a fill, since a fill is idempotent and a rotation is not.
+
+### The mutation lied twice, in the same way, and I nearly believed it
+
+The first two mutations came back NOT DETECTED. Both had matched an anchor that
+included the `sx_set` line — the *signal* branch — while the test used
+testbench locals, which take the local branch beside it. So each mutation
+disabled staging in a twin the test never reaches, and the untouched twin kept
+the test passing.
+
+Re-running with anchors that name the local branches: both detected
+immediately. That is the fifth time in this log that NOT DETECTED meant "the
+mutation went somewhere the test doesn't" rather than "the code is dead" — and
+the second time specifically because a function had two near-identical arms and
+I mutated the wrong one. The signal branch is now covered as well, by a struct
+connected to a DUT port whose instance is checked for the exchanged value, so
+all three sites are pinned.
+
+Also worth recording: my first attempt at those mutations was run through
+`python3 -c` inside double quotes, where `\\n` in the anchor is ambiguous
+between a newline and a backslash-n. Moving the mutation script to a file made
+the anchors unambiguous and immediately surfaced "matched 2 times, not 1",
+which is the message that told me what was actually wrong.

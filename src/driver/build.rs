@@ -497,6 +497,7 @@ pub fn build(
             methods: &methods,
             structs: &structs,
             derived_widths: &derived_widths,
+            tmp_seq: std::cell::Cell::new(0),
             const_exprs: &const_exprs,
             const_array_exprs: &const_array_exprs,
             consts: &consts,
@@ -854,6 +855,11 @@ struct Ctx<'a> {
     /// Derived-type inherited widths (`struct Byte : Logic[8]` -> 8), so a bare
     /// derived-vector local masks to the right width.
     derived_widths: &'a HashMap<String, u32>,
+    /// Serial for the temporaries a composite assignment stages its values in.
+    /// Writing a composite element by element lets a later element read one
+    /// already written, so `a = [a[2], a[0], a[1]]` rotated every slot to the
+    /// same value. Every right-hand side is evaluated first, then assigned.
+    tmp_seq: std::cell::Cell<u32>,
     /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
     /// resolving a method call's receiver type.
     local_types: std::cell::RefCell<HashMap<String, String>>,
@@ -2370,16 +2376,21 @@ impl Ctx<'_> {
                         elems.len()
                     ));
                 }
+                // As with a struct literal: every element's value is
+                // evaluated before any is written, so `a = [a[2], a[0], a[1]]`
+                // rotates instead of filling every slot from the first write.
+                let (mut decls, mut writes) = (String::new(), String::new());
                 for (index, value) in indices.into_iter().zip(elems) {
                     let element = format!("{name}[{index}]");
-                    if self.write_composite(&element, value, b, ind)? {
+                    if self.write_composite(&element, value, &mut writes, ind)? {
                         continue;
                     }
                     if let Some(&id) = self.map.get(&element) {
                         let expression = self.value_for(id, value)?;
-                        b.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
+                        let expression = self.stage_value(&expression, &mut decls, ind);
+                        writes.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
                         for extra in self.alias_ids_beyond(&element, &id.0.to_string()) {
-                            b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                            writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
                         }
                     } else {
                         let expression = self.value_for_local(&element, value)?;
@@ -2387,12 +2398,15 @@ impl Ctx<'_> {
                             Some(&width) => mask_c(&expression, width),
                             None => expression,
                         };
-                        b.push_str(&format!(
+                        let expression = self.stage_value(&expression, &mut decls, ind);
+                        writes.push_str(&format!(
                             "{ind}{} = {expression};\n",
                             c_local_ident(&element)
                         ));
                     }
                 }
+                b.push_str(&decls);
+                b.push_str(&writes);
                 Ok(true)
             }
             ast::Expr::StrLit { text, .. } => {
@@ -2489,6 +2503,10 @@ impl Ctx<'_> {
                     wrote = true;
                 }
 
+                // Every field's value is evaluated before any is written, so
+                // a literal that reads the struct it assigns (`{ .a = t.b,
+                // .b = t.a }`) exchanges rather than duplicating.
+                let (mut decls, mut writes) = (String::new(), String::new());
                 for (position, arg) in args.iter().enumerate() {
                     let field_name = arg
                         .field
@@ -2502,9 +2520,16 @@ impl Ctx<'_> {
                         ));
                     };
                     let Some(value) = &arg.value else { continue };
-                    wrote |=
-                        self.write_composite_field(&format!("{name}.{field_name}"), value, b, ind)?;
+                    wrote |= self.write_composite_field_staged(
+                        &format!("{name}.{field_name}"),
+                        value,
+                        &mut decls,
+                        &mut writes,
+                        ind,
+                    )?;
                 }
+                b.push_str(&decls);
+                b.push_str(&writes);
                 Ok(wrote)
             }
             ast::Expr::Concat { parts, .. } => {
@@ -2625,6 +2650,53 @@ impl Ctx<'_> {
             }),
             _ => None,
         }
+    }
+
+    /// Evaluate `expr` into a fresh temporary and return its name.
+    fn stage_value(&self, expr: &str, decls: &mut String, ind: &str) -> String {
+        let n = self.tmp_seq.get();
+        self.tmp_seq.set(n + 1);
+        let tmp = format!("_sxc{n}");
+        decls.push_str(&format!("{ind}sx_value {tmp} = {expr};\n"));
+        tmp
+    }
+
+    /// [`Self::write_composite_field`] with the value staged: the expression
+    /// goes into `decls` and the assignment into `writes`, so a caller can
+    /// emit every field's value before any of them lands. Without that split,
+    /// `t = P { .a = t.b, .b = t.a }` wrote `a` and then read it back for `b`.
+    fn write_composite_field_staged(
+        &self,
+        field: &str,
+        value: &ast::Expr,
+        decls: &mut String,
+        writes: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        // A nested composite manages its own ordering.
+        if self.write_composite(field, value, writes, ind)? {
+            return Ok(true);
+        }
+        if let Some(&id) = self.map.get(field) {
+            let expression = self.value_for(id, value)?;
+            let tmp = self.stage_value(&expression, decls, ind);
+            writes.push_str(&format!("{ind}sx_set({}, {tmp});\n", id.0));
+            for extra in self.alias_ids_beyond(field, &id.0.to_string()) {
+                writes.push_str(&format!("{ind}sx_set({extra}, {tmp});\n"));
+            }
+            return Ok(true);
+        }
+        if self.locals.borrow().contains(field) {
+            let expression = self.value_for_local(field, value)?;
+            let expression = match self.local_widths.borrow().get(field) {
+                Some(&width) => mask_c(&expression, width),
+                None => expression,
+            };
+            let tmp = self.stage_value(&expression, decls, ind);
+            writes.push_str(&format!("{ind}{} = {tmp};\n", c_local_ident(field)));
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn write_composite_field(
