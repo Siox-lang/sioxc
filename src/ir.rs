@@ -504,6 +504,10 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// Locals whose element type is an entity (`let stage: Inc[3]`), so an
+    /// out-of-range element can be named an instance the way the `types` check
+    /// names it rather than being called an array element.
+    instance_arrays: HashSet<String>,
     /// Out-of-range constant indices already reported, keyed by
     /// (array, index, span start). One source index is visited once per
     /// generate iteration, so without this a loop reports the same element
@@ -618,6 +622,7 @@ impl<'a> Lowering<'a> {
             local_struct_repr: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
+            instance_arrays: HashSet::new(),
             reported_oob: HashSet::new(),
             local_numeric: HashMap::new(),
             vector_families: std::collections::HashSet::new(),
@@ -1340,6 +1345,9 @@ impl<'a> Lowering<'a> {
                         l.ty.as_ref()
                             .and_then(type_head_name)
                             .is_some_and(|h| self.entities.contains_key(h));
+                    if is_instance_array {
+                        self.instance_arrays.insert(l.name.text.clone());
+                    }
                     if l.value.is_none()
                         && !is_instance_array
                         && !has_attr(edecl, "test")
@@ -2094,7 +2102,12 @@ impl<'a> Lowering<'a> {
                             indices.iter().copied().min().unwrap_or(0),
                             indices.iter().copied().max().unwrap_or(0),
                         );
-                        out.push((path, v, lo, hi, indices.len(), "element", *span));
+                        let noun = if self.instance_arrays.contains(&path) {
+                            "instance"
+                        } else {
+                            "element"
+                        };
+                        out.push((path, v, lo, hi, indices.len(), noun, *span));
                     }
                 } else if let Some(&(left, right)) = self.local_range.get(&path) {
                     let (lo, hi) = (left.min(right), left.max(right));

@@ -5808,3 +5808,75 @@ the declared `[3]` is simply ignored. Instances are gathered in `elab`, not
 lowered in `ir`, so the check added here does not see them — `st` is not a
 signal and is in neither `local_array` nor `local_range`. Separate mechanism,
 separate fix.
+
+## Correction, and a lint that stops at the loop
+
+**Correcting the previous entry.** I closed the last round reporting that an
+instance array over-running its declared size was "found, not fixed", reasoning
+that `st` is a gathered instance rather than a signal and so appears in neither
+map the new bounds check consults. That reasoning was wrong and I never
+re-tested it after writing the fix: `let st: Inc[3]` with `for i in 0..4` is
+now rejected. It was already fixed when I said it was not.
+
+What was actually wrong was the wording — it read "element 3 is outside `0..2`
+of this 3-element array" where the literal form says "instance". Lowering now
+records which locals have an entity element type and names them the same way
+the `types` check does. That is the whole of this round's fix, and it is a
+one-line-of-behaviour change to a message.
+
+## Views: a clean sweep
+
+Views had never been probed. Direction enforcement holds everywhere I could
+reach it:
+
+- a `Source` writing its own `in` field is `E-P004`, and so is a `Sink` writing
+  one — the check names the field, not just the bus;
+- **through a view method too**: `impl Stream Source { fn bad(self) { self.ready = '1'; } }`
+  is rejected at the definition, so an inlined body cannot launder a direction
+  violation past the check;
+- a view that omits a field makes that field unusable in *both* directions
+  (`view Partial does not specify direction for ready`), rather than defaulting
+  it silently;
+- a view naming a field the struct does not have is caught.
+
+And the combining case: four `Stage` entities, each with a `Sink` up-port and a
+`Source` down-port, wired head-to-tail through a generate loop over an array of
+`Stream` buses. Data flows forward through the chain (10 -> 14, one increment
+per stage) while `ready` propagates backward, all across an instance array
+built by unrolling. Correct.
+
+Worth recording: my *first* version of that chain had `link: Stream[3]` written
+as `Stream[2]`, and the bounds check added last round caught it —
+"element 2 is outside `0..1`". The design would previously have built four
+stages with the last one wired to nothing and reported nothing at all. That is
+the bug class the check exists for, found on a design I wrote for a different
+purpose.
+
+## Found, not fixed: the dead-assignment lint does not see through unrolling
+
+Two generate loops whose ranges overlap silently discard the earlier drive:
+
+```siox
+for i in 0..2 { v[i] = 11; }    // drives v[0], v[1], v[2]
+for i in 2..3 { v[i] = 22; }    // drives v[2] again
+```
+
+`v[2]` ends up 22 — the same value the direct spelling `v[2] = 11; v[2] = 22;`
+produces, so the *behaviour* is consistent. But the direct spelling warns
+`W-P014` ("the earlier assignment has no effect") and the unrolled one warns
+nothing. An off-by-one in a generate range is exactly the mistake this lint is
+for, and it is exactly the shape it cannot see: `lint_dead_assignments` walks
+source statements and clears its run on any looping statement.
+
+I am leaving it. The obvious fix — teach `types` to unroll constant ranges —
+means writing a second unroller alongside the one in `ir`, which is the precise
+arrangement that has produced most of the bugs in this log. The right fix does
+the check after unrolling, but the lint's semantics depend on *unconditional*
+assignments at one statement level, and my lowering walk deliberately descends
+into conditional bodies, so it cannot be reused as it stands. That is a
+restructure, not a patch, and worth doing deliberately rather than at the end
+of a sweep.
+
+Also noted: `W-P001` (`MULTIPLE_DRIVERS`) is declared in the code catalogue and
+emitted from nowhere in the compiler. Either the lint was folded into `W-P014`
+and the code should go, or it was never written.

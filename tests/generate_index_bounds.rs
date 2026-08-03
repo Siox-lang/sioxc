@@ -174,6 +174,31 @@ fn a_clocked_block_inside_a_generate_loop_is_checked_too() {
 }
 
 #[test]
+fn an_instance_array_that_over_runs_is_named_as_instances() {
+    // `let st: Inc[3]` with the loop running to 4 built and wired *five*
+    // instances, and the chain through them computed correctly, so the
+    // declared size was simply ignored. The wording has to match the literal
+    // case, which calls them instances rather than array elements.
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Inc { a: unsigned[16] in, y: unsigned[16] out }\n\
+               impl Inc { y = a + 1; }\n\
+               entity E { y: unsigned[16] out }\n\
+               impl E {\n\
+                   let st: Inc[3];\n\
+                   let w: unsigned[16][8];\n\
+                   w[0] = 10;\n\
+                   for i in 0..4 { st[i] = Inc { .a = w[i], .y = w[i+1] }; }\n\
+                   y = w[5];\n\
+               }\n";
+    let out = diagnostics("instarray", src);
+    assert!(
+        out.contains("instance 3 is outside `0..2` of this 3-instance array"),
+        "an over-run instance array should be reported as instances, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_runtime_index_is_not_bounds_checked() {
     // The negative control that matters most: `regs[addr]` has no constant to
     // check, and a check that fired here would break every memory in the
