@@ -2085,6 +2085,184 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// The single expression a body returns, or `None` when the body is
+    /// anything more than one `return`.
+    fn sole_return<'b>(&self, f: &'b ast::FnDecl) -> Option<&'b ast::Expr> {
+        let body = f.body.as_ref()?;
+        match body.stmts.as_slice() {
+            [ast::Stmt::Return { value: Some(e), .. }] => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Rewrite a struct-valued *call* into the literal it returns, expressed in
+    /// the caller's terms.
+    ///
+    /// The testbench writes a composite from a name, a literal or a spread. A
+    /// computed struct — `a + a`, `a.doubled()`, `twice(a)` — matched none of
+    /// those, fell through to the scalar path, and was reported as
+    /// "unknown signal `s`": a struct has no single signal to look up, so the
+    /// destination took the blame for a value the emitter could not build.
+    /// Substituting the arguments into the returned literal turns all three
+    /// into the `Construct` case that already works, and composes, so
+    /// `twice(a) + a` resolves in two steps.
+    fn struct_call_rewrite(&self, value: &ast::Expr, depth: u32) -> Option<ast::Expr> {
+        if depth > 8 {
+            return None; // recursive body; the frontend owns that diagnostic
+        }
+        let mut binds: HashMap<String, ast::Expr> = HashMap::new();
+        let f = match value {
+            ast::Expr::Binary { op, lhs, rhs, .. } => {
+                let op_str = siox::syntax::pretty::bin_op(op);
+                let lhs_ty = self.arg_type_name(lhs)?;
+                let fns = self.op_impls.get(&(op_str.to_string(), lhs_ty.clone()))?;
+                let rhs_ty = self.arg_type_name(rhs);
+                let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
+                    let d = a.clone().or_else(|| {
+                        f.params
+                            .iter()
+                            .find(|p| !p.is_self)
+                            .and_then(|p| p.ty.as_ref())
+                            .and_then(type_head_name)
+                            .map(str::to_string)
+                    })?;
+                    Some(if d == "Self" { lhs_ty.clone() } else { d })
+                };
+                let (f, _) = match &rhs_ty {
+                    Some(r) => fns
+                        .iter()
+                        .find(|(f, a)| declared(f, a).as_deref() == Some(r))?,
+                    None => (fns.len() == 1).then(|| &fns[0])?,
+                };
+                binds.insert("self".to_string(), (**lhs).clone());
+                if let Some(p) = f.params.iter().find(|p| !p.is_self) {
+                    if let Some(n) = &p.name {
+                        binds.insert(n.text.clone(), (**rhs).clone());
+                    }
+                }
+                *f
+            }
+            ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
+                // A method: bind `self` to the receiver.
+                ast::Expr::Field { base, field, .. } => {
+                    let ty = self.arg_type_name(base)?;
+                    let f = *self.methods.get(&(ty, field.text.clone()))?;
+                    binds.insert("self".to_string(), (**base).clone());
+                    for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+                        if let Some(n) = &p.name {
+                            binds.insert(n.text.clone(), a.clone());
+                        }
+                    }
+                    f
+                }
+                // A module-level function.
+                _ => {
+                    let key = siox::ir::call_fn_key(callee)?;
+                    let f = *self.fns.get(key.as_str())?;
+                    for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+                        if let Some(n) = &p.name {
+                            binds.insert(n.text.clone(), a.clone());
+                        }
+                    }
+                    f
+                }
+            },
+            _ => return None,
+        };
+        // Only a struct-returning body is this function's business; a scalar
+        // one is already handled by the ordinary expression path.
+        let ret = f.ret.as_ref().and_then(type_head_name)?;
+        if self.structs.get(ret).is_none_or(|fs| fs.is_empty()) {
+            return None;
+        }
+        let body = self.sole_return(f)?;
+        let rewritten = siox::ir::subst_expr_paths(body, &binds);
+        // Substituting a *struct-valued* argument leaves field reads of it
+        // behind — `self.x` with `self = twice(a)` becomes `twice(a).x`, which
+        // has no more hardware form here than it does in an entity. Reducing
+        // the base to its literal and taking the field named turns it back
+        // into ordinary scalar arithmetic.
+        // A result that is itself a call (`fn outer(v) { return twice(v); }`)
+        // needs no recursion here: `write_composite` re-enters this function
+        // with whatever comes back.
+        Some(self.fold_struct_fields(&rewritten, depth + 1))
+    }
+
+    /// Replace `<struct expression>.field` with the field's own value.
+    fn fold_struct_fields(&self, e: &ast::Expr, depth: u32) -> ast::Expr {
+        use ast::Expr as E;
+        if depth > 8 {
+            return e.clone();
+        }
+        let go = |x: &E| self.fold_struct_fields(x, depth);
+        match e {
+            E::Field { base, field, span } => {
+                let base = self.fold_struct_fields(base, depth);
+                // A call in base position becomes the literal it returns.
+                let base = match self.struct_call_rewrite(&base, depth) {
+                    Some(lit) => lit,
+                    None => base,
+                };
+                if let E::Construct { args, .. } = &base {
+                    for a in args {
+                        let named = a.field.as_ref().is_some_and(|n| n.text == field.text);
+                        if named {
+                            if let Some(v) = &a.value {
+                                return self.fold_struct_fields(v, depth + 1);
+                            }
+                        }
+                    }
+                }
+                E::Field {
+                    base: Box::new(base),
+                    field: field.clone(),
+                    span: *span,
+                }
+            }
+            E::Binary { op, lhs, rhs, span } => E::Binary {
+                op: op.clone(),
+                lhs: Box::new(go(lhs)),
+                rhs: Box::new(go(rhs)),
+                span: *span,
+            },
+            E::Unary { op, rhs, span } => E::Unary {
+                op: *op,
+                rhs: Box::new(go(rhs)),
+                span: *span,
+            },
+            E::Call {
+                callee,
+                args,
+                bang,
+                span,
+            } => E::Call {
+                callee: Box::new(go(callee)),
+                args: args.iter().map(go).collect(),
+                bang: *bang,
+                span: *span,
+            },
+            E::Construct {
+                ty,
+                args,
+                spread,
+                span,
+            } => E::Construct {
+                ty: ty.clone(),
+                args: args
+                    .iter()
+                    .map(|a| ast::ConnectArg {
+                        field: a.field.clone(),
+                        value: a.value.as_ref().map(&go),
+                        span: a.span,
+                    })
+                    .collect(),
+                spread: spread.as_ref().map(|s| Box::new(go(s))),
+                span: *span,
+            },
+            other => other.clone(),
+        }
+    }
+
     fn write_composite(
         &self,
         name: &str,
@@ -2092,6 +2270,11 @@ impl Ctx<'_> {
         b: &mut String,
         ind: &str,
     ) -> Result<bool, String> {
+        // A computed struct value reduces to the literal its body returns,
+        // which the `Construct` arm below already knows how to write.
+        if let Some(rewritten) = self.struct_call_rewrite(value, 0) {
+            return self.write_composite(name, &rewritten, b, ind);
+        }
         if let Some(source_name) = expr_path(value) {
             let source = self.composite_reads(&source_name);
             if !source.is_empty() {
@@ -3956,6 +4139,22 @@ impl Ctx<'_> {
     /// `None` means "not known here", and the caller stays permissive rather
     /// than rejecting something it merely cannot see.
     fn arg_type_name(&self, e: &ast::Expr) -> Option<String> {
+        // A call reads as its declared return type, so an operator whose left
+        // operand is itself a call (`twice(a) + a`) can still find its impl.
+        if let ast::Expr::Call { callee, args, .. } = e {
+            let ret = match callee.as_ref() {
+                ast::Expr::Field { base, field, .. } => self
+                    .arg_type_name(base)
+                    .and_then(|ty| self.methods.get(&(ty, field.text.clone())).copied()),
+                _ => siox::ir::call_fn_key(callee).and_then(|k| self.fns.get(k.as_str()).copied()),
+            }
+            .and_then(|f| f.ret.as_ref())
+            .and_then(type_head_name);
+            if let Some(ret) = ret {
+                return Some(ret.to_string());
+            }
+            let _ = args;
+        }
         let path = expr_path(e)?;
         if let Some(t) = self.local_types.borrow().get(&path) {
             return Some(t.clone());

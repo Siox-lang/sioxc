@@ -6354,3 +6354,58 @@ rounds ago — blaming the target for a form that was simply never handled — b
 the fix here is not a better message, it is per-field evaluation of an
 arbitrary expression in the C emitter, which is the feature itself. Worth doing
 deliberately.
+
+## The testbench can compute a struct now
+
+Checked last round's `Val`-returning `lower_free_call` first, in four contexts
+it had not been tried in: a struct-returning call driving a clocked register
+(6 10), a call as another call's argument (12 20), a function whose branches
+return parameters (3 5), and a field of a call result — the last still `E-P017`,
+honestly. No regressions.
+
+Then took the gap I reported last round and did not fix. In a testbench, a
+struct local accepted an assignment from a name, a literal or a spread, and
+*any* computed struct — `a + a`, `a.doubled()`, `twice(a)`,
+`twice(a) + a` — failed with
+
+```
+sioxc --test: unknown signal `s`
+```
+
+naming a local that works on the line above. Hardware lowered all of them, so
+the two engines disagreed about whether the program existed.
+
+`write_composite` matches a source name, a string and a literal. A computed
+struct matched none, fell through to the scalar path, which looks the
+destination up as a single signal, finds none — a struct is many — and blames
+the name. The fix reduces the computed value to the literal its body returns,
+expressed in the caller's terms, which is the `Construct` case that already
+worked. Operator impls, methods and free functions are all one substitution.
+
+It needed a second step I did not anticipate. Substituting a struct-valued
+*argument* leaves field reads of it behind: `self.x` with `self = twice(a)`
+becomes `twice(a).x`, which has no more meaning in C than it does in hardware.
+Folding `<literal>.field` down to the field's own value turns it back into
+scalar arithmetic, and then `twice(a) + a` resolves in two passes. The emitter's
+`arg_type_name` also had to learn a call's declared return type, or an operator
+whose left operand is a call could not find its impl.
+
+All nine shapes now agree with hardware: operator, method, free function, call
+feeding an operator, the same composition inside a body, method feeding an
+operator, call as an argument, name copy, and spread. The corpus file asserts
+the testbench result equals the hardware result for each, rather than only that
+each is right — the disagreement is the thing being fixed.
+
+Four mutations, all detected: the rewrite unhooked, the field fold removed, the
+call return type not typed, and the struct-return restriction dropped — that
+last one overflows the stack, since without it a scalar function rewrites into
+itself forever.
+
+**And one piece I wrote turned out to be dead.** `struct_call_rewrite` recursed
+into its own result, which looked necessary for a body that returns another
+call (`fn passthru(v) { return twice(v); }`). It is not: `write_composite`
+re-enters the rewrite with whatever comes back. The mutation said NOT DETECTED,
+I built the pass-through shape to check whether the test was merely too narrow —
+as it has been four times in this log — and this time the code really was
+redundant. Removed, and the shape kept as coverage since it exercises the
+re-entry that replaces it.
