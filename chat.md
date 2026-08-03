@@ -6008,3 +6008,76 @@ engines agree), a negative generic argument (`Sub<(0 - 3)>` gives 253, which is
 the raw-resize conversion the language specifies), and a zero-length array from
 `N = 0`, which reports `element 0 is outside 0..0 of this 0-element array`
 rather than building anything.
+
+## A conversion with nowhere to go, found by writing a UART
+
+Left the generate/index area — four rounds is enough — and went at FSMs, which
+combine more features than anything else in hardware and had exactly one corpus
+file: a state register with three states, four edges and no datapath.
+
+Wrote a UART transmitter instead: enum state driven by `match` inside a clocked
+block, a shift register and counter advanced by the same edge, a synchronous
+reset, a Moore output. The oracle is RS-232 framing, not the compiler — start
+bit 0, eight data bits least-significant first, stop bit 1, so 0xA5 goes out as
+0, then 1 0 1 0 0 1 0 1, then 1.
+
+The design would not compile, and the reason was the finding. The natural line
+for a shift register is
+
+```siox
+txr = Bit(sh[0]);
+```
+
+`sh[0]` on an `unsigned[8]` is a `Logic`. There is no `From<Logic> for Bit` and
+there should not be — `Bit` has nowhere to put `'X'` or `'Z'`. But the type
+checker accepted it, and the failure arrived after parse, resolve and typecheck
+had each reported success:
+
+```
+sioxc --test: the driver for `T.e.y`: contains an Unknown (unlowered) expression
+```
+
+No code, no span, and it names a signal rather than the expression. Probing the
+shape systematically: `Bit(Logic)`, `Logic(Bit)`, `Bit(integer)` and
+`St(integer)` all did this, while `unsigned[8](x)` was fine — so it was every
+*named-type* conversion with no route, not conversions in general.
+
+The mechanism itself was never broken, which is what made the fix cheap.
+`ULogic(Bit)` works through std's explicit `impl From<Bit> for ULogic`, and
+`Logic(ULogic)`/`ULogic(Logic)` work through the newtype derivation, both
+directions. Only the *absence* of a route was unreported.
+
+I considered checking this in `types`, which is where it belongs on paper, and
+did not: the accept side has a wide surface — struct newtypes over vectors and
+over kernel scalars, the nullary `T()` default, `Char`, generic `From` impls —
+and a check built there would have to re-derive all of it, which is how most of
+the bugs in this log got made. Lowering already knows the answer, because it
+has just failed to find a route, and it holds the target, the source and a
+span. It now records that instead of leaving an `Unknown`, through the same
+deferred-diagnostic mechanism `unresolved_names` uses:
+
+```
+error[E-P003]: no conversion from `Logic` to `Bit`
+   = help: `T(x)` needs an `impl From<S> for T`, or a derivation chain between
+           the two types; conversions are never implicit
+```
+
+Because it fires only where lowering already gave up, it cannot reject anything
+that previously worked. Corpus: 0 affected.
+
+Three mutations, all detected: recording disabled, reporter not flushed, and
+enums dropped from the eligible targets (which leaves structs working and so
+would pass a struct-only test). Three of the six tests are negative controls —
+the explicit `From` route, both derivation directions, and kernel width
+conversions — since a check like this fails by banning what it should permit.
+
+### And the FSM itself is correct
+
+With the conversion spelled legally (`tx` is a `Logic`, which is what a pin is),
+the transmitter matches the framing exactly: idle high, start low, 1 0 1 0 0 1
+0 1 for 0xA5, stop high, with `busy` rising on the load edge and clearing on
+the stop. The reset path abandons a frame mid-flight, holds idle while asserted,
+and starts a fresh frame from its own start bit when released. Banked as
+`uart_fsm_test.siox` — the next-state semantics it depends on (`txr = sh[0]`
+taking the old low bit while `sh` takes the old value shifted) had no coverage
+in the corpus at all.

@@ -338,6 +338,7 @@ pub fn lower_in(
         l.lower_entity(name);
     }
     l.report_depth_exceeded();
+    l.report_bad_conversions();
     l.report_unresolved_names();
     l.report_unsupported_exprs();
     l.lint_possible_latches();
@@ -504,6 +505,11 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// Conversions `T(x)` where `T` names a real struct/enum but no `From`
+    /// impl and no derivation connects it to the argument's type. Lowering
+    /// left an `Unknown`, which surfaced at the very end as "contains an
+    /// Unknown (unlowered) expression" with no code and no span.
+    bad_conversions: std::cell::RefCell<Vec<(String, Option<String>, crate::diag::Span)>>,
     /// Locals whose element type is an entity (`let stage: Inc[3]`), so an
     /// out-of-range element can be named an instance the way the `types` check
     /// names it rather than being called an array element.
@@ -622,6 +628,7 @@ impl<'a> Lowering<'a> {
             local_struct_repr: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
+            bad_conversions: std::cell::RefCell::new(Vec::new()),
             instance_arrays: HashSet::new(),
             reported_oob: HashSet::new(),
             local_numeric: HashMap::new(),
@@ -2316,6 +2323,37 @@ impl<'a> Lowering<'a> {
             }
             Some(ast::ElseBranch::If(inner)) => self.collect_if_bad_indices(inner, out),
             None => {}
+        }
+    }
+
+    /// Report a conversion with no route from its argument's type.
+    ///
+    /// `T(x)` on a named type dispatches to `impl From<S> for T` or to a total
+    /// derivation (spec 3.17/3.28). With neither, lowering left an `Unknown`
+    /// and the failure surfaced after every stage had reported success:
+    /// "the driver for `T.e.y`: contains an Unknown (unlowered) expression",
+    /// naming a signal rather than the expression, with no code and no span.
+    /// `Bit(l)` on a `Logic` is the shape that finds this — narrowing away
+    /// `'X'`/`'Z'` is exactly what std declines to provide a `From` for, and
+    /// it is what anyone writes when shifting a bit out of a vector.
+    fn report_bad_conversions(&mut self) {
+        let mut items = std::mem::take(&mut *self.bad_conversions.borrow_mut());
+        items.sort_by_key(|(t, s, span)| (span.start, t.clone(), s.clone()));
+        items.dedup();
+        for (target, src, span) in items {
+            let from = match &src {
+                Some(s) => format!("`{s}`"),
+                None => "this argument's type".to_string(),
+            };
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!("no conversion from {from} to `{target}`"))
+                    .with_code(crate::diag::codes::TYPE_MISMATCH)
+                    .at(span)
+                    .help(
+                        "`T(x)` needs an `impl From<S> for T`, or a derivation \
+                     chain between the two types; conversions are never implicit",
+                    ),
+            );
         }
     }
 
@@ -5809,6 +5847,30 @@ impl<'a> Lowering<'a> {
         };
         let arg = args.first()?;
         let src = self.operand_type_name(arg);
+        let found = self.lower_from_inner(target, arg, src.as_deref(), env);
+        // This is the last conversion strategy tried, so a `None` here is an
+        // `Unknown` in the driver. Record it while the target, the source and
+        // a span are all still in hand.
+        if found.is_none()
+            && (self.structs.contains_key(target) || self.enum_variants.contains_key(target))
+        {
+            self.bad_conversions.borrow_mut().push((
+                target.to_string(),
+                src.clone(),
+                ast::expr_span(callee),
+            ));
+        }
+        found
+    }
+
+    fn lower_from_inner(
+        &self,
+        target: &str,
+        arg: &ast::Expr,
+        src: Option<&str>,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let src = src.map(str::to_string);
         // No explicit `impl From<src> for target`: try a derivation-total
         // conversion (spec: T(x) is auto for total derivations).
         let Some(fns) = self.op_impls.get(&("From".to_string(), target.to_string())) else {
