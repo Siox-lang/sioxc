@@ -5727,3 +5727,84 @@ as do `Cell<8>` as a field type and `Meter<8>` as a bound — those go through
 application; every consumer in resolve, elab, types and ir matches
 `Positional(Expr::Path(p))`. Giving type arguments their own representation is
 a feature, not a parser tweak, and no doc or std source uses the shape today.
+
+## An index checked only when it was written as a literal
+
+Swept generate constructs — untouched since they were built, and recently
+relevant because `E-P020` explicitly permits instances inside a generate
+`for`/`if`. The corpus had two generate files, both building combinational
+structure out of instances. Nothing put sequential logic inside a loop, nested
+a loop in a loop, used the index as a value, or counted down.
+
+Those all work. A three-deep delay line whose per-stage register is clocked
+*inside* the loop shifts 11, 22, 33 out in order; a nested loop fills all nine
+cells (99); `i * i` sums to 30; `3..0` writes every element once (10); `2..2`
+is one iteration. All hand-computed, all correct.
+
+What is not correct is what happens when the loop runs off the end.
+
+`types` reports an out-of-range index as `E-P003` — but only when the index is
+a *literal in the source*. `v[4] = 1` on a four-element array is a hard error.
+`for k in 0..4 { v[k] = 1; }` is the same statement after unrolling, and it
+built four assignments and discarded the fifth without a word. The same hole
+swallowed every index that becomes constant later than stage 4:
+
+| shape | before |
+| --- | --- |
+| `for k in 0..4 { v[k] = 1 }`, `v` is 4 long | fifth write dropped |
+| `for k in 0..5 { s[k] = v[k] }` | reads past the end **clamp to the last element** |
+| `y = v[N]` with `N = 9` | clamps to `v[3]` |
+| `x[k]` past a packed `unsigned[8]` | reads 0 |
+| `Bit[7..0]`, `for k in 0..9` | two writes dropped |
+| `st[i] = Inc { .. }`, `st` is `Inc[3]`, `i` to 4 | **five instances built** |
+
+The read behaviour is the worst of them: `v[4]` came back as `v[3]`, so the
+design ran and produced a plausible wrong number rather than failing.
+
+The cause is layering. The check lives in `types`, which runs before
+elaboration; a generate index is a loop variable there and a parameter index is
+unbound, so `const_literal` sees no constant and the check never fires. Nothing
+looked again after the substitution. Lowering now walks each statement at the
+point where every index has finally folded — the same `E-P003`, worded the same
+way — and reuses `local_array`, which carries an array's actual element indices
+so a declared descending range needs no special case.
+
+It needs two hooks, not one. A `for` wrapped *around* a clocked block comes
+back through `lower_stmt` with its body substituted; a `for` nested *inside*
+the clocked block is unrolled by the sequential path, which never returns
+there. I only found that because the mutation for the second hook came back
+NOT DETECTED — my test had written the loop outermost, so the hook was dead
+code and deleting it changed nothing. The test now uses the nested form.
+
+### A negative index folded to nothing at all
+
+`for i in 0..(N - 1)` with `N = 0` is `0..-1`. Ranges are directional, so that
+is two iterations counting down — and the `-1` one quietly drove element -1.
+The new check did not catch it either, which was the tell: `subst_expr`
+substitutes the index as `Expr::Int { text: "-1" }`, and the lexer never
+produces an `Int` whose text carries a sign, so `parse_int` returns `None` and
+**every** const-folding path in the compiler treated that iteration's index as
+non-constant. A negative loop iteration was invisible to constant folding
+generally, not just to the bounds check. `subst_expr` now emits a negation over
+an unsigned literal, keeping the AST in the shape the rest of the compiler
+assumes.
+
+Six mutations, all detected: each hook, the negative substitution, the element
+path, the packed path, and accepting a negative index. The two negative
+controls are the ones that would hurt if they broke — a runtime index
+(`regs[addr]`) has no constant to check and must stay legal, and an in-range
+loop over a descending `Bit[7..0]` must not be flagged by code that reached for
+the length instead of the declared bounds. Corpus: 0 files affected.
+
+Banked `generate_shape_test.siox` for the working shapes above, and documented
+the directional-range rule in `docs/language.md` — it was the thing that made
+`N = 0` surprising, and it was written down nowhere.
+
+### Found, not fixed: an instance array over-runs its declared size
+
+`let st: Inc[3]` with `for i in 0..4 { st[i] = Inc { .. } }` builds five
+instances and wires all of them; the chain through them computes correctly, so
+the declared `[3]` is simply ignored. Instances are gathered in `elab`, not
+lowered in `ir`, so the check added here does not see them — `st` is not a
+signal and is in neither `local_array` nor `local_range`. Separate mechanism,
+separate fix.

@@ -36,6 +36,12 @@ precise reference.
   with a compile-time-constant condition selects which branch is built. The two
   nest, so hardware structure can be parameterized: `for i { if i < N { stage[i]
   = Sub { .. } } }`. A non-constant condition stays a behavioral `if`.
+  The range is **directional and inclusive**, like a declared index range:
+  `0..2` is 0, 1, 2 and `2..0` is 2, 1, 0, so a range never counts zero
+  iterations. `for i in 0..(N - 1)` with `N = 0` is therefore `0..-1` — two
+  iterations counting down, not none. An index that lands outside the array it
+  subscripts is `E-P003`, whether it was written as a literal or arrived by
+  unrolling or parameter substitution.
 - **Where an entity may be instantiated.** Only at the root layer of another
   entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
   a signal), not in a `match` arm, not in a function. Those are `E-P020`.

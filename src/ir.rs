@@ -504,6 +504,11 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// Out-of-range constant indices already reported, keyed by
+    /// (array, index, span start). One source index is visited once per
+    /// generate iteration, so without this a loop reports the same element
+    /// as many times as the loop is long.
+    reported_oob: HashSet<(String, i64, u32)>,
     /// The active driver context (bumped per impl block / connection).
     cur_ctx: u32,
     /// Driver context -> the source site that created it (a port connection's
@@ -613,6 +618,7 @@ impl<'a> Lowering<'a> {
             local_struct_repr: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
+            reported_oob: HashSet::new(),
             local_numeric: HashMap::new(),
             vector_families: std::collections::HashSet::new(),
             cur_ctx: 0,
@@ -2000,6 +2006,255 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Report a constant index that falls outside the array it indexes, at the
+    /// point where every index has finally become constant.
+    ///
+    /// `types` reports this already (`E-P003`), but only for an index that is a
+    /// *literal in the source*. An index that becomes constant later — a
+    /// generate loop's unrolled variable, or an entity parameter substituted at
+    /// elaboration — arrived here unchecked, and lowering had no complaint to
+    /// make: a write to an element that does not exist found no signal and was
+    /// dropped, and a read of one clamped to the last element. Both silent.
+    /// `for i in 0..3 { v[i] = .. }` on a 4-element `v` is the same statement
+    /// as `v[4] = ..` after unrolling, and only one of the two was an error.
+    ///
+    /// The shape that motivates it: ranges are directional (`2..1` counts
+    /// down), so a parameterized `for i in 0..(N - 1)` with `N = 0` iterates
+    /// `0, -1` and quietly drove element -1.
+    #[allow(clippy::type_complexity)]
+    fn report_bad_indices(
+        &mut self,
+        found: Vec<(
+            String,
+            i64,
+            i64,
+            i64,
+            usize,
+            &'static str,
+            crate::diag::Span,
+        )>,
+    ) {
+        for (name, value, lo, hi, len, noun, span) in found {
+            if !self.reported_oob.insert((name.clone(), value, span.start)) {
+                continue;
+            }
+            // Worded exactly as the `types` check words it, so the two routes
+            // to the same mistake read the same.
+            let unit = if noun == "bit" { "vector" } else { "array" };
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "{noun} {value} is outside `{lo}..{hi}` of this {len}-{noun} {unit}"
+                ))
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(span)
+                .help(
+                    "the index is constant after elaboration — check the generate \
+                     range or the parameter it came from against the declared size",
+                ),
+            );
+        }
+    }
+
+    /// Walk `e` for indexed reads/writes whose index const-folds in the current
+    /// environment and lands outside the base array. Reported through the
+    /// caller so the walk itself can stay behind `&self`.
+    #[allow(clippy::type_complexity)]
+    fn collect_bad_indices(
+        &self,
+        e: &ast::Expr,
+        out: &mut Vec<(
+            String,
+            i64,
+            i64,
+            i64,
+            usize,
+            &'static str,
+            crate::diag::Span,
+        )>,
+    ) {
+        use ast::Expr as E;
+        match e {
+            E::Index { base, index, span } => {
+                self.collect_bad_indices(base, out);
+                self.collect_bad_indices(index, out);
+                // A slice (`v[3..0]`) is bounded by `slice_bounds`, and a
+                // runtime index (`mem[addr]`) does not fold — neither is this
+                // check's business.
+                let (Some(path), Some(v)) = (expr_path(base), eval_const(index, &self.cur_env))
+                else {
+                    return;
+                };
+                // An element array carries its own index list, so a declared
+                // descending range (`Bit[7..0]` -> 7,6,..,0) needs no special
+                // case. Anything else falls back to the declared range, which
+                // covers packed vectors indexed by bit.
+                if let Some(indices) = self.local_array.get(&path) {
+                    if !indices.contains(&v) {
+                        let (lo, hi) = (
+                            indices.iter().copied().min().unwrap_or(0),
+                            indices.iter().copied().max().unwrap_or(0),
+                        );
+                        out.push((path, v, lo, hi, indices.len(), "element", *span));
+                    }
+                } else if let Some(&(left, right)) = self.local_range.get(&path) {
+                    let (lo, hi) = (left.min(right), left.max(right));
+                    if v < lo || v > hi {
+                        let len = (hi - lo + 1) as usize;
+                        out.push((path, v, lo, hi, len, "bit", *span));
+                    }
+                }
+            }
+            E::Field { base, .. } | E::SysAttr { base, .. } | E::Unary { rhs: base, .. } => {
+                self.collect_bad_indices(base, out)
+            }
+            E::Binary { lhs, rhs, .. }
+            | E::Range {
+                lo: lhs, hi: rhs, ..
+            } => {
+                self.collect_bad_indices(lhs, out);
+                self.collect_bad_indices(rhs, out);
+            }
+            E::PartialRange { lo, hi, .. } => {
+                if let Some(lo) = lo {
+                    self.collect_bad_indices(lo, out);
+                }
+                if let Some(hi) = hi {
+                    self.collect_bad_indices(hi, out);
+                }
+            }
+            E::IfExpr {
+                cond, then, els, ..
+            } => {
+                self.collect_bad_indices(cond, out);
+                self.collect_bad_indices(then, out);
+                self.collect_bad_indices(els, out);
+            }
+            E::Match {
+                scrutinee, arms, ..
+            } => {
+                self.collect_bad_indices(scrutinee, out);
+                for a in arms {
+                    for s in &a.body.stmts {
+                        self.collect_stmt_bad_indices(s, out);
+                    }
+                }
+            }
+            E::Call { callee, args, .. } => {
+                self.collect_bad_indices(callee, out);
+                for a in args {
+                    self.collect_bad_indices(a, out);
+                }
+            }
+            E::Construct { args, spread, .. } => {
+                for a in args {
+                    if let Some(v) = &a.value {
+                        self.collect_bad_indices(v, out);
+                    }
+                }
+                if let Some(s) = spread {
+                    self.collect_bad_indices(s, out);
+                }
+            }
+            E::Concat { parts: es, .. } | E::Array { elems: es, .. } => {
+                for x in es {
+                    self.collect_bad_indices(x, out);
+                }
+            }
+            E::Int { .. }
+            | E::SuffixLit { .. }
+            | E::BitStrLit { .. }
+            | E::CharLit { .. }
+            | E::StrLit { .. }
+            | E::Path(_) => {}
+        }
+    }
+
+    /// The statement form of [`Self::collect_bad_indices`]. A nested block is
+    /// walked too: a `for` body is re-dispatched here once per iteration with
+    /// its index substituted, and until then the loop variable does not fold,
+    /// so the untaken walk finds nothing and costs nothing.
+    #[allow(clippy::type_complexity)]
+    fn collect_stmt_bad_indices(
+        &self,
+        s: &ast::Stmt,
+        out: &mut Vec<(
+            String,
+            i64,
+            i64,
+            i64,
+            usize,
+            &'static str,
+            crate::diag::Span,
+        )>,
+    ) {
+        match s {
+            ast::Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
+                self.collect_bad_indices(target, out);
+                self.collect_bad_indices(value, out);
+                if let Some(a) = after {
+                    self.collect_bad_indices(a, out);
+                }
+            }
+            ast::Stmt::Let(l) => {
+                if let Some(v) = &l.value {
+                    self.collect_bad_indices(v, out);
+                }
+            }
+            ast::Stmt::Expr(e) => self.collect_bad_indices(e, out),
+            ast::Stmt::Return { value: Some(v), .. } => self.collect_bad_indices(v, out),
+            ast::Stmt::Return { .. } => {}
+            ast::Stmt::If(iff) => self.collect_if_bad_indices(iff, out),
+            ast::Stmt::Match(m) => {
+                self.collect_bad_indices(&m.scrutinee, out);
+                for a in &m.arms {
+                    for s in &a.body.stmts {
+                        self.collect_stmt_bad_indices(s, out);
+                    }
+                }
+            }
+            ast::Stmt::For { range, body, .. } => {
+                self.collect_bad_indices(range, out);
+                for s in &body.stmts {
+                    self.collect_stmt_bad_indices(s, out);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn collect_if_bad_indices(
+        &self,
+        iff: &ast::IfStmt,
+        out: &mut Vec<(
+            String,
+            i64,
+            i64,
+            i64,
+            usize,
+            &'static str,
+            crate::diag::Span,
+        )>,
+    ) {
+        self.collect_bad_indices(&iff.cond, out);
+        for s in &iff.then.stmts {
+            self.collect_stmt_bad_indices(s, out);
+        }
+        match iff.else_.as_deref() {
+            Some(ast::ElseBranch::Block(b)) => {
+                for s in &b.stmts {
+                    self.collect_stmt_bad_indices(s, out);
+                }
+            }
+            Some(ast::ElseBranch::If(inner)) => self.collect_if_bad_indices(inner, out),
+            None => {}
+        }
+    }
+
     /// Report any function whose inlining hit the depth guard. Recursion in
     /// hardware has to terminate at elaboration — either the arguments
     /// const-fold, or the recursion is unbounded and there is no finite circuit
@@ -3216,6 +3471,11 @@ impl<'a> Lowering<'a> {
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
     /// the enclosing combinational conditions.
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        // Every index in this statement is as constant as it will ever be: a
+        // generate `for` substitutes its variable before re-dispatching here.
+        let mut bad = Vec::new();
+        self.collect_stmt_bad_indices(stmt, &mut bad);
+        self.report_bad_indices(bad);
         // An instance-array element (`stage[i] = Sub { .. }`, Sub an entity) is
         // lowered structurally by `gather_generate`, not as a behavioral driver
         // — skip it so unrolling a `for` doesn't mistake it for an assignment. A
@@ -3845,6 +4105,11 @@ impl<'a> Lowering<'a> {
         out: &mut Vec<NextUpdate>,
     ) {
         for s in &block.stmts {
+            // The clocked path unrolls its own `for` (below) rather than going
+            // through `lower_stmt`, so the same check has to be made here.
+            let mut bad = Vec::new();
+            self.collect_stmt_bad_indices(s, &mut bad);
+            self.report_bad_indices(bad);
             match s {
                 ast::Stmt::Assign {
                     target,
@@ -8502,10 +8767,27 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
     use ast::Expr;
     let sub = |x: &Expr| Box::new(subst_expr(x, var, val));
     match e {
-        Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => Expr::Int {
-            text: val.to_string(),
-            span: p.span,
-        },
+        // A negative iteration has to stay a well-formed AST: the lexer never
+        // produces an `Int` whose text carries a sign, so `Int { text: "-1" }`
+        // failed `parse_int` and every const-folding path treated the index as
+        // non-constant. `for i in 0..(N - 1)` with `N = 0` counts down through
+        // -1 (ranges are directional), and that iteration silently folded to
+        // nothing instead of to element -1.
+        Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => {
+            let lit = Expr::Int {
+                text: val.unsigned_abs().to_string(),
+                span: p.span,
+            };
+            if val < 0 {
+                Expr::Unary {
+                    op: ast::UnOp::Neg,
+                    rhs: Box::new(lit),
+                    span: p.span,
+                }
+            } else {
+                lit
+            }
+        }
         Expr::Field { base, field, span } => Expr::Field {
             base: sub(base),
             field: field.clone(),
