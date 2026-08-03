@@ -33,6 +33,9 @@ type OperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<
 type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
+/// `(operator, left type, right type, span)` for an unmatched operator.
+type BadOperator = (String, String, Option<String>, crate::diag::Span);
+
 #[derive(Default)]
 pub struct Design {
     pub signals: Vec<Signal>,
@@ -347,6 +350,7 @@ pub fn lower_in(
         l.lower_entity(name);
     }
     l.report_depth_exceeded();
+    l.report_bad_operators();
     l.report_bad_conversions();
     l.report_unresolved_names();
     l.report_unsupported_exprs();
@@ -514,6 +518,11 @@ struct Lowering<'a> {
     /// Array-typed locals -> their ordered element indices (whole-array
     /// assignment and string literals expand per element).
     local_array: HashMap<String, Vec<i64>>,
+    /// Binary operators where the left operand's type has `Operator` impls but
+    /// none accepts the right operand. For an aggregate struct there is no
+    /// builtin arithmetic to fall back to, so the expression produced nothing
+    /// and the assignment it fed was silently dropped.
+    bad_operators: std::cell::RefCell<Vec<BadOperator>>,
     /// Conversions `T(x)` where `T` names a real struct/enum but no `From`
     /// impl and no derivation connects it to the argument's type. Lowering
     /// left an `Unknown`, which surfaced at the very end as "contains an
@@ -637,6 +646,7 @@ impl<'a> Lowering<'a> {
             local_struct_repr: HashMap::new(),
             local_char: std::collections::HashSet::new(),
             local_array: HashMap::new(),
+            bad_operators: std::cell::RefCell::new(Vec::new()),
             bad_conversions: std::cell::RefCell::new(Vec::new()),
             instance_arrays: HashSet::new(),
             reported_oob: HashSet::new(),
@@ -2332,6 +2342,32 @@ impl<'a> Lowering<'a> {
             }
             Some(ast::ElseBranch::If(inner)) => self.collect_if_bad_indices(inner, out),
             None => {}
+        }
+    }
+
+    /// Report a binary operator with no impl for its right operand's type.
+    fn report_bad_operators(&mut self) {
+        let mut items = std::mem::take(&mut *self.bad_operators.borrow_mut());
+        items.sort_by_key(|(o, l, r, sp)| (sp.start, o.clone(), l.clone(), r.clone()));
+        items.dedup();
+        for (op, lhs, rhs, span) in items {
+            let with = match &rhs {
+                Some(r) => format!("a right operand of type `{r}`"),
+                None => "this right operand".to_string(),
+            };
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "no `{op}` operator for `{lhs}` with {with}"
+                ))
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(span)
+                .help(
+                    "an operator is `impl Operator<\"<sym>\", Rhs, Out> for T`, and the \
+                     right operand has to match `Rhs` — a bare integer literal only \
+                     matches an `Rhs` of the same type as the left operand, so convert \
+                     it explicitly (`x * unsigned[8](3)`)",
+                ),
+            );
         }
     }
 
@@ -5220,6 +5256,38 @@ impl<'a> Lowering<'a> {
                 }
             }
         };
+        // No candidate accepted this right operand. For a *vector family* that
+        // is fine — the caller falls back to builtin arithmetic on the packed
+        // word. For an aggregate struct there is nothing to fall back to: the
+        // expression yields no fields, and the assignment it feeds is dropped
+        // without a word, leaving only a downstream "never driven" warning
+        // that names the symptom rather than the operator.
+        // An *aggregate* struct is the test, not "not a vector family": a
+        // multi-field struct may opt into `Vector`, and it is still many
+        // signals with no packed-word arithmetic to fall back on, so excluding
+        // vector families here would have left exactly this case silent. A
+        // field-less newtype (`struct Q(unsigned[8])`) is a word and is
+        // correctly left to builtin arithmetic.
+        // Only an *aggregate* struct. A field-less newtype is one word with
+        // builtin arithmetic behind it, and std's families are exactly that
+        // shape (`pub struct unsigned(Logic[])`), so `contains_key` alone
+        // would report on ordinary vector expressions. Testing for "not a
+        // vector family" instead would be wrong the other way: an aggregate
+        // may opt into `Vector` and is still many signals with nothing to fall
+        // back on.
+        if f.is_none()
+            && self
+                .structs
+                .get(lhs_ty.as_str())
+                .is_some_and(|st| !st.fields.is_empty())
+        {
+            self.bad_operators.borrow_mut().push((
+                op.to_string(),
+                lhs_ty.clone(),
+                rhs_ty.clone(),
+                ast::expr_span(lhs).to(ast::expr_span(rhs)),
+            ));
+        }
         let (f, _) = f?;
         let body = f.body.as_ref()?;
 

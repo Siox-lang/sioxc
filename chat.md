@@ -6212,3 +6212,77 @@ knowing about.
 Banked `registered_struct_test.siox`: a registered entry with an enable that
 holds when disabled, two array slots written independently, an unrolled loop
 writing whole struct elements, and a parameter-indexed slot.
+
+## An operator that matches nothing produces nothing
+
+Checked last round's struct-assignment work first: struct-to-struct copy,
+spread, and array-element-from-signal all lower correctly in both paths, and an
+incomplete literal leaves the omitted field undriven with `W-P011` in both. The
+`Some(vec![])` case I was worried about does not arise from a bare struct path.
+
+Then swept operator overloading, which had impls for `+`, `<=>`, `and` and `/`
+in the corpus but nothing using one inside a clocked block, with a mixed-type
+right operand, or in a precedence chain. A Q4.4 accumulator covers all three
+and is **correct** — `sum = sum + step` registers through a user `+`,
+`step + step * scale` respects precedence (96 for 24 + 24*3), and `sum > step`
+resolves through `<=>` on both edges.
+
+The bug is next door, on an aggregate:
+
+```siox
+struct Vec2 { x: unsigned[8], y: unsigned[8] }
+impl Operator<"*", unsigned[8], Vec2> for Vec2 { .. }
+
+s = a * 3;                 // silently nothing; s reads as 0
+s = a * unsigned[8](3);    // 24, as intended
+```
+
+Overload selection matches the declared `Rhs` exactly and retries a bare
+`integer` literal only against a `Self`-typed `Rhs`, so `3` matches neither.
+`inline_op` then returns `None` — which for a vector family correctly means
+"fall back to builtin arithmetic on the packed word", but for an aggregate
+means the expression yields no fields at all. The assignment it feeds is
+dropped, and the only trace is a downstream `W-P011` naming the destination
+rather than the operator. The reader sees a signal that is never driven and no
+reason why.
+
+Lowering now reports it where it happens, with both operand types and a span:
+
+```
+error[E-P003]: no `*` operator for `Vec2` with a right operand of type `integer`
+```
+
+Whether a literal *should* coerce to a vector-family `Rhs` is a language
+question I have not answered — this only makes the failure visible.
+
+Note the newtype next to it is not evidence of anything: `q * 3` on
+`struct Q(unsigned[8])` gives the right answer because `Q` joins the vector
+families and the expression never reaches the user's impl at all. I nearly
+recorded that as "dispatch works for newtypes".
+
+### The guard took three tries, and the mutations drove every correction
+
+My first guard was "an aggregate struct, and not a vector family". The
+vector-family half looked obviously right — a newtype over a vector genuinely
+does fall back. It is wrong: an aggregate may `impl Vector` and is still many
+signals with no packed word behind it, so that half *suppressed* the very bug
+being fixed. Caught by constructing the case rather than trusting the reading.
+
+So I dropped to "is a struct at all", which the mutations could not distinguish
+— including against the whole corpus. That was also wrong, and worse:
+`pub struct unsigned(Logic[])` is a struct, so ordinary vector arithmetic
+started reporting. `!fields.is_empty()` is the condition that separates them,
+and it had looked unexercised only because no test then had a field-less std
+struct on the left.
+
+Final: aggregate structs only, with tests pinning all four outcomes — an
+aggregate reported, an aggregate that opted into `Vector` still reported, a
+std family not reported, and a user newtype not reported. Every one of the four
+mutations is now detected; two of them were NOT DETECTED against earlier
+versions of the same test file, and each time that meant the test was too
+narrow rather than the code being dead. That is now the third and fourth
+occurrence of that pattern in this log.
+
+Also confirmed as an honest limitation, not a bug: reading a field of an
+operator *result* (`(a * k).x`) is `E-P017`, and a runtime index into a struct
+array likewise — both say so rather than producing a value.
