@@ -20,6 +20,41 @@
 
 use std::process::Command;
 
+/// Compile a testbench-only source and return the diagnostics. Testbench code
+/// is emitted as C by a separate backend, so a rule enforced only in hardware
+/// lowering does not reach it.
+fn testbench_diagnostics(name: &str, body: &str) -> String {
+    let src = format!(
+        "module m;\n\
+         using std::logic::{{Bit, Logic, ULogic}};\n\
+         using std::bits::{{unsigned}};\n\
+         #[test] entity T {{}}\n\
+         impl T {{ {body} await 1ns; print!(\"r={{}}\", o); }}\n"
+    );
+    let dir = std::env::temp_dir().join(format!("siox_convtb_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{name}.siox"));
+    std::fs::write(&file, src).unwrap();
+    let bin = dir.join(format!("{name}.bin"));
+    let out = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&file)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .unwrap();
+    let mut text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    // `--test` builds the binary; running it is what reports the assertions.
+    if bin.exists() {
+        let run = Command::new(&bin).output().unwrap();
+        text.push_str(&String::from_utf8_lossy(&run.stdout));
+        text.push_str(&String::from_utf8_lossy(&run.stderr));
+    }
+    text
+}
+
 fn diagnostics(name: &str, body: &str, out_ty: &str) -> String {
     let src = format!(
         "module m;\n\
@@ -122,4 +157,46 @@ fn a_vector_conversion_is_untouched() {
         !out.contains("E-P003"),
         "a width conversion must be untouched, got:\n{out}"
     );
+}
+
+#[test]
+fn the_testbench_engine_refuses_the_same_conversions() {
+    // The two engines disagreed on the same line. Hardware lowering rejects
+    // `Bit(l)`; the testbench emitter passed *any* `EnumName(x)` straight
+    // through, because its guard checked only that the target was an enum
+    // while its comment claimed a derivation chain. `'X'` therefore arrived
+    // in a `Bit`, which has nowhere to put it, and printed as `?`.
+    for body in [
+        "let l: Logic = 'X'; let o: Bit; o = Bit(l);",
+        "let l: Logic = '1'; let o: Bit; o = Bit(l);",
+        "let b: Bit = '1'; let o: Logic; o = Logic(b);",
+    ] {
+        let out = testbench_diagnostics("tbbad", body);
+        assert!(
+            out.contains("no conversion from"),
+            "the testbench must refuse `{body}`, got:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn the_testbench_engine_still_makes_the_legal_ones() {
+    // The three routes that exist, through the emitter this time: an explicit
+    // `From` impl, and a derivation chain in both directions. Rejecting these
+    // would trade a wrong answer for a broken language.
+    for body in [
+        "let b: Bit = '1'; let o: ULogic; o = ULogic(b);",
+        "let u: ULogic = '1'; let o: Logic; o = Logic(u);",
+        "let l: Logic = '1'; let o: ULogic; o = ULogic(l);",
+    ] {
+        let out = testbench_diagnostics("tbok", body);
+        assert!(
+            !out.contains("no conversion from"),
+            "the testbench must still allow `{body}`, got:\n{out}"
+        );
+        assert!(
+            out.contains("test result: ok"),
+            "and the test should run, got:\n{out}"
+        );
+    }
 }

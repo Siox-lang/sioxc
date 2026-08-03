@@ -3952,6 +3952,74 @@ impl Ctx<'_> {
     }
 
     /// Whether an operand reads a `real` signal.
+    /// The type name of a conversion argument, when the emitter knows it.
+    /// `None` means "not known here", and the caller stays permissive rather
+    /// than rejecting something it merely cannot see.
+    fn arg_type_name(&self, e: &ast::Expr) -> Option<String> {
+        let path = expr_path(e)?;
+        if let Some(t) = self.local_types.borrow().get(&path) {
+            return Some(t.clone());
+        }
+        // A bit of a packed vector carries its family's element enum.
+        if let ast::Expr::Index { base, .. } = e {
+            let family = self
+                .local_families
+                .borrow()
+                .get(&expr_path(base)?)
+                .cloned()?;
+            return self.design.vector_element_of_family.get(&family).cloned();
+        }
+        None
+    }
+
+    /// Whether `src` converts to `target`, by the same rule lowering uses: an
+    /// explicit `impl From<src> for target`, or a derivation chain along which
+    /// every source variant exists in the target (representation-identity).
+    fn enum_conversion_exists(&self, src: &str, target: &str) -> bool {
+        if src == target {
+            return true;
+        }
+        if let Some(fns) = self.op_impls.get(&("From".to_string(), target.to_string())) {
+            let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
+                a.clone().or_else(|| {
+                    f.params
+                        .iter()
+                        .find(|p| !p.is_self)
+                        .and_then(|p| p.ty.as_ref())
+                        .and_then(type_head_name)
+                        .map(str::to_string)
+                })
+            };
+            if fns
+                .iter()
+                .any(|(f, a)| declared(f, a).as_deref() == Some(src))
+            {
+                return true;
+            }
+        }
+        let ancestor = |from: &str, to: &str| {
+            let mut cur = from.to_string();
+            let mut seen = 0;
+            while let Some(b) = self.design.enum_bases.get(&cur) {
+                if b == to {
+                    return true;
+                }
+                cur = b.clone();
+                seen += 1;
+                if seen > 64 {
+                    break; // a cycle; the frontend reports it
+                }
+            }
+            false
+        };
+        // Chain-connected is enough: the newtype form takes no body, so a
+        // derived enum cannot add variants and the conversion is total in both
+        // directions. (Comparing variant sets here would be wrong anyway —
+        // this map holds each enum's *own* variants, and a newtype's are
+        // empty.)
+        ancestor(src, target) || ancestor(target, src)
+    }
+
     /// The family and width a conversion names: `signed[8](x)` -> ("signed", 8).
     /// A conversion is a `Call` whose callee is the indexed family, so it has
     /// no declared return type to consult like an ordinary call does.
@@ -5211,10 +5279,26 @@ impl Ctx<'_> {
                     }
                     // An enum-derivation conversion (`Logic(u)`, `ULogic(x)`):
                     // representation-identity along the chain — pass through.
+                    //
+                    // The chain has to be checked, not assumed. This guard used
+                    // to accept any `EnumName(x)` whatever the source was, so
+                    // the testbench performed conversions the hardware side
+                    // rejects: `Bit(l)` on a `Logic` handed `'X'` straight into
+                    // a `Bit`, which has nowhere to put it, and printed `?`.
                     ast::Expr::Path(p)
                         if p.segments.len() == 1
                             && self.enums.contains_key(&p.segments[0].text) =>
                     {
+                        let target = p.segments[0].text.as_str();
+                        if let Some(src) = self.arg_type_name(arg) {
+                            if !self.enum_conversion_exists(&src, target) {
+                                return Err(format!(
+                                    "no conversion from `{src}` to `{target}`: `T(x)` needs \
+                                     an `impl From<S> for T`, or a derivation chain between \
+                                     the two types"
+                                ));
+                            }
+                        }
                         return Ok(format!("({v})"));
                     }
                     _ => return self.c_fn_call(callee, args),

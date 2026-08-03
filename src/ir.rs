@@ -42,6 +42,12 @@ pub struct Design {
     /// (including `std`). Consumers render a `Signal::enum_type` value as its
     /// symbol (`'X'`, `Idle`) instead of a bare number.
     pub enum_syms: HashMap<String, HashMap<u64, String>>,
+    /// Enum name -> the enum it is a newtype over (`Logic` -> `ULogic`). A
+    /// conversion `T(x)` between enums is only representation-identity when a
+    /// chain connects them; without this the testbench emitter had the target
+    /// enum but no way to ask whether the source was related to it, so it
+    /// passed *every* `EnumName(x)` straight through.
+    pub enum_bases: HashMap<String, String>,
     /// Vector family -> its element enum (`unsigned` -> `Logic`). A *bit* of a
     /// packed vector is not a signal of its own, so an operator on one has no
     /// type to dispatch by unless the family says what its elements are.
@@ -302,6 +308,9 @@ pub fn lower_in(
                 l.enum_bases.insert(name.clone(), b);
             }
         }
+        // Hand the chain to the finished `Design`, so the testbench emitter
+        // can ask whether two enums are related rather than assuming it.
+        l.out.enum_bases = l.enum_bases.clone();
     }
 
     // The entity types that appear in the elaborated hierarchy, in first-seen
@@ -10296,6 +10305,7 @@ mod tests {
                 ctx: 0,
             }],
             event_blocks: vec![],
+            enum_bases: HashMap::new(),
             enum_syms: HashMap::new(),
             new_defaults: Default::default(),
             base_dir: Default::default(),

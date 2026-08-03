@@ -6081,3 +6081,66 @@ and starts a fresh frame from its own start bit when released. Banked as
 `uart_fsm_test.siox` — the next-state semantics it depends on (`txr = sh[0]`
 taking the old low bit while `sh` takes the old value shifted) had no coverage
 in the corpus at all.
+
+## The two engines disagreed about the conversion I had just fixed
+
+Went at last round's own change. The check I added lives in `ir` lowering, so
+the question was what it misses and what it might over-report. It behaves
+correctly at the edges — a bad conversion in a statically dead generate branch
+or in a function nobody calls is *not* reported, because lowering never reaches
+it, and one in a called function is. But:
+
+```siox
+#[test] entity T {}
+impl T { let l: Logic = 'X'; let b: Bit; b = Bit(l); ... }
+```
+
+compiles, runs, and prints `?`. The line that hardware lowering now rejects is
+an identity in a testbench, and `'X'` — a value `Bit` has no representation for
+— ends up stored in one. `St(9)` likewise produced an enum holding a
+discriminant outside its own variant list, and `St(2)` *worked* in a testbench
+while the hardware side refused it.
+
+The cause is one guard in the native emitter, with a comment that describes a
+rule the code does not implement:
+
+```rust
+// An enum-derivation conversion (`Logic(u)`, `ULogic(x)`):
+// representation-identity along the chain — pass through.
+ast::Expr::Path(p) if p.segments.len() == 1
+    && self.enums.contains_key(&p.segments[0].text) => { return Ok(format!("({v})")); }
+```
+
+It checks that the *target* is an enum and never that anything connects it to
+the source. Every `EnumName(x)` was a raw passthrough.
+
+The emitter could not have checked the chain: it had the variant tables but no
+derivation edges. `ir` computes those, so `Design` now carries `enum_bases` and
+the emitter asks the same question lowering asks — an explicit `impl From<S>
+for T`, or a chain in either direction. Chain-connectedness is sufficient on
+its own: the newtype form takes no body, so a derived enum cannot add variants.
+
+Two mistakes of mine along the way, both caught by testing rather than
+reasoning. I published `enum_bases` to `Design` *before* the loop that fills it,
+so the emitter received an empty map and rejected the legal derivation
+conversions — a plain ordering bug that only showed because I checked the
+must-work cases and not just the must-fail ones. And my first version compared
+variant sets as an extra safety condition, which broke `Logic(ULogic)`: that map
+holds each enum's *own* variants, and a newtype's are empty.
+
+Four mutations, all detected: the check disabled, the chain test forced true,
+`From` impls ignored, and `enum_bases` not published. Corpus clean.
+
+### The mutation harness lied again, in a new way
+
+All four first came back NOT DETECTED — with a `FAILED` line printed directly
+underneath. The helper decides "detected" by looking for `test result: ok.` in
+the output, and the new test compiles and *runs* a siox testbench, whose own
+harness prints exactly that string. The inner success masked the outer failure.
+It now uses the process exit code. That is the third distinct way this helper
+has misreported a result in this log — substring criteria on output that
+contains a nested test run are simply not sound.
+
+Also worth noting: `cargo build` was clean while `cargo test` was not. Adding a
+field to `Design` broke `#[cfg(test)]` literals in `llvm/emit.rs` and
+`llvm/aot.rs`, which only the full gate compiles.
