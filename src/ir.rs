@@ -4709,7 +4709,12 @@ impl<'a> Lowering<'a> {
                     return v;
                 }
                 self.lower_conversion(callee, args, &HashMap::new())
-                    .or_else(|| self.lower_free_call(callee, args, &HashMap::new()))
+                    .or_else(
+                        || match self.lower_free_call(callee, args, &HashMap::new()) {
+                            Some(Val::Scalar(v)) => Some(v),
+                            _ => None,
+                        },
+                    )
                     .or_else(
                         || match self.lower_method_call(callee, args, &HashMap::new()) {
                             Some(Val::Scalar(v)) => Some(v),
@@ -6096,12 +6101,20 @@ impl<'a> Lowering<'a> {
     /// const-evaluates (so `clog2(DEPTH)` is a constant), else inline the
     /// body like an operator impl (params bound positionally, with
     /// `param::length` available). Depth-guarded against runaway recursion.
+    /// Inline a module-level function call.
+    ///
+    /// Returns a [`Val`], not an `Expr`: a function may return a struct, and
+    /// discarding the `Val::Fields` the body produced left the call with no
+    /// value at all. The assignment it fed was then dropped for want of
+    /// fields, so `s = twice(a)` read as zero with only a "never driven"
+    /// warning — while a *method* with the identical body worked, because the
+    /// method path always kept the `Val`.
     fn lower_free_call(
         &self,
         callee: &ast::Expr,
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
-    ) -> Option<Expr> {
+    ) -> Option<Val> {
         let name = call_fn_key(callee)?;
         let name = name.as_str();
         let f = *self.free_fns.get(name)?;
@@ -6126,14 +6139,14 @@ impl<'a> Lowering<'a> {
             let f64_ret = is_type(&f.ret, "real");
             let integer_ret = is_type(&f.ret, "integer");
             let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
-            return Some(Expr::CCall {
+            return Some(Val::Scalar(Expr::CCall {
                 name: name.to_string(),
                 args,
                 f64_args,
                 integer_args,
                 f64_ret,
                 integer_ret,
-            });
+            }));
         }
         // Constant arguments: run the body statically.
         let consts: Option<Vec<i64>> = args
@@ -6148,7 +6161,7 @@ impl<'a> Lowering<'a> {
                 }
             }
             if let Some(v) = eval_const_stmts(&f.body.as_ref()?.stmts, &fenv, &self.free_fns, 0) {
-                return Some(Expr::Const(v as u64));
+                return Some(Val::Scalar(Expr::Const(v as u64)));
             }
         }
         // Dynamic arguments: inline the body as an expression tree.
@@ -6189,20 +6202,18 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let out = match f
+        let out = f
             .body
             .as_ref()
-            .and_then(|b| self.inline_block(&b.stmts, &fenv))
-        {
-            Some(Val::Scalar(v)) => Some(v),
-            _ => None,
-        };
+            .and_then(|b| self.inline_block(&b.stmts, &fenv));
         // The result is a value of the declared return type, so it wraps to
         // that width. Assigning it to a signal masked it anyway, which hid
         // this — but used in place (`neg(x) < 0`) the extra bits survived and
         // signed's Ord tested the wrong one.
+        // Only a scalar result has a declared width to wrap to; a struct's
+        // leaves were already masked field by field as the body built them.
         let out = match (out, f.ret.as_ref()) {
-            (Some(v), Some(ret)) => Some(self.mask_to_type_width(v, ret)),
+            (Some(Val::Scalar(v)), Some(ret)) => Some(Val::Scalar(self.mask_to_type_width(v, ret))),
             (v, _) => v,
         };
         for (name, prev) in saved.into_iter().rev() {
@@ -6663,8 +6674,13 @@ impl<'a> Lowering<'a> {
                     .or_else(|| call_fn_key(callee).and_then(|k| self.free_fns.get(&k)))
                     .and_then(|f| f.ret.as_ref())
                     .and_then(type_head_name)?;
-                (self.vector_families.contains(ret) || self.enum_variants.contains_key(ret))
-                    .then(|| ret.to_string())
+                // A struct return counts too: `twice(v) + v` needs a type for
+                // its left operand before any `Operator` impl can be found,
+                // and without one the whole expression produced nothing.
+                (self.vector_families.contains(ret)
+                    || self.enum_variants.contains_key(ret)
+                    || self.structs.contains_key(ret))
+                .then(|| ret.to_string())
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
                 .enum_variants
@@ -6841,9 +6857,10 @@ impl<'a> Lowering<'a> {
                 }
                 match self
                     .lower_conversion(callee, args, env)
+                    .map(Val::Scalar)
                     .or_else(|| self.lower_free_call(callee, args, env))
                 {
-                    Some(v) => Val::Scalar(v),
+                    Some(v) => v,
                     None => match self
                         .lower_method_call(callee, args, env)
                         .or_else(|| self.lower_from(callee, args, env))

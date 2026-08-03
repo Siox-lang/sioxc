@@ -6286,3 +6286,71 @@ occurrence of that pattern in this log.
 Also confirmed as an honest limitation, not a bug: reading a field of an
 operator *result* (`(a * k).x`) is `E-P017`, and a runtime index into a struct
 array likewise — both say so rather than producing a value.
+
+## A function that returns a struct returned nothing
+
+Went at last round's operator check first. It does not reach testbench code —
+but chasing that turned up something bigger on the way, so the asymmetry itself
+is reported below rather than fixed.
+
+Probing struct-valued expressions across both engines, five shapes, hardware:
+
+| expression | before |
+| --- | --- |
+| `s = a + a` (operator) | 6 10 ✓ |
+| `s = a.doubled()` (method) | 6 10 ✓ |
+| `s = twice(a)` (free fn) | **0 0** |
+| `s = twice(v) + v` (call feeding an operator) | **0 0** |
+| `s = if c { a } else { a }` | 3 5 ✓ |
+
+A free function returning a struct produced **zero**, with nothing but a
+"signal never driven" warning naming the destination. A method with the
+identical body was correct, so the same computation gave two answers depending
+on how it was spelled.
+
+`lower_free_call` inlines the body through `inline_block`, which does build the
+`Val::Fields` a struct-returning body needs — and then threw it away:
+
+```rust
+Some(Val::Scalar(v)) => Some(v),
+_ => None,                        // Fields discarded
+```
+
+The call was left with no value, so the assignment it fed found no fields and
+was dropped. It now returns a `Val`, like the method path always did; only a
+scalar result is wrapped to the declared return width, since a struct's leaves
+were already masked as the body built them.
+
+Nesting needed a second fix. `twice(v) + v` gives an operator a *call* as its
+left operand, and `operand_type_name` returned a call's declared return type
+only when it was a vector family or an enum — a struct return had no type at
+all, so no `Operator` impl could be found and the expression again produced
+nothing. Now `9 15`, matching `twice(a) + a` written at the use site.
+
+Three mutations, all detected: discarding the fields again, dropping them at
+the `Val` call site, and refusing a struct return type. Banked
+`struct_valued_call_test.siox`, which asserts the method and the free function
+agree — the disagreement is what makes this a bug rather than an unimplemented
+form.
+
+### Found, not fixed: the testbench refuses every struct-valued expression
+
+In a testbench, a struct local takes an assignment from another struct local,
+from a literal and from a spread, but *any* computed struct value —
+`s = a + a`, `s = a.doubled()`, `s = twice(a)`, `s = if c { a } else { a }` —
+fails with
+
+```
+sioxc --test: unknown signal `s`
+```
+
+`s` is a perfectly ordinary local that works on the line above. `write_composite`
+handles a source name, a string and a literal; anything else falls through to
+the scalar path, which looks `s` up as a single signal, does not find one
+(a struct is many), and blames the name. Hardware lowers all four.
+
+I have not fixed it. The message is wrong in the same way `E-P018` was two
+rounds ago — blaming the target for a form that was simply never handled — but
+the fix here is not a better message, it is per-field evaluation of an
+arbitrary expression in the C emitter, which is the feature itself. Worth doing
+deliberately.
