@@ -5030,7 +5030,13 @@ impl<'a> Lowering<'a> {
                         r = v;
                     }
                 }
-                self.make_binary(op.clone(), l, r, self.binary_uses_kernel_integer(lhs, rhs))
+                self.make_binary(
+                    op.clone(),
+                    l,
+                    r,
+                    self.binary_uses_kernel_integer(lhs, rhs),
+                    self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
+                )
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
@@ -5737,7 +5743,14 @@ impl<'a> Lowering<'a> {
     /// Build a binary node, switching `+ - * /` to float arithmetic (and
     /// coercing integer constants) when either operand is real. `==`/`!=`
     /// compare f64 bits exactly, which is right once constants are coerced.
-    fn make_binary(&self, op: ast::BinOp, lhs: Expr, rhs: Expr, integer: bool) -> Expr {
+    fn make_binary(
+        &self,
+        op: ast::BinOp,
+        lhs: Expr,
+        rhs: Expr,
+        integer: bool,
+        declared: bool,
+    ) -> Expr {
         if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
             let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
             let op = match op {
@@ -5769,8 +5782,11 @@ impl<'a> Lowering<'a> {
         // lowered signal is authoritative: a `signed[N]`, `unsigned[N]`, Bit,
         // enum, or user-newtype signal must keep the implementation's raw
         // vector operations rather than inherit kernel-integer signedness.
-        let integer =
-            integer && !self.has_non_integer_signal(&lhs) && !self.has_non_integer_signal(&rhs);
+        // A declared kernel-integer operand overrides the signal test: what
+        // its body happened to read does not change the type it returns.
+        let integer = integer
+            && (declared
+                || !self.has_non_integer_signal(&lhs) && !self.has_non_integer_signal(&rhs));
         match lower_binop(op) {
             Some(op) => {
                 let op = if integer {
@@ -5825,6 +5841,42 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether an operand *declares* itself a kernel integer, so the
+    /// representation of the signals inside it says nothing about the
+    /// operation's signedness.
+    ///
+    /// `sext(x)` exists to turn a `signed[8]` into a negative kernel value,
+    /// and `integer(r)` to truncate a `real` to one. Both are inlined, so the
+    /// `signed[8]` (or `real`) signal they read is still visible in the
+    /// lowered tree — and the guard below, seeing a non-integer signal, forced
+    /// the comparison unsigned. `if sext(x) < 0` was therefore false for every
+    /// negative `x`, and `abs(sext(x))` returned 251 for -5.
+    ///
+    /// This is the reasoning the `CCall` arm of `has_non_integer_signal`
+    /// already carries for a foreign call: argument representations do not
+    /// determine a declared return type. An inlined siox call is no different.
+    fn declares_kernel_integer(&self, e: &ast::Expr) -> bool {
+        // A parameter of the function being inlined, declared `integer`. The
+        // value bound to it may read a `signed[N]` signal (`abs(sext(x))`),
+        // and that must not decide the body's signedness either.
+        if expr_path(e).is_some_and(|n| self.param_integers.borrow().contains(&n)) {
+            return true;
+        }
+        let ast::Expr::Call { callee, .. } = e else {
+            return false;
+        };
+        // Only a module function. The kernel conversion `integer(x)` was here
+        // too, and removed: it changes no result, because `integer(r) < 0` on
+        // a `real` is wrong for a different reason (see chat.md) that this
+        // does not address.
+        // A module function whose declared return type is `integer`.
+        call_fn_key(callee)
+            .and_then(|k| self.free_fns.get(&k))
+            .and_then(|f| f.ret.as_ref())
+            .and_then(type_head_name)
+            == Some("integer")
+    }
+
     fn binary_uses_kernel_integer(&self, lhs_ast: &ast::Expr, rhs_ast: &ast::Expr) -> bool {
         let lhs = self.expr_types.get(&ast::expr_span(lhs_ast));
         let rhs = self.expr_types.get(&ast::expr_span(rhs_ast));
@@ -5847,6 +5899,10 @@ impl<'a> Lowering<'a> {
             || matches!(rhs, Some(crate::types::Ty::Integer))
             || declared_integer(lhs_ast)
             || declared_integer(rhs_ast)
+            // A call declaring `-> integer` is a kernel-integer operand
+            // whatever its span happens to have recorded.
+            || self.declares_kernel_integer(lhs_ast)
+            || self.declares_kernel_integer(rhs_ast)
     }
 
     /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
@@ -7083,6 +7139,7 @@ impl<'a> Lowering<'a> {
                     l,
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
+                    self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
                 ))
             }
             ast::Expr::Unary { op, rhs, .. } => {

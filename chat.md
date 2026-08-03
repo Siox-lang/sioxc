@@ -6692,3 +6692,50 @@ already a `CCall => false` arm carrying exactly the right reasoning for a
 foreign call — "argument representations do not determine a foreign call's
 declared return type" — which is the shape the fix should take for an inlined
 siox call too.
+
+## `sext(x) < 0` was false for every negative x
+
+Took the finding I deferred last round, with the fix I had sketched for it.
+
+`sext` exists to turn a `signed[N]` into a negative kernel integer. It is
+inlined, so the `signed[8]` signal it reads is still visible in the lowered
+expression — and signedness was decided by scanning that expression for a
+non-integer signal, which found one and forced an unsigned comparison,
+overruling `sext`'s declared `-> integer`. Measured, against a Python model:
+
+| expression | before | oracle |
+| --- | --- | --- |
+| `if sext(x) < 0` | 0 | 1 |
+| `abs(sext(x))` | 251 | 5 |
+| `min(127, sext(x))` | 127 | -5 |
+| the saturating accumulator | -128 every sample | 100, 127, 127, 50, -50, 10, -110, -128 |
+
+A declared kernel-integer operand is now authoritative over that scan, which is
+the reasoning the `CCall` arm beside it already carries for a foreign call:
+argument representations do not determine a declared return type. It applies to
+a module function declaring `-> integer` and to a parameter declared `integer`
+— the second is needed because inside `abs` the operand is the parameter, not
+the call.
+
+Three mutations, all detected. Two more were not, and both were instructive:
+
+- **My test was too narrow, again.** Removing the clause that makes a declared
+  call count as a kernel-integer operand changed nothing, because the
+  accumulator only compares *inside* `min`/`max`, where the operand is a
+  parameter. Adding a bare `sext(acc) < 0` to the design made it detected. That
+  is the sixth time in this log that NOT DETECTED meant the test missed the
+  path rather than the code being dead, and every time the cure was to widen
+  the design rather than to trust the mutation.
+- **One branch really was dead.** I had also made the kernel conversion
+  `integer(x)` authoritative. It changes no result and does not fix the case it
+  was aimed at, so it is gone.
+
+### Found, not fixed: `integer(r) < 0` on a `real`
+
+`integer(r)` for `r = -5.0` produces -5 — `signed[16](integer(r))` prints -5,
+and assigning it to a named `integer` local and comparing *that* is correct.
+Only the direct `if integer(r) < 0` is false. I instrumented it: the comparison
+lowers with `integer=true`, `declared=true` and neither operand seen as real,
+so it *is* a signed compare — the residue is in the value that reaches it in
+that position, not in the operator. That is a third distinct cause in this
+area and wants its own round rather than the tail of this one.
