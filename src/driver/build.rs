@@ -2103,12 +2103,26 @@ impl Ctx<'_> {
         use ast::Expr as E;
         // The branches, in order, and a way to rebuild the choice around new
         // branch expressions.
-        let branches: Vec<&E> = match value {
+        let raw: Vec<&E> = match value {
             E::Match { arms, .. } => arms.iter().map(|a| a.value_expr()).collect::<Option<_>>()?,
             E::IfExpr { then, els, .. } => vec![then.as_ref(), els.as_ref()],
             _ => return None,
         };
-        // Each branch must be a struct literal naming the same fields.
+        // An arm may be a *call* returning a struct rather than a literal
+        // (`_ => mk(6)`), so reduce each branch to its literal first.
+        // `reduced` owns the rewrites that `branches` borrows.
+        let reduced: Vec<Option<ast::Expr>> = raw
+            .iter()
+            .map(|br| self.struct_call_rewrite(br, 0))
+            .collect();
+        let branches: Vec<&E> = raw
+            .iter()
+            .zip(&reduced)
+            .map(|(br, red)| red.as_ref().unwrap_or(br))
+            .collect();
+        // Each branch must be a struct literal over the same set of fields.
+        // The *order* is not part of that: fields are matched by name below,
+        // so an arm may list them differently from its neighbour.
         let mut field_order: Vec<String> = Vec::new();
         for (i, br) in branches.iter().enumerate() {
             let E::Construct {
@@ -2123,8 +2137,13 @@ impl Ctx<'_> {
                 .collect::<Option<_>>()?;
             if i == 0 {
                 field_order = names;
-            } else if names != field_order {
-                return None;
+            } else {
+                let (mut here, mut first) = (names, field_order.clone());
+                here.sort();
+                first.sort();
+                if here != first {
+                    return None;
+                }
             }
         }
         if field_order.is_empty() {

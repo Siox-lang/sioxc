@@ -6563,3 +6563,34 @@ arms that differ from a neighbour in *one* field — Alu and Imm differ only in
 the immediate flag — so a decode that collapsed the struct to a single field
 would still fail. It also compares the testbench's result against the DUT's for
 the same opcode, since the two engines reach it by different routes.
+
+## The distribution was narrower than the lowering it mirrors
+
+Re-attacked last round's struct-valued `match` immediately, since the two
+halves were written to different rules: hardware folds arbitrary arm *values*
+with `select_val`, while the testbench distribution required every arm to be a
+struct literal listing the same fields in the same order.
+
+Hardware handles everything I threw at it — a struct match inside a clocked
+block, a match over an enum scrutinee, and arms that are struct-returning
+calls (`_ => mk(6)` gives 6, 7). The testbench refused two of those shapes,
+both with the misleading "unknown signal `p`":
+
+- an arm that is a **call** rather than a literal;
+- arms that list the same fields in a **different order**.
+
+Both are the distribution being stricter than it needs to be. Each branch is
+now reduced to its literal first — the machinery for that already existed for
+plain calls — and the field sets are compared unordered, since order is not
+part of a struct literal's meaning and the fields are matched by name anyway.
+
+Three mutations, all detected: not reducing call arms, requiring the same field
+order again, and taking each arm's fields *positionally* instead of by name.
+That last one is the one worth having: with arms written `{ .kind, .writes,
+.usesImm }` and `{ .usesImm, .kind, .writes }`, a positional match silently
+transposes three fields and every value still looks plausible. The corpus file
+pairs a reordered arm with a differently-shaped neighbour so that transposition
+cannot pass.
+
+Nothing else found this round: the hardware side of last round's change is
+correct in every shape I could construct for it.
