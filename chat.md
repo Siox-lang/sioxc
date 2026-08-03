@@ -6464,3 +6464,51 @@ Also worth recording: my first attempt at those mutations was run through
 between a newline and a backslash-n. Moving the mutation script to a file made
 the anchors unambiguous and immediately surfaced "matched 2 times, not 1",
 which is the message that told me what was actually wrong.
+
+## The staging stopped at the first nesting level
+
+Went straight back at last round's fix, on the suspicion that staging scalar
+leaves would not survive a recursion. It does not.
+
+A *nested struct* exchanging its inner fields is right (2, 1, and an outer
+field reading the old inner value gives 1, matching hardware). An **array of
+structs** rotated is not:
+
+```siox
+let arr: P[2] = [{ .a = 1, .b = 2 }, { .a = 3, .b = 4 }];
+arr = [arr[1], arr[0]];        // 3 4 3 4, not 3 4 1 2
+```
+
+Each element is itself a composite, so the element write recursed into
+`write_composite`, which emitted its copy immediately — outside the staging
+phase its parent had just set up. Copying element 1 into element 0 therefore
+happened before element 0 was read for element 1. Same bug as last round, one
+level down, and last round's fix could not see it because it staged only the
+leaves it wrote itself.
+
+The staging phase is now threaded through the recursion: `write_composite_into`
+takes the `decls` and `writes` buffers and passes them to every nested call, so
+an entire composite assignment — however deep — evaluates before any of it
+lands. `write_composite` survives as a thin wrapper that owns the two buffers
+for outside callers. The name-source copy path stages too, which is what the
+array-of-structs case actually goes through.
+
+Three mutations, all detected: giving the nested call its own buffers, leaving
+the name-source copy unstaged, and emitting the declarations after the writes
+(that last one fails to compile the generated C, which is the right kind of
+failure).
+
+`write_composite_field` became dead once every caller moved to the staged
+variant, and clippy said so — deleted rather than left behind.
+
+The corpus file now rotates an array of structs twice and exchanges a nested
+struct, alongside the scalar cases from last round. Rotating twice is again the
+real check: a copy-through is idempotent from the second application onward and
+a rotation is not.
+
+**A note on how this was found.** I did not go looking for a new area — I went
+looking for the failure mode of the fix I had just written, on the theory that
+"staging" and "recursion" are the two words in it that do not obviously
+compose. That is the third round running where re-attacking the previous
+round's change found the next bug, and it has been more productive than picking
+an untouched feature.

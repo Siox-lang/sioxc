@@ -2269,6 +2269,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// Write a composite into `b`. Thin wrapper over
+    /// [`Self::write_composite_into`] that owns the staging phase.
     fn write_composite(
         &self,
         name: &str,
@@ -2276,10 +2278,32 @@ impl Ctx<'_> {
         b: &mut String,
         ind: &str,
     ) -> Result<bool, String> {
+        let (mut decls, mut writes) = (String::new(), String::new());
+        let wrote = self.write_composite_into(name, value, &mut decls, &mut writes, ind)?;
+        b.push_str(&decls);
+        b.push_str(&writes);
+        Ok(wrote)
+    }
+
+    /// Write a composite, staging every value before any of it lands.
+    ///
+    /// `decls` collects the temporaries and `writes` the assignments, and both
+    /// are threaded through the recursion so a *nested* composite stages into
+    /// the same phase as its parent. Without that, `arr = [arr[1], arr[0]]`
+    /// over an array of structs copied element 1 into element 0 and then read
+    /// element 0 back for element 1.
+    fn write_composite_into(
+        &self,
+        name: &str,
+        value: &ast::Expr,
+        decls: &mut String,
+        writes: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
         // A computed struct value reduces to the literal its body returns,
         // which the `Construct` arm below already knows how to write.
         if let Some(rewritten) = self.struct_call_rewrite(value, 0) {
-            return self.write_composite(name, &rewritten, b, ind);
+            return self.write_composite_into(name, &rewritten, decls, writes, ind);
         }
         if let Some(source_name) = expr_path(value) {
             let source = self.composite_reads(&source_name);
@@ -2292,18 +2316,21 @@ impl Ctx<'_> {
                 }
                 for (suffix, expression) in source {
                     let (signal, destination) = &target[&suffix];
+                    // Staged like every other leaf: copying `arr[1]` into
+                    // `arr[0]` must not disturb a later read of `arr[0]`.
+                    let expression = self.stage_value(&expression, decls, ind);
                     if *signal {
-                        b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                        writes.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
                         // The same fan-out the scalar path needs: a composite
                         // feeding two instances has one destination in `map`
                         // per field and the rest in `aliases`, so only the
                         // last instance saw the value.
                         for extra in self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
                         {
-                            b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                            writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
                         }
                     } else {
-                        b.push_str(&format!("{ind}{destination} = {expression};\n"));
+                        writes.push_str(&format!("{ind}{destination} = {expression};\n"));
                     }
                 }
                 return Ok(true);
@@ -2340,15 +2367,16 @@ impl Ctx<'_> {
                         target.iter().zip(source).enumerate()
                     {
                         if *signal {
-                            b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                            writes
+                                .push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
                             // Each element fans out to every instance it feeds,
                             // as the scalar and field paths do.
                             let element = format!("{name}[{index}]");
                             for extra in self.alias_ids_beyond(&element, destination) {
-                                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                                writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
                             }
                         } else {
-                            b.push_str(&format!("{ind}{destination} = {expression};\n"));
+                            writes.push_str(&format!("{ind}{destination} = {expression};\n"));
                         }
                     }
                     return Ok(true);
@@ -2376,18 +2404,14 @@ impl Ctx<'_> {
                         elems.len()
                     ));
                 }
-                // As with a struct literal: every element's value is
-                // evaluated before any is written, so `a = [a[2], a[0], a[1]]`
-                // rotates instead of filling every slot from the first write.
-                let (mut decls, mut writes) = (String::new(), String::new());
                 for (index, value) in indices.into_iter().zip(elems) {
                     let element = format!("{name}[{index}]");
-                    if self.write_composite(&element, value, &mut writes, ind)? {
+                    if self.write_composite_into(&element, value, decls, writes, ind)? {
                         continue;
                     }
                     if let Some(&id) = self.map.get(&element) {
                         let expression = self.value_for(id, value)?;
-                        let expression = self.stage_value(&expression, &mut decls, ind);
+                        let expression = self.stage_value(&expression, decls, ind);
                         writes.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
                         for extra in self.alias_ids_beyond(&element, &id.0.to_string()) {
                             writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
@@ -2398,15 +2422,13 @@ impl Ctx<'_> {
                             Some(&width) => mask_c(&expression, width),
                             None => expression,
                         };
-                        let expression = self.stage_value(&expression, &mut decls, ind);
+                        let expression = self.stage_value(&expression, decls, ind);
                         writes.push_str(&format!(
                             "{ind}{} = {expression};\n",
                             c_local_ident(&element)
                         ));
                     }
                 }
-                b.push_str(&decls);
-                b.push_str(&writes);
                 Ok(true)
             }
             ast::Expr::StrLit { text, .. } => {
@@ -2443,16 +2465,16 @@ impl Ctx<'_> {
                     let element = format!("{name}[{index}]");
                     let value = self.char_value_for_target(&element, ch);
                     if let Some(&id) = self.map.get(&element) {
-                        b.push_str(&format!("{ind}sx_set({}, {value}ULL);\n", id.0));
+                        writes.push_str(&format!("{ind}sx_set({}, {value}ULL);\n", id.0));
                         for extra in self.alias_ids_beyond(&element, &id.0.to_string()) {
-                            b.push_str(&format!("{ind}sx_set({extra}, {value}ULL);\n"));
+                            writes.push_str(&format!("{ind}sx_set({extra}, {value}ULL);\n"));
                         }
                     } else if self.locals.borrow().contains(&element) {
                         let expression = match self.local_widths.borrow().get(&element) {
                             Some(&width) => mask_c(&format!("{value}ULL"), width),
                             None => format!("{value}ULL"),
                         };
-                        b.push_str(&format!(
+                        writes.push_str(&format!(
                             "{ind}{} = {expression};\n",
                             c_local_ident(&element)
                         ));
@@ -2486,7 +2508,8 @@ impl Ctx<'_> {
                     for (suffix, expression) in source {
                         let (signal, destination) = &target[&suffix];
                         if *signal {
-                            b.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                            writes
+                                .push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
                             // The spread half of `{ ..base, .x = v }` copies
                             // fields, and those need the same fan-out as every
                             // other seed: the overridden field reached both
@@ -2494,19 +2517,15 @@ impl Ctx<'_> {
                             for extra in
                                 self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
                             {
-                                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                                writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
                             }
                         } else {
-                            b.push_str(&format!("{ind}{destination} = {expression};\n"));
+                            writes.push_str(&format!("{ind}{destination} = {expression};\n"));
                         }
                     }
                     wrote = true;
                 }
 
-                // Every field's value is evaluated before any is written, so
-                // a literal that reads the struct it assigns (`{ .a = t.b,
-                // .b = t.a }`) exchanges rather than duplicating.
-                let (mut decls, mut writes) = (String::new(), String::new());
                 for (position, arg) in args.iter().enumerate() {
                     let field_name = arg
                         .field
@@ -2523,13 +2542,11 @@ impl Ctx<'_> {
                     wrote |= self.write_composite_field_staged(
                         &format!("{name}.{field_name}"),
                         value,
-                        &mut decls,
-                        &mut writes,
+                        decls,
+                        writes,
                         ind,
                     )?;
                 }
-                b.push_str(&decls);
-                b.push_str(&writes);
                 Ok(wrote)
             }
             ast::Expr::Concat { parts, .. } => {
@@ -2550,7 +2567,13 @@ impl Ctx<'_> {
                     ));
                 }
                 for ((field, _), value) in fields.iter().zip(parts) {
-                    self.write_composite_field(&format!("{name}.{field}"), value, b, ind)?;
+                    self.write_composite_field_staged(
+                        &format!("{name}.{field}"),
+                        value,
+                        decls,
+                        writes,
+                        ind,
+                    )?;
                 }
                 Ok(true)
             }
@@ -2562,15 +2585,15 @@ impl Ctx<'_> {
                 let Some(indices) = self.local_indices.borrow().get(name).cloned() else {
                     return Ok(false);
                 };
-                let mut writes = Vec::with_capacity(indices.len());
+                let mut lifted = Vec::with_capacity(indices.len());
                 for k in 0..indices.len() {
                     let Some(element) = self.elementwise_at(other, k, indices.len()) else {
                         return Ok(false);
                     };
-                    writes.push((format!("{name}[{}]", indices[k]), element));
+                    lifted.push((format!("{name}[{}]", indices[k]), element));
                 }
-                for (target, element) in writes {
-                    self.write_composite_field(&target, &element, b, ind)?;
+                for (target, element) in lifted {
+                    self.write_composite_field_staged(&target, &element, decls, writes, ind)?;
                 }
                 Ok(true)
             }
@@ -2694,39 +2717,6 @@ impl Ctx<'_> {
             };
             let tmp = self.stage_value(&expression, decls, ind);
             writes.push_str(&format!("{ind}{} = {tmp};\n", c_local_ident(field)));
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn write_composite_field(
-        &self,
-        field: &str,
-        value: &ast::Expr,
-        b: &mut String,
-        ind: &str,
-    ) -> Result<bool, String> {
-        if self.write_composite(field, value, b, ind)? {
-            return Ok(true);
-        }
-        if let Some(&id) = self.map.get(field) {
-            let expression = self.value_for(id, value)?;
-            b.push_str(&format!("{ind}sx_set({}, {expression});\n", id.0));
-            // A composite feeding two instances has one destination per field
-            // in `map` and the rest in `aliases`, so only the last instance
-            // saw the value — the field-wise twin of the scalar fan-out.
-            for extra in self.alias_ids_beyond(field, &id.0.to_string()) {
-                b.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
-            }
-            return Ok(true);
-        }
-        if self.locals.borrow().contains(field) {
-            let expression = self.value_for_local(field, value)?;
-            let expression = match self.local_widths.borrow().get(field) {
-                Some(&width) => mask_c(&expression, width),
-                None => expression,
-            };
-            b.push_str(&format!("{ind}{} = {expression};\n", c_local_ident(field)));
             return Ok(true);
         }
         Ok(false)
