@@ -6618,3 +6618,77 @@ had in fact passed on that exact tree moments earlier and passed again
 immediately after, so nothing shipped unverified — but the ordering was not
 what the rule asks for, and a pipeline hides the failure of everything except
 its last stage.
+
+## `abs(n)` returned `n` in hardware and 5 in the testbench
+
+Swept std's numeric helpers by building a saturating accumulator — `min`/`max`
+around a signed accumulation, with `abs` alongside — and checked it against a
+Python model. The accumulator itself matched exactly. `sat` was -128 for every
+input and `abs` returned its argument unchanged.
+
+Narrowed to this, on `let n: integer = 0 - 5`:
+
+| expression | hardware | testbench | oracle |
+| --- | --- | --- | --- |
+| `if n < 0` (inline) | 1 | 1 | 1 |
+| `abs(n)` | **-5** | 5 | 5 |
+| `min(127, n)` | **127** | -5 | -5 |
+| `myabs(n)`, the same body in user code | **-5** | 5 | 5 |
+
+So it is not std's source and not `integer` comparisons generally: a comparison
+against a parameter is unsigned *inside any inlined function body*, in hardware
+only. A design can pass its own testbench and be wrong in the hardware it
+describes, which is the worst shape this class takes.
+
+Instrumenting the decision showed why: signedness comes from the recorded types
+of the operand expressions, and a free function's body is type-checked with no
+parameters in scope, so every use of a parameter records as `Ty::Error`. With
+neither operand looking like a kernel integer, lowering emitted an unsigned
+comparison. The testbench engine is right because it emits C, where the value
+is already a signed word.
+
+My first fix was to check function bodies *with* their parameters bound. It
+works — but it also switches on operator checking inside every function body
+for the first time, and two unit tests immediately failed on a stub that
+declares no `+` for `unsigned`. That is a much broader change than the bug
+warrants and I reverted it. The shipped fix records which parameters of the
+function being inlined were *declared* `integer`, and consults that where the
+recorded type is missing — contained to lowering, no new diagnostics, corpus
+unaffected. It is applied at both inline sites, free functions and methods.
+
+Existing coverage missed this because it exercised `abs` on a `signed[8]`
+(which dispatches signed's `<=>` and never reaches this path) and on a literal
+(which const-folds). The new corpus file uses a hand-written clamp so both
+comparisons in one body are checked in both directions, includes a positive
+argument so "always signed" would not pass either, and compares the two engines
+against each other as well as against the arithmetic.
+
+Two mutations detected; the third — leaking the parameter binding instead of
+removing it on the way out — is not, and I checked rather than assumed: a
+colliding parameter name in a nested inline is still handled correctly, because
+`has_non_integer_signal` independently forces unsigned for a real vector
+signal. I have kept the cleanup anyway. It mirrors the `saved`/`saved_widths`
+restores beside it, and without it the set grows monotonically for the whole
+lowering — a state bug that happens to be masked today rather than an absent
+one.
+
+### Found, not fixed: the same comparison through `sext(...)`
+
+`abs(sext(x))`, `min(127, sext(x))` and even a bare `if sext(x) < 0` are still
+unsigned, and this has a *different* cause. The recorded type of the call is
+`integer`, so the first test passes — but the next line overrides it:
+
+```rust
+let integer = integer && !self.has_non_integer_signal(&lhs) && !self.has_non_integer_signal(&rhs);
+```
+
+`sext` is inlined, and its body reads the `signed[8]` signal it was given, so
+the guard sees a non-integer signal and forces unsigned — even though `sext`
+declares `-> integer` precisely to produce a negative kernel value. The guard
+exists for the opposite case (a kernel-typed literal inside an inlined vector
+impl must not make the operation signed) and has its own regression test, so
+narrowing it wants its own round rather than the tail of this one. There is
+already a `CCall => false` arm carrying exactly the right reasoning for a
+foreign call — "argument representations do not determine a foreign call's
+declared return type" — which is the shape the fix should take for an inlined
+siox call too.

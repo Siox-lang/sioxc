@@ -457,6 +457,17 @@ struct Lowering<'a> {
     /// the concrete argument's family), so operator dispatch in the body uses
     /// the caller's type (e.g. signed's signed `Ord`, not the kernel compare).
     param_types: std::cell::RefCell<HashMap<String, String>>,
+    /// Parameters of the function currently being inlined whose *declared*
+    /// type is the kernel `integer`.
+    ///
+    /// Signedness of an operation is decided from the recorded type of its
+    /// operand expressions, and a free function's body is type-checked with
+    /// no parameters in scope, so every use of a parameter records as
+    /// `Ty::Error`. `if v < 0` inside `fn f(v: integer)` therefore compiled to
+    /// an *unsigned* comparison: `abs(n)` returned `n` for every negative `n`,
+    /// and `min`/`max` picked the wrong side — in hardware only, since the
+    /// testbench evaluates the body in C where the values are signed.
+    param_integers: std::cell::RefCell<HashSet<String>>,
     /// A bound parameter's width, alongside its family in `param_types`. The
     /// family alone let the body dispatch `signed`'s operators while
     /// `self'length` inside them fell back to 1, so the sign-bit test shifted
@@ -626,6 +637,7 @@ impl<'a> Lowering<'a> {
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
+            param_integers: std::cell::RefCell::new(HashSet::new()),
             param_widths: std::cell::RefCell::new(HashMap::new()),
             consts: HashMap::new(),
             const_values: HashMap::new(),
@@ -5813,9 +5825,9 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn binary_uses_kernel_integer(&self, lhs: &ast::Expr, rhs: &ast::Expr) -> bool {
-        let lhs = self.expr_types.get(&ast::expr_span(lhs));
-        let rhs = self.expr_types.get(&ast::expr_span(rhs));
+    fn binary_uses_kernel_integer(&self, lhs_ast: &ast::Expr, rhs_ast: &ast::Expr) -> bool {
+        let lhs = self.expr_types.get(&ast::expr_span(lhs_ast));
+        let rhs = self.expr_types.get(&ast::expr_span(rhs_ast));
         // Literals retain their default `integer` type even when they occur
         // inside an inlined library-vector implementation. A concrete
         // array/newtype operand owns that operation through std; it must not be
@@ -5826,8 +5838,15 @@ impl<'a> Lowering<'a> {
         {
             return false;
         }
+        // A parameter of the function being inlined, declared `integer`. Its
+        // recorded type is `Error` (the body is checked without parameters in
+        // scope), so without this the declaration is simply not consulted.
+        let declared_integer =
+            |e: &ast::Expr| expr_path(e).is_some_and(|n| self.param_integers.borrow().contains(&n));
         matches!(lhs, Some(crate::types::Ty::Integer))
             || matches!(rhs, Some(crate::types::Ty::Integer))
+            || declared_integer(lhs_ast)
+            || declared_integer(rhs_ast)
     }
 
     /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
@@ -6207,6 +6226,9 @@ impl<'a> Lowering<'a> {
         // Saved param-family bindings to restore after this inline (nesting).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
         let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
+        // Names this inline added to `param_integers`, removed on the way out
+        // so a nested or later inline does not inherit them.
+        let mut added_integers: Vec<String> = Vec::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
@@ -6219,6 +6241,13 @@ impl<'a> Lowering<'a> {
                 if let Some(fam) = self.operand_type_name(a) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
+                }
+                // A parameter declared `integer` makes the body's operations
+                // signed, which its recorded types cannot say.
+                if p.ty.as_ref().and_then(type_head_name) == Some("integer")
+                    && self.param_integers.borrow_mut().insert(n.text.clone())
+                {
+                    added_integers.push(n.text.clone());
                 }
                 // The width travels with the family: a nested inline (e.g.
                 // `signed`'s Ord inside this body) reads `self'length` off the
@@ -6257,6 +6286,9 @@ impl<'a> Lowering<'a> {
                 Some(w) => self.param_widths.borrow_mut().insert(name, w),
                 None => self.param_widths.borrow_mut().remove(&name),
             };
+        }
+        for name in added_integers {
+            self.param_integers.borrow_mut().remove(&name);
         }
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
@@ -6369,6 +6401,9 @@ impl<'a> Lowering<'a> {
         // Family bindings to restore after the inline (nesting-safe).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
         let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
+        // Names this inline added to `param_integers`, removed on the way out
+        // so a nested or later inline does not inherit them.
+        let mut added_integers: Vec<String> = Vec::new();
         let self_prev = self
             .param_types
             .borrow_mut()
@@ -6387,6 +6422,13 @@ impl<'a> Lowering<'a> {
                 if let Some(fam) = self.operand_type_name(a) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
+                }
+                // A parameter declared `integer` makes the body's operations
+                // signed, which its recorded types cannot say.
+                if p.ty.as_ref().and_then(type_head_name) == Some("integer")
+                    && self.param_integers.borrow_mut().insert(n.text.clone())
+                {
+                    added_integers.push(n.text.clone());
                 }
                 // The width travels with the family: a nested inline (e.g.
                 // `signed`'s Ord inside this body) reads `self'length` off the
@@ -6414,6 +6456,9 @@ impl<'a> Lowering<'a> {
             };
         }
         self.self_signal.set(saved_self);
+        for name in added_integers {
+            self.param_integers.borrow_mut().remove(&name);
+        }
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
     }
