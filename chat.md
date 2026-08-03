@@ -5949,3 +5949,62 @@ second hook two rounds ago, arriving from the opposite direction.
 
 Three mutations, all detected: branch selection, the event-path guard, and
 `int_literal` itself. Corpus clean.
+
+## The same hole again, one level down: slice bounds
+
+Went back at my own change. Last round's `int_literal` fix makes expressions
+fold that previously did not, so anything reading a folded value is newly
+exposed. Checked the testbench engine first — it agrees with the hardware
+engine on all four negative shapes, so the new `Unary{Neg}` node is read
+correctly by both — then went looking for what else now folds.
+
+Slice bounds. My elaboration-time index check had an explicit carve-out:
+
+```rust
+// A slice (`v[3..0]`) is bounded by `slice_bounds`, and a runtime index
+// (`mem[addr]`) does not fold — neither is this check's business.
+```
+
+The second half is right; the first half was wrong. `slice_bounds` bounds
+nothing — it computes the width. Slices had exactly the hole scalar indices
+had, and the same asymmetry: a literal `x[1..-1]` or `x[9..0]` has always given
+a clean `E-P003`, while the folded spelling gave neither.
+
+Going up, the missing bits read as 0:
+
+```siox
+let x: unsigned[8] = 255;
+for i in 0..1 { v[i] = unsigned[16](x[i+8..i]); }   // nine bits of an eight-bit x
+```
+
+The two iterations produced 255 and 127, summing to 382 — exactly what that
+misread computes, and nothing to suggest the slice was too wide.
+
+Going down it was worse than silent. `x[i+1..i-1]` at `i = 0` is `x[1..-1]`,
+and the -1 was cast to `u32`:
+
+```
+sioxc --test: the driver for `T.e.v[0]`: slice bounds lo 4294967295 > hi 1
+```
+
+No code, no span, and a number that appears nowhere in the program. That one
+only became reachable *because* of last round's fix — before it, the -1 was an
+unreadable literal and the slice quietly took some other path. Fixing the fold
+turned a silent wrong answer into an unreadable internal error, which is how I
+found it.
+
+Both bounds of a `Range` index are now checked the same way a scalar index is,
+through one shared `check_one_index`, so the wording matches the literal route
+exactly. A `PartialRange` (`x[..4]`, `x[1..]`) has its omitted end supplied by
+the vector, so only the written bound is checked.
+
+Four mutations, all detected: skipping slice bounds entirely, checking only
+`lo`, checking only `hi` (each caught by the test that needs that end — the
+over-run case is a bad `lo`, the negative case a bad `hi`), and mishandling a
+partial range. Corpus clean, 13 tests in the file now.
+
+Also probed, no bug: negative arithmetic in a *testbench* generate loop (both
+engines agree), a negative generic argument (`Sub<(0 - 3)>` gives 253, which is
+the raw-resize conversion the language specifies), and a zero-length array from
+`N = 0`, which reports `element 0 is outside 0..0 of this 0-element array`
+rather than building anything.

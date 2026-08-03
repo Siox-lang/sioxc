@@ -231,6 +231,75 @@ fn a_statically_dead_branch_is_not_bounds_checked() {
 }
 
 #[test]
+fn a_folded_slice_bound_past_the_top_is_reported() {
+    // `x[i + 8..i]` on an 8-bit `x` is a nine-bit slice. Unchecked, the bits
+    // that do not exist read as 0 and the design produces a plausible number:
+    // with `x = 255` the two iterations gave 255 and 127, summing to 382,
+    // which is exactly what the misread computes and says nothing about being
+    // wrong.
+    let out = diagnostics(
+        "slicetop",
+        &design(
+            "    let x: unsigned[8] = 255;\n\
+             \x20   let v: unsigned[16][2];\n\
+             \x20   for i in 0..1 { v[i] = unsigned[16](x[i+8..i]); }\n\
+             \x20   y = v[0] + v[1];",
+        ),
+    );
+    assert!(
+        out.contains("bit 8 is outside `0..7` of this 8-bit vector"),
+        "a folded slice bound past the top should be reported, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_folded_negative_slice_bound_is_reported_with_its_source() {
+    // Going the other way the bound was cast to `u32` and wrapped, surfacing
+    // much later as the internal "slice bounds lo 4294967295 > hi 1" — no
+    // code, no span, and a number that is not in the program. The literal
+    // spelling `x[1..-1]` has always said "bit -1 is outside `0..7`", and the
+    // folded one has to say the same thing.
+    let out = diagnostics(
+        "sliceneg",
+        &design(
+            "    let x: unsigned[8] = 255;\n\
+             \x20   let v: unsigned[16][3];\n\
+             \x20   for i in 0..2 { v[i] = unsigned[16](x[i+1..i-1]); }\n\
+             \x20   y = v[0];",
+        ),
+    );
+    assert!(
+        out.contains("bit -1 is outside `0..7` of this 8-bit vector"),
+        "a folded negative slice bound should name the bit, got:\n{out}"
+    );
+    assert!(
+        !out.contains("4294967295"),
+        "and must not leak a wrapped u32, got:\n{out}"
+    );
+}
+
+#[test]
+fn an_in_range_folded_slice_is_left_alone() {
+    // Both controls: a moving in-range window, and a partial range whose
+    // omitted bound comes from the vector and so cannot be wrong.
+    let out = diagnostics(
+        "sliceok",
+        &design(
+            "    let x: unsigned[8] = 255;\n\
+             \x20   let v: unsigned[16][2];\n\
+             \x20   let w: unsigned[16][2];\n\
+             \x20   for i in 0..1 { v[i] = unsigned[16](x[i+3..i]); }\n\
+             \x20   for i in 0..1 { w[i] = unsigned[16](x[..i]); }\n\
+             \x20   y = v[0] + v[1] + w[0] + w[1];",
+        ),
+    );
+    assert!(
+        !out.contains("E-P003"),
+        "an in-range slice must not be flagged, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_runtime_index_is_not_bounds_checked() {
     // The negative control that matters most: `regs[addr]` has no constant to
     // check, and a check that fired here would break every memory in the

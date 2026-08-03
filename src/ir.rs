@@ -2085,38 +2085,34 @@ impl<'a> Lowering<'a> {
             E::Index { base, index, span } => {
                 self.collect_bad_indices(base, out);
                 self.collect_bad_indices(index, out);
-                // A slice (`v[3..0]`) is bounded by `slice_bounds`, and a
-                // runtime index (`mem[addr]`) does not fold — neither is this
-                // check's business.
-                let (Some(path), Some(v)) = (expr_path(base), eval_const(index, &self.cur_env))
-                else {
+                // A runtime index (`mem[addr]`) does not fold and is not this
+                // check's business. A *slice* is: both its bounds fold the same
+                // way a scalar index does, and an unchecked one either reads
+                // the missing bits as 0 (`x[i+8..i]` on an 8-bit `x`) or wraps
+                // negative through a `u32` and surfaces as an internal
+                // "slice bounds lo 4294967295 > hi 1" with no source location.
+                let Some(path) = expr_path(base) else {
                     return;
                 };
-                // An element array carries its own index list, so a declared
-                // descending range (`Bit[7..0]` -> 7,6,..,0) needs no special
-                // case. Anything else falls back to the declared range, which
-                // covers packed vectors indexed by bit.
-                if let Some(indices) = self.local_array.get(&path) {
-                    if !indices.contains(&v) {
-                        let (lo, hi) = (
-                            indices.iter().copied().min().unwrap_or(0),
-                            indices.iter().copied().max().unwrap_or(0),
-                        );
-                        let noun = if self.instance_arrays.contains(&path) {
-                            "instance"
-                        } else {
-                            "element"
-                        };
-                        out.push((path, v, lo, hi, indices.len(), noun, *span));
-                    }
-                } else if let Some(&(left, right)) = self.local_range.get(&path) {
-                    let (lo, hi) = (left.min(right), left.max(right));
-                    if v < lo || v > hi {
-                        let len = (hi - lo + 1) as usize;
-                        out.push((path, v, lo, hi, len, "bit", *span));
-                    }
+                let bounds: Vec<i64> = match index.as_ref() {
+                    E::Range { lo, hi, .. } => [lo, hi]
+                        .iter()
+                        .filter_map(|b| eval_const(b, &self.cur_env))
+                        .collect(),
+                    // An omitted bound is supplied by the vector itself, so
+                    // only the written one can be wrong.
+                    E::PartialRange { lo, hi, .. } => [lo, hi]
+                        .iter()
+                        .filter_map(|b| b.as_deref())
+                        .filter_map(|b| eval_const(b, &self.cur_env))
+                        .collect(),
+                    other => eval_const(other, &self.cur_env).into_iter().collect(),
+                };
+                for v in bounds {
+                    self.check_one_index(&path, v, *span, out);
                 }
             }
+
             E::Field { base, .. } | E::SysAttr { base, .. } | E::Unary { rhs: base, .. } => {
                 self.collect_bad_indices(base, out)
             }
@@ -2179,6 +2175,50 @@ impl<'a> Lowering<'a> {
             | E::CharLit { .. }
             | E::StrLit { .. }
             | E::Path(_) => {}
+        }
+    }
+
+    /// Check one folded index or slice bound against `path`'s declared bounds.
+    ///
+    /// An element array carries its own index list, so a declared descending
+    /// range (`Bit[7..0]` -> 7, 6, .., 0) needs no special case. Anything else
+    /// falls back to the declared range, which covers packed vectors indexed
+    /// by bit.
+    #[allow(clippy::type_complexity)]
+    fn check_one_index(
+        &self,
+        path: &str,
+        v: i64,
+        span: crate::diag::Span,
+        out: &mut Vec<(
+            String,
+            i64,
+            i64,
+            i64,
+            usize,
+            &'static str,
+            crate::diag::Span,
+        )>,
+    ) {
+        if let Some(indices) = self.local_array.get(path) {
+            if !indices.contains(&v) {
+                let (lo, hi) = (
+                    indices.iter().copied().min().unwrap_or(0),
+                    indices.iter().copied().max().unwrap_or(0),
+                );
+                let noun = if self.instance_arrays.contains(path) {
+                    "instance"
+                } else {
+                    "element"
+                };
+                out.push((path.to_string(), v, lo, hi, indices.len(), noun, span));
+            }
+        } else if let Some(&(left, right)) = self.local_range.get(path) {
+            let (lo, hi) = (left.min(right), left.max(right));
+            if v < lo || v > hi {
+                let len = (hi - lo + 1) as usize;
+                out.push((path.to_string(), v, lo, hi, len, "bit", span));
+            }
         }
     }
 
