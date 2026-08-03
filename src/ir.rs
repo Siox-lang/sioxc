@@ -2254,8 +2254,19 @@ impl<'a> Lowering<'a> {
         )>,
     ) {
         self.collect_bad_indices(&iff.cond, out);
-        for s in &iff.then.stmts {
-            self.collect_stmt_bad_indices(s, out);
+        // A condition that const-folds selects one branch at elaboration and
+        // the other is never built, so its indices are not the design's. The
+        // idiom this protects is the ordinary one for a generated chain —
+        // `if i == 0 { s[0] = d; } else { s[i] = s[i - 1]; }` — whose `else`
+        // reads `s[-1]` on the very iteration that does not take it.
+        let taken = eval_const(&iff.cond, &self.cur_env).map(|v| v != 0);
+        if taken != Some(false) {
+            for s in &iff.then.stmts {
+                self.collect_stmt_bad_indices(s, out);
+            }
+        }
+        if taken == Some(true) {
+            return;
         }
         match iff.else_.as_deref() {
             Some(ast::ElseBranch::Block(b)) => {
@@ -3486,9 +3497,18 @@ impl<'a> Lowering<'a> {
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
-        let mut bad = Vec::new();
-        self.collect_stmt_bad_indices(stmt, &mut bad);
-        self.report_bad_indices(bad);
+        //
+        // Only unconditioned statements are walked. A statement arriving with
+        // a condition is one branch of an `if` this walk already visited, and
+        // visiting it again reports it out of context: the walk applies branch
+        // selection, so the dead half of `if i == 0 { s[0] = d } else { s[i] =
+        // s[i - 1] }` is skipped at `i = 0`, but on re-entry that `s[i - 1]`
+        // arrives as a bare statement with nothing left to skip it.
+        if cond.is_none() {
+            let mut bad = Vec::new();
+            self.collect_stmt_bad_indices(stmt, &mut bad);
+            self.report_bad_indices(bad);
+        }
         // An instance-array element (`stage[i] = Sub { .. }`, Sub an entity) is
         // lowered structurally by `gather_generate`, not as a behavioral driver
         // — skip it so unrolling a `for` doesn't mistake it for an assignment. A
@@ -4119,10 +4139,14 @@ impl<'a> Lowering<'a> {
     ) {
         for s in &block.stmts {
             // The clocked path unrolls its own `for` (below) rather than going
-            // through `lower_stmt`, so the same check has to be made here.
-            let mut bad = Vec::new();
-            self.collect_stmt_bad_indices(s, &mut bad);
-            self.report_bad_indices(bad);
+            // through `lower_stmt`, so the same check has to be made here —
+            // under the same unconditioned-only rule, which on this path is
+            // what keeps a clocked generate chain's dead `else` unreported.
+            if cond.is_none() {
+                let mut bad = Vec::new();
+                self.collect_stmt_bad_indices(s, &mut bad);
+                self.report_bad_indices(bad);
+            }
             match s {
                 ast::Stmt::Assign {
                     target,
@@ -8787,19 +8811,7 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
         // -1 (ranges are directional), and that iteration silently folded to
         // nothing instead of to element -1.
         Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == var => {
-            let lit = Expr::Int {
-                text: val.unsigned_abs().to_string(),
-                span: p.span,
-            };
-            if val < 0 {
-                Expr::Unary {
-                    op: ast::UnOp::Neg,
-                    rhs: Box::new(lit),
-                    span: p.span,
-                }
-            } else {
-                lit
-            }
+            int_literal(val, p.span)
         }
         Expr::Field { base, field, span } => Expr::Field {
             base: sub(base),
@@ -8910,12 +8922,33 @@ pub fn loop_range(a: i64, b: i64) -> Vec<i64> {
 
 /// Collapse a now-constant arithmetic node to an integer literal, so unrolled
 /// index expressions resolve as plain `Int`s. Non-constant nodes pass through.
+/// Build the AST for an integer value.
+///
+/// The lexer never produces an `Int` whose text carries a sign, so a negative
+/// value has to be a negation over an unsigned literal — `Int { text: "-5" }`
+/// is a node no other stage can read. `parse_int` rejects it, which silently
+/// demotes the whole expression to non-constant, and the value it was carrying
+/// reaches hardware as 0. Both places that turn a folded `i64` back into AST
+/// go through here so a third one cannot drift.
+fn int_literal(val: i64, span: crate::diag::Span) -> ast::Expr {
+    let lit = ast::Expr::Int {
+        text: val.unsigned_abs().to_string(),
+        span,
+    };
+    if val < 0 {
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs: Box::new(lit),
+            span,
+        }
+    } else {
+        lit
+    }
+}
+
 fn fold_const(e: ast::Expr, span: crate::diag::Span) -> ast::Expr {
     match eval_const(&e, &HashMap::new()) {
-        Some(v) => ast::Expr::Int {
-            text: v.to_string(),
-            span,
-        },
+        Some(v) => int_literal(v, span),
         None => e,
     }
 }

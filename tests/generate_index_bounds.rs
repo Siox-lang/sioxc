@@ -199,6 +199,38 @@ fn an_instance_array_that_over_runs_is_named_as_instances() {
 }
 
 #[test]
+fn a_statically_dead_branch_is_not_bounds_checked() {
+    // The ordinary shape for a generated chain: the first stage takes the
+    // input and every later one takes its predecessor. At `i = 0` the `else`
+    // reads `s[-1]`, but `i == 0` folds and that branch is never built, so
+    // there is nothing to report.
+    //
+    // This passed by accident before negative folding was fixed — `s[i - 1]`
+    // at `i = 0` produced an unreadable literal and the check skipped it for
+    // the wrong reason. It has to hold for the right one now. The clocked
+    // wrapper matters: without it the branch statements never re-enter
+    // lowering on their own, which is where the context to skip them is lost.
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               using std::logic::{Bit};\n\
+               entity A { clk: Bit in, d: unsigned[8] in, q: unsigned[8] out }\n\
+               impl A {\n\
+                   let s: unsigned[8][3];\n\
+                   for i in 0..2 {\n\
+                       if clk.rising() {\n\
+                           if i == 0 { s[0] = d; } else { s[i] = s[i-1]; }\n\
+                       }\n\
+                   }\n\
+                   q = s[2];\n\
+               }\n";
+    let out = diagnostics("deadbranch", src);
+    assert!(
+        !out.contains("E-P003"),
+        "an untaken generate branch must not be checked, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_runtime_index_is_not_bounds_checked() {
     // The negative control that matters most: `regs[addr]` has no constant to
     // check, and a check that fired here would break every memory in the

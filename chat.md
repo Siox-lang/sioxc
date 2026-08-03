@@ -5880,3 +5880,72 @@ of a sweep.
 Also noted: `W-P001` (`MULTIPLE_DRIVERS`) is declared in the code catalogue and
 emitted from nowhere in the compiler. Either the lint was folded into `W-P014`
 and the code should go, or it was never written.
+
+## The same bug, in the function next to the one I fixed
+
+Went looking at my own recent change first. Last round I fixed `subst_expr` for
+negative loop indices; the corpus has no negative values in a generate loop, so
+CI could not have caught a regression there. Probing that found something
+worse, and older.
+
+A negative constant expression is correct outside a loop and 0 inside one:
+
+```siox
+v[0] = signed[16](0 - 5);                        // -5, always was
+for i in 0..0 { v[2] = signed[16](0 - 5); }      // 0
+```
+
+The index is not involved — the second form does not mention `i` at all. The
+loop alone is enough, because unrolling folds every substituted expression
+through `fold_const`, and `fold_const` did exactly what `subst_expr` did before
+last round's fix:
+
+```rust
+Some(v) => ast::Expr::Int { text: v.to_string(), span },
+```
+
+`Int { text: "-5" }` is a node the lexer cannot produce. `parse_int` rejects
+it, so the expression is demoted to non-constant and reaches hardware as 0.
+I fixed one of the two functions last round and did not look at the one
+directly below it. Both now go through a shared `int_literal`, so a third site
+cannot drift; the only other place that rebuilds an `Int` from an `i64` already
+guards `index < 0` explicitly.
+
+Checked against Python: `k - 5` over 0..3 gives -5, -4, -3, -2 (sum -14);
+`0 - i` over a descending 3..0 gives 0, -1, -2, -3 (sum -6); `i * i - 10` over
+0..4 crosses zero as -10, -9, -6, -1, 6 (sum -20); and negative loop *bounds*,
+`i * 3` over -2..2, give -6, -3, 0, 3, 6. Element by element, not by sum — my
+first probe used `signed[16](i)` over -2..2, whose sum is 0 whether the
+compiler is right or wrong, and I nearly recorded that as a pass.
+
+### Fixing it exposed a false positive in last round's check
+
+`generate_shape_test.siox` — a file I added two rounds ago — stopped compiling.
+The delay line uses the ordinary idiom for a generated chain:
+
+```siox
+if i == 0 { s[0] = d; } else { s[i] = s[i - 1]; }
+```
+
+At `i = 0` the `else` reads `s[-1]`, and it is never built, because `i == 0`
+folds. The bounds check walked both branches. It had *passed* before only
+because `s[-1]` was unreadable — the very bug being fixed here was masking a
+flaw in the check written to find it. The walk now folds the condition and
+follows the branch lowering follows.
+
+That was not sufficient on its own. Branch statements re-enter lowering
+individually, and by then the `if` that would have excluded them is gone, so
+`s[i - 1]` arrives as a bare statement with nothing left to skip it. The walk
+now runs only on unconditioned statements — a conditioned one has already been
+visited by its parent, with selection applied.
+
+**And I nearly shipped that guard as dead code.** The mutation for it came back
+NOT DETECTED, so I removed it — and the corpus immediately broke. The mutation
+had only removed the guard from `lower_stmt`, leaving the one in
+`lower_event_block`, which is the copy that matters: the failing design puts the
+generate `if` inside a clocked block. A mutation that edits one of two identical
+sites proves nothing about the other, which is the same lesson as the dead
+second hook two rounds ago, arriving from the opposite direction.
+
+Three mutations, all detected: branch selection, the event-path guard, and
+`int_literal` itself. Corpus clean.
