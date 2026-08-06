@@ -847,6 +847,10 @@ impl<'a> Checker<'a> {
         self.base_struct_fields_at(ty, &mut HashSet::new())
     }
 
+    fn base_struct_fields_named(&self, head: &str) -> Vec<String> {
+        self.base_struct_fields_named_at(head, &mut HashSet::new())
+    }
+
     fn struct_field_count(&self, id: crate::resolve::DefId) -> Option<usize> {
         let name = &self.resolved.def(id)?.name;
         self.struct_field_count_at(name, &mut HashSet::new())
@@ -870,19 +874,24 @@ impl<'a> Checker<'a> {
     /// Cycle-safe because resolution reports cyclic derivation but checking
     /// continues best-effort.
     fn base_struct_fields_at(&self, ty: &Type, seen: &mut HashSet<String>) -> Vec<String> {
+        let Some(head) = type_head_name(ty) else {
+            return Vec::new();
+        };
+        self.base_struct_fields_named_at(head, seen)
+    }
+
+    fn base_struct_fields_named_at(&self, head: &str, seen: &mut HashSet<String>) -> Vec<String> {
         let mut out = Vec::new();
-        if let Some(head) = type_head_name(ty) {
-            if !seen.insert(head.to_string()) {
-                return out;
-            }
-            if let Some((base, own)) = self.structs.get(head) {
-                if let Some(b) = base {
-                    out.extend(self.base_struct_fields_at(b, seen));
-                }
-                out.extend(own.iter().cloned());
-            }
-            seen.remove(head);
+        if !seen.insert(head.to_string()) {
+            return out;
         }
+        if let Some((base, own)) = self.structs.get(head) {
+            if let Some(base) = base.as_ref().and_then(type_head_name) {
+                out.extend(self.base_struct_fields_named_at(base, seen));
+            }
+            out.extend(own.iter().cloned());
+        }
+        seen.remove(head);
         out
     }
 
@@ -2274,6 +2283,11 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     );
                 } else {
+                    if let (Some(expected), Some(value)) = (expected_return, value) {
+                        if self.check_struct_literal_for_ty(expected, value, sym) {
+                            return;
+                        }
+                    }
                     match (expected_return, value) {
                         (Some(expected), Some(value))
                             if !matches!(expected, Ty::Error)
@@ -2993,6 +3007,9 @@ impl<'a> Checker<'a> {
     /// the target's type. Only fires when the target type is known.
     fn check_assignment(&mut self, target: &Expr, value: &Expr, sym: &HashMap<String, Ty>) {
         let lhs = self.type_of(target, sym);
+        if self.check_struct_literal_for_ty(&lhs, value, sym) {
+            return;
+        }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
@@ -3208,7 +3225,7 @@ impl<'a> Checker<'a> {
     /// `extern "C"` call passed a garbage argument to real native code.
     /// Conversions, method calls and runtime-provided std functions have no
     /// declaration here and are skipped.
-    fn check_call_arity(&mut self, callee: &Expr, args: &[Expr]) {
+    fn check_call_arity(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Expr::Path(p) = callee else { return };
         let [name] = p.segments.as_slice() else {
             return;
@@ -3244,25 +3261,27 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        self.check_call_arg_types(&name.text, args);
+        self.check_call_arg_types(&name.text, args, sym);
     }
 
     /// Each argument must be assignable to its parameter, by the same rule an
     /// assignment uses. Only the count was checked, so a `real` handed to an
     /// `integer` parameter passed its f64 bits through as an integer, and a
     /// `signed[8]` passed its raw bit pattern — `abs(-5)` returned 251.
-    fn check_call_arg_types(&mut self, name: &str, args: &[Expr]) {
+    fn check_call_arg_types(&mut self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Some(params) = self.fn_param_types.get(name).cloned() else {
             return;
         };
-        let sym = HashMap::new();
         for (arg, pty) in args.iter().zip(params.iter()) {
             let Some(pty) = pty else { continue };
             let want = self.ast_ty(pty);
-            if want == Ty::Error || self.assignable(&want, arg, &sym) {
+            if self.check_struct_literal_for_ty(&want, arg, sym) {
                 continue;
             }
-            let got = self.type_of(arg, &sym);
+            if want == Ty::Error || self.assignable(&want, arg, sym) {
+                continue;
+            }
+            let got = self.type_of(arg, sym);
             if got == Ty::Error {
                 continue;
             }
@@ -3723,6 +3742,11 @@ impl<'a> Checker<'a> {
                     _ => compatible(lhs, &self.type_of(value, sym)),
                 }
             }
+            // Kernel integers widen exactly into the real domain. This is the
+            // same promotion used by mixed real arithmetic and by std's
+            // `Complex::from(integer)`; the reverse direction remains an
+            // explicit `integer(value)` conversion because it truncates.
+            _ if matches!(lhs, Ty::Real) && matches!(self.type_of(value, sym), Ty::Integer) => true,
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }
@@ -4113,7 +4137,7 @@ impl<'a> Checker<'a> {
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
                 self.check_generic_bounds(callee, args, sym);
-                self.check_call_arity(callee, args);
+                self.check_call_arity(callee, args, sym);
                 self.check_runtime_call_arity(callee, args);
             }
             Expr::Construct { args, .. } => {
@@ -4384,6 +4408,13 @@ impl<'a> Checker<'a> {
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
+                // Runtime lowering promotes either ordering of mixed
+                // integer/real arithmetic to f64. Returning the left type here
+                // made `integer_value + real_value` look like an integer and
+                // allowed it into truncating integer-only contexts.
+                if matches!(lhs_ty, Ty::Real) || matches!(rhs_ty, Ty::Real) {
+                    return Ty::Real;
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 let tr = op_str;
                 if let (Some(owner), Some(input)) = (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty)) {
@@ -4743,7 +4774,49 @@ impl<'a> Checker<'a> {
             return;
         }
         let head = head.to_string();
-        let fields = self.base_struct_fields(&ty);
+        let expected = self.ast_ty(&ty);
+        self.check_struct_literal_for_head(&expected, &head, value, sym);
+    }
+
+    /// Validate a contextual struct literal when only the consumer's semantic
+    /// type is available (assignments, returns, and call arguments). Returns
+    /// true when this was a struct-literal context, so the caller does not also
+    /// emit a generic mismatch for the literal's intentionally context-free
+    /// `Ty::Error`.
+    fn check_struct_literal_for_ty(
+        &mut self,
+        expected: &Ty,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        if !matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
+            return false;
+        }
+        let Ty::Named(id) = expected else {
+            return false;
+        };
+        let Some(head) = self
+            .resolved
+            .def(*id)
+            .map(|definition| definition.name.clone())
+        else {
+            return false;
+        };
+        if !self.structs.contains_key(&head) {
+            return false;
+        }
+        self.check_struct_literal_for_head(expected, &head, value, sym);
+        true
+    }
+
+    fn check_struct_literal_for_head(
+        &mut self,
+        expected: &Ty,
+        head: &str,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let fields = self.base_struct_fields_named(head);
         if fields.is_empty() {
             return;
         }
@@ -4759,15 +4832,15 @@ impl<'a> Checker<'a> {
                 // sides are constructions. `check_init` deliberately leaves
                 // name-less construction to this contextual checker.
                 if let Some(actual) = explicit {
-                    let (expected, actual) = (self.ast_ty(&ty), self.ast_ty(actual));
-                    if !compatible(&expected, &actual) {
+                    let actual = self.ast_ty(actual);
+                    if !compatible(expected, &actual) {
                         self.error(
                             codes::TYPE_MISMATCH,
                             *span,
                             format!(
                                 "cannot construct {} where {} is required",
                                 self.ty_display(&actual),
-                                self.ty_display(&expected)
+                                self.ty_display(expected)
                             ),
                         );
                         return;
@@ -4790,7 +4863,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 for (field, value) in fields.iter().zip(parts) {
-                    self.check_struct_field_value(&head, field, value, sym);
+                    self.check_struct_field_value(head, field, value, sym);
                 }
                 return;
             }
@@ -4798,8 +4871,7 @@ impl<'a> Checker<'a> {
         };
 
         if let Some(base) = spread {
-            let expected = self.ast_ty(&ty);
-            if !self.assignable(&expected, base, sym) {
+            if !self.assignable(expected, base, sym) {
                 let actual = self.type_of(base, sym);
                 self.error(
                     codes::TYPE_MISMATCH,
@@ -4807,7 +4879,7 @@ impl<'a> Checker<'a> {
                     format!(
                         "struct spread for `{head}` has type {}, expected {}",
                         self.ty_display(&actual),
-                        self.ty_display(&expected)
+                        self.ty_display(expected)
                     ),
                 );
             }
@@ -4828,13 +4900,13 @@ impl<'a> Checker<'a> {
                 Some(f) => {
                     seen.insert(f.text.clone());
                     if let Some(value) = &c.value {
-                        self.check_struct_field_value(&head, &f.text, value, sym);
+                        self.check_struct_field_value(head, &f.text, value, sym);
                     }
                 }
                 None => {
                     positional = true;
                     if let (Some(field), Some(value)) = (fields.get(position), &c.value) {
-                        self.check_struct_field_value(&head, field, value, sym);
+                        self.check_struct_field_value(head, field, value, sym);
                     }
                 }
             }
@@ -5911,6 +5983,50 @@ mod tests {
         assert_eq!(
             errors, 2,
             "bare and valued returns must agree with the declared signature"
+        );
+    }
+
+    #[test]
+    fn local_function_arguments_use_their_declared_types() {
+        let errors = check_src(
+            "module m;\n\
+             fn take_byte(value: unsigned[8]) {}\n\
+             fn take_real(value: real) {}\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let r: real = 1.5;\n\
+               let i: integer = 2;\n\
+               take_byte(r);\n\
+               take_byte(i + r);\n\
+               take_real(i);\n\
+               y = '0';\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 2,
+            "local and mixed-real arguments must use their actual promoted types"
+        );
+    }
+
+    #[test]
+    fn struct_literal_fields_are_checked_in_every_value_context() {
+        let errors = check_src(
+            "module m;\n\
+             struct Packet { data: unsigned[8] }\n\
+             fn consume(packet: Packet) {}\n\
+             fn make_bad(r: real) -> Packet { return { .data = r }; }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let r: real = 1.5;\n\
+               let packet: Packet;\n\
+               packet = { .data = r };\n\
+               consume({ .data = r });\n\
+               y = '0';\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 3,
+            "assignment, return, and call arguments all supply struct-field context"
         );
     }
 

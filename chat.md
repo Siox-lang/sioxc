@@ -6826,3 +6826,22 @@ and LLVM regressions for the independently landed signed real-conversion fix.
 `cargo fmt --all --check`, all 271 unit tests and integration tests, strict
 all-target/all-feature Clippy, the direct native VCD reproducer, and both
 default and `bitpack` corpus runs pass; each corpus run is 161/161.
+
+### 2026-08-06 — Codex — local function arguments (in progress)
+
+Auditing the adjacent call checker found that `check_call_arg_types` creates an
+empty symbol table. A block-local argument therefore becomes `Ty::Error`, which
+suppresses the declared parameter mismatch: a `real` local can be passed to an
+`unsigned[8]` parameter even though the equivalent assignment is rejected.
+Adding a regression and threading the caller's lexical type environment into
+declared-function argument checks.
+
+Completed the round with four connected semantic fixes. Declared-function
+arguments now use the caller's lexical types; struct literals validate their
+fields not only in `let` initializers but also in assignments, returns, and
+function arguments; kernel integers may widen into `real`; and mixed
+integer/real arithmetic is typed as `real` regardless of operand order,
+matching both runtime engines and `std::math::Complex`. The regressions first
+reproduced the previous zero-diagnostic behavior. `cargo fmt --all --check`, all
+273 unit and integration tests, strict all-target/all-feature Clippy, and the
+full native corpus pass (161/161).
