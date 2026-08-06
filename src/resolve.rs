@@ -671,21 +671,11 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(ty);
                 }
             }
-            Item::Fn(f) => {
-                // A generic fn's type params (`<T: Ord>`) scope over its
-                // signature, so `a: T` resolves.
-                self.enter();
-                self.bind_params(&f.generics, true, None);
-                for p in &f.params {
-                    if let Some(t) = &p.ty {
-                        self.resolve_type(t);
-                    }
-                }
-                if let Some(t) = &f.ret {
-                    self.resolve_type(t);
-                }
-                self.exit();
-            }
+            // A free function uses the same resolver as a method. The old
+            // special case resolved only its signature and skipped the body,
+            // so unknown names and unresolved local types inside every
+            // module-level function passed Stage 3 silently.
+            Item::Fn(f) => self.resolve_fn(f),
             Item::ExternBlock { .. } => {}
             Item::Const(c) => {
                 self.resolve_type(&c.ty);
@@ -891,6 +881,10 @@ impl<'a> Resolver<'a> {
 
     fn resolve_fn(&mut self, f: &FnDecl) {
         self.enter();
+        // Function parameters scope over both the signature and body. This is
+        // needed here (rather than only in the module-level Item arm) for
+        // generic methods and trait defaults as well.
+        self.bind_params(&f.generics, true, None);
         let mut has_self = false;
         for p in &f.params {
             if p.is_self {
@@ -1800,6 +1794,22 @@ mod tests {
         assert_eq!(errs, 1);
         let (_, errs) = resolve_src("module m;\nusing Word = Bit;\n");
         assert_eq!(errs, 0);
+    }
+
+    #[test]
+    fn free_function_bodies_are_resolved() {
+        let (_, errs) = resolve_src(
+            "module m;\nfn bad(value: Bit) -> Bit { let local: Missing = value; return value; }\n",
+        );
+        assert_eq!(errs, 1, "an unknown block-local type");
+
+        let (_, errs) = resolve_src(
+            "module m;\nfn id<T>(value: T) -> T { let local: T = value; return local; }\n",
+        );
+        assert_eq!(
+            errs, 0,
+            "function generics, parameters, and locals share the body scope"
+        );
     }
 
     /// A derivation base is a type reference like any other, but it was the

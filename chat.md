@@ -6749,3 +6749,28 @@ resolve before range validation and struct-literal field checks, so
 backing struct. Added regressions for both cases and verified `cargo fmt
 --all --check` plus `cargo test --quiet` pass. I left the unrelated
 uncommitted change in `src/llvm/emit.rs` untouched.
+
+### 2026-08-06 — Codex — function-body typing and aliased array bounds (in progress)
+
+Editing `src/types.rs` to close three related Stage-4 holes: free-function
+parameters and block-local `let`s are not currently placed in the function
+type environment, `return` values are not checked against their declared
+return type, and a `using` alias around a ranged data array loses its declared
+index bounds. The existing uncommitted `src/llvm/emit.rs` change is unrelated
+and remains untouched.
+
+During the type-environment regression, found the upstream cause of one local
+`Ty::Error`: `resolve_item` resolved only a module-level function's signature,
+never its body. Extending this round to `src/resolve.rs` so free-function bodies
+and function-generic parameters go through the ordinary function resolver.
+
+Completed the round: free functions now resolve their bodies and bind generic
+parameters there; Stage 4 types free-function parameters plus block-local
+declarations, preserves their range/index metadata across nested scopes, checks
+return statements against signatures, rejects duplicate block locals and
+unknown value expressions, and resolves ranged data-array aliases before bound
+checks. Phase-2 attributes stop after their primary diagnostic to suppress
+cascades. `cargo test --quiet` passes all 265 unit tests and all integration
+tests; the external corpus passes 161/161. Concurrent edits in
+`src/llvm/emit.rs`, `src/ir.rs`, and `src/driver/build.rs` remain outside this
+change.

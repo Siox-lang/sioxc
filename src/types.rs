@@ -1059,7 +1059,7 @@ impl<'a> Checker<'a> {
                     if let Some(b) = &f.body {
                         let saved =
                             self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
-                        self.check_block(b);
+                        self.check_function_block(f, b, None);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -1070,7 +1070,7 @@ impl<'a> Checker<'a> {
                 // (operators on the opaque `T`) would wrongly reject it.
                 if f.generics.params.is_empty() {
                     if let Some(b) = &f.body {
-                        self.check_block(b);
+                        self.check_function_block(f, b, None);
                     }
                 }
             }
@@ -1694,19 +1694,36 @@ impl<'a> Checker<'a> {
                         // `self.data = wide` silently truncated a 16-bit
                         // argument into an 8-bit field.
                         let mut body_sym: HashMap<String, Ty> = HashMap::new();
+                        let mut body_index_bounds: HashMap<String, (i64, i64)> =
+                            self.array_bounds.borrow().clone();
                         for param in &f.params {
                             if param.is_self {
                                 body_sym.insert("self".to_string(), self.ast_ty(self_ty(im)));
                             } else if let (Some(n), Some(t)) = (&param.name, &param.ty) {
                                 body_sym.insert(n.text.clone(), self.ast_ty(t));
+                                if let Some(range) = self.declared_range(t) {
+                                    body_ranged.insert(n.text.clone(), range);
+                                }
+                                body_index_bounds.remove(&n.text);
+                                if let Some(range) = self.declared_index_bounds(t) {
+                                    body_index_bounds.insert(n.text.clone(), range);
+                                }
                             }
                         }
-                        self.check_block_with(b, &body_dirs, &body_ranged, &body_sym);
+                        let expected = f.ret.as_ref().map(|ty| self.ast_ty(ty));
+                        self.check_block_with(
+                            b,
+                            &body_dirs,
+                            &body_ranged,
+                            &body_sym,
+                            &body_index_bounds,
+                            expected.as_ref(),
+                        );
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
                 ImplItem::ModeField { .. } => {}
-                ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym, &ranged),
+                ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym, &ranged, None),
             }
         }
         self.lint_dead_assignments(im.items.iter().filter_map(|it| match it {
@@ -1839,8 +1856,39 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_block(&mut self, b: &Block) {
-        self.check_block_with(b, &PortDirs::default(), &HashMap::new(), &HashMap::new());
+    /// Check a free function or trait-default body with its declared value
+    /// parameters in scope. Previously these bodies were checked against an
+    /// empty symbol table, so every parameter expression became `Ty::Error`
+    /// and suppressed the very type diagnostics Stage 4 was meant to provide.
+    fn check_function_block(&mut self, function: &FnDecl, body: &Block, self_ty: Option<&Type>) {
+        let mut names = HashMap::new();
+        let mut ranged = HashMap::new();
+        let mut index_bounds = HashMap::new();
+        for parameter in &function.params {
+            if parameter.is_self {
+                names.insert(
+                    "self".to_string(),
+                    self_ty.map(|ty| self.ast_ty(ty)).unwrap_or(Ty::Error),
+                );
+            } else if let (Some(name), Some(ty)) = (&parameter.name, &parameter.ty) {
+                names.insert(name.text.clone(), self.ast_ty(ty));
+                if let Some(range) = self.declared_range(ty) {
+                    ranged.insert(name.text.clone(), range);
+                }
+                if let Some(range) = self.declared_index_bounds(ty) {
+                    index_bounds.insert(name.text.clone(), range);
+                }
+            }
+        }
+        let expected = function.ret.as_ref().map(|ty| self.ast_ty(ty));
+        self.check_block_with(
+            body,
+            &PortDirs::default(),
+            &ranged,
+            &names,
+            &index_bounds,
+            expected.as_ref(),
+        );
     }
 
     /// A method body whose `self` carries directions — an impl on a view
@@ -1855,17 +1903,120 @@ impl<'a> Checker<'a> {
         view_dirs: &PortDirs,
         bounds: &HashMap<String, (i64, i64)>,
         names: &HashMap<String, Ty>,
+        index_bounds: &HashMap<String, (i64, i64)>,
+        expected_return: Option<&Ty>,
     ) {
         // Every caller of this is a function body — a trait method, a free
         // function, or an impl method — so `return` is legal inside it.
         let saved = self.in_fn_body.replace(true);
-        let (dirs, sym) = (view_dirs.clone(), names.clone());
-        let ranged = bounds.clone();
-        self.lint_dead_assignments(b.stmts.iter());
-        for s in &b.stmts {
-            self.check_stmt(s, &dirs, &sym, &ranged);
-        }
+        let saved_index_bounds = self.array_bounds.replace(index_bounds.clone());
+        self.check_stmt_sequence(&b.stmts, view_dirs, names, bounds, expected_return);
+        self.array_bounds.replace(saved_index_bounds);
         self.in_fn_body.set(saved);
+    }
+
+    /// Check one lexical statement sequence with every block-local declaration
+    /// in scope, matching resolution's block semantics. Each nested block gets
+    /// a cloned environment; its locals shadow outer names but do not leak out.
+    fn check_stmt_sequence(
+        &mut self,
+        stmts: &[Stmt],
+        outer_dirs: &PortDirs,
+        outer_names: &HashMap<String, Ty>,
+        outer_ranges: &HashMap<String, (i64, i64)>,
+        expected_return: Option<&Ty>,
+    ) {
+        let saved_index_bounds = self.array_bounds.borrow().clone();
+        let mut dirs = outer_dirs.clone();
+        let mut names = outer_names.clone();
+        let mut ranges = outer_ranges.clone();
+        let mut locals = HashSet::new();
+
+        // Resolution binds every local for the whole block before resolving
+        // expressions, so collect their declared types first as well. A second
+        // pass fills unconstrained array lengths from initializers once every
+        // local name is known.
+        for statement in stmts {
+            let Stmt::Let(declaration) = statement else {
+                continue;
+            };
+            if !locals.insert(declaration.name.text.clone()) {
+                self.error_with_help(
+                    codes::DUPLICATE_ITEM,
+                    declaration.name.span,
+                    format!(
+                        "`{}` is declared more than once in this block",
+                        declaration.name.text
+                    ),
+                    "rename one local, or assign to the first declaration instead".to_string(),
+                );
+            }
+            let ty = declaration
+                .ty
+                .as_ref()
+                .map(|ty| self.ast_ty(ty))
+                .unwrap_or(Ty::Error);
+            names.insert(declaration.name.text.clone(), ty);
+            if let Some(range) = declaration
+                .ty
+                .as_ref()
+                .and_then(|ty| self.declared_range(ty))
+            {
+                ranges.insert(declaration.name.text.clone(), range);
+            } else {
+                ranges.remove(&declaration.name.text);
+            }
+            self.array_bounds
+                .borrow_mut()
+                .remove(&declaration.name.text);
+            if let Some(range) = declaration
+                .ty
+                .as_ref()
+                .and_then(|ty| self.declared_index_bounds(ty))
+            {
+                self.array_bounds
+                    .borrow_mut()
+                    .insert(declaration.name.text.clone(), range);
+            }
+
+            let root = declaration.name.text.as_str();
+            let shadowed = |candidate: &String| {
+                candidate.split(['.', '[']).next().unwrap_or(candidate) == root
+            };
+            dirs.illegal.retain(|name| !shadowed(name));
+            dirs.plain_in_roots.retain(|name| !shadowed(name));
+            dirs.consts.retain(|name| !shadowed(name));
+        }
+        for statement in stmts {
+            let Stmt::Let(declaration) = statement else {
+                continue;
+            };
+            let Some(Ty::Array { len: 0, .. }) = names.get(&declaration.name.text) else {
+                continue;
+            };
+            let inferred = match declaration.value.as_ref() {
+                Some(Expr::StrLit { text, .. }) => {
+                    u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
+                }
+                Some(Expr::Array { elems, .. }) => u32::try_from(elems.len()).unwrap_or(u32::MAX),
+                Some(value) => match self.type_of(value, &names) {
+                    Ty::Array { len, .. } => len,
+                    _ => 0,
+                },
+                None => 0,
+            };
+            if inferred != 0 {
+                if let Some(Ty::Array { len, .. }) = names.get_mut(&declaration.name.text) {
+                    *len = inferred;
+                }
+            }
+        }
+
+        self.lint_dead_assignments(stmts.iter());
+        for statement in stmts {
+            self.check_stmt(statement, &dirs, &names, &ranges, expected_return);
+        }
+        self.array_bounds.replace(saved_index_bounds);
     }
 
     fn check_stmt(
@@ -1874,11 +2025,13 @@ impl<'a> Checker<'a> {
         dirs: &PortDirs,
         sym: &HashMap<String, Ty>,
         ranged: &HashMap<String, (i64, i64)>,
+        expected_return: Option<&Ty>,
     ) {
         match s {
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
+                self.check_struct_literal_fields(l);
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v, sym);
@@ -1906,7 +2059,7 @@ impl<'a> Checker<'a> {
                 }
                 self.check_expr(value, sym);
             }
-            Stmt::If(i) => self.check_if(i, dirs, sym, ranged),
+            Stmt::If(i) => self.check_if(i, dirs, sym, ranged, expected_return),
             Stmt::Match(m) => {
                 self.check_match_exhaustive(m, sym);
                 self.check_unreachable_arms(&m.arms);
@@ -1916,9 +2069,7 @@ impl<'a> Checker<'a> {
                 self.check_expr(&m.scrutinee, sym);
                 let saved = self.in_match_arm.replace(true);
                 for arm in &m.arms {
-                    for s in &arm.body.stmts {
-                        self.check_stmt(s, dirs, sym, ranged);
-                    }
+                    self.check_stmt_sequence(&arm.body.stmts, dirs, sym, ranged, expected_return);
                 }
                 self.in_match_arm.set(saved);
             }
@@ -1935,9 +2086,7 @@ impl<'a> Checker<'a> {
                 };
                 let mut loop_sym = sym.clone();
                 loop_sym.insert(var.text.clone(), loop_ty);
-                for s in &body.stmts {
-                    self.check_stmt(s, dirs, &loop_sym, ranged);
-                }
+                self.check_stmt_sequence(&body.stmts, dirs, &loop_sym, ranged, expected_return);
             }
             Stmt::Expr(e) => {
                 self.check_no_effect(e);
@@ -1958,6 +2107,46 @@ impl<'a> Checker<'a> {
                          silently"
                             .to_string(),
                     );
+                } else {
+                    match (expected_return, value) {
+                        (Some(expected), Some(value))
+                            if !matches!(expected, Ty::Error)
+                                && !self.assignable(expected, value, sym) =>
+                        {
+                            let actual = self.type_of(value, sym);
+                            self.error_with_help(
+                                codes::TYPE_MISMATCH,
+                                expr_span(value),
+                                format!(
+                                    "cannot return {} from a function declared to return {}",
+                                    self.ty_display(&actual),
+                                    self.ty_display(expected)
+                                ),
+                                format!(
+                                    "return a {}, or convert the value explicitly",
+                                    self.ty_display(expected)
+                                ),
+                            );
+                        }
+                        (Some(expected), None) if !matches!(expected, Ty::Error) => {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!(
+                                    "this function must return a {} value",
+                                    self.ty_display(expected)
+                                ),
+                            );
+                        }
+                        (None, Some(value)) => {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(value),
+                                "this function has no declared return type".to_string(),
+                            );
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -2029,19 +2218,16 @@ impl<'a> Checker<'a> {
         dirs: &PortDirs,
         sym: &HashMap<String, Ty>,
         ranged: &HashMap<String, (i64, i64)>,
+        expected_return: Option<&Ty>,
     ) {
         self.check_condition(&i.cond, sym);
         self.check_expr(&i.cond, sym);
-        for s in &i.then.stmts {
-            self.check_stmt(s, dirs, sym, ranged);
-        }
+        self.check_stmt_sequence(&i.then.stmts, dirs, sym, ranged, expected_return);
         match i.else_.as_deref() {
             Some(ElseBranch::Block(b)) => {
-                for s in &b.stmts {
-                    self.check_stmt(s, dirs, sym, ranged);
-                }
+                self.check_stmt_sequence(&b.stmts, dirs, sym, ranged, expected_return)
             }
-            Some(ElseBranch::If(inner)) => self.check_if(inner, dirs, sym, ranged),
+            Some(ElseBranch::If(inner)) => self.check_if(inner, dirs, sym, ranged, expected_return),
             None => {}
         }
     }
@@ -3378,6 +3564,10 @@ impl<'a> Checker<'a> {
                             attr.text
                         ),
                     );
+                    // The whole construct is unavailable in this phase. Do
+                    // not descend into its receiver and turn one rejected
+                    // analogue expression into unrelated value/type errors.
+                    return;
                 }
                 // Anything outside the implemented set is reported here.
                 // Silently lowering it produced an `Unknown` that only failed
@@ -3701,6 +3891,12 @@ impl<'a> Checker<'a> {
                 // judge the name, so one mistake yields one diagnostic.
                 match callee.as_ref() {
                     Expr::Field { base, .. } => self.check_expr(base, sym),
+                    // A bare path in callee position is checked by
+                    // `check_known_call` below. Treating it as an ordinary
+                    // value here would double-report unknown functions and
+                    // reject runtime/compiler-provided primitives that have
+                    // no source declaration.
+                    Expr::Path(_) => {}
                     _ => self.check_expr(callee, sym),
                 }
                 for a in args {
@@ -3845,7 +4041,37 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Expr::Int { .. } | Expr::CharLit { .. } | Expr::StrLit { .. } | Expr::Path(_) => {}
+            Expr::Path(path) => {
+                let local = path
+                    .segments
+                    .first()
+                    .is_some_and(|name| path.segments.len() == 1 && sym.contains_key(&name.text));
+                // Enum variants may be used unqualified (`return Equal;`).
+                // Resolution intentionally leaves those to type context, so
+                // they are known values even without a span -> DefId entry.
+                let unqualified_variant = path.segments.first().is_some_and(|name| {
+                    path.segments.len() == 1
+                        && self
+                            .enum_variants
+                            .values()
+                            .any(|variants| variants.contains(&name.text))
+                });
+                if !local && !unqualified_variant && self.resolved.resolved(path.span).is_none() {
+                    self.error(
+                        codes::UNKNOWN_NAME,
+                        path.span,
+                        format!(
+                            "unknown value `{}`",
+                            path.segments
+                                .iter()
+                                .map(|segment| segment.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join("::")
+                        ),
+                    );
+                }
+            }
+            Expr::Int { .. } | Expr::CharLit { .. } | Expr::StrLit { .. } => {}
         }
     }
 
@@ -4390,13 +4616,14 @@ impl<'a> Checker<'a> {
     /// vector (`unsigned[8]`, checked from its width instead), an instance
     /// array, and anything parametric.
     fn declared_index_bounds(&self, decl_ty: &Type) -> Option<(i64, i64)> {
+        let resolved = self.resolve_alias_type(decl_ty)?;
         let Type::Indexed {
             index: Some(ix), ..
-        } = decl_ty
+        } = &resolved
         else {
             return None;
         };
-        match self.ast_ty(decl_ty) {
+        match self.ast_ty(&resolved) {
             Ty::Array {
                 elem, family: None, ..
             } if !self.is_entity_ty(&elem) => {}
@@ -5021,6 +5248,7 @@ mod tests {
         impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { fn apply(self) -> T[] { return self; } }\n\
         impl Vector for unsigned {}\n\
         struct unsigned(Logic[]);\n\
+        impl Operator<\"+\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Operator<\"/\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Operator<\"<=>\", unsigned, Ordering> for unsigned { fn apply(self, rhs: unsigned) -> Ordering { return Equal; } }\n\
         impl Vector for signed {}\n\
@@ -5330,6 +5558,66 @@ mod tests {
              impl E { let x: B = { .nosuch = '1' }; ok = '1'; }\n",
         );
         assert!(errors > 0, "a chained alias must not bypass struct checks");
+    }
+
+    #[test]
+    fn free_function_parameters_and_locals_keep_their_declared_types() {
+        let parameter = check_src(
+            "module m;\n\
+             fn bad(value: Logic) { if value { return; } }\n",
+        );
+        assert_eq!(
+            parameter, 1,
+            "a free-function parameter must participate in condition checking"
+        );
+
+        let local = check_src(
+            "module m;\n\
+             fn bad(value: Logic) -> unsigned[8] {\n\
+               let copy: Logic = value;\n\
+               return copy;\n\
+             }\n",
+        );
+        assert_eq!(
+            local, 1,
+            "a block-local declaration must participate in return checking"
+        );
+
+        let unknown = check_src(
+            "module m;\n\
+             fn bad() -> Logic { return missing; }\n",
+        );
+        assert_eq!(
+            unknown, 1,
+            "an unknown value in a free-function body must not disappear as Ty::Error"
+        );
+    }
+
+    #[test]
+    fn return_values_match_the_function_signature() {
+        let errors = check_src(
+            "module m;\n\
+             fn missing() -> unsigned[8] { return; }\n\
+             fn unexpected() { return 1; }\n",
+        );
+        assert_eq!(
+            errors, 2,
+            "bare and valued returns must agree with the declared signature"
+        );
+    }
+
+    #[test]
+    fn array_aliases_preserve_declared_index_bounds() {
+        let errors = check_src(
+            "module m;\n\
+             using Window = Logic[15..8];\n\
+             entity E { y: Logic out }\n\
+             impl E { let data: Window; y = data[0]; }\n",
+        );
+        assert_eq!(
+            errors, 1,
+            "an alias must not turn a ranged array into an unchecked zero-based array"
+        );
     }
 
     #[test]
