@@ -160,8 +160,8 @@ enum AttrValueTy {
 type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 type MethodParams = Vec<Option<Type>>;
-type TraitDefaultSignature = (String, Option<Type>, MethodParams);
-type InheritedMethodSignature = (String, String, Option<Type>, MethodParams);
+type TraitDefaultSignature = (String, Option<Type>, MethodParams, bool);
+type InheritedMethodSignature = (String, String, Option<Type>, MethodParams, bool);
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
 struct Checker<'a> {
@@ -280,6 +280,10 @@ struct Checker<'a> {
     /// Method calls used to check only that a name existed, so wrong counts
     /// and raw-bit reinterpretations both passed semantic analysis.
     method_param_types: HashMap<(String, String), MethodParams>,
+    /// Whether a collected method declares a `self` receiver. Instance and
+    /// associated call syntax are distinct and cannot substitute for each
+    /// other merely because the owner/name pair exists.
+    method_has_self: HashMap<(String, String), bool>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
@@ -354,6 +358,7 @@ impl<'a> Checker<'a> {
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
             method_param_types: HashMap::new(),
+            method_has_self: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
         }
@@ -390,15 +395,22 @@ impl<'a> Checker<'a> {
                 let Some(methods) = self.trait_defaults.get(tr) else {
                     continue;
                 };
-                for (name, ret, params) in methods {
-                    inherited.push((ty.clone(), name.clone(), ret.clone(), params.clone()));
+                for (name, ret, params, has_self) in methods {
+                    inherited.push((
+                        ty.clone(),
+                        name.clone(),
+                        ret.clone(),
+                        params.clone(),
+                        *has_self,
+                    ));
                 }
             }
         }
-        for (ty, name, ret, params) in inherited {
+        for (ty, name, ret, params, has_self) in inherited {
             let key = (ty, name);
             self.methods.entry(key.clone()).or_insert(ret);
-            self.method_param_types.entry(key).or_insert(params);
+            self.method_param_types.entry(key.clone()).or_insert(params);
+            self.method_has_self.entry(key).or_insert(has_self);
         }
         self.resolve_transitive_vector_families();
         self.resolve_vector_elements();
@@ -454,13 +466,15 @@ impl<'a> Checker<'a> {
                             let key = (ty.clone(), f.name.text.clone());
                             self.methods.insert(key.clone(), f.ret.clone());
                             self.method_param_types.insert(
-                                key,
+                                key.clone(),
                                 f.params
                                     .iter()
                                     .filter(|parameter| !parameter.is_self)
                                     .map(|parameter| parameter.ty.clone())
                                     .collect(),
                             );
+                            self.method_has_self
+                                .insert(key, f.params.iter().any(|parameter| parameter.is_self));
                         }
                     }
                 }
@@ -676,6 +690,7 @@ impl<'a> Checker<'a> {
                                     .filter(|parameter| !parameter.is_self)
                                     .map(|parameter| parameter.ty.clone())
                                     .collect(),
+                                f.params.iter().any(|parameter| parameter.is_self),
                             )
                         })
                         .collect(),
@@ -1586,52 +1601,19 @@ impl<'a> Checker<'a> {
         };
         let key = (head.clone(), field.text.clone());
         if self.methods.contains_key(&key) {
-            let Some(params) = self.method_param_types.get(&key).cloned() else {
-                return;
-            };
-            if args.len() != params.len() {
-                self.error(
-                    codes::TYPE_MISMATCH,
+            if !self.method_has_self.get(&key).copied().unwrap_or(false) {
+                self.error_with_help(
+                    codes::INVALID_METHOD_CALL,
                     *span,
                     format!(
-                        "method `{}.{}` takes {} argument(s) but {} were given",
-                        head,
-                        field.text,
-                        params.len(),
-                        args.len()
+                        "associated function `{}::{}` has no `self` receiver",
+                        head, field.text
                     ),
+                    format!("call it as `{}::{}(...)`", head, field.text),
                 );
                 return;
             }
-            for (argument, declared) in args.iter().zip(params.iter()) {
-                let Some(declared) = declared else { continue };
-                let expected = self.ast_ty(declared);
-                if self.check_struct_literal_for_ty(&expected, argument, sym)
-                    || matches!(expected, Ty::Error)
-                    || self.assignable(&expected, argument, sym)
-                {
-                    continue;
-                }
-                let actual = self.type_of(argument, sym);
-                if matches!(actual, Ty::Error) {
-                    continue;
-                }
-                self.error_with_help(
-                    codes::TYPE_MISMATCH,
-                    expr_span(argument),
-                    format!(
-                        "cannot pass {} to the {} parameter of method `{}.{}`",
-                        self.ty_display(&actual),
-                        self.ty_display(&expected),
-                        head,
-                        field.text
-                    ),
-                    format!(
-                        "wrap it in a conversion, e.g. `{}(...)`",
-                        self.ty_display(&expected)
-                    ),
-                );
-            }
+            self.check_collected_method_args(&head, &field.text, *span, args, sym);
             return;
         }
         // Only complain about a type we actually know methods for.
@@ -1652,6 +1634,85 @@ impl<'a> Checker<'a> {
             d = d.help(format!("it has: {}", known.join(", ")));
         }
         self.sink.emit(d);
+    }
+
+    /// Check `Type::function(args)` against the same collected impl signature
+    /// as receiver syntax, while enforcing that this declaration has no
+    /// `self` parameter.
+    fn check_associated_call(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
+        let Expr::Path(path) = callee else { return };
+        if path.segments.len() < 2 {
+            return;
+        }
+        let owner = &path.segments[path.segments.len() - 2].text;
+        let name = &path.segments[path.segments.len() - 1].text;
+        let key = (owner.clone(), name.clone());
+        if !self.methods.contains_key(&key) {
+            return;
+        }
+        if self.method_has_self.get(&key).copied().unwrap_or(false) {
+            self.error_with_help(
+                codes::INVALID_METHOD_CALL,
+                expr_span(callee),
+                format!("method `{owner}.{name}` needs a `self` receiver"),
+                format!("call it on a `{owner}` value, e.g. `value.{name}(...)`"),
+            );
+            return;
+        }
+        self.check_collected_method_args(owner, name, expr_span(callee), args, sym);
+    }
+
+    fn check_collected_method_args(
+        &mut self,
+        owner: &str,
+        name: &str,
+        span: Span,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let key = (owner.to_string(), name.to_string());
+        let Some(params) = self.method_param_types.get(&key).cloned() else {
+            return;
+        };
+        if args.len() != params.len() {
+            self.error(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "`{owner}::{name}` takes {} argument(s) but {} were given",
+                    params.len(),
+                    args.len()
+                ),
+            );
+            return;
+        }
+        for (argument, declared) in args.iter().zip(params.iter()) {
+            let Some(declared) = declared else { continue };
+            let expected = self.ast_ty(declared);
+            if self.check_struct_literal_for_ty(&expected, argument, sym)
+                || matches!(expected, Ty::Error)
+                || self.assignable(&expected, argument, sym)
+            {
+                continue;
+            }
+            let actual = self.type_of(argument, sym);
+            if matches!(actual, Ty::Error) {
+                continue;
+            }
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                expr_span(argument),
+                format!(
+                    "cannot pass {} to the {} parameter of `{owner}::{name}`",
+                    self.ty_display(&actual),
+                    self.ty_display(&expected)
+                ),
+                format!(
+                    "wrap it in a conversion, e.g. `{}(...)`",
+                    self.ty_display(&expected)
+                ),
+            );
+        }
     }
 
     /// Spec 3.20: a trait is a compile-time contract, so an implementation
@@ -4531,6 +4592,8 @@ impl<'a> Checker<'a> {
                     self.check_format_arity(callee, args);
                 } else if matches!(callee.as_ref(), Expr::Field { .. }) {
                     self.check_method_call(callee, args, sym);
+                } else if matches!(callee.as_ref(), Expr::Path(path) if path.segments.len() > 1) {
+                    self.check_associated_call(callee, args, sym);
                 }
                 // Reset assertion is normally level-sensitive inside the
                 // design clock's event block. Edge-detecting a conventionally
@@ -5032,6 +5095,15 @@ impl<'a> Checker<'a> {
                     }
                     name => self.free_call_return_type(name, args, sym),
                 },
+                Expr::Path(path) if path.segments.len() >= 2 => {
+                    let owner = &path.segments[path.segments.len() - 2].text;
+                    let name = &path.segments[path.segments.len() - 1].text;
+                    match self.methods.get(&(owner.clone(), name.clone())) {
+                        Some(Some(ret)) => self.ast_ty(ret),
+                        Some(None) => Ty::Void,
+                        None => Ty::Error,
+                    }
+                }
                 // A method call `recv.method(args)` types as the method's
                 // declared return type (spec 3.20); the receiver's type head
                 // selects the impl. An unknown method or a `self`-only method
@@ -6504,6 +6576,39 @@ mod tests {
         assert_eq!(
             errors, 4,
             "inherent and inherited-default methods enforce parameter type and arity"
+        );
+    }
+
+    #[test]
+    fn associated_and_instance_method_call_forms_are_distinct() {
+        let errors = check_src(
+            "module m;\n\
+             struct Thing { value: Bit }\n\
+             struct Other { value: Bit }\n\
+             trait Factory {\n\
+               fn make(value: integer) -> integer { return value; }\n\
+             }\n\
+             impl Factory for Other {}\n\
+             impl Thing {\n\
+               fn static_value(value: integer) -> integer { return value; }\n\
+               fn logic_value() -> Logic { return 'X'; }\n\
+               fn instance_value(self) -> integer { return 1; }\n\
+             }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let thing: Thing = { .value = '0' };\n\
+               let r: real = 1.5;\n\
+               Thing::static_value(r);\n\
+               Thing::static_value();\n\
+               Thing::instance_value();\n\
+               thing.static_value(1);\n\
+               Other::make(r);\n\
+               if Thing::logic_value() { y = '1'; } else { y = '0'; }\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 6,
+            "associated calls enforce signatures, receiver form, and return typing"
         );
     }
 

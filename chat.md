@@ -6846,6 +6846,20 @@ reproduced the previous zero-diagnostic behavior. `cargo fmt --all --check`, all
 273 unit and integration tests, strict all-target/all-feature Clippy, and the
 full native corpus pass (161/161).
 
+### 2026-08-06 — Codex — associated-function call contracts
+
+`Type::function(args)` used a separate lowering path and bypassed every
+signature fact gathered for `value.method(args)`: no arity or argument checks,
+no distinction between declarations with and without `self`, and no return
+type at the call site. Collected impl/default-trait signatures now retain
+receiver presence. Both call forms share parameter validation, instance syntax
+rejects associated functions, associated syntax rejects receiver methods, and
+associated return types participate in surrounding conditions and assignments.
+The regression reproduced six silent errors across inherent and inherited
+default methods. The focused associated-function and trait-default native
+fixtures pass. `cargo fmt --all --check`, all 282 unit and integration tests,
+strict all-target/all-feature Clippy, and the full native corpus pass (161/161).
+
 ### 2026-08-06 — Codex — complete free-call contracts
 
 Finished the adjacent call-signature audit after method validation. Matching-
