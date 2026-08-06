@@ -994,3 +994,74 @@ fn hardware_block_locals_are_scoped_immediate_values() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(output);
 }
+
+#[test]
+fn nested_generic_type_arguments_build_and_run() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let stem = format!("siox_nested_generic_types_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        r#"module nested_generic_types;
+         using std::bits::unsigned;
+         struct Box<T> { value: T }
+         entity Pass<T> { input: T in, output: T out }
+         impl<T> Pass<T> { output = input; }
+         entity NestedUse {
+             input: unsigned[8] in,
+             output: unsigned[8] out
+         }
+         impl NestedUse {
+             let source: Box<Box<unsigned[8]>>;
+             source = Box<Box<unsigned[8]>> {
+                 .value = Box<unsigned[8]> { .value = input }
+             };
+             let passed: Box<Box<unsigned[8]>>;
+             let pass: Pass<Box<Box<unsigned[8]>>> = {
+                 .input = source,
+                 .output = passed
+             };
+             output = passed.value.value;
+         }
+         #[test] entity NestedGenericTest {}
+         impl NestedGenericTest {
+             let input: unsigned[8] = 37;
+             let output: unsigned[8];
+             let dut: NestedUse = { .input = input, .output = output };
+             await 1fs;
+             assert!(output == 37,
+                     "nested type arguments survive entity specialization");
+         }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "nested-generic fixture failed to compile:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "nested-generic fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}

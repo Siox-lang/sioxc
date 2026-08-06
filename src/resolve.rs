@@ -792,6 +792,9 @@ impl<'a> Resolver<'a> {
                 GenericArg::Positional(value) | GenericArg::Named { value, .. } => {
                     self.resolve_expr(value);
                 }
+                GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                    self.resolve_type(ty);
+                }
             }
         }
         // The impl target necessarily mentions its parameters (`Owner<T>`);
@@ -1008,6 +1011,9 @@ impl<'a> Resolver<'a> {
                     match a {
                         GenericArg::Positional(e) => self.resolve_expr(e),
                         GenericArg::Named { value, .. } => self.resolve_expr(value),
+                        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                            self.resolve_type(ty)
+                        }
                     }
                 }
             }

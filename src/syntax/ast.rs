@@ -623,7 +623,18 @@ pub enum Type {
 #[derive(Clone, Debug)]
 pub enum GenericArg {
     Positional(Expr),
-    Named { name: Ident, value: Expr },
+    /// An unambiguously type-shaped nested application (`Box<T>` inside
+    /// `Outer<Box<T>>`). Bare names and indexed forms remain expressions until
+    /// their parameter kind disambiguates them in later stages.
+    PositionalType(Type),
+    Named {
+        name: Ident,
+        value: Expr,
+    },
+    NamedType {
+        name: Ident,
+        ty: Type,
+    },
 }
 
 /// Native scheduler scale for the std-defined physical suffixes:

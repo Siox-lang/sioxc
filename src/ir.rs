@@ -1760,6 +1760,7 @@ impl<'a> Lowering<'a> {
                         out.insert(p.name.text.clone(), v);
                     }
                 }
+                ast::GenericArg::PositionalType(_) | ast::GenericArg::NamedType { .. } => {}
             }
         }
         out
@@ -1788,10 +1789,22 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
+                ast::GenericArg::NamedType { name, ty } => {
+                    if type_params.iter().any(|p| p.name.text == name.text) {
+                        out.insert(name.text.clone(), ty.clone());
+                    }
+                }
                 ast::GenericArg::Positional(e) => {
                     if let (Some(p), Some(t)) = (decl.params.params.get(i), expr_to_type(e)) {
                         if p.bound.is_none() {
                             out.insert(p.name.text.clone(), t);
+                        }
+                    }
+                }
+                ast::GenericArg::PositionalType(ty) => {
+                    if let Some(p) = decl.params.params.get(i) {
+                        if p.bound.is_none() {
+                            out.insert(p.name.text.clone(), ty.clone());
                         }
                     }
                 }
@@ -3540,11 +3553,27 @@ impl<'a> Lowering<'a> {
                 let sname = type_head_name(base)?;
                 let s = self.structs.get(sname)?;
                 let mut subst: HashMap<String, ast::Type> = HashMap::new();
-                for (param, arg) in s.params.params.iter().zip(args) {
-                    if let ast::GenericArg::Positional(e) = arg {
-                        if let Some(t) = expr_to_type(e) {
-                            subst.insert(param.name.text.clone(), t);
-                        }
+                for (index, arg) in args.iter().enumerate() {
+                    let Some(ty) = (match arg {
+                        ast::GenericArg::Positional(e) => expr_to_type(e),
+                        ast::GenericArg::PositionalType(ty) => Some(ty.clone()),
+                        ast::GenericArg::Named { value, .. } => expr_to_type(value),
+                        ast::GenericArg::NamedType { ty, .. } => Some(ty.clone()),
+                    }) else {
+                        continue;
+                    };
+                    let parameter = match arg {
+                        ast::GenericArg::Named { name, .. }
+                        | ast::GenericArg::NamedType { name, .. } => name.text.clone(),
+                        _ => s
+                            .params
+                            .params
+                            .get(index)
+                            .map(|parameter| parameter.name.text.clone())
+                            .unwrap_or_default(),
+                    };
+                    if !parameter.is_empty() {
+                        subst.insert(parameter, ty);
                     }
                 }
                 let fields = self.raw_struct_fields(sname)?;
@@ -9606,7 +9635,34 @@ fn subst_type_params(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast:
         },
         ast::Type::Generic { base, args, span } => ast::Type::Generic {
             base: Box::new(subst_type_params(base, subst)),
-            args: args.clone(),
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    ast::GenericArg::Positional(ast::Expr::Path(path))
+                        if path.segments.len() == 1
+                            && subst.contains_key(&path.segments[0].text) =>
+                    {
+                        ast::GenericArg::PositionalType(subst[&path.segments[0].text].clone())
+                    }
+                    ast::GenericArg::Named {
+                        name,
+                        value: ast::Expr::Path(path),
+                    } if path.segments.len() == 1 && subst.contains_key(&path.segments[0].text) => {
+                        ast::GenericArg::NamedType {
+                            name: name.clone(),
+                            ty: subst[&path.segments[0].text].clone(),
+                        }
+                    }
+                    ast::GenericArg::PositionalType(ty) => {
+                        ast::GenericArg::PositionalType(subst_type_params(ty, subst))
+                    }
+                    ast::GenericArg::NamedType { name, ty } => ast::GenericArg::NamedType {
+                        name: name.clone(),
+                        ty: subst_type_params(ty, subst),
+                    },
+                    _ => arg.clone(),
+                })
+                .collect(),
             span: *span,
         },
         ast::Type::View { view, target, span } => ast::Type::View {
@@ -10044,9 +10100,16 @@ fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type {
                     ast::GenericArg::Positional(e) => {
                         ast::GenericArg::Positional(subst_expr(e, var, val))
                     }
+                    ast::GenericArg::PositionalType(ty) => {
+                        ast::GenericArg::PositionalType(subst_type(ty, var, val))
+                    }
                     ast::GenericArg::Named { name, value } => ast::GenericArg::Named {
                         name: name.clone(),
                         value: subst_expr(value, var, val),
+                    },
+                    ast::GenericArg::NamedType { name, ty } => ast::GenericArg::NamedType {
+                        name: name.clone(),
+                        ty: subst_type(ty, var, val),
                     },
                 })
                 .collect(),
@@ -11989,6 +12052,53 @@ mod tests {
             .signals
             .iter()
             .all(|signal| !signal.path.ends_with(".temporary")));
+        assert!(!design.to_ir_string().contains("Unknown"));
+    }
+
+    #[test]
+    fn nested_generic_type_arguments_preserve_recursive_layout() {
+        let design = lower_src(
+            "module m;\n\
+             struct Box<T> { value: T }\n\
+             struct Pair<T, U> { left: T, right: U }\n\
+             entity Pass<T> { input: T in, output: T out }\n\
+             impl<T> Pass<T> { output = input; }\n\
+             #[top] entity E {\n\
+                 nested: Box<Box<unsigned[8]>> in,\n\
+                 named: Pair<U = Box<unsigned[16]>, T = Box<Box<unsigned[8]>>> in,\n\
+                 y: unsigned[8] out,\n\
+             }\n\
+             impl E {\n\
+                 let passed: Box<Box<unsigned[8]>>;\n\
+                 let pass: Pass<Box<Box<unsigned[8]>>> = {\n\
+                     .input = nested, .output = passed,\n\
+                 };\n\
+                 y = passed.value.value;\n\
+             }\n",
+        );
+        let leaf = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(".nested.value.value"))
+            .expect("the nested generic field should flatten to one leaf");
+        assert_eq!(leaf.width, 8);
+        let named_left = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(".named.left.value.value"))
+            .expect("the named T argument should bind independently of order");
+        let named_right = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(".named.right.value"))
+            .expect("the named U argument should bind independently of order");
+        assert_eq!(named_left.width, 8);
+        assert_eq!(named_right.width, 16);
+        assert!(design.signals.iter().any(|signal| {
+            signal.path.contains(".pass.")
+                && signal.path.ends_with(".input.value.value")
+                && signal.width == 8
+        }));
         assert!(!design.to_ir_string().contains("Unknown"));
     }
 

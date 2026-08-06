@@ -83,7 +83,8 @@ precise reference.
 
 ### Types and generics
 
-- Generics with trait bounds and `where` clauses.
+- Generics with trait bounds, `where` clauses, and recursive type arguments
+  such as `Outer<Box<unsigned[8]>>`.
 - **One operator trait** — `impl Operator<"+", In, Out> for T`, with a single
   three-way `Operator<"<=>", T, Ordering>` deriving all six comparisons.
 - **Methods** — `recv.method(args)` on a value's inherent or trait impl
@@ -307,6 +308,21 @@ Counter<(W * 2)>        // valid
 Counter<W = (W + 1)>    // valid, named
 Counter<W * 2>          // invalid: `*` needs parentheses
 ```
+
+Type arguments may nest directly; no alias is required to disambiguate their
+closing brackets:
+
+```siox
+struct Box<T> { value: T }
+struct Pair<T, U> { left: T, right: U }
+
+using Nested = Box<Box<unsigned[8]>>;
+using Named = Pair<U = Box<unsigned[16]>, T = Box<Box<unsigned[8]>>>;
+```
+
+The parenthesis rule above applies to value expressions. A nested `<...>`
+application is type-shaped and is retained as a type argument through parsing,
+resolution, specialization, and layout.
 
 Recommended Phase 1 restriction: do not allow mixing named and positional parameters in the same specialization.
 

@@ -2030,8 +2030,15 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
                 let name = self.parse_ident();
                 self.bump(); // `=`
-                let value = self.parse_generic_value();
-                args.push(GenericArg::Named { name, value });
+                if self.generic_arg_starts_nested_type() {
+                    let ty = self.parse_type();
+                    args.push(GenericArg::NamedType { name, ty });
+                } else {
+                    let value = self.parse_generic_value();
+                    args.push(GenericArg::Named { name, value });
+                }
+            } else if self.generic_arg_starts_nested_type() {
+                args.push(GenericArg::PositionalType(self.parse_type()));
             } else {
                 args.push(GenericArg::Positional(self.parse_generic_value()));
             }
@@ -2042,6 +2049,22 @@ impl<'a> Parser<'a> {
         }
         self.close_generic("to close a generic argument list");
         args
+    }
+
+    /// A bare name can be either a value or a type parameter, but a path
+    /// immediately followed by its own `<...>` is unambiguously a nested type
+    /// application in a surrounding generic argument list.
+    fn generic_arg_starts_nested_type(&self) -> bool {
+        if !self.at(TokenKind::Ident) {
+            return false;
+        }
+        let mut position = self.pos + 1;
+        while self.kind_at(position) == &TokenKind::ColonColon
+            && self.kind_at(position + 1) == &TokenKind::Ident
+        {
+            position += 2;
+        }
+        self.kind_at(position) == &TokenKind::Lt
     }
 
     /// One generic argument value: a postfix expression, optionally extended

@@ -93,3 +93,20 @@ fn a_bound_closing_on_a_shift_token_still_parses() {
         "a bound ending in `>>` should parse, got {errors:?}"
     );
 }
+
+#[test]
+fn nested_generic_type_arguments_parse_without_aliases() {
+    let source = "module m;\n\
+                  using std::bits::{unsigned};\n\
+                  struct Box<T> { value: T }\n\
+                  struct Pair<T, U> { left: T, right: U }\n\
+                  struct Nested<T> {\n\
+                      direct: Box<Box<T>>,\n\
+                      named: Pair<T = Box<T>, U = Box<Box<unsigned[8]>>>,\n\
+                  }\n";
+    let errors = parse_errors(source);
+    assert!(
+        errors.is_empty(),
+        "nested generic types should parse directly, got {errors:?}"
+    );
+}

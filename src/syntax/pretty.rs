@@ -521,7 +521,9 @@ fn pattern(p: &Pattern) -> String {
 fn generic_arg(a: &GenericArg) -> String {
     match a {
         GenericArg::Positional(e) => expr(e),
+        GenericArg::PositionalType(ty) => type_str(ty),
         GenericArg::Named { name, value } => format!("{} = {}", name.text, expr(value)),
+        GenericArg::NamedType { name, ty } => format!("{} = {}", name.text, type_str(ty)),
     }
 }
 
@@ -782,6 +784,19 @@ mod tests {
     fn roundtrips_generic_fn() {
         roundtrip(
             "module m;\nfn maxi<T: Ord>(a: T, b: T) -> T {\n    if a > b {\n        return a;\n    }\n    return b;\n}\n",
+        );
+    }
+
+    #[test]
+    fn roundtrips_nested_generic_type_arguments() {
+        roundtrip(
+            "module m;\n\
+             struct Box<T> { value: T }\n\
+             struct Pair<T, U> { left: T, right: U }\n\
+             struct Nested<T> {\n\
+               direct: Box<Box<T>>,\n\
+               named: Pair<T = Box<T>, U = Box<Box<T>>>,\n\
+             }\n",
         );
     }
 

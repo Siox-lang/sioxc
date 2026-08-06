@@ -809,8 +809,9 @@ impl<'a> Elaborator<'a> {
             return;
         };
         for arg in args {
-            let GenericArg::Named { name, .. } = arg else {
-                continue;
+            let name = match arg {
+                GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => name,
+                _ => continue,
             };
             if !edecl.params.params.iter().any(|p| p.name.text == name.text) {
                 let known: Vec<&str> = edecl
@@ -1064,6 +1065,9 @@ fn eval_params(
     for (i, arg) in args.iter().enumerate() {
         match arg {
             GenericArg::Named { name, value } => out.push((name.text.clone(), eval(value, env))),
+            GenericArg::NamedType { name, .. } => {
+                out.push((name.text.clone(), ParamValue::Unknown));
+            }
             GenericArg::Positional(value) => {
                 let name = edecl
                     .params
@@ -1072,6 +1076,15 @@ fn eval_params(
                     .map(|p| p.name.text.clone())
                     .unwrap_or_else(|| format!("arg{i}"));
                 out.push((name, eval(value, env)));
+            }
+            GenericArg::PositionalType(_) => {
+                let name = edecl
+                    .params
+                    .params
+                    .get(i)
+                    .map(|p| p.name.text.clone())
+                    .unwrap_or_else(|| format!("arg{i}"));
+                out.push((name, ParamValue::Unknown));
             }
         }
     }
@@ -1218,8 +1231,12 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
                 .iter()
                 .map(|a| match a {
                     GenericArg::Positional(e) => render_index(e, env),
+                    GenericArg::PositionalType(ty) => render_concrete(ty, env),
                     GenericArg::Named { name, value } => {
                         format!("{} = {}", name.text, render_index(value, env))
+                    }
+                    GenericArg::NamedType { name, ty } => {
+                        format!("{} = {}", name.text, render_concrete(ty, env))
                     }
                 })
                 .collect::<Vec<_>>()

@@ -13,11 +13,10 @@ Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and co
 Bug-sweep stop point (2026-08-06): generated assignments are now linted after
 parameter specialization and loop unrolling, closing the known W-P014 gap. The
 highest-confidence remaining compiler gaps are recorded in their owning
-sections below: nested generic type arguments and partial instance-array facts
-under AST, plus the W-P001/E-P014 driver diagnostic split under IR. Testbench
-generate-loop lint parity also needs a policy decision: either normalize
-stimulus loops before W-P014 analysis or document that the warning applies only
-to hardware driver contexts.
+sections below: partial instance-array facts under AST, plus the W-P001/E-P014
+driver diagnostic split under IR. Testbench generate-loop lint parity also
+needs a policy decision: either normalize stimulus loops before W-P014 analysis
+or document that the warning applies only to hardware driver contexts.
 
 ## AST
 
@@ -26,9 +25,9 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, `src/elab.rs`.
 
 Current baseline:
 
-- ✅ Partial ranges, custom operators/indexing, applied views, generics,
-  visibility, persistent expression types, direction checks, and frontend
-  diagnostics are implemented.
+- ✅ Partial ranges, custom operators/indexing, applied views, nested generic
+  type arguments, visibility, persistent expression types, direction checks,
+  and frontend diagnostics are implemented.
 - ✅ Imports and qualified paths enforce `pub`; `pub using` aliases retain
   visibility.
 - ✅ Entity, struct, view, trait, and function generic parameters participate
@@ -36,10 +35,6 @@ Current baseline:
 
 Remaining:
 
-- 🟡 **Nested generic type arguments.** Nested bounds and return types parse,
-  but an inline argument such as `Box<Box<T>>` needs a typed
-  `GenericArg::Type` node and `<` expression/type disambiguation. A type alias
-  is the current workaround.
 - 🟡 **Partial instance-array diagnostics.** Conditionally elaborated arrays
   work, but reading an element that was not built reaches a downstream unknown
   rather than a direct “instance element was not elaborated” diagnostic. Carry

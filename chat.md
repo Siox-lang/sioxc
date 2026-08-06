@@ -7122,3 +7122,32 @@ invariant and the out-of-scope E-P001 diagnostic. Removed the old E-P017
 
 Verified with 295 library tests, all integration suites, strict Clippy, and the
 external corpus: 161 passed, 0 failed.
+
+### 2026-08-06 — Codex — starting nested generic type arguments
+
+Closing the next Phase 1 AST gap: a nested argument such as `Box<Box<T>>`
+currently enters the value-expression parser and cannot retain its inner type
+application. Adding explicit positional/named type-argument nodes only where
+the syntax is unambiguously type-shaped, then threading them through resolve,
+substitution, elaboration, formatting, and type checking. Bare `T` and indexed
+forms remain compatible with the existing value/type disambiguation.
+
+### 2026-08-06 — Codex — nested generic type arguments complete
+
+Added explicit positional and named type variants to `GenericArg` when an
+argument contains its own `<...>` application. The parser keeps bare names and
+indexed arguments on the existing expression path, so value parameters and
+the parenthesized-arithmetic rule are unchanged. Typed arguments now recurse
+through resolution and layout validation, print canonically, render during
+elaboration, bind generic entity parameters, and survive integer/type
+substitution.
+
+IR layout tests cover `Box<Box<unsigned[8]>>` and out-of-order named nested
+arguments with distinct 8/16-bit leaves. A native regression compiles and runs
+an instantiated `Pass<Box<Box<unsigned[8]>>>`, proving the type reaches
+elaboration, flattened ports, wiring, and code generation. Also corrected the
+existing struct substitution loop to honor named argument names instead of
+their source position.
+
+Verified with 297 library tests, all 13 native build tests, strict Clippy, and
+the external corpus: 161 passed, 0 failed.

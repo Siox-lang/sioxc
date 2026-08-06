@@ -1308,7 +1308,17 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Type::Generic { base, .. } => self.check_type_layout(base),
+            Type::Generic { base, args, .. } => {
+                self.check_type_layout(base);
+                for argument in args {
+                    match argument {
+                        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                            self.check_type_layout(ty);
+                        }
+                        GenericArg::Positional(_) | GenericArg::Named { .. } => {}
+                    }
+                }
+            }
             Type::View { target, .. } => self.check_type_layout(target),
         }
     }
