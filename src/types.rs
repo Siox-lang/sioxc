@@ -1646,6 +1646,19 @@ impl<'a> Checker<'a> {
         }
         let owner = &path.segments[path.segments.len() - 2].text;
         let name = &path.segments[path.segments.len() - 1].text;
+        if name == "new" && self.is_conversion_name(owner) {
+            if !args.is_empty() {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    format!(
+                        "`{owner}::new` takes no arguments, but {} were given",
+                        args.len()
+                    ),
+                );
+            }
+            return;
+        }
         let key = (owner.clone(), name.clone());
         if !self.methods.contains_key(&key) {
             return;
@@ -3223,10 +3236,19 @@ impl<'a> Checker<'a> {
     /// instead of a post-inline one.
     fn check_generic_bounds(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Expr::Path(p) = callee else { return };
-        if p.segments.len() != 1 {
+        let Some(name) = p.segments.last() else {
             return;
+        };
+        if p.segments.len() >= 2 {
+            let owner = &p.segments[p.segments.len() - 2].text;
+            if self
+                .methods
+                .contains_key(&(owner.clone(), name.text.clone()))
+            {
+                return;
+            }
         }
-        let Some((generics, params)) = self.generic_fns.get(&p.segments[0].text).cloned() else {
+        let Some((generics, params)) = self.generic_fns.get(&name.text).cloned() else {
             return;
         };
         for gp in &generics {
@@ -3353,7 +3375,11 @@ impl<'a> Checker<'a> {
         let width = match callee {
             Expr::Index { base, index, .. } => {
                 let head = match base.as_ref() {
-                    Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+                    Expr::Path(p) => p
+                        .segments
+                        .last()
+                        .map(|name| name.text.as_str())
+                        .unwrap_or(""),
                     _ => return,
                 };
                 if !self.vector_families.contains(head) {
@@ -3364,7 +3390,7 @@ impl<'a> Checker<'a> {
                     None => return,
                 }
             }
-            Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
+            Expr::Path(p) if p.segments.last().is_some_and(|name| name.text == "resize") => {
                 match args.get(1).and_then(signed_lit) {
                     Some(w) => w,
                     None => return,
@@ -3404,13 +3430,20 @@ impl<'a> Checker<'a> {
             return;
         }
         let is_conversion = match callee {
-            Expr::Path(path) if path.segments.len() == 1 => {
-                let name = &path.segments[0].text;
-                !self.fn_arity.contains_key(name) && self.is_conversion_name(name)
+            Expr::Path(path) => {
+                let Some(name) = path.segments.last().map(|segment| &segment.text) else {
+                    return;
+                };
+                let associated = path.segments.len() >= 2
+                    && self.methods.contains_key(&(
+                        path.segments[path.segments.len() - 2].text.clone(),
+                        name.clone(),
+                    ));
+                !associated && !self.fn_arity.contains_key(name) && self.is_conversion_name(name)
             }
             Expr::Index { base, .. } => {
-                matches!(base.as_ref(), Expr::Path(path) if path.segments.len() == 1
-                    && self.is_conversion_name(&path.segments[0].text))
+                matches!(base.as_ref(), Expr::Path(path) if path.segments.last()
+                    .is_some_and(|name| self.is_conversion_name(&name.text)))
             }
             _ => false,
         };
@@ -3536,9 +3569,19 @@ impl<'a> Checker<'a> {
     /// declaration here and are skipped.
     fn check_call_arity(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Expr::Path(p) = callee else { return };
-        let [name] = p.segments.as_slice() else {
+        let Some(name) = p.segments.last() else {
             return;
         };
+        if p.segments.len() >= 2 {
+            let owner = &p.segments[p.segments.len() - 2].text;
+            if self
+                .methods
+                .contains_key(&(owner.clone(), name.text.clone()))
+                || (name.text == "new" && self.is_conversion_name(owner))
+            {
+                return;
+            }
+        }
         let Some(&want) = self.fn_arity.get(&name.text) else {
             // No declaration here is normal for a conversion (`unsigned[8](x)`,
             // `Logic(b)`) and for the runtime-provided std functions, and a
@@ -3622,9 +3665,19 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) {
         let Expr::Path(path) = callee else { return };
-        let [name] = path.segments.as_slice() else {
+        let Some(name) = path.segments.last() else {
             return;
         };
+        if path.segments.len() >= 2 {
+            let owner = &path.segments[path.segments.len() - 2].text;
+            if self
+                .methods
+                .contains_key(&(owner.clone(), name.text.clone()))
+                || (name.text == "new" && self.is_conversion_name(owner))
+            {
+                return;
+            }
+        }
         let function = name.text.as_str();
         // A source declaration shadows a runtime primitive with the same
         // leaf name (`fn read<Bus>(bus)` is common in protocol traits).
@@ -5101,7 +5154,10 @@ impl<'a> Checker<'a> {
                     match self.methods.get(&(owner.clone(), name.clone())) {
                         Some(Some(ret)) => self.ast_ty(ret),
                         Some(None) => Ty::Void,
-                        None => Ty::Error,
+                        None if name == "new" && self.is_conversion_name(owner) => {
+                            self.ty_from_head(owner)
+                        }
+                        None => self.free_call_return_type(name, args, sym),
                     }
                 }
                 // A method call `recv.method(args)` types as the method's
@@ -6613,6 +6669,28 @@ mod tests {
     }
 
     #[test]
+    fn module_qualified_free_calls_keep_their_contracts() {
+        let errors = check_src(
+            "module m;\n\
+             fn take(value: integer) -> Logic { return 'X'; }\n\
+             fn same<T>(first: T, second: T) -> T { return first; }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let i: integer = 1;\n\
+               let r: real = 1.5;\n\
+               m::take(r);\n\
+               m::take();\n\
+               m::same(i, r);\n\
+               if m::take(i) { y = '1'; } else { y = '0'; }\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 4,
+            "qualification must not discard arity, generic, argument, or return facts"
+        );
+    }
+
+    #[test]
     fn value_returning_functions_return_on_every_path() {
         let missing = check_src(
             "module m;\n\
@@ -7663,6 +7741,11 @@ mod tests {
             "one conversion input"
         );
         assert_eq!(
+            check_src(&fixture("Phase::new(1)")),
+            1,
+            "associated default construction is nullary"
+        );
+        assert_eq!(
             check_src(&fixture("Child()")),
             1,
             "an entity is instantiated with a struct literal, not called as a value"
@@ -7772,6 +7855,11 @@ mod tests {
             check_src(&tb("let value: integer = uniform();")),
             1,
             "uniform returns real"
+        );
+        assert_eq!(
+            check_src(&tb("let value: integer = std::rand::uniform();")),
+            1,
+            "qualification keeps a runtime primitive's return contract"
         );
         assert_eq!(
             check_src(&tb("let value: integer = seed(1);")),

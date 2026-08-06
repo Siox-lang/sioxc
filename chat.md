@@ -6860,6 +6860,19 @@ default methods. The focused associated-function and trait-default native
 fixtures pass. `cargo fmt --all --check`, all 282 unit and integration tests,
 strict all-target/all-feature Clippy, and the full native corpus pass (161/161).
 
+### 2026-08-06 — Codex — qualified free-call contracts
+
+Module qualification (`module::function(...)`) discarded the same arity,
+argument, generic-unification, runtime-primitive, conversion-fit, and return
+facts enforced for a bare function name. Call classification now takes the
+path leaf for free/runtime functions while first excluding collected
+`Type::associated` calls. `Type::new()` remains the explicit nullary default
+constructor and now rejects arguments; qualified type conversions keep their
+constructor and constant-fit checks. The regression reproduced four silent
+errors on qualified concrete and generic calls, plus a qualified `uniform()`
+return mismatch. `cargo fmt --all --check`, all 283 unit and integration tests,
+strict all-target/all-feature Clippy, and the full native corpus pass (161/161).
+
 ### 2026-08-06 — Codex — complete free-call contracts
 
 Finished the adjacent call-signature audit after method validation. Matching-
