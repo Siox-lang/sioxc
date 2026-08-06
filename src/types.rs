@@ -155,7 +155,7 @@ enum AttrValueTy {
 }
 
 type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
-type GenericFnSignature = (Vec<Param>, Vec<(String, Type)>);
+type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 type MethodParams = Vec<Option<Type>>;
 type TraitDefaultSignature = (String, Option<Type>, MethodParams);
 type InheritedMethodSignature = (String, String, Option<Type>, MethodParams);
@@ -246,6 +246,10 @@ struct Checker<'a> {
     /// checked for count but never for type, so a value of the wrong type was
     /// reinterpreted bit-for-bit at the call.
     fn_param_types: HashMap<String, Vec<Option<Type>>>,
+    /// Free-function name -> its declared return type. A call expression used
+    /// to type as `Error` even for a known declaration, suppressing checks in
+    /// assignments, conditions, arguments, and enclosing expressions.
+    fn_return_types: HashMap<String, Option<Type>>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -340,6 +344,7 @@ impl<'a> Checker<'a> {
             generic_fns: HashMap::new(),
             fn_arity: HashMap::new(),
             fn_param_types: HashMap::new(),
+            fn_return_types: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -689,6 +694,16 @@ impl<'a> Checker<'a> {
                         f.name.text.clone(),
                         f.params.iter().filter(|p| !p.is_self).count(),
                     );
+                    self.fn_param_types.insert(
+                        f.name.text.clone(),
+                        f.params
+                            .iter()
+                            .filter(|p| !p.is_self)
+                            .map(|p| p.ty.clone())
+                            .collect(),
+                    );
+                    self.fn_return_types
+                        .insert(f.name.text.clone(), f.ret.clone());
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {
@@ -696,22 +711,14 @@ impl<'a> Checker<'a> {
                     f.name.text.clone(),
                     f.params.iter().filter(|p| !p.is_self).count(),
                 );
-                let vps = f
+                let params = f
                     .params
                     .iter()
                     .filter(|p| !p.is_self)
-                    .filter_map(|p| Some((p.name.as_ref()?.text.clone(), p.ty.clone()?)))
+                    .map(|p| p.ty.clone())
                     .collect();
                 self.generic_fns
-                    .insert(f.name.text.clone(), (f.generics.params.clone(), vps));
-            }
-            Item::Fn(f) => {
-                self.fn_arity.insert(
-                    f.name.text.clone(),
-                    f.params.iter().filter(|p| !p.is_self).count(),
-                );
-                // Generic functions are verified at each call, where the
-                // concrete types are known; only concrete ones are recorded.
+                    .insert(f.name.text.clone(), (f.generics.params.clone(), params));
                 self.fn_param_types.insert(
                     f.name.text.clone(),
                     f.params
@@ -720,6 +727,27 @@ impl<'a> Checker<'a> {
                         .map(|p| p.ty.clone())
                         .collect(),
                 );
+                self.fn_return_types
+                    .insert(f.name.text.clone(), f.ret.clone());
+            }
+            Item::Fn(f) => {
+                self.fn_arity.insert(
+                    f.name.text.clone(),
+                    f.params.iter().filter(|p| !p.is_self).count(),
+                );
+                // Concrete functions can validate every parameter directly;
+                // the generic arm above records the same shape and defers only
+                // type-parameter substitution to each call site.
+                self.fn_param_types.insert(
+                    f.name.text.clone(),
+                    f.params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .map(|p| p.ty.clone())
+                        .collect(),
+                );
+                self.fn_return_types
+                    .insert(f.name.text.clone(), f.ret.clone());
             }
             Item::Struct(st) => {
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
@@ -3115,30 +3143,74 @@ impl<'a> Checker<'a> {
             .is_some_and(|vars| vars.iter().any(|v| v.trim_matches('\'') == ch.to_string()))
     }
 
-    /// Enforce a generic fn's trait bounds at the call site (spec: generic
-    /// bounds). Each type parameter is inferred from the value argument whose
-    /// declared type names it; a bound `T: Tr` requires the inferred type to
-    /// satisfy `Tr`. Fns inline, so the call *is* the monomorphization —
-    /// checking here gives an early, clear error instead of a post-inline one.
+    /// Enforce a generic fn's type contracts at the call site (spec: generic
+    /// bounds). Each type parameter is inferred from value parameters whose
+    /// declared type names it. Repeated uses must agree, and a bound `T: Tr`
+    /// requires the inferred type to satisfy `Tr`. Fns inline, so the call
+    /// *is* the monomorphization — checking here gives an early, clear error
+    /// instead of a post-inline one.
     fn check_generic_bounds(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Expr::Path(p) = callee else { return };
         if p.segments.len() != 1 {
             return;
         }
-        let Some((generics, vparams)) = self.generic_fns.get(&p.segments[0].text).cloned() else {
+        let Some((generics, params)) = self.generic_fns.get(&p.segments[0].text).cloned() else {
             return;
         };
         for gp in &generics {
+            let occurrences: Vec<&Expr> = params
+                .iter()
+                .zip(args)
+                .filter_map(|(declared, argument)| {
+                    declared
+                        .as_ref()
+                        .filter(|ty| Self::is_direct_type_param(ty, &gp.name.text))
+                        .map(|_| argument)
+                })
+                .collect();
+
+            // Infer from the first non-literal value. Integer/character/bit
+            // literals are contextual and may adopt that inferred type.
+            let inferred_expr = occurrences
+                .iter()
+                .copied()
+                .find(|argument| !Self::is_contextual_literal(argument))
+                .or_else(|| occurrences.first().copied());
+            let inferred = inferred_expr.map(|argument| self.type_of(argument, sym));
+
+            if let Some(expected) = inferred.as_ref().filter(|ty| !matches!(ty, Ty::Error)) {
+                for argument in &occurrences {
+                    let actual = self.type_of(argument, sym);
+                    if matches!(actual, Ty::Error)
+                        || if Self::is_contextual_literal(argument) {
+                            self.assignable(expected, argument, sym)
+                        } else {
+                            &actual == expected
+                        }
+                    {
+                        continue;
+                    }
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        expr_span(argument),
+                        format!(
+                            "generic parameter `{}` was inferred as {}, but this argument is {}",
+                            gp.name.text,
+                            self.ty_display(expected),
+                            self.ty_display(&actual)
+                        ),
+                        format!(
+                            "pass one consistent type for every `{}` parameter, or convert this argument explicitly",
+                            gp.name.text
+                        ),
+                    );
+                }
+            }
+
             let Some(bound) = &gp.bound else { continue };
             let Some(trait_name) = type_head_name(bound) else {
                 continue;
             };
-            // Infer the type param from the first value param named after it.
-            let inferred = vparams
-                .iter()
-                .position(|(_, t)| type_head_name(t) == Some(&gp.name.text))
-                .and_then(|i| args.get(i))
-                .map(|a| self.type_of(a, sym));
             let Some(ty) = inferred else { continue };
             if !self.satisfies(&ty, trait_name) {
                 let name = self.ty_display(&ty);
@@ -3152,6 +3224,20 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+    }
+
+    fn is_direct_type_param(ty: &Type, name: &str) -> bool {
+        matches!(ty, Type::Path(path) if path.segments.len() == 1 && path.segments[0].text == name)
+    }
+
+    fn is_contextual_literal(expression: &Expr) -> bool {
+        matches!(
+            expression,
+            Expr::Int { text, .. } if !text.contains('.')
+        ) || matches!(
+            expression,
+            Expr::CharLit { .. } | Expr::BitStrLit { .. } | Expr::StrLit { .. }
+        )
     }
 
     /// Whether `ty` satisfies trait bound `trait_name`. A named struct/enum
@@ -3289,6 +3375,38 @@ impl<'a> Checker<'a> {
             } => format!("{}[{len}]", self.ty_display(elem)),
             _ => ty_name(t),
         }
+    }
+
+    /// Resolve a declared free-function return at its call site. Concrete
+    /// returns are direct; a bare generic return (`-> T`) takes the type
+    /// inferred from the corresponding value parameter.
+    fn free_call_return_type(&self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) -> Ty {
+        let Some(Some(declared)) = self.fn_return_types.get(name) else {
+            return Ty::Error;
+        };
+        if let Type::Path(path) = declared {
+            if path.segments.len() == 1 {
+                let parameter_name = &path.segments[0].text;
+                if let Some((generics, params)) = self.generic_fns.get(name) {
+                    let is_generic = generics
+                        .iter()
+                        .any(|parameter| parameter.name.text == *parameter_name);
+                    if is_generic {
+                        return params
+                            .iter()
+                            .zip(args)
+                            .find_map(|(parameter, argument)| {
+                                parameter
+                                    .as_ref()
+                                    .filter(|ty| Self::is_direct_type_param(ty, parameter_name))
+                                    .map(|_| self.type_of(argument, sym))
+                            })
+                            .unwrap_or(Ty::Error);
+                    }
+                }
+            }
+        }
+        self.ast_ty(declared)
     }
 
     /// A call to a *declared* function must pass one argument per parameter.
@@ -4676,7 +4794,7 @@ impl<'a> Checker<'a> {
                             len: w,
                         }
                     }
-                    _ => Ty::Error,
+                    name => self.free_call_return_type(name, args, sym),
                 },
                 // A method call `recv.method(args)` types as the method's
                 // declared return type (spec 3.20); the receiver's type head
@@ -7161,6 +7279,55 @@ mod tests {
             check_src(&format!("{base}unsigned[8](a); }}\n")),
             0,
             "conversion"
+        );
+    }
+
+    #[test]
+    fn extern_call_arguments_must_match_the_declaration() {
+        let src = "module m;\n\
+                   extern \"C\" { fn take_int(value: integer); }\n\
+                   entity E { y: Bit out }\n\
+                   impl E { let value: real = 1.5; take_int(value); y = '0'; }\n";
+        assert_eq!(
+            check_src(src),
+            1,
+            "an extern call must not reinterpret a real argument as an integer"
+        );
+    }
+
+    #[test]
+    fn generic_call_arguments_obey_concrete_and_repeated_types() {
+        let src = "module m;\n\
+                   fn select<T>(tag: integer, first: T, second: T) -> T { return first; }\n\
+                   entity E { y: Bit out }\n\
+                   impl E {\n\
+                     let i: integer = 1;\n\
+                     let r: real = 1.5;\n\
+                     select(r, i, i);\n\
+                     select(i, i, r);\n\
+                     y = '0';\n\
+                   }\n";
+        assert_eq!(
+            check_src(src),
+            2,
+            "generic calls keep concrete parameters and one consistent inferred T"
+        );
+    }
+
+    #[test]
+    fn free_function_return_types_propagate_to_the_call_site() {
+        let src = "module m;\n\
+                   fn logic_value() -> Logic { return 'X'; }\n\
+                   fn real_value() -> real { return 1.5; }\n\
+                   entity E { y: Logic out }\n\
+                   impl E {\n\
+                     let i: integer = real_value();\n\
+                     if logic_value() { y = '1'; } else { y = '0'; }\n\
+                   }\n";
+        assert_eq!(
+            check_src(src),
+            2,
+            "a call has its declaration's return type in every surrounding check"
         );
     }
 

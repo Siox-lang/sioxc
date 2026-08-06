@@ -6846,6 +6846,21 @@ reproduced the previous zero-diagnostic behavior. `cargo fmt --all --check`, all
 273 unit and integration tests, strict all-target/all-feature Clippy, and the
 full native corpus pass (161/161).
 
+### 2026-08-06 — Codex — complete free-call contracts
+
+Finished the adjacent call-signature audit after method validation. Matching-
+arity `extern "C"` calls had no parameter-type checking; generic functions
+discarded their concrete parameter contracts and allowed conflicting repeated
+`T` arguments; and all ordinary/extern free-function calls typed as `Error`,
+which suppressed return-type checks in assignments and conditions. The checker
+now retains parameters and returns for every declared free function, validates
+extern and generic arguments, unifies repeated direct type parameters while
+preserving contextual literals, and propagates concrete or inferred generic
+returns at the call site. The regressions first reproduced all three zero-
+diagnostic failures. `cargo fmt --all --check`, all 277 unit and integration
+tests, strict all-target/all-feature Clippy, and the full native corpus pass
+(161/161).
+
 ### 2026-08-06 — Codex — method argument contracts
 
 The free-function fix exposed that method calls use a wholly separate path:
