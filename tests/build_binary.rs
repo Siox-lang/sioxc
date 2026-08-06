@@ -755,11 +755,13 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
              signed_value: signed[8] in,
              real_value: real in,
              int_hit: Bit out,
+             descending_hit: Bit out,
              signed_hit: Bit out,
              real_hit: Bit out
          }
          impl NumericMatch {
              int_hit = match int_value { -4..-1 => '1', _ => '0' };
+             descending_hit = match int_value { -1..-4 => '1', _ => '0' };
              signed_hit = match signed_value { -4..-1 => '1', _ => '0' };
              real_hit = match real_value { -2..1 => '1', _ => '0' };
          }
@@ -769,6 +771,7 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
              let signed_value: signed[8] = -3;
              let real_value: real = -1.5;
              let int_hit: Bit;
+             let descending_hit: Bit;
              let signed_hit: Bit;
              let real_hit: Bit;
              let dut: NumericMatch = {
@@ -776,10 +779,12 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
                  .signed_value = signed_value,
                  .real_value = real_value,
                  .int_hit = int_hit,
+                 .descending_hit = descending_hit,
                  .signed_hit = signed_hit,
                  .real_hit = real_hit
              };
              let local_int_hit: Bit = match int_value { -4..-1 => '1', _ => '0' };
+             let local_descending_hit: Bit = match int_value { -1..-4 => '1', _ => '0' };
              let local_signed_hit: Bit = match signed_value { -4..-1 => '1', _ => '0' };
              let local_real_hit: Bit = match real_value { -2..1 => '1', _ => '0' };
              let wide_value: unsigned[128] = 1267650600228229401496703205376;
@@ -787,9 +792,11 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
              match wide_value { 0 => { wide_statement_hit = '0'; }, _ => {} }
              let wide_expression_hit: Bit = match wide_value { 0 => '0', _ => '1' };
              assert!(int_hit == '1', "hardware integer negative range");
+             assert!(descending_hit == '1', "hardware descending range");
              assert!(signed_hit == '1', "hardware signed negative range");
              assert!(real_hit == '1', "hardware real range");
              assert!(local_int_hit == '1', "testbench integer negative range");
+             assert!(local_descending_hit == '1', "testbench descending range");
              assert!(local_signed_hit == '1', "testbench signed negative range");
              assert!(local_real_hit == '1', "testbench real range");
              assert!(wide_statement_hit == '1', "wide statement scrutinee is not truncated");
@@ -799,6 +806,7 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
              real_value = 1.5;
              await 1fs;
              assert!(int_hit == '0', "hardware integer range miss");
+             assert!(descending_hit == '0', "hardware descending range miss");
              assert!(signed_hit == '0', "hardware signed range miss");
              assert!(real_hit == '0', "hardware real range miss");
          }"#,

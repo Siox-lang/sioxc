@@ -5556,6 +5556,7 @@ impl Ctx<'_> {
                 Some(format!("({})", parts.join(" || ")))
             }
             ast::Pattern::Range { lo, hi, .. } => {
+                let (low, high) = if lo <= hi { (*lo, *hi) } else { (*hi, *lo) };
                 let comparison = |operator: &str, value: i64| {
                     let (lhs, rhs) = if self.is_real_operand(scrutinee) {
                         (
@@ -5580,13 +5581,13 @@ impl Ctx<'_> {
                     };
                     format!("(({lhs}) {operator} ({rhs}))")
                 };
-                if lo == hi {
-                    Some(comparison("==", *lo))
+                if low == high {
+                    Some(comparison("==", low))
                 } else {
                     Some(format!(
                         "({} && {})",
-                        comparison(">=", *lo),
-                        comparison("<=", *hi)
+                        comparison(">=", low),
+                        comparison("<=", high)
                     ))
                 }
             }

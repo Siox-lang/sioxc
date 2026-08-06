@@ -4263,6 +4263,7 @@ impl<'a> Lowering<'a> {
             // signed-vector `<=>` implementation, kernel-integer signedness,
             // and real coercion all remain identical to expression syntax.
             ast::Pattern::Range { lo, hi, span } => {
+                let (low, high) = if lo <= hi { (*lo, *hi) } else { (*hi, *lo) };
                 let compare = |op: ast::BinOp, value: i64| {
                     let magnitude = ast::Expr::Int {
                         text: value.unsigned_abs().to_string(),
@@ -4289,11 +4290,11 @@ impl<'a> Lowering<'a> {
                         self.declares_kernel_integer(scrutinee),
                     )
                 };
-                if lo == hi {
-                    Some(compare(ast::BinOp::Eq, *lo))
+                if low == high {
+                    Some(compare(ast::BinOp::Eq, low))
                 } else {
-                    let ge = compare(ast::BinOp::Ge, *lo);
-                    let le = compare(ast::BinOp::Le, *hi);
+                    let ge = compare(ast::BinOp::Ge, low);
+                    let le = compare(ast::BinOp::Le, high);
                     Some(and(Some(ge), le))
                 }
             }

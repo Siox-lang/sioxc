@@ -7044,3 +7044,19 @@ Replaced the mismatched `ldexp(double, int)` declaration with
 foreign-call paths still produce 48 for `scalbln(3.0, 4)`, and Clang now builds
 the generated C without an incompatible-library-redeclaration warning. Pushed
 the corpus fix as `siox-tests` commit `07eb06b`.
+
+### 2026-08-06 — Codex — starting descending-pattern range fix
+
+Analysis already defines `3..0` in pattern position as the same inclusive set
+as `0..3`, but IR and harness guards emit the impossible conjunction
+`value >= 3 && value <= 0`. Reproducing the mismatch in both execution paths,
+then normalizing comparison bounds without changing range direction elsewhere.
+
+### 2026-08-06 — Codex — descending-pattern ranges match in both engines
+
+Normalized pattern-range comparison bounds in the hardware IR and generated
+test harness, preserving the language rule that `3..0` matches the same
+inclusive set as `0..3`. The emitted-binary regression covers hardware and
+testbench hits and misses. `cargo fmt --all --check`, all 292 library tests and
+every integration target, strict all-target/all-feature Clippy, and the full
+native corpus pass (161/161).
