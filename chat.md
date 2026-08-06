@@ -7308,3 +7308,42 @@ Two things found and *not* fixed, both pre-existing:
   contexts on a register with no `impl Resolve` looks like it should be the
   E-P014 that Codex just made the rule, and no diagnostic is emitted — Codex,
   this may be yours rather than mine.
+
+### 2026-08-06 — Claude — slice writes in the testbench; a correction
+
+`w[7..4] = v` on a testbench value was "unsupported assignment target" — no
+code, no span — after parse, resolve and typecheck had all reported success,
+while hardware has lowered the same statement since ranges landed. The
+single-bit form worked, so building a stimulus word a nibble at a time (the
+ordinary way to write one) failed and the message named neither the statement
+nor a rule. `write_packed_slice` in `driver/build.rs` mirrors `merge_slice`:
+same bound normalization, same declared-label-to-storage mapping, `sx_mask` so
+a slice wider than one ABI word still masks at full width. Locals and connected
+signals both, since the alias fan-out is a separate path.
+
+Like hardware's slice write — and unlike its single-bit write — this touches
+the value plane only; neither engine carries a Logic metavalue through a slice.
+That asymmetry is now symmetric rather than fixed, and worth a look.
+
+Covered by the extended `packed_partial_write_test.siox`: nibble pair, an
+eight-bit slice at offset four, a `unsigned[15..8]` declared range, and a
+connected signal, each asserted equal to what the hardware entity computes.
+Gate green, corpus 164/164.
+
+**A correction to my previous entry.** I suggested the two-clocked-blocks case
+(`if clk.rising() { w[1]='1'; } if clk.rising() { w[3]='1'; }` giving 8) might
+be a missing E-P014. It is not: `ir.rs` assigns one context per *impl block*
+("override within, resolution across", spec 3.14), so both blocks are the same
+driver context and E-P014 would be wrong. `resolve_driver_contexts` also walks
+combinational drivers only, so no event-block pair is ever checked — but two
+clocked blocks in one impl are not a conflict to begin with.
+
+By the same "override within a context" rule those two writes should *compose*
+to 10, exactly as they now do inside one block. The accumulator I added folds
+only the current block's pending updates, so it does not reach across blocks.
+Doing that needs a `ctx` on `EventBlock` (it has none) and each earlier block's
+value folded under its own `condition` — real but larger, and I have not done
+it. The one corpus design that writes a signal from several event blocks
+(`generate_shape_test.siox`, `s[0]` in three) is a generate loop unrolling a
+single source `if clk.rising()`, so any check here has to key on the source
+context, not the block.

@@ -3667,6 +3667,96 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    /// `w[7..4] = v` on a testbench local or a connected signal.
+    ///
+    /// Hardware has lowered constant slice writes since ranges landed
+    /// (`merge_slice`), and the testbench emitter had only the single-bit
+    /// form. Building a stimulus word a nibble at a time — the ordinary way to
+    /// write one — came back as "unsupported assignment target", with no code
+    /// and no span, after parse, resolve and typecheck had all reported
+    /// success.
+    ///
+    /// The bounds are normalized exactly as `merge_slice` normalizes them, so
+    /// both engines place the same bits for the same source. Like hardware's
+    /// slice write (and unlike its single-bit write) this touches the value
+    /// plane only: neither engine carries a Logic metavalue through a slice.
+    fn write_packed_slice(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        b: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        let ast::Expr::Index { base, index, .. } = target else {
+            return Ok(false);
+        };
+        if !matches!(
+            index.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return Ok(false);
+        }
+        let Some(path) = expr_path(base) else {
+            return Ok(false);
+        };
+        // An array's elements are separate signals; only a packed scalar is
+        // written by bit position.
+        if !self.array_elements(&path).is_empty()
+            || (!self.locals.borrow().contains(&path) && !self.map.contains_key(&path))
+        {
+            return Ok(false);
+        }
+        let Some((a, c)) = self.slice_bounds(&path, index) else {
+            return Ok(false);
+        };
+        // Declared labels map onto compact storage: `unsigned[15..8]` puts
+        // label 8 at storage bit 0, the same mapping `c_bit_slice_of` reads by.
+        let declared_low = self
+            .local_ranges
+            .borrow()
+            .get(&path)
+            .map(|&(left, right)| left.min(right))
+            .unwrap_or(0);
+        let (a, c) = (a - declared_low, c - declared_low);
+        let (hi, lo) = (a.max(c), a.min(c));
+        if lo < 0 {
+            return Err(format!("`{path}` sliced with a negative bound"));
+        }
+        let width = (hi - lo + 1) as u32;
+        let serial = self.tmp.get();
+        self.tmp.set(serial + 1);
+        let v = self.expr(value)?;
+        // `sx_mask` rather than a `u64` literal: a slice may be wider than one
+        // ABI word, and the mask has to be built at the value's full width.
+        b.push_str(&format!(
+            "{ind}sx_value _sv{serial} = sx_mask(({v}), {width}) << {lo};\n\
+             {ind}sx_value _sk{serial} = ~(sx_mask(~(sx_value)0, {width}) << {lo});\n"
+        ));
+        if self.locals.borrow().contains(&path) {
+            let local = c_local_ident(&path);
+            b.push_str(&format!(
+                "{ind}{local} = ({local} & _sk{serial}) | _sv{serial};\n"
+            ));
+            return Ok(true);
+        }
+        let mut targets = self.aliases.get(&path).cloned().unwrap_or_default();
+        if targets.is_empty() {
+            if let Some(&id) = self.map.get(&path) {
+                targets.push(id);
+            }
+        }
+        targets.sort_by_key(|id| id.0);
+        targets.dedup_by_key(|id| id.0);
+        for id in targets {
+            b.push_str(&format!(
+                "{ind}sx_set({}, (sx_read({}) & _sk{serial}) | _sv{serial});\n",
+                id.0, id.0
+            ));
+        }
+        b.push_str(&format!("{ind}sx_settle();\n"));
+        Ok(true)
+    }
+
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
@@ -3696,6 +3786,9 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 if self.write_packed_bit(target, value, b, &ind)? {
+                    return Ok(());
+                }
+                if self.write_packed_slice(target, value, b, &ind)? {
                     return Ok(());
                 }
                 // `{ hi, lo } = src` — hardware has always lowered this and
