@@ -4091,7 +4091,8 @@ impl<'a> Lowering<'a> {
                 }
                 let mut remaining = cond;
                 for arm in &m.arms {
-                    let mc = self.arm_match_cond(&arm.pattern, &scrut);
+                    let mc =
+                        self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, &HashMap::new());
                     // A wildcard arm is the match's default branch: its direct
                     // assignments cover "everything else", so those targets are
                     // not latches even though the lowered driver is conditional.
@@ -4162,7 +4163,7 @@ impl<'a> Lowering<'a> {
                 .map(|v| self.lower_expr(v))
                 .unwrap_or(Expr::Unknown);
             let last = i + 1 == arms.len();
-            match self.arm_match_cond(&arm.pattern, &scrut) {
+            match self.arm_match_cond(&arm.pattern, scrutinee, &scrut, &HashMap::new()) {
                 None => result = Some(val), // wildcard: the default branch
                 Some(_) if exhaustive && last => result = Some(val),
                 Some(cond) => {
@@ -4196,7 +4197,7 @@ impl<'a> Lowering<'a> {
                 .map(|v| self.lower_val_env(v, env))
                 .unwrap_or(Val::Scalar(Expr::Unknown));
             let last = i + 1 == arms.len();
-            match self.arm_match_cond(&arm.pattern, &scrut) {
+            match self.arm_match_cond(&arm.pattern, scrutinee, &scrut, env) {
                 None => result = Some(val),
                 Some(_) if exhaustive && last => result = Some(val),
                 Some(cond) => {
@@ -4208,7 +4209,13 @@ impl<'a> Lowering<'a> {
         result.unwrap_or(Val::Scalar(Expr::Unknown))
     }
 
-    fn arm_match_cond(&self, pattern: &ast::Pattern, scrut: &Expr) -> Option<Expr> {
+    fn arm_match_cond(
+        &self,
+        pattern: &ast::Pattern,
+        scrutinee: &ast::Expr,
+        scrut: &Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
                 let disc = self
@@ -4235,7 +4242,7 @@ impl<'a> Lowering<'a> {
             ast::Pattern::Or { alts, .. } => {
                 let mut acc: Option<Expr> = None;
                 for a in alts {
-                    match self.arm_match_cond(a, scrut) {
+                    match self.arm_match_cond(a, scrutinee, scrut, env) {
                         None => return None,
                         Some(c) => {
                             acc = Some(match acc {
@@ -4252,21 +4259,41 @@ impl<'a> Lowering<'a> {
                 acc
             }
             // An integer literal or inclusive range: `scrut == lo`, or
-            // `lo <= scrut <= hi`.
-            ast::Pattern::Range { lo, hi, .. } => {
+            // `lo <= scrut <= hi`. Reuse ordinary comparison selection so a
+            // signed-vector `<=>` implementation, kernel-integer signedness,
+            // and real coercion all remain identical to expression syntax.
+            ast::Pattern::Range { lo, hi, span } => {
+                let compare = |op: ast::BinOp, value: i64| {
+                    let magnitude = ast::Expr::Int {
+                        text: value.unsigned_abs().to_string(),
+                        span: *span,
+                    };
+                    let rhs = if value < 0 {
+                        ast::Expr::Unary {
+                            op: ast::UnOp::Neg,
+                            rhs: Box::new(magnitude),
+                            span: *span,
+                        }
+                    } else {
+                        magnitude
+                    };
+                    let spelling = crate::syntax::pretty::bin_op(&op);
+                    if let Some(derived) = self.inline_cmp(spelling, scrutinee, &rhs, env) {
+                        return derived;
+                    }
+                    self.make_binary(
+                        op,
+                        scrut.clone(),
+                        self.lower_scalar_env(&rhs, env),
+                        self.binary_uses_kernel_integer(scrutinee, &rhs),
+                        self.declares_kernel_integer(scrutinee),
+                    )
+                };
                 if lo == hi {
-                    Some(eq(scrut.clone(), Expr::Const(*lo as u64)))
+                    Some(compare(ast::BinOp::Eq, *lo))
                 } else {
-                    let ge = Expr::Binary {
-                        op: BinOp::Ge,
-                        lhs: Box::new(scrut.clone()),
-                        rhs: Box::new(Expr::Const(*lo as u64)),
-                    };
-                    let le = Expr::Binary {
-                        op: BinOp::Le,
-                        lhs: Box::new(scrut.clone()),
-                        rhs: Box::new(Expr::Const(*hi as u64)),
-                    };
+                    let ge = compare(ast::BinOp::Ge, *lo);
+                    let le = compare(ast::BinOp::Le, *hi);
                     Some(and(Some(ge), le))
                 }
             }
@@ -4400,7 +4427,12 @@ impl<'a> Lowering<'a> {
                     let scrut = self.lower_expr(&m.scrutinee);
                     let mut remaining = cond.clone();
                     for arm in &m.arms {
-                        let mc = self.arm_match_cond(&arm.pattern, &scrut);
+                        let mc = self.arm_match_cond(
+                            &arm.pattern,
+                            &m.scrutinee,
+                            &scrut,
+                            &HashMap::new(),
+                        );
                         let fire = match &mc {
                             Some(c) => Some(and(remaining.clone(), c.clone())),
                             None => remaining.clone(),
@@ -5696,6 +5728,11 @@ impl<'a> Lowering<'a> {
         }
         match e {
             Expr::Const(v) => Expr::Real(v as f64),
+            Expr::Unary { op: UnOp::Neg, rhs } => Expr::Binary {
+                op: BinOp::FSub,
+                lhs: Box::new(Expr::Real(0.0)),
+                rhs: Box::new(self.coerce_real(*rhs)),
+            },
             Expr::Select { cond, then, els } => Expr::Select {
                 cond,
                 then: Box::new(self.coerce_real(*then)),
@@ -6904,14 +6941,19 @@ impl<'a> Lowering<'a> {
                         // through to the statements after the match.
                         None => after.clone()?,
                     };
-                    acc = Some(match (self.arm_match_cond(&arm.pattern, &scrut), acc) {
-                        // A wildcard covers everything that follows it.
-                        (None, _) => value,
-                        // Nothing follows: an exhaustive match ends here, so
-                        // this arm is the fallback.
-                        (Some(_), None) => value,
-                        (Some(cond), Some(otherwise)) => select_val(cond, value, otherwise),
-                    });
+                    acc = Some(
+                        match (
+                            self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, env),
+                            acc,
+                        ) {
+                            // A wildcard covers everything that follows it.
+                            (None, _) => value,
+                            // Nothing follows: an exhaustive match ends here, so
+                            // this arm is the fallback.
+                            (Some(_), None) => value,
+                            (Some(cond), Some(otherwise)) => select_val(cond, value, otherwise),
+                        },
+                    );
                 }
                 acc
             }

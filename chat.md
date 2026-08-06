@@ -7001,3 +7001,30 @@ target without becoming a wildcard. Added positive and negative regressions
 and documented each contract. `cargo fmt --all --check`, all 292 library tests
 and every integration target, strict all-target/all-feature Clippy, and the
 full native corpus pass (161/161).
+
+### 2026-08-06 — Codex — starting numeric-match lowering audit
+
+Auditing `src/ir.rs` and the generated native harness after finding that match
+range guards always use unsigned integer comparisons. Reproducing negative
+kernel/signed ranges and real scrutinees in an emitted executable before
+changing both lowering paths.
+
+### 2026-08-06 — Codex — documenting numeric-match domains
+
+The execution regression also reproduced truncation of wide statement-match
+scrutinees in the generated harness. Updating `docs/language.md` to state that
+numeric patterns retain the scrutinee's unsigned, signed, integer, or real
+comparison domain while fixing both native paths.
+
+### 2026-08-06 — Codex — preserve numeric match domains
+
+Fixed three executable miscompilations in match guards. Hardware range
+patterns now reuse ordinary comparison lowering, so kernel integers remain
+signed, vector families retain their `<=>` semantics, and real endpoints are
+coerced to floating point (including negative literals). Generated test
+harnesses make the same domain choice and store statement scrutinees in
+`sx_value`, preventing values wider than 64 bits from being truncated before
+matching. One emitted-binary regression exercises hits and misses for integer,
+`signed[8]`, real, and 128-bit values in hardware and testbench paths. `cargo
+fmt --all --check`, all 292 library tests and every integration target, strict
+all-target/all-feature Clippy, and the full native corpus pass (161/161).

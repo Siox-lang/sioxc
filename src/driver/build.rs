@@ -3866,10 +3866,10 @@ impl Ctx<'_> {
                 let scrut = self.expr(&m.scrutinee)?;
                 let k = self.tmp.get();
                 self.tmp.set(k + 1);
-                b.push_str(&format!("{ind}{{ uint64_t _m{k} = {scrut};\n"));
+                b.push_str(&format!("{ind}{{ sx_value _m{k} = {scrut};\n"));
                 let mut first = true;
                 for arm in &m.arms {
-                    let cond = self.pattern_cond(&arm.pattern, &format!("_m{k}"))?;
+                    let cond = self.pattern_cond(&arm.pattern, &m.scrutinee, &format!("_m{k}"))?;
                     let kw = if first { "if" } else { "else if" };
                     match cond {
                         Some(c) => b.push_str(&format!("{ind}{kw} {} {{\n", c_condition(&c))),
@@ -5469,15 +5469,17 @@ impl Ctx<'_> {
                             None => return Err("a match arm yields no value".into()),
                         },
                     };
-                    acc = Some(match (self.pattern_cond(&arm.pattern, &scrut)?, acc) {
-                        // A wildcard covers everything after it.
-                        (None, _) => value,
-                        // Nothing follows: an exhaustive match ends here.
-                        (Some(_), None) => value,
-                        (Some(cond), Some(otherwise)) => {
-                            format!("(({cond}) ? {value} : {otherwise})")
-                        }
-                    });
+                    acc = Some(
+                        match (self.pattern_cond(&arm.pattern, &m.scrutinee, &scrut)?, acc) {
+                            // A wildcard covers everything after it.
+                            (None, _) => value,
+                            // Nothing follows: an exhaustive match ends here.
+                            (Some(_), None) => value,
+                            (Some(cond), Some(otherwise)) => {
+                                format!("(({cond}) ? {value} : {otherwise})")
+                            }
+                        },
+                    );
                 }
                 acc.ok_or_else(|| "a match with no arms yields no value".to_string())
             }
@@ -5517,7 +5519,12 @@ impl Ctx<'_> {
     /// The C condition for a match pattern over `scrut` (a C expression), or
     /// `None` for a wildcard/always-match (spec 3.22). Or-patterns `||` their
     /// alternatives' conditions.
-    fn pattern_cond(&self, pattern: &ast::Pattern, scrut: &str) -> Result<Option<String>, String> {
+    fn pattern_cond(
+        &self,
+        pattern: &ast::Pattern,
+        scrutinee: &ast::Expr,
+        scrut: &str,
+    ) -> Result<Option<String>, String> {
         Ok(match pattern {
             ast::Pattern::Wildcard => None,
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
@@ -5541,20 +5548,48 @@ impl Ctx<'_> {
             ast::Pattern::Or { alts, .. } => {
                 let mut parts = Vec::new();
                 for a in alts {
-                    match self.pattern_cond(a, scrut)? {
+                    match self.pattern_cond(a, scrutinee, scrut)? {
                         None => return Ok(None),
                         Some(c) => parts.push(c),
                     }
                 }
                 Some(format!("({})", parts.join(" || ")))
             }
-            ast::Pattern::Range { lo, hi, .. } if lo == hi => {
-                Some(format!("(({scrut}) == {}ULL)", *lo as u64))
+            ast::Pattern::Range { lo, hi, .. } => {
+                let comparison = |operator: &str, value: i64| {
+                    let (lhs, rhs) = if self.is_real_operand(scrutinee) {
+                        (
+                            format!("sx_f64((uint64_t)({scrut}))"),
+                            format!("((double){:e})", value as f64),
+                        )
+                    } else if let Some(width) = self.signed_vector_width(scrutinee) {
+                        (
+                            format!("sx_i64(({scrut}), {width})"),
+                            format!("((int64_t){}ULL)", value as u64),
+                        )
+                    } else if self.is_integer_operand(scrutinee) {
+                        (
+                            self.c_integer_operand(scrutinee, scrut),
+                            format!("((int64_t){}ULL)", value as u64),
+                        )
+                    } else {
+                        (
+                            format!("({scrut})"),
+                            format!("((sx_value){}ULL)", value as u64),
+                        )
+                    };
+                    format!("(({lhs}) {operator} ({rhs}))")
+                };
+                if lo == hi {
+                    Some(comparison("==", *lo))
+                } else {
+                    Some(format!(
+                        "({} && {})",
+                        comparison(">=", *lo),
+                        comparison("<=", *hi)
+                    ))
+                }
             }
-            ast::Pattern::Range { lo, hi, .. } => Some(format!(
-                "((({scrut}) >= {}ULL) && (({scrut}) <= {}ULL))",
-                *lo as u64, *hi as u64
-            )),
             // A character literal names a variant of a char-valued enum, the
             // same discriminant a `== '0'` comparison uses here.
             ast::Pattern::CharLit { ch, .. } => Some(format!(
@@ -5600,7 +5635,7 @@ impl Ctx<'_> {
                         Some(v) => self.expr(v)?,
                         None => "0".to_string(),
                     };
-                    match self.pattern_cond(&arm.pattern, &scrut)? {
+                    match self.pattern_cond(&arm.pattern, scrutinee, &scrut)? {
                         None => out = format!("({val})"), // wildcard: the default
                         Some(cond) => out = format!("({cond} ? ({val}) : {out})"),
                     }

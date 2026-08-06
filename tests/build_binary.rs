@@ -735,3 +735,99 @@ fn native_string_reassignment_rejects_storage_length_mismatch() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(output);
 }
+
+#[test]
+fn numeric_match_ranges_preserve_signed_and_real_domains() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let stem = format!("siox_numeric_match_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        r#"module numeric_match;
+         using std::bits::signed;
+         using std::bits::unsigned;
+         entity NumericMatch {
+             int_value: integer in,
+             signed_value: signed[8] in,
+             real_value: real in,
+             int_hit: Bit out,
+             signed_hit: Bit out,
+             real_hit: Bit out
+         }
+         impl NumericMatch {
+             int_hit = match int_value { -4..-1 => '1', _ => '0' };
+             signed_hit = match signed_value { -4..-1 => '1', _ => '0' };
+             real_hit = match real_value { -2..1 => '1', _ => '0' };
+         }
+         #[test] entity NumericMatchTest {}
+         impl NumericMatchTest {
+             let int_value: integer = -2;
+             let signed_value: signed[8] = -3;
+             let real_value: real = -1.5;
+             let int_hit: Bit;
+             let signed_hit: Bit;
+             let real_hit: Bit;
+             let dut: NumericMatch = {
+                 .int_value = int_value,
+                 .signed_value = signed_value,
+                 .real_value = real_value,
+                 .int_hit = int_hit,
+                 .signed_hit = signed_hit,
+                 .real_hit = real_hit
+             };
+             let local_int_hit: Bit = match int_value { -4..-1 => '1', _ => '0' };
+             let local_signed_hit: Bit = match signed_value { -4..-1 => '1', _ => '0' };
+             let local_real_hit: Bit = match real_value { -2..1 => '1', _ => '0' };
+             let wide_value: unsigned[128] = 1267650600228229401496703205376;
+             let wide_statement_hit: Bit = '1';
+             match wide_value { 0 => { wide_statement_hit = '0'; }, _ => {} }
+             let wide_expression_hit: Bit = match wide_value { 0 => '0', _ => '1' };
+             assert!(int_hit == '1', "hardware integer negative range");
+             assert!(signed_hit == '1', "hardware signed negative range");
+             assert!(real_hit == '1', "hardware real range");
+             assert!(local_int_hit == '1', "testbench integer negative range");
+             assert!(local_signed_hit == '1', "testbench signed negative range");
+             assert!(local_real_hit == '1', "testbench real range");
+             assert!(wide_statement_hit == '1', "wide statement scrutinee is not truncated");
+             assert!(wide_expression_hit == '1', "wide expression scrutinee is not truncated");
+             int_value = 2;
+             signed_value = 3;
+             real_value = 1.5;
+             await 1fs;
+             assert!(int_hit == '0', "hardware integer range miss");
+             assert!(signed_hit == '0', "hardware signed range miss");
+             assert!(real_hit == '0', "hardware real range miss");
+         }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "numeric-match fixture failed to compile:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success(),
+        "numeric-match fixture failed:\n{stdout}{stderr}"
+    );
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}

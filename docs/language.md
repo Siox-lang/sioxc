@@ -1383,6 +1383,11 @@ equally named variant), integer/range patterns require a numeric scrutinee, and
 bit patterns require a packed vector. Alternatives joined with `|` obey the
 same rule independently.
 
+Numeric literal and range patterns compare in the scrutinee's own domain:
+unsigned vectors remain unsigned, `signed` vectors and kernel `integer` use
+signed ordering, and integer endpoints are promoted when matching a `real`.
+The scrutinee is evaluated once and retains its complete width.
+
 ---
 
 ### 3.23 Arrays and ranges
