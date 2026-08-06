@@ -336,6 +336,13 @@ pub fn lower_in(
                 });
         }
     }
+    // Hierarchy owns the authoritative result of generate elaboration. Keep
+    // its per-parent instance-array facts keyed by the same dotted paths IR
+    // uses while recursively lowering bodies.
+    for &root in &hier.roots {
+        let path = hier.instance(root).entity.clone();
+        l.collect_instance_array_facts(hier, root, &path);
+    }
     // Lower only the top-level designs — the `#[top]`/`#[test]` roots. Their
     // sub-instances (and a testbench's DUTs) are lowered recursively from there,
     // each per-instance, so no entity is lowered standalone by type.
@@ -353,6 +360,7 @@ pub fn lower_in(
     l.report_bad_operators();
     l.report_bad_conversions();
     l.report_unresolved_names();
+    l.report_unelaborated_instance_uses();
     l.report_unsupported_exprs();
     l.lint_possible_latches();
     l.resolve_driver_contexts();
@@ -449,6 +457,15 @@ struct Lowering<'a> {
     /// (`m[i][j]`) is the usual one. Recorded here with the source spelling,
     /// which the IR no longer has by the time validation sees an `Unknown`.
     unsupported_exprs: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Concrete instance-array shapes from hierarchy elaboration, keyed by
+    /// the owning instance's dotted IR path.
+    instance_array_facts: HashMap<String, Vec<crate::elab::InstanceArrayFact>>,
+    /// Dotted path of the body currently being lowered.
+    cur_instance_path: String,
+    /// Reads of declared slots omitted by the active generate conditions.
+    /// Expression lowering is intentionally `&self`, so these are collected
+    /// through interior mutability and emitted after the design is lowered.
+    unelaborated_instance_uses: std::cell::RefCell<Vec<UnelaboratedInstanceUse>>,
     /// The receiver signal bound to `self` while inlining a method body, so a
     /// `self'event`/`self'old` sysattr in the body resolves to the receiver's
     /// signal (the `ClockLike` edge methods are defined this way in std).
@@ -586,6 +603,22 @@ struct BlockLocal {
     ty: ast::Type,
 }
 
+#[derive(Clone, Debug)]
+struct UnelaboratedInstanceUse {
+    slot: String,
+    parent_path: String,
+    use_span: crate::diag::Span,
+    declaration_span: crate::diag::Span,
+}
+
+impl UnelaboratedInstanceUse {
+    fn slot_root(&self) -> &str {
+        self.slot
+            .split_once('[')
+            .map_or(self.slot.as_str(), |(root, _)| root)
+    }
+}
+
 /// `cond ? then : els` over values; struct values select per field.
 fn select_val(cond: Expr, then: Val, els: Val) -> Val {
     match (then, els) {
@@ -618,6 +651,27 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
 }
 
 impl<'a> Lowering<'a> {
+    fn collect_instance_array_facts(
+        &mut self,
+        hierarchy: &Hierarchy,
+        id: crate::elab::InstanceId,
+        path: &str,
+    ) {
+        let instance = hierarchy.instance(id);
+        if !instance.instance_arrays.is_empty() {
+            self.instance_array_facts
+                .insert(path.to_string(), instance.instance_arrays.clone());
+        }
+        for &child in &instance.children {
+            let child_instance = hierarchy.instance(child);
+            self.collect_instance_array_facts(
+                hierarchy,
+                child,
+                &format!("{path}.{}", child_instance.name),
+            );
+        }
+    }
+
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Lowering {
             sink,
@@ -648,6 +702,9 @@ impl<'a> Lowering<'a> {
             unresolved_names: std::cell::RefCell::new(Vec::new()),
             block_scopes: std::cell::RefCell::new(Vec::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
+            instance_array_facts: HashMap::new(),
+            cur_instance_path: String::new(),
+            unelaborated_instance_uses: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
             param_integers: std::cell::RefCell::new(HashSet::new()),
@@ -1110,6 +1167,7 @@ impl<'a> Lowering<'a> {
         };
 
         // Save the caller's scope; give this body a fresh one.
+        let saved_instance_path = std::mem::replace(&mut self.cur_instance_path, path.to_string());
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_enum = std::mem::take(&mut self.local_enum);
         let saved_struct = std::mem::take(&mut self.local_struct);
@@ -1117,6 +1175,7 @@ impl<'a> Lowering<'a> {
         let saved_char = std::mem::take(&mut self.local_char);
         let saved_array = std::mem::take(&mut self.local_array);
         let saved_numeric = std::mem::take(&mut self.local_numeric);
+        let saved_instance_arrays = std::mem::take(&mut self.instance_arrays);
         // A Rust-style binder may rename: `impl<M: integer> Counter<M>` calls
         // the entity's first parameter `M` inside its own body. Every lookup
         // below — signal widths as much as expressions — goes through `env`,
@@ -1394,9 +1453,9 @@ impl<'a> Lowering<'a> {
                     // An instance array (`let stage: Inc[N]`, Inc an entity) is
                     // built element-wise, not driven — never a signal to check.
                     let is_instance_array =
-                        l.ty.as_ref()
-                            .and_then(type_head_name)
-                            .is_some_and(|h| self.entities.contains_key(h));
+                        l.ty.as_ref().and_then(type_head_name).is_some_and(|h| {
+                            self.entities.contains_key(h) && !self.cur_type_env.contains_key(h)
+                        });
                     if is_instance_array {
                         self.instance_arrays.insert(l.name.text.clone());
                     }
@@ -1715,10 +1774,12 @@ impl<'a> Lowering<'a> {
         self.local_char = saved_char;
         self.local_array = saved_array;
         self.local_numeric = saved_numeric;
+        self.instance_arrays = saved_instance_arrays;
         self.cur_env = saved_env;
         self.cur_type_env = saved_type_env;
         self.consts = saved_consts;
         self.const_values = saved_const_values;
+        self.cur_instance_path = saved_instance_path;
         ports
     }
 
@@ -2017,6 +2078,99 @@ impl<'a> Lowering<'a> {
                     ),
             );
         }
+    }
+
+    /// Report a reference to an in-range instance-array slot that concrete
+    /// generate elaboration omitted. This is distinct from an out-of-bounds
+    /// index: the slot belongs to the declaration, but no child instance (and
+    /// therefore no port signals) exists for this parameter set.
+    fn report_unelaborated_instance_uses(&mut self) {
+        let mut uses = std::mem::take(&mut *self.unelaborated_instance_uses.borrow_mut());
+        uses.sort_by_key(|use_| {
+            (
+                use_.use_span.file.0,
+                use_.use_span.start,
+                use_.slot.clone(),
+                use_.parent_path.clone(),
+            )
+        });
+        uses.dedup_by(|left, right| {
+            left.use_span == right.use_span
+                && left.slot == right.slot
+                && left.parent_path == right.parent_path
+        });
+        for use_ in uses {
+            self.sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "instance `{}` was not elaborated in `{}`",
+                    use_.slot, use_.parent_path
+                ))
+                .with_code(crate::diag::codes::INSTANCE_NOT_ELABORATED)
+                .at(use_.use_span)
+                .label(
+                    use_.declaration_span,
+                    format!("instance array `{}` declared here", use_.slot_root()),
+                )
+                .help(
+                    "this slot was omitted by the active generate conditions; \
+                     guard the reference with the same condition, or construct \
+                     the slot for this parameter set",
+                ),
+            );
+        }
+    }
+
+    /// Record `e` when its flattened path begins with a declared-but-unbuilt
+    /// instance slot in the body currently being lowered.
+    fn record_unelaborated_instance_use(&self, e: &ast::Expr) -> bool {
+        let Some(path) = self.folded_elem_path(e).or_else(|| expr_path(e)) else {
+            return false;
+        };
+        let Some(facts) = self.instance_array_facts.get(&self.cur_instance_path) else {
+            return false;
+        };
+        for fact in facts {
+            for &index in &fact.declared {
+                if fact.built.contains(&index) {
+                    continue;
+                }
+                let slot = format!("{}[{index}]", fact.name);
+                if path == slot
+                    || path
+                        .strip_prefix(&slot)
+                        .is_some_and(|rest| rest.starts_with('.'))
+                {
+                    self.unelaborated_instance_uses
+                        .borrow_mut()
+                        .push(UnelaboratedInstanceUse {
+                            slot,
+                            parent_path: self.cur_instance_path.clone(),
+                            use_span: ast::expr_span(e),
+                            declaration_span: fact.span,
+                        });
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// A generic entity analysed without a concrete parameter set may not yet
+    /// know either its instance-array bounds or which generate branches build
+    /// its slots. Do not turn that uncertainty into E-P017; concrete
+    /// instantiations carry a hierarchy fact and are handled above.
+    fn is_unresolved_instance_array_reference(&self, e: &ast::Expr) -> bool {
+        let Some(path) = self.folded_elem_path(e).or_else(|| expr_path(e)) else {
+            return false;
+        };
+        let Some((root, _)) = path.split_once('[') else {
+            return false;
+        };
+        self.instance_arrays.contains(root)
+            && !self
+                .instance_array_facts
+                .get(&self.cur_instance_path)
+                .is_some_and(|facts| facts.iter().any(|fact| fact.name == root))
     }
 
     /// An assignment whose left side lowering cannot place. Two different
@@ -4598,6 +4752,9 @@ impl<'a> Lowering<'a> {
                         });
                         off -= w;
                     }
+                } else if self.record_unelaborated_instance_use(target) {
+                    // The concrete child does not exist, so there is no port
+                    // signal to drive. The queued E-P022 names the real cause.
                 } else {
                     self.report_bad_assign_target(target);
                 }
@@ -4995,6 +5152,9 @@ impl<'a> Lowering<'a> {
                             });
                             off -= w;
                         }
+                    } else if self.record_unelaborated_instance_use(target) {
+                        // As above, suppress the generic assign-target error;
+                        // E-P022 identifies the absent concrete child.
                     } else {
                         self.report_bad_assign_target(target);
                     }
@@ -5621,6 +5781,12 @@ impl<'a> Lowering<'a> {
                     if let Some(v) = self.lower_custom_index(base, index) {
                         return v;
                     }
+                }
+                if self.record_unelaborated_instance_use(e) {
+                    return Expr::Unknown;
+                }
+                if self.is_unresolved_instance_array_reference(e) {
+                    return Expr::Unknown;
                 }
                 // No signal, no mux tree, no `Index` impl. Record the shape
                 // while the source is still in hand: from the IR this was an

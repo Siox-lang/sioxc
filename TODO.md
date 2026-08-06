@@ -10,13 +10,14 @@ the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
 
-Bug-sweep stop point (2026-08-06): generated assignments are now linted after
-parameter specialization and loop unrolling, closing the known W-P014 gap. The
-highest-confidence remaining compiler gaps are recorded in their owning
-sections below: partial instance-array facts under AST, plus the W-P001/E-P014
-driver diagnostic split under IR. Testbench generate-loop lint parity also
-needs a policy decision: either normalize stimulus loops before W-P014 analysis
-or document that the warning applies only to hardware driver contexts.
+Bug-sweep status (2026-08-06): generated assignments are linted after parameter
+specialization and loop unrolling, scoped hardware locals lower completely,
+nested generic types survive the full pipeline, and concrete instance-array
+build facts now reach IR diagnostics. The highest-confidence remaining compiler
+gap is the W-P001/E-P014 driver diagnostic split under IR. Testbench
+generate-loop lint parity also needs a policy decision: either normalize
+stimulus loops before W-P014 analysis or document that the warning applies only
+to hardware driver contexts.
 
 ## AST
 
@@ -32,13 +33,11 @@ Current baseline:
   visibility.
 - ✅ Entity, struct, view, trait, and function generic parameters participate
   in unused-parameter analysis, including uses in a separate `impl`.
+- ✅ `Hierarchy` retains each concrete instance array's declared and generated
+  slots, in declaration order and with the declaration span.
 
 Remaining:
 
-- 🟡 **Partial instance-array diagnostics.** Conditionally elaborated arrays
-  work, but reading an element that was not built reaches a downstream unknown
-  rather than a direct “instance element was not elaborated” diagnostic. Carry
-  declared/built slot metadata in `Hierarchy`.
 - 🔴 **Comment-preserving formatting.** The canonical printer intentionally
   declines LSP formatting when comments are present because comment trivia is
   not attached to AST nodes. Preserve trivia and anchor comments before
@@ -67,6 +66,9 @@ Current baseline:
 - ✅ Scoped hardware block locals lower to storage-free expressions with
   immediate reassignment, lexical shadowing, conditional selection, aggregate
   fields/elements, packed slices, and event-block next-state separation.
+- ✅ Reads and writes through an in-range but conditionally unbuilt instance
+  slot produce E-P022 at the reference, label the array declaration, and do not
+  misdiagnose unreferenced slots or unresolved generic specializations.
 
 Remaining:
 
@@ -82,10 +84,6 @@ Remaining:
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
   detection.
-- 🟡 **Instance-array build facts.** See the AST item above: carry declared
-  bounds and built slots into lowering so an unbuilt read has a precise source
-  diagnostic.
-
 ## LLVM
 
 Owns native lowering, state layout, optimization, and the word ABI. Code:

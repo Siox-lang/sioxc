@@ -7151,3 +7151,27 @@ their source position.
 
 Verified with 297 library tests, all 13 native build tests, strict Clippy, and
 the external corpus: 161 passed, 0 failed.
+
+### 2026-08-06 — Codex — starting conditional instance-slot diagnostics
+
+Closing the remaining Phase 1 hierarchy-fact gap: a declared instance-array
+element omitted by a constant generate branch currently turns a read such as
+`stage[1].y` into an anonymous unsupported expression. Carrying each concrete
+parent instance's declared indices and actually elaborated child slots through
+`Hierarchy`, then diagnosing the exact source read without flagging legal
+partially built arrays whose missing slots are never referenced.
+
+### 2026-08-06 — Codex — conditional instance slots diagnosed precisely
+
+`Hierarchy` now retains every concrete entity-array declaration's ordered
+indices, generated slots, and declaration span. IR keys those facts by the
+actual parent instance path: reads or port writes through a declared-but-absent
+slot emit E-P022 at the reference, label the declaration, and suppress the old
+anonymous E-P017/assign-target cascade. Unused missing slots remain legal;
+unbound generic entities stay undecided until specialization; descending ranges
+and type parameters that merely share an entity name are covered. The old
+instance-array marker is now lexical rather than leaking across entity bodies.
+
+Verified with 298 library tests, every integration suite including all 13
+native build tests, strict all-target/all-feature Clippy, a directly built and
+run `generate_if_test`, and the external corpus: 161 passed, 0 failed.

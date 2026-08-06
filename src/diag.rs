@@ -262,6 +262,10 @@ pub mod codes {
     /// signal cannot be folded and was dropped, leaving the signal at its
     /// type's default with no word said.
     pub const NON_CONSTANT_INITIALIZER: &str = "E-P021";
+    /// An in-range element of an instance array was omitted by concrete
+    /// generate elaboration, but its ports are referenced as though the child
+    /// existed. This differs from E-P003: the index is inside the declaration.
+    pub const INSTANCE_NOT_ELABORATED: &str = "E-P022";
 
     // Warnings
     pub const MULTIPLE_DRIVERS: &str = "W-P001";

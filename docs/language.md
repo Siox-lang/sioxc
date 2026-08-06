@@ -41,7 +41,10 @@ precise reference.
   iterations. `for i in 0..(N - 1)` with `N = 0` is therefore `0..-1` — two
   iterations counting down, not none. An index that lands outside the array it
   subscripts is `E-P003`, whether it was written as a literal or arrived by
-  unrolling or parameter substitution.
+  unrolling or parameter substitution. A slot may be inside a declared entity
+  array yet omitted by a generate condition; referencing one of its ports is
+  `E-P022` (“instance was not elaborated”), while leaving that slot unused is
+  legal.
 - **Where an entity may be instantiated.** Only at the root layer of another
   entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
   a signal), not in a `match` arm, not in a function. Those are `E-P020`.

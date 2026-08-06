@@ -90,6 +90,22 @@ pub struct Connection {
     pub span: Span,
 }
 
+/// Concrete elaboration facts for one instance-array declaration in a parent
+/// instance. An array may be only partially populated by generate conditions;
+/// retaining both sets lets later stages distinguish an intentionally absent
+/// slot from an ordinary unresolved signal path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstanceArrayFact {
+    /// The local declaration name (`stage` in `let stage: Cell[N]`).
+    pub name: String,
+    /// Ordered indices implied by the declaration after parameter evaluation.
+    pub declared: Vec<i64>,
+    /// Declared indices whose construction sites survived generate elaboration.
+    pub built: Vec<i64>,
+    /// The array declaration, used as a related diagnostic location.
+    pub span: Span,
+}
+
 /// One node in the elaborated instance tree.
 #[derive(Clone, Debug)]
 pub struct Instance {
@@ -105,6 +121,8 @@ pub struct Instance {
     /// How this instance's ports connect to the parent's signals (empty for a
     /// root, which has no parent).
     pub connections: Vec<Connection>,
+    /// Declared versus built slots for entity arrays owned by this instance.
+    pub instance_arrays: Vec<InstanceArrayFact>,
     pub children: Vec<InstanceId>,
     pub is_extern: bool,
 }
@@ -335,6 +353,7 @@ impl<'a> Elaborator<'a> {
                 entity: entity_name.to_string(),
                 params,
                 connections,
+                instance_arrays: Vec::new(),
                 children: Vec::new(),
                 is_extern: true,
             });
@@ -347,6 +366,7 @@ impl<'a> Elaborator<'a> {
             .unwrap_or(true);
         let env = self.with_impl_binders(entity_name, param_env(&params));
         let specs = self.gather_instances(entity_name, is_extern, &env);
+        let instance_arrays = self.instance_array_facts(entity_name, &env, &specs);
         // This instance's own signals (ports + impl lets), for width-checking the
         // connections of the children it instantiates.
         let parent_signals = self.entity_signals(entity_name, &env);
@@ -404,6 +424,7 @@ impl<'a> Elaborator<'a> {
             entity: entity_name.to_string(),
             params,
             connections,
+            instance_arrays,
             children,
             is_extern,
         })
@@ -487,6 +508,84 @@ impl<'a> Elaborator<'a> {
             }
         }
         specs
+    }
+
+    /// Retain the shape of every entity array in this concrete parent and the
+    /// slots that generate elaboration actually constructed. Unresolved
+    /// generic bounds yield no fact: without a concrete shape, reporting a
+    /// missing slot would be a false positive.
+    fn instance_array_facts(
+        &self,
+        entity_name: &str,
+        env: &HashMap<String, i64>,
+        specs: &[InstanceSpec<'a>],
+    ) -> Vec<InstanceArrayFact> {
+        let mut out = Vec::new();
+        let Some(impls) = self.impls.get(entity_name) else {
+            return out;
+        };
+        let type_params: HashSet<&str> = self
+            .entities
+            .get(entity_name)
+            .into_iter()
+            .flat_map(|entity| &entity.params.params)
+            .filter(|parameter| parameter.bound.is_none())
+            .map(|parameter| parameter.name.text.as_str())
+            .collect();
+        for im in impls {
+            for item in &im.items {
+                let ImplItem::Let(l) = item else {
+                    continue;
+                };
+                let Some(Type::Indexed {
+                    base,
+                    index: Some(index),
+                    ..
+                }) = l.ty.as_ref()
+                else {
+                    continue;
+                };
+                if !type_head_name(base).is_some_and(|name| {
+                    self.entities.contains_key(name) && !type_params.contains(name)
+                }) {
+                    continue;
+                }
+                let declared = match index.as_ref() {
+                    Expr::Range { lo, hi, .. } => {
+                        let (ParamValue::Int(left), ParamValue::Int(right)) =
+                            (eval(lo, env), eval(hi, env))
+                        else {
+                            continue;
+                        };
+                        loop_range(left, right)
+                    }
+                    width => {
+                        let ParamValue::Int(width) = eval(width, env) else {
+                            continue;
+                        };
+                        if width < 0 {
+                            continue;
+                        }
+                        (0..width).collect()
+                    }
+                };
+                let built = declared
+                    .iter()
+                    .copied()
+                    .filter(|index| {
+                        let slot = format!("{}[{index}]", l.name.text);
+                        specs.iter().any(|spec| spec.name == slot)
+                    })
+                    .collect();
+                out.push(InstanceArrayFact {
+                    name: l.name.text.clone(),
+                    declared,
+                    built,
+                    span: l.span,
+                });
+            }
+        }
+        out
     }
 
     /// An instance `let`, in either form, as `(instance type, connections,
@@ -1608,6 +1707,34 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_retains_declared_and_conditionally_built_instance_slots() {
+        let src = "module m;\n\
+            entity Cell { y: Bit out }\n\
+            impl Cell { y = '1'; }\n\
+            entity Chain<N: integer> { y: Bit out }\n\
+            impl<N: integer> Chain<N> {\n\
+              let stage: Cell[3..1];\n\
+              for i in 3..1 { if i > N { stage[i] = Cell {}; } }\n\
+              y = stage[3].y;\n\
+            }\n\
+            #[top] entity Top { y: Bit out }\n\
+            impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
+        let (hier, errors) = elaborate_src(src);
+        assert_eq!(errors, 0);
+        let top = hier.instance(hier.roots[0]);
+        let chain = hier.instance(top.children[0]);
+        assert_eq!(
+            chain.instance_arrays,
+            vec![InstanceArrayFact {
+                name: "stage".into(),
+                declared: vec![3, 2, 1],
+                built: vec![3, 2],
+                span: chain.instance_arrays[0].span,
+            }]
+        );
+    }
+
+    #[test]
     fn unconnected_input_warns_not_errors() {
         // A sub-instance with a forgotten `in` connection holds its default
         // value (§3.29) — a warning (W-P012), not an error.
@@ -1652,8 +1779,10 @@ mod tests {
             entity Buf<T> { a: T in, y: T out }\n\
             impl Buf<T> {\n\
               let s: T;\n\
+              let values: T[2];\n\
               s = a;\n\
-              y = s;\n\
+              values[0] = s;\n\
+              y = values[0];\n\
             }\n\
             #[top]\n\
             entity T {}\n\
@@ -1671,7 +1800,11 @@ mod tests {
         assert_eq!(dut.entity, "Buf");
         assert!(
             dut.children.is_empty(),
-            "`let s: T` must be a signal, not an instance"
+            "`let s: T` and `let values: T[2]` must be data, not instances"
+        );
+        assert!(
+            dut.instance_arrays.is_empty(),
+            "an array of the type parameter must not become an entity-array fact"
         );
     }
 

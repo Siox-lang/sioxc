@@ -199,6 +199,102 @@ fn an_instance_array_that_over_runs_is_named_as_instances() {
 }
 
 #[test]
+fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Inc { y: unsigned[8] out }\n\
+               impl Inc { y = 1; }\n\
+               entity Chain<N: integer> { y: unsigned[8] out }\n\
+               impl<N: integer> Chain<N> {\n\
+                   let stage: Inc[2];\n\
+                   for i in 0..1 {\n\
+                       if i < N { stage[i] = Inc {}; }\n\
+                   }\n\
+                   y = stage[1].y;\n\
+               }\n\
+               #[top] entity Top { y: unsigned[8] out }\n\
+               impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
+    let out = diagnostics("unbuilt_instance_slot", src);
+    assert!(
+        out.contains("instance `stage[1]` was not elaborated"),
+        "an in-range but unbuilt instance slot should be named directly, got:\n{out}"
+    );
+    assert!(out.contains("E-P022"), "the diagnostic needs a stable code");
+    assert!(
+        out.contains("instance array `stage` declared here"),
+        "the array declaration should be a related source location, got:\n{out}"
+    );
+    assert!(
+        !out.contains("`stage[1].y` has no hardware form"),
+        "the generic unsupported-expression diagnostic should be suppressed, got:\n{out}"
+    );
+}
+
+#[test]
+fn an_unreferenced_unbuilt_instance_array_slot_is_legal() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Inc { y: unsigned[8] out }\n\
+               impl Inc { y = 1; }\n\
+               #[top] entity Top { y: unsigned[8] out }\n\
+               impl Top {\n\
+                   let stage: Inc[2];\n\
+                   for i in 0..1 {\n\
+                       if i == 0 { stage[i] = Inc {}; }\n\
+                   }\n\
+                   y = stage[0].y;\n\
+               }\n";
+    let out = diagnostics("unused_unbuilt_instance_slot", src);
+    assert!(
+        !out.contains("was not elaborated") && !out.contains("has no hardware form"),
+        "an omitted slot is legal when it is not referenced, got:\n{out}"
+    );
+}
+
+#[test]
+fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Cell { a: unsigned[8] in, y: unsigned[8] out }\n\
+               impl Cell { y = a; }\n\
+               #[top] entity Top { a: unsigned[8] in, y: unsigned[8] out }\n\
+               impl Top {\n\
+                   let stage: Cell[2];\n\
+                   if 1 == 1 { stage[0] = Cell {}; }\n\
+                   stage[1].a = a;\n\
+                   y = stage[0].y;\n\
+               }\n";
+    let out = diagnostics("drive_unbuilt_instance_slot", src);
+    assert!(
+        out.contains("instance `stage[1]` was not elaborated"),
+        "driving a port of an absent child should name that child, got:\n{out}"
+    );
+    assert!(
+        !out.contains("cannot be assigned to") && !out.contains("cannot assign to"),
+        "the generic assignment-target diagnostic should be suppressed, got:\n{out}"
+    );
+}
+
+#[test]
+fn an_unbound_generic_instance_array_does_not_invent_a_missing_slot() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Cell { y: unsigned[8] out }\n\
+               impl Cell { y = 1; }\n\
+               entity LibraryChain<N: integer> { y: unsigned[8] out }\n\
+               impl<N: integer> LibraryChain<N> {\n\
+                   let stage: Cell[N];\n\
+                   for i in 0..(N - 1) { stage[i] = Cell {}; }\n\
+                   y = stage[0].y;\n\
+               }\n";
+    let out = diagnostics("generic_instance_slot_unknown", src);
+    assert!(
+        !out.contains("was not elaborated") && !out.contains("has no hardware form"),
+        "an uninstantiated generic has no concrete slot facts yet, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_statically_dead_branch_is_not_bounds_checked() {
     // The ordinary shape for a generated chain: the first stage takes the
     // input and every later one takes its predecessor. At `i = 0` the `else`

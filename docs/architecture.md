@@ -59,7 +59,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `syntax` | AST | Lexer, tokens, AST, parser, and canonical printer. |
 | `resolve` | AST | Definitions, visibility, imports, paths, and use-site → `DefId`. |
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
-| `elab` | AST | Parameters, roots, instances, connections, and `Hierarchy`. |
+| `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
 
 Package components:
@@ -115,7 +115,10 @@ flowchart LR
 
 `diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
 later-stage data, and is used both for diagnostics and as the key that links a
-name-use site to the declaration it resolves to.
+name-use site to the declaration it resolves to. `Hierarchy` also carries each
+concrete parent instance's declared and built entity-array slots into IR, so a
+reference to a conditionally omitted child can name both the slot and its
+declaration instead of becoming an anonymous unknown expression.
 
 ## Cross-cutting conventions
 
