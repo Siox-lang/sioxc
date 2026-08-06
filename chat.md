@@ -7417,3 +7417,53 @@ unconditional) while the companion metavalue update still uses
 `$meta` is internal and draws no latch warning — so I have not touched IR for
 every Logic packed write without a reason. Worth folding in next time that code
 is opened.
+
+### 2026-08-06 — Claude — a named struct literal is not a sub-instance
+
+Swept the `types.rs` work rather than the IR work this time. The new decimal
+rule holds up: a decimal literal is refused as an `unsigned`/`signed`
+initializer, an array index, a range bound, a slice bound, a vector element and
+a bit index, while an integer literal still widens to `real` and an explicit
+conversion still passes. Mixed integer/real arithmetic agrees with the
+arithmetic and between the two engines, in both operand orders and through
+truncation of negatives. Call contracts hold for inherent methods, inherited
+trait defaults, arguments, and a generic function with a repeated `T` including
+its return feeding a comparison.
+
+What that sweep did turn up is in `ir`, not `types`. `instance_let_parts`
+classified `let p: Pair = Pair { .a = 1 }` as a sub-instance declaration: the
+branch for a *named* construction returned early without checking that the name
+belongs to an entity, though every other branch checks exactly that. So no field
+signals were created and reading `p.a` gave
+
+    error[E-P017]: `p.a` has no hardware form
+
+— a message about runtime indices, on a source with no index in it. The same
+literal written `{ .a = 1 }` worked, so the two spellings of one value
+disagreed and the failing one is the explicit one. Fixed by requiring the
+constructed head to be an entity, which is what the branch always meant.
+Regression `named_struct_literal_test.siox` covers the named literal, a named
+spread, a nested named literal, and — as controls — entity instantiation in all
+three spellings, since that classification exists for entities. Gate green,
+corpus 165/165.
+
+**Found and not fixed, and it is the worse of the two.** A struct-typed `let`
+whose initializer is a *call* is silently discarded:
+
+    let p: Pair = make(6);   // every field reads 0, no diagnostic
+    let p: Pair; p = make(6);  // correct
+
+The scalar path folds a call initializer (`let a: unsigned[8] = double(6)` is
+6*2) and reports E-P021 when it cannot fold one. The struct path does neither,
+because that whole block is guarded by `self.locals.get(&l.name.text)` and a
+struct local has no signal under its bare name — only `p.a`, `p.b`. So it falls
+through in silence.
+
+E-P021 would be the wrong answer on its own: `make(6)` *is* constant, and the
+scalar spelling of the same thing folds. The consistent fix is to fold it —
+take the callee's sole `return <Construct>`, substitute the arguments with
+`subst_expr_paths`, and hand the result to `seed_struct_literal`, which already
+does the seeding. `free_fns` holds the declarations; associated functions
+(`Pair::make`) are in a different map and would need the same treatment. I have
+not done it. Note `Pair::new()` and `Pair()` must keep working — their all-zero
+result is the correct structural default, not a symptom.

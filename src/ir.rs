@@ -10288,13 +10288,22 @@ fn instance_let_parts(
     l: &ast::LetDecl,
     entities: &HashMap<String, &ast::EntityDecl>,
 ) -> Option<(ast::Type, Vec<ast::ConnectArg>)> {
+    // A *named* construction is a sub-instance only when the name is an
+    // entity's. Every other branch below checks that; this one did not, so
+    // `let p: Pair = Pair { .a = 1 }` — naming the struct, the way one
+    // ordinarily writes a struct literal — was filed as an instance. No field
+    // signals were ever created, and reading `p.a` came back as E-P017 "has no
+    // hardware form", which describes a runtime-index problem the source does
+    // not have. The same literal written `{ .a = 1 }` worked.
     if let Some(ast::Expr::Construct {
         ty: Some(cty),
         args,
         ..
     }) = &l.value
     {
-        return Some((cty.clone(), args.clone()));
+        if type_head_name(cty).is_some_and(|n| entities.contains_key(n)) {
+            return Some((cty.clone(), args.clone()));
+        }
     }
     let ann = l.ty.as_ref()?;
     // An entity *array* (`let stage: Inc[N]`) is built element-wise, not a
