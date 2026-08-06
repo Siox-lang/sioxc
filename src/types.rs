@@ -4294,21 +4294,12 @@ impl<'a> Checker<'a> {
     /// A constant initializer must lie inside a value-range-constrained
     /// numeric type (`let b: integer<0..255> = 300;` is an error). Literal
     /// bounds only; named ranges and dynamic values are runtime checks later.
-    /// The declared bounds of a ranged numeric (`integer<left..right>`), resolving
-    /// one alias hop (`using Byte = integer<0..255>`). `None` for every other
-    /// type.
+    /// The declared bounds of a ranged numeric (`integer<left..right>`),
+    /// resolving any alias chain (`using Byte = integer<0..255>; using Octet =
+    /// Byte`). `None` for every other type.
     fn declared_range(&self, decl_ty: &Type) -> Option<(i64, i64)> {
-        let resolved;
-        let t = match decl_ty {
-            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
-                Some(a) => {
-                    resolved = a.clone();
-                    &resolved
-                }
-                None => decl_ty,
-            },
-            _ => decl_ty,
-        };
+        let resolved = self.resolve_alias_type(decl_ty)?;
+        let t = &resolved;
         let Type::Generic { base, args, .. } = t else {
             return None;
         };
@@ -4329,20 +4320,23 @@ impl<'a> Checker<'a> {
     /// names a known struct — an entity is not in `structs`.
     fn check_struct_literal_fields(&mut self, l: &LetDecl) {
         let Some(ty) = &l.ty else { return };
+        let Some(ty) = self.resolve_alias_type(ty) else {
+            return;
+        };
         let Some(Expr::Construct {
             args, spread, span, ..
         }) = &l.value
         else {
             return;
         };
-        let Some(head) = type_head_name(ty) else {
+        let Some(head) = type_head_name(&ty) else {
             return;
         };
         if !self.structs.contains_key(head) {
             return;
         }
         let head = head.to_string();
-        let fields = self.base_struct_fields(ty);
+        let fields = self.base_struct_fields(&ty);
         if fields.is_empty() {
             return;
         }
@@ -4449,18 +4443,10 @@ impl<'a> Checker<'a> {
     }
 
     fn check_value_range(&mut self, decl_ty: &Type, value: &Expr) {
-        // Resolve one alias hop (`using Byte = integer<0..255>`).
-        let resolved;
-        let t = match decl_ty {
-            Type::Path(p) if p.segments.len() == 1 => match self.aliases.get(&p.segments[0].text) {
-                Some(a) => {
-                    resolved = a.clone();
-                    &resolved
-                }
-                None => decl_ty,
-            },
-            _ => decl_ty,
+        let Some(resolved) = self.resolve_alias_type(decl_ty) else {
+            return;
         };
+        let t = &resolved;
         let Type::Generic { base, args, .. } = t else {
             return;
         };
@@ -4580,6 +4566,29 @@ impl<'a> Checker<'a> {
             }
         } else {
             self.named_ty(p.span)
+        }
+    }
+
+    /// Resolve a `using` alias chain transitively. Cycles stop the walk and
+    /// return `None` so callers can suppress follow-on diagnostics.
+    fn resolve_alias_type(&self, ty: &Type) -> Option<Type> {
+        let mut current = ty.clone();
+        let mut seen = HashSet::new();
+        loop {
+            let Type::Path(p) = &current else {
+                return Some(current);
+            };
+            if p.segments.len() != 1 {
+                return Some(current);
+            }
+            let name = p.segments[0].text.clone();
+            if !seen.insert(name.clone()) {
+                return None;
+            }
+            let Some(alias) = self.aliases.get(&name) else {
+                return Some(current);
+            };
+            current = alias.clone();
         }
     }
 
@@ -5296,6 +5305,31 @@ mod tests {
              entity QueueProducer { bus: Queue Source }\n",
         );
         assert_eq!(errors, 0, "the view/backing pair is the nominal identity");
+    }
+
+    #[test]
+    fn chained_integer_aliases_still_enforce_value_ranges() {
+        let errors = check_src(
+            "module m;\n\
+             using Small = integer<0..3>;\n\
+             using Alias = Small;\n\
+             entity E { ok: Bit out }\n\
+             impl E { let value: Alias = 4; ok = '1'; }\n",
+        );
+        assert_eq!(errors, 1, "a chained alias must not bypass range checks");
+    }
+
+    #[test]
+    fn chained_struct_aliases_still_validate_literals() {
+        let errors = check_src(
+            "module m;\n\
+             struct S { a: Bit }\n\
+             using A = S;\n\
+             using B = A;\n\
+             entity E { ok: Bit out }\n\
+             impl E { let x: B = { .nosuch = '1' }; ok = '1'; }\n",
+        );
+        assert!(errors > 0, "a chained alias must not bypass struct checks");
     }
 
     #[test]

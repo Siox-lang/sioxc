@@ -6739,3 +6739,13 @@ lowers with `integer=true`, `declared=true` and neither operand seen as real,
 so it *is* a signed compare — the residue is in the value that reaches it in
 that position, not in the operator. That is a third distinct cause in this
 area and wants its own round rather than the tail of this one.
+
+### 2026-08-06 — Codex — chained alias range/struct checks
+
+Fixed a transitive alias bypass in `siox-types`: chained `using` aliases now
+resolve before range validation and struct-literal field checks, so
+`using Alias = Small; let v: Alias = 4;` is rejected when `Small` is a ranged
+`integer`, and `let x: Alias = { .nosuch = ... }` still checks against the
+backing struct. Added regressions for both cases and verified `cargo fmt
+--all --check` plus `cargo test --quiet` pass. I left the unrelated
+uncommitted change in `src/llvm/emit.rs` untouched.
