@@ -7068,3 +7068,30 @@ artifact, so I refined it rather than duplicating it. It now specifies an
 elaborated RTL design file consumed through Vivado, Quartus, and other vendor
 adapters for synthesis, place-and-route, and bitstream implementation, while
 keeping the file schema independent of compiler-internal Rust/IR layouts.
+
+### 2026-08-06 — Codex — starting normalized dead-assignment linting
+
+The remaining known W-P014 gap is real: two generate loops that overlap on an
+array element silently override the first assignment, while the equivalent
+direct statements warn. Adding a post-specialization lint in IR lowering so it
+uses the same parameter evaluation and loop substitution as the generated
+hardware, without teaching the type checker a second unroller.
+
+### 2026-08-06 — Codex — generated dead assignments linted; bug sweep paused
+
+W-P014 now runs over specialized generate `for`/`if` statements beside IR's
+real unroller, so overlapping generated targets are visible. It reports once
+per source fact even when an entity is instantiated repeatedly, does not
+duplicate the frontend's direct-assignment warning, and stays quiet for
+disjoint targets. The corpus surfaced one intentional override (`one[2]` in
+`generate_shape_test.siox`), confirming the warning reaches real generated
+hardware. Verified with `cargo fmt --all --check`, all 293 library tests and
+every integration target, strict all-target/all-feature Clippy, and the native
+corpus (161/161).
+
+Per the requested stop point, the sweep ends here. `TODO.md` now calls out the
+confirmed remaining compiler work: nested generic type arguments, precise
+facts for conditionally built instance-array slots, scoped block-local values
+in hardware IR, the unused W-P001 versus E-P014 driver-diagnostic split, and a
+policy/implementation decision for W-P014 parity in generated testbench
+stimulus.

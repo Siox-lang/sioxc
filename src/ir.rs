@@ -548,6 +548,11 @@ struct Lowering<'a> {
     /// generate iteration, so without this a loop reports the same element
     /// as many times as the loop is long.
     reported_oob: HashSet<(String, i64, u32)>,
+    /// Generated dead assignments already reported, keyed by the two source
+    /// sites and the concrete target after loop/parameter substitution. The
+    /// same entity body may be lowered for several instances; diagnostics are
+    /// source facts and must not repeat per instance.
+    reported_generated_dead_assignments: HashSet<(crate::diag::Span, crate::diag::Span, String)>,
     /// The active driver context (bumped per impl block / connection).
     cur_ctx: u32,
     /// Driver context -> the source site that created it (a port connection's
@@ -662,6 +667,7 @@ impl<'a> Lowering<'a> {
             bad_conversions: std::cell::RefCell::new(Vec::new()),
             instance_arrays: HashSet::new(),
             reported_oob: HashSet::new(),
+            reported_generated_dead_assignments: HashSet::new(),
             local_numeric: HashMap::new(),
             vector_families: std::collections::HashSet::new(),
             cur_ctx: 0,
@@ -1680,6 +1686,10 @@ impl<'a> Lowering<'a> {
         // Behaviour: each impl block is one driver context (spec 3.14 —
         // override within, resolution across).
         for im in &impls {
+            self.lint_generated_dead_assignments(im.items.iter().filter_map(|item| match item {
+                ast::ImplItem::Stmt(statement) => Some(statement),
+                _ => None,
+            }));
             self.cur_ctx += 1;
             for item in &im.items {
                 if let ast::ImplItem::Stmt(stmt) = item {
@@ -3625,6 +3635,111 @@ impl<'a> Lowering<'a> {
         }
         let head = type_head_name(ty)?;
         self.views.contains_key(head).then(|| head.to_string())
+    }
+
+    /// Warn when specialization makes two unconditional assignments target
+    /// the same concrete signal. The type checker handles direct source
+    /// sequences, but cannot know a generic entity's parameter values or
+    /// substitute generate-loop variables. Do that here, beside the actual
+    /// unroller, and emit only when at least one assignment was generated so
+    /// ordinary source warnings are not duplicated.
+    fn lint_generated_dead_assignments<'s>(
+        &mut self,
+        statements: impl Iterator<Item = &'s ast::Stmt>,
+    ) {
+        let mut seen = HashMap::new();
+        for statement in statements {
+            self.lint_generated_dead_statement(statement, false, &mut seen);
+        }
+    }
+
+    fn lint_generated_dead_statement(
+        &mut self,
+        statement: &ast::Stmt,
+        generated: bool,
+        seen: &mut HashMap<String, (crate::diag::Span, bool)>,
+    ) {
+        match statement {
+            ast::Stmt::Assign { target, span, .. } => {
+                let key = crate::syntax::pretty::expr_string(target);
+                if let Some((previous, previous_generated)) =
+                    seen.insert(key.clone(), (*span, generated))
+                {
+                    let frontend_reported = self.sink.diagnostics().iter().any(|diagnostic| {
+                        diagnostic.code == Some(crate::diag::codes::DEAD_ASSIGNMENT)
+                            && diagnostic.primary == Some(*span)
+                            && diagnostic.labels.iter().any(|label| label.span == previous)
+                    });
+                    if !frontend_reported
+                        && (generated || previous_generated)
+                        && self.reported_generated_dead_assignments.insert((
+                            previous,
+                            *span,
+                            key.clone(),
+                        ))
+                    {
+                        self.sink.emit(
+                            crate::diag::Diagnostic::warning(format!(
+                                "`{key}` is assigned again here; the earlier assignment has no effect"
+                            ))
+                            .with_code(crate::diag::codes::DEAD_ASSIGNMENT)
+                            .at(*span)
+                            .label(previous, "this generated assignment is overridden")
+                            .help(
+                                "remove the overlapping generated assignment, or make one of them conditional",
+                            ),
+                        );
+                    }
+                }
+            }
+            ast::Stmt::For {
+                var,
+                range: ast::Expr::Range { lo, hi, .. },
+                body,
+                ..
+            } => {
+                let (Some(left), Some(right)) =
+                    (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
+                else {
+                    seen.clear();
+                    return;
+                };
+                for index in loop_range(left, right) {
+                    for nested in &body.stmts {
+                        let nested = subst_stmt(nested, &var.text, index);
+                        self.lint_generated_dead_statement(&nested, true, seen);
+                    }
+                }
+            }
+            ast::Stmt::If(conditional) => {
+                let Some(selected) = eval_const(&conditional.cond, &self.cur_env) else {
+                    seen.clear();
+                    return;
+                };
+                if selected != 0 {
+                    for nested in &conditional.then.stmts {
+                        self.lint_generated_dead_statement(nested, true, seen);
+                    }
+                } else {
+                    match conditional.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(block)) => {
+                            for nested in &block.stmts {
+                                self.lint_generated_dead_statement(nested, true, seen);
+                            }
+                        }
+                        Some(ast::ElseBranch::If(nested)) => self.lint_generated_dead_statement(
+                            &ast::Stmt::If(nested.clone()),
+                            true,
+                            seen,
+                        ),
+                        None => {}
+                    }
+                }
+            }
+            // Any runtime control flow or statement with effects we do not
+            // flatten ends the unconditional run, matching the frontend lint.
+            _ => seen.clear(),
+        }
     }
 
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
@@ -9809,6 +9924,83 @@ mod tests {
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    /// Generate loops are unrolled after type checking, so the source-level
+    /// dead-assignment lint could not see two iterations/loops resolve to the
+    /// same concrete target.
+    #[test]
+    fn generated_dead_assignments_warn_after_specialization() {
+        let warning_count = |source: &str| {
+            lower_diags(source)
+                .iter()
+                .filter(|diagnostic| diagnostic.starts_with("Some(\"W-P014\")"))
+                .count()
+        };
+        let overlapping = "module m;
+             #[top] entity E { y: unsigned[8] out, }
+             impl E {
+                 let values: unsigned[8][4];
+                 for i in 0..2 { values[i] = 11; }
+                 for i in 2..3 { values[i] = 22; }
+                 y = values[2];
+             }";
+        assert_eq!(
+            warning_count(overlapping),
+            1,
+            "the generated writes to values[2] overlap"
+        );
+
+        let repeated_instance = "module m;
+             entity E { y: unsigned[8] out, }
+             impl E {
+                 let values: unsigned[8][4];
+                 for i in 0..2 { values[i] = 11; }
+                 for i in 2..3 { values[i] = 22; }
+                 y = values[2];
+             }
+             #[top] entity H { a: unsigned[8] out, b: unsigned[8] out, }
+             impl H {
+                 let first: E = { .y = a };
+                 let second: E = { .y = b };
+             }";
+        assert_eq!(
+            warning_count(repeated_instance),
+            1,
+            "a source warning must not repeat for every instance"
+        );
+
+        let direct = "module m;
+             #[top] entity E { y: unsigned[8] out, }
+             impl E { y = 1; y = 2; }";
+        assert_eq!(
+            warning_count(direct),
+            1,
+            "the IR lint must not duplicate the frontend warning"
+        );
+
+        let selected_block = "module m;
+             #[top] entity E { y: unsigned[8] out, }
+             impl E { if true { y = 1; y = 2; } }";
+        assert_eq!(
+            warning_count(selected_block),
+            1,
+            "specializing a block must not repeat its frontend warning"
+        );
+
+        let disjoint = "module m;
+             #[top] entity E { y: unsigned[8] out, }
+             impl E {
+                 let values: unsigned[8][4];
+                 for i in 0..1 { values[i] = 11; }
+                 for i in 2..3 { values[i] = 22; }
+                 y = values[2];
+             }";
+        assert_eq!(
+            warning_count(disjoint),
+            0,
+            "disjoint generated targets are independent"
+        );
     }
 
     #[test]

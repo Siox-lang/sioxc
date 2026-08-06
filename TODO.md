@@ -5,10 +5,19 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-07-29 against the compiler, standard library, documentation,
+Status audited 2026-08-06 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
+
+Bug-sweep stop point (2026-08-06): generated assignments are now linted after
+parameter specialization and loop unrolling, closing the known W-P014 gap. The
+highest-confidence remaining compiler gaps are recorded in their owning
+sections below: nested generic type arguments and partial instance-array facts
+under AST, plus hardware block-local values and the W-P001/E-P014 driver
+diagnostic split under IR. Testbench generate-loop lint parity also needs a
+policy decision: either normalize stimulus loops before W-P014 analysis or
+document that the warning applies only to hardware driver contexts.
 
 ## AST
 
@@ -63,6 +72,16 @@ Current baseline:
 
 Remaining:
 
+- 🔴 **Scoped block-local values in hardware.** A `let` inside an `if`, `match`,
+  or event block is accepted and typed, but hardware lowering reports it as
+  unsupported because IR has no scoped temporary value. Lower block locals to
+  SSA-like expressions or explicit temporary storage while preserving
+  sequential next-state semantics. Testbench block locals already execute.
+- 🟡 **Driver diagnostic taxonomy.** `W-P001` remains declared and listed in
+  the historical specification but is never emitted; conflicting independent
+  contexts are diagnosed as `E-P014`. Either retire `W-P001` everywhere or
+  define the resolvable/suspicious multi-driver case that remains a warning,
+  then add source-span tests for both outcomes.
 - 🟡 **Persist complete source layouts.** Expression types reach lowering, but
   named/repeated/composite layout is still partly reconstructed from
   declarations. Store recursive source layouts directly in IR metadata.
