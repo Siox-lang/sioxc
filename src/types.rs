@@ -44,6 +44,9 @@ pub enum Ty {
         len: u32,
         family: Option<String>,
     },
+    /// A declared function or method with no return type. Unlike `Error`, this
+    /// is known and must be rejected anywhere a value is required.
+    Void,
     /// Placeholder for an as-yet-unresolved/error type.
     Error,
 }
@@ -62,7 +65,7 @@ impl Ty {
                     elem.bit_width()?.checked_mul(*len)
                 }
             }
-            Ty::Named(_) | Ty::Error => None,
+            Ty::Named(_) | Ty::Void | Ty::Error => None,
         }
     }
 }
@@ -2517,6 +2520,14 @@ impl<'a> Checker<'a> {
     /// An unknown (`Error`) condition type is skipped to avoid false positives.
     fn check_condition(&mut self, cond: &Expr, sym: &HashMap<String, Ty>) {
         let ty = self.type_of(cond, sym);
+        if matches!(ty, Ty::Void) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(cond),
+                "a procedure call has no value and cannot be used as a condition".to_string(),
+            );
+            return;
+        }
         let Some(name) = self.type_kind_name(&ty) else {
             return;
         };
@@ -2847,7 +2858,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The name a type is keyed by in the trait-impl table (`unsigned[8]` and
-    /// `unsigned` share `unsigned`). `Error`/array types have no name.
+    /// `unsigned` share `unsigned`). `Void`/`Error`/array types have no name.
     fn type_kind_name(&self, t: &Ty) -> Option<String> {
         match t {
             Ty::Integer => Some("integer".to_string()),
@@ -2857,7 +2868,7 @@ impl<'a> Checker<'a> {
             Ty::Array {
                 family: Some(name), ..
             } => Some(name.clone()),
-            Ty::Array { .. } | Ty::Error => None,
+            Ty::Array { .. } | Ty::Void | Ty::Error => None,
         }
     }
 
@@ -3381,8 +3392,11 @@ impl<'a> Checker<'a> {
     /// returns are direct; a bare generic return (`-> T`) takes the type
     /// inferred from the corresponding value parameter.
     fn free_call_return_type(&self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) -> Ty {
-        let Some(Some(declared)) = self.fn_return_types.get(name) else {
+        let Some(declared) = self.fn_return_types.get(name) else {
             return Ty::Error;
+        };
+        let Some(declared) = declared else {
+            return Ty::Void;
         };
         if let Type::Path(path) = declared {
             if path.segments.len() == 1 {
@@ -4010,6 +4024,14 @@ impl<'a> Checker<'a> {
                 span,
             } => {
                 self.check_expr(scrutinee, sym);
+                if matches!(self.type_of(scrutinee, sym), Ty::Void) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(scrutinee),
+                        "a procedure call has no value and cannot be matched".to_string(),
+                    );
+                    return;
+                }
                 // An expression must yield a value for every case it can meet,
                 // so a missing variant matters at least as much here as in a
                 // statement — and this form was not checked at all.
@@ -4027,6 +4049,14 @@ impl<'a> Checker<'a> {
             }
             Expr::Field { base, field, .. } => {
                 self.check_expr(base, sym);
+                if matches!(self.type_of(base, sym), Ty::Void) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(base),
+                        "a procedure call has no value and therefore has no fields".to_string(),
+                    );
+                    return;
+                }
                 self.check_field_exists(base, field, sym);
             }
             Expr::Index { base, index, .. } => {
@@ -4041,6 +4071,16 @@ impl<'a> Checker<'a> {
                         }
                     }
                     _ => self.check_expr(index, sym),
+                }
+                if matches!(self.type_of(base, sym), Ty::Void)
+                    || matches!(self.type_of(index, sym), Ty::Void)
+                {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(e),
+                        "a procedure call has no value and cannot be indexed".to_string(),
+                    );
+                    return;
                 }
                 self.check_index_bounds(base, index, sym);
                 self.check_custom_index(base, index, sym);
@@ -4065,6 +4105,14 @@ impl<'a> Checker<'a> {
             }
             Expr::Unary { op, rhs, span } => {
                 self.check_expr(rhs, sym);
+                if matches!(self.type_of(rhs, sym), Ty::Void) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        "a procedure call has no value for a unary operator".to_string(),
+                    );
+                    return;
+                }
                 // `not` is per-bit boolean — bit-derived / Boolean operands only.
                 if matches!(op, UnOp::Not) {
                     let t = self.type_of(rhs, sym);
@@ -4101,6 +4149,16 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
                 self.check_expr(rhs, sym);
+                if matches!(self.type_of(lhs, sym), Ty::Void)
+                    || matches!(self.type_of(rhs, sym), Ty::Void)
+                {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        "a procedure call has no value for a binary operator".to_string(),
+                    );
+                    return;
+                }
                 if is_comparison(op) {
                     self.check_comparison_fit(lhs, rhs, sym);
                 }
@@ -4470,7 +4528,7 @@ impl<'a> Checker<'a> {
     /// being accepted blindly (in particular, entity instances are not data).
     fn is_digital_ty(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Error => false,
+            Ty::Void | Ty::Error => false,
             Ty::Named(id) => self
                 .resolved
                 .kind_of(*id)
@@ -4807,7 +4865,8 @@ impl<'a> Checker<'a> {
                         .and_then(|h| self.methods.get(&(h, field.text.clone())))
                     {
                         Some(Some(ret)) => self.ast_ty(&ret.clone()),
-                        _ => Ty::Error,
+                        Some(None) => Ty::Void,
+                        None => Ty::Error,
                     }
                 }
                 _ => Ty::Error,
@@ -5732,6 +5791,7 @@ fn ty_name(t: &Ty) -> String {
             ..
         } => format!("{name}[{len}]"),
         Ty::Array { .. } => "an array".to_string(),
+        Ty::Void => "no value".to_string(),
         Ty::Error => "<unknown>".to_string(),
     }
 }
@@ -7328,6 +7388,37 @@ mod tests {
             check_src(src),
             2,
             "a call has its declaration's return type in every surrounding check"
+        );
+    }
+
+    #[test]
+    fn procedures_cannot_be_used_as_values() {
+        let src = "module m;\n\
+                   fn procedure() {}\n\
+                   fn consume(value: integer) {}\n\
+                   struct Device { value: Bit }\n\
+                   impl Device { fn procedure(self) {} }\n\
+                   entity E { y: Bit out }\n\
+                   impl E {\n\
+                     let device: Device = { .value = '0' };\n\
+                     let a: integer = procedure();\n\
+                     let b: integer = device.procedure();\n\
+                     consume(procedure());\n\
+                     let same: Bool = procedure() == procedure();\n\
+                     if procedure() { y = '1'; } else { y = '0'; }\n\
+                   }\n";
+        assert_eq!(
+            check_src(src),
+            5,
+            "a procedure call is valid as a statement, never as a value"
+        );
+        assert_eq!(
+            check_src(
+                "module m;\nfn procedure() {}\nentity E { y: Bit out }\n\
+                 impl E { procedure(); y = '0'; }\n"
+            ),
+            0,
+            "a procedure call remains valid in statement position"
         );
     }
 

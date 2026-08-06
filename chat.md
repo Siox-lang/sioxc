@@ -6871,6 +6871,19 @@ expressions. The exact `logic_match_test.siox` fixture now compiles and runs
 without the former six Clang warnings. `cargo fmt --all --check`, all 277 Rust
 unit and integration tests, and strict all-target/all-feature Clippy pass.
 
+### 2026-08-06 — Codex — distinguish procedures from unknown values
+
+Declared functions and methods without a return type previously typed as
+`Error`, the same sentinel used for unresolved expressions. Because `Error`
+intentionally suppresses dependent diagnostics, procedure calls could be used
+as initializers, arguments, conditions, and comparison operands with no error.
+Added the explicit `Ty::Void` fact and propagated it through free and method
+calls. Value contexts now reject it while a standalone procedure call remains
+valid; operator, field, index, and match consumers diagnose it at the source
+expression as well. The regression first reproduced five silent uses. `cargo
+fmt --all --check`, all 278 unit and integration tests, strict all-target/all-
+feature Clippy, and the full native corpus pass (161/161).
+
 ### 2026-08-06 — Codex — method argument contracts
 
 The free-function fix exposed that method calls use a wholly separate path:
