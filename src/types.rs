@@ -3393,7 +3393,7 @@ impl<'a> Checker<'a> {
     /// inferred from the corresponding value parameter.
     fn free_call_return_type(&self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) -> Ty {
         let Some(declared) = self.fn_return_types.get(name) else {
-            return Ty::Error;
+            return self.runtime_call_return_type(name);
         };
         let Some(declared) = declared else {
             return Ty::Void;
@@ -3421,6 +3421,21 @@ impl<'a> Checker<'a> {
             }
         }
         self.ast_ty(declared)
+    }
+
+    /// Return contracts for compiler/runtime-provided functions which have no
+    /// source `FnDecl`. Context-sized file reads deliberately remain unknown;
+    /// their initializer target determines the result layout.
+    fn runtime_call_return_type(&self, name: &str) -> Ty {
+        match name {
+            "rand" | "randint" => Ty::Integer,
+            "uniform" => Ty::Real,
+            "exists" => self.ty_from_head("Bool"),
+            "seed" | "print" | "assert" | "warn" | "await" | "wait" | "tick" | "clock" | "stop"
+            | "finish" => Ty::Void,
+            "read" | "read_to_string" | "resize" => Ty::Error,
+            _ => Ty::Error,
+        }
     }
 
     /// A call to a *declared* function must pass one argument per parameter.
@@ -3504,31 +3519,146 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Runtime-provided std functions have no source `FnDecl`, so they do not
-    /// enter `fn_arity`. Check their public call contract explicitly rather
-    /// than letting generated C silently ignore extra arguments or fail much
-    /// later while building the harness.
-    fn check_runtime_call_arity(&mut self, callee: &Expr, args: &[Expr]) {
+    /// Compiler/runtime-provided functions have no source `FnDecl`, so retain
+    /// their complete public contract here: arity, argument domains, macro
+    /// spelling, and removed migration forms. This keeps malformed calls from
+    /// surviving until C harness generation.
+    fn check_runtime_call_contract(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        bang: bool,
+        sym: &HashMap<String, Ty>,
+    ) {
         let Expr::Path(path) = callee else { return };
         let [name] = path.segments.as_slice() else {
             return;
         };
-        let expected = match name.text.as_str() {
-            "rand" | "uniform" => 0,
-            "seed" | "exists" | "read" | "read_to_string" => 1,
-            "randint" => 2,
-            _ => return,
+        let function = name.text.as_str();
+        // A source declaration shadows a runtime primitive with the same
+        // leaf name (`fn read<Bus>(bus)` is common in protocol traits).
+        if self.fn_arity.contains_key(function) {
+            return;
+        }
+        if matches!(function, "tick" | "clock") {
+            let replacement = if function == "tick" {
+                "drive the clock and `await` each half-period explicitly"
+            } else {
+                "write `clk = not clk after <half-period>;`"
+            };
+            self.error_with_help(
+                codes::UNKNOWN_NAME,
+                expr_span(callee),
+                format!("`{function}()` was removed"),
+                replacement.to_string(),
+            );
+            return;
+        }
+
+        let exact = match function {
+            "rand" | "uniform" | "stop" | "finish" => Some(0),
+            "seed" | "exists" | "read" | "read_to_string" | "await" => Some(1),
+            "randint" | "resize" => Some(2),
+            _ => None,
         };
-        if args.len() != expected {
+        if let Some(expected) = exact {
+            if args.len() != expected {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    format!(
+                        "`{function}` takes {expected} argument(s) but {} were given",
+                        args.len()
+                    ),
+                );
+                return;
+            }
+        } else if matches!(function, "print" | "assert" | "warn") && args.is_empty() {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(callee),
-                format!(
-                    "`{}` takes {expected} argument(s) but {} were given",
-                    name.text,
-                    args.len()
-                ),
+                format!("`{function}!` needs at least one argument"),
             );
+            return;
+        } else if !matches!(
+            function,
+            "print"
+                | "assert"
+                | "warn"
+                | "rand"
+                | "uniform"
+                | "stop"
+                | "finish"
+                | "seed"
+                | "exists"
+                | "read"
+                | "read_to_string"
+                | "await"
+                | "randint"
+                | "resize"
+        ) {
+            return;
+        }
+
+        if matches!(function, "print" | "assert" | "warn") && !bang {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                expr_span(callee),
+                format!("`{function}` is a macro-like compiler primitive"),
+                format!("write `{function}!(...)`"),
+            );
+            return;
+        }
+
+        match function {
+            "seed" | "randint" => {
+                for argument in args {
+                    if !self.assignable(&Ty::Integer, argument, sym) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(argument),
+                            format!("`{function}` expects integer argument(s)"),
+                        );
+                    }
+                }
+            }
+            "exists" | "read" | "read_to_string" => {
+                let Some(argument) = args.first() else { return };
+                if !matches!(argument, Expr::StrLit { .. }) {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        expr_span(argument),
+                        format!("`{function}` needs a literal file path"),
+                        format!("write `{function}(\"path/to/file\")`"),
+                    );
+                }
+            }
+            "print" => {
+                let Some(format) = args.first() else { return };
+                if !matches!(format, Expr::StrLit { .. }) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(format),
+                        "`print!` needs a string-literal format".to_string(),
+                    );
+                }
+            }
+            "assert" | "warn" => {
+                let Some(condition) = args.first() else {
+                    return;
+                };
+                self.check_condition(condition, sym);
+                if let Some(message) = args.get(1) {
+                    if !matches!(message, Expr::StrLit { .. }) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(message),
+                            format!("`{function}!` message must be a string literal"),
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3855,7 +3985,13 @@ impl<'a> Checker<'a> {
 
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
-            // A numeric literal also initialises `real` (`.re = 10` is 10.0).
+            // A decimal literal is already `real`; narrowing it to integer or
+            // packed bits requires an explicit conversion.
+            Expr::Int { text, .. } if text.contains('.') => {
+                matches!(lhs, Ty::Real | Ty::Error)
+            }
+            // An integer literal also initialises `real` (`.re = 10` is 10.0)
+            // and is contextual for packed numeric families.
             Expr::Int { .. } => {
                 matches!(
                     lhs,
@@ -4385,7 +4521,7 @@ impl<'a> Checker<'a> {
                 self.check_conversion_fit(callee, args, e);
                 self.check_generic_bounds(callee, args, sym);
                 self.check_call_arity(callee, args, sym);
-                self.check_runtime_call_arity(callee, args);
+                self.check_runtime_call_contract(callee, args, *bang, sym);
             }
             Expr::Construct { args, .. } => {
                 for c in args {
@@ -6258,6 +6394,25 @@ mod tests {
     }
 
     #[test]
+    fn decimal_literals_require_real_context_or_explicit_conversion() {
+        let errors = check_src(
+            "module m;\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let i: integer = 1.5;\n\
+               let bits: unsigned[8] = 1.5;\n\
+               let r: real = 1.5;\n\
+               let converted: integer = integer(r);\n\
+               y = '0';\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 2,
+            "a decimal literal is real and narrowing remains explicit"
+        );
+    }
+
+    #[test]
     fn struct_literal_fields_are_checked_in_every_value_context() {
         let errors = check_src(
             "module m;\n\
@@ -7436,6 +7591,63 @@ mod tests {
         assert_eq!(check_src(&tb("randint(1, 2, 3)")), 1, "too many bounds");
         assert_eq!(check_src(&tb("rand()")), 0);
         assert_eq!(check_src(&tb("randint(1, 2)")), 0);
+    }
+
+    #[test]
+    fn runtime_functions_enforce_types_results_and_removed_forms() {
+        let tb = |body: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {body} }}\n");
+        assert_eq!(
+            check_src(&tb("let value: integer = uniform();")),
+            1,
+            "uniform returns real"
+        );
+        assert_eq!(
+            check_src(&tb("let value: integer = seed(1);")),
+            1,
+            "seed is a procedure"
+        );
+        assert_eq!(
+            check_src(&tb("randint(1.5, 2);")),
+            1,
+            "randint needs integer bounds"
+        );
+        assert_eq!(check_src(&tb("seed(1.5);")), 1, "seed needs an integer");
+        assert_eq!(
+            check_src(&tb("read(7);")),
+            1,
+            "file primitives need literal paths"
+        );
+        assert_eq!(check_src(&tb("finish(1);")), 1, "finish is nullary");
+        assert_eq!(
+            check_src(&tb("clock('0', 1ns);")),
+            1,
+            "removed clock sugar is rejected before code generation"
+        );
+        assert_eq!(check_src(&tb("assert!();")), 1, "assert needs a condition");
+        assert_eq!(check_src(&tb("print!();")), 1, "print needs a format");
+        assert_eq!(
+            check_src(&tb("print!(123);")),
+            1,
+            "the format must be a string literal"
+        );
+        assert_eq!(
+            check_src(&tb("assert!(1);")),
+            1,
+            "assert needs a Boolean condition"
+        );
+        assert_eq!(
+            check_src(&tb("let flag: Bool = exists(\"fixture\");")),
+            0,
+            "exists returns Bool"
+        );
+        assert_eq!(
+            check_src(
+                "module m;\nfn read<T>(value: T) -> T { return value; }\n\
+                 #[test] entity T {}\nimpl T { let value: integer = read(1); }\n"
+            ),
+            0,
+            "a declared function shadows a runtime primitive with the same name"
+        );
     }
 
     /// A miscounted `print!` silently rendered an empty slot or dropped an

@@ -6884,6 +6884,26 @@ expression as well. The regression first reproduced five silent uses. `cargo
 fmt --all --check`, all 278 unit and integration tests, strict all-target/all-
 feature Clippy, and the full native corpus pass (161/161).
 
+### 2026-08-06 — Codex — runtime primitive contracts and real literals
+
+Runtime-provided std functions had only a partial arity table and no result or
+argument typing. `uniform()` could initialize an integer, `seed()` could be
+used as a value, `randint` accepted real bounds, file primitives accepted
+nonliteral paths, zero-argument formatting/assertion primitives survived to C
+generation, and removed `clock()`/`tick()` survived until the backend. Added
+complete frontend contracts for random, file, reporting, timing, resize, and
+termination primitives, including Boolean assertion conditions and source-
+declaration shadowing (`fn read<T>` remains an ordinary user function).
+
+The new `randint(1.5, 2)` regression also exposed that every numeric AST
+literal was considered integer-polymorphic even when its text contained a
+decimal point. Decimal literals are now real-only unless explicitly converted;
+integer literals still widen to real and contextualize to packed numeric
+families. The regressions reproduced the silent cases, and the protocol-view
+corpus fixture caught and verified the shadowing correction. `cargo fmt --all
+--check`, all 280 unit and integration tests, strict all-target/all-feature
+Clippy, and the full native corpus pass (161/161).
+
 ### 2026-08-06 — Codex — method argument contracts
 
 The free-function fix exposed that method calls use a wholly separate path:
