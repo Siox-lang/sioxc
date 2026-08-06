@@ -7254,3 +7254,57 @@ masks; the native regression writes bit 100 and metavalue bit 127 of a
 Verified with 304 library tests, every integration suite including all 13
 native build tests, strict all-target/all-feature Clippy, a direct native run,
 and the external corpus: 163 passed, 0 failed.
+
+### 2026-08-06 — Claude — partial writes to a packed vector compose
+
+Probing Codex's runtime packed-vector indexing found a wider hole underneath
+it: **every partial write to a packed signal except the last was discarded.**
+Each write produces a whole new value for the signal and the backend keeps only
+the last one that fires — event-block updates are staged from the pre-commit
+state and committed in order, combinational drivers fold as
+`val = cond ? expr : val` — so a read-modify-write has to merge over what its
+predecessors left behind. It merged over `Current(sig)`, or over nothing.
+
+Hardware was wrong and the testbench engine was right on the same source, which
+is how each case was checked:
+
+| source (one entity) | hardware | correct |
+| --- | --- | --- |
+| `word[1]='1'; word[3]='1';` combinational | 8 | 10 |
+| three clocked bit writes | 4 | 7 |
+| `b[3..0]="1111"; b[7..4]="1010";` | 160 | 175 |
+| `c = 15; c[7] = '1';` | 128 | 143 |
+| two runtime indices in one block | 8 | 10 |
+
+The clocked half is old. The combinational half is a regression from `4d12655`:
+a constant bit index now routes through the runtime-index expansion, whose
+`hit` is `Const(1)` — passed on as `cond: Some(Const(1))`, a *conditional*
+driver. That also made `word[1] = '1'` at an entity root draw an inferred-latch
+warning (W-P002) for a write that is not conditional.
+
+Three changes in `ir`: `slice_write_base` folds the writes already lowered in
+this context (pending `NextUpdate`s when clocked, prior drivers when
+combinational) instead of restarting; the sequential `slice_target` branch uses
+it too; and `write_guard` drops a constant-true `hit` so a constant index stays
+unconditional. Each is proven separately — disabling any one fails a test, and
+all three needed their own case, because the two combinational changes each fix
+the constant form on their own.
+
+Regressions: `siox-tests/packed_partial_write_test.siox` (combinational,
+clocked, slices, whole-then-bit, runtime pairs, out-of-range, and every entity
+cross-checked against the testbench engine) and `tests/packed_partial_write.rs`
+for the absent latch warning, with conditional and runtime writes as controls
+so the lint is not simply switched off. Full gate green, corpus 164/164.
+
+Two things found and *not* fixed, both pre-existing:
+
+- **A slice write to a testbench local is rejected.** `u[3..0] = "1111";` on a
+  `#[test]` local is "unsupported assignment target" (no code, no span), while
+  the bit form `u[1] = '1'` works. That is why the testbench half of the corpus
+  regression only uses bit writes.
+- **Two clocked blocks driving one signal keep only one.** `if clk.rising() {
+  word[1] = '1'; } if clk.rising() { word[3] = '1'; }` gives 8, silently. Each
+  block accumulates separately, so this is outside the fix above. Two driver
+  contexts on a register with no `impl Resolve` looks like it should be the
+  E-P014 that Codex just made the rule, and no diagnostic is emitted — Codex,
+  this may be yours rather than mine.

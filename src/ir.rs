@@ -5020,7 +5020,7 @@ impl<'a> Lowering<'a> {
                         expr,
                         ctx: self.cur_ctx,
                     });
-                } else if let Some(ups) = self.dynamic_write(target, value, &cond, false) {
+                } else if let Some(ups) = self.dynamic_write(target, value, &cond, false, &[]) {
                     for u in ups {
                         self.out.drivers.push(Driver {
                             target: u.target,
@@ -5030,34 +5030,32 @@ impl<'a> Lowering<'a> {
                         });
                     }
                 } else if let Some((sig, hi, lo)) = self.slice_target(target) {
-                    // Partial write: merge over the prior driver (`y = base;
-                    // y[3..0] = a;`), else over 0.
+                    // Partial write: merge over what this context has already
+                    // driven (`y = base; y[3..0] = a;`), else over 0.
                     let v = self.lower_expr(value);
                     let width = self.out.signals[sig.0 as usize].width;
-                    let base = self
+                    let base = self.slice_write_base(sig, false, &[]);
+                    let merged = self.merge_slice(base, hi, lo, v, width);
+                    // `merged` already folds in every driver this context has
+                    // for `sig`, so it may *replace* the last one — but only
+                    // when that one is unconditional and this write is too.
+                    // Otherwise it has to be a new driver, or a guarded write
+                    // would be applied unconditionally.
+                    let last = self
                         .out
                         .drivers
                         .iter()
-                        .rev()
-                        .find(|d| d.target == sig && d.ctx == self.cur_ctx && d.cond.is_none())
-                        .map(|d| d.expr.clone())
-                        .unwrap_or(Expr::Const(0));
-                    let merged = self.merge_slice(base, hi, lo, v, width);
-                    if let Some(d) = self
-                        .out
-                        .drivers
-                        .iter_mut()
-                        .rev()
-                        .find(|d| d.target == sig && d.ctx == self.cur_ctx && d.cond.is_none())
-                    {
-                        d.expr = merged;
-                    } else {
-                        self.out.drivers.push(Driver {
+                        .rposition(|d| d.target == sig && d.ctx == self.cur_ctx);
+                    match last {
+                        Some(i) if cond.is_none() && self.out.drivers[i].cond.is_none() => {
+                            self.out.drivers[i].expr = merged;
+                        }
+                        _ => self.out.drivers.push(Driver {
                             target: sig,
                             cond,
                             expr: merged,
                             ctx: self.cur_ctx,
-                        });
+                        }),
                     }
                 } else if let ast::Expr::Concat { parts, span: cspan } = target {
                     // `{hi, lo} = w;` unpacks the value MSB-first: each part
@@ -5447,14 +5445,17 @@ impl<'a> Lowering<'a> {
                             cond: cond.clone(),
                             expr,
                         });
-                    } else if let Some(ups) = self.dynamic_write(target, value, &cond, true) {
+                    } else if let Some(ups) = self.dynamic_write(target, value, &cond, true, out) {
                         out.extend(ups);
                     } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                         // Register bit-field update: next(y) holds the other
-                        // bits (read-modify-write on the current value).
+                        // bits (read-modify-write on the value this block has
+                        // produced so far, which is `Current` until something
+                        // in it writes the signal).
                         let v = self.lower_expr(value);
                         let width = self.out.signals[sig.0 as usize].width;
-                        let expr = self.merge_slice(Expr::Current(sig), hi, lo, v, width);
+                        let base = self.slice_write_base(sig, true, out);
+                        let expr = self.merge_slice(base, hi, lo, v, width);
                         out.push(NextUpdate {
                             target: sig,
                             cond: cond.clone(),
@@ -5704,6 +5705,7 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         cond: &Option<Expr>,
         sequential: bool,
+        pending: &[NextUpdate],
     ) -> Option<Vec<NextUpdate>> {
         let (root, steps) = access_steps(target)?;
         if !steps
@@ -5720,7 +5722,7 @@ impl<'a> Lowering<'a> {
             match target {
                 DynamicWriteTarget::Whole { signal, hit } => updates.push(NextUpdate {
                     target: signal,
-                    cond: Some(and(cond.clone(), hit)),
+                    cond: write_guard(cond, hit),
                     expr: self.coerce_to_target(signal, expr.clone()),
                 }),
                 DynamicWriteTarget::PackedBit {
@@ -5729,10 +5731,10 @@ impl<'a> Lowering<'a> {
                     hit,
                 } => {
                     let width = self.out.signals[signal.0 as usize].width;
-                    let base = self.slice_write_base(signal, sequential);
+                    let base = self.slice_write_base(signal, sequential, pending);
                     updates.push(NextUpdate {
                         target: signal,
-                        cond: Some(and(cond.clone(), hit.clone())),
+                        cond: write_guard(cond, hit.clone()),
                         expr: self.merge_slice(base, position, position, expr.clone(), width),
                     });
 
@@ -5747,7 +5749,7 @@ impl<'a> Lowering<'a> {
                             self.ensure_combinational_companion_base(signal, companion);
                         }
                         let meta_width = self.out.signals[companion.0 as usize].width;
-                        let meta_base = self.slice_write_base(companion, sequential);
+                        let meta_base = self.slice_write_base(companion, sequential, pending);
                         let meta_value = Expr::Select {
                             cond: Box::new(Expr::Binary {
                                 op: BinOp::Ge,
@@ -5800,19 +5802,49 @@ impl<'a> Lowering<'a> {
         });
     }
 
-    fn slice_write_base(&self, signal: SignalId, sequential: bool) -> Expr {
+    /// What `signal` already holds where this write appears — the base a
+    /// read-modify-write must merge over.
+    ///
+    /// It is not enough to start from the signal's *prior* value. Each write
+    /// produces a whole new value for the signal, and the backend keeps only
+    /// the last one that fires: event-block updates are all staged from the
+    /// pre-commit state and committed in order, and combinational drivers fold
+    /// as `val = cond ? expr : val`. So a second partial write that merged over
+    /// `Current(sig)` (or over nothing) silently threw the first one away —
+    /// `word[1] = '1'; word[3] = '1';` set bit 3 alone. Folding the writes
+    /// already lowered in this context gives each one the value its
+    /// predecessors left behind, which is what the source says in both engines.
+    fn slice_write_base(&self, signal: SignalId, sequential: bool, pending: &[NextUpdate]) -> Expr {
         if sequential {
-            return Expr::Current(signal);
+            // A clocked block reads the pre-commit value, so an unwritten
+            // signal keeps `Current`; each update's expression is a complete
+            // next value, so a later one supersedes exactly when it fires.
+            return pending
+                .iter()
+                .filter(|update| update.target == signal)
+                .fold(Expr::Current(signal), |acc, update| match &update.cond {
+                    Some(cond) => Expr::Select {
+                        cond: Box::new(cond.clone()),
+                        then: Box::new(update.expr.clone()),
+                        els: Box::new(acc),
+                    },
+                    None => update.expr.clone(),
+                });
         }
+        // Combinational: undriven bits read as zero, which is the seed the
+        // single-driver form has always used.
         self.out
             .drivers
             .iter()
-            .rev()
-            .find(|driver| {
-                driver.target == signal && driver.ctx == self.cur_ctx && driver.cond.is_none()
+            .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
+            .fold(Expr::Const(0), |acc, driver| match &driver.cond {
+                Some(cond) => Expr::Select {
+                    cond: Box::new(cond.clone()),
+                    then: Box::new(driver.expr.clone()),
+                    els: Box::new(acc),
+                },
+                None => driver.expr.clone(),
             })
-            .map(|driver| driver.expr.clone())
-            .unwrap_or(Expr::Const(0))
     }
 
     fn dynamic_write_targets(
@@ -9499,6 +9531,20 @@ fn eq(lhs: Expr, rhs: Expr) -> Expr {
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
+}
+
+/// The guard for one expanded write: the enclosing condition narrowed by the
+/// index-match `hit`.
+///
+/// A constant index matches unconditionally, and saying so matters beyond tidy
+/// IR. `Some(Const(1))` is still a *conditional* driver, so `word[1] = '1'` at
+/// an entity's root drew an inferred-latch warning (W-P002) and never became
+/// the unconditional driver that a following partial write merges over.
+fn write_guard(cond: &Option<Expr>, hit: Expr) -> Option<Expr> {
+    if matches!(hit, Expr::Const(1)) {
+        return cond.clone();
+    }
+    Some(and(cond.clone(), hit))
 }
 
 /// `and` of an optional accumulated condition with a new one.
