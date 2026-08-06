@@ -146,6 +146,9 @@ struct PortInfo {
     /// carry them, and an out-of-range constant otherwise wrapped at store
     /// time so the runtime range assert could never see it.
     range: Option<(i64, i64)>,
+    /// Declared labels of a packed vector or data array. Unlike `range`, this
+    /// is an index domain rather than a numeric value constraint.
+    index_bounds: Option<(i64, i64)>,
 }
 
 /// The value type an attribute declaration expects (spec 3.5).
@@ -262,12 +265,10 @@ struct Checker<'a> {
     prefix_types: HashMap<String, Vec<String>>,
     /// `using X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
-    /// Data-array local -> its inclusive index bounds. A packed vector is
-    /// bound-checked from its width, but an array's bounds are not in `Ty`:
-    /// `Logic[15..8]` and `Logic[8]` have the same length and are indexed
-    /// `8..15` and `0..7` respectively, so the declared form is the only
-    /// place the answer exists. Without it `v[9]` on a 4-element array
-    /// silently read `v[3]`.
+    /// Indexed local -> its inclusive declared labels. Range direction is not
+    /// retained in `Ty`: both `unsigned[15..8]` and `unsigned[8..15]` have
+    /// length 8, while their valid labels are 8..15 rather than 0..7. The
+    /// declaration is therefore authoritative for vectors and data arrays.
     array_bounds: std::cell::RefCell<HashMap<String, (i64, i64)>>,
     /// Aliases currently being expanded, so a cycle (`using A = B; using B =
     /// A`) is caught instead of recursing until the stack overflows.
@@ -431,6 +432,7 @@ impl<'a> Checker<'a> {
                             dir: p.dir,
                             view: view_key(&p.ty, &self.views),
                             range: self.declared_range(&p.ty),
+                            index_bounds: self.declared_index_bounds(&p.ty),
                         })
                         .collect();
                     if e.attrs
@@ -1975,6 +1977,11 @@ impl<'a> Checker<'a> {
                     sym.insert(p.name.clone(), p.ty.clone());
                     if let Some(r) = p.range {
                         ranged.insert(p.name.clone(), r);
+                    }
+                    if let Some(bounds) = p.index_bounds {
+                        self.array_bounds
+                            .borrow_mut()
+                            .insert(p.name.clone(), bounds);
                     }
                     if p.dir == Some(Direction::In) {
                         illegal.insert(p.name.clone());
@@ -4185,21 +4192,21 @@ impl<'a> Checker<'a> {
 
     /// A constant bit index or slice outside a packed vector's width has no
     /// hardware meaning — it lowered to `Unknown` and surfaced much later as a
-    /// generic "no engine can run this design". Only *packed* vectors
-    /// (family-carrying `Ty::Array`, indices `0..width-1`) are checked: an array with a
-    /// declared range (`Logic[15..8]`) is indexed by its own bounds.
+    /// generic "no engine can run this design". Both packed vectors and data
+    /// arrays use their declared labels; a width/count spelling falls back to
+    /// `0..len-1`.
     fn check_index_bounds(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
-        // What we can bound-check, and how to name it. A packed vector is
-        // indexed `0..width-1`. An *instance array* (`let s: Sub[4]`) is always
-        // declared with a plain count, so it is 0-based too — unlike a data
-        // array, which may carry a declared range (`Logic[15..8]`) and is
-        // therefore left alone.
+        // What we can bound-check, and how to name it. A packed vector or data
+        // array may carry nonzero declared labels. An instance array (`let s:
+        // Sub[4]`) is always declared with a plain count and remains 0-based.
         let (lo, hi, noun) = match self.type_of(base, sym) {
             Ty::Array {
                 len,
                 family: Some(_),
                 ..
-            } => (0, len as i64 - 1, "bit"),
+            } => declared_bounds_of(base, &self.array_bounds)
+                .map(|(lo, hi)| (lo, hi, "bit"))
+                .unwrap_or((0, len as i64 - 1, "bit")),
             Ty::Array {
                 elem,
                 len,
@@ -6105,10 +6112,10 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The inclusive index bounds of a *data array* declaration: `Logic[15..8]`
-    /// is `(8, 15)` and `unsigned[8][4]` is `(0, 3)`. `None` for a packed
-    /// vector (`unsigned[8]`, checked from its width instead), an instance
-    /// array, and anything parametric.
+    /// The inclusive labels of a packed vector or data-array declaration:
+    /// `unsigned[15..8]` is `(8, 15)`, while `unsigned[8]` and
+    /// `unsigned[8][4]` are `(0, 7)` and `(0, 3)`. Instance arrays and
+    /// parametric bounds return `None`.
     fn declared_index_bounds(&self, decl_ty: &Type) -> Option<(i64, i64)> {
         let resolved = self.resolve_alias_type(decl_ty)?;
         let Type::Indexed {
@@ -6118,9 +6125,7 @@ impl<'a> Checker<'a> {
             return None;
         };
         match self.ast_ty(&resolved) {
-            Ty::Array {
-                elem, family: None, ..
-            } if !self.is_entity_ty(&elem) => {}
+            Ty::Array { elem, .. } if !self.is_entity_ty(&elem) => {}
             _ => return None,
         }
         match ix.as_ref() {
@@ -7642,6 +7647,19 @@ mod tests {
         assert!(!oob(&ranged.replace("IX", "8")));
         assert!(oob(&ranged.replace("IX", "7")));
         assert!(oob(&ranged.replace("IX", "16")));
+
+        // Packed vector families retain the same nonzero labels. Cover both
+        // an impl-local declaration and a port, whose metadata is collected
+        // on different checker paths.
+        let packed_local = "module m; using std::bits::unsigned; using std::logic::Logic; \
+            entity E { y: Logic out } impl E { let v: unsigned[15..8]; y = v[IX]; }";
+        assert!(!oob(&packed_local.replace("IX", "15")));
+        assert!(!oob(&packed_local.replace("IX", "8")));
+        assert!(oob(&packed_local.replace("IX", "7")));
+        let packed_port = "module m; using std::bits::unsigned; using std::logic::Logic; \
+            entity E { v: unsigned[15..8] in, y: Logic out } impl E { y = v[IX]; }";
+        assert!(!oob(&packed_port.replace("IX", "15")));
+        assert!(oob(&packed_port.replace("IX", "16")));
     }
 
     #[test]

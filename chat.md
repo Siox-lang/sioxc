@@ -7226,3 +7226,31 @@ native build tests, strict all-target/all-feature Clippy, and the external
 native corpus: 162 passed, 0 failed. The new corpus regression simulates a
 clocked two-dimensional register file, including distinct cells and
 out-of-range read/write behavior.
+
+### 2026-08-06 — Codex — starting runtime packed-vector indexing
+
+Closing the next accepted-but-unlowered Phase 1 form: type checking permits
+`word[index]` for a runtime numeric index, but hardware IR emits E-P017 and the
+native testbench emitter rejects the same expression/target. Implementing
+position selection and read-modify-write over the packed scalar, including
+nonzero declared ranges, out-of-range behavior, and Logic metavalue reads.
+
+### 2026-08-06 — Codex — runtime packed-vector indexing complete
+
+Runtime scalar indices now lower for packed signals, nested array leaves, and
+storage-free block locals. Reads select by the declared logical label and use
+zero outside the range; writes expand into mutually exclusive read-modify-write
+updates and become no-ops outside the range. Logic-family writes update the
+value bit and four-bit discriminant companion together, so runtime `'X'`/`'Z'`
+writes reconstruct exactly on later constant or runtime reads.
+
+Corrected the shared declared-range model at the same boundary: a packed
+`unsigned[15..8]` is checked against labels 8..15 and maps them onto compact
+storage bits 0..7. Constant slices and the native testbench emitter use that
+mapping too. Replaced the partial-write `u64` masks with arbitrary-width word
+masks; the native regression writes bit 100 and metavalue bit 127 of a
+128-element vector, proving value and companion updates cross ABI words.
+
+Verified with 304 library tests, every integration suite including all 13
+native build tests, strict all-target/all-feature Clippy, a direct native run,
+and the external corpus: 163 passed, 0 failed.

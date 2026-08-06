@@ -1427,6 +1427,7 @@ bit-slice, updating only those bits and holding the rest:
 y = 0;
 y[3..0] = a;          // low nibble = a, high nibble stays 0  -> y = a
 status[7] = err;      // set one bit
+status[index] = err;  // runtime bit position
 ```
 
 It is a read-modify-write. Combinational partial writes merge with the
@@ -1440,6 +1441,18 @@ keeps the top).
 elements 7 down to 0 (descending), `Bit[0..3]` ascending. Slices follow the
 written order too: `w[7..4]` extracts MSB-first (the natural bit order),
 while `w[4..7]` extracts the same bits with the order reversed.
+
+A runtime scalar index is supported for packed vectors in hardware and native
+testbench code. Reads select one element and writes are read-modify-writes that
+preserve every other bit. An out-of-range runtime packed read returns `'0'`;
+an out-of-range write is a no-op. Logic-family writes update the element's full
+metavalue discriminant as well as its value bit, so writing `'X'` or `'Z'` and
+reading it through another runtime index preserves the symbol.
+
+Explicit nonzero labels occupy compact storage by subtracting the declared
+low bound. For `unsigned[15..8]`, label 8 is storage bit 0 and label 15 is
+storage bit 7; the vector is still eight bits wide. This mapping applies to
+constant and runtime indices and slices.
 
 Ranges are inclusive, including partial ranges. An omitted bound comes from
 the indexed object's declared range:

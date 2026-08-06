@@ -604,6 +604,18 @@ enum AccessStep<'e> {
     Index(&'e ast::Expr),
 }
 
+enum DynamicWriteTarget {
+    Whole {
+        signal: SignalId,
+        hit: Expr,
+    },
+    PackedBit {
+        signal: SignalId,
+        position: u32,
+        hit: Expr,
+    },
+}
+
 /// One block-local binding. The declared type is retained because substituting
 /// the value expression alone would lose its operator family and width.
 #[derive(Clone, Debug)]
@@ -2193,8 +2205,8 @@ impl<'a> Lowering<'a> {
             crate::diag::Diagnostic::error(format!("cannot assign to `{text}`"))
                 .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
                 .help(
-                    "runtime indices may traverse declared arrays; packed-vector \
-                     indices and slices require constant bounds, and a custom container needs \
+                    "runtime indices may traverse declared arrays and packed vectors; \
+                     packed-vector slice bounds must be constant, and a custom container needs \
                      an `IndexAssign` implementation",
                 )
         } else {
@@ -2221,8 +2233,8 @@ impl<'a> Lowering<'a> {
                     .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
                     .at(span)
                     .help(
-                        "runtime indices may traverse declared arrays; packed-vector \
-                         indices and slices require constant bounds, and a custom container needs \
+                        "runtime indices may traverse declared arrays and packed vectors; \
+                         packed-vector slice bounds must be constant, and a custom container needs \
                          an `Index` implementation",
                     ),
             );
@@ -4038,10 +4050,56 @@ impl<'a> Lowering<'a> {
             return None;
         }
         let (_, binding) = self.block_local_named(&root)?;
-        let Val::Fields(fields) = binding.value else {
+        match binding.value {
+            Val::Scalar(value) => {
+                let [AccessStep::Index(index)] = steps.as_slice() else {
+                    return None;
+                };
+                self.lower_block_packed_read(&binding.ty, value, index)
+            }
+            Val::Fields(fields) => {
+                self.lower_block_dynamic_access_from(&binding.ty, "", &steps, &fields)
+            }
+        }
+    }
+
+    fn lower_block_packed_read(
+        &self,
+        ty: &ast::Type,
+        value: Expr,
+        index: &ast::Expr,
+    ) -> Option<Expr> {
+        if matches!(
+            index,
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
             return None;
-        };
-        self.lower_block_dynamic_access_from(&binding.ty, "", &steps, &fields)
+        }
+        let positions = self.block_packed_positions(ty)?;
+        if let Some(logical) = eval_const(index, &self.cur_env) {
+            let physical = positions
+                .iter()
+                .find_map(|&(label, position)| (label == logical).then_some(position))?;
+            return Some(Expr::Slice {
+                base: Box::new(value),
+                hi: physical,
+                lo: physical,
+            });
+        }
+        let lowered_index = self.lower_expr(index);
+        let mut result = Expr::Const(0);
+        for (logical, physical) in positions.into_iter().rev() {
+            result = Expr::Select {
+                cond: Box::new(eq(lowered_index.clone(), Expr::Const(logical as u64))),
+                then: Box::new(Expr::Slice {
+                    base: Box::new(value.clone()),
+                    hi: physical,
+                    lo: physical,
+                }),
+                els: Box::new(result),
+            };
+        }
+        Some(result)
     }
 
     fn lower_block_dynamic_access_from(
@@ -4073,27 +4131,37 @@ impl<'a> Lowering<'a> {
                 )
             }
             AccessStep::Index(index) => {
-                let (element_ty, indices) =
-                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)?;
-                let (&last, earlier) = indices.split_last()?;
-                let lowered_index = self.lower_expr(index);
-                let element = |position: i64| {
-                    self.lower_block_dynamic_access_from(
-                        element_ty,
-                        &format!("{prefix}[{position}]"),
-                        rest,
-                        fields,
-                    )
-                };
-                let mut result = element(last)?;
-                for &position in earlier.iter().rev() {
-                    result = Expr::Select {
-                        cond: Box::new(eq(lowered_index.clone(), Expr::Const(position as u64))),
-                        then: Box::new(element(position)?),
-                        els: Box::new(result),
+                if let Some((element_ty, indices)) =
+                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
+                {
+                    let (&last, earlier) = indices.split_last()?;
+                    let lowered_index = self.lower_expr(index);
+                    let element = |position: i64| {
+                        self.lower_block_dynamic_access_from(
+                            element_ty,
+                            &format!("{prefix}[{position}]"),
+                            rest,
+                            fields,
+                        )
                     };
+                    let mut result = element(last)?;
+                    for &position in earlier.iter().rev() {
+                        result = Expr::Select {
+                            cond: Box::new(eq(lowered_index.clone(), Expr::Const(position as u64))),
+                            then: Box::new(element(position)?),
+                            els: Box::new(result),
+                        };
+                    }
+                    return Some(result);
                 }
-                Some(result)
+                if !rest.is_empty() {
+                    return None;
+                }
+                let value = fields
+                    .iter()
+                    .find(|(name, _)| name == prefix)
+                    .map(|(_, value)| value.clone())?;
+                self.lower_block_packed_read(ty, value, index)
             }
         }
     }
@@ -4262,13 +4330,14 @@ impl<'a> Lowering<'a> {
                             .cloned()
                     };
                     if let Some(previous) = previous {
-                        if let (Val::Scalar(old), Some((left, right))) =
-                            (previous.value.clone(), self.slice_bounds(base, index))
-                        {
+                        if let (Val::Scalar(old), Some((left, right))) = (
+                            previous.value.clone(),
+                            self.storage_slice_bounds(base, index),
+                        ) {
                             let next = self.merge_slice(
                                 old.clone(),
-                                left.max(right) as u32,
-                                left.min(right) as u32,
+                                left.max(right),
+                                left.min(right),
                                 self.lower_expr(value),
                                 self.block_local_width(&previous.ty),
                             );
@@ -4291,6 +4360,49 @@ impl<'a> Lowering<'a> {
                                 );
                             }
                             return true;
+                        }
+                        if let Val::Scalar(old) = previous.value.clone() {
+                            if !matches!(
+                                index.as_ref(),
+                                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                            ) && eval_const(index, &self.cur_env).is_none()
+                            {
+                                if let Some(positions) = self.block_packed_positions(&previous.ty) {
+                                    let lowered_index = self.lower_expr(index);
+                                    let replacement = self.lower_expr(value);
+                                    let width = self.block_local_width(&previous.ty);
+                                    let mut next = old.clone();
+                                    for (logical, physical) in positions.into_iter().rev() {
+                                        let fire = and(
+                                            cond.clone(),
+                                            eq(lowered_index.clone(), Expr::Const(logical as u64)),
+                                        );
+                                        next = Expr::Select {
+                                            cond: Box::new(fire),
+                                            then: Box::new(self.merge_slice(
+                                                old.clone(),
+                                                physical,
+                                                physical,
+                                                replacement.clone(),
+                                                width,
+                                            )),
+                                            els: Box::new(next),
+                                        };
+                                    }
+                                    if let Some(scope) =
+                                        self.block_scopes.borrow_mut().get_mut(scope_index)
+                                    {
+                                        scope.insert(
+                                            name,
+                                            BlockLocal {
+                                                value: Val::Scalar(next),
+                                                ty: previous.ty,
+                                            },
+                                        );
+                                    }
+                                    return true;
+                                }
+                            }
                         }
                         if let (Val::Fields(mut fields), Some((element_ty, indices))) = (
                             previous.value.clone(),
@@ -4908,7 +5020,7 @@ impl<'a> Lowering<'a> {
                         expr,
                         ctx: self.cur_ctx,
                     });
-                } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
+                } else if let Some(ups) = self.dynamic_write(target, value, &cond, false) {
                     for u in ups {
                         self.out.drivers.push(Driver {
                             target: u.target,
@@ -5335,7 +5447,7 @@ impl<'a> Lowering<'a> {
                             cond: cond.clone(),
                             expr,
                         });
-                    } else if let Some(ups) = self.dynamic_write(target, value, &cond) {
+                    } else if let Some(ups) = self.dynamic_write(target, value, &cond, true) {
                         out.extend(ups);
                     } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                         // Register bit-field update: next(y) holds the other
@@ -5525,21 +5637,56 @@ impl<'a> Lowering<'a> {
                 self.lower_dynamic_access_from(&format!("{path}.{field}"), rest)
             }
             AccessStep::Index(index) => {
-                let indices = self.local_array.get(path)?;
-                let (&last, earlier) = indices.split_last()?;
+                if let Some(indices) = self.local_array.get(path) {
+                    let (&last, earlier) = indices.split_last()?;
+                    let lowered_index = self.lower_expr(index);
+                    let element = |position: i64| {
+                        self.lower_dynamic_access_from(&format!("{path}[{position}]"), rest)
+                    };
+                    let mut result = element(last)?;
+                    for &position in earlier.iter().rev() {
+                        result = Expr::Select {
+                            cond: Box::new(Expr::Binary {
+                                op: BinOp::Eq,
+                                lhs: Box::new(lowered_index.clone()),
+                                rhs: Box::new(Expr::Const(position as u64)),
+                            }),
+                            then: Box::new(element(position)?),
+                            els: Box::new(result),
+                        };
+                    }
+                    return Some(result);
+                }
+                if !rest.is_empty()
+                    || matches!(
+                        index,
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    )
+                {
+                    return None;
+                }
+                let signal = *self.locals.get(path)?;
+                let positions = self.packed_positions(path)?;
+                if let Some(logical) = eval_const(index, &self.cur_env) {
+                    let physical = positions
+                        .iter()
+                        .find_map(|&(label, position)| (label == logical).then_some(position))?;
+                    return Some(Expr::Slice {
+                        base: Box::new(Expr::Current(signal)),
+                        hi: physical,
+                        lo: physical,
+                    });
+                }
                 let lowered_index = self.lower_expr(index);
-                let element = |position: i64| {
-                    self.lower_dynamic_access_from(&format!("{path}[{position}]"), rest)
-                };
-                let mut result = element(last)?;
-                for &position in earlier.iter().rev() {
+                let mut result = Expr::Const(0);
+                for (logical, physical) in positions.into_iter().rev() {
                     result = Expr::Select {
-                        cond: Box::new(Expr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(lowered_index.clone()),
-                            rhs: Box::new(Expr::Const(position as u64)),
+                        cond: Box::new(eq(lowered_index.clone(), Expr::Const(logical as u64))),
+                        then: Box::new(Expr::Slice {
+                            base: Box::new(Expr::Current(signal)),
+                            hi: physical,
+                            lo: physical,
                         }),
-                        then: Box::new(element(position)?),
                         els: Box::new(result),
                     };
                 }
@@ -5552,10 +5699,11 @@ impl<'a> Lowering<'a> {
     /// `pack[slot].data = v`): enumerate every concrete scalar leaf and gate it
     /// by all runtime index comparisons. An out-of-range write matches no leaf.
     fn dynamic_write(
-        &self,
+        &mut self,
         target: &ast::Expr,
         value: &ast::Expr,
         cond: &Option<Expr>,
+        sequential: bool,
     ) -> Option<Vec<NextUpdate>> {
         let (root, steps) = access_steps(target)?;
         if !steps
@@ -5567,16 +5715,104 @@ impl<'a> Lowering<'a> {
         let mut targets = Vec::new();
         self.dynamic_write_targets(&root, &steps, None, &mut targets)?;
         let expr = self.lower_expr(value);
-        Some(
-            targets
-                .into_iter()
-                .map(|(signal, hit)| NextUpdate {
+        let mut updates = Vec::new();
+        for target in targets {
+            match target {
+                DynamicWriteTarget::Whole { signal, hit } => updates.push(NextUpdate {
                     target: signal,
                     cond: Some(and(cond.clone(), hit)),
                     expr: self.coerce_to_target(signal, expr.clone()),
-                })
-                .collect(),
-        )
+                }),
+                DynamicWriteTarget::PackedBit {
+                    signal,
+                    position,
+                    hit,
+                } => {
+                    let width = self.out.signals[signal.0 as usize].width;
+                    let base = self.slice_write_base(signal, sequential);
+                    updates.push(NextUpdate {
+                        target: signal,
+                        cond: Some(and(cond.clone(), hit.clone())),
+                        expr: self.merge_slice(base, position, position, expr.clone(), width),
+                    });
+
+                    // A packed Logic-family vector has a separate nibble per
+                    // element for its full 9-value discriminant. Update that
+                    // plane alongside the value bit so a runtime write of
+                    // `'X'`/`'Z'` reads back exactly, while 0/1 clear the
+                    // companion nibble.
+                    if self.out.vector_element_enums.contains_key(&signal.0) {
+                        let companion = SignalId(self.driven_companion(signal));
+                        if !sequential {
+                            self.ensure_combinational_companion_base(signal, companion);
+                        }
+                        let meta_width = self.out.signals[companion.0 as usize].width;
+                        let meta_base = self.slice_write_base(companion, sequential);
+                        let meta_value = Expr::Select {
+                            cond: Box::new(Expr::Binary {
+                                op: BinOp::Ge,
+                                lhs: Box::new(expr.clone()),
+                                rhs: Box::new(Expr::Const(2)),
+                            }),
+                            then: Box::new(expr.clone()),
+                            els: Box::new(Expr::Const(0)),
+                        };
+                        updates.push(NextUpdate {
+                            target: companion,
+                            cond: Some(and(cond.clone(), hit)),
+                            expr: self.merge_slice(
+                                meta_base,
+                                position * 4 + 3,
+                                position * 4,
+                                meta_value,
+                                meta_width,
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        Some(updates)
+    }
+
+    fn ensure_combinational_companion_base(&mut self, value: SignalId, companion: SignalId) {
+        if self.out.drivers.iter().any(|driver| {
+            driver.target == companion && driver.ctx == self.cur_ctx && driver.cond.is_none()
+        }) {
+            return;
+        }
+        let width = self.out.signals[value.0 as usize].width;
+        let meta = self
+            .out
+            .drivers
+            .iter()
+            .rev()
+            .find(|driver| {
+                driver.target == value && driver.ctx == self.cur_ctx && driver.cond.is_none()
+            })
+            .and_then(|driver| self.lower_meta_ir(&driver.expr, width))
+            .unwrap_or(Expr::Const(0));
+        self.out.drivers.push(Driver {
+            target: companion,
+            cond: None,
+            expr: meta,
+            ctx: self.cur_ctx,
+        });
+    }
+
+    fn slice_write_base(&self, signal: SignalId, sequential: bool) -> Expr {
+        if sequential {
+            return Expr::Current(signal);
+        }
+        self.out
+            .drivers
+            .iter()
+            .rev()
+            .find(|driver| {
+                driver.target == signal && driver.ctx == self.cur_ctx && driver.cond.is_none()
+            })
+            .map(|driver| driver.expr.clone())
+            .unwrap_or(Expr::Const(0))
     }
 
     fn dynamic_write_targets(
@@ -5584,11 +5820,14 @@ impl<'a> Lowering<'a> {
         path: &str,
         steps: &[AccessStep<'_>],
         hit: Option<Expr>,
-        out: &mut Vec<(SignalId, Expr)>,
+        out: &mut Vec<DynamicWriteTarget>,
     ) -> Option<()> {
         let Some((step, rest)) = steps.split_first() else {
             let signal = *self.locals.get(path)?;
-            out.push((signal, hit.unwrap_or(Expr::Const(1))));
+            out.push(DynamicWriteTarget::Whole {
+                signal,
+                hit: hit.unwrap_or(Expr::Const(1)),
+            });
             return Some(());
         };
         match step {
@@ -5596,20 +5835,50 @@ impl<'a> Lowering<'a> {
                 self.dynamic_write_targets(&format!("{path}.{field}"), rest, hit, out)
             }
             AccessStep::Index(index) => {
-                let indices = self.local_array.get(path)?;
+                if let Some(indices) = self.local_array.get(path) {
+                    let lowered_index = self.lower_expr(index);
+                    for &position in indices {
+                        let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
+                        self.dynamic_write_targets(
+                            &format!("{path}[{position}]"),
+                            rest,
+                            Some(and(hit.clone(), matches)),
+                            out,
+                        )?;
+                    }
+                    return Some(());
+                }
+                if !rest.is_empty()
+                    || matches!(
+                        index,
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    )
+                {
+                    return None;
+                }
+                let signal = *self.locals.get(path)?;
+                let positions = self.packed_positions(path)?;
+                if let Some(logical) = eval_const(index, &self.cur_env) {
+                    let position = positions
+                        .into_iter()
+                        .find_map(|(label, position)| (label == logical).then_some(position))?;
+                    out.push(DynamicWriteTarget::PackedBit {
+                        signal,
+                        position,
+                        hit: hit.unwrap_or(Expr::Const(1)),
+                    });
+                    return Some(());
+                }
                 let lowered_index = self.lower_expr(index);
-                for &position in indices {
-                    let matches = Expr::Binary {
-                        op: BinOp::Eq,
-                        lhs: Box::new(lowered_index.clone()),
-                        rhs: Box::new(Expr::Const(position as u64)),
-                    };
-                    self.dynamic_write_targets(
-                        &format!("{path}[{position}]"),
-                        rest,
-                        Some(and(hit.clone(), matches)),
-                        out,
-                    )?;
+                for (logical, position) in positions {
+                    out.push(DynamicWriteTarget::PackedBit {
+                        signal,
+                        position,
+                        hit: and(
+                            hit.clone(),
+                            eq(lowered_index.clone(), Expr::Const(logical as u64)),
+                        ),
+                    });
                 }
                 Some(())
             }
@@ -5622,9 +5891,9 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Index { base, index, .. } = target else {
             return None;
         };
-        let (a, b) = self.slice_bounds(base, index)?;
+        let (a, b) = self.storage_slice_bounds(base, index)?;
         let sig = *self.locals.get(&expr_path(base)?)?;
-        Some((sig, a.max(b) as u32, a.min(b) as u32))
+        Some((sig, a.max(b), a.min(b)))
     }
 
     /// A partial (bit-slice) write as a read-modify-write over `base`:
@@ -5632,26 +5901,31 @@ impl<'a> Lowering<'a> {
     /// [hi..lo] window. `width` is the target signal's width.
     fn merge_slice(&self, base: Expr, hi: u32, lo: u32, value: Expr, width: u32) -> Expr {
         let slice_w = hi - lo + 1;
-        let slice_mask = if slice_w >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << slice_w) - 1
+        let ones = |bits: u32| {
+            let mut words = vec![u64::MAX; (bits as usize).div_ceil(64)];
+            if let Some(last) = words.last_mut() {
+                let used = bits % 64;
+                if used != 0 {
+                    *last = (1u64 << used) - 1;
+                }
+            }
+            words
         };
-        let full = if width == 0 || width >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << width) - 1
-        };
-        let keep = full & !(slice_mask << lo);
+        let mut keep = ones(width);
+        for bit in lo..=hi {
+            if let Some(word) = keep.get_mut(bit as usize / 64) {
+                *word &= !(1u64 << (bit % 64));
+            }
+        }
         let kept = Expr::Binary {
             op: BinOp::And,
             lhs: Box::new(base),
-            rhs: Box::new(Expr::Const(keep)),
+            rhs: Box::new(words_const(keep)),
         };
         let masked = Expr::Binary {
             op: BinOp::And,
             lhs: Box::new(value),
-            rhs: Box::new(Expr::Const(slice_mask)),
+            rhs: Box::new(words_const(ones(slice_w))),
         };
         let shifted = Expr::Binary {
             op: BinOp::Shl,
@@ -5954,25 +6228,27 @@ impl<'a> Lowering<'a> {
             // range constant). Direction follows the written order: `7..4`
             // (descending) extracts MSB-first — the natural bit order —
             // while `4..7` (ascending) extracts with the bit order reversed.
-            ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
-                let (a, b) = self.slice_bounds(base, index).unwrap();
+            ast::Expr::Index { base, index, .. }
+                if self.storage_slice_bounds(base, index).is_some() =>
+            {
+                let (a, b) = self.storage_slice_bounds(base, index).unwrap();
                 let lowered = self.lower_expr(base);
                 if a >= b {
                     Expr::Slice {
                         base: Box::new(lowered),
-                        hi: a as u32,
-                        lo: b as u32,
+                        hi: a,
+                        lo: b,
                     }
                 } else {
                     // Ascending: reassemble bits a..=b with significance
                     // reversed: source bit (a+k) lands at result bit (w-1-k).
-                    let w = (b - a + 1) as u32;
+                    let w = b - a + 1;
                     let mut acc = Expr::Const(0);
                     for k in 0..w {
                         let bit = Expr::Slice {
                             base: Box::new(lowered.clone()),
-                            hi: a as u32 + k,
-                            lo: a as u32 + k,
+                            hi: a + k,
+                            lo: a + k,
                         };
                         let shifted = Expr::Binary {
                             op: BinOp::Shl,
@@ -6482,6 +6758,68 @@ impl<'a> Lowering<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Map a vector's declared index labels onto its zero-based storage bits.
+    /// A nonzero range keeps numeric significance: `unsigned[15..8]` stores
+    /// label 8 in bit 0 and label 15 in bit 7. Direction still controls slice
+    /// ordering, but does not waste storage below the declared low bound.
+    fn packed_positions(&self, path: &str) -> Option<Vec<(i64, u32)>> {
+        if self.local_array.contains_key(path) {
+            return None;
+        }
+        let &(left, right) = self.local_range.get(path)?;
+        let low = left.min(right);
+        let high = left.max(right);
+        let signal = *self.locals.get(path)?;
+        let width = self.out.signals[signal.0 as usize].width;
+        let span = i128::from(high) - i128::from(low) + 1;
+        if span != i128::from(width) {
+            return None;
+        }
+        (low..=high)
+            .map(|logical| {
+                u32::try_from(i128::from(logical) - i128::from(low))
+                    .ok()
+                    .map(|physical| (logical, physical))
+            })
+            .collect()
+    }
+
+    fn block_packed_positions(&self, ty: &ast::Type) -> Option<Vec<(i64, u32)>> {
+        let (left, right) = self.declared_range(ty, &self.cur_env)?;
+        let low = left.min(right);
+        let high = left.max(right);
+        let width = self.block_local_width(ty);
+        let span = i128::from(high) - i128::from(low) + 1;
+        if span != i128::from(width) {
+            return None;
+        }
+        (low..=high)
+            .map(|logical| {
+                u32::try_from(i128::from(logical) - i128::from(low))
+                    .ok()
+                    .map(|physical| (logical, physical))
+            })
+            .collect()
+    }
+
+    /// Constant source bounds translated from declared labels to packed
+    /// storage positions. Arrays are excluded because their elements are
+    /// separate signals rather than bits of one scalar.
+    fn storage_slice_bounds(&self, base: &ast::Expr, index: &ast::Expr) -> Option<(u32, u32)> {
+        let (a, b) = self.slice_bounds(base, index)?;
+        let path = expr_path(base)?;
+        let (left, right) = self
+            .block_local_binding(base)
+            .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
+            .or_else(|| self.local_range.get(&path).copied())?;
+        let low = left.min(right);
+        let to_storage = |label: i64| {
+            let offset = i128::from(label) - i128::from(low);
+            u32::try_from(offset).ok()
+        };
+        Some((to_storage(a)?, to_storage(b)?))
     }
 
     fn lower_custom_index(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
@@ -11871,6 +12209,106 @@ mod tests {
     }
 
     #[test]
+    fn packed_vector_indices_use_declared_labels_and_storage_offsets() {
+        let design = lower_src(
+            "module m; using std::bits::unsigned; using std::logic::Logic;
+             #[top] entity E {
+               value: unsigned[15..8] in,
+               high: Logic out, low: Logic out, whole: unsigned[8] out
+             }
+             impl E { high = value[15]; low = value[8]; whole = value[15..8]; }",
+        );
+        let driver = |path: &str| {
+            let signal = design
+                .signals
+                .iter()
+                .position(|signal| signal.path == path)
+                .map(|index| SignalId(index as u32))
+                .unwrap();
+            &design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == signal)
+                .unwrap()
+                .expr
+        };
+        assert!(matches!(driver("E.high"), Expr::Slice { hi: 7, lo: 7, .. }));
+        assert!(matches!(driver("E.low"), Expr::Slice { hi: 0, lo: 0, .. }));
+        assert!(matches!(
+            driver("E.whole"),
+            Expr::Slice { hi: 7, lo: 0, .. }
+        ));
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
+    }
+
+    #[test]
+    fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
+        let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
+             #[top] entity E {
+               clk: Bit in, index: unsigned[5] in, data: Logic in, q: Logic out
+             }
+             impl E {
+               let word: unsigned[15..8] = \"00000000\";
+               if clk.rising() { word[index] = data; }
+               q = word[index];
+             }";
+        let diagnostics = lower_diags(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("E-P017")),
+            "{diagnostics:#?}"
+        );
+        let design = lower_src(source);
+        let word = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "E.word")
+            .unwrap() as u32;
+        let meta = *design
+            .meta_of
+            .get(&word)
+            .expect("runtime writes need a companion");
+        let event = design.event_blocks.first().expect("clocked bit write");
+        assert_eq!(
+            event
+                .updates
+                .iter()
+                .filter(|update| update.target.0 == word)
+                .count(),
+            8,
+            "one mutually exclusive value update per declared label"
+        );
+        assert_eq!(
+            event
+                .updates
+                .iter()
+                .filter(|update| update.target.0 == meta)
+                .count(),
+            8,
+            "the metavalue nibble follows every value update"
+        );
+        let q = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "E.q")
+            .unwrap() as u32;
+        let mut reads = Vec::new();
+        read_set(
+            &design
+                .drivers
+                .iter()
+                .find(|driver| driver.target.0 == q)
+                .expect("q driver")
+                .expr,
+            &mut reads,
+        );
+        assert!(reads.iter().any(|signal| signal.0 == word));
+        assert!(reads.iter().any(|signal| signal.0 == meta));
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
+    }
+
+    #[test]
     fn validate_accepts_good_and_flags_bad_ir() {
         // A lowered counter is well-formed.
         assert!(lower_src(COUNTER).validate().is_empty());
@@ -12568,6 +13006,35 @@ mod tests {
             .signals
             .iter()
             .all(|signal| !signal.path.contains("matrix")));
+        assert!(!design.to_ir_string().contains("Unknown"));
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
+    }
+
+    #[test]
+    fn runtime_packed_index_on_a_block_local_stays_storage_free() {
+        let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
+             #[top] entity E {
+               enable: Bit in, index: unsigned[5] in, y: Logic out
+             }
+             impl E {
+               if enable == '1' {
+                 let word: unsigned[15..8] = 0;
+                 word[index] = '1';
+                 y = word[index];
+               } else { y = '0'; }
+             }";
+        let diagnostics = lower_diags(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("E-P017")),
+            "{diagnostics:#?}"
+        );
+        let design = lower_src(source);
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.ends_with(".word")));
         assert!(!design.to_ir_string().contains("Unknown"));
         assert!(design.validate().is_empty(), "{:#?}", design.validate());
     }

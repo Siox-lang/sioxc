@@ -3581,6 +3581,92 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Write one packed bit selected by a constant or runtime declared label.
+    /// The update is guarded, so an out-of-range runtime label is a no-op. A
+    /// connected Logic-family signal's companion nibble is updated in lockstep
+    /// when the finished design has one.
+    fn write_packed_bit(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        b: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        let ast::Expr::Index { base, index, .. } = target else {
+            return Ok(false);
+        };
+        if matches!(
+            index.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return Ok(false);
+        }
+        let Some(path) = expr_path(base) else {
+            return Ok(false);
+        };
+        if !self.array_elements(&path).is_empty()
+            || (!self.locals.borrow().contains(&path) && !self.map.contains_key(&path))
+        {
+            return Ok(false);
+        }
+        let Some(width) = self.name_width(&path) else {
+            return Ok(false);
+        };
+        let (left, right) = self
+            .local_ranges
+            .borrow()
+            .get(&path)
+            .copied()
+            .unwrap_or((0, i64::from(width).saturating_sub(1)));
+        let (low, high) = (left.min(right), left.max(right));
+        let index = self.expr(index)?;
+        let value = self.expr(value)?;
+        let serial = self.tmp.get();
+        self.tmp.set(serial + 1);
+        b.push_str(&format!(
+            "{ind}{{ int64_t _bi{serial} = (int64_t)({index}); \
+             sx_value _bv{serial} = {value};\n\
+             {ind}  if (_bi{serial} >= {low}LL && _bi{serial} <= {high}LL) {{\n\
+             {ind}    uint64_t _bp{serial} = (uint64_t)(_bi{serial} - {low}LL);\n"
+        ));
+        if self.locals.borrow().contains(&path) {
+            let local = c_local_ident(&path);
+            b.push_str(&format!(
+                "{ind}    sx_value _bm{serial} = ((sx_value)1) << _bp{serial};\n\
+                 {ind}    {local} = ({local} & ~_bm{serial}) | \
+                 ((_bv{serial} & 1) << _bp{serial});\n"
+            ));
+        } else {
+            let mut targets = self.aliases.get(&path).cloned().unwrap_or_default();
+            if targets.is_empty() {
+                if let Some(&id) = self.map.get(&path) {
+                    targets.push(id);
+                }
+            }
+            targets.sort_by_key(|id| id.0);
+            targets.dedup_by_key(|id| id.0);
+            for id in targets {
+                b.push_str(&format!(
+                    "{ind}    {{ sx_value _bm = ((sx_value)1) << _bp{serial}; \
+                     sx_value _old = sx_read({}); \
+                     sx_set({}, (_old & ~_bm) | ((_bv{serial} & 1) << _bp{serial})); }}\n",
+                    id.0, id.0
+                ));
+                if let Some(&meta) = self.design.meta_of.get(&id.0) {
+                    b.push_str(&format!(
+                        "{ind}    {{ uint64_t _ms = _bp{serial} * 4; \
+                         sx_value _mm = ((sx_value)15) << _ms; \
+                         sx_value _md = _bv{serial} >= 2 ? _bv{serial} : 0; \
+                         sx_value _old = sx_read({meta}); \
+                         sx_set({meta}, (_old & ~_mm) | ((_md & 15) << _ms)); }}\n"
+                    ));
+                }
+            }
+        }
+        b.push_str(&format!("{ind}  }}\n{ind}}}\n{ind}sx_settle();\n"));
+        Ok(true)
+    }
+
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
@@ -3607,6 +3693,9 @@ impl Ctx<'_> {
                             ));
                         }
                     }
+                    return Ok(());
+                }
+                if self.write_packed_bit(target, value, b, &ind)? {
                     return Ok(());
                 }
                 // `{ hi, lo } = src` — hardware has always lowered this and
@@ -5933,6 +6022,12 @@ impl Ctx<'_> {
             ast::Expr::Index { base, index, .. } if self.c_bit_slice(base, index).is_some() => {
                 self.c_bit_slice(base, index).unwrap()?
             }
+            // A runtime bit of a packed value. Arrays were handled above;
+            // this selects one storage bit (and its Logic companion nibble,
+            // when present) by the vector's declared labels.
+            ast::Expr::Index { base, index, .. } if self.c_dynamic_bit(base, index).is_some() => {
+                self.c_dynamic_bit(base, index).unwrap()?
+            }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 let path = expr_path(e).ok_or_else(|| {
                     // Naming the base is the difference between "the tool has
@@ -6162,6 +6257,58 @@ impl Ctx<'_> {
         Some(self.c_bit_slice_of(&path, a, b))
     }
 
+    fn c_dynamic_bit(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Result<String, String>> {
+        if matches!(
+            index,
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return None;
+        }
+        let path = expr_path(base)?;
+        if !self.array_elements(&path).is_empty()
+            || (!self.locals.borrow().contains(&path) && !self.map.contains_key(&path))
+            || self.slice_bounds(&path, index).is_some()
+        {
+            return None;
+        }
+        let width = self.name_width(&path)?;
+        let (left, right) = self
+            .local_ranges
+            .borrow()
+            .get(&path)
+            .copied()
+            .unwrap_or((0, i64::from(width).saturating_sub(1)));
+        let (low, high) = (left.min(right), left.max(right));
+        let value = match self.read_path(&path) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        let runtime_index = match self.expr(index) {
+            Ok(index) => index,
+            Err(error) => return Some(Err(error)),
+        };
+        let meta = self
+            .map
+            .get(&path)
+            .and_then(|id| self.design.meta_of.get(&id.0))
+            .map(|id| format!("sx_read({id})"));
+        let mut out = String::from("0");
+        for logical in (low..=high).rev() {
+            let physical = logical - low;
+            let bit = format!("((({value}) >> {physical}) & 1)");
+            let selected = match &meta {
+                Some(meta) => {
+                    let shift = physical * 4;
+                    let nibble = format!("((({meta}) >> {shift}) & 15)");
+                    format!("(({nibble}) >= 2 ? ({nibble}) : ({bit}))")
+                }
+                None => bit,
+            };
+            out = format!("(((int64_t)({runtime_index}) == {logical}LL) ? ({selected}) : ({out}))");
+        }
+        Some(Ok(out))
+    }
+
     /// The resolved `(a, b)` bit bounds of `base[index]`: an explicit range, a
     /// partial one completed from the declared range, or a single bit. Shared
     /// with `slice_width`, so the width a concat places a part at and the bits
@@ -6217,6 +6364,13 @@ impl Ctx<'_> {
     /// bit by bit — the width is a constant, so the unrolling is bounded.
     fn c_bit_slice_of(&self, path: &str, a: i64, b: i64) -> Result<String, String> {
         let v = self.read_path(path)?;
+        let declared_low = self
+            .local_ranges
+            .borrow()
+            .get(path)
+            .map(|&(left, right)| left.min(right))
+            .unwrap_or(0);
+        let (a, b) = (a - declared_low, b - declared_low);
         let (hi, lo) = (a.max(b), a.min(b));
         if hi < 0 || lo < 0 {
             return Err(format!("`{path}` sliced with a negative bound"));
