@@ -156,6 +156,9 @@ enum AttrValueTy {
 
 type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
 type GenericFnSignature = (Vec<Param>, Vec<(String, Type)>);
+type MethodParams = Vec<Option<Type>>;
+type TraitDefaultSignature = (String, Option<Type>, MethodParams);
+type InheritedMethodSignature = (String, String, Option<Type>, MethodParams);
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
 struct Checker<'a> {
@@ -190,7 +193,7 @@ struct Checker<'a> {
     /// trait method *with* a body is a default the impl may omit — which
     /// `trait_required` already allows — so the implementing type has to be
     /// able to call it.
-    trait_defaults: HashMap<String, Vec<(String, Option<Type>)>>,
+    trait_defaults: HashMap<String, Vec<TraitDefaultSignature>>,
     /// Type identity -> the traits it implements, for that inheritance.
     trait_impls_by_type: HashMap<String, Vec<String>>,
     /// Trait name -> the methods an implementation must provide (those the
@@ -266,6 +269,10 @@ struct Checker<'a> {
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
+    /// `(type head, method name)` -> declared non-`self` parameter types.
+    /// Method calls used to check only that a name existed, so wrong counts
+    /// and raw-bit reinterpretations both passed semantic analysis.
+    method_param_types: HashMap<(String, String), MethodParams>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
@@ -338,6 +345,7 @@ impl<'a> Checker<'a> {
             aliases: HashMap::new(),
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
+            method_param_types: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
         }
@@ -368,19 +376,21 @@ impl<'a> Checker<'a> {
         // A trait's defaulted methods belong to every type that implements it
         // and did not provide its own. Collection order is not guaranteed — a
         // trait may be declared after the impl — so this is a second pass.
-        let mut inherited: Vec<(String, String, Option<Type>)> = Vec::new();
+        let mut inherited: Vec<InheritedMethodSignature> = Vec::new();
         for (ty, traits) in &self.trait_impls_by_type {
             for tr in traits {
                 let Some(methods) = self.trait_defaults.get(tr) else {
                     continue;
                 };
-                for (name, ret) in methods {
-                    inherited.push((ty.clone(), name.clone(), ret.clone()));
+                for (name, ret, params) in methods {
+                    inherited.push((ty.clone(), name.clone(), ret.clone(), params.clone()));
                 }
             }
         }
-        for (ty, name, ret) in inherited {
-            self.methods.entry((ty, name)).or_insert(ret);
+        for (ty, name, ret, params) in inherited {
+            let key = (ty, name);
+            self.methods.entry(key.clone()).or_insert(ret);
+            self.method_param_types.entry(key).or_insert(params);
         }
         self.resolve_transitive_vector_families();
         self.resolve_vector_elements();
@@ -433,8 +443,16 @@ impl<'a> Checker<'a> {
                 if let Some(ty) = type_identity(&im.target) {
                     for it in &im.items {
                         if let ImplItem::Fn(f) = it {
-                            self.methods
-                                .insert((ty.clone(), f.name.text.clone()), f.ret.clone());
+                            let key = (ty.clone(), f.name.text.clone());
+                            self.methods.insert(key.clone(), f.ret.clone());
+                            self.method_param_types.insert(
+                                key,
+                                f.params
+                                    .iter()
+                                    .filter(|parameter| !parameter.is_self)
+                                    .map(|parameter| parameter.ty.clone())
+                                    .collect(),
+                            );
                         }
                     }
                 }
@@ -641,7 +659,17 @@ impl<'a> Checker<'a> {
                     t.items
                         .iter()
                         .filter(|f| f.body.is_some())
-                        .map(|f| (f.name.text.clone(), f.ret.clone()))
+                        .map(|f| {
+                            (
+                                f.name.text.clone(),
+                                f.ret.clone(),
+                                f.params
+                                    .iter()
+                                    .filter(|parameter| !parameter.is_self)
+                                    .map(|parameter| parameter.ty.clone())
+                                    .collect(),
+                            )
+                        })
                         .collect(),
                 );
             }
@@ -1517,19 +1545,62 @@ impl<'a> Checker<'a> {
     /// Deliberately conservative: only a receiver whose type head is known
     /// *and* which has at least one method recorded is checked, so a type
     /// whose methods this stage never collected can't false-positive.
-    fn check_method_exists(&mut self, callee: &Expr, sym: &HashMap<String, Ty>) {
+    fn check_method_call(&mut self, callee: &Expr, args: &[Expr], sym: &HashMap<String, Ty>) {
         let Expr::Field { base, field, span } = callee else {
             return;
         };
-        let _ = &base;
         let recv = self.type_of(base, sym);
         let Some(head) = self.ty_head(&recv) else {
             return;
         };
-        if self
-            .methods
-            .contains_key(&(head.clone(), field.text.clone()))
-        {
+        let key = (head.clone(), field.text.clone());
+        if self.methods.contains_key(&key) {
+            let Some(params) = self.method_param_types.get(&key).cloned() else {
+                return;
+            };
+            if args.len() != params.len() {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    *span,
+                    format!(
+                        "method `{}.{}` takes {} argument(s) but {} were given",
+                        head,
+                        field.text,
+                        params.len(),
+                        args.len()
+                    ),
+                );
+                return;
+            }
+            for (argument, declared) in args.iter().zip(params.iter()) {
+                let Some(declared) = declared else { continue };
+                let expected = self.ast_ty(declared);
+                if self.check_struct_literal_for_ty(&expected, argument, sym)
+                    || matches!(expected, Ty::Error)
+                    || self.assignable(&expected, argument, sym)
+                {
+                    continue;
+                }
+                let actual = self.type_of(argument, sym);
+                if matches!(actual, Ty::Error) {
+                    continue;
+                }
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    expr_span(argument),
+                    format!(
+                        "cannot pass {} to the {} parameter of method `{}.{}`",
+                        self.ty_display(&actual),
+                        self.ty_display(&expected),
+                        head,
+                        field.text
+                    ),
+                    format!(
+                        "wrap it in a conversion, e.g. `{}(...)`",
+                        self.ty_display(&expected)
+                    ),
+                );
+            }
             return;
         }
         // Only complain about a type we actually know methods for.
@@ -4106,7 +4177,7 @@ impl<'a> Checker<'a> {
                 if *bang {
                     self.check_format_arity(callee, args);
                 } else if matches!(callee.as_ref(), Expr::Field { .. }) {
-                    self.check_method_exists(callee, sym);
+                    self.check_method_call(callee, args, sym);
                 }
                 // Reset assertion is normally level-sensitive inside the
                 // design clock's event block. Edge-detecting a conventionally
@@ -6027,6 +6098,37 @@ mod tests {
         assert_eq!(
             errors, 3,
             "assignment, return, and call arguments all supply struct-field context"
+        );
+    }
+
+    #[test]
+    fn method_calls_check_argument_count_and_types() {
+        let errors = check_src(
+            "module m;\n\
+             struct Device { value: unsigned[8] }\n\
+             impl Device { fn take(self, value: unsigned[8]) {} }\n\
+             struct DefaultDevice { value: unsigned[8] }\n\
+             trait Takes {\n\
+               fn take(self, value: unsigned[8]) {\n\
+                 let copy: unsigned[8] = value;\n\
+               }\n\
+             }\n\
+             impl Takes for DefaultDevice {}\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let device: Device = { .value = 0 };\n\
+               let default_device: DefaultDevice = { .value = 0 };\n\
+               let r: real = 1.5;\n\
+               device.take(r);\n\
+               device.take();\n\
+               default_device.take(r);\n\
+               default_device.take();\n\
+               y = '0';\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 4,
+            "inherent and inherited-default methods enforce parameter type and arity"
         );
     }
 

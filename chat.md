@@ -6845,3 +6845,16 @@ matching both runtime engines and `std::math::Complex`. The regressions first
 reproduced the previous zero-diagnostic behavior. `cargo fmt --all --check`, all
 273 unit and integration tests, strict all-target/all-feature Clippy, and the
 full native corpus pass (161/161).
+
+### 2026-08-06 — Codex — method argument contracts
+
+The free-function fix exposed that method calls use a wholly separate path:
+`check_method_exists` verifies only the receiver/name pair. It records neither
+parameter types nor arity, so `object.take(real_local)` and `object.take()` are
+both accepted for `fn take(self, value: unsigned[8])`. Extending collected
+method/default-trait signatures and validating method arguments with the same
+contextual rules as free functions. Inherent methods and inherited trait
+defaults now reject both wrong argument counts and incompatible argument
+types, including contextual struct literals. `cargo fmt --all --check`, all
+274 unit and integration tests, strict all-target/all-feature Clippy, and the
+full native corpus pass (161/161).
