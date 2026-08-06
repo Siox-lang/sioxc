@@ -1377,6 +1377,12 @@ A bit pattern is only meaningful in `match` position — it is not a value:
 let x: unsigned[4] = "10--";   // '-' here is the std_ulogic value, not a wildcard
 ```
 
+Patterns are checked against the matched value's domain. An enum arm must use
+the scrutinee's own qualified variants (`State::Idle`, not another enum's
+equally named variant), integer/range patterns require a numeric scrutinee, and
+bit patterns require a packed vector. Alternatives joined with `|` obey the
+same rule independently.
+
 ---
 
 ### 3.23 Arrays and ranges
@@ -1428,6 +1434,18 @@ indexed value that supplies `'left` and `'right`; a standalone `..4` or a
 partial range passed to a custom index type without declared bounds is an
 error. Full `left..right` ranges are ordinary `Range` values for custom `Index`
 implementations.
+
+Intrinsic array and packed-vector indices are integer or packed-numeric values;
+the same requirement applies to every explicit range endpoint. A user-defined
+scalar `Index<I, Output>` may deliberately choose another `I`, but a `Range`
+still contains integer-like `left` and `right` bounds. In an implementation,
+`Self` in either indexing contract names the implementation target, just as it
+does in ordinary method signatures:
+
+```siox
+impl Index<Self, Self> for Cursor { /* index and result are Cursor */ }
+impl IndexAssign<Self, Self> for Cursor { /* index and value are Cursor */ }
+```
 
 **Unconstrained arrays.** Empty brackets leave the range to be set at use
 (VHDL's `range <>` box):
@@ -2472,14 +2490,14 @@ payload-carrying enums — never a keyword.
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
 directly, Python-style — length is the `'length` system attribute (an
-elaboration-time fact).
+elaboration-time fact). Other scalar values are not iterable.
 
 A numeric range `left..right` in a `for` is **inclusive and directional**, exactly
 like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`
 and `2..0` visits `2, 1, 0` — reversing the endpoints reverses the traversal
 over the *same* set. (This is not Python's half-open `range`; siox gives `..`
-one meaning everywhere.) So an index loop over an `N`-element array runs to
-`N-1`:
+one meaning everywhere.) Both endpoints must be integer or packed-numeric
+values. So an index loop over an `N`-element array runs to `N-1`:
 
 ```siox
 let acc: unsigned[8] = 0;

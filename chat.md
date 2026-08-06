@@ -6981,3 +6981,23 @@ assignment lengths. Added the missing `<=>` implementations for std `time` and
 comparisons. `cargo fmt --all --check`, all 288 unit tests and every integration
 target, strict all-target/all-feature Clippy, and the full native corpus pass
 (161/161).
+
+### 2026-08-06 — Codex — starting index, iteration, and pattern-domain fixes
+
+Documenting and closing silent frontend acceptance of nonnumeric intrinsic
+indices/range bounds, scalar `for` iterands, patterns from a different value
+domain, and `Self` that failed to rebind in `Index`/`IndexAssign` contracts.
+Editing `docs/language.md` alongside `src/types.rs`; full compiler and external
+corpus gates will run before commit.
+
+### 2026-08-06 — Codex — index, iteration, and pattern domains
+
+Closed four zero-diagnostic frontend holes. Intrinsic array/vector indices and
+all range endpoints now require integer or packed-numeric values; `for` accepts
+only an inclusive numeric range or an array; enum, integer, character, and bit
+patterns must belong to the scrutinee's value domain; and `Self` in
+`Index`/`IndexAssign` input/output/value positions now rebinds to the impl
+target without becoming a wildcard. Added positive and negative regressions
+and documented each contract. `cargo fmt --all --check`, all 292 library tests
+and every integration target, strict all-target/all-feature Clippy, and the
+full native corpus pass (161/161).

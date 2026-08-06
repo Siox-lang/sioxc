@@ -2438,10 +2438,29 @@ impl<'a> Checker<'a> {
             } => {
                 self.check_expr(range, sym);
                 let loop_ty = match range {
-                    Expr::Range { .. } => Ty::Integer,
+                    Expr::Range { lo, hi, .. } => {
+                        self.check_index_value(lo, sym, "range bound");
+                        self.check_index_value(hi, sym, "range bound");
+                        Ty::Integer
+                    }
+                    // `check_expr` already reports that a partial range needs
+                    // an indexed receiver; do not add a second iterable error.
+                    Expr::PartialRange { .. } => Ty::Error,
                     _ => match self.type_of(range, sym) {
                         Ty::Array { elem, .. } => *elem,
-                        _ => Ty::Error,
+                        Ty::Error => Ty::Error,
+                        found => {
+                            self.error_with_help(
+                                codes::TYPE_MISMATCH,
+                                expr_span(range),
+                                format!(
+                                    "a `for` loop needs a range or array, found {}",
+                                    self.ty_display(&found)
+                                ),
+                                "use `left..right`, or iterate an array value".to_string(),
+                            );
+                            Ty::Error
+                        }
                     },
                 };
                 let mut loop_sym = sym.clone();
@@ -2732,6 +2751,92 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn check_pattern_domains(&mut self, ty: &Ty, arms: &[MatchArm]) {
+        for arm in arms {
+            self.check_pattern_domain(ty, &arm.pattern);
+        }
+    }
+
+    fn check_pattern_domain(&mut self, ty: &Ty, pattern: &Pattern) {
+        if matches!(ty, Ty::Error) {
+            return;
+        }
+        match pattern {
+            Pattern::Wildcard | Pattern::CharLit { .. } => {}
+            Pattern::Or { alts, .. } => {
+                for alternative in alts {
+                    self.check_pattern_domain(ty, alternative);
+                }
+            }
+            Pattern::Path(path) if path.segments.len() == 2 => {
+                let qualifier = &path.segments[0];
+                match self.enum_operand_name(ty) {
+                    Some(expected) if qualifier.text == expected => {}
+                    Some(expected) => self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        path.span,
+                        format!(
+                            "pattern `{}` belongs to enum `{}`, but the matched value is `{expected}`",
+                            path.segments[1].text, qualifier.text
+                        ),
+                        format!("use a `{expected}::…` variant in this match"),
+                    ),
+                    None => self.error(
+                        codes::TYPE_MISMATCH,
+                        path.span,
+                        format!(
+                            "enum pattern `{}::{}` cannot match a {} value",
+                            qualifier.text,
+                            path.segments[1].text,
+                            self.ty_display(ty)
+                        ),
+                    ),
+                }
+            }
+            // Bare/deeper paths receive their spelling diagnostic from
+            // `check_pattern_form`; avoid adding a dependent type error.
+            Pattern::Path(_) => {}
+            Pattern::Range { span, .. } => {
+                let numeric = matches!(ty, Ty::Integer | Ty::Real)
+                    || matches!(
+                        ty,
+                        Ty::Array {
+                            family: Some(_),
+                            ..
+                        }
+                    );
+                if !numeric {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "an integer pattern cannot match a {} value",
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+            }
+            Pattern::BitPattern { span, .. } => {
+                if !matches!(
+                    ty,
+                    Ty::Array {
+                        family: Some(_),
+                        ..
+                    }
+                ) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "a bit pattern needs a packed vector, found {}",
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     /// A character pattern names a variant of a character-valued enum, so it
     /// is only meaningful against one. Expression position has always rejected
     /// the rest — `s == '0'` on a numeric or a `State` is "a character literal
@@ -2785,6 +2890,7 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) {
         let ty = self.type_of(scrutinee, sym);
+        self.check_pattern_domains(&ty, arms);
         self.check_char_patterns(&ty, arms);
         let Ty::Named(id) = ty else {
             // A numeric scrutinee has a domain rather than a variant list.
@@ -2849,6 +2955,14 @@ impl<'a> Checker<'a> {
                             "enum patterns name their type (`Color::Red`); a bare name is not \
                              a binding — use `_` to match anything",
                         ),
+                );
+            }
+            Pattern::Path(path) if path.segments.len() != 2 => {
+                self.sink.emit(
+                    Diagnostic::error("an enum pattern must be written as `Type::Variant`")
+                        .with_code(codes::INVALID_PATTERN)
+                        .at(path.span)
+                        .help("import the enum type, then use exactly its type and variant names"),
                 );
             }
             // A pattern whose text is not a well-formed mask (a digit outside
@@ -3041,8 +3155,8 @@ impl<'a> Checker<'a> {
             .get(&("IndexAssign".to_string(), owner.clone()))
             .is_some_and(|sigs| {
                 sigs.iter().any(|(i, v)| {
-                    (i.is_none() || i.as_ref() == input.as_ref())
-                        && (v.is_none() || v.as_ref() == value_ty.as_ref())
+                    Self::index_contract_type_matches(i, input.as_deref(), &owner)
+                        && Self::index_contract_type_matches(v, value_ty.as_deref(), &owner)
                 })
             });
         if !found {
@@ -3057,6 +3171,16 @@ impl<'a> Checker<'a> {
             );
         }
         true
+    }
+
+    fn index_contract_type_matches(
+        declared: &Option<String>,
+        actual: Option<&str>,
+        owner: &str,
+    ) -> bool {
+        declared.is_none()
+            || declared.as_deref() == actual
+            || (declared.as_deref() == Some("Self") && actual == Some(owner))
     }
 
     /// Spec 3.5: an attribute's value must match the type its declaration gives.
@@ -3998,6 +4122,57 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn is_integer_like_index(ty: &Ty) -> bool {
+        matches!(ty, Ty::Integer | Ty::Error)
+            || matches!(
+                ty,
+                Ty::Array {
+                    family: Some(_),
+                    ..
+                }
+            )
+    }
+
+    fn check_index_value(&mut self, value: &Expr, sym: &HashMap<String, Ty>, description: &str) {
+        let ty = self.type_of(value, sym);
+        if Self::is_integer_like_index(&ty) {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            expr_span(value),
+            format!(
+                "{description} must be an integer or packed numeric value, found {}",
+                self.ty_display(&ty)
+            ),
+            "convert it explicitly to `integer` or a packed numeric type".to_string(),
+        );
+    }
+
+    /// Validate intrinsic array subscripts and every range endpoint. A custom
+    /// scalar `Index<I, _>` may choose another input type, but `Range` itself
+    /// always stores integer left/right bounds.
+    fn check_index_operand(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
+        match index {
+            Expr::Range { lo, hi, .. } => {
+                self.check_index_value(lo, sym, "range bound");
+                self.check_index_value(hi, sym, "range bound");
+            }
+            Expr::PartialRange { lo, hi, .. } => {
+                if let Some(lo) = lo {
+                    self.check_index_value(lo, sym, "range bound");
+                }
+                if let Some(hi) = hi {
+                    self.check_index_value(hi, sym, "range bound");
+                }
+            }
+            _ if matches!(self.type_of(base, sym), Ty::Array { .. }) => {
+                self.check_index_value(index, sym, "array index");
+            }
+            _ => {}
+        }
+    }
+
     /// A constant bit index or slice outside a packed vector's width has no
     /// hardware meaning — it lowered to `Unknown` and surfaced much later as a
     /// generic "no engine can run this design". Only *packed* vectors
@@ -4108,7 +4283,7 @@ impl<'a> Checker<'a> {
             .get(&("Index".to_string(), owner.clone()))
             .is_some_and(|sigs| {
                 sigs.iter()
-                    .any(|(i, _)| i.is_none() || i.as_ref() == input.as_ref())
+                    .any(|(i, _)| Self::index_contract_type_matches(i, input.as_deref(), &owner))
             });
         if !found {
             self.error(
@@ -4700,6 +4875,7 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
+                self.check_index_operand(base, index, sym);
                 self.check_index_bounds(base, index, sym);
                 self.check_custom_index(base, index, sym);
             }
@@ -5435,17 +5611,28 @@ impl<'a> Checker<'a> {
                         } else {
                             self.type_kind_name(&self.type_of(index, sym))
                         };
-                        let output =
-                            self.index_sigs
-                                .get(&("Index".to_string(), owner))
-                                .and_then(|sigs| {
-                                    sigs.iter()
-                                        .find(|(i, _)| i.is_none() || i.as_ref() == input.as_ref())
-                                        .and_then(|(_, output)| output.as_deref())
-                                });
-                        output
-                            .map(|name| self.ty_from_head(name))
-                            .unwrap_or(Ty::Error)
+                        let output = self
+                            .index_sigs
+                            .get(&("Index".to_string(), owner.clone()))
+                            .and_then(|sigs| {
+                                sigs.iter()
+                                    .find(|(i, _)| {
+                                        Self::index_contract_type_matches(
+                                            i,
+                                            input.as_deref(),
+                                            &owner,
+                                        )
+                                    })
+                                    .and_then(|(_, output)| output.as_deref())
+                            });
+                        match output {
+                            Some("Self") => base_ty,
+                            Some(name) if input.as_deref() == Some(name) => {
+                                self.type_of(index, sym)
+                            }
+                            Some(name) => self.ty_from_head(name),
+                            None => Ty::Error,
+                        }
                     }
                 }
             }
@@ -7765,6 +7952,69 @@ mod tests {
     }
 
     #[test]
+    fn self_in_index_contracts_is_the_impl_target() {
+        let contracts = "module m;\n\
+             struct Box { value: integer }\n\
+             impl Index<Self, Self> for Box {\n\
+               fn index(self, index: Self) -> Self { return index; }\n\
+             }\n\
+             impl IndexAssign<Self, Self> for Box {\n\
+               fn index_assign(self, index: Self, value: Self) {}\n\
+             }\n";
+        let errors = check_src(&format!(
+            "{}{}",
+            contracts,
+            "\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let left: Box = Box { .value = 1 };\n\
+               let right: Box = Box { .value = 2 };\n\
+               let selected: Box = left[right];\n\
+               left[right] = selected;\n\
+             }\n"
+        ));
+        assert_eq!(
+            errors, 0,
+            "`Self` selects the owner for Index input/output and IndexAssign values"
+        );
+
+        assert_eq!(
+            check_src(&format!(
+                "{}{}",
+                contracts,
+                "\
+                 struct Other { value: integer }\n\
+                 #[test] entity T {}\n\
+                 impl T {\n\
+                   let container: Box = Box { .value = 1 };\n\
+                   let other: Other = Other { .value = 2 };\n\
+                   let invalid: Box = container[other];\n\
+                 }\n",
+            )),
+            1,
+            "`Self` does not accept an unrelated index type"
+        );
+
+        assert_eq!(
+            check_src(&format!(
+                "{}{}",
+                contracts,
+                "\
+                 struct Other { value: integer }\n\
+                 #[test] entity T {}\n\
+                 impl T {\n\
+                   let container: Box = Box { .value = 1 };\n\
+                   let index: Box = Box { .value = 2 };\n\
+                   let other: Other = Other { .value = 3 };\n\
+                   container[index] = other;\
+                 }\n",
+            )),
+            1,
+            "`Self` does not accept an unrelated assigned value type"
+        );
+    }
+
+    #[test]
     fn struct_equality_is_derived_from_three_way_comparison() {
         let base = |operator: &str| {
             format!(
@@ -9103,6 +9353,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn match_patterns_must_belong_to_the_scrutinee_domain() {
+        let enums = "module m;\nenum Left { Zero, One }\nenum Right { Zero, One }\n";
+        assert_eq!(
+            check_src(&format!(
+                "{enums}#[test] entity T {{}}\nimpl T {{\n\
+                 let value: Left = Left::Zero;\n\
+                 match value {{ Right::Zero => {{}}, _ => {{}}, }}\n\
+                 }}\n"
+            )),
+            1,
+            "equal discriminants from different enums are not interchangeable"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{enums}#[test] entity T {{}}\nimpl T {{\n\
+                 let value: unsigned[2] = 0;\n\
+                 match value {{ Left::Zero => {{}}, _ => {{}}, }}\n\
+                 }}\n"
+            )),
+            1,
+            "an enum variant cannot pattern-match a numeric value"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{enums}#[test] entity T {{}}\nimpl T {{\n\
+                 let value: Left = Left::Zero;\n\
+                 match value {{ 0 => {{}}, _ => {{}}, }}\n\
+                 }}\n"
+            )),
+            1,
+            "an integer pattern cannot inspect an enum discriminant"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{enums}#[test] entity T {{}}\nimpl T {{\n\
+                 let value: Left = Left::Zero;\n\
+                 match value {{ \"--\" => {{}}, _ => {{}}, }}\n\
+                 }}\n"
+            )),
+            1,
+            "a bit mask cannot inspect an enum discriminant"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{enums}#[test] entity T {{}}\nimpl T {{\n\
+                 let value: Left = Left::Zero;\n\
+                 match value {{ Left::Zero | Left::One => {{}}, }}\n\
+                 }}\n"
+            )),
+            0,
+            "matching alternatives from the scrutinee enum remains valid"
+        );
+    }
+
     /// An entity may be instantiated at the root layer of another entity's
     /// body, or inside a generate `for`/`if` — nowhere else. A `match` arm and
     /// a function body used to be accepted and then quietly dropped by
@@ -9437,6 +9742,60 @@ mod tests {
         };
         assert_eq!(check_src(&inst(9)), 1, "instance 9 of a Sub[4]");
         assert_eq!(check_src(&inst(3)), 0, "the last instance is in range");
+    }
+
+    #[test]
+    fn intrinsic_indices_require_numeric_index_values() {
+        let tb = |body: &str| {
+            format!(
+                "module m;\n#[test] entity T {{}}\nimpl T {{\n\
+                 let bits: unsigned[8] = 0;\n{body}\n}}\n"
+            )
+        };
+        assert_eq!(
+            check_src(&tb("let r: real = 1.5; let value: Logic = bits[r];")),
+            1,
+            "a real is not a bit index"
+        );
+        assert_eq!(
+            check_src(&tb("let flag: Bool = true; let value: Logic = bits[flag];")),
+            1,
+            "an enum value is not a bit index"
+        );
+        assert_eq!(
+            check_src(&tb("let r: real = 1.5; bits[r] = '1';")),
+            1,
+            "indexed writes enforce the same index domain"
+        );
+        assert_eq!(
+            check_src(&tb("let r: real = 1.5; bits[0..r] = 0;")),
+            1,
+            "slice bounds are numeric index values too"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let index: unsigned[3] = 2; let value: Logic = bits[index];"
+            )),
+            0,
+            "packed numeric values remain valid dynamic indices"
+        );
+    }
+
+    #[test]
+    fn for_loops_require_ranges_or_iterable_arrays() {
+        let tb = |range: &str| {
+            format!(
+                "module m;\n#[test] entity T {{}}\nimpl T {{ for item in {range} {{ print!(\"{{}}\", item); }} }}\n"
+            )
+        };
+        assert_eq!(check_src(&tb("5")), 1, "an integer is not iterable");
+        assert_eq!(check_src(&tb("true")), 1, "an enum is not iterable");
+        assert_eq!(
+            check_src(&tb("1.5..2.5")),
+            2,
+            "both range endpoints must be integer-like"
+        );
+        assert_eq!(check_src(&tb("0..3")), 0, "integer ranges remain valid");
     }
 
     /// Hardware has no divide-by-zero trap, so a constant zero divisor just
