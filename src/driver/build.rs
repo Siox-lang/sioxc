@@ -3872,7 +3872,7 @@ impl Ctx<'_> {
                     let cond = self.pattern_cond(&arm.pattern, &format!("_m{k}"))?;
                     let kw = if first { "if" } else { "else if" };
                     match cond {
-                        Some(c) => b.push_str(&format!("{ind}{kw} ({c}) {{\n")),
+                        Some(c) => b.push_str(&format!("{ind}{kw} {} {{\n", c_condition(&c))),
                         None => b.push_str(&format!(
                             "{ind}{} {{\n",
                             if first { "if (1)" } else { "else" }
@@ -3898,11 +3898,7 @@ impl Ctx<'_> {
         // Binary/comparison lowering already encloses its expression. Avoid
         // producing `if ((a == b))`, which Clang diagnoses as suspicious,
         // while still parenthesizing a bare name or literal as C requires.
-        let condition = if c.starts_with('(') && c.ends_with(')') {
-            c
-        } else {
-            format!("({c})")
-        };
+        let condition = c_condition(&c);
         b.push_str(&format!("{ind}if {condition} {{\n"));
         for s in &iff.then.stmts {
             self.stmt(s, b, depth + 1)?;
@@ -6719,6 +6715,18 @@ fn descendant_suffix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
         .filter(|rest| rest.starts_with('[') || rest.starts_with('.'))
 }
 
+/// Render one C control-flow condition with exactly one syntactic wrapper.
+/// Most expression lowering already returns a parenthesized expression; adding
+/// another pair makes Clang warn about suspicious double-parenthesized
+/// comparisons in every generated match arm.
+fn c_condition(expression: &str) -> String {
+    if expression.starts_with('(') && expression.ends_with(')') {
+        expression.to_string()
+    } else {
+        format!("({expression})")
+    }
+}
+
 fn str_lit(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::StrLit { text, .. } => Some(text.clone()),
@@ -6751,4 +6759,15 @@ fn logic_lit_value(c: char, enums: &HashMap<String, HashMap<String, u64>>) -> u6
         .and_then(|m| m.get(&format!("'{c}'")))
         .copied()
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::c_condition;
+
+    #[test]
+    fn c_conditions_are_parenthesized_once() {
+        assert_eq!(c_condition("ready"), "(ready)");
+        assert_eq!(c_condition("((value) == 0ULL)"), "((value) == 0ULL)");
+    }
 }

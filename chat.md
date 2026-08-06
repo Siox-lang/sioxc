@@ -6861,6 +6861,16 @@ diagnostic failures. `cargo fmt --all --check`, all 277 unit and integration
 tests, strict all-target/all-feature Clippy, and the full native corpus pass
 (161/161).
 
+### 2026-08-06 — Codex — clean generated match conditions
+
+The native corpus was semantically green but Clang warned on every scalar
+match arm because the test-harness emitter wrapped an already-parenthesized
+comparison a second time. Statement matches now share the condition renderer
+already used by ordinary `if`, with a unit regression for bare and pre-wrapped
+expressions. The exact `logic_match_test.siox` fixture now compiles and runs
+without the former six Clang warnings. `cargo fmt --all --check`, all 277 Rust
+unit and integration tests, and strict all-target/all-feature Clippy pass.
+
 ### 2026-08-06 — Codex — method argument contracts
 
 The free-function fix exposed that method calls use a wholly separate path:
