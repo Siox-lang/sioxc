@@ -5865,10 +5865,18 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Call { callee, .. } = e else {
             return false;
         };
-        // Only a module function. The kernel conversion `integer(x)` was here
-        // too, and removed: it changes no result, because `integer(r) < 0` on
-        // a `real` is wrong for a different reason (see chat.md) that this
-        // does not address.
+        // The kernel conversion `integer(x)`, whose whole purpose is to produce
+        // a signed kernel value (`integer(r)` truncates a `real`, which may be
+        // negative). It reads the real/vector signal it converts, so the signal
+        // scan would otherwise force the comparison unsigned. (This needs the
+        // matching `fit_signed` on the LLVM side of `RealToInt`: the two are
+        // interdependent — a signed compare that zero-extends its operand is no
+        // better than an unsigned one.)
+        if let ast::Expr::Path(p) = callee.as_ref() {
+            if p.segments.len() == 1 && p.segments[0].text == "integer" {
+                return true;
+            }
+        }
         // A module function whose declared return type is `integer`.
         call_fn_key(callee)
             .and_then(|k| self.free_fns.get(&k))

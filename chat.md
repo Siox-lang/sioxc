@@ -6774,3 +6774,43 @@ cascades. `cargo test --quiet` passes all 265 unit tests and all integration
 tests; the external corpus passes 161/161. Concurrent edits in
 `src/llvm/emit.rs`, `src/ir.rs`, and `src/driver/build.rs` remain outside this
 change.
+### 2026-08-06 — `integer(r) < 0` compared unsigned in both engines
+
+Took the finding I deferred last round: `integer(r)` truncates a `real` toward
+zero and yields a *signed* kernel value (`integer(-2.9)` is -2), but comparing
+it in place — `if integer(r) < 0` — was false for every negative `r`. Assigning
+the conversion to a signed signal was always right; only the direct comparison
+failed, in *both* engines, and each for its own reason.
+
+**Hardware** needed two interdependent fixes. Neither alone helps:
+
+- `declares_kernel_integer` (ir) has to recognise the `integer(x)` conversion,
+  or the signal scan sees the `real` signal it reads and forces an *unsigned*
+  compare. (I had this branch last round and deleted it as "dead" — it is only
+  dead without the second fix, and I said so in that commit's log. It is not
+  dead; it is half of a pair.)
+- `RealToInt` in the LLVM backend was `fit` (zero-extend), so even once the
+  compare was signed, the operand-widening step (a signed compare widens by
+  one) zero-extended the -2 into a huge positive and `SLt` saw it as positive.
+  Now `fit_signed`. A signed compare that zero-extends its operand is no better
+  than an unsigned one — which is exactly why removing the ir half last round
+  "changed no result": the emit half was still zero-extending.
+
+**The testbench** (C emitter) had the same shape: `is_integer_operand` did not
+recognise the `integer(x)` conversion, so `integer(r) < 0` fell past the signed
+comparison to C's unsigned `sx_value` compare — `0xFFFF...FFFE < 0` = false.
+The same value stored in an `integer` local first compared correctly, which is
+the tell. `c_integer_operand` already casts to `int64_t`, so recognising the
+conversion is the whole fix; it also corrects the unsigned printing of a bare
+`integer(r)`.
+
+Verified against `math.trunc`: -2.9→-2 (lt), 2.9→2 (gt), -128.0→-128 (floor),
+-0.5→0 (not lt). Both engines agree. Three mutations, all detected — each of
+the three pieces is load-bearing, and the two hardware pieces confirm the
+interdependence. Corpus: `real_conversion_signed_test.siox`, which asserts the
+testbench result equals the hardware result as well as the arithmetic.
+
+(Committed from an isolated `git worktree` at HEAD — a concurrent session was
+mid-edit on `src/types.rs`/`chat.md` in the shared checkout, and this keeps my
+commit off their in-flight work. Their `src/llvm/emit.rs`-untouched note and my
+`emit.rs` change are the same coordination from both sides.)

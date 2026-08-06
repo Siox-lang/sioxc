@@ -1243,7 +1243,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                             .builder
                             .build_float_to_signed_int(f, self.ctx.i64_type(), "rtoi")
                             .unwrap();
-                        self.fit(i, self.value_ty(width))
+                        // Signed widening: this is a *number*, not a bit
+                        // pattern. Zero-extending it lost the sign whenever
+                        // the consumer asked for more than 64 bits — which a
+                        // signed comparison always does, since it widens its
+                        // operands by one before comparing. `integer(r) < 0`
+                        // was therefore false for every negative `r`, while
+                        // the same value assigned to a signal was correct.
+                        self.fit_signed(i, self.value_ty(width))
                     }
                 }
             }

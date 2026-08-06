@@ -4732,6 +4732,16 @@ impl Ctx<'_> {
                 return true;
             }
             ast::Expr::Call { callee, .. } => {
+                // The kernel conversion `integer(x)` produces a signed kernel
+                // value (truncating a `real`, crossing out of a vector). Without
+                // this a direct `integer(r) < 0` compared unsigned and was false
+                // for every negative `r`, though the same value stored in an
+                // `integer` local first compared correctly.
+                if let ast::Expr::Path(p) = callee.as_ref() {
+                    if p.segments.len() == 1 && p.segments[0].text == "integer" {
+                        return true;
+                    }
+                }
                 if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
                     if let Some(receiver) = self.receiver_type(base) {
                         return self
