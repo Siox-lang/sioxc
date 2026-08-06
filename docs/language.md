@@ -105,11 +105,12 @@ precise reference.
 ### Diagnostics
 
 Every diagnostic has a stable code. Beyond errors, the compiler lints for
-possible latches, unused imports, unresolved multiple drivers, combinational
-loops (a signal that feeds itself with no register in the path), and
-non-exhaustive / unreachable match arms. Type errors carry targeted fix-it
-help — e.g. a string literal used where a single value is wanted (`Logic = "0"`)
-points at the character literal `'0'`.
+possible latches, unused imports, combinational loops (a signal that feeds
+itself with no register in the path), and non-exhaustive / unreachable match
+arms. Independent drivers on a type without `Resolve` are the E-P014 conflict
+error; drivers on a type with `Resolve` are intentional and do not warn. Type
+errors carry targeted fix-it help — e.g. a string literal used where a single
+value is wanted (`Logic = "0"`) points at the character literal `'0'`.
 
 Simulating and testing designs is covered in [simulation.md](simulation.md) and
 [testing.md](testing.md); `extern "C"`, editor, and cocotb integration in
@@ -955,13 +956,13 @@ z = if x > 200 { 200 } else if x < 10 { 10 } else { x };
 
 The condition follows the same `Boolean` rule as statement `if` (spec 3.16).
 
-Invalid or warning-prone cases:
+Diagnostics and resolution:
 
 - Missing default assignment that creates latch-like behavior.
-- Multiple unrelated driver contexts for the same signal.
-- Conflicting assignments from multiple blocks.
-
-Phase 1 should simulate these, but diagnostics should warn where behavior is suspicious.
+- Multiple unrelated driver contexts fold through the signal type's
+  `impl Resolve`; this is explicit type-defined behavior and is legal.
+- Multiple unrelated contexts on a type without `Resolve` are conflicting
+  sources and produce E-P014, with each known connection site labeled.
 
 ---
 
@@ -2649,10 +2650,11 @@ Errors:
 - Invalid method call.
 - Invalid pattern.
 - Use of Phase 2-only analogue syntax.
+- Signal driven from multiple independent contexts when its type has no
+  `impl Resolve` (E-P014).
 
 Warnings:
 
-- Signal assigned in multiple independent driver contexts.
 - Possible latch from incomplete combinational assignment.
 - Unused signal.
 - Unused parameter.

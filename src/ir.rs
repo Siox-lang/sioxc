@@ -10912,6 +10912,27 @@ mod tests {
     }
 
     #[test]
+    fn resolved_parallel_drivers_are_legal_without_a_warning() {
+        let diagnostics = lower_diags(
+            "module m;\n\
+             enum Wire { '0', '1' }\n\
+             trait Resolve { fn resolve(self, rhs: Wire) -> Wire; }\n\
+             impl Resolve for Wire {\n\
+                 fn resolve(self, rhs: Wire) -> Wire { return self; }\n\
+             }\n\
+             #[top] entity Net { a: Wire in, b: Wire in, y: Wire out }\n\
+             impl Net { y = a; }\n\
+             impl Net { y = b; }\n",
+        );
+        assert!(
+            !diagnostics.iter().any(|diagnostic| {
+                diagnostic.contains("driver") || diagnostic.contains("W-P001")
+            }),
+            "a type-defined Resolve fold is intentional, not suspicious: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn bit_pattern_masks() {
         // Bare strings are per-bit with `-` as the don't-care.
         assert_eq!(

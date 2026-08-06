@@ -13,11 +13,9 @@ Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and co
 Bug-sweep status (2026-08-06): generated assignments are linted after parameter
 specialization and loop unrolling, scoped hardware locals lower completely,
 nested generic types survive the full pipeline, and concrete instance-array
-build facts now reach IR diagnostics. The highest-confidence remaining compiler
-gap is the W-P001/E-P014 driver diagnostic split under IR. Testbench
-generate-loop lint parity also needs a policy decision: either normalize
-stimulus loops before W-P014 analysis or document that the warning applies only
-to hardware driver contexts.
+build facts now reach IR diagnostics. Testbench generate-loop lint parity still
+needs a policy decision: either normalize stimulus loops before W-P014 analysis
+or document that the warning applies only to hardware driver contexts.
 
 ## AST
 
@@ -69,14 +67,12 @@ Current baseline:
 - ✅ Reads and writes through an in-range but conditionally unbuilt instance
   slot produce E-P022 at the reference, label the array declaration, and do not
   misdiagnose unreferenced slots or unresolved generic specializations.
+- ✅ Parallel driver contexts fold without warning when their type implements
+  `Resolve`; otherwise they are an E-P014 error with contributing source spans.
+  The obsolete W-P001 category is retired.
 
 Remaining:
 
-- 🟡 **Driver diagnostic taxonomy.** `W-P001` remains declared and listed in
-  the historical specification but is never emitted; conflicting independent
-  contexts are diagnosed as `E-P014`. Either retire `W-P001` everywhere or
-  define the resolvable/suspicious multi-driver case that remains a warning,
-  then add source-span tests for both outcomes.
 - 🟡 **Persist complete source layouts.** Expression types reach lowering, but
   named/repeated/composite layout is still partly reconstructed from
   declarations. Store recursive source layouts directly in IR metadata.

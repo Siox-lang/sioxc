@@ -268,7 +268,8 @@ pub mod codes {
     pub const INSTANCE_NOT_ELABORATED: &str = "E-P022";
 
     // Warnings
-    pub const MULTIPLE_DRIVERS: &str = "W-P001";
+    // W-P001 retired: parallel drivers are legal when their type implements
+    // `Resolve`, and otherwise are the E-P014 `CONFLICTING_DRIVERS` error.
     pub const POSSIBLE_LATCH: &str = "W-P002";
     pub const UNUSED_SIGNAL: &str = "W-P003";
     pub const UNUSED_PARAM: &str = "W-P004";

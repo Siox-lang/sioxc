@@ -7175,3 +7175,24 @@ instance-array marker is now lexical rather than leaking across entity bodies.
 Verified with 298 library tests, every integration suite including all 13
 native build tests, strict all-target/all-feature Clippy, a directly built and
 run `generate_if_test`, and the external corpus: 161 passed, 0 failed.
+
+### 2026-08-06 — Codex — starting driver-diagnostic taxonomy cleanup
+
+Auditing the dormant W-P001 against the implemented `Resolve` model. Multiple
+independent contexts are either explicitly legal because the signal type owns
+an `impl Resolve`, or a hard E-P014 conflict because it does not; there is no
+sound middle category the compiler can call suspicious without warning on
+intentional buses. Retiring the stale warning code and historical wording,
+while pinning both sides of the rule in IR tests.
+
+### 2026-08-06 — Codex — driver taxonomy made type-defined
+
+Retired the never-emitted W-P001 category. Multiple independent driver
+contexts now have one documented rule matching the implementation: a type with
+`impl Resolve` owns the fold and receives no warning; a type without it emits
+E-P014, pointing at each known source. Updated the current and historical
+language diagnostics text and moved the TODO item into the verified baseline.
+
+Verified with 299 library tests, every integration suite including all 13
+native build tests, strict all-target/all-feature Clippy, and the external
+corpus: 161 passed, 0 failed.
