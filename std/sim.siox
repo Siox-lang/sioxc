@@ -1,5 +1,7 @@
 module std::sim;
 
+using std::ops::{Ordering};
+
 // Simulation time and frequency (modelled on VHDL physical quantities). `time`
 // is a nominal integer measured in femtoseconds; frequency is a nominal real
 // measured in hertz.
@@ -8,6 +10,14 @@ module std::sim;
 // (spec Stage 11 allows this).
 
 pub struct time(integer);
+
+impl Operator<"<=>", time, Ordering> for time {
+    fn apply(self, rhs: time) -> Ordering {
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
 
 // Time-unit literal suffixes: `10ns` is a `time`. The symbol parameterizes the
 // `Suffix` trait; the `suffix` method builds the value (inlined at the use
@@ -29,6 +39,14 @@ impl Suffix<"ms", integer> for time {
 }
 
 pub struct frequency(real);
+
+impl Operator<"<=>", frequency, Ordering> for frequency {
+    fn apply(self, rhs: frequency) -> Ordering {
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
 
 // Frequency literal suffixes: `100MHz` is a real-backed `frequency`.
 impl Suffix<"Hz", real> for frequency {

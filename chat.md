@@ -6957,3 +6957,27 @@ defaults now reject both wrong argument counts and incompatible argument
 types, including contextual struct literals. `cargo fmt --all --check`, all
 274 unit and integration tests, strict all-target/all-feature Clippy, and the
 full native corpus pass (161/161).
+
+### 2026-08-06 — Codex — starting expression/operator compatibility fixes
+
+Auditing and fixing silent expression-domain errors in `src/types.rs`, plus
+the missing `<=>` contracts for the nominal `time` and `frequency` types in
+`std/sim.siox`. The batch also covers exact operator input selection, `Self`
+rebinding, conditional/match result consistency, and comparison compatibility.
+Full compiler and external-corpus gates will run before commit.
+
+### 2026-08-06 — Codex — expression domains and exact operator contracts
+
+Fixed silent comparisons between incompatible types, nonnumeric intrinsic
+arithmetic, inconsistent `if`/`match` result domains, and first-arm inference
+that narrowed nested integer/real joins. Operator resolution now selects the
+declared right-hand input, treats `Self` as the impl owner rather than a
+wildcard, preserves packed-vector intrinsic fallback and blanket forwarding,
+and suppresses diagnostics only when an operand is genuinely opaque recovery
+state. `Self` parameters and returns now rebind inside impl bodies and at method
+and associated-function call sites. Array comparisons no longer require equal
+assignment lengths. Added the missing `<=>` implementations for std `time` and
+`frequency`, retaining their nominal unit types while enabling all six
+comparisons. `cargo fmt --all --check`, all 288 unit tests and every integration
+target, strict all-target/all-feature Clippy, and the full native corpus pass
+(161/161).

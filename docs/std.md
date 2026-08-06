@@ -134,10 +134,11 @@ pub struct frequency(real);   // nominal real, stored in hertz
 
 Unit suffixes `fs ps ns us ms` construct `time`; `Hz kHz MHz GHz` construct
 `frequency`, including fractional values such as `2.5MHz`. The simulator uses
-the 1 fs base tick (also the VCD timescale), and `FS..MS` remain raw integer
-multipliers. `wait`/`tick`
-stimulus control is built-in simulator syntax; `wait 10ns` also works in
-bare files through a fixed fallback table typed as `integer`.
+the 1 fs base tick (also the VCD timescale), and both nominal types implement
+`Operator<"<=>", Self, Ordering>` so all six comparisons are available without
+discarding their unit identity. `FS..MS` remain raw integer multipliers.
+`wait`/`tick` stimulus control is built-in simulator syntax; `wait 10ns` also
+works in bare files through a fixed fallback table typed as `integer`.
 
 ## `std::rand`
 

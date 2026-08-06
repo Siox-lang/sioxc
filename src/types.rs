@@ -288,6 +288,10 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Concrete meaning of the `Self` type while checking one impl. The
+    /// resolver correctly binds `Self` locally, but its synthetic definition
+    /// is not the impl target and must not become a distinct nominal type.
+    current_self_ty: std::cell::RefCell<Option<Ty>>,
 }
 
 impl<'a> Checker<'a> {
@@ -361,6 +365,7 @@ impl<'a> Checker<'a> {
             method_has_self: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
+            current_self_ty: std::cell::RefCell::new(None),
         }
     }
 
@@ -1699,9 +1704,10 @@ impl<'a> Checker<'a> {
             );
             return;
         }
+        let owner_ty = self.ty_from_head(owner);
         for (argument, declared) in args.iter().zip(params.iter()) {
             let Some(declared) = declared else { continue };
-            let expected = self.ast_ty(declared);
+            let expected = self.ast_ty_for_owner(declared, &owner_ty);
             if self.check_struct_literal_for_ty(&expected, argument, sym)
                 || matches!(expected, Ty::Error)
                 || self.assignable(&expected, argument, sym)
@@ -1773,7 +1779,10 @@ impl<'a> Checker<'a> {
             .in_testbench
             .replace(type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)));
         let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
+        let concrete_self = self.ast_ty(self_ty(im));
+        let saved_self = self.current_self_ty.replace(Some(concrete_self));
         self.check_impl_inner(im);
+        self.current_self_ty.replace(saved_self);
         *self.type_params.borrow_mut() = saved_params;
         self.in_testbench.set(saved_tb);
     }
@@ -4138,6 +4147,305 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether two expressions can inhabit one value domain without an
+    /// explicit conversion. This is symmetric because contextual literals may
+    /// take the other side's type, and integer/real choose the real domain.
+    fn value_expressions_compatible(
+        &self,
+        left: &Expr,
+        right: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        let left_ty = self.type_of(left, sym);
+        let right_ty = self.type_of(right, sym);
+        if matches!(left_ty, Ty::Error) || matches!(right_ty, Ty::Error) {
+            return true;
+        }
+        if compatible(&left_ty, &right_ty) || compatible(&right_ty, &left_ty) {
+            return true;
+        }
+        if matches!(
+            (&left_ty, &right_ty),
+            (Ty::Integer, Ty::Real) | (Ty::Real, Ty::Integer)
+        ) {
+            return true;
+        }
+        self.assignable(&right_ty, left, sym) || self.assignable(&left_ty, right, sym)
+    }
+
+    fn value_domain_anchor<'b>(
+        &self,
+        values: &[&'b Expr],
+        sym: &HashMap<String, Ty>,
+    ) -> Option<&'b Expr> {
+        values
+            .iter()
+            .copied()
+            .find(|value| {
+                !Self::is_contextual_literal(value)
+                    && !matches!(self.type_of(value, sym), Ty::Error)
+            })
+            .or_else(|| values.first().copied())
+    }
+
+    fn values_share_domain(&self, values: &[&Expr], sym: &HashMap<String, Ty>) -> bool {
+        let Some(anchor) = self.value_domain_anchor(values, sym) else {
+            return false;
+        };
+        values
+            .iter()
+            .all(|value| self.value_expressions_compatible(anchor, value, sym))
+    }
+
+    /// Infer the value domain selected by conditional arms rather than simply
+    /// copying the first arm. In particular, integer/real joins are real and
+    /// contextual literals take the concrete arm's type.
+    fn joined_value_type(&self, values: &[&Expr], sym: &HashMap<String, Ty>) -> Ty {
+        if !self.values_share_domain(values, sym) {
+            return Ty::Error;
+        }
+        let types: Vec<Ty> = values
+            .iter()
+            .map(|value| self.type_of(value, sym))
+            .collect();
+        if types.iter().any(|ty| matches!(ty, Ty::Real))
+            && types.iter().all(|ty| matches!(ty, Ty::Integer | Ty::Real))
+        {
+            return Ty::Real;
+        }
+        self.value_domain_anchor(values, sym)
+            .map(|value| self.type_of(value, sym))
+            .unwrap_or(Ty::Error)
+    }
+
+    /// Comparisons may inspect two differently constrained arrays without
+    /// assigning either into the other. Their element domains must agree, but
+    /// unequal lengths are meaningful (`"abc" == "abcd"` is simply false)
+    /// and must not be treated as an assignment-width error.
+    fn comparison_domains_compatible(
+        &self,
+        left: &Expr,
+        right: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        if self.value_expressions_compatible(left, right, sym) {
+            return true;
+        }
+        match (self.type_of(left, sym), self.type_of(right, sym)) {
+            (Ty::Array { elem: left, .. }, Ty::Array { elem: right, .. }) => {
+                compatible(&left, &right) || compatible(&right, &left)
+            }
+            _ => false,
+        }
+    }
+
+    /// Find the output of the operator overload selected by these operands.
+    /// `Self` is the impl owner, not a wildcard: it only matches the owner's
+    /// type. A contextual literal may also take that type at the call site.
+    fn operator_output(
+        &self,
+        symbol: &str,
+        left: &Ty,
+        right: &Ty,
+        coerces_to_owner: bool,
+    ) -> Option<Option<String>> {
+        let owner = self.ty_head(left)?;
+        let input = self.ty_head(right)?;
+        self.operator_sigs
+            .get(&(symbol.to_string(), owner.clone()))
+            .and_then(|signatures| {
+                signatures.iter().find(|(declared, _)| {
+                    declared.as_deref() == Some(input.as_str())
+                        || (declared.as_deref() == Some("Self") && input == owner)
+                        || (coerces_to_owner
+                            && (declared.as_deref() == Some("Self")
+                                || declared.as_deref() == Some(owner.as_str())))
+                })
+            })
+            .map(|(_, output)| output.clone())
+            .or_else(|| {
+                // A field-less Vector newtype inherits a blanket array
+                // operator from its element. Keep this fallback separate from
+                // ordinary impl ownership: an unrelated overload for the same
+                // owner must not make every right-hand type match.
+                let same_domain = input == owner || coerces_to_owner;
+                let element = self.vector_elements.get(&owner)?;
+                let requirement = self.blanket_array_impls.get(symbol)?;
+                (same_domain
+                    && self
+                        .trait_impls
+                        .get(requirement)
+                        .is_some_and(|types| types.contains(element)))
+                .then_some(Some(owner))
+            })
+    }
+
+    fn operator_accepts(
+        &self,
+        symbol: &str,
+        left: &Ty,
+        right: &Ty,
+        coerces_to_owner: bool,
+    ) -> bool {
+        self.operator_output(symbol, left, right, coerces_to_owner)
+            .is_some()
+    }
+
+    fn operator_accepts_expr(
+        &self,
+        symbol: &str,
+        left: &Ty,
+        right: &Ty,
+        rhs: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        let contextual_rhs = Self::is_contextual_literal(rhs) && self.assignable(left, rhs, sym);
+        let numeric_kernel_coercion = matches!(
+            (left, right),
+            (
+                Ty::Array {
+                    family: Some(_),
+                    ..
+                },
+                Ty::Integer
+            )
+        );
+        self.operator_accepts(
+            symbol,
+            left,
+            right,
+            contextual_rhs || numeric_kernel_coercion,
+        )
+    }
+
+    fn check_comparison_operands(
+        &mut self,
+        op: &BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        // Keep the existing focused character/numeric error and enum/integer
+        // suspicious-comparison warning as the sole diagnostics for those
+        // deliberately recognized source forms.
+        let char_numeric = [(lhs, rhs), (rhs, lhs)].iter().any(|(literal, other)| {
+            matches!(literal, Expr::CharLit { .. })
+                && matches!(
+                    self.type_of(other, sym),
+                    Ty::Array {
+                        family: Some(_),
+                        ..
+                    } | Ty::Integer
+                        | Ty::Real
+                )
+        });
+        let enum_integer = [(lhs, rhs), (rhs, lhs)].iter().any(|(literal, other)| {
+            matches!(literal, Expr::Int { text, .. } if !text.contains('.'))
+                && self.enum_operand_name(&self.type_of(other, sym)).is_some()
+        });
+        // Equality against an enum discriminant is deliberately a lint (the
+        // warning below points users to a variant). Ordering has no analogous
+        // intrinsic meaning and must continue through normal `<=>` checking.
+        let suspicious_enum_equality = enum_integer && matches!(op, BinOp::Eq | BinOp::Ne);
+        if char_numeric || suspicious_enum_equality {
+            return true;
+        }
+        if self.comparison_domains_compatible(lhs, rhs, sym) {
+            return false;
+        }
+        let left = self.type_of(lhs, sym);
+        let right = self.type_of(rhs, sym);
+        if self.operator_accepts_expr("<=>", &left, &right, rhs, sym) {
+            return false;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            span,
+            format!(
+                "cannot compare {} and {} with `{}`",
+                self.ty_display(&left),
+                self.ty_display(&right),
+                crate::syntax::pretty::bin_op(op)
+            ),
+            "convert one operand to the other's type, or implement `Operator<\"<=>\", Input, Ordering>`"
+                .to_string(),
+        );
+        true
+    }
+
+    fn check_intrinsic_binary_operands(
+        &mut self,
+        op: &BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        sym: &HashMap<String, Ty>,
+    ) {
+        if !matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Shl | BinOp::Shr
+        ) {
+            return;
+        }
+        let left = self.type_of(lhs, sym);
+        let right = self.type_of(rhs, sym);
+        if matches!(left, Ty::Error) || matches!(right, Ty::Error) {
+            return;
+        }
+        let symbol = crate::syntax::pretty::bin_op(op);
+        if self.operator_accepts_expr(symbol, &left, &right, rhs, sym) {
+            return;
+        }
+        // Nominal left operands are diagnosed by the trait-specific check
+        // below, which can offer the exact impl spelling without duplicating
+        // this intrinsic-domain diagnostic.
+        if self.named_operand_name(lhs, sym).is_some() {
+            return;
+        }
+        let packed = |ty: &Ty| {
+            matches!(
+                ty,
+                Ty::Array {
+                    family: Some(_),
+                    ..
+                }
+            )
+        };
+        let valid = match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                matches!(
+                    (&left, &right),
+                    (Ty::Integer, Ty::Integer)
+                        | (Ty::Integer, Ty::Real)
+                        | (Ty::Real, Ty::Integer)
+                        | (Ty::Real, Ty::Real)
+                ) || (matches!(left, Ty::Integer) && packed(&right))
+                    || (packed(&left) && matches!(right, Ty::Integer))
+            }
+            BinOp::Shl | BinOp::Shr => {
+                matches!((&left, &right), (Ty::Integer, Ty::Integer))
+                    || (matches!(left, Ty::Integer) && packed(&right))
+                    || (packed(&left) && matches!(right, Ty::Integer))
+            }
+            _ => true,
+        };
+        if !valid {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "cannot apply `{symbol}` to {} and {}",
+                    self.ty_display(&left),
+                    self.ty_display(&right)
+                ),
+                format!(
+                    "use numeric operands, convert explicitly, or implement `Operator<\"{symbol}\", Input, Output>`"
+                ),
+            );
+        }
+    }
+
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A decimal literal is already `real`; narrowing it to integer or
@@ -4171,18 +4479,20 @@ impl<'a> Checker<'a> {
             // literals in the branches read through the target type
             // (`b: Bit = if c { '1' } else { '0' }`).
             Expr::IfExpr { then, els, .. } => {
-                self.assignable(lhs, then, sym) && self.assignable(lhs, els, sym)
+                // The expression walk owns an incompatible-branch error. Once
+                // it has done so, do not blame the enclosing assignment too.
+                !self.value_expressions_compatible(then, els, sym)
+                    || (self.assignable(lhs, then, sym) && self.assignable(lhs, els, sym))
             }
             // A match expression has the assignment context of its consumer
             // on every arm, just like an if-expression has it on both
             // branches. Looking only at `type_of` used the first arm and let a
             // later incompatible value be reinterpreted silently.
             Expr::Match { arms, .. } => {
-                !arms.is_empty()
-                    && arms.iter().all(|arm| {
-                        arm.value_expr()
-                            .is_some_and(|value| self.assignable(lhs, value, sym))
-                    })
+                let values: Vec<&Expr> = arms.iter().filter_map(MatchArm::value_expr).collect();
+                let common = self.values_share_domain(&values, sym);
+                !values.is_empty()
+                    && (!common || values.iter().all(|value| self.assignable(lhs, value, sym)))
             }
             // `[a, b, c]` fills an array target: length must match and every
             // element must be assignable to the element type (element literals
@@ -4337,6 +4647,23 @@ impl<'a> Checker<'a> {
                         self.check_expr(v, sym);
                     }
                 }
+                let values: Vec<&Expr> = arms.iter().filter_map(MatchArm::value_expr).collect();
+                let anchor = self.value_domain_anchor(&values, sym);
+                if let Some(anchor) = anchor {
+                    for value in values {
+                        if !self.value_expressions_compatible(anchor, value, sym) {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(value),
+                                format!(
+                                    "match arms yield incompatible types: {} and {}",
+                                    self.ty_display(&self.type_of(anchor, sym)),
+                                    self.ty_display(&self.type_of(value, sym))
+                                ),
+                            );
+                        }
+                    }
+                }
             }
             Expr::Field { base, field, .. } => {
                 self.check_expr(base, sym);
@@ -4436,6 +4763,17 @@ impl<'a> Checker<'a> {
                 self.check_expr(cond, sym);
                 self.check_expr(then, sym);
                 self.check_expr(els, sym);
+                if !self.value_expressions_compatible(then, els, sym) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(els),
+                        format!(
+                            "`if` branches yield incompatible types: {} and {}",
+                            self.ty_display(&self.type_of(then, sym)),
+                            self.ty_display(&self.type_of(els, sym))
+                        ),
+                    );
+                }
             }
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
@@ -4450,9 +4788,13 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
-                if is_comparison(op) {
+                let comparison_handled = if is_comparison(op) {
                     self.check_comparison_fit(lhs, rhs, sym);
-                }
+                    self.check_comparison_operands(op, lhs, rhs, *span, sym)
+                } else {
+                    false
+                };
+                self.check_intrinsic_binary_operands(op, lhs, rhs, *span, sym);
                 // A constant zero divisor is always a mistake: hardware has no
                 // trap for it, so today it just yields 0 with no complaint.
                 if matches!(op, BinOp::Div) && Self::const_literal(rhs) == Some(0) {
@@ -4492,25 +4834,7 @@ impl<'a> Checker<'a> {
                     // Self-typed parameter, as it does for the symbolic
                     // operators — `a + 255` worked and `a xor 255` did not,
                     // purely because the textual half dispatches here.
-                    let rhs_literal = matches!(
-                        rhs.as_ref(),
-                        Expr::Int { .. } | Expr::SuffixLit { .. } | Expr::BitStrLit { .. }
-                    );
-                    let matching = self
-                        .ty_head(&lhs_ty)
-                        .zip(self.ty_head(&rhs_ty))
-                        .is_some_and(|(owner, input)| {
-                            self.operator_sigs
-                                .get(&(symbol.clone(), owner.clone()))
-                                .is_some_and(|sigs| {
-                                    sigs.iter().any(|(declared, _)| {
-                                        declared.as_deref() == Some(input.as_str())
-                                            || declared.as_deref() == Some("Self")
-                                            || (rhs_literal
-                                                && declared.as_deref() == Some(owner.as_str()))
-                                    })
-                                })
-                        });
+                    let matching = self.operator_accepts_expr(symbol, &lhs_ty, &rhs_ty, rhs, sym);
                     // A plain array has no type head, so the exact
                     // `(symbol, owner)` lookup above cannot see the blanket
                     // `for T[]` impl that lifts the element's operator.
@@ -4597,24 +4921,46 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                // A user struct/enum operand needs an operator-trait impl
-                // (spec 3.25); intrinsic numerics keep built-in semantics.
-                // `==`/`!=` on enums stay built-in (discriminant compare).
-                if !matches!(op_str, "==" | "!=") {
+                // A user struct/enum or nominal vector operand needs an exact
+                // operator-trait overload (spec 3.25); overload resolution
+                // includes the right operand, not merely the impl owner.
+                // Equality on enums alone stays intrinsic (a discriminant
+                // compare); structs derive it from `<=>` like ordering does.
+                if !matches!(op, BinOp::Custom { .. }) {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
-                        let has_op = |tr: &str| self.has_impl(tr, &name);
-                        // Operators dispatch by symbol; one three-way `<=>`
-                        // (`-> Ordering`) impl derives every comparison.
-                        let is_cmp = matches!(op_str, "<" | "<=" | ">" | ">=");
-                        let sym = if is_cmp { "<=>" } else { op_str };
-                        if !has_op(sym) {
-                            self.error(
-                                codes::TYPE_MISMATCH,
-                                *span,
-                                format!(
-                                    "`{op_str}` needs an `impl Operator<\"{sym}\", …> for {name}`"
-                                ),
-                            );
+                        let intrinsic_enum_equality = matches!(op_str, "==" | "!=")
+                            && self.enum_operand_name(&self.type_of(lhs, sym)).is_some();
+                        let intrinsic_vector_operator = (is_comparison(op)
+                            || matches!(
+                                op,
+                                BinOp::Add
+                                    | BinOp::Sub
+                                    | BinOp::Mul
+                                    | BinOp::Div
+                                    | BinOp::Shl
+                                    | BinOp::Shr
+                            ))
+                            && self.is_packed_vector_newtype(&name);
+                        if !intrinsic_enum_equality && !intrinsic_vector_operator {
+                            let operator = if is_comparison(op) { "<=>" } else { op_str };
+                            let left = self.type_of(lhs, sym);
+                            let right = self.type_of(rhs, sym);
+                            // `Error` is the recovery type for an expression this
+                            // pass cannot yet model (generic constants, composite
+                            // field calls, and similar forms). Never reinterpret
+                            // it as a known mismatching overload argument.
+                            let accepts = matches!(right, Ty::Error)
+                                || self.operator_accepts_expr(operator, &left, &right, rhs, sym);
+                            if !accepts && !comparison_handled {
+                                self.error(
+                                    codes::TYPE_MISMATCH,
+                                    *span,
+                                    format!(
+                                        "no `{op_str}` operator for `{name}` with a right operand of type `{}`",
+                                        self.ty_display(&right)
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
@@ -4850,15 +5196,11 @@ impl<'a> Checker<'a> {
             // A numeric literal is `integer`, or `real` when it has a point.
             Expr::Int { text, .. } if text.contains('.') => Ty::Real,
             Expr::Int { .. } => Ty::Integer,
-            // `if c { a } else { b }` takes its branches' type (the then arm;
-            // branch-mismatch diagnostics ride on assignment compatibility).
-            Expr::IfExpr { then, .. } => self.type_of(then, sym),
-            // A match-expression takes its arms' common type (the first arm).
-            Expr::Match { arms, .. } => arms
-                .iter()
-                .find_map(|a| a.value_expr())
-                .map(|v| self.type_of(v, sym))
-                .unwrap_or(Ty::Error),
+            Expr::IfExpr { then, els, .. } => self.joined_value_type(&[then, els], sym),
+            Expr::Match { arms, .. } => {
+                let values: Vec<&Expr> = arms.iter().filter_map(MatchArm::value_expr).collect();
+                self.joined_value_type(&values, sym)
+            }
             // A suffix defined by `impl Suffix for T` types the literal as T;
             // the fixed fs/Hz table backs bare files as integer.
             Expr::SuffixLit { suffix, .. } => {
@@ -4949,34 +5291,43 @@ impl<'a> Checker<'a> {
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
-                // Runtime lowering promotes either ordering of mixed
-                // integer/real arithmetic to f64. Returning the left type here
-                // made `integer_value + real_value` look like an integer and
-                // allowed it into truncating integer-only contexts.
-                if matches!(lhs_ty, Ty::Real) || matches!(rhs_ty, Ty::Real) {
-                    return Ty::Real;
-                }
                 let op_str = crate::syntax::pretty::bin_op(op);
-                let tr = op_str;
-                if let (Some(owner), Some(input)) = (self.ty_head(&lhs_ty), self.ty_head(&rhs_ty)) {
-                    if let Some((_, Some(output))) = self
-                        .operator_sigs
-                        .get(&(tr.to_string(), owner.clone()))
-                        .and_then(|sigs| {
-                            sigs.iter().find(|(declared, _)| {
-                                declared.as_deref() == Some(input.as_str())
-                                    || declared.as_deref() == Some("Self")
-                            })
-                        })
-                    {
-                        if output == "Self" || output == &owner {
+                let contextual_rhs =
+                    Self::is_contextual_literal(rhs) && self.assignable(&lhs_ty, rhs, sym);
+                let numeric_kernel_coercion = matches!(
+                    (&lhs_ty, &rhs_ty),
+                    (
+                        Ty::Array {
+                            family: Some(_),
+                            ..
+                        },
+                        Ty::Integer
+                    )
+                );
+                if let Some(Some(output)) = self.operator_output(
+                    op_str,
+                    &lhs_ty,
+                    &rhs_ty,
+                    contextual_rhs || numeric_kernel_coercion,
+                ) {
+                    if let Some(owner) = self.ty_head(&lhs_ty) {
+                        if output == "Self" || output == owner {
                             return lhs_ty;
                         }
-                        if output == &input {
+                        if self.ty_head(&rhs_ty).as_deref() == Some(output.as_str()) {
                             return rhs_ty;
                         }
-                        return self.ty_from_head(output);
+                        return self.ty_from_head(&output);
                     }
+                }
+                // Runtime lowering promotes either ordering of mixed
+                // integer/real arithmetic to f64. This applies only to
+                // arithmetic: a real shift count (or logical/custom operator)
+                // does not turn the whole expression into a real value.
+                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                    && (matches!(lhs_ty, Ty::Real) || matches!(rhs_ty, Ty::Real))
+                {
+                    return Ty::Real;
                 }
                 if matches!(op, BinOp::Custom { .. }) {
                     return Ty::Error;
@@ -5152,7 +5503,7 @@ impl<'a> Checker<'a> {
                     let owner = &path.segments[path.segments.len() - 2].text;
                     let name = &path.segments[path.segments.len() - 1].text;
                     match self.methods.get(&(owner.clone(), name.clone())) {
-                        Some(Some(ret)) => self.ast_ty(ret),
+                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(owner)),
                         Some(None) => Ty::Void,
                         None if name == "new" && self.is_conversion_name(owner) => {
                             self.ty_from_head(owner)
@@ -5170,7 +5521,7 @@ impl<'a> Checker<'a> {
                         .ty_head(&recv)
                         .and_then(|h| self.methods.get(&(h, field.text.clone())))
                     {
-                        Some(Some(ret)) => self.ast_ty(&ret.clone()),
+                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &recv),
                         Some(None) => Ty::Void,
                         None => Ty::Error,
                     }
@@ -5277,6 +5628,18 @@ impl<'a> Checker<'a> {
             } => Some(name),
             _ => None,
         }
+    }
+
+    /// Whether a Vector family is represented by one packed word sequence
+    /// rather than flattened aggregate fields. These newtypes retain the
+    /// backend's intrinsic arithmetic fallback; a multi-field struct that
+    /// merely opts into `Vector` does not.
+    fn is_packed_vector_newtype(&self, name: &str) -> bool {
+        self.vector_families.contains(name)
+            && self
+                .structs
+                .get(name)
+                .is_some_and(|(_, fields)| fields.is_empty())
     }
 
     /// A constant initializer must lie inside a value-range-constrained
@@ -5684,6 +6047,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Interpret a collected method signature at a call site. Signatures are
+    /// stored as source `Type`s, so a direct `Self` must be rebound to the
+    /// receiver/associated owner rather than the impl-local resolver symbol.
+    fn ast_ty_for_owner(&self, t: &Type, owner: &Ty) -> Ty {
+        if matches!(t, Type::Path(path) if path.segments.len() == 1 && path.segments[0].text == "Self")
+        {
+            owner.clone()
+        } else {
+            self.ast_ty(t)
+        }
+    }
+
     /// A resolved type-name span as a `Ty`. A **type parameter** (`T` in a
     /// generic entity/struct/impl) is opaque, so it types as `Error` — it
     /// suppresses the assignment/type checks that can't be meaningful until the
@@ -5702,6 +6077,11 @@ impl<'a> Checker<'a> {
                 "integer" => Ty::Integer,
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
+                "Self" => self
+                    .current_self_ty
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| self.named_ty(p.span)),
                 // Elaboration-time range constants (`const BYTE: range`);
                 // opaque to value checking.
                 "range" => Ty::Error,
@@ -6583,6 +6963,91 @@ mod tests {
     }
 
     #[test]
+    fn comparisons_and_value_branches_need_compatible_types() {
+        let tb = |body: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {body} }}\n");
+        assert_eq!(
+            check_src(&tb(
+                "let r: real = 1.5; let text: Char[1] = \"x\"; let bad: Bool = r == text;"
+            )),
+            1,
+            "comparison domains"
+        );
+        assert_eq!(
+            check_src(&tb("if if true { true } else { 1 } {}")),
+            1,
+            "if-expression branches"
+        );
+        assert_eq!(
+            check_src(&tb("let bad: Bool = if true { true } else { 1 };")),
+            1,
+            "an enclosing assignment does not duplicate the branch error"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "if match true { Bool::true => true, Bool::false => 1 } {}"
+            )),
+            1,
+            "match-expression arms"
+        );
+        assert_eq!(
+            check_src(
+                "module m;\nenum State { Idle, Run }\n#[test] entity T {}\n\
+                 impl T { let state: State = State::Idle; let bad: Bool = state < 1; }\n"
+            ),
+            1,
+            "enum ordering still requires a matching `<=>` implementation"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let r: real = 1.5; let promoted: real = if true { 1 } else { 1.5 }; let compared: Bool = 1 < r;"
+            )),
+            0,
+            "integer-to-real promotion stays compatible"
+        );
+        assert_eq!(
+            check_src(&tb("let bad: integer = (if true { 1 } else { 1.5 }) + 1;")),
+            1,
+            "an `if` join retains real promotion when nested"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let bad: integer = (match true { Bool::true => 1, Bool::false => 1.5 }) + 1;"
+            )),
+            1,
+            "a match join retains real promotion when nested"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let short: Char[4] = \"siox\"; let different: Bool = short != \"sioxc\";"
+            )),
+            0,
+            "array comparison does not require assignment-compatible lengths"
+        );
+    }
+
+    #[test]
+    fn intrinsic_arithmetic_requires_numeric_operands() {
+        let errors = check_src(
+            "module m;\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+               let r: real = 1.5;\n\
+               let text: Char[1] = \"x\";\n\
+               let bad_add: real = r + text;\n\
+               let bad_sub: Char = 'a' - 'b';\n\
+               let bad_shift: integer = 1 << r;\n\
+               let promoted: real = 1 + r;\n\
+               let bits: unsigned[8] = 3;\n\
+               let incremented: unsigned[8] = bits + 1;\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 3,
+            "intrinsic arithmetic has numeric operand domains"
+        );
+    }
+
+    #[test]
     fn struct_literal_fields_are_checked_in_every_value_context() {
         let errors = check_src(
             "module m;\n\
@@ -7235,6 +7700,92 @@ mod tests {
                 "impl Operator<\"+\", V, V> for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
             )),
             0
+        );
+    }
+
+    #[test]
+    fn operator_overloads_match_the_declared_input_type() {
+        let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
+        let explicit = "impl Operator<\"+\", Right, Left> for Left {\n\
+                          fn apply(self, rhs: Right) -> Left { return self; }\n\
+                        }\n";
+        assert_eq!(
+            check_src(&format!(
+                "{header}{explicit}entity E {{ a: Left in, b: Right in, }}\n\
+                 impl E {{ let good: Left = a + b; }}\n"
+            )),
+            0,
+            "the declared right-hand type selects the overload"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{header}{explicit}entity E {{ a: Left in, }}\n\
+                 impl E {{ let bad: Left = a + a; }}\n"
+            )),
+            1,
+            "an impl for another input type is not a wildcard"
+        );
+
+        let self_typed = "impl Operator<\"+\", Self, Self> for Left {\n\
+                            fn apply(self, rhs: Self) -> Self { return self; }\n\
+                          }\n";
+        assert_eq!(
+            check_src(&format!(
+                "{header}{self_typed}entity E {{ a: Left in, b: Right in, }}\n\
+                 impl E {{ let bad: Left = a + b; }}\n"
+            )),
+            1,
+            "`Self` means the impl owner rather than any input type"
+        );
+    }
+
+    #[test]
+    fn self_in_method_signatures_is_the_impl_target() {
+        let methods = "impl Left {\n\
+                         fn choose(self, rhs: Self) -> Self { return rhs; }\n\
+                         fn identity(value: Self) -> Self { return value; }\n\
+                       }\n";
+        let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
+        assert_eq!(
+            check_src(&format!(
+                "{header}{methods}entity E {{ a: Left in, b: Left in, }}\n\
+                 impl E {{ let x: Left = a.choose(b); let y: Left = Left::identity(x); }}\n"
+            )),
+            0,
+            "`Self` parameters and returns rebind at method call sites"
+        );
+        assert_eq!(
+            check_src(&format!(
+                "{header}{methods}entity E {{ a: Left in, b: Right in, }}\n\
+                 impl E {{ let bad: Left = a.choose(b); }}\n"
+            )),
+            1,
+            "a `Self` parameter rejects a different nominal type"
+        );
+    }
+
+    #[test]
+    fn struct_equality_is_derived_from_three_way_comparison() {
+        let base = |operator: &str| {
+            format!(
+                "module m;\nstruct V {{ a: Bit }}\n{operator}\n\
+                 entity E {{ p: V in, q: V in, }}\n\
+                 impl E {{ let equal: Bool = p == q; }}\n"
+            )
+        };
+        assert_eq!(
+            check_src(&base("")),
+            1,
+            "struct equality needs an operator contract"
+        );
+        assert_eq!(
+            check_src(&base(
+                "impl Operator<\"<=>\", V, Ordering> for V {\n\
+                   fn apply(self, rhs: V) -> Ordering { return Ordering::Equal; }\n\
+                 }"
+            )),
+            0,
+            "one `<=>` implementation derives equality"
         );
     }
 
