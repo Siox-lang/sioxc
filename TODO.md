@@ -129,16 +129,17 @@ Remaining:
 - 🟡 **Diagnostic source coverage.** Frontend diagnostics carry spans and stable
   codes. Continue threading declaration/source spans into IR-only warnings so
   every late diagnostic can highlight its origin.
-- 🔴 **RTL elaboration output file (Phase 3).** Emit a stable, vendor-neutral
-  artifact for Vivado, Quartus, and other implementation tools after hierarchy
-  elaboration and synthesizable-logic normalization. It must retain module and
+- 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, vendor-neutral
+  artifact after hierarchy elaboration and synthesizable-logic normalization.
+  Vivado, Quartus, and other vendor adapters should consume it for synthesis,
+  place-and-route, and bitstream implementation. It must retain module and
   instance hierarchy, ports and directions, logical ranges/widths, nets,
   registers, combinational and clocked logic, clock/reset metadata, parameters,
-  initial values where synthesizable, and source-name/debug mappings. Define a
-  versioned schema plus validation/import tooling so vendor adapters can consume
-  it without depending on compiler-internal Rust/IR layouts; HDL/netlist
-  renderers can then be separate consumers of the same artifact. This is not a
-  current simulation milestone.
+  initial values where synthesizable, constraints, and source-name/debug
+  mappings. Define a versioned schema plus validation/import tooling so adapters
+  do not depend on compiler-internal Rust/IR layouts; HDL and netlist renderers
+  can remain separate consumers of the same artifact. This is not a current
+  simulation milestone.
 
 ## API
 

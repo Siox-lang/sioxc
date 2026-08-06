@@ -7060,3 +7060,11 @@ inclusive set as `0..3`. The emitted-binary regression covers hardware and
 testbench hits and misses. `cargo fmt --all --check`, all 292 library tests and
 every integration target, strict all-target/all-feature Clippy, and the full
 native corpus pass (161/161).
+
+### 2026-08-06 — Codex — RTL implementation artifact roadmap refined
+
+The Output TODO already included a Phase 3 vendor-neutral RTL elaboration
+artifact, so I refined it rather than duplicating it. It now specifies an
+elaborated RTL design file consumed through Vivado, Quartus, and other vendor
+adapters for synthesis, place-and-route, and bitstream implementation, while
+keeping the file schema independent of compiler-internal Rust/IR layouts.
