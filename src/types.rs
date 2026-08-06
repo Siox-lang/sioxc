@@ -1059,7 +1059,11 @@ impl<'a> Checker<'a> {
                     if let Some(b) = &f.body {
                         let saved =
                             self.push_type_params(f.generics.params.iter().map(|p| &p.name.text));
-                        self.check_function_block(f, b, None);
+                        // The std operator/literal hook traits use an empty
+                        // body as an intrinsic placeholder. A real default
+                        // body, however, is ordinary inlined code and must
+                        // return on every path like any other function.
+                        self.check_function_block(f, b, None, !b.stmts.is_empty());
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
@@ -1070,8 +1074,27 @@ impl<'a> Checker<'a> {
                 // (operators on the opaque `T`) would wrongly reject it.
                 if f.generics.params.is_empty() {
                     if let Some(b) = &f.body {
-                        self.check_function_block(f, b, None);
+                        self.check_function_block(f, b, None, true);
                     }
+                } else if let Some(body) = &f.body {
+                    // Operator/type checks wait for monomorphization, but
+                    // reaching the end without a value is independent of the
+                    // concrete type arguments and is already invalid here.
+                    let names = f
+                        .params
+                        .iter()
+                        .filter_map(|parameter| {
+                            Some((
+                                parameter.name.as_ref()?.text.clone(),
+                                parameter
+                                    .ty
+                                    .as_ref()
+                                    .map(|ty| self.ast_ty(ty))
+                                    .unwrap_or(Ty::Error),
+                            ))
+                        })
+                        .collect();
+                    self.check_function_fallthrough(f, body, &names);
                 }
             }
             // A struct newtype needs no check of its own: the form carries no
@@ -1604,9 +1627,8 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Let(l) => {
                     self.require_let_annotation(l);
-                    self.check_struct_literal_fields(l);
+                    self.check_struct_literal_fields(l, &sym);
                     self.check_signal_reset_value(l);
-                    self.check_struct_literal_fields(l);
                     // Two `let`s of one name in the same body: the second
                     // silently shadowed a scalar, and for a struct produced C
                     // with the field locals defined twice, which failed at
@@ -1711,6 +1733,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                         let expected = f.ret.as_ref().map(|ty| self.ast_ty(ty));
+                        self.check_function_fallthrough(f, b, &body_sym);
                         self.check_block_with(
                             b,
                             &body_dirs,
@@ -1860,7 +1883,13 @@ impl<'a> Checker<'a> {
     /// parameters in scope. Previously these bodies were checked against an
     /// empty symbol table, so every parameter expression became `Ty::Error`
     /// and suppressed the very type diagnostics Stage 4 was meant to provide.
-    fn check_function_block(&mut self, function: &FnDecl, body: &Block, self_ty: Option<&Type>) {
+    fn check_function_block(
+        &mut self,
+        function: &FnDecl,
+        body: &Block,
+        self_ty: Option<&Type>,
+        require_complete_return: bool,
+    ) {
         let mut names = HashMap::new();
         let mut ranged = HashMap::new();
         let mut index_bounds = HashMap::new();
@@ -1881,6 +1910,9 @@ impl<'a> Checker<'a> {
             }
         }
         let expected = function.ret.as_ref().map(|ty| self.ast_ty(ty));
+        if require_complete_return {
+            self.check_function_fallthrough(function, body, &names);
+        }
         self.check_block_with(
             body,
             &PortDirs::default(),
@@ -1889,6 +1921,140 @@ impl<'a> Checker<'a> {
             &index_bounds,
             expected.as_ref(),
         );
+    }
+
+    /// A value-returning function is an expression once inlined, so every
+    /// reachable path must produce a value. Letting one fall off the end made
+    /// lowering return `None`; callers then failed later as an opaque unknown
+    /// driver instead of receiving a diagnostic at the function declaration.
+    fn check_function_fallthrough(
+        &mut self,
+        function: &FnDecl,
+        body: &Block,
+        names: &HashMap<String, Ty>,
+    ) {
+        let Some(ret) = &function.ret else { return };
+        if self.block_guarantees_return(body, names) {
+            return;
+        }
+        let expected = crate::syntax::pretty::type_str(ret);
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            function.name.span,
+            format!(
+                "function `{}` can reach the end without returning {}",
+                function.name.text, expected
+            ),
+            "return a value on every branch, or remove the declared return type".to_string(),
+        );
+    }
+
+    fn block_guarantees_return(&self, body: &Block, outer: &HashMap<String, Ty>) -> bool {
+        // Locals are block-scoped from the start during resolution. Mirror
+        // that here so a `match` on a local can prove its domain exhaustive.
+        let mut names = outer.clone();
+        for statement in &body.stmts {
+            if let Stmt::Let(declaration) = statement {
+                names.insert(
+                    declaration.name.text.clone(),
+                    declaration
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.ast_ty(ty))
+                        .unwrap_or(Ty::Error),
+                );
+            }
+        }
+        body.stmts
+            .iter()
+            .any(|statement| self.statement_guarantees_return(statement, &names))
+    }
+
+    fn statement_guarantees_return(&self, statement: &Stmt, names: &HashMap<String, Ty>) -> bool {
+        match statement {
+            Stmt::Return { .. } => true,
+            Stmt::If(if_) => {
+                self.block_guarantees_return(&if_.then, names)
+                    && match if_.else_.as_deref() {
+                        Some(ElseBranch::Block(block)) => {
+                            self.block_guarantees_return(block, names)
+                        }
+                        Some(ElseBranch::If(inner)) => self.if_guarantees_return(inner, names),
+                        None => false,
+                    }
+            }
+            Stmt::Match(match_) => {
+                !match_.arms.is_empty()
+                    && match_
+                        .arms
+                        .iter()
+                        .all(|arm| self.block_guarantees_return(&arm.body, names))
+                    && self.match_is_exhaustive(&match_.scrutinee, &match_.arms, names)
+            }
+            Stmt::Let(_) | Stmt::Assign { .. } | Stmt::For { .. } | Stmt::Expr(_) => false,
+        }
+    }
+
+    fn if_guarantees_return(&self, if_: &IfStmt, names: &HashMap<String, Ty>) -> bool {
+        self.block_guarantees_return(&if_.then, names)
+            && match if_.else_.as_deref() {
+                Some(ElseBranch::Block(block)) => self.block_guarantees_return(block, names),
+                Some(ElseBranch::If(inner)) => self.if_guarantees_return(inner, names),
+                None => false,
+            }
+    }
+
+    fn match_is_exhaustive(
+        &self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        names: &HashMap<String, Ty>,
+    ) -> bool {
+        // A wildcard (including one inside an or-pattern) is sufficient for
+        // every scrutinee type.
+        if arms.iter().any(|arm| pattern_covers(&arm.pattern).1) {
+            return true;
+        }
+        match self.type_of(scrutinee, names) {
+            Ty::Named(id) => {
+                let Some(enum_name) = self.resolved.def(id).map(|def| &def.name) else {
+                    return false;
+                };
+                let Some(variants) = self.enum_variants.get(enum_name) else {
+                    return false;
+                };
+                let covered: HashSet<String> = arms
+                    .iter()
+                    .flat_map(|arm| pattern_covers(&arm.pattern).0)
+                    .collect();
+                variants.iter().all(|variant| covered.contains(variant))
+            }
+            ty => self.numeric_match_is_exhaustive(&ty, arms),
+        }
+    }
+
+    fn numeric_match_is_exhaustive(&self, ty: &Ty, arms: &[MatchArm]) -> bool {
+        let Some((lo, hi)) = self.numeric_domain(ty) else {
+            return false;
+        };
+        let mut covered = Vec::new();
+        for arm in arms {
+            if !collect_pattern_ranges(&arm.pattern, &mut covered) {
+                return false;
+            }
+        }
+        covered.sort_unstable();
+        let mut frontier = lo;
+        for (start, end) in covered {
+            if start > frontier {
+                return false;
+            }
+            frontier = frontier.max(end.saturating_add(1));
+            if frontier > hi {
+                return true;
+            }
+        }
+        frontier > hi
     }
 
     /// A method body whose `self` carries directions — an impl on a view
@@ -2031,7 +2197,7 @@ impl<'a> Checker<'a> {
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
-                self.check_struct_literal_fields(l);
+                self.check_struct_literal_fields(l, sym);
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v, sym);
@@ -3494,6 +3660,17 @@ impl<'a> Checker<'a> {
             Expr::IfExpr { then, els, .. } => {
                 self.assignable(lhs, then, sym) && self.assignable(lhs, els, sym)
             }
+            // A match expression has the assignment context of its consumer
+            // on every arm, just like an if-expression has it on both
+            // branches. Looking only at `type_of` used the first arm and let a
+            // later incompatible value be reinterpreted silently.
+            Expr::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms.iter().all(|arm| {
+                        arm.value_expr()
+                            .is_some_and(|value| self.assignable(lhs, value, sym))
+                    })
+            }
             // `[a, b, c]` fills an array target: length must match and every
             // element must be assignable to the element type (element literals
             // read through it, as in an initialiser).
@@ -4541,18 +4718,22 @@ impl<'a> Checker<'a> {
         Some((signed_lit(lo)?, signed_lit(hi)?))
     }
 
-    /// Field names in a struct literal, against the declared type. Instance
-    /// construction reuses `Construct`, so this only fires when the target
-    /// names a known struct — an entity is not in `structs`.
-    fn check_struct_literal_fields(&mut self, l: &LetDecl) {
+    /// Field names and values in a struct literal, against the declared type.
+    /// Instance construction reuses `Construct`, so this only fires when the
+    /// target names a known struct — an entity is not in `structs`.
+    fn check_struct_literal_fields(&mut self, l: &LetDecl, sym: &HashMap<String, Ty>) {
         let Some(ty) = &l.ty else { return };
-        let Some(ty) = self.resolve_alias_type(ty) else {
-            return;
-        };
-        let Some(Expr::Construct {
-            args, spread, span, ..
-        }) = &l.value
-        else {
+        let Some(value) = &l.value else { return };
+        self.check_struct_literal_value(ty, value, sym);
+    }
+
+    fn check_struct_literal_value(
+        &mut self,
+        declared: &Type,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let Some(ty) = self.resolve_alias_type(declared) else {
             return;
         };
         let Some(head) = type_head_name(&ty) else {
@@ -4566,9 +4747,75 @@ impl<'a> Checker<'a> {
         if fields.is_empty() {
             return;
         }
+
+        let (args, spread, span) = match value {
+            Expr::Construct {
+                ty: explicit,
+                args,
+                spread,
+                span,
+            } => {
+                // `let a: A = B { ... }` is a type mismatch even though both
+                // sides are constructions. `check_init` deliberately leaves
+                // name-less construction to this contextual checker.
+                if let Some(actual) = explicit {
+                    let (expected, actual) = (self.ast_ty(&ty), self.ast_ty(actual));
+                    if !compatible(&expected, &actual) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!(
+                                "cannot construct {} where {} is required",
+                                self.ty_display(&actual),
+                                self.ty_display(&expected)
+                            ),
+                        );
+                        return;
+                    }
+                }
+                (args.as_slice(), spread.as_deref(), *span)
+            }
+            // A name-less positional literal (`{ a, b }`) is represented as
+            // concatenation until its declared struct type supplies context.
+            Expr::Concat { parts, span } => {
+                if parts.len() > fields.len() {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "literal for `{head}` has {} values but only {} fields",
+                            parts.len(),
+                            fields.len()
+                        ),
+                    );
+                }
+                for (field, value) in fields.iter().zip(parts) {
+                    self.check_struct_field_value(&head, field, value, sym);
+                }
+                return;
+            }
+            _ => return,
+        };
+
+        if let Some(base) = spread {
+            let expected = self.ast_ty(&ty);
+            if !self.assignable(&expected, base, sym) {
+                let actual = self.type_of(base, sym);
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(base),
+                    format!(
+                        "struct spread for `{head}` has type {}, expected {}",
+                        self.ty_display(&actual),
+                        self.ty_display(&expected)
+                    ),
+                );
+            }
+        }
+
         let mut seen: HashSet<String> = HashSet::new();
         let mut positional = false;
-        for c in args {
+        for (position, c) in args.iter().enumerate() {
             match &c.field {
                 // A misspelled name was dropped whole: the field kept its
                 // default and the literal still type-checked.
@@ -4580,9 +4827,28 @@ impl<'a> Checker<'a> {
                 ),
                 Some(f) => {
                     seen.insert(f.text.clone());
+                    if let Some(value) = &c.value {
+                        self.check_struct_field_value(&head, &f.text, value, sym);
+                    }
                 }
-                None => positional = true,
+                None => {
+                    positional = true;
+                    if let (Some(field), Some(value)) = (fields.get(position), &c.value) {
+                        self.check_struct_field_value(&head, field, value, sym);
+                    }
+                }
             }
+        }
+        if positional && args.len() > fields.len() {
+            self.error(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "literal for `{head}` has {} values but only {} fields",
+                    args.len(),
+                    fields.len()
+                ),
+            );
         }
         // A spread supplies the rest, and the positional form is bound by
         // ordinal elsewhere.
@@ -4605,8 +4871,50 @@ impl<'a> Checker<'a> {
                         .join(", ")
                 ))
                 .with_code(codes::INCOMPLETE_STRUCT_LITERAL)
-                .at(*span)
+                .at(span)
                 .help("give every field a value, or copy the rest with `{ ..base, .x = v }`"),
+            );
+        }
+    }
+
+    fn check_struct_field_value(
+        &mut self,
+        owner: &str,
+        field: &str,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let Some(declared) = self.field_decl_ty(owner, field) else {
+            return;
+        };
+        let expected = self.ast_ty(&declared);
+
+        // A name-less nested literal gets its type from this field. Recurse so
+        // every nested leaf is contextualized, instead of accepting it merely
+        // because an unknown expression type suppresses compatibility checks.
+        let nested_struct = self
+            .resolve_alias_type(&declared)
+            .and_then(|ty| type_head_name(&ty).map(str::to_string))
+            .is_some_and(|head| self.structs.contains_key(&head));
+        if nested_struct && matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
+            self.check_struct_literal_value(&declared, value, sym);
+            return;
+        }
+
+        if !matches!(expected, Ty::Error) && !self.assignable(&expected, value, sym) {
+            let actual = self.type_of(value, sym);
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                expr_span(value),
+                format!(
+                    "cannot initialize `{owner}.{field}` ({}) with {}",
+                    self.ty_display(&expected),
+                    self.ty_display(&actual)
+                ),
+                format!(
+                    "convert the value explicitly to {}",
+                    self.ty_display(&expected)
+                ),
             );
         }
     }
@@ -5607,6 +5915,67 @@ mod tests {
     }
 
     #[test]
+    fn value_returning_functions_return_on_every_path() {
+        let missing = check_src(
+            "module m;\n\
+             fn empty() -> unsigned[8] {}\n\
+             fn partial(flag: Bool) -> unsigned[8] {\n\
+               if flag { return 1; }\n\
+             }\n\
+             fn numeric_gap(value: unsigned[2]) -> unsigned[8] {\n\
+               match value { 0..2 => { return 1; } }\n\
+             }\n\
+             fn generic_gap<T>(value: T) -> T {\n\
+               let copy: T = value;\n\
+             }\n",
+        );
+        assert_eq!(
+            missing, 4,
+            "empty, one-sided, non-exhaustive numeric, and generic bodies fall through"
+        );
+
+        let complete = check_src(
+            "module m;\n\
+             enum State { A, B, C }\n\
+             fn branch(flag: Bool) -> unsigned[8] {\n\
+               if flag { return 1; } else { return 2; }\n\
+             }\n\
+             fn choose(state: State) -> unsigned[8] {\n\
+               match state {\n\
+                 State::A => { return 1; }\n\
+                 State::B => { return 2; }\n\
+                 State::C => { return 3; }\n\
+               }\n\
+             }\n\
+             fn numeric(value: unsigned[2]) -> unsigned[8] {\n\
+               match value { 0..3 => { return 4; } }\n\
+             }\n",
+        );
+        assert_eq!(
+            complete, 0,
+            "two-sided branches and exhaustive matches return on every path"
+        );
+    }
+
+    #[test]
+    fn value_returning_methods_cannot_fall_through() {
+        let errors = check_src(
+            "module m;\n\
+             struct S { value: unsigned[8] }\n\
+             impl S { fn bad(self) -> unsigned[8] {} }\n\
+             trait Defaulted {\n\
+               fn partial(self, flag: Bool) -> unsigned[8] {\n\
+                 if flag { return 1; }\n\
+               }\n\
+             }\n",
+        );
+        assert_eq!(
+            errors, 2,
+            "implementation and non-empty trait-default methods are inlined expressions"
+        );
+    }
+
+    #[test]
     fn array_aliases_preserve_declared_index_bounds() {
         let errors = check_src(
             "module m;\n\
@@ -6389,6 +6758,80 @@ mod tests {
         );
     }
 
+    #[test]
+    fn struct_literal_values_use_their_field_types() {
+        let direct = check_src(
+            "module m;\n\
+             struct Packet { data: unsigned[8], valid: Bit }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let logic: Logic = 'X';\n\
+               let packet: Packet = { .data = logic, .valid = '1' };\n\
+               y = packet.valid;\n\
+             }\n",
+        );
+        assert_eq!(direct, 1, "a named field keeps its declared type");
+
+        let nested = check_src(
+            "module m;\n\
+             struct Inner { data: unsigned[8] }\n\
+             struct Outer { inner: Inner, valid: Bit }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let logic: Logic = 'X';\n\
+               let value: Outer = { .inner = { .data = logic }, .valid = '1' };\n\
+               y = value.valid;\n\
+             }\n",
+        );
+        assert_eq!(nested, 1, "nested literals are checked recursively");
+
+        let wrong_type = check_src(
+            "module m;\n\
+             struct A { a: Bit }\n\
+             struct B { b: Bit }\n\
+             entity E { y: Bit out }\n\
+             impl E { let value: A = B { .b = '1' }; y = value.a; }\n",
+        );
+        assert_eq!(
+            wrong_type, 1,
+            "an explicitly typed construction must match its destination"
+        );
+
+        let wrong_spread = check_src(
+            "module m;\n\
+             struct Packet { data: unsigned[8], valid: Bit }\n\
+             entity E { y: Bit out }\n\
+             impl E {\n\
+               let logic: Logic = 'X';\n\
+               let packet: Packet = { ..logic, .valid = '1' };\n\
+               y = packet.valid;\n\
+             }\n",
+        );
+        assert_eq!(wrong_spread, 1, "a spread must have the struct's type");
+
+        let extra_positional = check_src(
+            "module m;\n\
+             struct Pair { a: Bit, b: Bit }\n\
+             entity E { y: Bit out }\n\
+             impl E { let pair: Pair = { '0', '1', '0' }; y = pair.a; }\n",
+        );
+        assert_eq!(
+            extra_positional, 1,
+            "extra positional values cannot be silently dropped"
+        );
+
+        let unknown_field_once = check_src(
+            "module m;\n\
+             struct Packet { data: unsigned[8] }\n\
+             entity E { y: Bit out }\n\
+             impl E { let packet: Packet = { .missing = 1 }; y = '1'; }\n",
+        );
+        assert_eq!(
+            unknown_field_once, 1,
+            "the struct literal checker must run exactly once"
+        );
+    }
+
     /// An unknown field or method lowered to `Unknown`: the driver silently
     /// carried no value, and `if clk.typo()` produced an unknown *condition*,
     /// quietly turning a clocked block combinational.
@@ -6604,6 +7047,43 @@ mod tests {
             0,
             "a wildcard covers the rest"
         );
+    }
+
+    #[test]
+    fn match_expression_checks_every_arm_type() {
+        let bad_assignment = check_src(
+            "module m;\n\
+             enum Select { Number, Other }\n\
+             entity E { select: Select in, logic: Logic in, y: unsigned[8] out }\n\
+             impl E {\n\
+               y = match select { Select::Number => 1, Select::Other => logic };\n\
+             }\n",
+        );
+        assert_eq!(
+            bad_assignment, 1,
+            "a later match arm cannot bypass assignment compatibility"
+        );
+
+        let bad_return = check_src(
+            "module m;\n\
+             enum Select { Number, Other }\n\
+             fn choose(select: Select, logic: Logic) -> unsigned[8] {\n\
+               return match select { Select::Number => 1, Select::Other => logic };\n\
+             }\n",
+        );
+        assert_eq!(
+            bad_return, 1,
+            "the return context applies to every match arm"
+        );
+
+        let good = check_src(
+            "module m;\n\
+             enum Select { One, Two }\n\
+             fn choose(select: Select) -> unsigned[8] {\n\
+               return match select { Select::One => 1, Select::Two => 2 };\n\
+             }\n",
+        );
+        assert_eq!(good, 0, "compatible match arms remain valid");
     }
 
     #[test]

@@ -6814,3 +6814,15 @@ testbench result equals the hardware result as well as the arithmetic.
 mid-edit on `src/types.rs`/`chat.md` in the shared checkout, and this keeps my
 commit off their in-flight work. Their `src/llvm/emit.rs`-untouched note and my
 `emit.rs` change are the same coordination from both sides.)
+
+### 2026-08-06 — Codex — function fall-through and contextual values
+
+Value-returning functions now diagnose fall-through paths across ordinary,
+generic, impl, and non-empty trait-default functions, including exhaustive
+enum and numeric matches. Match-expression compatibility checks every value
+arm, while struct literals validate named, nested, positional, spread, and
+explicit construction values against their contextual types. Added focused IR
+and LLVM regressions for the independently landed signed real-conversion fix.
+`cargo fmt --all --check`, all 271 unit tests and integration tests, strict
+all-target/all-feature Clippy, the direct native VCD reproducer, and both
+default and `bitpack` corpus runs pass; each corpus run is 161/161.

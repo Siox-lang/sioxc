@@ -1870,6 +1870,45 @@ mod tests {
     }
 
     #[test]
+    fn real_to_integer_sign_extends_in_wider_signed_contexts() {
+        let design = Design {
+            signals: vec![sig("E.r", 64), sig("E.lt", 1)],
+            drivers: vec![Driver {
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::SLt,
+                    lhs: Box::new(Expr::Unary {
+                        op: UnOp::RealToInt,
+                        rhs: Box::new(Expr::Current(SignalId(0))),
+                    }),
+                    rhs: Box::new(Expr::Const(0)),
+                },
+            }],
+            event_blocks: vec![],
+            enum_syms: Default::default(),
+            enum_bases: Default::default(),
+            new_defaults: Default::default(),
+            base_dir: Default::default(),
+            meta_of: Default::default(),
+            vector_element_enums: Default::default(),
+            vector_element_of_family: Default::default(),
+        };
+        let ll = emit_module_ir(&design).unwrap();
+        assert!(ll.contains("fptosi double"), "missing conversion:\n{ll}");
+        assert!(
+            ll.contains("sext i64") && ll.contains("to i65"),
+            "negative converted integers were not sign-extended:\n{ll}"
+        );
+        assert!(ll.contains("icmp slt i65"), "unsigned comparison:\n{ll}");
+        assert!(
+            !ll.contains("zext i64 %rtoi"),
+            "converted integer was zero-extended:\n{ll}"
+        );
+    }
+
+    #[test]
     fn topo_orders_a_chain() {
         // Drivers declared out of dependency order: y=c, c=b, b=a. The emitted
         // settle must compute b, then c, then y (each after its input).

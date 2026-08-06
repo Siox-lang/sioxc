@@ -5886,6 +5886,14 @@ impl<'a> Lowering<'a> {
     }
 
     fn binary_uses_kernel_integer(&self, lhs_ast: &ast::Expr, rhs_ast: &ast::Expr) -> bool {
+        // An explicit kernel-integer declaration is authoritative. In
+        // particular, the type table may describe `integer(real_value)` with
+        // the source family after inlining; rejecting arrays first made a
+        // direct negative comparison unsigned even though assigning the same
+        // conversion to an integer local worked.
+        if self.declares_kernel_integer(lhs_ast) || self.declares_kernel_integer(rhs_ast) {
+            return true;
+        }
         let lhs = self.expr_types.get(&ast::expr_span(lhs_ast));
         let rhs = self.expr_types.get(&ast::expr_span(rhs_ast));
         // Literals retain their default `integer` type even when they occur
@@ -5907,10 +5915,6 @@ impl<'a> Lowering<'a> {
             || matches!(rhs, Some(crate::types::Ty::Integer))
             || declared_integer(lhs_ast)
             || declared_integer(rhs_ast)
-            // A call declaring `-> integer` is a kernel-integer operand
-            // whatever its span happens to have recorded.
-            || self.declares_kernel_integer(lhs_ast)
-            || self.declares_kernel_integer(rhs_ast)
     }
 
     /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
@@ -11062,6 +11066,43 @@ mod tests {
                 op: BinOp::AShr,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn real_to_integer_conversion_is_signed_in_direct_comparisons() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E {\n\
+                 r: real in,\n\
+                 lt: Bit out,\n\
+             }\n\
+             impl E {\n\
+                 lt = if integer(r) < 0 { '1' } else { '0' };\n\
+             }\n",
+        );
+        let lt = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".lt"))
+            .expect("lt signal");
+        let expr = &design
+            .drivers
+            .iter()
+            .find(|driver| driver.target == SignalId(lt as u32))
+            .expect("lt driver")
+            .expr;
+        assert!(matches!(
+            expr,
+            Expr::Select { cond, .. }
+                if matches!(
+                    cond.as_ref(),
+                    Expr::Binary {
+                        op: BinOp::SLt,
+                        lhs,
+                        ..
+                    } if matches!(lhs.as_ref(), Expr::Unary { op: UnOp::RealToInt, .. })
+                )
         ));
     }
 
