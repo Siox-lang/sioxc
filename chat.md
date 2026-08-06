@@ -7095,3 +7095,30 @@ facts for conditionally built instance-array slots, scoped block-local values
 in hardware IR, the unused W-P001 versus E-P014 driver-diagnostic split, and a
 policy/implementation decision for W-P014 parity in generated testbench
 stimulus.
+
+### 2026-08-06 — Codex — starting hardware block-local lowering
+
+For the first valid Phase 1 release, closing the clearest accepted-but-not-
+lowered language form: `let` inside combinational and event-controlled blocks.
+The spec requires immediate local updates while persistent signal writes keep
+next-state semantics. Reproducing `if`, `match`, local reassignment, lexical
+scope, and a clocked swap in one emitted-binary regression before changing IR.
+
+### 2026-08-06 — Codex — hardware block locals lowered and verified
+
+Hardware `let` declarations inside lexical blocks now remain storage-free
+values in IR. Immediate assignment rewrites the binding; a conditional write
+selects between the new and prior value, while assignments to persistent
+signals in an event block still become `NextUpdate`s. Nested blocks mutate an
+outer local without leaking their own declarations, and a local may shadow a
+port or signal.
+
+The same representation covers struct leaves, scalar arrays (including
+runtime selection and element writes), and packed-vector bit/slice updates.
+The regression compiles and runs all of those forms plus `if`/`match` locals
+and the documented clocked swap. Two IR tests pin the no-storage/no-`Unknown`
+invariant and the out-of-scope E-P001 diagnostic. Removed the old E-P017
+"accepted but not lowered" fallback.
+
+Verified with 295 library tests, all integration suites, strict Clippy, and the
+external corpus: 161 passed, 0 failed.

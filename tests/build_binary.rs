@@ -839,3 +839,158 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(output);
 }
+
+#[test]
+fn hardware_block_locals_are_scoped_immediate_values() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let stem = format!("siox_hardware_block_locals_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let output = std::env::temp_dir().join(&stem);
+    std::fs::write(
+        &source,
+        r#"module hardware_block_locals;
+         using std::bits::unsigned;
+         struct Pair { first: unsigned[8], second: unsigned[8] }
+         entity LocalHardware {
+             clk: Bit in,
+             select: Bit in,
+             a: unsigned[8] in,
+             b: unsigned[8] in,
+             comb: unsigned[8] out,
+             chosen: unsigned[8] out,
+             nested: unsigned[8] out,
+             aggregate: unsigned[8] out,
+             indexed: unsigned[8] out,
+             sliced: unsigned[8] out,
+             left: unsigned[8] out,
+             right: unsigned[8] out
+         }
+         impl LocalHardware {
+             let x: unsigned[8] = 10;
+             let y: unsigned[8] = 20;
+             if select == '1' {
+                 let value: unsigned[8] = a;
+                 value = value + 1;
+                 comb = value + 1;
+             } else {
+                 let a: unsigned[8] = b;
+                 comb = a + 2;
+             }
+             if select == '1' {
+                 let adjusted: unsigned[8] = a;
+                 if b == 7 {
+                     adjusted = adjusted + 2;
+                 }
+                 nested = adjusted;
+             } else {
+                 nested = b;
+             }
+             match select {
+                 '0' => {
+                     let value: unsigned[8] = b;
+                     chosen = value + 3;
+                 }
+                 _ => {
+                     let value: unsigned[8] = a;
+                     chosen = value + 4;
+                 }
+             }
+             if 1 == 1 {
+                 let pair: Pair = Pair { .first = a, .second = b };
+                 pair.first = pair.second + 1;
+                 aggregate = pair.first;
+                 let table: unsigned[8][2] = [a, b];
+                 table[0] = table[1] + 2;
+                 let dynamic_index: unsigned[1] = unsigned[1](select);
+                 indexed = table[dynamic_index];
+                 let word: unsigned[8] = a;
+                 word[3..0] = b[3..0];
+                 sliced = word;
+             }
+             if clk.rising() {
+                 let temporary: unsigned[8] = x;
+                 x = y;
+                 y = temporary;
+             }
+             left = x;
+             right = y;
+         }
+         #[test] entity BlockLocalHardwareTest {}
+         impl BlockLocalHardwareTest {
+             let clk: Bit = '0';
+             let select: Bit = '1';
+             let a: unsigned[8] = 250;
+             let b: unsigned[8] = 7;
+             let comb: unsigned[8];
+             let chosen: unsigned[8];
+             let nested: unsigned[8];
+             let aggregate: unsigned[8];
+             let indexed: unsigned[8];
+             let sliced: unsigned[8];
+             let left: unsigned[8];
+             let right: unsigned[8];
+             let dut: LocalHardware = {
+                 .clk = clk,
+                 .select = select,
+                 .a = a,
+                 .b = b,
+                 .comb = comb,
+                 .chosen = chosen,
+                 .nested = nested,
+                 .aggregate = aggregate,
+                 .indexed = indexed,
+                 .sliced = sliced,
+                 .left = left,
+                 .right = right
+             };
+             await 1fs;
+             assert!(comb == 252, "if-local reassignment is immediate");
+             assert!(chosen == 254, "match-arm local reaches its assignment");
+             assert!(nested == 252, "nested branch mutates its outer local");
+             assert!(aggregate == 8, "struct local field assignment is immediate");
+             assert!(indexed == 7, "array local supports a dynamic read");
+             assert!(sliced == 247, "packed local supports a slice assignment");
+             assert!(left == 10 and right == 20, "register initial values");
+             select = '0';
+             await 1fs;
+             assert!(comb == 9, "else-local shadows the then-local");
+             assert!(chosen == 10, "other match arm has its own scope");
+             assert!(nested == 7, "nested local update keeps its branch condition");
+             assert!(indexed == 9, "array element assignment feeds dynamic selection");
+             clk = '1';
+             await 1fs;
+             assert!(left == 20 and right == 10,
+                     "local reads immediately while signal writes are next-state");
+         }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--test",
+            source.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "block-local fixture failed to compile:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "block-local fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(output);
+}

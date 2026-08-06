@@ -440,11 +440,11 @@ struct Lowering<'a> {
     /// used to become a silent `Unknown`, which `check` reported as ok
     /// and a build reported as "driver 0 contains an Unknown".
     unresolved_names: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
-    /// Names declared by a `let` *inside* a nested block. Lowering has no
-    /// scoped temporary, so it skips them and their uses arrive at
-    /// `report_unresolved_names` looking like misspellings — spec 3.13
-    /// documents the form and it works in a testbench.
-    block_lets: std::cell::RefCell<HashSet<String>>,
+    /// Lexical, storage-free values declared by `let` inside a hardware block.
+    /// Each assignment replaces the binding with an expression (a conditional
+    /// assignment becomes a `Select`), so event blocks retain next-state
+    /// semantics for signals while their local values update immediately.
+    block_scopes: std::cell::RefCell<Vec<HashMap<String, BlockLocal>>>,
     /// Field/index expressions with no hardware form — a nested dynamic index
     /// (`m[i][j]`) is the usual one. Recorded here with the source spelling,
     /// which the IR no longer has by the time validation sees an `Unknown`.
@@ -578,6 +578,14 @@ enum Val {
     Fields(Vec<(String, Expr)>),
 }
 
+/// One block-local binding. The declared type is retained because substituting
+/// the value expression alone would lose its operator family and width.
+#[derive(Clone, Debug)]
+struct BlockLocal {
+    value: Val,
+    ty: ast::Type,
+}
+
 /// `cond ? then : els` over values; struct values select per field.
 fn select_val(cond: Expr, then: Val, els: Val) -> Val {
     match (then, els) {
@@ -638,7 +646,7 @@ impl<'a> Lowering<'a> {
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
-            block_lets: std::cell::RefCell::new(HashSet::new()),
+            block_scopes: std::cell::RefCell::new(Vec::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),
             self_signal: std::cell::Cell::new(None),
             param_types: std::cell::RefCell::new(HashMap::new()),
@@ -1693,7 +1701,6 @@ impl<'a> Lowering<'a> {
             self.cur_ctx += 1;
             for item in &im.items {
                 if let ast::ImplItem::Stmt(stmt) = item {
-                    collect_block_lets(stmt, false, &mut self.block_lets.borrow_mut());
                     self.lower_stmt(stmt, None);
                 }
             }
@@ -1987,31 +1994,15 @@ impl<'a> Lowering<'a> {
         names.sort_by_key(|(name, span)| (span.start, name.clone()));
         names.dedup();
         for (name, span) in names {
-            // A `let` inside a block is a real form (spec 3.13) that lowering
-            // skips, so saying the name is unknown blames the author for
-            // something they got right.
-            let diag = if self.block_lets.borrow().contains(&name) {
-                crate::diag::Diagnostic::error(format!(
-                    "`{name}` is declared by a `let` inside a block, which is not \
-                     lowered to hardware yet"
-                ))
-                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
-                .at(span)
-                .help(
-                    "declare it beside the entity's other signals instead; a \
-                     block-local `let` works in a testbench, where statements run \
-                     in sequence",
-                )
-            } else {
+            self.sink.emit(
                 crate::diag::Diagnostic::error(format!("no value named `{name}` is in scope"))
                     .with_code(crate::diag::codes::UNKNOWN_NAME)
                     .at(span)
                     .help(
                         "a value has to be a port, a `let` signal or local, a \
                          constant, or a parameter of the enclosing entity",
-                    )
-            };
-            self.sink.emit(diag);
+                    ),
+            );
         }
     }
 
@@ -3744,6 +3735,421 @@ impl<'a> Lowering<'a> {
 
     /// Lower a top-level (combinational-context) statement. `cond` accumulates
     /// the enclosing combinational conditions.
+    fn lower_combinational_block(&mut self, block: &ast::Block, cond: Option<Expr>) {
+        self.block_scopes.borrow_mut().push(HashMap::new());
+        for statement in &block.stmts {
+            self.lower_stmt(statement, cond.clone());
+        }
+        self.block_scopes.borrow_mut().pop();
+    }
+
+    /// Find the innermost block-local binding addressed by a source path.
+    /// The suffix is empty for the whole value and is a flattened field name
+    /// (`inner.valid`) for a struct leaf.
+    fn block_local_path(&self, expression: &ast::Expr) -> Option<(usize, String, String)> {
+        let path = self
+            .folded_elem_path(expression)
+            .or_else(|| expr_path(expression))?;
+        let scopes = self.block_scopes.borrow();
+        for (scope_index, scope) in scopes.iter().enumerate().rev() {
+            for name in scope.keys() {
+                let suffix = if path == *name {
+                    ""
+                } else if let Some(rest) = path.strip_prefix(name) {
+                    if rest.starts_with('.') || rest.starts_with('[') {
+                        rest
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+                return Some((
+                    scope_index,
+                    name.clone(),
+                    suffix.strip_prefix('.').unwrap_or(suffix).to_string(),
+                ));
+            }
+        }
+        None
+    }
+
+    fn block_local_binding(&self, expression: &ast::Expr) -> Option<BlockLocal> {
+        let (scope, name, _) = self.block_local_path(expression)?;
+        self.block_scopes.borrow().get(scope)?.get(&name).cloned()
+    }
+
+    /// The declared type at a local path. Aggregate roots retain their own
+    /// type while a selected struct field or array element carries the leaf's
+    /// type for width attributes and operator dispatch.
+    fn block_local_type(&self, expression: &ast::Expr) -> Option<ast::Type> {
+        match expression {
+            ast::Expr::Path(_) => self
+                .block_local_binding(expression)
+                .map(|binding| binding.ty),
+            ast::Expr::Field { base, field, .. } => {
+                let base_type = self.block_local_type(base)?;
+                self.struct_fields(&base_type)?
+                    .into_iter()
+                    .find(|(name, _)| *name == field.text)
+                    .map(|(_, ty)| ty)
+            }
+            ast::Expr::Index { base, .. } => {
+                let base_type = self.block_local_type(base)?;
+                array_of(
+                    &base_type,
+                    &self.cur_env,
+                    &self.const_ranges,
+                    &self.vector_families,
+                )
+                .map(|(element, _)| element.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn block_local_value(&self, expression: &ast::Expr) -> Option<Val> {
+        let (scope, name, suffix) = self.block_local_path(expression)?;
+        let binding = self.block_scopes.borrow().get(scope)?.get(&name)?.clone();
+        if suffix.is_empty() {
+            return Some(binding.value);
+        }
+        let Val::Fields(fields) = binding.value else {
+            return None;
+        };
+        fields
+            .into_iter()
+            .find(|(field, _)| *field == suffix)
+            .map(|(_, value)| Val::Scalar(value))
+    }
+
+    fn block_local_width(&self, ty: &ast::Type) -> u32 {
+        self.enum_representation(ty)
+            .map(|(width, _)| width)
+            .or_else(|| self.ranged_numeric(ty).map(|(width, _, _)| width))
+            .unwrap_or_else(|| {
+                type_width(
+                    ty,
+                    &self.cur_env,
+                    &self.free_fns,
+                    &self.structs,
+                    &self.const_ranges,
+                )
+            })
+    }
+
+    fn block_local_default(&self, ty: &ast::Type) -> Val {
+        if let Some((element, indices)) =
+            array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
+        {
+            let mut fields = Vec::new();
+            for index in indices {
+                Self::prefix_block_value(
+                    &format!("[{index}]"),
+                    self.block_local_default(element),
+                    &mut fields,
+                );
+            }
+            return Val::Fields(fields);
+        }
+        let Some(head) = type_head_name(ty) else {
+            return Val::Scalar(Expr::Const(0));
+        };
+        if let Some(fields) = self.struct_default_leaves(head, "") {
+            return Val::Fields(fields);
+        }
+        let value = self
+            .new_defaults
+            .get(head)
+            .or_else(|| self.enum_first_disc.get(head))
+            .copied()
+            .unwrap_or(0);
+        Val::Scalar(Expr::Const(value))
+    }
+
+    fn prefix_block_value(prefix: &str, value: Val, out: &mut Vec<(String, Expr)>) {
+        match value {
+            Val::Scalar(value) => out.push((prefix.to_string(), value)),
+            Val::Fields(fields) => {
+                for (field, value) in fields {
+                    let separator = if field.starts_with('[') { "" } else { "." };
+                    out.push((format!("{prefix}{separator}{field}"), value));
+                }
+            }
+        }
+    }
+
+    /// Lower a value with the declaration's aggregate shape available. The
+    /// general expression inliner deliberately has no contextual type, while
+    /// an array literal needs exactly that context to name its flattened
+    /// elements.
+    fn lower_block_value(&self, value: &ast::Expr, ty: &ast::Type) -> Val {
+        if let Some((element, indices)) =
+            array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
+        {
+            if let ast::Expr::Array { elems, .. } = value {
+                let mut fields = Vec::new();
+                for (index, expression) in indices.into_iter().zip(elems) {
+                    Self::prefix_block_value(
+                        &format!("[{index}]"),
+                        self.lower_block_value(expression, element),
+                        &mut fields,
+                    );
+                }
+                return Val::Fields(fields);
+            }
+            if let ast::Expr::StrLit { text, .. } = value {
+                let mut fields = Vec::new();
+                for (index, character) in indices.into_iter().zip(text.chars()) {
+                    let scalar =
+                        self.coerce_block_local(element, Val::Scalar(Expr::Logic(character)));
+                    Self::prefix_block_value(&format!("[{index}]"), scalar, &mut fields);
+                }
+                return Val::Fields(fields);
+            }
+        }
+        self.coerce_block_local(ty, self.lower_val_env(value, &HashMap::new()))
+    }
+
+    /// Apply the representation boundary a signal store would provide. A
+    /// block local has no storage of its own, so width, enum-character and
+    /// real coercions must be made explicit in the substituted expression.
+    fn coerce_block_local(&self, ty: &ast::Type, value: Val) -> Val {
+        let Val::Scalar(mut expression) = value else {
+            return value;
+        };
+        if let Some((_, enum_name)) = self.enum_representation(ty) {
+            if let Expr::Logic(character) = expression {
+                if let Some(discriminant) = self.char_disc(character, &enum_name) {
+                    expression = Expr::Const(discriminant);
+                } else {
+                    expression = Expr::Logic(character);
+                }
+            }
+        }
+        let head = type_head_name(ty).unwrap_or("");
+        if head == "Char" || struct_derives_kernel(head, "Char", &self.structs) {
+            if let Expr::Logic(character) = expression {
+                expression = Expr::Const(character as u32 as u64);
+            }
+        }
+        if head == "real" || struct_derives_kernel(head, "real", &self.structs) {
+            return Val::Scalar(self.coerce_real(expression));
+        }
+        let width = self.block_local_width(ty);
+        if width > 0 {
+            expression = Expr::Slice {
+                base: Box::new(expression),
+                hi: width - 1,
+                lo: 0,
+            };
+        }
+        Val::Scalar(expression)
+    }
+
+    fn declare_block_local(&self, declaration: &ast::LetDecl) {
+        let Some(ty) = declaration.ty.clone() else {
+            return;
+        };
+        let value = declaration
+            .value
+            .as_ref()
+            .map(|value| self.lower_block_value(value, &ty))
+            .unwrap_or_else(|| self.block_local_default(&ty));
+        if let Some(scope) = self.block_scopes.borrow_mut().last_mut() {
+            scope.insert(declaration.name.text.clone(), BlockLocal { value, ty });
+        }
+    }
+
+    /// An assignment to a block-local value is an immediate expression
+    /// rewrite, not a driver or next-state update. Return whether the target
+    /// named such a local so signal lowering does not see it too.
+    fn assign_block_local(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        cond: &Option<Expr>,
+    ) -> bool {
+        // A packed local vector is one scalar expression. Its indexed writes
+        // are immediate read-modify-writes over that expression, unlike an
+        // array local whose elements live in `Val::Fields` below.
+        if let ast::Expr::Index { base, index, .. } = target {
+            if let Some((scope_index, name, suffix)) = self.block_local_path(base) {
+                if suffix.is_empty() {
+                    let previous = {
+                        let scopes = self.block_scopes.borrow();
+                        scopes
+                            .get(scope_index)
+                            .and_then(|scope| scope.get(&name))
+                            .cloned()
+                    };
+                    if let Some(previous) = previous {
+                        if let (Val::Scalar(old), Some((left, right))) =
+                            (previous.value.clone(), self.slice_bounds(base, index))
+                        {
+                            let next = self.merge_slice(
+                                old.clone(),
+                                left.max(right) as u32,
+                                left.min(right) as u32,
+                                self.lower_expr(value),
+                                self.block_local_width(&previous.ty),
+                            );
+                            let next = match cond {
+                                Some(condition) => Expr::Select {
+                                    cond: Box::new(condition.clone()),
+                                    then: Box::new(next),
+                                    els: Box::new(old),
+                                },
+                                None => next,
+                            };
+                            if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index)
+                            {
+                                scope.insert(
+                                    name,
+                                    BlockLocal {
+                                        value: Val::Scalar(next),
+                                        ty: previous.ty,
+                                    },
+                                );
+                            }
+                            return true;
+                        }
+                        if let (Val::Fields(mut fields), Some((element_ty, indices))) = (
+                            previous.value.clone(),
+                            array_of(
+                                &previous.ty,
+                                &self.cur_env,
+                                &self.const_ranges,
+                                &self.vector_families,
+                            ),
+                        ) {
+                            let new_element = self.lower_block_value(value, element_ty);
+                            let lowered_index = self.lower_expr(index);
+                            for position in indices {
+                                let prefix = format!("[{position}]");
+                                let hit = Expr::Binary {
+                                    op: BinOp::Eq,
+                                    lhs: Box::new(lowered_index.clone()),
+                                    rhs: Box::new(Expr::Const(position as u64)),
+                                };
+                                let fire = and(cond.clone(), hit);
+                                for (field, old) in &mut fields {
+                                    let suffix = if *field == prefix {
+                                        Some("")
+                                    } else {
+                                        field
+                                            .strip_prefix(&prefix)
+                                            .and_then(|rest| rest.strip_prefix('.'))
+                                    };
+                                    let Some(suffix) = suffix else {
+                                        continue;
+                                    };
+                                    let replacement = match &new_element {
+                                        Val::Scalar(value) if suffix.is_empty() => {
+                                            Some(value.clone())
+                                        }
+                                        Val::Fields(values) => values
+                                            .iter()
+                                            .find(|(name, _)| *name == suffix)
+                                            .map(|(_, value)| value.clone()),
+                                        _ => None,
+                                    };
+                                    if let Some(replacement) = replacement {
+                                        *old = Expr::Select {
+                                            cond: Box::new(fire.clone()),
+                                            then: Box::new(replacement),
+                                            els: Box::new(old.clone()),
+                                        };
+                                    }
+                                }
+                            }
+                            if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index)
+                            {
+                                scope.insert(
+                                    name,
+                                    BlockLocal {
+                                        value: Val::Fields(fields),
+                                        ty: previous.ty,
+                                    },
+                                );
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        let Some((scope_index, name, suffix)) = self.block_local_path(target) else {
+            return false;
+        };
+        let Some(previous) = self
+            .block_scopes
+            .borrow()
+            .get(scope_index)
+            .and_then(|scope| scope.get(&name))
+            .cloned()
+        else {
+            return false;
+        };
+
+        let next = if suffix.is_empty() {
+            self.lower_block_value(value, &previous.ty)
+        } else {
+            let Val::Fields(mut fields) = previous.value.clone() else {
+                // A suffix on a scalar that was not recognized as a packed
+                // bit/slice above has no place representation. Do not
+                // misclassify it as a signal write.
+                self.unsupported_exprs.borrow_mut().push((
+                    crate::syntax::pretty::expr_string(target),
+                    ast::expr_span(target),
+                ));
+                return true;
+            };
+            let Some((_, old)) = fields.iter_mut().find(|(field, _)| *field == suffix) else {
+                self.unsupported_exprs.borrow_mut().push((
+                    crate::syntax::pretty::expr_string(target),
+                    ast::expr_span(target),
+                ));
+                return true;
+            };
+            let new = self
+                .block_local_type(target)
+                .map(|ty| self.lower_block_value(value, &ty))
+                .and_then(|value| match value {
+                    Val::Scalar(value) => Some(value),
+                    Val::Fields(_) => None,
+                })
+                .unwrap_or_else(|| self.lower_expr(value));
+            *old = match cond {
+                Some(condition) => Expr::Select {
+                    cond: Box::new(condition.clone()),
+                    then: Box::new(new),
+                    els: Box::new(old.clone()),
+                },
+                None => new,
+            };
+            Val::Fields(fields)
+        };
+        let next = if suffix.is_empty() {
+            match cond {
+                Some(condition) => select_val(condition.clone(), next, previous.value),
+                None => next,
+            }
+        } else {
+            next
+        };
+        if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
+            scope.insert(
+                name,
+                BlockLocal {
+                    value: next,
+                    ty: previous.ty,
+                },
+            );
+        }
+        true
+    }
+
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
@@ -3789,10 +4195,15 @@ impl<'a> Lowering<'a> {
                     let saved = self.cur_env.get(&var.text).copied();
                     for i in loop_range(a, b) {
                         self.cur_env.insert(var.text.clone(), i);
-                        for s in &body.stmts {
-                            let s = subst_stmt(s, &var.text, i);
-                            self.lower_stmt(&s, cond.clone());
-                        }
+                        let unrolled = ast::Block {
+                            stmts: body
+                                .stmts
+                                .iter()
+                                .map(|statement| subst_stmt(statement, &var.text, i))
+                                .collect(),
+                            span: body.span,
+                        };
+                        self.lower_combinational_block(&unrolled, cond.clone());
                     }
                     match saved {
                         Some(v) => {
@@ -3820,6 +4231,9 @@ impl<'a> Lowering<'a> {
                         )
                         .with_code(crate::diag::codes::TYPE_MISMATCH),
                     );
+                }
+                if self.assign_block_local(target, value, &cond) {
+                    return;
                 }
                 if let ast::Expr::Index { base, index, .. } = target {
                     if expr_path(base)
@@ -3899,6 +4313,37 @@ impl<'a> Lowering<'a> {
                     // Whole-array assignment: a string literal fills a Char
                     // array per element; an array of the same shape copies.
                     if let Some(indices) = self.local_array.get(&tpath).cloned() {
+                        if let Some(binding) = self.block_local_binding(value) {
+                            if let (Val::Fields(fields), Some((_, source_indices))) = (
+                                binding.value,
+                                array_of(
+                                    &binding.ty,
+                                    &self.cur_env,
+                                    &self.const_ranges,
+                                    &self.vector_families,
+                                ),
+                            ) {
+                                for (target_index, source_index) in
+                                    indices.iter().zip(source_indices)
+                                {
+                                    let source = fields
+                                        .iter()
+                                        .find(|(name, _)| *name == format!("[{source_index}]"));
+                                    let target =
+                                        self.locals.get(&format!("{tpath}[{target_index}]"));
+                                    if let (Some((_, expression)), Some(&target)) = (source, target)
+                                    {
+                                        self.out.drivers.push(Driver {
+                                            target,
+                                            cond: cond.clone(),
+                                            expr: self.coerce_to_target(target, expression.clone()),
+                                            ctx: self.cur_ctx,
+                                        });
+                                    }
+                                }
+                                return;
+                            }
+                        }
                         match value {
                             ast::Expr::StrLit { text, .. } => {
                                 let chars: Vec<char> = text.chars().collect();
@@ -4151,15 +4596,11 @@ impl<'a> Lowering<'a> {
                     // untaken branch too would add a spurious driver that
                     // collides with a conditionally-instantiated block.
                     if k != 0 {
-                        for s in &iff.then.stmts {
-                            self.lower_stmt(s, cond.clone());
-                        }
+                        self.lower_combinational_block(&iff.then, cond.clone());
                     } else {
                         match iff.else_.as_deref() {
                             Some(ast::ElseBranch::Block(b)) => {
-                                for s in &b.stmts {
-                                    self.lower_stmt(s, cond.clone());
-                                }
+                                self.lower_combinational_block(b, cond.clone());
                             }
                             Some(ast::ElseBranch::If(inner)) => {
                                 self.lower_stmt(&ast::Stmt::If(inner.clone()), cond.clone());
@@ -4180,9 +4621,7 @@ impl<'a> Lowering<'a> {
                     // drivers; the `else` adds the negated condition.
                     let c = self.lower_expr(&iff.cond);
                     let then_cond = Some(and(cond.clone(), c.clone()));
-                    for s in &iff.then.stmts {
-                        self.lower_stmt(s, then_cond.clone());
-                    }
+                    self.lower_combinational_block(&iff.then, then_cond);
                     if let Some(eb) = iff.else_.as_deref() {
                         let else_cond = Some(and(cond, not(c)));
                         self.lower_combinational_else(eb, else_cond);
@@ -4224,9 +4663,7 @@ impl<'a> Lowering<'a> {
                         Some(c) => Some(and(remaining.clone(), c.clone())),
                         None => remaining.clone(),
                     };
-                    for s in &arm.body.stmts {
-                        self.lower_stmt(s, fire.clone());
-                    }
+                    self.lower_combinational_block(&arm.body, fire);
                     remaining = match mc {
                         Some(c) => Some(and(remaining, not(c))),
                         None => Some(Expr::Const(0)),
@@ -4248,7 +4685,9 @@ impl<'a> Lowering<'a> {
             ast::Stmt::Expr(ast::Expr::Call { callee, args, .. }) => {
                 self.lower_free_stmt(callee, args, cond);
             }
-            // Other statement forms (for, let, expr, return) are not lowered yet.
+            ast::Stmt::Let(declaration) => self.declare_block_local(declaration),
+            // Other statement forms (bare expr and return) are not hardware
+            // statements; the frontend diagnoses them when applicable.
             _ => {}
         }
     }
@@ -4426,11 +4865,7 @@ impl<'a> Lowering<'a> {
 
     fn lower_combinational_else(&mut self, eb: &ast::ElseBranch, cond: Option<Expr>) {
         match eb {
-            ast::ElseBranch::Block(b) => {
-                for s in &b.stmts {
-                    self.lower_stmt(s, cond.clone());
-                }
-            }
+            ast::ElseBranch::Block(b) => self.lower_combinational_block(b, cond),
             ast::ElseBranch::If(inner) => {
                 self.lower_stmt(&ast::Stmt::If(inner.clone()), cond);
             }
@@ -4445,6 +4880,7 @@ impl<'a> Lowering<'a> {
         cond: Option<Expr>,
         out: &mut Vec<NextUpdate>,
     ) {
+        self.block_scopes.borrow_mut().push(HashMap::new());
         for s in &block.stmts {
             // The clocked path unrolls its own `for` (below) rather than going
             // through `lower_stmt`, so the same check has to be made here —
@@ -4470,6 +4906,9 @@ impl<'a> Lowering<'a> {
                             )
                             .with_code(crate::diag::codes::TYPE_MISMATCH),
                         );
+                    }
+                    if self.assign_block_local(target, value, &cond) {
+                        continue;
                     }
                     if let Some(leaves) = self.struct_assign_leaves(target, value) {
                         // A registered bus: one next-state update per leaf.
@@ -4624,9 +5063,11 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
+                ast::Stmt::Let(declaration) => self.declare_block_local(declaration),
                 _ => {}
             }
         }
+        self.block_scopes.borrow_mut().pop();
     }
 
     fn lower_event_else(
@@ -4676,6 +5117,45 @@ impl<'a> Lowering<'a> {
             };
         }
         Some(acc)
+    }
+
+    /// Dynamic selection from a storage-free scalar array local. Composite
+    /// elements remain represented by several fields and therefore require a
+    /// field selection before they have a scalar expression.
+    fn lower_block_dynamic_read(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
+        let binding = self.block_local_binding(base)?;
+        let (_, indices) = array_of(
+            &binding.ty,
+            &self.cur_env,
+            &self.const_ranges,
+            &self.vector_families,
+        )?;
+        let Val::Fields(fields) = binding.value else {
+            return None;
+        };
+        let (&last, rest) = indices.split_last()?;
+        let element = |position: i64| {
+            let key = format!("[{position}]");
+            fields
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.clone())
+                .unwrap_or(Expr::Unknown)
+        };
+        let lowered_index = self.lower_expr(index);
+        let mut result = element(last);
+        for &position in rest.iter().rev() {
+            result = Expr::Select {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(lowered_index.clone()),
+                    rhs: Box::new(Expr::Const(position as u64)),
+                }),
+                then: Box::new(element(position)),
+                els: Box::new(result),
+            };
+        }
+        Some(result)
     }
 
     /// A dynamic array write `mem[addr] = v`: update EVERY element,
@@ -4966,6 +5446,9 @@ impl<'a> Lowering<'a> {
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
+                if let Some(Val::Scalar(value)) = self.block_local_value(e) {
+                    return value;
+                }
                 if let Some(id) = self.locals.get(name) {
                     return Expr::Current(*id);
                 }
@@ -5085,6 +5568,9 @@ impl<'a> Lowering<'a> {
             // resolves to its flattened signal; a *dynamic* array index
             // (`mem[addr]`) becomes a mux tree over the element signals.
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                if let Some(Val::Scalar(value)) = self.block_local_value(e) {
+                    return value;
+                }
                 // `p'old.valid` / `xs'old[0]`: a struct or array is stored as
                 // leaf signals, so there is no one signal to take the previous
                 // value of. The attribute belongs on the leaf, and
@@ -5097,6 +5583,9 @@ impl<'a> Lowering<'a> {
                     return Expr::Current(id);
                 }
                 if let ast::Expr::Index { base, index, .. } = e {
+                    if let Some(v) = self.lower_block_dynamic_read(base, index) {
+                        return v;
+                    }
                     if let Some(v) = self.lower_dynamic_read(base, index) {
                         return v;
                     }
@@ -5251,6 +5740,9 @@ impl<'a> Lowering<'a> {
     }
 
     fn ref_width(&self, e: &ast::Expr) -> Option<u32> {
+        if let Some(ty) = self.block_local_type(e) {
+            return Some(self.block_local_width(&ty));
+        }
         // Indexing is precisely where syntax-only lowering cannot distinguish
         // a vector family from its scalar element. Literal and match types are
         // intentionally contextual, so their best-effort Stage-4 default
@@ -5315,6 +5807,9 @@ impl<'a> Lowering<'a> {
     }
 
     fn ast_width(&self, e: &ast::Expr) -> u32 {
+        if let Some(ty) = self.block_local_type(e) {
+            return self.block_local_width(&ty);
+        }
         // A bound parameter carries the caller's width, recorded at the
         // inline; without it a nested inline sees no width at all.
         if let Some(p) = expr_path(e) {
@@ -5519,7 +6014,11 @@ impl<'a> Lowering<'a> {
     /// expression with const-evaluable bounds, or a named range constant.
     fn slice_bounds(&self, base: &ast::Expr, index: &ast::Expr) -> Option<(i64, i64)> {
         let path = expr_path(base)?;
-        let declared = self.local_range.get(&path).copied()?;
+        let block_binding = self.block_local_binding(base);
+        let declared = block_binding
+            .as_ref()
+            .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
+            .or_else(|| self.local_range.get(&path).copied())?;
         match index {
             ast::Expr::Range { lo, hi, .. } => Some((
                 eval_const(lo, &self.cur_env)?,
@@ -5545,7 +6044,9 @@ impl<'a> Lowering<'a> {
             // on a packed vector — which is one signal. An array's elements are
             // signals of their own and `a[2]` resolves through those, so the
             // base having its own entry in `locals` is what tells them apart.
-            _ if self.locals.contains_key(&path) => {
+            _ if self.locals.contains_key(&path)
+                || block_binding.is_some_and(|binding| matches!(binding.value, Val::Scalar(_))) =>
+            {
                 let n = eval_const(index, &self.cur_env)?;
                 Some((n, n))
             }
@@ -6009,6 +6510,13 @@ impl<'a> Lowering<'a> {
     /// already carries for a foreign call: argument representations do not
     /// determine a declared return type. An inlined siox call is no different.
     fn declares_kernel_integer(&self, e: &ast::Expr) -> bool {
+        if self
+            .block_local_type(e)
+            .and_then(|ty| type_head_name(&ty).map(str::to_string))
+            .is_some_and(|name| name == "integer")
+        {
+            return true;
+        }
         // A parameter of the function being inlined, declared `integer`. The
         // value bound to it may read a `signed[N]` signal (`abs(sext(x))`),
         // and that must not decide the body's signedness either.
@@ -6737,9 +7245,8 @@ impl<'a> Lowering<'a> {
         let Some(stmts) = self.method_stmt_body(recv, method, args) else {
             return false;
         };
-        for s in &stmts {
-            self.lower_stmt(s, cond.clone());
-        }
+        let span = ast::expr_span(recv);
+        self.lower_combinational_block(&ast::Block { stmts, span }, cond);
         true
     }
 
@@ -6775,9 +7282,8 @@ impl<'a> Lowering<'a> {
         let Some(stmts) = self.free_stmt_body(callee, args) else {
             return false;
         };
-        for stmt in &stmts {
-            self.lower_stmt(stmt, cond.clone());
-        }
+        let span = ast::expr_span(callee);
+        self.lower_combinational_block(&ast::Block { stmts, span }, cond);
         true
     }
 
@@ -6906,6 +7412,9 @@ impl<'a> Lowering<'a> {
     /// declared enum/struct, a suffix literal's target type, an enum variant's
     /// enum, or `integer` for a bare numeric literal.
     fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
+        if let Some(ty) = self.block_local_type(e) {
+            return type_head_name(&ty).map(str::to_string);
+        }
         match e {
             // A branch-valued expression is whatever its branches are; the
             // checker has already made them agree. Without this an `if`/`match`
@@ -7106,10 +7615,13 @@ impl<'a> Lowering<'a> {
                 true
             }
             ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
-                expr_path(rhs)
-                    .and_then(|p| self.locals.get(&p))
-                    .map(|&id| self.out.signals[id.0 as usize].enum_type.is_none())
-                    .unwrap_or(false)
+                self.block_local_type(rhs)
+                    .and_then(|ty| type_head_name(&ty).map(str::to_string))
+                    .is_some_and(|family| self.vector_families.contains(&family))
+                    || expr_path(rhs)
+                        .and_then(|p| self.locals.get(&p))
+                        .map(|&id| self.out.signals[id.0 as usize].enum_type.is_none())
+                        .unwrap_or(false)
             }
             _ => false,
         };
@@ -7186,13 +7698,19 @@ impl<'a> Lowering<'a> {
                 if let Some(v) = env.get(name) {
                     return v.clone();
                 }
-                if let Some(v) = self.struct_local_val(name) {
+                if let Some(value) = self.block_local_value(e) {
+                    return value;
+                }
+                if let Some(v) = self.aggregate_signal_val(name) {
                     return v;
                 }
                 Val::Scalar(self.lower_expr(e))
             }
             // `self.re` where `self` is an env-bound struct value.
             ast::Expr::Field { base, field, .. } => {
+                if let Some(value) = self.block_local_value(e) {
+                    return value;
+                }
                 if let ast::Expr::Path(p) = base.as_ref() {
                     if p.segments.len() == 1 {
                         if let Some(Val::Fields(fs)) = env.get(&p.segments[0].text) {
@@ -7390,6 +7908,38 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// A flattened struct or array signal as one aggregate value. Scanning
+    /// leaf names also handles nested structs/arrays, where no signal exists
+    /// for an intermediate field.
+    fn aggregate_signal_val(&self, name: &str) -> Option<Val> {
+        if !self.local_struct_repr.contains_key(name) && !self.local_array.contains_key(name) {
+            return None;
+        }
+        let field_prefix = format!("{name}.");
+        let element_prefix = format!("{name}[");
+        let mut fields: Vec<(String, Expr)> = self
+            .locals
+            .iter()
+            .filter(|(path, _)| {
+                path.starts_with(&field_prefix) || path.starts_with(&element_prefix)
+            })
+            .map(|(path, &signal)| {
+                (
+                    path.strip_prefix(name)
+                        .unwrap_or(path)
+                        .trim_start_matches('.')
+                        .to_string(),
+                    Expr::Current(signal),
+                )
+            })
+            .collect();
+        if fields.is_empty() {
+            return self.struct_local_val(name);
+        }
+        fields.sort_by(|left, right| left.0.cmp(&right.0));
+        Some(Val::Fields(fields))
+    }
+
     /// The declared index range `(left, right)` in written order of a vector or
     /// array type — `Logic[7..0]` -> `(7, 0)`, a named `range` const keeps its
     /// direction, a width-only `Bit[4]` -> `(0, 3)` (ascending). `None` for a
@@ -7426,6 +7976,17 @@ impl<'a> Lowering<'a> {
         // else a signal's bit width (they coincide for a flat vector, so one
         // attribute serves both — VHDL's `'length`).
         if attr == "length" {
+            if let Some(ty) = self.block_local_type(base) {
+                if let Some((_, indices)) = array_of(
+                    &ty,
+                    &self.cur_env,
+                    &self.const_ranges,
+                    &self.vector_families,
+                ) {
+                    return Expr::Const(indices.len() as u64);
+                }
+                return Expr::Const(self.block_local_width(&ty) as u64);
+            }
             if let Some(indices) = expr_path(base).and_then(|p| self.local_array.get(&p)) {
                 return Expr::Const(indices.len() as u64);
             }
@@ -7438,7 +7999,12 @@ impl<'a> Lowering<'a> {
         // `'high`/`'low`/`'ascending`): `left`/`right` in written order,
         // `high`/`low` numeric, `ascending` the direction (`to` vs `downto`).
         if matches!(attr, "left" | "right" | "high" | "low" | "ascending") {
-            if let Some(&(l, r)) = expr_path(base).and_then(|p| self.local_range.get(&p)) {
+            let local_declared = self
+                .block_local_type(base)
+                .and_then(|ty| self.declared_range(&ty, &self.cur_env));
+            if let Some((l, r)) = local_declared
+                .or_else(|| expr_path(base).and_then(|p| self.local_range.get(&p).copied()))
+            {
                 let v = match attr {
                     "left" => l,
                     "right" => r,
@@ -8839,52 +9405,6 @@ pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
     out
 }
 
-/// The dotted signal path of a name, struct-field, or constant-index access:
-/// `s` -> `"s"`, `s.data` -> `"s.data"`, `a[2]` -> `"a[2]"`. A dynamic index or
-/// anything else (calls, slices) yields `None`.
-/// Unroll a generate `for i in a..b { let s: Sub = {..} }` into concrete
-/// sub-instances, substituting the loop index into each instance's name, type
-/// arguments, and connection expressions. Plain `let` instances inside the loop
-/// body are handled too; nested loops recurse. Non-instance statements are
-/// left for the behavioural pass.
-/// Collect names declared by a `let` nested inside a block. The top level of
-/// an impl body is not nested — those are ordinary signals.
-fn collect_block_lets(stmt: &ast::Stmt, nested: bool, out: &mut HashSet<String>) {
-    let block = |b: &ast::Block, out: &mut HashSet<String>| {
-        for s in &b.stmts {
-            collect_block_lets(s, true, out);
-        }
-    };
-    match stmt {
-        ast::Stmt::Let(l) if nested => {
-            out.insert(l.name.text.clone());
-        }
-        ast::Stmt::For { body, .. } => block(body, out),
-        ast::Stmt::If(iff) => {
-            block(&iff.then, out);
-            let mut branch = iff.else_.as_deref();
-            while let Some(b) = branch {
-                match b {
-                    ast::ElseBranch::Block(bl) => {
-                        block(bl, out);
-                        branch = None;
-                    }
-                    ast::ElseBranch::If(inner) => {
-                        block(&inner.then, out);
-                        branch = inner.else_.as_deref();
-                    }
-                }
-            }
-        }
-        ast::Stmt::Match(m) => {
-            for arm in &m.arms {
-                block(&arm.body, out);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Flatten a struct literal into `suffix -> value` (".valid", ".inner.x"),
 /// named the way a composite port's leaves are.
 fn literal_leaves<'a>(
@@ -8954,6 +9474,11 @@ fn instance_let_parts(
     }
 }
 
+/// Unroll a generate `for i in a..b { let s: Sub = {..} }` into concrete
+/// sub-instances, substituting the loop index into each instance's name, type
+/// arguments, and connection expressions. Plain `let` instances inside the
+/// loop body are handled too; nested loops recurse. Non-instance statements
+/// are left for the behavioural pass.
 fn gather_generate(
     s: &ast::Stmt,
     env: &HashMap<String, i64>,
@@ -9571,6 +10096,9 @@ fn sunk_sysattr(e: &ast::Expr) -> Option<ast::Expr> {
     })
 }
 
+/// The dotted signal path of a name, struct-field, or constant-index access:
+/// `s` -> `"s"`, `s.data` -> `"s.data"`, `a[2]` -> `"a[2]"`. A dynamic index or
+/// anything else (calls, slices) yields `None`.
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
@@ -11423,6 +11951,45 @@ mod tests {
                 ..
             }) if integer_args == &[true]
         ));
+    }
+
+    #[test]
+    fn a_hardware_block_local_does_not_leak_out_of_its_block() {
+        let diagnostics = lower_diags(
+            "module m;\n\
+             #[top] entity E { select: Bit in, y: unsigned[8] out }\n\
+             impl E {\n\
+                 if select == '1' { let temporary: unsigned[8] = 3; y = temporary; }\n\
+                 y = temporary;\n\
+             }\n",
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("E-P001")
+                && diagnostic.contains("no value named `temporary`")));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.contains("not lowered to hardware")));
+    }
+
+    #[test]
+    fn hardware_block_locals_do_not_allocate_signals_or_leave_unknown_ir() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E { select: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
+             impl E {\n\
+                 if select == '1' {\n\
+                     let temporary: unsigned[8] = a;\n\
+                     temporary = temporary + 1;\n\
+                     y = temporary;\n\
+                 } else { y = 0; }\n\
+             }\n",
+        );
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.ends_with(".temporary")));
+        assert!(!design.to_ir_string().contains("Unknown"));
     }
 
     #[test]
