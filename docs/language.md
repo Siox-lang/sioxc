@@ -1494,12 +1494,23 @@ element, most-significant/first element leftmost:
 let table: unsigned[8][4];
 table = [10, 20, 30, 40];   // four 8-bit elements
 y = table[sel];             // runtime index reads the lookup table
+
+let matrix: unsigned[8][3][2];
+matrix[row][column] = value;
+y = matrix[row][column];    // every runtime dimension is supported
 ```
 
 The literal's length must match the target array's length, and each element
 reads through the element type (so bare integer/char literals are polymorphic,
 as in an initialiser). Array literals use `[..]` — distinct from `{..}` bit
 concatenation, which packs its parts into one wider vector.
+
+Runtime indices may be chained through nested arrays and struct fields, for
+example `packets[slot].data` or `matrix[row][column]`. Lowering expands a read
+into muxes over the flattened scalar leaves and a write into one gated update
+per possible leaf. An out-of-range runtime read selects the last declared
+element at that dimension, matching the existing single-dimensional rule; an
+out-of-range runtime write matches no element and is therefore a no-op.
 
 **Named ranges.** A `range` constant names a range, preserving direction,
 usable in both type and slice position:

@@ -7196,3 +7196,33 @@ language diagnostics text and moved the TODO item into the verified baseline.
 Verified with 299 library tests, every integration suite including all 13
 native build tests, strict all-target/all-feature Clippy, and the external
 corpus: 161 passed, 0 failed.
+
+### 2026-08-06 — Codex — starting nested runtime array access lowering
+
+The fresh Phase 1 audit found an accepted-but-explicitly-rejected hardware
+form: flattened nested arrays support constant `m[0][1]`, but a runtime
+`m[row][col]` read becomes E-P017 and the corresponding write is rejected as
+an unsupported target. Generalizing the existing one-dimensional select/gated
+write expansion over field/index access steps, retaining last-element fallback
+for out-of-range reads and no-op semantics for out-of-range writes.
+
+### 2026-08-06 — Codex — nested runtime aggregate access complete
+
+Replaced the one-dimensional signal-array read/write special cases with an
+ordered field/index walker. Runtime indices now traverse every nested array
+dimension and may continue into struct fields. Reads lower to nested muxes;
+writes enumerate the flattened scalar leaves and combine all index matches in
+each update condition. Storage-free block locals use the same access model,
+while retaining immediate-expression assignment rather than creating signals.
+
+Preserved the established boundary behavior at every dimension: an
+out-of-range read falls through to the last declared element and an
+out-of-range write matches no leaf. Updated E-P017 help so it no longer claims
+`m[i][j]` is unsupported, documented the behavior, and recorded runtime packed
+vector bit indexing as the distinct remaining gap.
+
+Verified with 301 library tests, every integration suite including all 13
+native build tests, strict all-target/all-feature Clippy, and the external
+native corpus: 162 passed, 0 failed. The new corpus regression simulates a
+clocked two-dimensional register file, including distinct cells and
+out-of-range read/write behavior.

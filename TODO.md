@@ -13,9 +13,10 @@ Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and co
 Bug-sweep status (2026-08-06): generated assignments are linted after parameter
 specialization and loop unrolling, scoped hardware locals lower completely,
 nested generic types survive the full pipeline, and concrete instance-array
-build facts now reach IR diagnostics. Testbench generate-loop lint parity still
-needs a policy decision: either normalize stimulus loops before W-P014 analysis
-or document that the warning applies only to hardware driver contexts.
+build facts now reach IR diagnostics. Nested runtime array/field access lowers
+to muxes and gated leaf writes. Testbench generate-loop lint parity still needs
+a policy decision: either normalize stimulus loops before W-P014 analysis or
+document that the warning applies only to hardware driver contexts.
 
 ## AST
 
@@ -64,6 +65,10 @@ Current baseline:
 - ✅ Scoped hardware block locals lower to storage-free expressions with
   immediate reassignment, lexical shadowing, conditional selection, aggregate
   fields/elements, packed slices, and event-block next-state separation.
+- ✅ Runtime indices traverse nested arrays and intervening struct fields.
+  Reads become nested muxes with last-element fallback at each dimension;
+  writes become one condition per flattened leaf and match no leaf when an
+  index is out of range.
 - ✅ Reads and writes through an in-range but conditionally unbuilt instance
   slot produce E-P022 at the reference, label the array declaration, and do not
   misdiagnose unreferenced slots or unresolved generic specializations.
@@ -73,6 +78,11 @@ Current baseline:
 
 Remaining:
 
+- 🔴 **Runtime packed-vector indexing.** Type checking accepts a numeric
+  runtime position (`word[index]`), but IR currently lowers packed-vector
+  indices and slice bounds only when they are constant. Lower variable reads
+  with value/metavalue selection and variable writes as a width-safe
+  read-modify-write, including declared nonzero and descending ranges.
 - 🟡 **Persist complete source layouts.** Expression types reach lowering, but
   named/repeated/composite layout is still partly reconstructed from
   declarations. Store recursive source layouts directly in IR metadata.

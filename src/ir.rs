@@ -453,9 +453,9 @@ struct Lowering<'a> {
     /// assignment becomes a `Select`), so event blocks retain next-state
     /// semantics for signals while their local values update immediately.
     block_scopes: std::cell::RefCell<Vec<HashMap<String, BlockLocal>>>,
-    /// Field/index expressions with no hardware form — a nested dynamic index
-    /// (`m[i][j]`) is the usual one. Recorded here with the source spelling,
-    /// which the IR no longer has by the time validation sees an `Unknown`.
+    /// Field/index expressions with no hardware form. Recorded here with the
+    /// source spelling, which the IR no longer has by the time validation sees
+    /// an `Unknown`.
     unsupported_exprs: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
     /// Concrete instance-array shapes from hierarchy elaboration, keyed by
     /// the owning instance's dotted IR path.
@@ -593,6 +593,15 @@ struct Lowering<'a> {
 enum Val {
     Scalar(Expr),
     Fields(Vec<(String, Expr)>),
+}
+
+/// One suffix in a flattened aggregate access. Keeping the source expression
+/// for an index lets a runtime access expand into a mux or gated writes over
+/// the concrete leaf signals.
+#[derive(Clone, Copy)]
+enum AccessStep<'e> {
+    Field(&'e str),
+    Index(&'e ast::Expr),
 }
 
 /// One block-local binding. The declared type is retained because substituting
@@ -2175,8 +2184,8 @@ impl<'a> Lowering<'a> {
 
     /// An assignment whose left side lowering cannot place. Two different
     /// mistakes arrive here and used to share one message that carried no
-    /// span, no code and no help: a chained runtime index, which is a real
-    /// gap, and an expression that is not a place at all.
+    /// span, no code and no help: an index form with no lowering contract, and
+    /// an expression that is not a place at all.
     fn report_bad_assign_target(&mut self, target: &ast::Expr) {
         let text = crate::syntax::pretty::expr_string(target);
         let span = ast::expr_span(target);
@@ -2184,9 +2193,9 @@ impl<'a> Lowering<'a> {
             crate::diag::Diagnostic::error(format!("cannot assign to `{text}`"))
                 .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
                 .help(
-                    "a runtime index writes one array (`mem[addr] = v`); chaining \
-                     them (`m[i][j] = v`) is not lowered yet — write one level into \
-                     a named signal, or make the outer index constant",
+                    "runtime indices may traverse declared arrays; packed-vector \
+                     indices and slices require constant bounds, and a custom container needs \
+                     an `IndexAssign` implementation",
                 )
         } else {
             crate::diag::Diagnostic::error(format!("`{text}` cannot be assigned to"))
@@ -2212,9 +2221,9 @@ impl<'a> Lowering<'a> {
                     .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
                     .at(span)
                     .help(
-                        "a runtime index reads one array (`mem[addr]`); chaining them \
-                         (`m[i][j]`) is not lowered yet — index one level into a named \
-                         signal, or make the outer index constant",
+                        "runtime indices may traverse declared arrays; packed-vector \
+                         indices and slices require constant bounds, and a custom container needs \
+                         an `Index` implementation",
                     ),
             );
         }
@@ -3962,6 +3971,17 @@ impl<'a> Lowering<'a> {
         self.block_scopes.borrow().get(scope)?.get(&name).cloned()
     }
 
+    fn block_local_named(&self, name: &str) -> Option<(usize, BlockLocal)> {
+        self.block_scopes
+            .borrow()
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(scope, bindings)| {
+                bindings.get(name).cloned().map(|binding| (scope, binding))
+            })
+    }
+
     /// The declared type at a local path. Aggregate roots retain their own
     /// type while a selected struct field or array element carries the leaf's
     /// type for width attributes and operator dispatch.
@@ -4004,6 +4024,78 @@ impl<'a> Lowering<'a> {
             .into_iter()
             .find(|(field, _)| *field == suffix)
             .map(|(_, value)| Val::Scalar(value))
+    }
+
+    /// Runtime aggregate access into a storage-free block local. Its leaves
+    /// use the same flattened suffixes as signals (`[0][1]`, `[0].data`), but
+    /// live as expressions inside `Val::Fields` rather than `SignalId`s.
+    fn lower_block_dynamic_access(&self, expression: &ast::Expr) -> Option<Expr> {
+        let (root, steps) = access_steps(expression)?;
+        if !steps
+            .iter()
+            .any(|step| matches!(step, AccessStep::Index(_)))
+        {
+            return None;
+        }
+        let (_, binding) = self.block_local_named(&root)?;
+        let Val::Fields(fields) = binding.value else {
+            return None;
+        };
+        self.lower_block_dynamic_access_from(&binding.ty, "", &steps, &fields)
+    }
+
+    fn lower_block_dynamic_access_from(
+        &self,
+        ty: &ast::Type,
+        prefix: &str,
+        steps: &[AccessStep<'_>],
+        fields: &[(String, Expr)],
+    ) -> Option<Expr> {
+        let Some((step, rest)) = steps.split_first() else {
+            return fields
+                .iter()
+                .find(|(name, _)| name == prefix)
+                .map(|(_, value)| value.clone());
+        };
+        match step {
+            AccessStep::Field(field) => {
+                let field_ty = self
+                    .struct_fields(ty)?
+                    .into_iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, field_ty)| field_ty)?;
+                let separator = if prefix.is_empty() { "" } else { "." };
+                self.lower_block_dynamic_access_from(
+                    &field_ty,
+                    &format!("{prefix}{separator}{field}"),
+                    rest,
+                    fields,
+                )
+            }
+            AccessStep::Index(index) => {
+                let (element_ty, indices) =
+                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)?;
+                let (&last, earlier) = indices.split_last()?;
+                let lowered_index = self.lower_expr(index);
+                let element = |position: i64| {
+                    self.lower_block_dynamic_access_from(
+                        element_ty,
+                        &format!("{prefix}[{position}]"),
+                        rest,
+                        fields,
+                    )
+                };
+                let mut result = element(last)?;
+                for &position in earlier.iter().rev() {
+                    result = Expr::Select {
+                        cond: Box::new(eq(lowered_index.clone(), Expr::Const(position as u64))),
+                        then: Box::new(element(position)?),
+                        els: Box::new(result),
+                    };
+                }
+                Some(result)
+            }
+        }
     }
 
     fn block_local_width(&self, ty: &ast::Type) -> u32 {
@@ -4153,6 +4245,9 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         cond: &Option<Expr>,
     ) -> bool {
+        if self.assign_block_dynamic_access(target, value, cond) {
+            return true;
+        }
         // A packed local vector is one scalar expression. Its indexed writes
         // are immediate read-modify-writes over that expression, unlike an
         // array local whose elements live in `Val::Fields` below.
@@ -4331,6 +4426,134 @@ impl<'a> Lowering<'a> {
             );
         }
         true
+    }
+
+    /// Immediate assignment through one or more runtime indices of a block
+    /// local. Each possible flattened target leaf becomes a `Select` guarded
+    /// by the conjunction of its index matches.
+    fn assign_block_dynamic_access(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        cond: &Option<Expr>,
+    ) -> bool {
+        let Some((root, steps)) = access_steps(target) else {
+            return false;
+        };
+        if !steps
+            .iter()
+            .any(|step| matches!(step, AccessStep::Index(_)))
+        {
+            return false;
+        }
+        let Some((scope_index, previous)) = self.block_local_named(&root) else {
+            return false;
+        };
+        let Val::Fields(mut fields) = previous.value.clone() else {
+            return false;
+        };
+        let mut targets = Vec::new();
+        let Some(target_ty) =
+            self.block_dynamic_targets(&previous.ty, "", &steps, None, &mut targets)
+        else {
+            return false;
+        };
+        let replacement = self.lower_block_value(value, &target_ty);
+        for (prefix, hit) in targets {
+            let fire = and(cond.clone(), hit);
+            for (field, old) in &mut fields {
+                let suffix = if *field == prefix {
+                    Some("")
+                } else if let Some(rest) = field.strip_prefix(&prefix) {
+                    if let Some(rest) = rest.strip_prefix('.') {
+                        Some(rest)
+                    } else if rest.starts_with('[') {
+                        Some(rest)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let Some(suffix) = suffix else {
+                    continue;
+                };
+                let new = match &replacement {
+                    Val::Scalar(value) if suffix.is_empty() => Some(value.clone()),
+                    Val::Fields(values) => values
+                        .iter()
+                        .find(|(name, _)| name == suffix)
+                        .map(|(_, value)| value.clone()),
+                    _ => None,
+                };
+                if let Some(new) = new {
+                    *old = Expr::Select {
+                        cond: Box::new(fire.clone()),
+                        then: Box::new(new),
+                        els: Box::new(old.clone()),
+                    };
+                }
+            }
+        }
+        if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
+            scope.insert(
+                root,
+                BlockLocal {
+                    value: Val::Fields(fields),
+                    ty: previous.ty,
+                },
+            );
+        }
+        true
+    }
+
+    fn block_dynamic_targets(
+        &self,
+        ty: &ast::Type,
+        prefix: &str,
+        steps: &[AccessStep<'_>],
+        hit: Option<Expr>,
+        out: &mut Vec<(String, Expr)>,
+    ) -> Option<ast::Type> {
+        let Some((step, rest)) = steps.split_first() else {
+            out.push((prefix.to_string(), hit.unwrap_or(Expr::Const(1))));
+            return Some(ty.clone());
+        };
+        match step {
+            AccessStep::Field(field) => {
+                let field_ty = self
+                    .struct_fields(ty)?
+                    .into_iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, field_ty)| field_ty)?;
+                let separator = if prefix.is_empty() { "" } else { "." };
+                self.block_dynamic_targets(
+                    &field_ty,
+                    &format!("{prefix}{separator}{field}"),
+                    rest,
+                    hit,
+                    out,
+                )
+            }
+            AccessStep::Index(index) => {
+                let (element_ty, indices) =
+                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)?;
+                let lowered_index = self.lower_expr(index);
+                let mut target_ty = None;
+                for position in indices {
+                    let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
+                    let found = self.block_dynamic_targets(
+                        element_ty,
+                        &format!("{prefix}[{position}]"),
+                        rest,
+                        Some(and(hit.clone(), matches)),
+                        out,
+                    )?;
+                    target_ty.get_or_insert(found);
+                }
+                target_ty
+            }
+        }
     }
 
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
@@ -5277,108 +5500,120 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// The signal an assignment target refers to — a bare name or a struct-field
-    /// path (`s.data`).
-    /// A dynamic array read `mem[addr]`: select among the flattened element
-    /// signals by the runtime index — `addr==0 ? mem[0] : addr==1 ? mem[1] :
-    /// ... : mem[last]`. Out-of-range reads the last element (defined, not UB).
-    fn lower_dynamic_read(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
-        let bpath = expr_path(base)?;
-        let indices = self.local_array.get(&bpath)?.clone();
-        let (&last, rest) = indices.split_last()?;
-        let idx = self.lower_expr(index);
-        let elem = |i: i64| {
-            self.locals
-                .get(&format!("{bpath}[{i}]"))
-                .map(|&s| Expr::Current(s))
-                .unwrap_or(Expr::Unknown)
-        };
-        let mut acc = elem(last);
-        for &i in rest.iter().rev() {
-            acc = Expr::Select {
-                cond: Box::new(Expr::Binary {
-                    op: BinOp::Eq,
-                    lhs: Box::new(idx.clone()),
-                    rhs: Box::new(Expr::Const(i as u64)),
-                }),
-                then: Box::new(elem(i)),
-                els: Box::new(acc),
-            };
-        }
-        Some(acc)
-    }
-
-    /// Dynamic selection from a storage-free scalar array local. Composite
-    /// elements remain represented by several fields and therefore require a
-    /// field selection before they have a scalar expression.
-    fn lower_block_dynamic_read(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
-        let binding = self.block_local_binding(base)?;
-        let (_, indices) = array_of(
-            &binding.ty,
-            &self.cur_env,
-            &self.const_ranges,
-            &self.vector_families,
-        )?;
-        let Val::Fields(fields) = binding.value else {
+    /// Lower a scalar leaf reached through one or more runtime array indices.
+    /// Arrays and structs are flattened (`m[0][1]`, `pack[0].data`), so each
+    /// index expands over the concrete paths registered in `local_array` and
+    /// each field simply extends the path. Like the original one-dimensional
+    /// mux, an out-of-range read selects the last element at that dimension.
+    fn lower_dynamic_access(&self, access: &ast::Expr) -> Option<Expr> {
+        let (root, steps) = access_steps(access)?;
+        if !steps
+            .iter()
+            .any(|step| matches!(step, AccessStep::Index(_)))
+        {
             return None;
-        };
-        let (&last, rest) = indices.split_last()?;
-        let element = |position: i64| {
-            let key = format!("[{position}]");
-            fields
-                .iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| value.clone())
-                .unwrap_or(Expr::Unknown)
-        };
-        let lowered_index = self.lower_expr(index);
-        let mut result = element(last);
-        for &position in rest.iter().rev() {
-            result = Expr::Select {
-                cond: Box::new(Expr::Binary {
-                    op: BinOp::Eq,
-                    lhs: Box::new(lowered_index.clone()),
-                    rhs: Box::new(Expr::Const(position as u64)),
-                }),
-                then: Box::new(element(position)),
-                els: Box::new(result),
-            };
         }
-        Some(result)
+        self.lower_dynamic_access_from(&root, &steps)
     }
 
-    /// A dynamic array write `mem[addr] = v`: update EVERY element,
-    /// each gated by `addr == i` (and the enclosing condition). One element
-    /// takes the new value; the rest hold (a `None` cond means unconditional,
-    /// so we always attach the match condition).
+    fn lower_dynamic_access_from(&self, path: &str, steps: &[AccessStep<'_>]) -> Option<Expr> {
+        let Some((step, rest)) = steps.split_first() else {
+            return self.locals.get(path).copied().map(Expr::Current);
+        };
+        match step {
+            AccessStep::Field(field) => {
+                self.lower_dynamic_access_from(&format!("{path}.{field}"), rest)
+            }
+            AccessStep::Index(index) => {
+                let indices = self.local_array.get(path)?;
+                let (&last, earlier) = indices.split_last()?;
+                let lowered_index = self.lower_expr(index);
+                let element = |position: i64| {
+                    self.lower_dynamic_access_from(&format!("{path}[{position}]"), rest)
+                };
+                let mut result = element(last)?;
+                for &position in earlier.iter().rev() {
+                    result = Expr::Select {
+                        cond: Box::new(Expr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(lowered_index.clone()),
+                            rhs: Box::new(Expr::Const(position as u64)),
+                        }),
+                        then: Box::new(element(position)?),
+                        els: Box::new(result),
+                    };
+                }
+                Some(result)
+            }
+        }
+    }
+
+    /// A dynamic aggregate write (`mem[addr] = v`, `m[row][col] = v`, or
+    /// `pack[slot].data = v`): enumerate every concrete scalar leaf and gate it
+    /// by all runtime index comparisons. An out-of-range write matches no leaf.
     fn dynamic_write(
         &self,
         target: &ast::Expr,
         value: &ast::Expr,
         cond: &Option<Expr>,
     ) -> Option<Vec<NextUpdate>> {
-        let ast::Expr::Index { base, index, .. } = target else {
+        let (root, steps) = access_steps(target)?;
+        if !steps
+            .iter()
+            .any(|step| matches!(step, AccessStep::Index(_)))
+        {
             return None;
-        };
-        let bpath = expr_path(base)?;
-        let indices = self.local_array.get(&bpath)?.clone();
-        let idx = self.lower_expr(index);
-        let expr = self.lower_expr(value);
-        let mut updates = Vec::new();
-        for i in indices {
-            let sig = *self.locals.get(&format!("{bpath}[{i}]"))?;
-            let hit = Expr::Binary {
-                op: BinOp::Eq,
-                lhs: Box::new(idx.clone()),
-                rhs: Box::new(Expr::Const(i as u64)),
-            };
-            updates.push(NextUpdate {
-                target: sig,
-                cond: Some(and(cond.clone(), hit)),
-                expr: self.coerce_to_target(sig, expr.clone()),
-            });
         }
-        Some(updates)
+        let mut targets = Vec::new();
+        self.dynamic_write_targets(&root, &steps, None, &mut targets)?;
+        let expr = self.lower_expr(value);
+        Some(
+            targets
+                .into_iter()
+                .map(|(signal, hit)| NextUpdate {
+                    target: signal,
+                    cond: Some(and(cond.clone(), hit)),
+                    expr: self.coerce_to_target(signal, expr.clone()),
+                })
+                .collect(),
+        )
+    }
+
+    fn dynamic_write_targets(
+        &self,
+        path: &str,
+        steps: &[AccessStep<'_>],
+        hit: Option<Expr>,
+        out: &mut Vec<(SignalId, Expr)>,
+    ) -> Option<()> {
+        let Some((step, rest)) = steps.split_first() else {
+            let signal = *self.locals.get(path)?;
+            out.push((signal, hit.unwrap_or(Expr::Const(1))));
+            return Some(());
+        };
+        match step {
+            AccessStep::Field(field) => {
+                self.dynamic_write_targets(&format!("{path}.{field}"), rest, hit, out)
+            }
+            AccessStep::Index(index) => {
+                let indices = self.local_array.get(path)?;
+                let lowered_index = self.lower_expr(index);
+                for &position in indices {
+                    let matches = Expr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(lowered_index.clone()),
+                        rhs: Box::new(Expr::Const(position as u64)),
+                    };
+                    self.dynamic_write_targets(
+                        &format!("{path}[{position}]"),
+                        rest,
+                        Some(and(hit.clone(), matches)),
+                        out,
+                    )?;
+                }
+                Some(())
+            }
+        }
     }
 
     /// A slice-assignment target `y[hi..lo]`: the base signal and the
@@ -5771,13 +6006,13 @@ impl<'a> Lowering<'a> {
                 if let Some(id) = expr_path(e).and_then(|p| self.locals.get(&p).copied()) {
                     return Expr::Current(id);
                 }
+                if let Some(v) = self.lower_block_dynamic_access(e) {
+                    return v;
+                }
+                if let Some(v) = self.lower_dynamic_access(e) {
+                    return v;
+                }
                 if let ast::Expr::Index { base, index, .. } = e {
-                    if let Some(v) = self.lower_block_dynamic_read(base, index) {
-                        return v;
-                    }
-                    if let Some(v) = self.lower_dynamic_read(base, index) {
-                        return v;
-                    }
                     if let Some(v) = self.lower_custom_index(base, index) {
                         return v;
                     }
@@ -10344,6 +10579,34 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
     }
 }
 
+/// Split a flattened aggregate access into its root name and ordered field /
+/// index suffixes. Unlike `expr_path`, indices remain as expressions so a
+/// runtime access can be expanded over the concrete leaf paths.
+fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessStep<'_>>)> {
+    fn walk<'e>(e: &'e ast::Expr, steps: &mut Vec<AccessStep<'e>>) -> Option<String> {
+        match e {
+            ast::Expr::Path(path) if path.segments.len() == 1 => {
+                Some(path.segments[0].text.clone())
+            }
+            ast::Expr::Field { base, field, .. } => {
+                let root = walk(base, steps)?;
+                steps.push(AccessStep::Field(&field.text));
+                Some(root)
+            }
+            ast::Expr::Index { base, index, .. } => {
+                let root = walk(base, steps)?;
+                steps.push(AccessStep::Index(index));
+                Some(root)
+            }
+            _ => None,
+        }
+    }
+
+    let mut steps = Vec::new();
+    let root = walk(e, &mut steps)?;
+    Some((root, steps))
+}
+
 /// The `(element type, length)` if `ty` is an array — an `Indexed` type whose
 /// base is *not* an integer (`Bit[4]`), as opposed to a vector (`unsigned[8]`).
 /// The element type and **ordered element indices** of an array type.
@@ -11513,27 +11776,10 @@ mod tests {
         );
     }
 
-    /// Two different mistakes reached one message that carried no span, no
-    /// code and no help: a chained runtime index write (a real gap) and an
-    /// expression that is not a place at all.
+    /// An expression that is not a place must be distinguished from supported
+    /// field/index targets.
     #[test]
     fn a_bad_assignment_target_says_which_kind_it_is() {
-        let gap = lower_diags(
-            "module m;
-             #[top] entity E { a: unsigned[8] in, y: unsigned[8] out }
-             impl E {
-               let mm: unsigned[8][2][2];
-               let i: integer = 1;
-               mm[i][i] = a;
-               y = a;
-             }",
-        );
-        assert!(
-            gap.iter()
-                .any(|d| d.contains("E-P017") && d.contains("cannot assign to `mm[i][i]`")),
-            "{gap:#?}"
-        );
-
         let not_a_place = lower_diags(
             "module m;
              fn f(x: unsigned[8]) -> unsigned[8] { return x; }
@@ -11548,26 +11794,80 @@ mod tests {
         );
     }
 
-    /// A chained runtime index has no hardware form. It lowered to an
-    /// anonymous `Unknown`, so the only report was "the driver for `x`
-    /// contains an Unknown" — naming neither the expression nor its line.
+    /// Nested array indices are independent runtime mux dimensions on reads
+    /// and a conjunction of match gates on writes.
     #[test]
-    fn a_chained_runtime_index_names_itself() {
-        let diags = lower_diags(
-            "module m;
-             #[top] entity E { y: unsigned[8] out }
+    fn chained_runtime_indices_lower_to_muxes_and_gated_writes() {
+        let source = "module m;
+             #[top] entity E {
+               a: unsigned[8] in, row: integer in, col: integer in,
+               y: unsigned[8] out
+             }
              impl E {
                let mm: unsigned[8][2][2];
-               let i: integer = 1;
-               y = mm[i][i];
-             }",
-        );
+               mm[row][col] = a;
+               y = mm[row][col];
+             }";
+        let diags = lower_diags(source);
         assert!(
             diags
                 .iter()
-                .any(|d| d.contains("`mm[i][i]` has no hardware form")),
-            "{diags:#?}"
+                .all(|diagnostic| !diagnostic.contains("E-P017")),
+            "nested runtime access should no longer be rejected: {diags:#?}"
         );
+        let design = lower_src(source);
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
+        let matrix_writes: Vec<_> = design
+            .drivers
+            .iter()
+            .filter(|driver| {
+                design.signals[driver.target.0 as usize]
+                    .path
+                    .contains(".mm[")
+            })
+            .collect();
+        assert_eq!(matrix_writes.len(), 4, "one gated write per scalar leaf");
+        assert!(
+            matrix_writes.iter().all(|driver| driver.cond.is_some()),
+            "every leaf write must test both runtime indices"
+        );
+        let output = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "E.y")
+            .map(|index| SignalId(index as u32))
+            .unwrap();
+        let read = design
+            .drivers
+            .iter()
+            .find(|driver| driver.target == output)
+            .unwrap();
+        assert!(
+            matches!(read.expr, Expr::Select { .. }),
+            "read is a mux tree"
+        );
+    }
+
+    #[test]
+    fn runtime_index_then_struct_field_reaches_the_scalar_leaf() {
+        let source = "module m;
+             struct Packet { data: unsigned[8], tag: unsigned[4] }
+             #[top] entity E {
+               a: unsigned[8] in, slot: integer in, y: unsigned[8] out
+             }
+             impl E {
+               let packets: Packet[2];
+               packets[slot].data = a;
+               y = packets[slot].data;
+             }";
+        let diagnostics = lower_diags(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("E-P017")),
+            "{diagnostics:#?}"
+        );
+        assert!(lower_src(source).validate().is_empty());
     }
 
     #[test]
@@ -12240,6 +12540,36 @@ mod tests {
             .iter()
             .all(|signal| !signal.path.ends_with(".temporary")));
         assert!(!design.to_ir_string().contains("Unknown"));
+    }
+
+    #[test]
+    fn nested_runtime_access_on_a_block_local_stays_storage_free() {
+        let source = "module m;\n\
+             #[top] entity E {\n\
+                 enable: Bit in, row: integer in, col: integer in,\n\
+                 a: unsigned[8] in, y: unsigned[8] out\n\
+             }\n\
+             impl E {\n\
+                 if enable == '1' {\n\
+                     let matrix: unsigned[8][2][2] = [[1, 2], [3, 4]];\n\
+                     matrix[row][col] = a;\n\
+                     y = matrix[row][col];\n\
+                 } else { y = 0; }\n\
+             }\n";
+        let diagnostics = lower_diags(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.contains("E-P017")),
+            "{diagnostics:#?}"
+        );
+        let design = lower_src(source);
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.contains("matrix")));
+        assert!(!design.to_ir_string().contains("Unknown"));
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
     }
 
     #[test]
