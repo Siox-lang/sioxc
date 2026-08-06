@@ -7028,3 +7028,19 @@ matching. One emitted-binary regression exercises hits and misses for integer,
 `signed[8]`, real, and 128-bit values in hardware and testbench paths. `cargo
 fmt --all --check`, all 292 library tests and every integration target, strict
 all-target/all-feature Clippy, and the full native corpus pass (161/161).
+
+### 2026-08-06 — Codex — correcting the mixed C-ABI corpus fixture
+
+The only generated-C warning in the corpus is source-side ABI mismatch:
+`ldexp` takes C `int`, while siox `integer` deliberately maps to `int64_t`.
+Updating the shared `siox-tests/ffi_real_test.siox` fixture to use C99
+`scalbln(double, long int)`, which correctly tests the documented mixed
+double/64-bit-integer ABI on the supported LP64 native toolchain.
+
+### 2026-08-06 — Codex — mixed C-ABI fixture corrected
+
+Replaced the mismatched `ldexp(double, int)` declaration with
+`scalbln(double, long int)` in the shared corpus. Both hardware and testbench
+foreign-call paths still produce 48 for `scalbln(3.0, 4)`, and Clang now builds
+the generated C without an incompatible-library-redeclaration warning. Pushed
+the corpus fix as `siox-tests` commit `07eb06b`.
