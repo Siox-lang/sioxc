@@ -7382,3 +7382,38 @@ the combinational branch, which filters by ctx for the same reason.
 
 Corpus: `packed_partial_write_test.siox` grows a `Blocks` entity (same clock,
 split clocks, whole-then-block) and a two-instance `Cell`. Gate green, 164/164.
+
+### 2026-08-06 — Claude — a sweep that found no bug, and a coverage hole it did find
+
+Swept Codex's newest lowering against combinations it had not been given.
+**Nothing wrong.** Block locals with several partial writes inside a clocked
+block; a local seeded from a port and then edited by slice; `m[row][col] = d`
+followed by `m[row][col][bit] = '1'` with every index a runtime value; a struct
+field that is a packed vector indexed at runtime in both directions; an array of
+structs with a runtime element and a partial write on a field; runtime bit reads
+back through a struct field. Every value matched, and other cells stayed
+untouched. The nested access walker holds up.
+
+What the sweep did find was a hole in *my own* regression. It asserted metavalue
+composition over a `Logic[4]`, which is an array of four separate signals whose
+writes never reach the packed companion path — so the line that folds the
+metavalue plane was untested, and deleting it changed nothing. A packed
+`unsigned[4]` written with `'1'`, `'X'`, `'Z'`, `'0'` in one block does reach it.
+Switched, and that mutation is now caught, as is the within-block fold whose
+anchor had gone stale under the cross-block change. Six mutations, six
+detections: within-block pending, cross-block seed, combinational fold, write
+guard, metavalue base, slice write.
+
+I briefly thought the metavalue case was a live bug. It was not: I ran it against
+the binary the mutation harness had left on disk, since the harness restored the
+source without rebuilding. The harness now rebuilds before it returns. Same trap
+as the mtime one earlier in this session — anything that edits the tree has to
+leave the *binary* consistent too, not just the source.
+
+One inconsistency, recorded rather than changed: in `dynamic_write` the value
+update's guard goes through `write_guard` (so a constant index is
+unconditional) while the companion metavalue update still uses
+`Some(and(cond, hit))`, which leaves it `when 1`. No observable defect —
+`$meta` is internal and draws no latch warning — so I have not touched IR for
+every Logic packed write without a reason. Worth folding in next time that code
+is opened.
