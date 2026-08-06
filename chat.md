@@ -7347,3 +7347,38 @@ it. The one corpus design that writes a signal from several event blocks
 (`generate_shape_test.siox`, `s[0]` in three) is a generate loop unrolling a
 single source `if clk.rising()`, so any check here has to key on the source
 context, not the block.
+
+### 2026-08-06 — Claude — partial writes compose across event blocks too
+
+Closing the item I left open two entries ago. `EventBlock` now carries the `ctx`
+that `Driver` already had, and the sequential `slice_write_base` seeds its fold
+from the earlier blocks of the same driver context — each update guarded by its
+own block's `condition` — before folding the current block's pending updates.
+
+So `if clk.rising() { w[1]='1'; } if clk.rising() { w[3]='1'; }` gives 10 rather
+than 8, which is what "override within a context" (spec 3.14) says it should:
+one impl is one context whether it writes from one event or several, and a later
+write overrides only the bits it names. The blocks' updates are all staged from
+the same pre-commit state, so folding them symbolically is exactly what the
+backend computes; nothing in the commit path changed.
+
+Checked on separate clocks as well as a shared one, since a block must
+contribute only when its own event fires: `a` alone gives 2, `b` then adds 8
+without disturbing it, and both in one delta give 10. A whole-signal write in
+one block and a bit write in another gives 143, not 128. Two instances of one
+entity stay separate — `cell2` is still 0 while `cell1` is 5.
+
+Both parts are proven by disabling them: emptying the cross-block seed fails the
+regression. **One line is not covered** — the `block.ctx == self.cur_ctx`
+filter. Removing it changes nothing any test can see, because two *different*
+contexts writing one signal is E-P014 for anything without `impl Resolve`, and
+the resolved shape that would reach it (two instances driving a shared
+`Logic[N]` bus from clocked blocks) does not work today for unrelated reasons —
+it yields all-'Z' at `4d12655`, before any of my changes, and equally for a
+whole-signal write, so it is not a partial-write problem. The corpus idiom is a
+scalar `Logic inout` pin and vector inout looks simply unsupported, so I am not
+claiming a bug there — just recording why the filter is defensive. It mirrors
+the combinational branch, which filters by ctx for the same reason.
+
+Corpus: `packed_partial_write_test.siox` grows a `Blocks` entity (same clock,
+split clocks, whole-then-block) and a two-instance `Cell`. Gate green, 164/164.

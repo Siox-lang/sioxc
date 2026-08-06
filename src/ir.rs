@@ -127,6 +127,13 @@ pub struct Driver {
 pub struct EventBlock {
     pub condition: Expr,
     pub updates: Vec<NextUpdate>,
+    /// The driver context that lowered this block — one per impl block, the
+    /// same identity `Driver::ctx` carries (spec 3.14: override within a
+    /// context, resolution across). Several blocks share it when one impl
+    /// writes from more than one event, or when a generate loop unrolls a
+    /// single clocked statement, and a partial write in a later block merges
+    /// over what the earlier ones in that context left behind.
+    pub ctx: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -5105,9 +5112,11 @@ impl<'a> Lowering<'a> {
                         let neg = Some(not(self.lower_expr(&iff.cond)));
                         self.lower_event_else(eb, neg, &mut updates);
                     }
-                    self.out
-                        .event_blocks
-                        .push(EventBlock { condition, updates });
+                    self.out.event_blocks.push(EventBlock {
+                        condition,
+                        updates,
+                        ctx: self.cur_ctx,
+                    });
                 } else if let Some(k) = eval_const(&iff.cond, &self.cur_env) {
                     // A generate-if: the condition is a compile-time constant
                     // (a parameter/const), so only the taken branch is lowered.
@@ -5817,12 +5826,41 @@ impl<'a> Lowering<'a> {
     fn slice_write_base(&self, signal: SignalId, sequential: bool, pending: &[NextUpdate]) -> Expr {
         if sequential {
             // A clocked block reads the pre-commit value, so an unwritten
-            // signal keeps `Current`; each update's expression is a complete
+            // signal keeps `Current`. Earlier *blocks* of the same driver
+            // context count too: an impl may write one signal from several
+            // events, and each of those blocks contributes only when its own
+            // event fires. Their updates are staged from the same pre-commit
+            // state, so folding them symbolically is exactly what the backend
+            // computes.
+            let seed = self
+                .out
+                .event_blocks
+                .iter()
+                .filter(|block| block.ctx == self.cur_ctx)
+                .flat_map(|block| {
+                    block
+                        .updates
+                        .iter()
+                        .filter(|update| update.target == signal)
+                        .map(move |update| {
+                            let guard = match &update.cond {
+                                Some(cond) => and_expr(block.condition.clone(), cond.clone()),
+                                None => block.condition.clone(),
+                            };
+                            (guard, update.expr.clone())
+                        })
+                })
+                .fold(Expr::Current(signal), |acc, (guard, expr)| Expr::Select {
+                    cond: Box::new(guard),
+                    then: Box::new(expr),
+                    els: Box::new(acc),
+                });
+            // Then this block's own updates: each expression is a complete
             // next value, so a later one supersedes exactly when it fires.
             return pending
                 .iter()
                 .filter(|update| update.target == signal)
-                .fold(Expr::Current(signal), |acc, update| match &update.cond {
+                .fold(seed, |acc, update| match &update.cond {
                     Some(cond) => Expr::Select {
                         cond: Box::new(cond.clone()),
                         then: Box::new(update.expr.clone()),
