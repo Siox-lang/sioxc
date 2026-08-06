@@ -6904,6 +6904,20 @@ corpus fixture caught and verified the shadowing correction. `cargo fmt --all
 --check`, all 280 unit and integration tests, strict all-target/all-feature
 Clippy, and the full native corpus pass (161/161).
 
+### 2026-08-06 — Codex — constructor arity and entity calls
+
+Type calls have two valid shapes: `T()` for explicit default construction and
+`T(value)` for conversion. Extra arguments were not checked and several
+lowerers read only the first, silently dropping the rest. Added a shared
+0-or-1 constructor arity check for scalar, named, aliased, indexed, and vector
+types while preserving normal functions that share a type-like spelling.
+Entity declarations are no longer classified as callable value conversions;
+they must be instantiated with the existing typed struct-literal form. The
+regression reproduced ignored extra arguments on kernel, vector, and enum
+constructors plus the accepted `Entity()` call. `cargo fmt --all --check`, all
+281 unit and integration tests, strict all-target/all-feature Clippy, and the
+full native corpus pass (161/161).
+
 ### 2026-08-06 — Codex — method argument contracts
 
 The free-function fix exposed that method calls use a wholly separate path:

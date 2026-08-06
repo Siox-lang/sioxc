@@ -3335,6 +3335,36 @@ impl<'a> Checker<'a> {
         self.check_fits_width(v, width as u32, expr_span(site));
     }
 
+    /// `T()` is explicit default construction and `T(value)` is conversion;
+    /// no type constructor accepts more than one value. Several lowerers read
+    /// only `args.first()`, so extra arguments otherwise vanished silently.
+    fn check_conversion_arity(&mut self, callee: &Expr, args: &[Expr]) {
+        if args.len() <= 1 {
+            return;
+        }
+        let is_conversion = match callee {
+            Expr::Path(path) if path.segments.len() == 1 => {
+                let name = &path.segments[0].text;
+                !self.fn_arity.contains_key(name) && self.is_conversion_name(name)
+            }
+            Expr::Index { base, .. } => {
+                matches!(base.as_ref(), Expr::Path(path) if path.segments.len() == 1
+                    && self.is_conversion_name(&path.segments[0].text))
+            }
+            _ => false,
+        };
+        if is_conversion {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(callee),
+                format!(
+                    "a type constructor takes zero or one argument, but {} were given",
+                    args.len()
+                ),
+            );
+        }
+    }
+
     /// `print!("{} {}", x)` silently rendered an empty slot, and a spare
     /// argument was silently dropped — in a testbench that is exactly where a
     /// wrong value costs you debugging time. Both engines share the arity, so
@@ -3693,21 +3723,32 @@ impl<'a> Checker<'a> {
         ) {
             return true;
         }
-        // A conversion names a type: kernel scalars, a vector family, an
-        // alias, or any declared struct/enum/entity.
-        if matches!(name, "integer" | "real" | "Char" | "string")
-            || self.is_vector_family(name)
-            || self.aliases.contains_key(name)
-            || self.structs.contains_key(name)
-            || self.enum_variants.contains_key(name)
-            || self.entities.contains_key(name)
-        {
+        // A conversion names a value type. Entities are instantiated with a
+        // struct literal and are never callable values.
+        if self.is_conversion_name(name) {
             return true;
         }
         // A method reached through UFCS-ish sugar, or a trait method the
         // receiver supplies: if any type implements a method of this name it
         // is not an unknown *function*.
         self.methods.keys().any(|(_, m)| m == name)
+    }
+
+    fn is_conversion_name(&self, name: &str) -> bool {
+        if matches!(name, "integer" | "real" | "Char" | "string")
+            || self.is_vector_family(name)
+            || self.structs.contains_key(name)
+            || self.enum_variants.contains_key(name)
+        {
+            return true;
+        }
+        let Some(alias) = self.aliases.get(name) else {
+            return false;
+        };
+        self.resolve_alias_type(alias)
+            .as_ref()
+            .and_then(type_head_name)
+            .is_some_and(|head| !self.entities.contains_key(head))
     }
 
     /// The write restrictions `self` carries inside an impl on a view: each
@@ -4519,6 +4560,7 @@ impl<'a> Checker<'a> {
                 // like `let b: Byte = 300`. Dynamic values get simulation
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
+                self.check_conversion_arity(callee, args);
                 self.check_generic_bounds(callee, args, sym);
                 self.check_call_arity(callee, args, sym);
                 self.check_runtime_call_contract(callee, args, *bang, sym);
@@ -7494,6 +7536,31 @@ mod tests {
             check_src(&format!("{base}unsigned[8](a); }}\n")),
             0,
             "conversion"
+        );
+    }
+
+    #[test]
+    fn type_constructors_accept_at_most_one_argument() {
+        let fixture = |call: &str| {
+            format!(
+                "module m;\nenum Phase {{ Idle, Run }}\n\
+                 entity Child {{ y: Bit out }}\nimpl Child {{ y = '0'; }}\n\
+                 #[test] entity T {{}}\nimpl T {{ {call}; }}\n"
+            )
+        };
+        assert_eq!(check_src(&fixture("integer(1, 2)")), 1);
+        assert_eq!(check_src(&fixture("unsigned[8](1, 2)")), 1);
+        assert_eq!(check_src(&fixture("Phase(1, 2)")), 1);
+        assert_eq!(check_src(&fixture("Phase()")), 0, "explicit default");
+        assert_eq!(
+            check_src(&fixture("Phase(Phase::Idle)")),
+            0,
+            "one conversion input"
+        );
+        assert_eq!(
+            check_src(&fixture("Child()")),
+            1,
+            "an entity is instantiated with a struct literal, not called as a value"
         );
     }
 
