@@ -1555,25 +1555,15 @@ impl<'a> Lowering<'a> {
                     // struct-literal forms above do. Without it a lookup table
                     // written this way powered on at 0 in every element and
                     // read back as zeros with no diagnostic.
+                    // This used to walk the elements itself, with `enumerate`
+                    // for the index and no case for an element that is a
+                    // struct. `seed_elements` is the same walk done once: it
+                    // takes the indices from the declared range (so a
+                    // non-zero-based array seeds the right elements) and seeds
+                    // an aggregate element through the struct path.
                     if let Some(ast::Expr::Array { elems, .. }) = &l.value {
-                        for (i, elem) in elems.iter().enumerate() {
-                            let Some(&id) = self.locals.get(&format!("{}[{i}]", l.name.text))
-                            else {
-                                continue;
-                            };
-                            // The element's own enum type resolves a character
-                            // literal (`['0', '1']`) to its variant.
-                            let en = self.out.signals[id.0 as usize].enum_type.clone();
-                            let is_char = self.out.signals[id.0 as usize].char;
-                            if let Some(v) = self.const_init_value(elem, en.as_deref(), is_char) {
-                                self.out.signals[id.0 as usize].init = vec![v];
-                            } else {
-                                self.report_non_constant_init(
-                                    &format!("{}[{i}]", l.name.text),
-                                    l.span,
-                                );
-                            }
-                        }
+                        let name = l.name.text.clone();
+                        self.seed_elements(&name, elems.iter().collect(), l.span);
                     }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
@@ -1832,6 +1822,37 @@ impl<'a> Lowering<'a> {
                             };
                             let expr = self.lower_expr(field_value);
                             let ctx = self.next_ctx_at(ast::expr_span(field_value));
+                            self.out.drivers.push(Driver {
+                                target: *child_id,
+                                cond: None,
+                                expr,
+                                ctx,
+                            });
+                        }
+                    }
+                    // An *array* literal on a composite port (`.v = [1, 9]`)
+                    // drives one leaf per element. Only the struct form was
+                    // handled, so this connection was dropped in silence and
+                    // the child read its default — a scalar port has always
+                    // accepted a literal here.
+                    if let ast::Expr::Array { elems, .. } = value {
+                        // Declared index order, numerically: `v[10]` must not
+                        // sort before `v[2]`.
+                        let mut elements: Vec<(i64, SignalId, Option<ast::Direction>)> = leaves
+                            .iter()
+                            .filter_map(|(k, id, dir)| {
+                                let rest = k.strip_prefix(&idx)?;
+                                let index = rest.strip_suffix(']')?.parse::<i64>().ok()?;
+                                Some((index, *id, *dir))
+                            })
+                            .collect();
+                        elements.sort_by_key(|(index, _, _)| *index);
+                        for ((_, child_id, dir), elem) in elements.iter().zip(elems) {
+                            if *dir == Some(ast::Direction::Out) {
+                                continue;
+                            }
+                            let expr = self.lower_expr(elem);
+                            let ctx = self.next_ctx_at(ast::expr_span(elem));
                             self.out.drivers.push(Driver {
                                 target: *child_id,
                                 cond: None,
@@ -3233,6 +3254,34 @@ impl<'a> Lowering<'a> {
         for (elem, i) in elems.into_iter().zip(indices) {
             let path = format!("{prefix}[{i}]");
             let Some(&id) = self.locals.get(&path) else {
+                // An element that is itself a struct has no scalar leaf of its
+                // own — its fields are `ps[0].a` — so the lookup above found
+                // nothing and the element was skipped in silence, leaving every
+                // field of every element at zero. It is a struct literal in
+                // element position, read against the element's type like any
+                // other.
+                if let Some(struct_name) = self.local_struct.get(&path).cloned() {
+                    match elem {
+                        ast::Expr::Construct { args, spread, .. } => self.seed_struct_literal(
+                            &path,
+                            Some(&struct_name),
+                            args,
+                            spread.as_deref(),
+                            span,
+                        ),
+                        _ => {
+                            if let Some(args) = self.positional_struct_args(&struct_name, elem) {
+                                self.seed_struct_literal(
+                                    &path,
+                                    Some(&struct_name),
+                                    &args,
+                                    None,
+                                    span,
+                                );
+                            }
+                        }
+                    }
+                }
                 continue;
             };
             let en = self.out.signals[id.0 as usize].enum_type.clone();

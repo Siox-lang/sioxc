@@ -7643,3 +7643,43 @@ The concat control is asserted throughout — the identical braces against a
 packed vector are still 163. Five mutations, five detections, including the
 parameter site isolated on its own (its anchor appears twice, in the free-call
 and method inliners, and both needed it). Gate green, corpus 166/166.
+
+### 2026-08-07 — Claude — array literals against aggregate destinations
+
+Swept the array sibling of the struct-literal work. Three silent seedings, all
+leaving zeros with no diagnostic:
+
+- **An array of structs.** `let ps: Pair[2] = [{ .a = 4, .b = 5 }, ..]` seeded
+  nothing. An element that is itself a struct has no scalar leaf of its own —
+  its fields are `ps[0].a` — so the element lookup found none and the element
+  was skipped.
+- **An array literal on a composite port.** `.v = [1, 9]` connected nothing and
+  the child read its default. The literal-connection path handled a struct
+  literal and not an array one, though a *scalar* port has always accepted a
+  literal there.
+- **A non-zero-based array.** `let r: unsigned[8][4..5] = [8, 9]` seeded
+  nothing, because the declaration walked its elements with `enumerate` and
+  looked for `r[0]`/`r[1]`, which do not exist.
+
+The third was a duplicate walk: the declaration had its own copy of the element
+loop and only the struct-field copy took indices from the declared range. They
+are one walk now (`seed_elements`), which is what fixes the ranged case and
+where the struct-element handling was added. Port connections learned the array
+form beside the struct one, pairing elements to leaves in declared index order
+numerically — `v[10]` must not sort before `v[2]`.
+
+Regression `array_literal_test.siox`; three mutations, three detections. Gate
+green, corpus 167/167.
+
+**Found and not fixed — both loud, and both the same missing capability.** An
+array *value* cannot cross a function boundary:
+
+    takes([7, 8])                          // E-P017 `v[0]` has no hardware form
+    fn gives() -> unsigned[8][2] { .. }    // E-P017 no element-wise form
+
+The inliner binds a parameter to a `Val`, which is `Scalar` or `Fields`; there
+is no array case, so an array argument or return has nothing to bind to. That
+is a capability rather than a slip, and bigger than this corner. The return
+form already says exactly what it supports; the argument form reports `v[0]`
+inside the callee's body with help about runtime indices, which blames the
+wrong line and would be worth improving even before the capability lands.
