@@ -1447,6 +1447,35 @@ impl<'a> Lowering<'a> {
                             spread.as_deref(),
                             l.span,
                         );
+                    } else if self.local_struct.contains_key(&l.name.text) {
+                        // A struct local initialized by anything else. The
+                        // scalar fold below never sees these: it is reached
+                        // through `locals[name]`, and a struct has signals only
+                        // under `name.field`. So `let p: Pair = make(6)` seeded
+                        // nothing and every field powered on at zero, silently.
+                        if let Some(value) = &l.value {
+                            let head = l.ty.as_ref().and_then(type_head_name).map(str::to_string);
+                            match self.struct_literal_from_call(value) {
+                                Some((fields, spread)) => self.seed_struct_literal(
+                                    &l.name.text,
+                                    head.as_deref(),
+                                    &fields,
+                                    spread.as_ref(),
+                                    l.span,
+                                ),
+                                // A call into a body this cannot reduce to one
+                                // literal has no power-on value to fold. Say
+                                // so, rather than power on at zero — the help
+                                // names the spelling that does work. A default
+                                // construction (`Pair::new()`, `Pair()`) is not
+                                // a call to any declared function and keeps its
+                                // structural zeros, which are correct.
+                                None if self.resolves_to_declared_fn(value) => {
+                                    self.report_non_constant_init(&l.name.text, l.span);
+                                }
+                                None => {}
+                            }
+                        }
                     }
                     // An array-literal initializer (`let rom: unsigned[8][4] =
                     // [1, 2, 3, 4]`) seeds each element, as the string and
@@ -2928,6 +2957,79 @@ impl<'a> Lowering<'a> {
     /// `p.y` — so the field loop used to `continue` past it and the inner
     /// values were dropped without a word, while a sibling scalar field on the
     /// same literal seeded correctly.
+    /// Whether `value` is a call to a function this compilation declares —
+    /// which separates "a body too complex to fold" from a default
+    /// construction like `Pair::new()`, whose name resolves to no function at
+    /// all and whose structural zeros are the right answer.
+    fn resolves_to_declared_fn(&self, value: &ast::Expr) -> bool {
+        let ast::Expr::Call { callee, .. } = value else {
+            return false;
+        };
+        call_fn_key(callee).is_some_and(|k| self.free_fns.contains_key(&k))
+    }
+
+    /// The struct literal a call returns, with the arguments written at the
+    /// call substituted for the parameters — so a struct-typed `let` can seed
+    /// its fields from `let p: Pair = make(6)` the way it already does from
+    /// `let p: Pair = { .a = 6, .b = 7 }`.
+    ///
+    /// An initializer is a power-on value folded at elaboration, and the scalar
+    /// path folds a call: `let a: unsigned[8] = double(6)` is 12. The struct
+    /// path folded nothing, because the block that does the folding is reached
+    /// only through `locals[name]` and a struct local has no signal under its
+    /// bare name — only `p.a`, `p.b`. So every field powered on at zero with no
+    /// diagnostic, while the same call written as a separate assignment was
+    /// right.
+    ///
+    /// `None` when the callee is not a known function (`Pair::new()` and
+    /// `Pair()` are the structural default, not a call to fold) or its body is
+    /// anything but a single returned literal — the caller reports those.
+    fn struct_literal_from_call(
+        &self,
+        value: &ast::Expr,
+    ) -> Option<(Vec<ast::ConnectArg>, Option<ast::Expr>)> {
+        let ast::Expr::Call { callee, args, .. } = value else {
+            return None;
+        };
+        let f = *call_fn_key(callee).and_then(|k| self.free_fns.get(&k))?;
+        let body = f.body.as_ref()?;
+        let [ast::Stmt::Return {
+            value: Some(returned),
+            ..
+        }] = body.stmts.as_slice()
+        else {
+            return None;
+        };
+        let ast::Expr::Construct {
+            args: fields,
+            spread,
+            ..
+        } = returned
+        else {
+            return None;
+        };
+        // Bind each declared parameter to its argument. `self` takes no
+        // argument, so it is skipped rather than consuming one.
+        let mut bound: HashMap<String, ast::Expr> = HashMap::new();
+        for (param, arg) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(name) = param.name.as_ref() {
+                bound.insert(name.text.clone(), arg.clone());
+            }
+        }
+        let fields = fields
+            .iter()
+            .map(|field| ast::ConnectArg {
+                field: field.field.clone(),
+                value: field.value.as_ref().map(|v| subst_expr_paths(v, &bound)),
+                span: field.span,
+            })
+            .collect();
+        Some((
+            fields,
+            spread.as_deref().map(|s| subst_expr_paths(s, &bound)),
+        ))
+    }
+
     fn seed_struct_literal(
         &mut self,
         prefix: &str,

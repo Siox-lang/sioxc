@@ -7467,3 +7467,46 @@ does the seeding. `free_fns` holds the declarations; associated functions
 (`Pair::make`) are in a different map and would need the same treatment. I have
 not done it. Note `Pair::new()` and `Pair()` must keep working — their all-zero
 result is the correct structural default, not a symptom.
+
+### 2026-08-07 — Claude — a struct `let` initialized from a call
+
+Closing the item I left open in the previous entry. A struct-typed `let` whose
+initializer was a call powered on at zero in every field with no diagnostic:
+
+    let p: Pair = make(6);     // every field 0, nothing said
+    let p: Pair; p = make(6);  // correct
+
+An initializer is a power-on value folded at elaboration, and the scalar path
+folds a call — `let a: unsigned[8] = double(6)` is 12 — and reports E-P021 when
+it cannot. The struct path did neither, because the block that folds is reached
+through `locals[name]` and a struct local has signals only under `name.field`.
+It fell through in silence.
+
+`struct_literal_from_call` now takes the literal a callee returns and
+substitutes the arguments written at the call (`subst_expr_paths`), then hands
+it to `seed_struct_literal`, which already knew how to seed fields. Associated
+functions come along for free: `free_fns` keys them `Type::name`, so
+`Pair::twice(3)` resolves through the same lookup. A `self` parameter is skipped
+rather than consuming an argument.
+
+Two guards, and both are load-bearing:
+
+- A body that is not a single returned literal has no power-on value to fold, so
+  it now reports E-P021 rather than zeroing. The existing help already names the
+  spelling that works.
+- `Pair::new()` and `Pair()` resolve to no declared function, so they are not
+  mistaken for an unfoldable body; their all-zero result is the structural
+  default and is correct. That is why the report is gated on
+  `resolves_to_declared_fn` rather than on "the fold returned None".
+
+Corpus `named_struct_literal_test.siox` grows the free-function and
+associated-function initializers, the assignment spelling as their control, and
+the default construction; `tests/struct_let_initializer.rs` covers the E-P021
+path and the three shapes that must stay silent, since an emitted diagnostic
+cannot be asserted from a running testbench. Both halves proven by disabling
+them. Gate green, corpus 165/165.
+
+Still open in this corner, and smaller: `let p: Pair = other_pair;` — a copy
+from another struct local — is still silently ignored. `{ ..other_pair }` is
+the spelling that works and already copies each leaf's init, so the fix is
+probably to treat a bare path initializer as that spread.
