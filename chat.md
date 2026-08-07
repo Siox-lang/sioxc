@@ -7729,3 +7729,39 @@ from the other side, and its message already says exactly what is supported.
 Substitution does not help there: the value has to come *out*, so this one does
 want an array case in the inliner's result, or an expansion at the assignment
 into one driver per element.
+
+### 2026-08-08 — Claude — registering an array, and returning one
+
+Closing the array-return item, which led to a larger one beside it.
+
+**A clocked block could not assign an array at all.** Not from a call, not from
+a literal, not from another array signal — all three reported E-P018, `g`
+cannot be assigned to, naming the target. An array signal is many element
+signals and no single id, so the target lookup finds nothing for it; the
+combinational path has long expanded a whole-array assignment element by
+element and the clocked path had no such expansion. Registering an array is the
+ordinary way to write a pipeline, and the message blamed the innocent half of
+the statement — the same mistake the combinational path's own comment says it
+was fixed for.
+
+`array_assign_leaves` is the array twin of `struct_assign_leaves`, wired into
+the event-block assignment beside it: one `NextUpdate` per element, from a
+literal, from another array (read pre-commit, so a two-stage pipeline shifts by
+one edge rather than collapsing), or from an element-wise expression.
+
+**An array return** then needed only a reduction: a call stands for the
+expression it returns with the arguments substituted, so `g = gives()` becomes
+`g = [3, 4]` and the arms that already drive a literal take it. Both paths need
+it separately — the clocked one inside `array_assign_leaves`, the combinational
+one at its own match — and both are proven, the combinational one only after
+adding a case that is not clocked, since the clocked test never reaches it.
+
+`registered_array_test.siox`: registered from an array, a literal, a call, a
+call with an argument, and a call returning its own parameter, plus a two-stage
+pipeline and the combinational counterpart. Three mutations, three detections.
+Gate green, corpus 168/168.
+
+A note on the test rather than the compiler: my first expected value for
+`scaled2(5)` was 510, reading "5 and 10" as digits when the encoding is
+`d[0]*10 + d[1]` = 60. The test caught my arithmetic, which is the right way
+round.

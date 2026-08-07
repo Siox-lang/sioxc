@@ -3069,6 +3069,33 @@ impl<'a> Lowering<'a> {
         call_fn_key(callee).is_some_and(|k| self.free_fns.contains_key(&k))
     }
 
+    /// The expression a call returns, with the arguments written at the call
+    /// substituted for the parameters.
+    ///
+    /// `None` unless the callee is a declared function whose body is a single
+    /// returned expression — anything else has no one expression to stand for
+    /// the call, and the caller keeps its own handling.
+    fn returned_expr_from_call(&self, value: &ast::Expr) -> Option<ast::Expr> {
+        let ast::Expr::Call { callee, args, .. } = value else {
+            return None;
+        };
+        let f = *call_fn_key(callee).and_then(|k| self.free_fns.get(&k))?;
+        let [ast::Stmt::Return {
+            value: Some(returned),
+            ..
+        }] = f.body.as_ref()?.stmts.as_slice()
+        else {
+            return None;
+        };
+        let mut bound: HashMap<String, ast::Expr> = HashMap::new();
+        for (param, arg) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+            if let Some(name) = param.name.as_ref() {
+                bound.insert(name.text.clone(), arg.clone());
+            }
+        }
+        Some(subst_expr_paths(returned, &bound))
+    }
+
     /// The struct literal a call returns, with the arguments written at the
     /// call substituted for the parameters — so a struct-typed `let` can seed
     /// its fields from `let p: Pair = make(6)` the way it already does from
@@ -5243,6 +5270,16 @@ impl<'a> Lowering<'a> {
                                 return;
                             }
                         }
+                        // An array-returning call has no array form of its own —
+                        // the inliner's result is a scalar or named fields, and
+                        // an array is neither — so `g = gives()` reported that
+                        // `gives()` had no element-wise form. Reducing the call
+                        // to the expression it returns, with the arguments
+                        // substituted, hands it to the arms below: the literal
+                        // it returns is driven element by element exactly as a
+                        // literal written at the assignment would be.
+                        let reduced = self.returned_expr_from_call(value);
+                        let value = reduced.as_ref().unwrap_or(value);
                         match value {
                             ast::Expr::StrLit { text, .. } => {
                                 let chars: Vec<char> = text.chars().collect();
@@ -5814,6 +5851,15 @@ impl<'a> Lowering<'a> {
                     }
                     if let Some(leaves) = self.struct_assign_leaves(target, value) {
                         // A registered bus: one next-state update per leaf.
+                        for (sig, expr) in leaves {
+                            out.push(NextUpdate {
+                                target: sig,
+                                cond: cond.clone(),
+                                expr,
+                            });
+                        }
+                    } else if let Some(leaves) = self.array_assign_leaves(target, value) {
+                        // A registered array: one next-state update per element.
                         for (sig, expr) in leaves {
                             out.push(NextUpdate {
                                 target: sig,
@@ -6422,6 +6468,74 @@ impl<'a> Lowering<'a> {
             for (fname, expr) in fields {
                 if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
                     out.push((sig, self.coerce_to_target(sig, expr)));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Expand a whole-array assignment (`g = src`, `g = [3, 4]`, `g = f()`)
+    /// into one write per element.
+    ///
+    /// An array signal is many element signals and no single id, so
+    /// `target_signal` returns `None` for it. The combinational path has had
+    /// this expansion; the clocked path had none, so *every* array assignment
+    /// in an event block — from another array, from a literal, from a call —
+    /// fell through to the target check and reported `g` as something that
+    /// cannot be assigned to. Registering an array is the ordinary way to
+    /// write a pipeline, and it named the innocent half of the statement.
+    fn array_assign_leaves(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+    ) -> Option<Vec<(SignalId, Expr)>> {
+        let tpath = self
+            .folded_elem_path(target)
+            .or_else(|| expr_path(target))?;
+        let indices = self.local_array.get(&tpath).cloned()?;
+        // A call stands for the expression it returns, as it does
+        // combinationally.
+        let reduced = self.returned_expr_from_call(value);
+        let value = reduced.as_ref().unwrap_or(value);
+        let leaf = |index: &i64| self.locals.get(&format!("{tpath}[{index}]")).copied();
+        let mut out = Vec::new();
+        match value {
+            ast::Expr::Array { elems, .. } if elems.len() == indices.len() => {
+                for (element, index) in elems.iter().zip(&indices) {
+                    let signal = leaf(index)?;
+                    out.push((
+                        signal,
+                        self.coerce_to_target(signal, self.lower_expr(element)),
+                    ));
+                }
+            }
+            // Another array signal: element for element, from its pre-commit
+            // value like every other read in an event block.
+            value
+                if expr_path(value)
+                    .and_then(|p| self.local_array.get(&p))
+                    .is_some_and(|source| source.len() == indices.len()) =>
+            {
+                let source_path = expr_path(value)?;
+                let source = self.local_array.get(&source_path)?;
+                for (target_index, source_index) in indices.iter().zip(source) {
+                    let signal = leaf(target_index)?;
+                    let from = self
+                        .locals
+                        .get(&format!("{source_path}[{source_index}]"))
+                        .copied()?;
+                    out.push((signal, self.coerce_to_target(signal, Expr::Current(from))));
+                }
+            }
+            // An element-wise expression over arrays (`g = a and b`).
+            value => {
+                for (position, index) in indices.iter().enumerate() {
+                    let element = self.elementwise_at(value, position, indices.len())?;
+                    let signal = leaf(index)?;
+                    out.push((
+                        signal,
+                        self.coerce_to_target(signal, self.lower_expr(&element)),
+                    ));
                 }
             }
         }
