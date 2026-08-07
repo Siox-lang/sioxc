@@ -7613,3 +7613,33 @@ against an `unsigned[8]` is still 163, not a two-field struct.
 Four mutations, four detections — and the fourth only after moving a positional
 constant into the *testbench*, since the emitter folds its own tables and the
 entity-level constant never exercised that path. Gate green, corpus 166/166.
+
+### 2026-08-07 — Claude — the type-decides rule, at every position that knows a type
+
+Swept the positions the previous round did not reach. The rule was right and its
+application was partial: a positional struct literal was still read as a
+concatenation everywhere except a `let`, an assignment and a constant. Four more
+positions, each of which knows its destination's declared type:
+
+    take({ 5, 6 })                       // a parameter's type -- the body's
+                                         // `p.a` had no hardware form
+    fn give() -> Pair { return { 3, 4 }; } // a return type -- caller undriven
+    let s: Sink = { .p = { 7, 8 }, .. }  // a port's type -- child read zeros
+    { .inner = { 1, 2 }, .tag = 9 }      // a field's type -- inner seeded nothing
+
+All four are now routed through one `as_struct_literal(ty, value)`, so the rule
+is applied in one place rather than re-derived per site: the field of an
+enclosing literal (both when seeding a declaration and when lowering an
+assignment), `norm_conns` for instance connections, the parameter binding in the
+call inliner, and a `normalize_struct_returns` pass over a function body before
+it is inlined. The last one avoided threading a return type through
+`inline_block`'s fourteen call sites.
+
+The named form was already right in every one of these, which is what made them
+findable: the two spellings of one value disagreed, and the concat reading
+silently produced zeros or an E-P017 about runtime indices.
+
+The concat control is asserted throughout — the identical braces against a
+packed vector are still 163. Five mutations, five detections, including the
+parameter site isolated on its own (its anchor appears twice, in the free-call
+and method inliners, and both needed it). Gate green, corpus 166/166.

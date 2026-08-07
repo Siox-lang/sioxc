@@ -3157,6 +3157,12 @@ impl<'a> Lowering<'a> {
                 continue;
             };
             let path = format!("{prefix}.{field}");
+            // A struct-typed field's value is read against *that field's*
+            // type, so a positional literal nested inside a named one
+            // (`{ .inner = { 1, 2 }, .tag = 9 }`) is a struct literal too. It
+            // stayed a concat and seeded nothing.
+            let field_ty = fields.iter().find(|(n, _)| *n == field).map(|(_, t)| t);
+            let value = &self.as_struct_literal(field_ty, value);
             // A field whose value is itself an aggregate names no leaf of its
             // own, so each of these used to fall through the lookup below and
             // seed nothing — silently, and without even reaching the
@@ -3303,6 +3309,30 @@ impl<'a> Lowering<'a> {
                 })
                 .collect(),
         )
+    }
+
+    /// `value` as a struct literal when the type it is being assigned to is a
+    /// struct: a positional `{ 6, 7 }` becomes the named form, and anything
+    /// else is returned unchanged.
+    ///
+    /// Every position that knows its destination's type goes through here — a
+    /// field of an enclosing literal, an instance's port connection, a
+    /// function's parameter and its return — so the one rule ("the assigned
+    /// type decides how to read the braces") is applied in one way rather than
+    /// re-derived per site.
+    fn as_struct_literal(&self, ty: Option<&ast::Type>, value: &ast::Expr) -> ast::Expr {
+        let Some(args) = ty
+            .and_then(type_head_name)
+            .and_then(|head| self.positional_struct_args(head, value))
+        else {
+            return value.clone();
+        };
+        ast::Expr::Construct {
+            ty: None,
+            args,
+            spread: None,
+            span: ast::expr_span(value),
+        }
     }
 
     /// A struct constant's folded fields, keyed off the dotted entries
@@ -4007,7 +4037,17 @@ impl<'a> Lowering<'a> {
                     Some(f) => f.text.clone(),
                     None => order.get(i).cloned()?,
                 };
-                Some((port, c.value.clone()?))
+                // The connected value is read against the *port's* declared
+                // type, so a positional literal on a struct port
+                // (`.p = { 7, 8 }`) is a struct literal, not the concat it
+                // lexes as. It connected nothing and the child read zeros.
+                let port_ty = self
+                    .entities
+                    .get(ename)
+                    .and_then(|d| d.ports.iter().find(|p| p.name.text == port))
+                    .map(|p| p.ty.clone());
+                let value = self.as_struct_literal(port_ty.as_ref(), &c.value.clone()?);
+                Some((port, value))
             })
             .collect()
     }
@@ -8102,6 +8142,12 @@ impl<'a> Lowering<'a> {
         let mut added_integers: Vec<String> = Vec::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
+                // An argument is read against the *parameter's* declared type,
+                // so a positional literal for a struct parameter is a struct
+                // literal. Left as the concatenation it lexes as, the
+                // parameter bound no fields and the body's `p.a` reported
+                // having no hardware form.
+                let a = &self.as_struct_literal(p.ty.as_ref(), a);
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
                 fenv.insert(
                     format!("{}::length", n.text),
@@ -8132,10 +8178,10 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let out = f
-            .body
-            .as_ref()
-            .and_then(|b| self.inline_block(&b.stmts, &fenv));
+        let out = f.body.as_ref().and_then(|b| {
+            let stmts = self.normalize_struct_returns(&b.stmts, f.ret.as_ref());
+            self.inline_block(&stmts, &fenv)
+        });
         // The result is a value of the declared return type, so it wraps to
         // that width. Assigning it to a signal masked it anyway, which hid
         // this — but used in place (`neg(x) < 0`) the extra bits survived and
@@ -8283,6 +8329,12 @@ impl<'a> Lowering<'a> {
         let receiver_width = self.ast_width(base);
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
+                // An argument is read against the *parameter's* declared type,
+                // so a positional literal for a struct parameter is a struct
+                // literal. Left as the concatenation it lexes as, the
+                // parameter bound no fields and the body's `p.a` reported
+                // having no hardware form.
+                let a = &self.as_struct_literal(p.ty.as_ref(), a);
                 fenv.insert(n.text.clone(), self.lower_val_env(a, env));
                 fenv.insert(
                     format!("{}::length", n.text),
@@ -8671,6 +8723,64 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Read every `return` in `stmts` against the function's declared return
+    /// type, so a positional literal returned from a struct-returning function
+    /// (`return { 3, 4 }`) is a struct literal rather than the concatenation it
+    /// lexes as. Returned as the concat it produced no fields, and the caller's
+    /// destination was left undriven.
+    ///
+    /// Only the shapes the inliner itself understands are walked; anything else
+    /// is carried through unchanged.
+    fn normalize_struct_returns(
+        &self,
+        stmts: &[ast::Stmt],
+        ret: Option<&ast::Type>,
+    ) -> Vec<ast::Stmt> {
+        stmts
+            .iter()
+            .map(|stmt| match stmt {
+                ast::Stmt::Return {
+                    value: Some(value),
+                    span,
+                } => ast::Stmt::Return {
+                    value: Some(self.as_struct_literal(ret, value)),
+                    span: *span,
+                },
+                ast::Stmt::If(iff) => {
+                    let mut iff = iff.clone();
+                    iff.then.stmts = self.normalize_struct_returns(&iff.then.stmts, ret);
+                    iff.else_ = iff.else_.map(|branch| {
+                        Box::new(match *branch {
+                            ast::ElseBranch::Block(mut b) => {
+                                b.stmts = self.normalize_struct_returns(&b.stmts, ret);
+                                ast::ElseBranch::Block(b)
+                            }
+                            ast::ElseBranch::If(inner) => {
+                                let rewritten = self.normalize_struct_returns(
+                                    std::slice::from_ref(&ast::Stmt::If(inner.clone())),
+                                    ret,
+                                );
+                                match rewritten.into_iter().next() {
+                                    Some(ast::Stmt::If(inner)) => ast::ElseBranch::If(inner),
+                                    _ => ast::ElseBranch::If(inner),
+                                }
+                            }
+                        })
+                    });
+                    ast::Stmt::If(iff)
+                }
+                ast::Stmt::Match(m) => {
+                    let mut m = m.clone();
+                    for arm in &mut m.arms {
+                        arm.body.stmts = self.normalize_struct_returns(&arm.body.stmts, ret);
+                    }
+                    ast::Stmt::Match(m)
+                }
+                other => other.clone(),
+            })
+            .collect()
+    }
+
     /// The value a straight-line `return`/`if-else` block produces, or `None`
     /// if the block has statements the inliner cannot express as a value.
     fn inline_block(&self, stmts: &[ast::Stmt], env: &HashMap<String, Val>) -> Option<Val> {
@@ -8938,7 +9048,20 @@ impl<'a> Lowering<'a> {
                     // a dotted name so the flat map still addresses one leaf per
                     // entry — `inner.a` then resolves against the flattened
                     // signal `…o.inner.a` exactly as a top-level field does.
-                    let vals: Vec<(String, Expr)> = match &a.value {
+                    // A struct-typed field reads its value against that
+                    // field's type, so a positional literal nested in a named
+                    // one is itself a struct literal rather than the concat it
+                    // lexes as.
+                    let field_ty = struct_name
+                        .as_deref()
+                        .and_then(|n| self.structs.get(n))
+                        .and_then(|sd| sd.fields.iter().find(|f| f.name.text == fname))
+                        .map(|f| f.ty.clone());
+                    let vals: Vec<(String, Expr)> = match &a
+                        .value
+                        .as_ref()
+                        .map(|v| self.as_struct_literal(field_ty.as_ref(), v))
+                    {
                         Some(v) => match self.lower_val_env(v, env) {
                             Val::Scalar(e) => vec![(fname, e)],
                             Val::Fields(inner) => inner
