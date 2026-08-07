@@ -7543,3 +7543,40 @@ struct consts as values first, which is a separate piece of work and larger
 than this corner.
 
 Gate green, corpus 165/165.
+
+### 2026-08-07 — Claude — struct constants work in both engines
+
+The last item from the struct-initializer thread. `const K: Pair = { .a = 4,
+.b = 5 }` type-checked with **0 diagnostics** and then failed in both back ends,
+differently: hardware reported `K.a` as "has no hardware form" (E-P017 — a
+message about runtime indices, on a source containing no index) and `K` read
+whole as an unknown name (E-P001); the testbench reported "references `K.a`,
+which siox build cannot translate yet". Nothing folded the declaration, so the
+constant reached neither engine's table. A scalar `const N: unsigned[8] = 5`
+folded and worked in both.
+
+A struct constant is now one folded value per field, keyed by the dotted path a
+read spells — the same shape in both engines:
+
+- `ir`: `fold_const` gains a `Construct` branch writing `K.a`/`K.b` into
+  `const_values`; the field-read fallback consults it before recording an
+  unsupported expression; a bare `K` in value position becomes `Val::Fields`,
+  which the existing assignment expansion already spreads per leaf; and
+  `let p: Pair = K` seeds from it rather than reporting E-P021, because a
+  constant *is* constant and the scalar spelling folds.
+- `driver/build`: `const_tables` folds the same fields into `consts` and
+  `const_exprs`, and the field-read path answers from `const_exprs` before
+  looking for a signal.
+
+Named arguments bind by name and positional ones by declaration order, in the
+helper shared by both. Corpus `struct_const_test.siox` covers field reads,
+fields in arithmetic, the whole constant assigned then read back, a `let`
+initializer, a constant in a condition, and a testbench-local constant — with
+the two engines asserted against each other. Five mutations, five detections.
+Gate green, corpus 166/166.
+
+**Not covered, and wider than constants:** a *positional* struct literal
+`{ 6, 7 }` lexes as a concat rather than a construction. It does not seed a
+struct-typed `let` either, so it is a gap in struct literals generally rather
+than in constants, and I have left it alone rather than supporting it in one
+place only.

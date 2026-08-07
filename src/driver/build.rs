@@ -458,7 +458,7 @@ pub fn build(
             consts,
             const_exprs,
             const_array_exprs,
-        } = const_tables(&scoped_decls, &enums, &fns, &type_aliases);
+        } = const_tables(&scoped_decls, &enums, &fns, &type_aliases, &structs);
         let clocks = scan_clocks(&items, &aliases)?;
         let instance_names: std::collections::HashSet<String> = hier
             .instance(root)
@@ -6145,6 +6145,12 @@ impl Ctx<'_> {
                 // mangled C local; otherwise it's a connected signal.
                 if self.locals.borrow().contains(&path) {
                     c_local_ident(&path)
+                } else if let Some(value) = self.const_exprs.get(&path) {
+                    // A struct constant's field. It has no signal — a constant
+                    // is a value, not storage — so the dotted path answers from
+                    // the constant table, one entry per field, exactly as a
+                    // plain `N` does.
+                    value.clone()
                 } else {
                     let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
                     self.check_scalar(*id)?;
@@ -6677,6 +6683,7 @@ fn const_tables(
     enums: &HashMap<String, HashMap<String, u64>>,
     fns: &HashMap<String, &ast::FnDecl>,
     type_aliases: &HashMap<String, ast::Type>,
+    structs: &HashMap<String, StructFields>,
 ) -> ConstTables {
     let real_consts: std::collections::HashSet<String> = const_decls
         .iter()
@@ -6705,6 +6712,45 @@ fn const_tables(
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
         for c in const_decls {
+            // A struct constant is one entry per field, keyed by the dotted
+            // path a read spells (`K.a`) — the same shape hardware folds it
+            // into. Without it the testbench refused `K.a` as something "siox
+            // build cannot translate yet", on a declaration stage 4 accepted.
+            if let ast::Expr::Construct { args, .. } = &c.value {
+                if consts.contains_key(&format!("{}.", c.name.text)) {
+                    continue;
+                }
+                let declared = type_head_name(&c.ty).and_then(|head| structs.get(head));
+                let mut folded = Vec::new();
+                for (position, arg) in args.iter().enumerate() {
+                    let field = match &arg.field {
+                        Some(name) => Some(name.text.clone()),
+                        None => declared
+                            .and_then(|fields| fields.get(position))
+                            .map(|(name, _)| name.clone()),
+                    };
+                    let value = arg
+                        .value
+                        .as_ref()
+                        .and_then(|v| eval_c_const(v, &consts, enums, fns));
+                    match (field, value) {
+                        (Some(field), Some(value)) => folded.push((field, value)),
+                        _ => {
+                            folded.clear();
+                            break;
+                        }
+                    }
+                }
+                if !folded.is_empty() {
+                    for (field, value) in folded {
+                        consts.insert(format!("{}.{field}", c.name.text), value);
+                    }
+                    // A marker so the fixed point does not refold this decl.
+                    consts.insert(format!("{}.", c.name.text), 0);
+                    progressed = true;
+                }
+                continue;
+            }
             if consts.contains_key(&c.name.text) {
                 continue;
             }
@@ -6724,6 +6770,44 @@ fn const_tables(
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
         for declaration in const_decls {
+            // A struct constant is one emitted expression per field, keyed by
+            // the dotted path a read spells. The scalar table holds a single
+            // entry per name, so a struct constant put nothing in it and every
+            // read of `K.a` was reported as untranslatable.
+            if let ast::Expr::Construct { args, .. } = &declaration.value {
+                if const_exprs.contains_key(&format!("{}.", declaration.name.text)) {
+                    continue;
+                }
+                let declared = type_head_name(&declaration.ty).and_then(|head| structs.get(head));
+                let mut folded = Vec::new();
+                for (position, arg) in args.iter().enumerate() {
+                    let field = match &arg.field {
+                        Some(name) => Some(name.text.clone()),
+                        None => declared
+                            .and_then(|fields| fields.get(position))
+                            .map(|(name, _)| name.clone()),
+                    };
+                    let value = arg
+                        .value
+                        .as_ref()
+                        .and_then(|v| emit_c_const(v, &const_exprs, enums));
+                    match (field, value) {
+                        (Some(field), Some(value)) => folded.push((field, value)),
+                        _ => {
+                            folded.clear();
+                            break;
+                        }
+                    }
+                }
+                if !folded.is_empty() {
+                    for (field, value) in folded {
+                        const_exprs.insert(format!("{}.{field}", declaration.name.text), value);
+                    }
+                    const_exprs.insert(format!("{}.", declaration.name.text), String::new());
+                    progressed = true;
+                }
+                continue;
+            }
             if const_exprs.contains_key(&declaration.name.text) {
                 continue;
             }

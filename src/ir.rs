@@ -1125,6 +1125,28 @@ impl<'a> Lowering<'a> {
                 self.const_arrays.insert(name.clone(), values);
                 return true;
             }
+        } else if let ast::Expr::Construct { args, .. } = &constant.value {
+            // `const K: Pair = { .a = 4, .b = 5 };` — a struct constant is one
+            // folded value per field, keyed by the dotted path a read spells.
+            // Nothing folded it before, so the constant never entered any
+            // table: `K.a` reported "has no hardware form" (a message about
+            // runtime indices, on a source with no index) and `p = K` reported
+            // `K` as an unknown name — both after stage 4 had accepted the
+            // declaration with no diagnostic at all.
+            let Some(fields) = self.const_struct_fields(&constant.ty, args) else {
+                return false;
+            };
+            for (field, value) in fields {
+                let key = format!("{name}.{field}");
+                if let Some(narrow) = eval_const(&value, scope) {
+                    self.consts.insert(key.clone(), narrow);
+                }
+                let Some(lowered) = lower_const_value(&value, &self.const_values, scope) else {
+                    return false;
+                };
+                self.const_values.insert(key, lowered);
+            }
+            return true;
         } else if let ast::Expr::Int { text, .. } = &constant.value {
             if text.contains('.') {
                 if let Ok(value) = text.replace('_', "").parse::<f64>() {
@@ -1479,6 +1501,10 @@ impl<'a> Lowering<'a> {
                                 // (`let b: unsigned[8] = a`) is E-P021: an
                                 // initializer folds constants, and reading a
                                 // signal is not folding.
+                                // A whole struct constant (`let p: Pair = K`)
+                                // *is* a constant, and the scalar spelling of
+                                // it folds, so this seeds rather than reports.
+                                None if self.seed_from_struct_const(&l.name.text, value) => {}
                                 None => {
                                     self.report_non_constant_init(&l.name.text, l.span);
                                 }
@@ -3180,6 +3206,72 @@ impl<'a> Lowering<'a> {
     /// silence, leaving the signal at its type's default. A driver is the
     /// spelling that computes from other signals, and is a different thing:
     /// continuous rather than once.
+    /// Seed a struct local's leaves from a whole struct constant
+    /// (`let p: Pair = K`). `false` when `value` names no struct constant, so
+    /// the caller can fall through to its diagnostic.
+    fn seed_from_struct_const(&mut self, prefix: &str, value: &ast::Expr) -> bool {
+        let Some(fields) = expr_path(value).and_then(|name| self.const_struct_value(&name)) else {
+            return false;
+        };
+        for (field, folded) in fields {
+            let Expr::Const(word) = folded else { continue };
+            let Some(&id) = self.locals.get(&format!("{prefix}.{field}")) else {
+                continue;
+            };
+            let width = self.out.signals[id.0 as usize].width;
+            let masked = if width > 0 && width < 64 {
+                word & ((1u64 << width) - 1)
+            } else {
+                word
+            };
+            self.out.signals[id.0 as usize].init = vec![masked];
+        }
+        true
+    }
+
+    /// A struct constant's folded fields, keyed off the dotted entries
+    /// `fold_const` left in the constant table. `None` when `name` names no
+    /// struct constant.
+    fn const_struct_value(&self, name: &str) -> Option<Vec<(String, Expr)>> {
+        let prefix = format!("{name}.");
+        let mut fields: Vec<(String, Expr)> = self
+            .const_values
+            .iter()
+            .filter_map(|(key, value)| {
+                key.strip_prefix(&prefix)
+                    .map(|field| (field.to_string(), value.clone()))
+            })
+            .collect();
+        if fields.is_empty() {
+            return None;
+        }
+        // Leaves are matched by name downstream; a stable order only keeps the
+        // emitted IR reproducible.
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(fields)
+    }
+
+    /// A struct constant's `(field, value)` pairs. A named argument binds by
+    /// name; a positional one binds to the declared field at that position, so
+    /// both spellings of a literal fold the same way. `None` when the type is
+    /// not a known struct or an argument carries no value.
+    fn const_struct_fields(
+        &self,
+        ty: &ast::Type,
+        args: &[ast::ConnectArg],
+    ) -> Option<Vec<(String, ast::Expr)>> {
+        let declared = self.structs.get(type_head_name(ty)?)?;
+        let mut out = Vec::new();
+        for (position, arg) in args.iter().enumerate() {
+            let field = match &arg.field {
+                Some(name) => name.text.clone(),
+                None => declared.fields.get(position)?.name.text.clone(),
+            };
+            out.push((field, arg.value.clone()?));
+        }
+        Some(out)
+    }
+
     fn report_non_constant_init(&mut self, name: &str, span: crate::diag::Span) {
         self.sink.emit(
             crate::diag::Diagnostic::error(format!(
@@ -6469,6 +6561,13 @@ impl<'a> Lowering<'a> {
                 if let Some(id) = expr_path(e).and_then(|p| self.locals.get(&p).copied()) {
                     return Expr::Current(id);
                 }
+                // A struct constant's field (`K.a`). It has no signal — a
+                // constant is a value, not storage — so the dotted path is
+                // looked up in the constant table the same way a plain `N`
+                // is, one entry per field.
+                if let Some(value) = expr_path(e).and_then(|p| self.const_values.get(&p)) {
+                    return value.clone();
+                }
                 if let Some(v) = self.lower_block_dynamic_access(e) {
                     return v;
                 }
@@ -8658,6 +8757,13 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(v) = self.aggregate_signal_val(name) {
                     return v;
+                }
+                // A struct constant read whole (`p = K`). Its fields live in
+                // the constant table under dotted paths, so it has no signal
+                // and no scalar form — as a value it is the fields themselves,
+                // which is what an assignment expands per leaf.
+                if let Some(fields) = self.const_struct_value(name) {
+                    return Val::Fields(fields);
                 }
                 Val::Scalar(self.lower_expr(e))
             }
