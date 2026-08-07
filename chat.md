@@ -7510,3 +7510,36 @@ Still open in this corner, and smaller: `let p: Pair = other_pair;` — a copy
 from another struct local — is still silently ignored. `{ ..other_pair }` is
 the spelling that works and already copies each leaf's init, so the fix is
 probably to treat a bare path initializer as that spread.
+
+### 2026-08-07 — Claude — the last struct-initializer case, and a correction
+
+Closing the remainder: `let p: Pair = other_pair` — a struct local initialized
+from another signal — no longer powers on at zero in silence.
+
+**My previous entry proposed the wrong fix.** I suggested treating a bare path
+initializer as a spread, since `{ ..other }` already copies each leaf's init.
+Checking the scalar rule first showed that is not what the language does:
+
+    let a: unsigned[8] = 5;
+    let b: unsigned[8] = a;   // error[E-P021]: not a constant
+
+An initializer folds *constants*, and reading a signal is not folding, even when
+that signal's own power-on value is constant. Copying would have made the struct
+spelling more permissive than the scalar one. So the struct case reports E-P021
+too, and a test pins the scalar rule beside it — if that ever changes, the
+struct behaviour should be revisited rather than left to drift.
+
+The final arm is now: fold a call whose body is one returned literal; stay
+silent only for a default construction (`Pair::new()`, `Pair()`, which name no
+declared function and whose structural zeros are correct); report everything
+else. All three arms are proven by disabling them separately.
+
+One thing this surfaced and did not fix: **a struct-typed `const` does not
+work at all.** `const K: Pair = { .a = 4, .b = 5 }` then `y = K.a` is E-P017,
+and `p = K` is E-P001 "no value named `K`". So `let p: Pair = K` now reports
+E-P021 rather than folding, which is honest but not the end state — a scalar
+`let c: unsigned[8] = K` does fold. Folding the struct form means implementing
+struct consts as values first, which is a separate piece of work and larger
+than this corner.
+
+Gate green, corpus 165/165.

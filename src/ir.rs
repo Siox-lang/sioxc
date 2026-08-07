@@ -1463,17 +1463,25 @@ impl<'a> Lowering<'a> {
                                     spread.as_ref(),
                                     l.span,
                                 ),
-                                // A call into a body this cannot reduce to one
-                                // literal has no power-on value to fold. Say
-                                // so, rather than power on at zero — the help
-                                // names the spelling that does work. A default
-                                // construction (`Pair::new()`, `Pair()`) is not
-                                // a call to any declared function and keeps its
-                                // structural zeros, which are correct.
-                                None if self.resolves_to_declared_fn(value) => {
+                                // A default construction (`Pair::new()`,
+                                // `Pair()`) names no declared function, and its
+                                // structural zeros are the right answer — the
+                                // one shape here that must stay silent.
+                                None if Self::is_default_construction(value)
+                                    && !self.resolves_to_declared_fn(value) => {}
+                                // Everything else has no power-on value this
+                                // can fold: a body that is not one returned
+                                // literal, or a read of another signal. Say so
+                                // rather than powering on at zero — the help
+                                // names the spelling that works. This matches
+                                // the scalar rule exactly, where even a copy
+                                // from a constant-initialized local
+                                // (`let b: unsigned[8] = a`) is E-P021: an
+                                // initializer folds constants, and reading a
+                                // signal is not folding.
+                                None => {
                                     self.report_non_constant_init(&l.name.text, l.span);
                                 }
-                                None => {}
                             }
                         }
                     }
@@ -2957,6 +2965,13 @@ impl<'a> Lowering<'a> {
     /// `p.y` — so the field loop used to `continue` past it and the inner
     /// values were dropped without a word, while a sibling scalar field on the
     /// same literal seeded correctly.
+    /// Whether `value` is a call at all — `Pair::new()` or `Pair()`, once it is
+    /// known to name no declared function, is a default construction rather
+    /// than an initializer that failed to fold.
+    fn is_default_construction(value: &ast::Expr) -> bool {
+        matches!(value, ast::Expr::Call { .. })
+    }
+
     /// Whether `value` is a call to a function this compilation declares —
     /// which separates "a body too complex to fold" from a default
     /// construction like `Pair::new()`, whose name resolves to no function at

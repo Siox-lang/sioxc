@@ -57,6 +57,45 @@ fn a_body_that_cannot_be_folded_is_reported() {
 }
 
 #[test]
+fn a_copy_from_another_struct_is_reported() {
+    // Reading another signal is not folding, even when that signal's own
+    // power-on value is constant. The scalar spelling of exactly this is
+    // already E-P021 (see the control below), and the struct spelling used to
+    // power on at zero in every field instead.
+    let out = diagnostics(
+        "copy",
+        "    let src: Pair = { .a = 4, .b = 5 };\n\
+         \x20   let copy: Pair = src;\n\
+         \x20   y = copy.a;",
+    );
+    assert!(
+        out.contains("E-P021"),
+        "a copy from another struct is not a constant, got:\n{out}"
+    );
+    assert!(
+        out.contains("the initializer for `copy` is not a constant"),
+        "and names the local, got:\n{out}"
+    );
+}
+
+#[test]
+fn the_scalar_rule_it_mirrors_still_holds() {
+    // The control the struct rule is derived from: if this ever stops being an
+    // error, the struct behaviour above is no longer consistent with it and
+    // should be revisited rather than left to drift.
+    let out = diagnostics(
+        "scalarcopy",
+        "    let a: unsigned[8] = 5;\n\
+         \x20   let b: unsigned[8] = a;\n\
+         \x20   y = b;",
+    );
+    assert!(
+        out.contains("E-P021"),
+        "a scalar copy from a constant local is still not a constant, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_foldable_call_is_not_reported() {
     // The control in the other direction: the fix must not have turned every
     // struct initializer into an error.
