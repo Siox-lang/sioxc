@@ -7580,3 +7580,36 @@ Gate green, corpus 166/166.
 struct-typed `let` either, so it is a gap in struct literals generally rather
 than in constants, and I have left it alone rather than supporting it in one
 place only.
+
+### 2026-08-07 — Claude — positional struct literals, decided by the assigned type
+
+The last item: `{ 6, 7 }` against a struct. It carries no field names, so it
+lexes as a bit concatenation, and every struct-typed use of it saw a concat
+where `{ .a = 6, .b = 7 }` gives a construction. Three shapes, one cause:
+
+    let p: Pair = { 6, 7 };   // seeded nothing (E-P021 since the last fix)
+    p = { 8, 9 };             // assignment dropped outright; both leaves then
+                              // reported "never driven"
+    const P: Pair = { 6, 7 }; // folded nothing, so `P.a` had no hardware form
+
+The rule the owner stated, and the one now implemented: **which reading applies
+is decided by the assigned type, not by the braces.** Against a struct they are
+a struct literal binding by declaration order; against an array or a packed
+vector the identical braces stay a concatenation. So `positional_struct_args`
+is keyed on the target's struct name, and I deliberately did *not* gate it on
+the part count matching the field count — the type decides, and a short list
+binds what it can, leaving the unbound leaves to the checks that already look
+for them.
+
+Wired into all three: the declaration seeding, `struct_assign_leaves` (which
+normalizes the concat into the named form before lowering), and `fold_const`.
+The native emitter gained the same reading through one shared
+`struct_const_fields`, which both of its constant tables now use, so the named
+and positional forms cannot diverge between them.
+
+The control is asserted in both regressions and in both engines: `cat = { hi, lo }`
+against an `unsigned[8]` is still 163, not a two-field struct.
+
+Four mutations, four detections — and the fourth only after moving a positional
+constant into the *testbench*, since the emitter folds its own tables and the
+entity-level constant never exercised that path. Gate green, corpus 166/166.

@@ -6678,6 +6678,42 @@ struct ConstTables {
     const_array_exprs: HashMap<String, Vec<String>>,
 }
 
+/// The `(field, value)` pairs of a struct constant's literal.
+///
+/// Which reading applies is decided by the constant's declared type, not by
+/// the braces: against a struct these are fields, against an array or packed
+/// vector the same braces stay a concatenation. Named arguments bind by name
+/// and positional ones by declaration order; a brace list carrying no field
+/// names at all (`{ 6, 7 }`) lexes as a concat, and against a struct type that
+/// is the positional form.
+fn struct_const_fields<'a>(
+    declaration: &'a ast::ConstDecl,
+    structs: &HashMap<String, StructFields>,
+) -> Option<Vec<(String, &'a ast::Expr)>> {
+    let declared = type_head_name(&declaration.ty).and_then(|head| structs.get(head))?;
+    match &declaration.value {
+        ast::Expr::Construct { args, .. } => args
+            .iter()
+            .enumerate()
+            .map(|(position, arg)| {
+                let field = match &arg.field {
+                    Some(name) => name.text.clone(),
+                    None => declared.get(position)?.0.clone(),
+                };
+                Some((field, arg.value.as_ref()?))
+            })
+            .collect(),
+        ast::Expr::Concat { parts, .. } => Some(
+            parts
+                .iter()
+                .zip(declared)
+                .map(|(part, (field, _))| (field.clone(), part))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 fn const_tables(
     const_decls: &[&ast::ConstDecl],
     enums: &HashMap<String, HashMap<String, u64>>,
@@ -6716,32 +6752,15 @@ fn const_tables(
             // path a read spells (`K.a`) — the same shape hardware folds it
             // into. Without it the testbench refused `K.a` as something "siox
             // build cannot translate yet", on a declaration stage 4 accepted.
-            if let ast::Expr::Construct { args, .. } = &c.value {
+            if let Some(fields) = struct_const_fields(c, structs) {
                 if consts.contains_key(&format!("{}.", c.name.text)) {
                     continue;
                 }
-                let declared = type_head_name(&c.ty).and_then(|head| structs.get(head));
-                let mut folded = Vec::new();
-                for (position, arg) in args.iter().enumerate() {
-                    let field = match &arg.field {
-                        Some(name) => Some(name.text.clone()),
-                        None => declared
-                            .and_then(|fields| fields.get(position))
-                            .map(|(name, _)| name.clone()),
-                    };
-                    let value = arg
-                        .value
-                        .as_ref()
-                        .and_then(|v| eval_c_const(v, &consts, enums, fns));
-                    match (field, value) {
-                        (Some(field), Some(value)) => folded.push((field, value)),
-                        _ => {
-                            folded.clear();
-                            break;
-                        }
-                    }
-                }
-                if !folded.is_empty() {
+                let folded: Option<Vec<(String, u128)>> = fields
+                    .into_iter()
+                    .map(|(field, value)| Some((field, eval_c_const(value, &consts, enums, fns)?)))
+                    .collect();
+                if let Some(folded) = folded {
                     for (field, value) in folded {
                         consts.insert(format!("{}.{field}", c.name.text), value);
                     }
@@ -6774,32 +6793,15 @@ fn const_tables(
             // the dotted path a read spells. The scalar table holds a single
             // entry per name, so a struct constant put nothing in it and every
             // read of `K.a` was reported as untranslatable.
-            if let ast::Expr::Construct { args, .. } = &declaration.value {
+            if let Some(fields) = struct_const_fields(declaration, structs) {
                 if const_exprs.contains_key(&format!("{}.", declaration.name.text)) {
                     continue;
                 }
-                let declared = type_head_name(&declaration.ty).and_then(|head| structs.get(head));
-                let mut folded = Vec::new();
-                for (position, arg) in args.iter().enumerate() {
-                    let field = match &arg.field {
-                        Some(name) => Some(name.text.clone()),
-                        None => declared
-                            .and_then(|fields| fields.get(position))
-                            .map(|(name, _)| name.clone()),
-                    };
-                    let value = arg
-                        .value
-                        .as_ref()
-                        .and_then(|v| emit_c_const(v, &const_exprs, enums));
-                    match (field, value) {
-                        (Some(field), Some(value)) => folded.push((field, value)),
-                        _ => {
-                            folded.clear();
-                            break;
-                        }
-                    }
-                }
-                if !folded.is_empty() {
+                let folded: Option<Vec<(String, String)>> = fields
+                    .into_iter()
+                    .map(|(field, value)| Some((field, emit_c_const(value, &const_exprs, enums)?)))
+                    .collect();
+                if let Some(folded) = folded {
                     for (field, value) in folded {
                         const_exprs.insert(format!("{}.{field}", declaration.name.text), value);
                     }

@@ -1125,6 +1125,26 @@ impl<'a> Lowering<'a> {
                 self.const_arrays.insert(name.clone(), values);
                 return true;
             }
+        } else if let Some(args) = type_head_name(&constant.ty)
+            .and_then(|head| self.positional_struct_args(head, &constant.value))
+        {
+            // `const P: Pair = { 6, 7 };` — the same constant written without
+            // field names. The declared type says these braces are a struct
+            // literal, so they bind by declaration order.
+            let Some(fields) = self.const_struct_fields(&constant.ty, &args) else {
+                return false;
+            };
+            for (field, value) in fields {
+                let key = format!("{name}.{field}");
+                if let Some(narrow) = eval_const(&value, scope) {
+                    self.consts.insert(key.clone(), narrow);
+                }
+                let Some(lowered) = lower_const_value(&value, &self.const_values, scope) else {
+                    return false;
+                };
+                self.const_values.insert(key, lowered);
+            }
+            return true;
         } else if let ast::Expr::Construct { args, .. } = &constant.value {
             // `const K: Pair = { .a = 4, .b = 5 };` — a struct constant is one
             // folded value per field, keyed by the dotted path a read spells.
@@ -1505,6 +1525,25 @@ impl<'a> Lowering<'a> {
                                 // *is* a constant, and the scalar spelling of
                                 // it folds, so this seeds rather than reports.
                                 None if self.seed_from_struct_const(&l.name.text, value) => {}
+                                // A positional literal (`let p: Pair = { 6, 7 }`)
+                                // is the named form without the field names.
+                                None if head
+                                    .as_deref()
+                                    .and_then(|h| self.positional_struct_args(h, value))
+                                    .is_some() =>
+                                {
+                                    let args = head
+                                        .as_deref()
+                                        .and_then(|h| self.positional_struct_args(h, value))
+                                        .unwrap_or_default();
+                                    self.seed_struct_literal(
+                                        &l.name.text,
+                                        head.as_deref(),
+                                        &args,
+                                        None,
+                                        l.span,
+                                    );
+                                }
                                 None => {
                                     self.report_non_constant_init(&l.name.text, l.span);
                                 }
@@ -3227,6 +3266,43 @@ impl<'a> Lowering<'a> {
             self.out.signals[id.0 as usize].init = vec![masked];
         }
         true
+    }
+
+    /// A *positional* struct literal, as the named form's arguments.
+    ///
+    /// `{ 6, 7 }` carries no field names, so it lexes as a bit concatenation
+    /// and every struct-typed use of it saw a concat where `{ .a = 6, .b = 7 }`
+    /// gives a construction. Nothing bound the parts to fields, so a `let`
+    /// initialized this way seeded nothing and an assignment written this way
+    /// was dropped entirely — its leaves then reported as never driven.
+    /// Binding part *i* to declared field *i* is what the named form means.
+    ///
+    /// Which reading applies is decided by the *assigned type*, not by the
+    /// shape of the braces: against a struct these braces are a struct
+    /// literal, against an array or packed vector they stay a concatenation.
+    /// So this is keyed on the target's struct name, and a part count that
+    /// does not match the field count binds what it can — the fields left
+    /// unbound are then reported by the checks that already look for them.
+    fn positional_struct_args(
+        &self,
+        struct_name: &str,
+        value: &ast::Expr,
+    ) -> Option<Vec<ast::ConnectArg>> {
+        let ast::Expr::Concat { parts, span } = value else {
+            return None;
+        };
+        let declared = self.structs.get(struct_name)?;
+        Some(
+            parts
+                .iter()
+                .zip(&declared.fields)
+                .map(|(part, field)| ast::ConnectArg {
+                    field: Some(field.name.clone()),
+                    value: Some(part.clone()),
+                    span: *span,
+                })
+                .collect(),
+        )
     }
 
     /// A struct constant's folded fields, keyed off the dotted entries
@@ -6237,9 +6313,21 @@ impl<'a> Lowering<'a> {
         let tpath = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
-        if !self.local_struct.contains_key(&tpath) {
-            return None;
-        }
+        let struct_name = self.local_struct.get(&tpath).cloned()?;
+        // The target's type decides how to read the braces: against a struct
+        // `{ 6, 7 }` is a positional literal, not the bit concatenation it
+        // lexes as. Without this the whole assignment produced no fields and
+        // was dropped, leaving its leaves reported as never driven.
+        let positional = self.positional_struct_args(&struct_name, value);
+        let value = &match positional {
+            Some(args) => ast::Expr::Construct {
+                ty: None,
+                args,
+                spread: None,
+                span: ast::expr_span(value),
+            },
+            None => value.clone(),
+        };
         let mut out = Vec::new();
         if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
             for (fname, expr) in fields {
