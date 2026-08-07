@@ -7683,3 +7683,49 @@ is a capability rather than a slip, and bigger than this corner. The return
 form already says exactly what it supports; the argument form reports `v[0]`
 inside the callee's body with help about runtime indices, which blames the
 wrong line and would be worth improving even before the capability lands.
+
+### 2026-08-07 — Claude — an array can cross a function boundary
+
+Continued from the previous entry, where I recorded this as a capability too big
+for that round. It was smaller than it looked, and worse than I described: not
+only an array *literal* argument but an array **signal** argument failed too, so
+no array could be passed to a function at all.
+
+The cause is that the inliner binds a parameter to a `Val`, which is a scalar or
+a set of named fields. An array is neither — its elements are separate signals —
+so nothing bound and the body's `v[0]` reported "has no hardware form" with help
+about runtime indices, pointing inside the callee at a line the caller never
+wrote.
+
+Rather than adding an array case to `Val` (which would change every consumer of
+`Val::Fields` and its dotted-leaf convention), the parameter's *name* is
+substituted with the argument, so `v[0]` becomes `d[0]` — an ordinary element
+read that every later stage already understands. `subst_stmt_paths` already
+existed for the statement-position inliner.
+
+Two things the first attempt got wrong, both caught by probing shapes rather
+than by the single case that motivated it:
+
+- **A sibling index.** `fn pick(v: unsigned[8][4], i: unsigned[8])` with
+  `return v[i]` substituted only `v`, leaving `i` bound in the value
+  environment — which an element read does not consult, so `i` became an
+  unknown name. When any parameter is an array, *every* parameter is
+  substituted. Functions with no array parameter keep their value bindings,
+  which carry the width and family a substituted expression does not.
+- **Methods.** The method inliner is a separate path and needed the same
+  substitution; `p.plusSecond(d)` failed while the free function worked.
+
+An array *literal* argument then becomes `[3, 4][0]`, so a constant index into
+an array literal now lowers by picking the element — a value with no storage
+behind it, so there is no signal to look for.
+
+Covered in `array_literal_test.siox`: an array signal, an array literal, a
+runtime index from a sibling parameter, an array of structs, and a method.
+Three mutations, three detections. Gate green, corpus 167/167.
+
+**Still open:** an array *return*. `fn gives() -> unsigned[8][2]` is E-P017,
+`gives()` has no element-wise form — which is the same missing capability seen
+from the other side, and its message already says exactly what is supported.
+Substitution does not help there: the value has to come *out*, so this one does
+want an array case in the inliner's result, or an expansion at the assignment
+into one driver per element.

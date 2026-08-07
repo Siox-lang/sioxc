@@ -6745,6 +6745,20 @@ impl<'a> Lowering<'a> {
                 if let Some(value) = expr_path(e).and_then(|p| self.const_values.get(&p)) {
                     return value.clone();
                 }
+                // A constant index into an array literal (`[3, 4][0]`). This is
+                // what an array-literal argument becomes once the parameter is
+                // substituted, and it is a value with no storage behind it, so
+                // there is no signal to find — the element is simply picked.
+                if let ast::Expr::Index { base, index, .. } = e {
+                    if let ast::Expr::Array { elems, .. } = base.as_ref() {
+                        if let Some(element) = eval_const(index, &self.cur_env)
+                            .and_then(|i| usize::try_from(i).ok())
+                            .and_then(|i| elems.get(i))
+                        {
+                            return self.lower_expr(element);
+                        }
+                    }
+                }
                 if let Some(v) = self.lower_block_dynamic_access(e) {
                     return v;
                 }
@@ -8227,8 +8241,46 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        // An array-typed parameter has no `Val` to bind to: a `Val` is a scalar
+        // or a set of named fields, and an array is neither — its elements are
+        // separate signals. So `fenv` held nothing useful for it and the body's
+        // `v[0]` resolved to nothing, reporting "has no hardware form" with
+        // help about runtime indices, pointing inside the callee at a line the
+        // caller never wrote. Substituting the parameter's *name* with the
+        // argument turns `v[0]` into `d[0]`, an ordinary element read.
+        //
+        // When one parameter is an array, *every* parameter is substituted:
+        // the body's `v[i]` has to become `q[idx]`, and an index left bound in
+        // the value environment instead reports `i` as an unknown name — that
+        // environment is consulted for a value, not for the index of an
+        // element read. A function with no array parameter keeps its value
+        // bindings, which carry the width and family that a substituted
+        // expression does not.
+        let has_array_param = f.params.iter().filter(|p| !p.is_self).any(|p| {
+            p.ty.as_ref().is_some_and(|ty| {
+                array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families).is_some()
+            })
+        });
+        let array_args: HashMap<String, ast::Expr> = if has_array_param {
+            f.params
+                .iter()
+                .filter(|p| !p.is_self)
+                .zip(args)
+                .filter_map(|(p, a)| Some((p.name.as_ref()?.text.clone(), a.clone())))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         let out = f.body.as_ref().and_then(|b| {
             let stmts = self.normalize_struct_returns(&b.stmts, f.ret.as_ref());
+            let stmts: Vec<ast::Stmt> = if array_args.is_empty() {
+                stmts
+            } else {
+                stmts
+                    .iter()
+                    .map(|s| subst_stmt_paths(s, &array_args))
+                    .collect()
+            };
             self.inline_block(&stmts, &fenv)
         });
         // The result is a value of the declared return type, so it wraps to
@@ -8414,7 +8466,33 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let out = self.inline_block(&body.stmts, &fenv);
+        // A method's array parameter needs the same substitution a free
+        // function's does — the value environment has no array case, so the
+        // body's `v[0]` resolved to nothing.
+        let array_args: HashMap<String, ast::Expr> =
+            if f.params.iter().filter(|p| !p.is_self).any(|p| {
+                p.ty.as_ref().is_some_and(|ty| {
+                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families).is_some()
+                })
+            }) {
+                f.params
+                    .iter()
+                    .filter(|p| !p.is_self)
+                    .zip(args)
+                    .filter_map(|(p, a)| Some((p.name.as_ref()?.text.clone(), a.clone())))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+        let stmts: Vec<ast::Stmt> = if array_args.is_empty() {
+            body.stmts.clone()
+        } else {
+            body.stmts
+                .iter()
+                .map(|s| subst_stmt_paths(s, &array_args))
+                .collect()
+        };
+        let out = self.inline_block(&stmts, &fenv);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
