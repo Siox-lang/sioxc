@@ -5623,6 +5623,25 @@ impl Ctx<'_> {
                         }
                         continue;
                     }
+                    // A struct *literal* argument, likewise: it has no path
+                    // either, so no spelling of one reached a struct parameter
+                    // here — named, named-with-its-type, or positional all came
+                    // back as an unsupported expression, the positional one
+                    // complaining about the width of a part because braces
+                    // with no field names lex as a concatenation. The
+                    // parameter's declared type is what says these are fields.
+                    if let Some(named) =
+                        p.ty.as_ref()
+                            .and_then(type_head_name)
+                            .and_then(|head| self.structs.get(head))
+                            .and_then(|fields| literal_struct_fields(a, fields))
+                    {
+                        for (field, value) in named {
+                            let value = format!("({})", self.expr(value)?);
+                            env.insert(format!("{}.{field}", n.text), value);
+                        }
+                        continue;
+                    }
                 }
                 env.insert(n.text.clone(), format!("({})", self.expr(a)?));
                 // The argument's width travels with it, as at the operator and
@@ -6715,6 +6734,40 @@ struct ConstTables {
     consts: HashMap<String, u128>,
     const_exprs: HashMap<String, String>,
     const_array_exprs: HashMap<String, Vec<String>>,
+}
+
+/// The `(field, value)` pairs of a struct literal written in place, against the
+/// fields it is being read as.
+///
+/// A named argument binds by name and a positional one by declaration order; a
+/// brace list carrying no field names at all lexes as a concatenation, and
+/// against a struct that is the positional form. `None` for anything that is
+/// not a literal, which the caller handles its own way.
+fn literal_struct_fields<'a>(
+    value: &'a ast::Expr,
+    fields: &StructFields,
+) -> Option<Vec<(String, &'a ast::Expr)>> {
+    match value {
+        ast::Expr::Construct { args, .. } => args
+            .iter()
+            .enumerate()
+            .map(|(position, arg)| {
+                let field = match &arg.field {
+                    Some(name) => name.text.clone(),
+                    None => fields.get(position)?.0.clone(),
+                };
+                Some((field, arg.value.as_ref()?))
+            })
+            .collect(),
+        ast::Expr::Concat { parts, .. } => Some(
+            parts
+                .iter()
+                .zip(fields)
+                .map(|(part, (field, _))| (field.clone(), part))
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 /// The `(field, value)` pairs of a struct constant's literal.

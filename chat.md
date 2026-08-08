@@ -7802,3 +7802,40 @@ all five were byte-identical, so no result reported earlier is affected. This is
 the third time this harness has produced a misleading reading (stale binary,
 stale mtime, now shadowed keys); each guard is now in the file rather than in my
 head.
+
+### 2026-08-08 — Claude — a struct literal reaching a parameter, in the testbench
+
+Continued the two-engine audit onto the forms fixed in hardware that the
+previous round did not cover. Five of six were already right in the emitter — a
+named struct literal, a positional literal nested in a named one, an array of
+structs, a non-zero-based array, and a positional return. One was not:
+
+    takes({ 5, 6 })            // unsupported testbench expression:
+                               // the width of `5` is not known here
+    takes({ .a = 5, .b = 6 })  // unsupported testbench expression
+    takes(Pair { .a = 5, .b = 6 })  // unsupported testbench expression
+
+**No spelling** of a struct literal reached a struct parameter — the failure was
+not about the positional form at all, which the first message made it look like
+(braces with no field names lex as a concatenation, so it complained about a
+part's width). A struct literal has no path to read leaves from, and the
+parameter binding only knew how to read leaves from a path. The parameter's
+declared type is what says these are fields; `literal_struct_fields` reads them
+that way, named or positional, and each binds under `p.a` as a struct argument
+already bound when it came from a signal.
+
+Extended `testbench_composite_test.siox` with all three spellings, and the
+positional one asserted equal to hardware. Two mutations, two detections.
+Gate green, corpus 169/169.
+
+Two harness notes, both of which produced a wrong reading before I caught them:
+
+- A stale `.bin` from an earlier probe of the same name ran after a *failed*
+  compile, because the shell's `&&` was satisfied by the grep that matched the
+  error line. The output looked like a passing result for a program that never
+  built. Probes now delete the binary before compiling.
+- The first `tb-struct-literal-arg` run reported NOT DETECTED. The mutation was
+  fine; my routing sent it to the wrong corpus file, so it compiled something
+  that never exercises the code. Fixed the rule rather than concluding the line
+  was dead — the same "the test is too narrow" reflex that has been right every
+  previous time it came up.
