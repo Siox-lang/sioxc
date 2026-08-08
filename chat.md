@@ -7765,3 +7765,40 @@ A note on the test rather than the compiler: my first expected value for
 `scaled2(5)` was 510, reading "5 and 10" as digits when the encoding is
 `d[0]*10 + d[1]` = 60. The test caught my arithmetic, which is the right way
 round.
+
+### 2026-08-08 — Claude — the same composite forms, in the other engine
+
+Having fixed a run of composite-value bugs in hardware, I put the same source
+through the testbench emitter. Four gaps, one of them silent:
+
+- **`let p: Pair = makePair(6)` read back as zero in every field, silently.**
+  The declaration knew a struct literal and nothing else, while the same call
+  written as a separate assignment was right — and while hardware folds the
+  identical initializer, since I fixed it there two days ago. `struct_call_rewrite`
+  already existed for the assignment path; the declaration simply never asked it.
+- **`x = constant2()`** — "unknown signal `x`". The call-to-literal reduction
+  asked only whether the return named a field-aggregate struct, and
+  `unsigned[8][2]` heads on `unsigned`, a newtype with no named fields, so an
+  array return was declined. It now accepts either composite.
+- **`sum2(d)`** — "no value named `d`" — and **`sum2([7, 8])`** — "unsupported
+  testbench expression". An array parameter has no single C value, so it binds
+  per element under `v[0]`, `v[1]`, exactly as a struct parameter already bound
+  per field. A literal argument has no path to read leaves from, so its elements
+  bind directly.
+
+`testbench_composite_test.siox` asserts all five forms in both engines *and*
+against each other, so neither can drift alone again. Four mutations, four
+detections. Gate green, corpus 169/169.
+
+The lesson is the one already in this file: after fixing something in `ir`, run
+the same source through `driver/build`. These four were reachable the whole
+time I was fixing their hardware twins.
+
+**A harness correction.** The mutation file had accumulated duplicate keys —
+Python keeps the last definition, so an earlier correct entry can be silently
+replaced by a later broken one. It now refuses to run if any key is duplicated
+or is not an `(old, new)` pair. I checked every duplicate before deduplicating:
+all five were byte-identical, so no result reported earlier is affected. This is
+the third time this harness has produced a misleading reading (stale binary,
+stale mtime, now shadowed keys); each guard is now in the file rather than in my
+head.

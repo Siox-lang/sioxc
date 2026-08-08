@@ -1846,7 +1846,19 @@ impl Ctx<'_> {
         self.local_types
             .borrow_mut()
             .insert(l.name.text.clone(), head.to_string());
-        let init: HashMap<&str, &ast::Expr> = match &l.value {
+        // A call returns a struct literal once its body is rewritten with the
+        // arguments bound, which `struct_call_rewrite` already does for the
+        // assignment path. The declaration knew only a literal, so
+        // `let p: Pair = makePair(6)` initialized nothing and every field read
+        // back as zero — silently, while the same call written as a separate
+        // assignment was right, and while hardware folds the identical
+        // initializer.
+        let rewritten = l
+            .value
+            .as_ref()
+            .and_then(|value| self.struct_call_rewrite(value, 0));
+        let value = rewritten.as_ref().or(l.value.as_ref());
+        let init: HashMap<&str, &ast::Expr> = match value {
             Some(ast::Expr::Construct { args, .. }) => args
                 .iter()
                 .enumerate()
@@ -2339,10 +2351,22 @@ impl Ctx<'_> {
             },
             _ => return None,
         };
-        // Only a struct-returning body is this function's business; a scalar
+        // A *composite*-returning body is this function's business; a scalar
         // one is already handled by the ordinary expression path.
-        let ret = f.ret.as_ref().and_then(type_head_name)?;
-        if self.structs.get(ret).is_none_or(|fs| fs.is_empty()) {
+        //
+        // An array return counts. This used to ask only whether the return
+        // named a field-aggregate struct, and `unsigned[8][2]` heads on
+        // `unsigned` — a newtype with no named fields — so an array-returning
+        // call was declined and `x = constant2()` came back as "unknown signal
+        // `x`", a struct having no single signal to look up. The caller writes
+        // composites of either kind.
+        let returned = f.ret.as_ref()?;
+        let returns_struct = type_head_name(returned)
+            .and_then(|head| self.structs.get(head))
+            .is_some_and(|fields| !fields.is_empty());
+        // `array_parts` is `None` for a packed vector and `Some` for a real
+        // array, which is exactly the distinction wanted here.
+        if !returns_struct && self.array_parts(returned).is_none() {
             return None;
         }
         let body = self.sole_return(f)?;
@@ -5569,11 +5593,17 @@ impl Ctx<'_> {
                 // flattened name the environment is keyed by. Without this,
                 // `manhattan(p, q)` reported `p` as a name not in scope,
                 // though a *method* on the same struct inlined fine.
+                // An array parameter is composite for the same reason a struct
+                // one is: it has no single C value, so `self.expr` below
+                // reported the argument as a name that is not in scope. Its
+                // leaves bind under `v[0]`, `v[1]`, which is how the body
+                // spells them and how an indexed path resolves here.
                 let composite =
                     p.ty.as_ref()
                         .and_then(type_head_name)
                         .and_then(|head| self.structs.get(head))
-                        .is_some_and(|fields| !fields.is_empty());
+                        .is_some_and(|fields| !fields.is_empty())
+                        || p.ty.as_ref().is_some_and(|t| self.array_parts(t).is_some());
                 if composite {
                     if let Some(path) = expr_path(a) {
                         let leaves = self.composite_reads(&path);
@@ -5583,6 +5613,15 @@ impl Ctx<'_> {
                             }
                             continue;
                         }
+                    }
+                    // An array *literal* argument has no path to read leaves
+                    // from; each element binds directly.
+                    if let ast::Expr::Array { elems, .. } = a {
+                        for (index, element) in elems.iter().enumerate() {
+                            let value = format!("({})", self.expr(element)?);
+                            env.insert(format!("{}[{index}]", n.text), value);
+                        }
+                        continue;
                     }
                 }
                 env.insert(n.text.clone(), format!("({})", self.expr(a)?));
