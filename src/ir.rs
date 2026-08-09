@@ -5447,6 +5447,15 @@ impl<'a> Lowering<'a> {
                             ctx: self.cur_ctx,
                         });
                     }
+                } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
+                    for u in ups {
+                        self.out.drivers.push(Driver {
+                            target: u.target,
+                            cond: u.cond,
+                            expr: u.expr,
+                            ctx: self.cur_ctx,
+                        });
+                    }
                 } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                     // Partial write: merge over what this context has already
                     // driven (`y = base; y[3..0] = a;`), else over 0.
@@ -5876,6 +5885,8 @@ impl<'a> Lowering<'a> {
                         });
                     } else if let Some(ups) = self.dynamic_write(target, value, &cond, true, out) {
                         out.extend(ups);
+                    } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
+                        out.extend(ups);
                     } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                         // Register bit-field update: next(y) holds the other
                         // bits (read-modify-write on the value this block has
@@ -6204,6 +6215,65 @@ impl<'a> Lowering<'a> {
             }
         }
         Some(updates)
+    }
+
+    /// A whole struct written to an array element chosen at runtime
+    /// (`slots[i] = { .tag = t, .val = v }`).
+    ///
+    /// The element has no signal of its own — its fields are `slots[0].tag`,
+    /// `slots[0].val` — so the leaf lookup that the runtime-index expansion
+    /// depends on found nothing and the statement was reported as an
+    /// unassignable target. Everything around it lowered: the same write at a
+    /// *constant* index, a single *field* of it at a runtime index, and a
+    /// runtime index into an array of scalars.
+    ///
+    /// One update per element per field, each gated on the index matching that
+    /// element, which is the same shape the scalar expansion produces.
+    fn dynamic_struct_write(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        cond: &Option<Expr>,
+    ) -> Option<Vec<NextUpdate>> {
+        let ast::Expr::Index { base, index, .. } = target else {
+            return None;
+        };
+        if matches!(
+            index.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return None;
+        }
+        // A constant index already resolves to one element's leaves.
+        if eval_const(index, &self.cur_env).is_some() {
+            return None;
+        }
+        let base_path = expr_path(base)?;
+        let indices = self.local_array.get(&base_path)?.clone();
+        // The elements must be structs; an array of scalars is the existing
+        // expansion's business.
+        self.local_struct
+            .get(&format!("{base_path}[{}]", indices.first()?))?;
+        let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) else {
+            return None;
+        };
+        let lowered_index = self.lower_expr(index);
+        let mut updates = Vec::new();
+        for position in indices {
+            let hit = eq(lowered_index.clone(), Expr::Const(position as u64));
+            for (field, expr) in &fields {
+                let Some(&signal) = self.locals.get(&format!("{base_path}[{position}].{field}"))
+                else {
+                    continue;
+                };
+                updates.push(NextUpdate {
+                    target: signal,
+                    cond: Some(and(cond.clone(), hit.clone())),
+                    expr: self.coerce_to_target(signal, expr.clone()),
+                });
+            }
+        }
+        (!updates.is_empty()).then_some(updates)
     }
 
     fn ensure_combinational_companion_base(&mut self, value: SignalId, companion: SignalId) {

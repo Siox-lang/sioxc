@@ -7839,3 +7839,41 @@ Two harness notes, both of which produced a wrong reading before I caught them:
   that never exercises the code. Fixed the rule rather than concluding the line
   was dead — the same "the test is too narrow" reflex that has been right every
   previous time it came up.
+
+### 2026-08-09 — Claude — a whole struct written at a runtime index
+
+Probed a small FSM combining an enum state, a struct-typed register and an
+array — all correct. The shapes beside it were not.
+
+`slots[i] = { .tag = t, .val = v }` reported `cannot assign to slots[i]`. The
+element has no signal of its own — its fields are `slots[0].tag` — so the leaf
+lookup the runtime-index expansion depends on found nothing. What makes it
+worth having found is how narrow it was: the same write at a *constant* index,
+a single *field* of it at a runtime index, and a runtime index into an array of
+scalars all lowered. Only the whole-struct case failed.
+
+`dynamic_struct_write` produces one update per element per field, each gated on
+the index matching that element — the shape the scalar expansion already
+produces — and is wired into both the clocked and combinational paths.
+`dynamic_struct_write_test.siox` is a slot table: the selected slot takes tag
+and value, its neighbours are untouched, an out-of-range index writes nothing,
+and a spread update in a clocked block keeps the field it does not name. Two
+mutations, two detections. Gate green, corpus 170/170.
+
+**Found and not fixed, and it is bigger than what I fixed.** The testbench
+engine has *no* runtime-indexed array write at all:
+
+    for i in 0..2 { a[i] = v; }   // unsupported assignment target
+    a[i].val = v;                 // unsupported assignment target
+    a[k] = { .. };                // unsupported assignment target, k a local
+
+Scalar arrays, struct fields and struct values alike, whether the index is a
+loop variable or an ordinary runtime local. `for i in 0..N { arr[i] = ... }` is
+about as ordinary as testbench stimulus gets, and the message carries no code
+and no span. Task #10 in the tracker is "dynamic array indexing **in
+hardware**", so the asymmetry looks original rather than regressed.
+
+The fix is an if-chain over the candidate elements, since the emitter gives
+each element its own C local — the same enumeration hardware does, written as
+control flow instead of gated updates. I have not done it; it is a fair-sized
+piece of the emitter and wants its own round.
