@@ -5,19 +5,37 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-06 against the compiler, standard library, documentation,
+Status audited 2026-08-10 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
 
-Bug-sweep status (2026-08-06): generated assignments are linted after parameter
+Bug-sweep status (2026-08-10): generated assignments are linted after parameter
 specialization and loop unrolling, scoped hardware locals lower completely,
 nested generic types survive the full pipeline, and concrete instance-array
 build facts now reach IR diagnostics. Nested runtime array/field access lowers
 to muxes and gated leaf writes, and runtime packed-vector indices preserve
-declared labels and Logic metavalues. Testbench generate-loop lint parity still
-needs a policy decision: either normalize stimulus loops before W-P014 analysis
-or document that the warning applies only to hardware driver contexts.
+declared labels and Logic metavalues. Native testbench runtime-indexed writes
+now cover scalar leaves, struct fields and values, nested dimensions, packed
+bits, declared nonzero/descending labels, composite copies/spreads, and
+out-of-range no-op behavior. Testbench generate-loop lint parity still needs a
+policy decision: either normalize stimulus loops before W-P014 analysis or
+document that the warning applies only to hardware driver contexts.
+
+First-valid-version decisions still open:
+
+- 🔴 **Out-of-range runtime array reads.** Hardware currently falls through to
+  the last element at each array dimension; native test executables return
+  zero. Writes consistently match no element and are a no-op. Specify the read
+  rule, document it, and make both engines implement the same behavior.
+- 🟡 **Late diagnostic spans.** Frontend errors are source-anchored, but the
+  remaining IR-only warnings still need complete declaration/source spans.
+- 🟡 **Advertised optional features.** Implement `f128` end to end or remove it
+  from the advertised feature set until it is real; a selectable stub is not a
+  valid first-version capability.
+- 🟡 **Testbench file I/O semantics.** Decide whether build-time baked file
+  reads are acceptable for the first version; otherwise runtime file reads are
+  required before calling the simulation surface complete.
 
 ## AST
 
@@ -131,6 +149,10 @@ Current baseline:
 - ✅ Native tests support filtering, assertions, timing/`await`, multiple
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
   reporting.
+- ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
+  declared array labels, nested dimensions, struct fields/values and packed
+  bits. Composite right-hand sides are staged before writes, and out-of-range
+  writes are no-ops.
 - ✅ Generated test executables accept `--vcd <path>` and write hierarchy,
   femtosecond timestamps, changed arbitrary-width values, Logic x/z, real
   values, and symbolic enums directly from the native scheduler.

@@ -7877,3 +7877,38 @@ The fix is an if-chain over the candidate elements, since the emitter gives
 each element its own C local — the same enumeration hardware does, written as
 control flow instead of gated updates. I have not done it; it is a fair-sized
 piece of the emitter and wants its own round.
+
+### 2026-08-10 — Codex — starting native runtime-indexed array writes
+
+Taking the testbench-emitter gap above. Valid runtime-indexed scalar elements,
+fields of array elements, and whole composite elements currently fall through
+to `expr_path` and report `unsupported assignment target`. The implementation
+will resolve declared array labels to flattened native storage, emit one
+runtime branch per candidate element, and stage the right-hand side before any
+branch writes so self-referential composite assignments retain assignment
+semantics. Hardware lowering is already the behavioral reference.
+
+### 2026-08-10 — Codex — native runtime-indexed aggregate access complete
+
+The native emitter now walks a target's full field/index chain, expands only
+flattened array dimensions by their declared logical labels, and leaves packed
+indices for the existing bit writer. It emits one C branch per concrete target
+with all runtime index expressions captured once. This covers scalar elements,
+fields, whole structs, nested arrays, a packed bit below a runtime array index,
+loop variables, nonzero and descending labels, and no-op out-of-range writes.
+
+The same access walk now reads nested/runtime-selected leaves. Composite copies
+and struct spreads accept runtime-selected sources, and every leaf is staged
+before any destination write; the regressions include a field swap and an
+overlapping dynamic spread so assignment ordering is observable.
+
+`tests/fixtures/dynamic_array_write_test.siox` is the independent native CLI
+regression. The external `testbench_dynamic_array_write_test.siox` covers the
+full matrix. Direct native execution passed, as did 304 default unit tests, 295
+bitpack unit tests, every integration test, strict all-target/all-feature
+Clippy, and both 170/170 corpus runs.
+
+One existing cross-engine policy gap is now explicit in `TODO.md`: an
+out-of-range runtime array *read* selects the last element in hardware and zero
+in the native emitter. Writes agree on no-op. I have not silently selected one
+read rule; the language needs to specify it before both engines are aligned.

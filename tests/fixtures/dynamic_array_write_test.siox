@@ -1,0 +1,53 @@
+module dynamic_array_write_fixture;
+
+using std::bits::unsigned;
+
+struct Pair { left: unsigned[8], right: unsigned[8] }
+
+#[test]
+entity DynamicArrayWriteFixture {}
+impl DynamicArrayWriteFixture {
+    let values: unsigned[8][4..2] = [10, 20, 30];
+    let index: integer = 3;
+    values[index] = 99;
+    assert!(values[4] == 10, "first scalar remains");
+    assert!(values[3] == 99, "declared label selects the scalar");
+    assert!(values[2] == 30, "last scalar remains");
+
+    for i in 2..4 { values[i] = i + 40; }
+    assert!(values[2] == 42, "loop label 2");
+    assert!(values[3] == 43, "loop label 3");
+    assert!(values[4] == 44, "loop label 4");
+
+    index = 9;
+    values[index] = 255;
+    assert!(values[3] == 43, "out-of-range write is a no-op");
+
+    let pairs: Pair[5..6] = [
+        { .left = 1, .right = 2 },
+        { .left = 3, .right = 4 },
+    ];
+    index = 6;
+    pairs[index].right = 8;
+    pairs[index] = {
+        .left = pairs[index].right,
+        .right = pairs[index].left,
+    };
+    assert!(pairs[6].left == 8, "runtime struct write stages left");
+    assert!(pairs[6].right == 3, "runtime struct write stages right");
+    assert!(pairs[5].left == 1, "neighbour struct remains");
+
+    index = 5;
+    let source: integer = 6;
+    pairs[index] = { ..pairs[source], .left = 55 };
+    assert!(pairs[5].left == 55, "dynamic spread override");
+    assert!(pairs[5].right == 3, "dynamic spread copy");
+
+    let words: unsigned[8][2] = [0, 0];
+    let word: integer = 1;
+    let bit: integer = 5;
+    words[word][bit] = '1';
+    assert!(words[word][bit] == '1', "nested packed access reads back");
+    assert!(words[1] == 32, "nested packed access writes selected word");
+    assert!(words[0] == 0, "nested packed access leaves neighbour");
+}

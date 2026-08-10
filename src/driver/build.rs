@@ -908,6 +908,19 @@ struct Ctx<'a> {
     value_bits: u32,
 }
 
+/// One field/index component of a flattened native aggregate access. The IR
+/// lowerer has its own typed equivalent; this one operates on emitted C
+/// storage paths.
+enum NativeAccessStep<'e> {
+    Field(&'e str),
+    Index(&'e ast::Expr),
+}
+
+struct DynamicTargetVariant {
+    expression: ast::Expr,
+    condition: Option<String>,
+}
+
 /// Struct layouts keyed by name, each a base-first flattened field list
 /// (`struct B : A` prepends A's fields), so a struct-typed testbench local can
 /// be materialized as one C local per field.
@@ -2473,6 +2486,38 @@ impl Ctx<'_> {
         Ok(wrote)
     }
 
+    /// Stage and then write a complete flattened composite source. Keeping
+    /// this in one place makes path copies, runtime-selected copies, and
+    /// struct spreads share both alias fan-out and assignment ordering.
+    fn stage_composite_source(
+        &self,
+        name: &str,
+        source: BTreeMap<String, String>,
+        decls: &mut String,
+        writes: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        let target = self.composite_targets(name);
+        if source.keys().ne(target.keys()) {
+            return Err(format!("composite assignment shape mismatch at `{name}`"));
+        }
+        for (suffix, expression) in source {
+            let (signal, destination) = &target[&suffix];
+            // Every leaf is read before any destination is changed. This is
+            // observable for swaps and overlapping aggregate copies.
+            let expression = self.stage_value(&expression, decls, ind);
+            if *signal {
+                writes.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
+                for extra in self.alias_ids_beyond(&format!("{name}{suffix}"), destination) {
+                    writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                }
+            } else {
+                writes.push_str(&format!("{ind}{destination} = {expression};\n"));
+            }
+        }
+        Ok(true)
+    }
+
     /// Write a composite, staging every value before any of it lands.
     ///
     /// `decls` collects the temporaries and `writes` the assignments, and both
@@ -2503,32 +2548,36 @@ impl Ctx<'_> {
         if let Some(source_name) = expr_path(value) {
             let source = self.composite_reads(&source_name);
             if !source.is_empty() {
-                let target = self.composite_targets(name);
-                if source.keys().ne(target.keys()) {
-                    return Err(format!(
-                        "composite assignment shape mismatch: `{name}` and `{source_name}`"
-                    ));
-                }
-                for (suffix, expression) in source {
-                    let (signal, destination) = &target[&suffix];
-                    // Staged like every other leaf: copying `arr[1]` into
-                    // `arr[0]` must not disturb a later read of `arr[0]`.
-                    let expression = self.stage_value(&expression, decls, ind);
-                    if *signal {
-                        writes.push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
-                        // The same fan-out the scalar path needs: a composite
-                        // feeding two instances has one destination in `map`
-                        // per field and the rest in `aliases`, so only the
-                        // last instance saw the value.
-                        for extra in self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
-                        {
-                            writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
+                return self
+                    .stage_composite_source(name, source, decls, writes, ind)
+                    .map_err(|error| {
+                        if error.starts_with("composite assignment shape mismatch") {
+                            format!(
+                                "composite assignment shape mismatch: `{name}` and `{source_name}`"
+                            )
+                        } else {
+                            error
                         }
-                    } else {
-                        writes.push_str(&format!("{ind}{destination} = {expression};\n"));
-                    }
+                    });
+            }
+        } else {
+            // A whole composite selected at runtime has no `expr_path`, but
+            // each target suffix can still be read through the same dynamic
+            // access mux as a scalar field. This covers `dst[i] = src[j]` and
+            // gives every leaf the usual before-any-write staging.
+            let target = self.composite_targets(name);
+            if !target.is_empty() {
+                let mut source = BTreeMap::new();
+                for suffix in target.keys() {
+                    let Some(expression) = self.dynamic_array_read(value, suffix) else {
+                        source.clear();
+                        break;
+                    };
+                    source.insert(suffix.clone(), expression?);
                 }
-                return Ok(true);
+                if !source.is_empty() {
+                    return self.stage_composite_source(name, source, decls, writes, ind);
+                }
             }
         }
         if !matches!(value, ast::Expr::StrLit { .. }) {
@@ -2692,33 +2741,24 @@ impl Ctx<'_> {
                     .unwrap_or_default();
                 let mut wrote = false;
 
-                if let Some(source_name) = spread.as_deref().and_then(expr_path) {
-                    let source = self.composite_reads(&source_name);
-                    let target = self.composite_targets(name);
-                    if source.keys().ne(target.keys()) {
-                        return Err(format!(
-                            "composite assignment shape mismatch: `{name}` and `{source_name}`"
-                        ));
-                    }
-                    for (suffix, expression) in source {
-                        let (signal, destination) = &target[&suffix];
-                        if *signal {
-                            writes
-                                .push_str(&format!("{ind}sx_set({destination}, {expression});\n"));
-                            // The spread half of `{ ..base, .x = v }` copies
-                            // fields, and those need the same fan-out as every
-                            // other seed: the overridden field reached both
-                            // instances while the copied ones reached one.
-                            for extra in
-                                self.alias_ids_beyond(&format!("{name}{suffix}"), destination)
-                            {
-                                writes.push_str(&format!("{ind}sx_set({extra}, {expression});\n"));
-                            }
-                        } else {
-                            writes.push_str(&format!("{ind}{destination} = {expression};\n"));
+                if let Some(spread) = spread.as_deref() {
+                    let source = if let Some(source_name) = expr_path(spread) {
+                        self.composite_reads(&source_name)
+                    } else {
+                        let target = self.composite_targets(name);
+                        let mut source = BTreeMap::new();
+                        for suffix in target.keys() {
+                            let Some(expression) = self.dynamic_array_read(spread, suffix) else {
+                                source.clear();
+                                break;
+                            };
+                            source.insert(suffix.clone(), expression?);
                         }
+                        source
+                    };
+                    if !source.is_empty() {
+                        wrote |= self.stage_composite_source(name, source, decls, writes, ind)?;
                     }
-                    wrote = true;
                 }
 
                 for (position, arg) in args.iter().enumerate() {
@@ -3781,6 +3821,210 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    /// Expand every runtime *array* index in an assignment target into the
+    /// concrete flattened targets used by the native harness.
+    ///
+    /// A packed vector index is deliberately left in the AST: after an outer
+    /// array dimension has been made concrete, [`Self::write_packed_bit`] can
+    /// update that selected word with its existing declared-bit mapping. Each
+    /// runtime index expression is evaluated once, even when a nested array
+    /// produces many candidate leaves.
+    fn dynamic_array_target_variants(
+        &self,
+        target: &ast::Expr,
+        declarations: &mut String,
+        ind: &str,
+    ) -> Result<Option<Vec<DynamicTargetVariant>>, String> {
+        fn combine(left: Option<String>, right: String) -> String {
+            match left {
+                Some(left) => format!("({left}) && ({right})"),
+                None => right,
+            }
+        }
+
+        fn expand(
+            cx: &Ctx<'_>,
+            expression: &ast::Expr,
+            declarations: &mut String,
+            ind: &str,
+        ) -> Result<(Vec<DynamicTargetVariant>, bool), String> {
+            match expression {
+                ast::Expr::Path(_) => Ok((
+                    vec![DynamicTargetVariant {
+                        expression: expression.clone(),
+                        condition: None,
+                    }],
+                    false,
+                )),
+                ast::Expr::Field { base, field, span } => {
+                    let (bases, expanded) = expand(cx, base, declarations, ind)?;
+                    Ok((
+                        bases
+                            .into_iter()
+                            .map(|variant| DynamicTargetVariant {
+                                expression: ast::Expr::Field {
+                                    base: Box::new(variant.expression),
+                                    field: field.clone(),
+                                    span: *span,
+                                },
+                                condition: variant.condition,
+                            })
+                            .collect(),
+                        expanded,
+                    ))
+                }
+                ast::Expr::Index { base, index, span } => {
+                    let (bases, mut expanded) = expand(cx, base, declarations, ind)?;
+                    let is_range = matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    );
+                    let is_literal = signed_index_bound(index).is_some();
+                    let is_array = !is_range
+                        && !is_literal
+                        && bases.iter().any(|variant| {
+                            expr_path(&variant.expression)
+                                .is_some_and(|path| cx.local_indices.borrow().contains_key(&path))
+                        });
+                    if !is_array {
+                        return Ok((
+                            bases
+                                .into_iter()
+                                .map(|variant| DynamicTargetVariant {
+                                    expression: ast::Expr::Index {
+                                        base: Box::new(variant.expression),
+                                        index: index.clone(),
+                                        span: *span,
+                                    },
+                                    condition: variant.condition,
+                                })
+                                .collect(),
+                            expanded,
+                        ));
+                    }
+
+                    expanded = true;
+                    let serial = cx.tmp.get();
+                    cx.tmp.set(serial + 1);
+                    let runtime_index = cx.expr(index)?;
+                    declarations.push_str(&format!(
+                        "{ind}int64_t _ai{serial} = (int64_t)({runtime_index});\n"
+                    ));
+                    let mut variants = Vec::new();
+                    for variant in bases {
+                        let path = expr_path(&variant.expression).ok_or_else(|| {
+                            "cannot resolve the base of a runtime array assignment".to_string()
+                        })?;
+                        let indices =
+                            cx.local_indices
+                                .borrow()
+                                .get(&path)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    format!("the declared indices of `{path}` are not known here")
+                                })?;
+                        for logical in indices {
+                            let condition = combine(
+                                variant.condition.clone(),
+                                format!("_ai{serial} == {logical}LL"),
+                            );
+                            variants.push(DynamicTargetVariant {
+                                expression: ast::Expr::Index {
+                                    base: Box::new(variant.expression.clone()),
+                                    index: Box::new(ast::Expr::Int {
+                                        text: logical.to_string(),
+                                        span: ast::expr_span(index),
+                                    }),
+                                    span: *span,
+                                },
+                                condition: Some(condition),
+                            });
+                        }
+                    }
+                    Ok((variants, expanded))
+                }
+                _ => Ok((
+                    vec![DynamicTargetVariant {
+                        expression: expression.clone(),
+                        condition: None,
+                    }],
+                    false,
+                )),
+            }
+        }
+
+        let (variants, expanded) = expand(self, target, declarations, ind)?;
+        Ok(expanded.then_some(variants))
+    }
+
+    /// Write a target containing one or more runtime array indices. Native
+    /// aggregates are flattened, so this is C control flow over concrete
+    /// leaves; an out-of-range index enters no branch and therefore writes
+    /// nothing, matching hardware lowering.
+    fn write_dynamic_array_target(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        b: &mut String,
+        ind: &str,
+    ) -> Result<bool, String> {
+        let mut declarations = String::new();
+        let Some(variants) = self.dynamic_array_target_variants(target, &mut declarations, ind)?
+        else {
+            return Ok(false);
+        };
+        let mut writes = String::new();
+        for variant in variants {
+            let target = variant.expression;
+            let condition = variant.condition;
+            let branch_ind = format!("{ind}  ");
+            let conditional = condition.is_some();
+            if let Some(condition) = condition.as_deref() {
+                writes.push_str(&format!("{ind}if ({condition}) {{\n"));
+            }
+            let inner = if conditional { &branch_ind } else { ind };
+            let mut handled = self.write_packed_bit(&target, value, &mut writes, inner)?;
+            if !handled {
+                handled = self.write_packed_slice(&target, value, &mut writes, inner)?;
+            }
+            if !handled {
+                let name =
+                    expr_path(&target).ok_or("unsupported runtime-indexed assignment target")?;
+                if self.write_composite(&name, value, &mut writes, inner)? {
+                    writes.push_str(&format!("{inner}sx_settle();\n"));
+                    handled = true;
+                } else if self.locals.borrow().contains(&name) {
+                    let expression = self.value_for_local(&name, value)?;
+                    let expression = match self.local_widths.borrow().get(&name) {
+                        Some(&width) => mask_c(&expression, width),
+                        None => expression,
+                    };
+                    writes.push_str(&format!(
+                        "{inner}{} = {expression};\n",
+                        c_local_ident(&name)
+                    ));
+                    handled = true;
+                } else if let Some(&id) = self.map.get(&name) {
+                    let expression = self.value_for(id, value)?;
+                    self.drive_signal(&name, &expression, &mut writes, inner)?;
+                    handled = true;
+                }
+            }
+            if !handled {
+                return Err(format!(
+                    "cannot write runtime-selected target `{}`",
+                    siox::syntax::pretty::expr_string(&target)
+                ));
+            }
+            if conditional {
+                writes.push_str(&format!("{ind}}}\n"));
+            }
+        }
+        b.push_str(&declarations);
+        b.push_str(&writes);
+        Ok(true)
+    }
+
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match s {
@@ -3813,6 +4057,9 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 if self.write_packed_slice(target, value, b, &ind)? {
+                    return Ok(());
+                }
+                if self.write_dynamic_array_target(target, value, b, &ind)? {
                     return Ok(());
                 }
                 // `{ hi, lo } = src` — hardware has always lowered this and
@@ -5842,6 +6089,15 @@ impl Ctx<'_> {
     }
 
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
+        // A field/element reached through a runtime array index has no static
+        // path, but every concrete leaf does. Handle it once before the shape
+        // match; packed bits return None and continue to their dedicated arm.
+        if expr_path(e).is_none() && matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. })
+        {
+            if let Some(read) = self.dynamic_array_read(e, "") {
+                return read;
+            }
+        }
         Ok(match e {
             ast::Expr::IfExpr {
                 cond, then, els, ..
@@ -6148,26 +6404,6 @@ impl Ctx<'_> {
                 }
                 out
             }
-            // A *dynamic* array index — `a[i]` where `i` is not constant, so
-            // the whole expression has no path. The elements are separate C
-            // locals (or signals), so select between them with a ternary
-            // chain: the same shape the hardware path builds as a mux tree,
-            // which is why this was supported there and not here.
-            ast::Expr::Index { base, index, .. }
-                if expr_path(e).is_none()
-                    && expr_path(base).is_some_and(|b| !self.array_elements(&b).is_empty()) =>
-            {
-                let elements = self.array_elements(&expr_path(base).unwrap());
-                let idx = self.expr(index)?;
-                // An out-of-range index reads 0, matching an undriven signal
-                // rather than aliasing some other element.
-                let mut out = String::from("0ULL");
-                for (k, element) in elements.iter().enumerate().rev() {
-                    let read = self.read_path(element)?;
-                    out = format!("((({idx}) == {k}ULL) ? ({read}) : {out})");
-                }
-                out
-            }
             // A constant bit slice of a packed value, before the generic
             // field/index path: `w[7..4]` has no `expr_path` to look up.
             ast::Expr::Index { base, index, .. } if self.c_bit_slice(base, index).is_some() => {
@@ -6379,10 +6615,106 @@ impl Ctx<'_> {
         })
     }
 
-    /// The element paths of an array named `base`, in index order, stopping
-    /// at the first gap. Elements are registered one by one as locals or
-    /// signals, so their presence is what says how long the array is.
+    /// Read a scalar leaf through flattened runtime array dimensions. `suffix`
+    /// lets composite spread/copy ask for the same dynamically selected base's
+    /// `.field` leaf without manufacturing a second AST.
+    fn dynamic_array_read(
+        &self,
+        expression: &ast::Expr,
+        suffix: &str,
+    ) -> Option<Result<String, String>> {
+        fn walk<'e>(
+            expression: &'e ast::Expr,
+            steps: &mut Vec<NativeAccessStep<'e>>,
+        ) -> Option<String> {
+            match expression {
+                ast::Expr::Path(path) if path.segments.len() == 1 => {
+                    Some(path.segments[0].text.clone())
+                }
+                ast::Expr::Field { base, field, .. } => {
+                    let root = walk(base, steps)?;
+                    steps.push(NativeAccessStep::Field(&field.text));
+                    Some(root)
+                }
+                ast::Expr::Index { base, index, .. } => {
+                    let root = walk(base, steps)?;
+                    steps.push(NativeAccessStep::Index(index));
+                    Some(root)
+                }
+                _ => None,
+            }
+        }
+
+        fn read_from(
+            cx: &Ctx<'_>,
+            path: &str,
+            steps: &[NativeAccessStep<'_>],
+            suffix: &str,
+            saw_array: bool,
+        ) -> Option<Result<String, String>> {
+            let Some((step, rest)) = steps.split_first() else {
+                return saw_array.then(|| cx.read_path(&format!("{path}{suffix}")));
+            };
+            match step {
+                NativeAccessStep::Field(field) => {
+                    read_from(cx, &format!("{path}.{field}"), rest, suffix, saw_array)
+                }
+                NativeAccessStep::Index(index) => {
+                    if matches!(
+                        index,
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    ) {
+                        return None;
+                    }
+                    let Some(indices) = cx.local_indices.borrow().get(path).cloned() else {
+                        // An array selection may be followed by a runtime bit
+                        // selection of its packed element (`words[i][bit]`).
+                        // Once the outer path is concrete, reuse the packed
+                        // vector reader rather than treating the bit as a
+                        // second aggregate dimension.
+                        return (saw_array && rest.is_empty() && suffix.is_empty())
+                            .then(|| cx.c_dynamic_bit_of_path(path, index))?;
+                    };
+                    let runtime_index = match cx.expr(index) {
+                        Ok(index) => index,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    // Out-of-range aggregate reads have historically yielded
+                    // zero in the native engine; preserve that rule while
+                    // making the declared labels and nested shape correct.
+                    let mut result = String::from("0ULL");
+                    for logical in indices.into_iter().rev() {
+                        let selected =
+                            match read_from(cx, &format!("{path}[{logical}]"), rest, suffix, true)?
+                            {
+                                Ok(value) => value,
+                                Err(error) => return Some(Err(error)),
+                            };
+                        result = format!(
+                            "((((int64_t)({runtime_index})) == {logical}LL) ? ({selected}) : ({result}))"
+                        );
+                    }
+                    Some(Ok(result))
+                }
+            }
+        }
+
+        let mut steps = Vec::new();
+        let root = walk(expression, &mut steps)?;
+        read_from(self, &root, &steps, suffix, false)
+    }
+
+    /// The element paths of an array named `base`, in declaration order.
+    /// Explicit ranges use their logical labels (`a[4]`, `a[3]`, `a[2]`), not
+    /// the flattened storage positions 0, 1, 2.
     fn array_elements(&self, base: &str) -> Vec<String> {
+        if let Some(indices) = self.local_indices.borrow().get(base).cloned() {
+            return indices
+                .into_iter()
+                .map(|index| format!("{base}[{index}]"))
+                .filter(|element| self.has_storage_prefix(element))
+                .collect();
+        }
         let mut out = Vec::new();
         loop {
             let element = format!("{base}[{}]", out.len());
@@ -6415,28 +6747,38 @@ impl Ctx<'_> {
     }
 
     fn c_dynamic_bit(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Result<String, String>> {
+        let path = expr_path(base)?;
+        if !self.array_elements(&path).is_empty() {
+            return None;
+        }
+        self.c_dynamic_bit_of_path(&path, index)
+    }
+
+    fn c_dynamic_bit_of_path(
+        &self,
+        path: &str,
+        index: &ast::Expr,
+    ) -> Option<Result<String, String>> {
         if matches!(
             index,
             ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
         ) {
             return None;
         }
-        let path = expr_path(base)?;
-        if !self.array_elements(&path).is_empty()
-            || (!self.locals.borrow().contains(&path) && !self.map.contains_key(&path))
-            || self.slice_bounds(&path, index).is_some()
+        if (!self.locals.borrow().contains(path) && !self.map.contains_key(path))
+            || self.slice_bounds(path, index).is_some()
         {
             return None;
         }
-        let width = self.name_width(&path)?;
+        let width = self.name_width(path)?;
         let (left, right) = self
             .local_ranges
             .borrow()
-            .get(&path)
+            .get(path)
             .copied()
             .unwrap_or((0, i64::from(width).saturating_sub(1)));
         let (low, high) = (left.min(right), left.max(right));
-        let value = match self.read_path(&path) {
+        let value = match self.read_path(path) {
             Ok(value) => value,
             Err(error) => return Some(Err(error)),
         };
@@ -6446,7 +6788,7 @@ impl Ctx<'_> {
         };
         let meta = self
             .map
-            .get(&path)
+            .get(path)
             .and_then(|id| self.design.meta_of.get(&id.0))
             .map(|id| format!("sx_read({id})"));
         let mut out = String::from("0");
