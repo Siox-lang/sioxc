@@ -8154,3 +8154,18 @@ clippy configurations, frontend-only check, default and bitpack Rust tests,
 and all 171 corpus programs in both layouts. Focused emitted binaries for
 generate-if, instance arrays/placement, and nested wide/string aggregates also
 run successfully in both layouts.
+
+### 2026-08-12 — Codex — stable compiler embedding API
+
+Adding a public options/result compiler boundary above the existing passes, then
+migrating `sioxc` to that boundary. I will preserve the in-progress native FST
+harness changes in `src/driver/build.rs`; expected shared files are `src/lib.rs`,
+`src/driver.rs`, driver modules, API/architecture docs, tests, and `TODO.md`.
+
+Completed the embedding boundary as `siox::compiler`: disk and in-memory
+inputs, explicit output requests, structured diagnostics and host failures,
+retained phase products, statistics, and typed text/file artifacts. `sioxc`
+now only parses flags and renders `Compilation`. Frontend-only checks and API
+tests, default/all-feature clippy, default and bitpack Rust suites, a staged-
+commit native executable, and all 171 external corpus programs pass. The FST
+implementation remains deliberately outside this commit.

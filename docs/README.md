@@ -41,13 +41,18 @@ flowchart LR
     IR --> LLVM["LLVM backend"]
     LLVM --> OUT["object / test executable"]
     IR --> DUMP["IR + metadata output"]
-    AST --> API["compiler API / LSP"]
+    AST --> API["siox::compiler"]
     SEM --> API
+    HIER --> API
+    IR --> API
+    API --> CLI["sioxc"]
+    API --> LSP["siox-lsp / tools"]
 ```
 
-`diag` (spans, diagnostics, source map) underpins every stage, and the `sioxc`
-binary target wires them together per invocation. **`siox::llvm` is the native
-backend**; `sioxc` generates and links the native `#[test]` harness.
+`diag` (spans, diagnostics, source map) underpins every stage, and
+`siox::compiler` wires them together behind a disk/in-memory request/result
+API. **`siox::llvm` is the native backend**; `sioxc` is a thin CLI over that
+same API, including native `#[test]` harness generation.
 The separate `siox-lsp` repository uses the core through Cargo Git and therefore
 builds without LLVM.
 

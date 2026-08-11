@@ -8,8 +8,11 @@ may use is `diag` — plus the LLVM backend:
 
 - **`siox`** (root) — the core: `diag` → `syntax` → `resolve` → `types` →
   `elab` → `ir`.
+- **`siox::compiler`** — the embedding interface that loads one source input,
+  composes the passes, and returns diagnostics, partial phase products, and an
+  optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
-- **`sioxc`** — the root package's compiler binary and driver.
+- **`sioxc`** — the root package's thin command-line adapter.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
@@ -27,21 +30,24 @@ flowchart TB
     IR --> LL["LLVM layer<br/>native state + codegen"]
     LL --> OUT["Output layer<br/>object / native tests"]
     IR --> OUT
-    SY --> API["API consumers"]
-    RE --> API
+    IR --> API["compiler API<br/>CompileRequest → Compilation"]
+    EL --> API
     TY --> API
+    RE --> API
+    SY --> API
     LSP["siox-lsp"] --> API
     STD["std source"] --> SY
-    CLI["sioxc driver"] ==> SY
-    CLI ==> LL
-    CLI ==> OUT
+    CLI["sioxc CLI"] --> API
+    API ==> LL
+    API ==> OUT
 ```
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
-`sioxc` discovers `#[test]` entities and generates a C harness containing the
-stimulus, scheduler, assertions, and reporting; it links that harness with the
-native design object. Therefore *`sioxc`* needs an LLVM toolchain to build; the
-core and language server do not.
+The compiler API discovers `#[test]` entities and generates a C harness
+containing the stimulus, scheduler, assertions, and reporting; it links that
+harness with the native design object when `Emit::TestExecutable` is requested.
+Therefore the `sioxc` feature set needs an LLVM toolchain; a
+`default-features = false` editor build does not.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do
@@ -61,13 +67,14 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
+| `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Package components:
 
 | Component | Layer | Role |
 | --------- | ----- | ---- |
 | `siox::llvm` | LLVM | LLVM lowering, optimization, native state, and word ABI. |
-| `sioxc` | Output/API driver | One compiler invocation and artifact/diagnostic production. |
+| `sioxc` | CLI | Parses command-line options and renders one `siox::compiler` result. |
 
 ## rustc-shaped compiler boundary
 
@@ -76,7 +83,7 @@ The compiler follows rustc's separation of responsibilities:
 | rustc concept | siox counterpart |
 | --- | --- |
 | `rustc` executable | `sioxc`'s minimal `main.rs`, which delegates one invocation |
-| `rustc_driver` / `rustc_interface` | `sioxc::driver`, which parses compiler options and composes the pipeline; extractable as a library crate when another tool needs to embed compilation |
+| `rustc_driver` / `rustc_interface` | `siox::compiler`, the library-owned request/result boundary used by every host |
 | frontend queries and MIR | `siox::{syntax, resolve, types, elab, ir}` |
 | codegen backend | `siox::llvm`, consuming only `siox::ir::Design` |
 | synthesized libtest harness | `sioxc --test`, which emits a native executable |
@@ -87,11 +94,13 @@ performs one compilation; `--emit object|metadata|source|tokens|ast|tree|ir|
 llvm-ir` chooses the requested artifact, while `--test` changes the generated
 artifact into a test executable. The compiler never executes that artifact.
 
-SIOX remains pass-oriented today. Rustc's memoized, demand-driven query system
-is a useful direction once incremental compilation or multiple consumers need
-it. Persistent resolved and typed products now provide the right boundary; the
-remaining API work is to expose stable queries and cache them without changing
-`sioxc` or the backend boundary.
+SIOX remains pass-oriented internally. Rustc's memoized, demand-driven query
+system is a useful direction once incremental compilation needs it. Consumers
+already use one stable orchestration boundary: `Compiler::compile` accepts a
+disk or in-memory source and an explicit `Emit`, then returns a `Compilation`
+with its `SourceMap`, entry tokens/modules, `Resolved`, `Typed`, `Hierarchy`,
+`Design`, structured diagnostics, host failure, statistics, and artifact. A
+failed source keeps every product completed before the failure.
 
 `src/lib.rs` opens with the module map, and each module's own file opens with a
 doc-comment summarising its responsibility and spec acceptance criteria — read
@@ -271,13 +280,18 @@ width integers are part of the normal compiler and need no `wide` flag. Quad
 precision has no `f128` flag until its lowering, ABI, formatting, and fallback
 runtime all exist.
 
-## The CLI as the pipeline driver
+## Compiler API and CLI
 
-`sioxc` is where the stages are composed. It loads a file into a
-`SourceMap`, runs the stages a subcommand needs on a shared `DiagnosticSink`,
-narrates each stage to stderr (more with `-v`), prints the requested artifact to
-stdout, and exits non-zero if any errors were reported. This makes the CLI the
-practical place to watch data move through the compiler. Like `rustc`, it takes
-one input per invocation: `--emit` selects the artifact and `--test` selects
-test-harness compilation. Project graphs, directory traversal, execution, and
-simulation tooling are deliberately outside the compiler.
+`siox::compiler` composes the stages. It accepts one `CompileRequest`, loads a
+disk `SourceInput` or uses an editor-provided in-memory buffer, and returns a
+`Compilation`; it never prints and never runs generated code. Textual outputs
+are returned as `Artifact::Text`, while objects and test executables are
+reported as typed file artifacts. Language errors remain source-anchored
+diagnostics; input, selection, validation, and backend failures are separate
+`CompileFailure` values.
+
+`sioxc` parses flags, constructs that request, renders the result, and chooses
+an exit status. Like `rustc`, it takes one input per invocation: `--emit`
+selects the artifact and `--test` selects test-harness compilation. Project
+graphs, directory traversal, execution, and simulation tooling remain outside
+the compiler.

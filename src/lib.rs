@@ -17,10 +17,13 @@
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
 //! | [`ir`]      | 6 | lowering to the digital simulation IR |
 //!
-//! The native LLVM AOT backend is the [`llvm`] module.
+//! [`compiler`] is the presentation-neutral embedding boundary that composes
+//! those stages for editors, build tools, and `sioxc`. The native LLVM AOT
+//! backend is available as `siox::llvm` when the `llvm` feature is enabled.
 
 extern crate self as siox;
 
+pub mod compiler;
 pub mod diag;
 pub mod elab;
 pub mod ir;

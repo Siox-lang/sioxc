@@ -81,6 +81,36 @@ canonical printer does not yet retain comment trivia, so it declines rather than
 delete them); cross-file user-module analysis follows the compiler's current
 single-entry-file limitation (std modules load transitively).
 
+### Compiler embedding API
+
+Editors and future project tools should compile through `siox::compiler`, not
+call the individual passes themselves:
+
+```rust
+use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+
+let compiler = Compiler::new("/path/to/sioxc/std");
+let request = CompileRequest::new(
+    SourceInput::memory("/workspace/design.siox", current_editor_text),
+    Emit::Metadata,
+);
+let compilation = compiler.compile(request);
+
+for diagnostic in compilation.diagnostics() {
+    // Map diagnostic.primary through compilation.sources into an LSP range.
+}
+```
+
+`SourceInput::Path` reads a disk file; `SourceInput::Memory` preserves the
+document path while using unsaved text. A `Compilation` retains the source map,
+entry tokens and modules, and each completed `Resolved`, `Typed`, `Hierarchy`,
+and `Design` product. Language errors are structured diagnostics and do not
+discard earlier products. Host failures such as an unreadable file, ambiguous
+top selection, invalid codegen IR, or unavailable backend are represented by
+`CompileFailure`. The API writes no terminal output and never executes an
+artifact, so a host remains responsible for presentation, caching, process
+execution, and project discovery.
+
 ## cocotb (planned)
 
 Because `await`'s trigger model *is* cocotb's trigger model, the runtime's

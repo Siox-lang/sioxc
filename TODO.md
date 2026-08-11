@@ -221,12 +221,13 @@ Current baseline:
   lowering instead of being truncated or dropped.
 - ✅ `sioxc` keeps rustc-like scope: project graphs, execution, dependency
   management, and directory-wide testing remain outside the compiler.
+- ✅ `siox::compiler` provides the shared disk/in-memory `CompileRequest` →
+  `Compilation` boundary. It retains structured diagnostics and partial phase
+  products, separates host failures, returns typed text/file artifacts, and is
+  used by `sioxc` without requiring LLVM for frontend consumers.
 
 Remaining:
 
-- 🔴 **Compiler embedding API.** Stabilize an options/result interface above the
-  current driver so an LSP or future Cargo-like tool does not compose internal
-  passes itself.
 - 🔴 **Multi-file user crates.** Standard-library modules load transitively,
   while user compilation still starts from one source entry. Define module
   discovery and crate boundaries in the future project tool, then expose the

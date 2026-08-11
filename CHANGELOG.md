@@ -52,6 +52,13 @@ assertions, and VCD export — predates this changelog. See
   coincident edges, and cross-domain sampling (already correct) are unaffected.
 
 ### Added
+- **A public compiler embedding API now owns pipeline orchestration.**
+  `siox::compiler::{Compiler, CompileRequest, SourceInput, Emit}` accepts disk
+  files or unsaved editor buffers and returns a presentation-neutral
+  `Compilation` with structured diagnostics, partial frontend/IR products,
+  typed host failures, statistics, and text/file artifacts. `sioxc` is now a
+  thin CLI over this same boundary, while frontend consumers continue to build
+  with `default-features = false` and no LLVM dependency.
 - **`impl New for T` overrides the uninitialized default; `Logic` powers on to
   `'U'`.** `new()` bodies that are constants now set a type's default (the
   compiler folds `impl New for T` from `op_impls`, no trait resolution needed).
