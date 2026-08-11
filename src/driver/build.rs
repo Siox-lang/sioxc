@@ -181,7 +181,9 @@ pub fn build(
 
     // Header, one `signed test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
-    prog.push_str("#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n");
+    prog.push_str(
+        "#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n",
+    );
     for name in &extern_fns {
         let f = fns[name];
         let ret = f
@@ -303,6 +305,187 @@ pub fn build(
          \x20   return buffer;\n\
          }}\n"
     ));
+    prog.push_str(
+        r#"typedef struct sx_io_block {
+    void *pointer;
+    struct sx_io_block *next;
+} sx_io_block;
+typedef struct {
+    unsigned char *data;
+    size_t length;
+} sx_bytes;
+typedef struct {
+    sx_value *values;
+    size_t length;
+    const char *text;
+    size_t text_length;
+} sx_dyn_array;
+static sx_io_block *g_io_blocks;
+static signed g_io_failed;
+static char g_io_message[512];
+static void sx_io_reset(void) {
+    while (g_io_blocks) {
+        sx_io_block *next = g_io_blocks->next;
+        free(g_io_blocks->pointer);
+        free(g_io_blocks);
+        g_io_blocks = next;
+    }
+    g_io_failed = 0;
+}
+static void sx_io_fail(const char *operation, const char *path, const char *detail) {
+    if (!g_io_failed)
+        snprintf(g_io_message, sizeof g_io_message, "%s(\"%s\"): %s", operation, path, detail);
+    g_io_failed = 1;
+}
+static void *sx_io_alloc(size_t size) {
+    if (size == 0) size = 1;
+    void *pointer = calloc(1, size);
+    sx_io_block *block = pointer ? malloc(sizeof *block) : 0;
+    if (!pointer || !block) {
+        free(pointer);
+        free(block);
+        sx_io_fail("file I/O", "<runtime>", "out of memory");
+        return 0;
+    }
+    block->pointer = pointer;
+    block->next = g_io_blocks;
+    g_io_blocks = block;
+    return pointer;
+}
+static sx_bytes sx_read_file(const char *operation, const char *path) {
+    sx_bytes result = {0};
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sx_io_fail(operation, path, strerror(errno));
+        return result;
+    }
+    if (fseek(file, 0, SEEK_END) || ftell(file) < 0) {
+        sx_io_fail(operation, path, "cannot determine file length");
+        fclose(file);
+        return result;
+    }
+    long end = ftell(file);
+    if (end < 0 || fseek(file, 0, SEEK_SET)) {
+        sx_io_fail(operation, path, "cannot seek file");
+        fclose(file);
+        return result;
+    }
+    result.length = (size_t)end;
+    if (result.length == SIZE_MAX) {
+        sx_io_fail(operation, path, "file is too large");
+        fclose(file);
+        result.length = 0;
+        return result;
+    }
+    result.data = sx_io_alloc(result.length + 1);
+    if (!result.data) {
+        fclose(file);
+        result.length = 0;
+        return result;
+    }
+    size_t read = fread(result.data, 1, result.length, file);
+    if (read != result.length) {
+        sx_io_fail(operation, path, ferror(file) ? strerror(errno) : "short read");
+        result.length = read;
+    }
+    result.data[result.length] = 0;
+    fclose(file);
+    return result;
+}
+static signed sx_utf8_next(const unsigned char *data, size_t length,
+                           size_t *cursor, uint32_t *value) {
+    size_t at = *cursor;
+    if (at >= length) return 0;
+    unsigned b0 = data[at++];
+    if (b0 <= 0x7f) *value = b0;
+    else if (b0 >= 0xc2 && b0 <= 0xdf && at < length
+             && (data[at] & 0xc0) == 0x80) {
+        *value = ((b0 & 0x1f) << 6) | (data[at++] & 0x3f);
+    } else if (b0 >= 0xe0 && b0 <= 0xef && at + 1 < length
+               && (data[at] & 0xc0) == 0x80 && (data[at + 1] & 0xc0) == 0x80
+               && !(b0 == 0xe0 && data[at] < 0xa0)
+               && !(b0 == 0xed && data[at] >= 0xa0)) {
+        *value = ((b0 & 0x0f) << 12) | ((data[at] & 0x3f) << 6)
+                 | (data[at + 1] & 0x3f);
+        at += 2;
+    } else if (b0 >= 0xf0 && b0 <= 0xf4 && at + 2 < length
+               && (data[at] & 0xc0) == 0x80 && (data[at + 1] & 0xc0) == 0x80
+               && (data[at + 2] & 0xc0) == 0x80
+               && !(b0 == 0xf0 && data[at] < 0x90)
+               && !(b0 == 0xf4 && data[at] >= 0x90)) {
+        *value = ((b0 & 0x07) << 18) | ((data[at] & 0x3f) << 12)
+                 | ((data[at + 1] & 0x3f) << 6) | (data[at + 2] & 0x3f);
+        at += 3;
+    } else return -1;
+    *cursor = at;
+    return 1;
+}
+static sx_dyn_array sx_read_text(const char *path) {
+    sx_dyn_array result = {0};
+    sx_bytes bytes = sx_read_file("read_to_string", path);
+    if (g_io_failed) return result;
+    size_t capacity = bytes.length ? bytes.length : 1;
+    if (capacity > SIZE_MAX / sizeof(sx_value)) {
+        sx_io_fail("read_to_string", path, "file is too large");
+        return result;
+    }
+    result.values = sx_io_alloc(capacity * sizeof(sx_value));
+    if (!result.values) return result;
+    size_t cursor = 0;
+    while (cursor < bytes.length) {
+        uint32_t value;
+        if (sx_utf8_next(bytes.data, bytes.length, &cursor, &value) < 0) {
+            sx_io_fail("read_to_string", path, "file is not valid UTF-8");
+            return result;
+        }
+        result.values[result.length++] = (sx_value)value;
+    }
+    result.text = (const char *)bytes.data;
+    result.text_length = bytes.length;
+    return result;
+}
+static signed sx_read_values(const char *path, sx_value *out, size_t count,
+                             size_t element_bytes, uint32_t element_bits) {
+    sx_bytes bytes = sx_read_file("read", path);
+    if (g_io_failed) return 0;
+    if (element_bytes && count > SIZE_MAX / element_bytes) {
+        sx_io_fail("read", path, "declared target is too large");
+        return 0;
+    }
+    size_t capacity = count * element_bytes;
+    if (bytes.length > capacity) {
+        snprintf(g_io_message, sizeof g_io_message,
+                 "read(\"%s\"): %zu bytes do not fit (%zu elements x %zu bytes)",
+                 path, bytes.length, count, element_bytes);
+        g_io_failed = 1;
+        return 0;
+    }
+    for (size_t element = 0; element < count; ++element) {
+        sx_value value = 0;
+        for (size_t byte = 0; byte < element_bytes; ++byte) {
+            size_t offset = element * element_bytes + byte;
+            if (offset < bytes.length)
+                value |= (sx_value)bytes.data[offset] << (byte * 8);
+        }
+        out[element] = sx_mask(value, element_bits);
+    }
+    return 1;
+}
+static sx_value sx_dyn_get(const sx_dyn_array *array, sx_value raw_index) {
+    if (!array->length) return 0;
+    size_t index = (size_t)raw_index;
+    return index < array->length ? array->values[index]
+                                 : array->values[array->length - 1];
+}
+static signed sx_dyn_equal_values(const sx_dyn_array *array,
+                                  const sx_value *values, size_t length) {
+    if (array->length != length) return 0;
+    for (size_t i = 0; i < length; ++i)
+        if (array->values[i] != values[i]) return 0;
+    return 1;
+}
+"#,
+    );
     prog.push_str("extern void sx_settle(void);\n");
     prog.push_str("static const char *g_msg;\nstatic signed g_range_failed;\n");
     prog.push_str("static signed g_warnings;\n");
@@ -491,6 +674,7 @@ pub fn build(
             local_widths: Default::default(),
             local_indices: Default::default(),
             local_ranges: Default::default(),
+            dynamic_strings: Default::default(),
             local_families: Default::default(),
             local_types: Default::default(),
             op_impls: &op_impls,
@@ -792,7 +976,7 @@ fn gen_main(names: &[(String, String)]) -> String {
          \x20   if (g_warnings) printf(\"; %d warning%s\", g_warnings, g_warnings == 1 ? \"\" : \"s\");\n\
          \x20   printf(\"\\n\");\n",
     );
-    m.push_str("    sx_vcd_close();\n    return failed ? 1 : 0;\n}\n");
+    m.push_str("    sx_io_reset();\n    sx_vcd_close();\n    return failed ? 1 : 0;\n}\n");
     m
 }
 
@@ -842,6 +1026,10 @@ struct Ctx<'a> {
     /// Declared `(left, right)` bounds for range attributes, preserving
     /// direction independently from flattened storage order.
     local_ranges: std::cell::RefCell<HashMap<String, (i64, i64)>>,
+    /// Runtime-owned `string` locals produced by `read_to_string`. Their
+    /// element count is not known while C is generated, so they use one
+    /// `sx_dyn_array` rather than flattened per-character locals.
+    dynamic_strings: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Declared vector family of a testbench name (`let a: signed[8]` -> "signed"),
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
@@ -1230,8 +1418,6 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
     out
 }
 
-/// A valid C identifier for a testbench local. Bare names (the common case)
-/// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
 /// The literal path of a `read`/`read_to_string` call, if `e` is one.
 fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
     let ast::Expr::Call { callee, args, .. } = e else {
@@ -1249,6 +1435,8 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
     }
 }
 
+/// A valid C identifier for a testbench local. Bare names (the common case)
+/// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
 /// is mangled to a flat identifier (`sxl_p_a`, `sxl_v_2`).
 fn c_local_ident(name: &str) -> String {
     if name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
@@ -1558,72 +1746,124 @@ impl Ctx<'_> {
                 .is_some_and(|ty| self.type_is(ty, expected))
     }
 
-    /// A testbench local initialized from a `std::fs` file read
-    /// (`let s: string = read_to_string("path")`, `let m: unsigned[8][N] = read(..)`).
-    /// The file is read at **build time** (matching the corpus's stable fixtures)
-    /// to size and fill the local: one `Char`/byte element per index. Returns
-    /// `true` when handled. `read`/`read_to_string` in *initializer* position of
-    /// a DUT signal is baked by the IR; this covers the testbench-local case.
+    fn emit_runtime_storage_write(
+        &self,
+        path: &str,
+        value: &str,
+        b: &mut String,
+        indent: &str,
+    ) -> Result<(), String> {
+        if let Some(id) = self.map.get(path) {
+            b.push_str(&format!("{indent}sx_set({}, {value});\n", id.0));
+            for extra in self.alias_ids_beyond(path, &id.0.to_string()) {
+                b.push_str(&format!("{indent}sx_set({extra}, {value});\n"));
+            }
+            return Ok(());
+        }
+        if self.locals.borrow().contains(path) {
+            b.push_str(&format!("{indent}{} = {value};\n", c_local_ident(path)));
+            return Ok(());
+        }
+        Err(format!(
+            "runtime file target `{path}` has no native storage"
+        ))
+    }
+
+    /// A testbench local initialized from a runtime `std::fs` read. Fixed raw
+    /// arrays retain their declared labels/element widths; an unconstrained
+    /// string owns a dynamic code-point buffer. Hardware/top initializers are
+    /// still folded by IR as ROM images — this path is only generated for a
+    /// `#[test]` body.
     fn try_declare_fs_read_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(value) = &l.value else {
             return Ok(false);
         };
-        let (path, bytes) = match (
-            fs_read_path(value, "read_to_string"),
-            fs_read_path(value, "read"),
-        ) {
-            (Some(p), _) => (p, false),
-            (_, Some(p)) => (p, true),
-            _ => return Ok(false),
-        };
-        let full = self.design.base_dir.join(&path);
-        let codes: Vec<u64> = if bytes {
-            std::fs::read(&full)
-                .map_err(|e| format!("read(\"{path}\"): {e}"))?
-                .iter()
-                .map(|&x| x as u64)
-                .collect()
-        } else {
-            std::fs::read_to_string(&full)
-                .map_err(|e| format!("read_to_string(\"{path}\"): {e}"))?
-                .chars()
-                .map(|c| c as u32 as u64)
-                .collect()
-        };
         let name = &l.name.text;
-        if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+        let Some(ty) = &l.ty else {
+            return Err(format!("runtime file local `{name}` needs a declared type"));
+        };
+        let serial = self.tmp.get();
+        self.tmp.set(serial + 1);
+
+        if let Some(path) = fs_read_path(value, "read_to_string") {
+            if !is_single_string_type(ty) {
+                return Err(format!(
+                    "read_to_string(\"{path}\") needs a `string` target"
+                ));
+            }
+            let full = c_escape(&self.design.base_dir.join(&path).to_string_lossy());
+            if let Some(indices) = sized_string_indices(ty, self.const_ranges, self.consts) {
+                self.declare_typed_storage(name, ty, b)?;
+                b.push_str(&format!(
+                    "    sx_dyn_array _fst{serial} = sx_read_text(\"{full}\");\n\
+                         if (g_io_failed) {{ g_msg = g_io_message; return 1; }}\n\
+                         if (_fst{serial}.length > {}) {{\n\
+                             snprintf(g_io_message, sizeof g_io_message, \
+                     \"read_to_string(\\\"{}\\\"): %zu characters do not fit a {}-element string\", \
+                     _fst{serial}.length); g_msg = g_io_message; return 1;\n\
+                         }}\n",
+                    indices.len(),
+                    c_escape(&path),
+                    indices.len()
+                ));
+                for (position, index) in indices.into_iter().enumerate() {
+                    let key = format!("{name}[{index}]");
+                    self.emit_runtime_storage_write(
+                        &key,
+                        &format!(
+                            "({position} < _fst{serial}.length ? _fst{serial}.values[{position}] : 0)"
+                        ),
+                        b,
+                        "    ",
+                    )?;
+                }
+                return Ok(true);
+            }
             self.local_types
                 .borrow_mut()
-                .insert(name.clone(), head.to_string());
+                .insert(name.clone(), "string".into());
+            self.dynamic_strings.borrow_mut().insert(name.clone());
+            b.push_str(&format!(
+                "    sx_dyn_array {} = sx_read_text(\"{full}\");\n\
+                     if (g_io_failed) {{ g_msg = g_io_message; return 1; }}\n",
+                c_local_ident(name)
+            ));
+            return Ok(true);
         }
-        // The file is read here, at build time, so the element count is known
-        // — but it was only ever spent laying out storage and then dropped, so
-        // `'length` on the local had nothing to consult and failed as "not
-        // known at compile time" for a length this function had in hand.
-        self.local_indices
-            .borrow_mut()
-            .insert(name.clone(), (0..codes.len() as i64).collect());
-        for (i, &code) in codes.iter().enumerate() {
-            let key = format!("{name}[{i}]");
-            if !bytes {
+
+        let Some(path) = fs_read_path(value, "read") else {
+            return Ok(false);
+        };
+        let Some((_element, indices)) = self.array_parts(ty) else {
+            return Err(format!("read(\"{path}\") needs a fixed-size array target"));
+        };
+        self.declare_typed_storage(name, ty, b)?;
+        let first = indices.first().copied().unwrap_or(0);
+        let first_key = format!("{name}[{first}]");
+        if !self.locals.borrow().contains(&first_key) && !self.map.contains_key(&first_key) {
+            return Err(format!(
+                "read(\"{path}\") currently needs scalar or packed-vector array elements"
+            ));
+        }
+        let width = self.name_width(&first_key).unwrap_or(8).max(1);
+        let bytes = width.div_ceil(8);
+        let full = c_escape(&self.design.base_dir.join(&path).to_string_lossy());
+        let storage = indices.len().max(1);
+        b.push_str(&format!(
+            "    sx_value _fsr{serial}[{storage}];\n\
+                 if (!sx_read_values(\"{full}\", _fsr{serial}, {}, {bytes}, {width})) \
+             {{ g_msg = g_io_message; return 1; }}\n",
+            indices.len()
+        ));
+        for (position, index) in indices.into_iter().enumerate() {
+            let key = format!("{name}[{index}]");
+            if let Some(head) = type_head_name(ty) {
                 self.local_types
                     .borrow_mut()
-                    .insert(key.clone(), "Char".into());
+                    .entry(key.clone())
+                    .or_insert_with(|| head.to_string());
             }
-            // A connected element writes its signal; an unconnected local gets
-            // its own C variable, registered so `name[i]` reads resolve to it.
-            if let Some(&id) = self.map.get(&key) {
-                b.push_str(&format!("    sx_set({}, {code}ULL);\n", id.0));
-                for extra in self.alias_ids_beyond(&key, &id.0.to_string()) {
-                    b.push_str(&format!("    sx_set({extra}, {code}ULL);\n"));
-                }
-            } else {
-                b.push_str(&format!(
-                    "    uint64_t {} = {code}ULL;\n",
-                    c_local_ident(&key)
-                ));
-                self.locals.borrow_mut().insert(key);
-            }
+            self.emit_runtime_storage_write(&key, &format!("_fsr{serial}[{position}]"), b, "    ")?;
         }
         Ok(true)
     }
@@ -3373,7 +3613,7 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_reset();\n    sx_vcd_begin_test();\n",
+            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_vcd_begin_test();\n",
             self.name
         ));
 
@@ -4197,6 +4437,44 @@ impl Ctx<'_> {
                 var, range, body, ..
             } => {
                 let v = &var.text;
+                if let Some(path) =
+                    expr_path(range).filter(|path| self.dynamic_strings.borrow().contains(path))
+                {
+                    let k = self.tmp.get();
+                    self.tmp.set(k + 1);
+                    let source = c_local_ident(&path);
+                    b.push_str(&format!(
+                        "{ind}{{ sx_dyn_array *_a{k} = &{source};\n\
+                         {ind}for (size_t _i{k} = 0; _i{k} < _a{k}->length; ++_i{k}) {{\n\
+                         {ind}sx_value {v} = _a{k}->values[_i{k}];\n"
+                    ));
+                    let fresh = self.locals.borrow_mut().insert(v.clone());
+                    let previous_type = self
+                        .local_types
+                        .borrow_mut()
+                        .insert(v.clone(), "Char".to_string());
+                    let previous_family = self.local_families.borrow_mut().remove(v);
+                    let previous_width = self.local_widths.borrow_mut().insert(v.clone(), 32);
+                    for statement in &body.stmts {
+                        self.stmt(statement, b, depth + 1)?;
+                    }
+                    self.local_types.borrow_mut().remove(v);
+                    self.local_widths.borrow_mut().remove(v);
+                    if let Some(previous) = previous_type {
+                        self.local_types.borrow_mut().insert(v.clone(), previous);
+                    }
+                    if let Some(previous) = previous_family {
+                        self.local_families.borrow_mut().insert(v.clone(), previous);
+                    }
+                    if let Some(previous) = previous_width {
+                        self.local_widths.borrow_mut().insert(v.clone(), previous);
+                    }
+                    if fresh {
+                        self.locals.borrow_mut().remove(v);
+                    }
+                    b.push_str(&format!("{ind}}} }}\n"));
+                    return Ok(());
+                }
                 // `for x in xs`: iterate a DUT-connected array via an id table.
                 if let Some((path, n)) =
                     expr_path(range).and_then(|p| self.array_len(&p).map(|n| (p, n)))
@@ -4441,6 +4719,9 @@ impl Ctx<'_> {
                         return None;
                     };
                     let base = expr_path(base)?;
+                    if self.dynamic_strings.borrow().contains(&base) {
+                        return Some("Char".to_string());
+                    }
                     self.local_types
                         .borrow()
                         .get(&format!("{base}[0]"))
@@ -4485,6 +4766,9 @@ impl Ctx<'_> {
             if let ast::Expr::StrLit { text, .. } = a {
                 cfmt.push_str("%s");
                 cargs.push(format!("\"{}\"", c_escape(text)));
+            } else if let Some(path) = self.dynamic_string_path(a) {
+                cfmt.push_str("%s");
+                cargs.push(format!("{}.text", c_local_ident(&path)));
             } else if let Some(elems) = string_elems {
                 cfmt.push_str("%s");
                 if elems.is_empty() {
@@ -4713,6 +4997,31 @@ impl Ctx<'_> {
         (n > 0).then_some(n)
     }
 
+    fn dynamic_string_path(&self, expression: &ast::Expr) -> Option<String> {
+        let path = expr_path(expression)?;
+        self.dynamic_strings
+            .borrow()
+            .contains(&path)
+            .then_some(path)
+    }
+
+    fn dynamic_string_index(&self, expression: &ast::Expr) -> Option<Result<String, String>> {
+        let ast::Expr::Index { base, index, .. } = expression else {
+            return None;
+        };
+        if matches!(
+            index.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return None;
+        }
+        let path = self.dynamic_string_path(base)?;
+        Some(
+            self.expr(index)
+                .map(|index| format!("sx_dyn_get(&{}, ({index}))", c_local_ident(&path))),
+        )
+    }
+
     /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
     /// is a code point, not a logic code).
     fn is_char_operand(&self, e: &ast::Expr) -> bool {
@@ -4722,6 +5031,11 @@ impl Ctx<'_> {
         // only thing that says it yields a character.
         if self.call_return_head(e).as_deref() == Some("Char") {
             return true;
+        }
+        if let ast::Expr::Index { base, .. } = e {
+            if self.dynamic_string_path(base).is_some() {
+                return true;
+            }
         }
         let Some(path) = expr_path(e) else {
             return false;
@@ -5351,6 +5665,27 @@ impl Ctx<'_> {
         }
     }
 
+    fn c_string_value_slice(&self, expression: &ast::Expr) -> Option<(String, String)> {
+        if let Some(path) = self.dynamic_string_path(expression) {
+            let ident = c_local_ident(&path);
+            return Some((format!("{ident}.values"), format!("{ident}.length")));
+        }
+        let values = match expression {
+            ast::Expr::StrLit { text, .. } => text
+                .chars()
+                .map(|character| format!("((sx_value){})", character as u32))
+                .collect::<Vec<_>>(),
+            _ => self.c_string_elems(expression)?,
+        };
+        let length = values.len();
+        let storage = if values.is_empty() {
+            "((sx_value[]){0})".to_string()
+        } else {
+            format!("((sx_value[]){{{}}})", values.join(", "))
+        };
+        Some((storage, length.to_string()))
+    }
+
     /// A formatted string argument as its per-character reads. Empty
     /// testbench-local strings deliberately produce an empty vector; they
     /// otherwise have no element local through which `c_string_elems` could
@@ -5375,6 +5710,27 @@ impl Ctx<'_> {
         lhs: &ast::Expr,
         rhs: &ast::Expr,
     ) -> Result<Option<String>, String> {
+        let left_dynamic = self.dynamic_string_path(lhs);
+        let right_dynamic = self.dynamic_string_path(rhs);
+        if left_dynamic.is_some() || right_dynamic.is_some() {
+            let (dynamic, other) = match (left_dynamic, right_dynamic) {
+                (Some(left), _) => (left, rhs),
+                (None, Some(right)) => (right, lhs),
+                (None, None) => unreachable!(),
+            };
+            let Some((values, length)) = self.c_string_value_slice(other) else {
+                return Ok(None);
+            };
+            let equal = format!(
+                "sx_dyn_equal_values(&{}, {values}, {length})",
+                c_local_ident(&dynamic)
+            );
+            return Ok(Some(if matches!(op, ast::BinOp::Eq) {
+                equal
+            } else {
+                format!("(!({equal}))")
+            }));
+        }
         let lit = |e: &ast::Expr| match e {
             ast::Expr::StrLit { text, .. } => Some(text.chars().collect::<Vec<char>>()),
             _ => None,
@@ -5744,9 +6100,8 @@ impl Ctx<'_> {
                     ))
                 }
                 "read" | "read_to_string" => Err(format!(
-                    "runtime `{name}()` is not compiled into the native binary yet; \
-                     use it in initializer position (`let x: T[N] = {name}(..);`) \
-                     or compile a test executable with `sioxc --test`"
+                    "runtime `{name}()` returns owned aggregate storage and is only valid \
+                     as a typed #[test] local initializer (`let x: T = {name}(..);`)"
                 )),
                 "rand" => Ok("sx_rand()".to_string()),
                 "uniform" => Ok("sx_uniform()".to_string()),
@@ -6089,6 +6444,9 @@ impl Ctx<'_> {
     }
 
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
+        if let Some(read) = self.dynamic_string_index(e) {
+            return read;
+        }
         // A field/element reached through a runtime array index has no static
         // path, but every concrete leaf does. Handle it once before the shape
         // match; packed bits return None and continue to their dedicated arm.
@@ -6286,6 +6644,9 @@ impl Ctx<'_> {
             // flat vector) — VHDL `'length`.
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "length" => {
                 let path = expr_path(base).ok_or("`'length` needs a named base")?;
+                if self.dynamic_strings.borrow().contains(&path) {
+                    return Ok(format!("((sx_value){}.length)", c_local_ident(&path)));
+                }
                 if let Some(v) = self
                     .fn_env
                     .borrow()
@@ -6320,6 +6681,20 @@ impl Ctx<'_> {
                 ) =>
             {
                 let path = expr_path(base);
+                if let Some(dynamic) = path
+                    .as_ref()
+                    .filter(|path| self.dynamic_strings.borrow().contains(*path))
+                {
+                    let ident = c_local_ident(dynamic);
+                    return Ok(match attr.text.as_str() {
+                        "left" | "low" => "((sx_value)0)".to_string(),
+                        "right" | "high" => {
+                            format!("((sx_value)(int64_t)((int64_t){ident}.length - 1))")
+                        }
+                        "ascending" => "((sx_value)1)".to_string(),
+                        _ => unreachable!(),
+                    });
+                }
                 let bounds = path
                     .as_ref()
                     .and_then(|path| self.local_ranges.borrow().get(path).copied());

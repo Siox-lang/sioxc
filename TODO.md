@@ -25,11 +25,9 @@ without normalization: W-P014 is explicitly scoped to hardware driver
 contexts, because sequential testbench writes settle individually and can be
 observable.
 
-First-valid-version decisions still open:
-
-- 🟡 **Testbench file I/O semantics.** Decide whether build-time baked file
-  reads are acceptable for the first version; otherwise runtime file reads are
-  required before calling the simulation surface complete.
+The first-valid-version policy decisions are resolved: native test fixtures
+are runtime inputs, while hardware/top file initializers are compile-time ROM
+images. The remaining sections are capability growth beyond that baseline.
 
 ## AST
 
@@ -164,14 +162,17 @@ Current baseline:
 - ✅ Late lowering diagnostics retain source anchors through IR metadata;
   compile-time file failures use E-P023 and all normalized signal lints point
   at their declarations.
+- ✅ Native `#[test]` file services execute in the generated binary. Fixed raw
+  arrays preserve declared labels and arbitrary-width little-endian elements;
+  runtime-owned UTF-8 strings support dynamic length, indexing, iteration,
+  comparison, and formatting. Missing/invalid/oversized fixtures fail the test
+  deterministically. Hardware/top file initializers remain compile-time ROM
+  images.
 
 Remaining:
 
 - 🔴 **FST output.** Add compressed waveform output for large simulations using
   the same scheduler-side change points as VCD.
-- 🔴 **Runtime file reads.** `read`/`read_to_string` fixtures are currently read
-  while building a test executable and baked into it. Add runtime
-  `fopen`/`fread` plus dynamic-length string/array ownership.
 - 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, vendor-neutral
   artifact after hierarchy elaboration and synthesizable-logic normalization.
   Vivado, Quartus, and other vendor adapters should consume it for synthesis,

@@ -2537,14 +2537,25 @@ unwind, so exception control flow has no meaning here. Errors instead take
 one of three forms: **hardware error conditions are ordinary signals**
 (`out error: Bit`, ready/valid); **fatal simulation errors** (`assert!`,
 range violations, missing files) fail the test, like a panic; and
-**recoverable conditions** use probe-and-branch (`if exists(p) { read(p) }
-else { ... }`) or `warn!`. A `Result`-style value would ride on future
-payload-carrying enums — never a keyword.
+**recoverable conditions** use explicit status values/signals or `warn!`.
+`exists("fixture.bin")` probes a literal source-relative path without failing;
+`read` and `read_to_string` failures themselves are fatal. A `Result`-style
+value would ride on future payload-carrying enums — never a keyword.
+
+File-returning primitives are typed initializers. In hardware/top declarations,
+the compiler opens the literal source-relative path and bakes a ROM image into
+the design. In a native `#[test]`, the generated executable opens the path when
+the test runs: `read` fills a fixed declared array in declaration order and
+`read_to_string` may create a runtime-sized Unicode string. Short fixed inputs
+zero-fill; oversized, missing, or invalid inputs fail the owning compile or test
+phase.
 
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
-directly, Python-style — length is the `'length` system attribute (an
-elaboration-time fact). Other scalar values are not iterable.
+directly, Python-style — length is the `'length` system attribute. It is an
+elaboration-time fact for declared arrays and a runtime value for an
+unconstrained string returned by `read_to_string`. Other scalar values are not
+iterable.
 
 A numeric range `left..right` in a `for` is **inclusive and directional**, exactly
 like a bit slice or array range (§ Bits and slices): `0..2` visits `0, 1, 2`
@@ -2678,8 +2689,9 @@ Errors:
 - Invalid attribute value type.
 - Invalid method call.
 - Invalid pattern.
-- Compile-time `read`/`read_to_string` failure or data that does not fit its
-  declared target (E-P023).
+- Compile-time hardware/top `read`/`read_to_string` failure or data that does
+  not fit its declared target (E-P023). The same failure in a native `#[test]`
+  is reported by the generated executable and fails that test.
 - Use of Phase 2-only analogue syntax.
 - Signal driven from multiple independent contexts when its type has no
   `impl Resolve` (E-P014).

@@ -26,13 +26,17 @@ Testbenches can read fixtures from disk with `read`, `read_to_string`, and
 and its data travel together:
 
 ```siox
-let rom: unsigned[8][256] = read("rom.bin");     // sized by the file
+let rom: unsigned[8][256] = read("rom.bin");     // fixed declared capacity
 let banner: string = read_to_string("banner.txt");
 ```
 
-In a native `--test` binary these reads currently happen at **build time**
-and are baked into the binary (fine for stable fixtures); a genuine runtime
-`fopen`/`fread` is a possible follow-up.
+In a native `--test` binary these reads happen when the generated executable
+runs. A fixed `read` target keeps its declared length (short files zero-fill;
+long files fail), while an unconstrained `string` owns a dynamic Unicode
+code-point buffer. Missing files, invalid UTF-8, and capacity failures fail the
+test with the operation and path. These aggregate-returning functions are used
+as typed local initializers. Hardware/top initializers remain different by
+design: `read` there is a compile-time ROM-image input baked into the object.
 
 ## Editor support (`siox-lsp`)
 

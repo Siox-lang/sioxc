@@ -123,6 +123,12 @@ declaration instead of becoming an anonymous unknown expression. Every scalar
 aggregate leaves and synthetic metavalue companions inherit that same anchor,
 so normalized-design lints do not lose their source location.
 
+File inputs follow the phase that owns their storage. Hardware/top
+initializers are elaboration-time ROM images in `Design::Signal::init`;
+`#[test]` locals are excluded from hardware IR and the generated native harness
+owns their runtime byte/code-point buffers. Both resolve relative paths against
+the source directory recorded in `Design::base_dir`.
+
 ## Cross-cutting conventions
 
 - **Spans everywhere.** Every AST node—and increasingly later-stage

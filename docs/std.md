@@ -186,9 +186,9 @@ pub enum Severity { Note, Warning, Error, Failure }
 
 ## Current boundaries
 
-- **File services exist**, but `read`/`read_to_string` fixtures are consumed
-  while building a native test executable and baked into it. Runtime mutable
-  file I/O still needs owned dynamic strings/arrays.
+- **File services execute at the owning phase.** Hardware/top initializers bake
+  ROM images during compilation; native `#[test]` locals open fixtures at run
+  time and own fixed byte arrays or dynamically sized Unicode strings.
 - **Real math exists** through `std::math` and the native C math ABI. `real`
   remains IEEE binary64; quad precision is a future LLVM/runtime capability,
   not an advertised compiler feature.

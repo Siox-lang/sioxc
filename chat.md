@@ -8011,3 +8011,31 @@ integration tests prove rendered filenames and line numbers for an undriven
 port and missing file. Formatting, 306 default and 297 bitpack unit tests plus
 all integrations, strict all-target/all-feature Clippy, direct native counter
 execution, and both 171/171 corpus configurations pass.
+
+### 2026-08-11 — Codex — moving testbench fixtures to runtime I/O
+
+Taking the final explicit first-version decision. Native `#[test]` executables
+will open `read`/`read_to_string` fixtures when the generated binary runs,
+while hardware/top initializers retain compile-time ROM-image semantics.
+Implementation scope includes owned runtime byte/text buffers, UTF-8 decoding,
+fixed-array capacity checks, dynamic string length/index/iteration/comparison/
+formatting, source-relative paths, deterministic run-time failures, IR/C
+lowering separation, documentation, and mutation-after-build regressions.
+
+### 2026-08-11 — Codex — runtime fixture ownership complete
+
+Generated `#[test]` functions now open typed `read` and `read_to_string`
+initializers when the executable runs. Raw arrays retain their declared labels,
+zero-fill short input, reject excess input, and pack arbitrary-width elements
+little-endian. Unconstrained UTF-8 strings own decoded code points and support
+runtime length/range attributes, indexing, iteration, equality, and formatting;
+fixed strings retain their declared capacity. Runtime failures name the
+operation and source-relative path. Allocations are reclaimed between tests.
+
+The regression builds with every runtime fixture absent, creates and mutates
+them only after compilation, and separately mutates a hardware ROM image to
+prove its elaborated value remains baked. It also covers `exists`, Unicode,
+wide elements, descending labels, missing input, invalid UTF-8, and both raw
+and text capacity failures. Formatting, 306 default and 297 bitpack unit tests
+plus all integrations, strict all-target/all-feature Clippy, direct native
+execution, and both 171/171 corpus configurations pass.

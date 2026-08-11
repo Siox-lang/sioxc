@@ -1,7 +1,7 @@
 module std::fs;
 
 // File primitives (Rust's std::fs shape: functions returning values; errors
-// are simulation/compile failures — a missing stimulus file fails the run).
+// are simulation/compile failures).
 // Runtime-provided, like std::rand. std ships the PRIMITIVE only: format
 // loaders (hex images, CSV stimulus, ...) are parsing libraries, not std.
 //
@@ -9,9 +9,10 @@ module std::fs;
 //                          (`let rom: unsigned[8][256] = read("rom.bin");`
 //                          little-endian packing for wider elements; a
 //                          shorter file leaves the tail at 0, a longer one
-//                          errors). In initializer position the COMPILER
-//                          reads the file (include_bytes!-style): contents
-//                          bake into the design, zero runtime IO.
-//   read_to_string(path)   file contents as a string; in initializer
-//                          position the Char[] length comes from the file
-//   exists(path)           whether the path exists (never fails)
+//                          errors). A hardware/top initializer is a ROM image
+//                          read by the compiler. A #[test] local is opened by
+//                          the generated executable each time that test runs.
+//   read_to_string(path)   UTF-8 file contents. The compiler bakes a
+//                          hardware/top initializer; a #[test] owns runtime
+//                          Char[] length and code-point storage.
+//   exists(path)           runtime path probe in a #[test] (never fails)
