@@ -676,7 +676,14 @@ impl<'a> Resolver<'a> {
             // so unknown names and unresolved local types inside every
             // module-level function passed Stage 3 silently.
             Item::Fn(f) => self.resolve_fn(f),
-            Item::ExternBlock { .. } => {}
+            // Foreign declarations still have ordinary SIOX types in their
+            // signatures. Resolve those names so ABI validation and call-site
+            // checking see nominal/aliased types instead of `Ty::Error`.
+            Item::ExternBlock { fns, .. } => {
+                for f in fns {
+                    self.resolve_fn(f);
+                }
+            }
             Item::Const(c) => {
                 self.resolve_type(&c.ty);
                 self.resolve_expr(&c.value);

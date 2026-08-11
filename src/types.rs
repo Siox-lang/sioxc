@@ -1187,12 +1187,108 @@ impl<'a> Checker<'a> {
                     self.check_function_fallthrough(f, body, &names);
                 }
             }
+            Item::ExternBlock { fns, .. } => {
+                for function in fns {
+                    self.check_extern_c_signature(function);
+                }
+            }
             // A struct newtype needs no check of its own: the form carries no
             // body, so there is nothing to validate past its base type.
             Item::Struct(_) => {}
             Item::View(v) => self.check_view(v),
-            Item::Using(_) | Item::AttrDecl(_) | Item::ExternBlock { .. } => {}
+            Item::Using(_) | Item::AttrDecl(_) => {}
         }
+    }
+
+    /// Validate the scalar ABI the current LLVM and generated-C backends
+    /// implement. Accepting a broader source type is dangerous here: both
+    /// backends otherwise lower every non-real value as one `uint64_t`, which
+    /// silently truncates wide vectors and treats aggregate layouts as scalar
+    /// words. Void calls in statement position are likewise not represented
+    /// in hardware IR yet, so reject them instead of dropping their effects.
+    fn check_extern_c_signature(&mut self, function: &FnDecl) {
+        if !function.generics.params.is_empty() {
+            self.error(
+                codes::TYPE_MISMATCH,
+                function.name.span,
+                format!(
+                    "extern C function `{}` cannot have generic parameters",
+                    function.name.text
+                ),
+            );
+        }
+        for parameter in &function.params {
+            let Some(ty) = &parameter.ty else {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    parameter
+                        .name
+                        .as_ref()
+                        .map_or(function.name.span, |name| name.span),
+                    format!(
+                        "extern C parameter in `{}` needs an explicit ABI type",
+                        function.name.text
+                    ),
+                );
+                continue;
+            };
+            self.check_extern_c_type(function, ty, "parameter");
+        }
+        match &function.ret {
+            Some(ty) => self.check_extern_c_type(function, ty, "return type"),
+            None => self.error_with_help(
+                codes::TYPE_MISMATCH,
+                function.name.span,
+                format!(
+                    "void extern C function `{}` is not supported yet",
+                    function.name.text
+                ),
+                "extern calls currently need a scalar return value; statement-only C calls have no hardware IR representation"
+                    .to_string(),
+            ),
+        }
+    }
+
+    fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
+        let checked = self.ast_ty(ty);
+        let supported = matches!(checked, Ty::Integer | Ty::Real)
+            || matches!(
+                checked,
+                Ty::Array {
+                    len: 1..=64,
+                    family: Some(_),
+                    ..
+                }
+            );
+        if supported || checked == Ty::Error {
+            return;
+        }
+        let detail = match checked {
+            Ty::Array {
+                len,
+                family: Some(_),
+                ..
+            } if len > 64 => {
+                format!("packed value is {len} bits, but the current C ABI carries one 64-bit word")
+            }
+            Ty::Array { .. } | Ty::Named(_) => {
+                "aggregate and nominal values have no C layout mapping".to_string()
+            }
+            Ty::Char => "Char has no declared C character ABI".to_string(),
+            Ty::Void => "void is not a value ABI type".to_string(),
+            Ty::Integer | Ty::Real | Ty::Error => unreachable!(),
+        };
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            type_head_span(ty).unwrap_or(function.name.span),
+            format!(
+                "unsupported extern C {position} `{}` in `{}`: {detail}",
+                crate::syntax::pretty::type_str(ty),
+                function.name.text
+            ),
+            "use `real`, `integer`, or a packed numeric type of at most 64 bits; wrap other C signatures in a scalar C adapter"
+                .to_string(),
+        );
     }
 
     /// Validate constant layout bounds before elaboration/lowering tries to
@@ -8706,13 +8802,50 @@ mod tests {
     #[test]
     fn extern_call_arguments_must_match_the_declaration() {
         let src = "module m;\n\
-                   extern \"C\" { fn take_int(value: integer); }\n\
+                   extern \"C\" { fn take_int(value: integer) -> integer; }\n\
                    entity E { y: Bit out }\n\
                    impl E { let value: real = 1.5; take_int(value); y = '0'; }\n";
         assert_eq!(
             check_src(src),
             1,
             "an extern call must not reinterpret a real argument as an integer"
+        );
+    }
+
+    #[test]
+    fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
+        assert_eq!(
+            check_src(
+                "module m;\n\
+                 extern \"C\" {\n\
+                   fn mixed(x: real, y: integer, bits: unsigned[64]) -> integer;\n\
+                 }\n"
+            ),
+            0,
+            "real, integer, and one-word packed values are supported"
+        );
+        assert_eq!(
+            check_src("module m;\nextern \"C\" { fn wide(x: unsigned[65]) -> integer; }\n"),
+            1,
+            "a packed argument wider than the C ABI word must be rejected"
+        );
+        assert_eq!(
+            check_src("module m;\nextern \"C\" { fn aggregate(x: unsigned[8][2]) -> integer; }\n"),
+            1,
+            "an array has no scalar C ABI mapping"
+        );
+        assert_eq!(
+            check_src(
+                "module m;\nstruct Pair { a: integer, b: integer }\n\
+                 extern \"C\" { fn record() -> Pair; }\n"
+            ),
+            1,
+            "a struct return has no C layout mapping"
+        );
+        assert_eq!(
+            check_src("module m;\nextern \"C\" { fn side_effect(x: integer); }\n"),
+            1,
+            "void calls must not be accepted and then dropped"
         );
     }
 

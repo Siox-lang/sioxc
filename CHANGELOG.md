@@ -12,6 +12,14 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Foreign C declarations now enforce their implemented scalar ABI.**
+  `real`, `integer`, and packed numeric values up to 64 bits remain supported;
+  generic, void, character, aggregate, and multiword signatures now produce an
+  E-P003 diagnostic before lowering instead of risking dropped effects,
+  invented layouts, or truncation. Extern signature types are resolved like
+  ordinary function signatures, including nominal and aliased names. Native
+  contract tests exercise direct testbench, combinational, clocked, signed,
+  real, and mixed-argument calls.
 - **File input is one typed construct, `read<T>`.** `read<string>` decodes
   UTF-8, `read<integer>` reads raw little-endian binary, and packed numeric
   requests such as `read<unsigned[16]>` reuse the integer path and ordinary

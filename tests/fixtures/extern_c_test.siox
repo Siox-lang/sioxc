@@ -1,0 +1,61 @@
+module ffi_contract;
+
+extern "C" {
+    fn sqrt(value: real) -> real;
+    fn scalbln(value: real, exponent: integer) -> real;
+    fn labs(value: integer) -> integer;
+}
+
+entity ForeignCalls {
+    clk: Bit in,
+    value: real in,
+    exponent: integer in,
+    signed_value: integer in,
+    root: real out,
+    scaled: real out,
+    magnitude: integer out
+}
+
+impl ForeignCalls {
+    let captured: integer = 0;
+
+    root = sqrt(value);
+    scaled = scalbln(value, exponent);
+
+    if clk.rising() {
+        captured = labs(signed_value);
+    }
+
+    magnitude = captured;
+}
+
+#[test]
+entity ForeignCallsTest {}
+
+impl ForeignCallsTest {
+    let clk: Bit = '0';
+    let value: real = 9.0;
+    let exponent: integer = 3;
+    let signed_value: integer = -37;
+    let root: real;
+    let scaled: real;
+    let magnitude: integer;
+    let dut: ForeignCalls = {
+        .clk = clk,
+        .value = value,
+        .exponent = exponent,
+        .signed_value = signed_value,
+        .root = root,
+        .scaled = scaled,
+        .magnitude = magnitude
+    };
+
+    await 1fs;
+    assert!(root == 3.0, "double argument and return");
+    assert!(scaled == 72.0, "mixed double and signed 64-bit arguments");
+    assert!(labs(-123) == 123, "direct signed 64-bit testbench call");
+
+    clk = '1';
+    await 1fs;
+    assert!(magnitude == 37, "clocked hardware extern call");
+}

@@ -8088,3 +8088,22 @@ exact local CI matrix passes: fmt, frontend check/Clippy, build, default and
 bitpack tests, all-target/all-feature Clippy, and 171/171 corpus programs in
 both value representations. A generated `fs_test` binary was also run directly
 from `/tmp`, proving source-relative fixture ownership.
+
+### 2026-08-11 — Codex — hardening and testing the extern C ABI boundary
+
+Adding focused compiler tests for the supported scalar C ABI and negative
+coverage for signatures the current backends cannot marshal safely. The
+semantic checker will reject void side-effect calls, aggregate parameters or
+returns, and packed values wider than the 64-bit ABI word instead of allowing
+them to disappear or truncate in lowering. Native integration coverage will
+exercise signed integer, real, and mixed-register calls in one fixture.
+
+Completed the ABI contract and its executable coverage. Extern declaration
+types now pass through ordinary name resolution, and Stage 4 accepts only
+value-returning `real`, `integer`, or packed 1..64-bit numeric signatures;
+generic, void, character, aggregate, and multiword forms stop with E-P003.
+The native fixture passes direct testbench, combinational, and clocked calls
+through `sqrt`, `scalbln`, and `labs`. Documentation and the API roadmap record
+the supported boundary and leave pointers/layouts/custom library discovery for
+the future general FFI layer. The exact local CI matrix passes, including both
+value layouts and both complete `/home/max/siox-tests` corpus runs.

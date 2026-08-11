@@ -1825,6 +1825,15 @@ destination's storage width.
 The native binary resolves symbols at link time (the math library is linked by
 default). Only the `"C"` ABI is supported.
 
+The implemented boundary is value-returning and scalar: a packed numeric must
+be 1 through 64 bits, and every function must return `real`, `integer`, or one
+such packed value. Generic declarations, void calls, `Char`, structs, and
+arrays are rejected before lowering. Use a scalar C adapter for pointer,
+aggregate, side-effect-only, or multiword APIs. Compiler-emitted objects leave
+foreign symbols for their consumer to link; generated native test executables
+currently link the system C and math libraries and have no custom `-L`/`-l`
+interface.
+
 
 ## 4. Historical Phase 1 implementation plan
 

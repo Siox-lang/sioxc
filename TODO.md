@@ -204,6 +204,11 @@ Current baseline:
   a Cargo Git dependency without depending on LLVM.
 - ✅ The native design ABI exposes reset, settle, and low-word-first signal
   get/set operations.
+- ✅ Foreign C declarations have a checked scalar ABI: `real`, signed
+  `integer`, and packed numeric values up to one 64-bit word work in
+  combinational logic, clocked logic, and native testbenches. Unsupported
+  aggregate, multiword, generic, character, and void signatures fail before
+  lowering instead of being truncated or dropped.
 - ✅ `sioxc` keeps rustc-like scope: project graphs, execution, dependency
   management, and directory-wide testing remain outside the compiler.
 
@@ -219,6 +224,11 @@ Remaining:
 - 🔴 **cocotb/VPI-GPI integration.** Build name→handle lookup,
   get/put/force/release, timed callbacks, value-change callbacks, and
   read-write/read-only phase callbacks over the native scheduler ABI.
+- 🟡 **General foreign-function ABI.** Define pointer/handle ownership,
+  aggregate and multiword layouts, explicit void/side-effect scheduling, and
+  platform-aware C scalar widths. Custom library discovery and linker flags
+  belong in the future project tool; `sioxc` should consume explicit inputs,
+  not discover packages itself.
 - 🔴 **Project/test tool.** A future Cargo-like executable should discover
   packages, cache builds, compile directories, run/filter generated tests, and
   coordinate waveform output. None of this belongs in `sioxc`.

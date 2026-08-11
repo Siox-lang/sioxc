@@ -11,13 +11,26 @@ A design or testbench may call C functions declared `extern "C"`:
 extern "C" fn sin(x: real) -> real;
 ```
 
-Only the `"C"` ABI is supported. Type mapping: `real` is `double`; `integer` is
-the signed 64-bit ABI word; packed word-sized numeric types use the unsigned
-64-bit ABI word. Calls are usable in hardware expressions and in testbenches.
+Only the `"C"` ABI is supported. Its current contract is deliberately scalar:
+
+- `real` maps to C `double`.
+- `integer`, including aliases and constrained forms, maps to a signed 64-bit
+  ABI word.
+- A packed numeric type from 1 through 64 bits maps to an unsigned 64-bit ABI
+  word; the result is converted to its declared storage width.
+
+Every declaration must have a scalar return value. Generic declarations,
+statement-only/void calls, structs, arrays, characters, and packed values wider
+than 64 bits are rejected during type checking because the backends do not yet
+have C layout or multiword-call rules for them. Wrap such an API in a C adapter
+that accepts and returns the scalar types above. Calls are usable in
+combinational expressions, clocked logic, and testbenches.
 
 In the **native binary**, symbols resolve at link time. The math library is
 linked by default, so the `std::math` surface — `sin`, `sqrt`, … — works out of
-the box.
+the box. Other symbols may be resolved by a consumer linking a compiler-emitted
+object; the generated native test executable does not yet accept custom library
+search paths or `-l` options.
 
 ## File I/O
 
