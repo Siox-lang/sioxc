@@ -238,6 +238,13 @@ Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —
 deferred until something needs precision beyond f64.
 
+Cargo features name implemented build boundaries only: `cli`/`llvm` select the
+compiler executable and LLVM dependency, `simd` targets the build host's CPU
+features, and `bitpack` selects the alternate packed state layout. Arbitrary-
+width integers are part of the normal compiler and need no `wide` flag. Quad
+precision has no `f128` flag until its lowering, ABI, formatting, and fallback
+runtime all exist.
+
 ## The CLI as the pipeline driver
 
 `sioxc` is where the stages are composed. It loads a file into a

@@ -17,8 +17,6 @@ default = ["cli"]
 cli = ["dep:clap", "llvm"]
 llvm = ["dep:inkwell"]
 simd = []
-wide = []
-f128 = []
 bitpack = []
 
 [lib]

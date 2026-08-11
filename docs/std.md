@@ -190,7 +190,8 @@ pub enum Severity { Note, Warning, Error, Failure }
   while building a native test executable and baked into it. Runtime mutable
   file I/O still needs owned dynamic strings/arrays.
 - **Real math exists** through `std::math` and the native C math ABI. `real`
-  remains IEEE binary64; quad precision is a separate LLVM/runtime feature.
+  remains IEEE binary64; quad precision is a future LLVM/runtime capability,
+  not an advertised compiler feature.
 - **Conversions and resize exist** for the numeric families used by the
   corpus.
 - **Vector metavalues propagate** through storage, logical operations,

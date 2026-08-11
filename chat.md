@@ -7963,3 +7963,27 @@ The unit regression also covers the direct and loop forms, while the existing
 hardware tests still detect both source-level and generated overlap. Default
 and bitpack Rust suites, strict Clippy, direct native execution, and both
 171/171 corpus runs are green.
+
+### 2026-08-11 — Codex — auditing advertised Cargo features
+
+Taking the first-version `f128` integrity item. The audit finds no `fp128`
+lowering, ABI, formatting, runtime, or conditional code at all: `f128 = []` is
+only a selectable promise. It also finds the same issue in the legacy
+`wide = []` flag; arbitrary-width integers have since become unconditional,
+so that flag cannot change a build. `simd` is genuine (it selects the host CPU
+and features in LLVM target creation) and `bitpack` is a fully separate storage
+layout. I will remove the two no-op flags, describe quad precision as future
+work rather than a present feature, and compile every remaining feature mode.
+
+### 2026-08-11 — Codex — advertised feature surface is honest
+
+Removed the empty `f128` and obsolete `wide` Cargo features. Arbitrary-width
+integer and signal support remains unconditional; quad precision stays an
+unadvertised future capability until its type, constants, operations, ABI, and
+formatting all exist. The documented feature surface is now exactly `cli`,
+`llvm`, `simd`, and `bitpack`, and each changes a real compiler boundary.
+
+Verified every remaining feature mode independently, then passed formatting,
+304 default unit tests plus integrations, 295 bitpack unit tests plus
+integrations, strict all-target/all-feature Clippy, and all 171 corpus programs
+under both the default and bitpack configurations.

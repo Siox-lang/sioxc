@@ -5,7 +5,7 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-10 against the compiler, standard library, documentation,
+Status audited 2026-08-11 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
@@ -29,9 +29,6 @@ First-valid-version decisions still open:
 
 - 🟡 **Late diagnostic spans.** Frontend errors are source-anchored, but the
   remaining IR-only warnings still need complete declaration/source spans.
-- 🟡 **Advertised optional features.** Implement `f128` end to end or remove it
-  from the advertised feature set until it is real; a selectable stub is not a
-  valid first-version capability.
 - 🟡 **Testbench file I/O semantics.** Decide whether build-time baked file
   reads are acceptable for the first version; otherwise runtime file reads are
   required before calling the simulation surface complete.
@@ -123,12 +120,18 @@ Current baseline:
   host SIMD features.
 - ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
   events, and the unbounded low-word-first ABI are covered.
+- ✅ Every advertised Cargo feature changes a real compiler boundary: `cli`
+  and `llvm` select dependencies/components, `simd` selects host target
+  features, and `bitpack` selects the alternate storage layout. Arbitrary-width
+  integers are always available; no legacy `wide` or unimplemented `f128` flag
+  is exposed.
 
 Remaining:
 
-- 🔴 **`f128`.** The feature is declared but not implemented. Add LLVM `fp128`
-  expression lowering, constants/conversions, ABI rules, formatting, and a
-  software-runtime path for hosts without scalar quad precision.
+- 🔴 **Quad precision (future, not advertised).** If a real use case requires
+  it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
+  formatting, and a software-runtime path for hosts without scalar quad
+  precision before exposing a Cargo feature or language type.
 - 🟡 **Aggregate layouts.** Consume the persistent recursive IR layouts once
   the IR item above lands; do not infer source aggregate sizing in the backend.
 - 🔴 **Optimization measurements.** Add repeatable size/runtime benchmarks for
