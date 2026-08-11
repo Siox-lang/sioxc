@@ -20,7 +20,7 @@ layer yet
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Design records and forward-looking proposals. Each document states which parts are implemented and which remain. |
-| [../TODO.md](../TODO.md) | The **outstanding-work list** — remaining Phase 1 gaps by area. |
+| [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
 language and [architecture.md](architecture.md) for the compiler.

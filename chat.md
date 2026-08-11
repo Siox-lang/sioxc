@@ -8039,3 +8039,27 @@ wide elements, descending labels, missing input, invalid UTF-8, and both raw
 and text capacity failures. Formatting, 306 default and 297 bitpack unit tests
 plus all integrations, strict all-target/all-feature Clippy, direct native
 execution, and both 171/171 corpus configurations pass.
+
+### 2026-08-11 — Codex — removing the native output-path panic
+
+The final first-version panic audit found a user-controlled `PathBuf` converted
+with `to_str().unwrap()` while invoking Clang for `--test`. Taking the narrow
+boundary fix and a Unix regression using a valid non-UTF-8 output filename;
+temporary object/source paths will also pass to `Command` as native OS strings.
+
+### 2026-08-11 — Codex — native C namespace and path boundary hardened
+
+Clang now receives source, object, and output paths as native OS strings, so a
+valid non-UTF-8 output filename no longer panics the compiler. Every testbench
+local path and loop binder is also encoded injectively into a private C
+namespace. This fixes both helper shadowing (`g_io_failed` could suppress a
+real runtime file error) and collisions between distinct flattened paths such
+as `a_b.c` and `a.b_c`.
+
+Process regressions prove the non-UTF-8 output path, independent flattened
+locals, helper isolation, and actionable runtime failure. The complete local
+CI matrix passes: formatting, frontend-only check/Clippy, build, 306 default
+and 297 bitpack unit tests plus all integrations, strict all-feature Clippy,
+and 171/171 corpus programs in both default and bitpack modes. The final marker
+and documentation audit now describes all remaining TODO items as post-baseline
+capability growth rather than first-version blockers.

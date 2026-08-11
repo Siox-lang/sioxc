@@ -24,6 +24,9 @@ their distinct zero fallback. Testbench generate-loop lint parity is resolved
 without normalization: W-P014 is explicitly scoped to hardware driver
 contexts, because sequential testbench writes settle individually and can be
 observable.
+Native harness locals use an injective private C namespace, so user names and
+distinct flattened source paths cannot shadow helpers or one another; linker
+paths remain native OS paths rather than requiring UTF-8.
 
 The first-valid-version policy decisions are resolved: native test fixtures
 are runtime inputs, while hardware/top file initializers are compile-time ROM
@@ -150,7 +153,8 @@ Current baseline:
   native `#[test]` executable. It never executes the artifact.
 - ✅ Native tests support filtering, assertions, timing/`await`, multiple
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
-  reporting.
+  reporting. User locals are injectively mangled outside the harness namespace,
+  and output filenames use native OS strings.
 - ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
   declared array labels, nested dimensions, struct fields/values and packed
   bits. Composite right-hand sides are staged before writes; aggregate reads

@@ -716,14 +716,10 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);
     }
     let status = Command::new("clang")
-        .args([
-            csrc.to_str().unwrap(),
-            obj.to_str().unwrap(),
-            "-O2",
-            "-lm",
-            "-o",
-            out.to_str().unwrap(),
-        ])
+        .arg(&csrc)
+        .arg(&obj)
+        .args(["-O2", "-lm", "-o"])
+        .arg(out)
         .status()
         .map_err(|e| format!("failed to run clang: {e}"))?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -1435,22 +1431,21 @@ fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
     }
 }
 
-/// A valid C identifier for a testbench local. Bare names (the common case)
-/// pass through unchanged; a struct-field or array-element name (`p.a`, `v[2]`)
-/// is mangled to a flat identifier (`sxl_p_a`, `sxl_v_2`).
+/// An injective C identifier for a testbench-local source path.
+///
+/// Every byte is encoded, including bytes that C would accept unchanged. This
+/// keeps user names out of the harness namespace and prevents flattened paths
+/// such as `a_b.c` and `a.b_c` from collapsing onto the same identifier.
 fn c_local_ident(name: &str) -> String {
-    if name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
-        return name.to_string();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(3 + name.len() * 3);
+    encoded.push_str("sxl");
+    for byte in name.bytes() {
+        encoded.push('_');
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
     }
-    let mut s = String::from("sxl_");
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c);
-        } else {
-            s.push('_');
-        }
-    }
-    s
+    encoded
 }
 
 /// Escape text for embedding inside a C string literal: backslash first,
@@ -3735,7 +3730,10 @@ impl Ctx<'_> {
                             } else {
                                 "uint64_t"
                             };
-                            b.push_str(&format!("    {c_ty} {} = {e};\n", l.name.text));
+                            b.push_str(&format!(
+                                "    {c_ty} {} = {e};\n",
+                                c_local_ident(&l.name.text)
+                            ));
                             self.locals.borrow_mut().insert(l.name.text.clone());
                             // Record an enum/Logic local's type so `print!`
                             // renders its symbol, not the raw discriminant.
@@ -4443,10 +4441,11 @@ impl Ctx<'_> {
                     let k = self.tmp.get();
                     self.tmp.set(k + 1);
                     let source = c_local_ident(&path);
+                    let variable = c_local_ident(v);
                     b.push_str(&format!(
                         "{ind}{{ sx_dyn_array *_a{k} = &{source};\n\
                          {ind}for (size_t _i{k} = 0; _i{k} < _a{k}->length; ++_i{k}) {{\n\
-                         {ind}sx_value {v} = _a{k}->values[_i{k}];\n"
+                         {ind}sx_value {variable} = _a{k}->values[_i{k}];\n"
                     ));
                     let fresh = self.locals.borrow_mut().insert(v.clone());
                     let previous_type = self
@@ -4498,10 +4497,11 @@ impl Ctx<'_> {
                             }
                         })
                         .collect();
+                    let variable = c_local_ident(v);
                     b.push_str(&format!(
                         "{ind}{{ sx_value _a{k}[] = {{{}}};\n\
                          {ind}for (signed _i{k} = 0; _i{k} < {n}; _i{k}++) {{ \
-                         sx_value {v} = _a{k}[_i{k}];\n",
+                         sx_value {variable} = _a{k}[_i{k}];\n",
                         values.join(", ")
                     ));
                     let fresh = self.locals.borrow_mut().insert(v.clone());
@@ -4558,11 +4558,12 @@ impl Ctx<'_> {
                 // wrap; `{v}` is exposed as uint64_t to match index/value use.
                 let k = self.tmp.get();
                 self.tmp.set(k + 1);
+                let variable = c_local_ident(v);
                 b.push_str(&format!(
                     "{ind}{{ int64_t _lo{k} = (int64_t)({lo}), _hi{k} = (int64_t)({hi});\n\
                      {ind}signed _st{k} = _lo{k} <= _hi{k} ? 1 : -1;\n\
                      {ind}for (int64_t _c{k} = _lo{k}; ; _c{k} += _st{k}) {{\n\
-                     {ind}uint64_t {v} = (uint64_t)_c{k};\n"
+                     {ind}uint64_t {variable} = (uint64_t)_c{k};\n"
                 ));
                 let fresh = self.locals.borrow_mut().insert(v.clone());
                 let previous_type = self

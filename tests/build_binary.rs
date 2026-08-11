@@ -3,6 +3,108 @@
 
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+
+#[cfg(unix)]
+#[test]
+fn native_output_path_does_not_need_to_be_utf8() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let mut filename = format!("siox_non_utf8_{}", std::process::id()).into_bytes();
+    filename.push(0xff);
+    let output = std::env::temp_dir().join(std::ffi::OsString::from_vec(filename));
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["--test", "tests/fixtures/counter_test.siox", "-o"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "non-UTF-8 output path failed:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "binary at non-UTF-8 path failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_file(output);
+}
+
+#[test]
+fn native_local_names_are_isolated_from_each_other_and_the_harness() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let stem = format!("siox_native_names_{}", std::process::id());
+    let directory = std::env::temp_dir().join(&stem);
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("names.siox");
+    let output = directory.join("names-test");
+    std::fs::write(
+        &source,
+        r#"module native_names;
+           using std::text::string;
+           struct Left { c: unsigned[8] }
+           struct Right { b_c: unsigned[8] }
+           #[test] entity FlattenedNames {}
+           impl FlattenedNames {
+               let a_b: Left = { .c = 11 };
+               let a: Right = { .b_c = 22 };
+               assert!(a_b.c == 11 and a.b_c == 22,
+                       "flattened paths stay distinct");
+           }
+           #[test] entity HarnessName {}
+           impl HarnessName {
+               let g_io_failed: unsigned[1] = 0;
+               let missing: string = read_to_string("not-there.txt");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "native name fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "missing fixture passed:\n{report}");
+    assert!(
+        report.contains("native_names::FlattenedNames ... ok"),
+        "flattened-name test did not pass independently:\n{report}"
+    );
+    assert!(
+        report.contains("native_names::HarnessName ... FAILED")
+            && report.contains("read_to_string")
+            && report.contains("not-there.txt"),
+        "harness helper was shadowed or failure was unclear:\n{report}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 #[test]
 fn test_no_run_builds_a_runnable_binary() {
     if Command::new("clang").arg("--version").output().is_err() {

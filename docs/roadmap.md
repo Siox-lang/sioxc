@@ -32,11 +32,11 @@ Implemented foundation:
 - standard-library source, native `#[test]` executables, assertions, timing,
   fixture reads, diagnostics, generated VCD output, LSP support, and CI corpus.
 
-Phase-1 completion work is organized by AST/IR/LLVM/Output/API/std in
-[`TODO.md`](../TODO.md). The major remaining product capabilities are native
-compressed waveform output, a stable embedding/scheduler API, cocotb
-integration,
-multi-file project tooling, and broader reusable std models.
+The first valid Phase-1 baseline is implemented. Further work is organized by
+AST/IR/LLVM/Output/API/std in [`TODO.md`](../TODO.md). Major product growth
+includes native compressed waveform output, a stable embedding/scheduler API,
+cocotb integration, multi-file project tooling, and broader reusable std
+models; those are not blockers for the baseline compiler and simulator.
 
 ## Phase 2 — analogue and mixed signal
 
