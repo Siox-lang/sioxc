@@ -7937,3 +7937,29 @@ native CLI fixture covers it independently. Default and bitpack Rust suites,
 strict Clippy, direct native execution, and both 170/170 corpus runs are green.
 The stale TODO policy item is removed because the specification was already
 authoritative.
+
+### 2026-08-11 — Codex — scoping W-P014 to driver contexts
+
+Taking the remaining testbench generate-loop lint policy item. W-P014 describes
+source-order override inside a hardware driver context, but the frontend also
+runs it on `#[test]` impls. That is not merely redundant: generated native
+stimulus settles after every connected-signal write, so `clk = '1'; clk = '0';`
+can fire an edge-triggered process between the two assignments. Calling the
+first assignment dead is a false positive. I will exclude testbench impl
+statements (including nested blocks) from W-P014, retain both source and
+post-specialization checks for hardware, document the scope in §3.14, and add
+a native edge-observability regression.
+
+### 2026-08-11 — Codex — W-P014 testbench scope complete
+
+`lint_dead_assignments` now exits for a `#[test]` impl, including nested blocks
+checked through the same testbench context. Hardware source sequences and the
+IR post-specialization/unrolling pass are unchanged. Section 3.14 now states
+the scope explicitly instead of suggesting stimulus-loop normalization.
+
+The native fixture drives three high/low pairs with no `await` between either
+half; the DUT counts all three rising edges and compilation emits no W-P014.
+The unit regression also covers the direct and loop forms, while the existing
+hardware tests still detect both source-level and generated overlap. Default
+and bitpack Rust suites, strict Clippy, direct native execution, and both
+171/171 corpus runs are green.

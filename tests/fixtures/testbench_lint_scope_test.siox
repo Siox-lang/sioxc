@@ -1,0 +1,29 @@
+module testbench_lint_scope_fixture;
+
+using std::bits::unsigned;
+using std::logic::Bit;
+
+entity EdgeCounter {
+    clk: Bit in,
+    pulses: unsigned[8] out,
+}
+impl EdgeCounter {
+    let count: unsigned[8] = 0;
+    if clk.rising() { count = count + 1; }
+    pulses = count;
+}
+
+#[test]
+entity TestbenchLintScopeFixture {}
+impl TestbenchLintScopeFixture {
+    let clk: Bit = '0';
+    let pulses: unsigned[8];
+    let counter: EdgeCounter = { .clk = clk, .pulses = pulses };
+
+    // Each write settles the native scheduler. Although adjacent assignments
+    // to one target are an override in hardware, these are three observable
+    // stimulus pulses and therefore must not receive W-P014.
+    clk = '1'; clk = '0';
+    for i in 0..1 { clk = '1'; clk = '0'; }
+    assert!(pulses == 3, "every adjacent stimulus pulse reaches the DUT");
+}

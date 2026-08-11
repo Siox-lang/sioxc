@@ -2063,6 +2063,14 @@ impl<'a> Checker<'a> {
     /// Conservative — any conditional/looping statement in between resets the
     /// scan, so the common `default then override` shapes never trip it.
     fn lint_dead_assignments<'s>(&mut self, stmts: impl Iterator<Item = &'s Stmt>) {
+        // Testbench assignments are sequential stimulus, not declarative
+        // drivers. The native harness settles after every connected-signal
+        // write, so even adjacent `clk = '1'; clk = '0';` assignments can be
+        // observed by an edge-triggered process. Applying the hardware
+        // source-order override rule here is therefore a false positive.
+        if self.in_testbench.get() {
+            return;
+        }
         let mut seen: HashMap<String, Span> = HashMap::new();
         for s in stmts {
             match s {
@@ -9850,6 +9858,13 @@ mod tests {
         // Distinct targets are unrelated.
         let distinct = "module m;\nentity E { y: unsigned[8] out, z: unsigned[8] out, }\nimpl E {\n  y = 1;\n  z = 2;\n}\n";
         assert_eq!(warnings(distinct, codes::DEAD_ASSIGNMENT), 0);
+
+        // Testbench stimulus settles after each connected-signal write. The
+        // first half of a clock pulse is observable even with no `await`
+        // between these statements, so neither it nor an unrolled repetition
+        // belongs to the driver-context lint.
+        let stimulus = "module m;\n#[test] entity T {}\nimpl T {\n  let clk: Bit = '0';\n  clk = '1';\n  clk = '0';\n  for i in 0..1 { clk = '1'; clk = '0'; }\n}\n";
+        assert_eq!(warnings(stimulus, codes::DEAD_ASSIGNMENT), 0);
     }
 
     #[test]

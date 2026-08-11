@@ -958,6 +958,11 @@ The condition follows the same `Boolean` rule as statement `if` (spec 3.16).
 
 Diagnostics and resolution:
 
+- W-P014 reports two unconditional assignments to the same target only within
+  a hardware driver context, where source-order override makes the earlier
+  assignment unobservable. It does not apply to `#[test]` stimulus: native
+  test executables settle after each connected-signal write, so adjacent writes
+  can intentionally form an observable pulse without an intervening `await`.
 - Missing default assignment that creates latch-like behavior.
 - Multiple unrelated driver contexts fold through the signal type's
   `impl Resolve`; this is explicit type-defined behavior and is legal.

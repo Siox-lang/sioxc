@@ -20,9 +20,10 @@ now cover scalar leaves, struct fields and values, nested dimensions, packed
 bits, declared nonzero/descending labels, composite copies/spreads, and
 out-of-range no-op writes. Runtime aggregate reads use the documented
 last-declared-element fallback in both engines; packed-vector reads retain
-their distinct zero fallback. Testbench generate-loop lint parity still needs
-a policy decision: either normalize stimulus loops before W-P014 analysis or
-document that the warning applies only to hardware driver contexts.
+their distinct zero fallback. Testbench generate-loop lint parity is resolved
+without normalization: W-P014 is explicitly scoped to hardware driver
+contexts, because sequential testbench writes settle individually and can be
+observable.
 
 First-valid-version decisions still open:
 
