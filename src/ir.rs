@@ -58,7 +58,7 @@ pub struct Design {
     /// Type name -> its `impl New for T` uninitialized default value (`Logic` ->
     /// `'U'`), so testbench-local seeding matches the hardware signal default.
     pub new_defaults: HashMap<String, u64>,
-    /// Directory that relative `read`/`read_to_string`/`exists` paths resolve
+    /// Directory that relative `read<T>`/`exists` paths resolve
     /// against — the design's source directory. Empty means the current working
     /// directory (the default; a bare `Design` reads CWD-relative).
     pub base_dir: std::path::PathBuf,
@@ -269,7 +269,7 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
     lower_in(modules, hier, sink, std::path::Path::new(""))
 }
 
-/// Lower with `base_dir` as the root that relative `read`/`read_to_string`
+/// Lower with `base_dir` as the root that relative `read<T>`
 /// paths resolve against (the design's source directory), so a program that
 /// bakes in a data file works regardless of the working directory.
 pub fn lower_in(
@@ -1448,35 +1448,41 @@ impl<'a> Lowering<'a> {
                             self.add_char_array(path, &l.name.text, text.chars().count(), l.span);
                             continue;
                         }
-                        // `let s: string = read_to_string("f.txt");` — the
-                        // compiler reads the file; its length sets the range.
-                        if let Some(fpath) = l
-                            .value
-                            .as_ref()
-                            .and_then(|v| Self::fs_read_call(v, "read_to_string"))
+                        // `let s: string = read<string>("f.txt");` — the
+                        // compiler reads UTF-8; its code-point length sets the
+                        // otherwise unconstrained range.
+                        if let Some((requested, fpath)) =
+                            l.value.as_ref().and_then(Self::fs_read_call)
                         {
-                            match std::fs::read_to_string(self.base_dir.join(fpath)) {
-                                Ok(text) => {
-                                    let chars: Vec<char> = text.chars().collect();
-                                    self.add_char_array(path, &l.name.text, chars.len(), l.span);
-                                    for (i, c) in chars.iter().enumerate() {
-                                        if let Some(&id) =
-                                            self.locals.get(&format!("{}[{i}]", l.name.text))
-                                        {
-                                            self.out.signals[id.0 as usize].init =
-                                                vec![*c as u32 as u64];
+                            if self.type_resolves_to(requested, "string") {
+                                match std::fs::read_to_string(self.base_dir.join(fpath)) {
+                                    Ok(text) => {
+                                        let chars: Vec<char> = text.chars().collect();
+                                        self.add_char_array(
+                                            path,
+                                            &l.name.text,
+                                            chars.len(),
+                                            l.span,
+                                        );
+                                        for (i, c) in chars.iter().enumerate() {
+                                            if let Some(&id) =
+                                                self.locals.get(&format!("{}[{i}]", l.name.text))
+                                            {
+                                                self.out.signals[id.0 as usize].init =
+                                                    vec![*c as u32 as u64];
+                                            }
                                         }
                                     }
+                                    Err(e) => self.sink.emit(
+                                        crate::diag::Diagnostic::error(format!(
+                                            "read<string>(\"{fpath}\"): {e}"
+                                        ))
+                                        .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                        .at(l.span),
+                                    ),
                                 }
-                                Err(e) => self.sink.emit(
-                                    crate::diag::Diagnostic::error(format!(
-                                        "read_to_string(\"{fpath}\"): {e}"
-                                    ))
-                                    .with_code(crate::diag::codes::COMPILE_TIME_IO)
-                                    .at(l.span),
-                                ),
+                                continue;
                             }
-                            continue;
                         }
                     }
                     if let Some(ty) = &l.ty {
@@ -1633,65 +1639,108 @@ impl<'a> Lowering<'a> {
                                 .map(|(_, &id)| id),
                         );
                     }
-                    // `let rom: unsigned[8][N] = read("rom.bin");` — the compiler
-                    // reads the file and bakes it into the element inits
-                    // (little-endian packing for elements wider than a byte;
-                    // a shorter file leaves the tail at 0; longer errors).
-                    if let Some(fpath) =
-                        l.value.as_ref().and_then(|v| Self::fs_read_call(v, "read"))
+                    // A typed file constructor is owned by elaboration here:
+                    // text decodes UTF-8 into Char leaves, while binary packs
+                    // little-endian integers and then stores them through the
+                    // requested destination representation.
+                    if let Some((requested, fpath)) = l.value.as_ref().and_then(Self::fs_read_call)
                     {
-                        if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
-                            match std::fs::read(self.base_dir.join(fpath)) {
-                                Ok(bytes) => {
-                                    let ew = self
-                                        .locals
-                                        .get(&format!("{}[{}]", l.name.text, indices[0]))
-                                        .map(|&id| self.out.signals[id.0 as usize].width)
-                                        .unwrap_or(8)
-                                        .max(1);
-                                    let per = ew.div_ceil(8) as usize;
-                                    if bytes.len() > per * indices.len() {
-                                        self.sink.emit(
-                                            crate::diag::Diagnostic::error(format!(
-                                                "read(\"{fpath}\"): {} bytes do not fit `{}` \
-                                                 ({} elements x {per} bytes)",
-                                                bytes.len(),
-                                                l.name.text,
-                                                indices.len()
-                                            ))
-                                            .with_code(crate::diag::codes::COMPILE_TIME_IO)
-                                            .at(l.span),
-                                        );
-                                    }
-                                    for (n, i) in indices.iter().enumerate() {
-                                        let mut v = 0u64;
-                                        for b in 0..per {
-                                            let byte = bytes.get(n * per + b).copied().unwrap_or(0);
-                                            v |= (byte as u64) << (8 * b);
+                        if self.type_resolves_to(requested, "string") {
+                            if let Some(indices) = self.local_array.get(&l.name.text).cloned() {
+                                match std::fs::read_to_string(self.base_dir.join(fpath)) {
+                                    Ok(text) => {
+                                        let chars = text.chars().collect::<Vec<_>>();
+                                        if chars.len() > indices.len() {
+                                            self.sink.emit(
+                                                crate::diag::Diagnostic::error(format!(
+                                                    "read<string>(\"{fpath}\"): {} characters do not fit `{}` ({} elements)",
+                                                    chars.len(),
+                                                    l.name.text,
+                                                    indices.len()
+                                                ))
+                                                .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                                .at(l.span),
+                                            );
                                         }
-                                        if let Some(&id) =
-                                            self.locals.get(&format!("{}[{i}]", l.name.text))
-                                        {
-                                            let w = self.out.signals[id.0 as usize].width;
-                                            let masked = if w > 0 && w < 64 {
-                                                v & ((1u64 << w) - 1)
-                                            } else {
-                                                v
-                                            };
-                                            self.out.signals[id.0 as usize].init = vec![masked];
+                                        for (position, index) in indices.iter().enumerate() {
+                                            if let Some(&id) = self
+                                                .locals
+                                                .get(&format!("{}[{index}]", l.name.text))
+                                            {
+                                                self.out.signals[id.0 as usize].init = vec![chars
+                                                    .get(position)
+                                                    .copied()
+                                                    .map(|character| character as u32 as u64)
+                                                    .unwrap_or(0)];
+                                            }
                                         }
                                     }
+                                    Err(error) => self.sink.emit(
+                                        crate::diag::Diagnostic::error(format!(
+                                            "read<string>(\"{fpath}\"): {error}"
+                                        ))
+                                        .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                        .at(l.span),
+                                    ),
                                 }
-                                Err(e) => self.sink.emit(
-                                    crate::diag::Diagnostic::error(format!(
-                                        "read(\"{fpath}\"): {e}"
-                                    ))
-                                    .with_code(crate::diag::codes::COMPILE_TIME_IO)
-                                    .at(l.span),
-                                ),
                             }
                             continue;
                         }
+
+                        let targets = self
+                            .local_array
+                            .get(&l.name.text)
+                            .map(|indices| {
+                                indices
+                                    .iter()
+                                    .filter_map(|index| {
+                                        self.locals
+                                            .get(&format!("{}[{index}]", l.name.text))
+                                            .copied()
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .or_else(|| self.locals.get(&l.name.text).copied().map(|id| vec![id]))
+                            .unwrap_or_default();
+                        match std::fs::read(self.base_dir.join(fpath)) {
+                            Ok(bytes) if !targets.is_empty() => {
+                                let element_width =
+                                    self.out.signals[targets[0].0 as usize].width.max(1);
+                                let element_bytes = element_width.div_ceil(8) as usize;
+                                let capacity = element_bytes.saturating_mul(targets.len());
+                                if bytes.len() > capacity {
+                                    self.sink.emit(
+                                        crate::diag::Diagnostic::error(format!(
+                                            "read<{}>(\"{fpath}\"): {} bytes do not fit `{}` ({} elements x {element_bytes} bytes)",
+                                            crate::syntax::pretty::type_str(requested),
+                                            bytes.len(),
+                                            l.name.text,
+                                            targets.len()
+                                        ))
+                                        .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                        .at(l.span),
+                                    );
+                                }
+                                for (position, id) in targets.into_iter().enumerate() {
+                                    self.out.signals[id.0 as usize].init = file_integer_words(
+                                        &bytes,
+                                        position.saturating_mul(element_bytes),
+                                        element_bytes,
+                                        element_width,
+                                    );
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) => self.sink.emit(
+                                crate::diag::Diagnostic::error(format!(
+                                    "read<{}>(\"{fpath}\"): {error}",
+                                    crate::syntax::pretty::type_str(requested)
+                                ))
+                                .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                .at(l.span),
+                            ),
+                        }
+                        continue;
                     }
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
@@ -3087,20 +3136,25 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// A `read("path")` / `read_to_string("path")` initializer's literal
-    /// path, when `e` is one (elaboration-time file reads, spec std::fs).
-    fn fs_read_call<'e>(e: &'e ast::Expr, which: &str) -> Option<&'e str> {
-        let ast::Expr::Call { callee, args, .. } = e else {
+    /// A `read<T>("path")` initializer's requested type and literal path.
+    fn fs_read_call(e: &ast::Expr) -> Option<(&ast::Type, &str)> {
+        let ast::Expr::Call {
+            callee,
+            type_args,
+            args,
+            ..
+        } = e
+        else {
             return None;
         };
         let ast::Expr::Path(p) = callee.as_ref() else {
             return None;
         };
-        if p.segments.len() != 1 || p.segments[0].text != which {
+        if p.segments.len() != 1 || p.segments[0].text != "read" {
             return None;
         }
-        match args.first() {
-            Some(ast::Expr::StrLit { text, .. }) => Some(text),
+        match (type_args.as_slice(), args.as_slice()) {
+            ([requested], [ast::Expr::StrLit { text, .. }]) => Some((requested, text)),
             _ => None,
         }
     }
@@ -11500,11 +11554,13 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
         },
         Expr::Call {
             callee,
+            type_args,
             args,
             bang,
             span,
         } => Expr::Call {
             callee: sub(callee),
+            type_args: type_args.clone(),
             args: args.iter().map(|a| subst_expr_paths(a, map)).collect(),
             bang: *bang,
             span: *span,
@@ -11688,11 +11744,13 @@ fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr {
         },
         Expr::Call {
             callee,
+            type_args,
             args,
             bang,
             span,
         } => Expr::Call {
             callee: sub(callee),
+            type_args: type_args.clone(),
             args: args.iter().map(|a| subst_expr(a, var, val)).collect(),
             bang: *bang,
             span: *span,
@@ -12043,6 +12101,35 @@ fn declared_view_key(view: &ast::ViewDecl) -> String {
     format!("{}@{target}", view.name.text)
 }
 
+/// Pack one little-endian file integer into the compiler's ABI-word vector.
+///
+/// File integers use exactly `ceil(width / 8)` bytes. Missing bytes are zero,
+/// and padding bits in the final byte never escape the declared type width.
+fn file_integer_words(bytes: &[u8], offset: usize, byte_count: usize, width: u32) -> Vec<u64> {
+    let word_count = width.max(1).div_ceil(64) as usize;
+    let mut words = vec![0; word_count];
+    for byte_index in 0..byte_count {
+        let Some(index) = offset.checked_add(byte_index) else {
+            break;
+        };
+        let Some(&byte) = bytes.get(index) else {
+            break;
+        };
+        let bit = byte_index * 8;
+        let word = bit / 64;
+        if let Some(destination) = words.get_mut(word) {
+            *destination |= u64::from(byte) << (bit % 64);
+        }
+    }
+    if let Some(last) = words.last_mut() {
+        let used = width % 64;
+        if used != 0 {
+            *last &= (1_u64 << used) - 1;
+        }
+    }
+    words
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12289,7 +12376,7 @@ mod tests {
     fn late_ir_errors_keep_stable_codes_and_source_spans() {
         let cases = [
             (
-                "module m;\n#[top] entity E {}\nimpl E { let data: unsigned[8][2] = read(\"__siox_missing_span_fixture__.bin\"); }\n",
+                "module m;\n#[top] entity E {}\nimpl E { let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\"); }\n",
                 crate::diag::codes::COMPILE_TIME_IO,
                 "let data:",
             ),

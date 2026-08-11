@@ -48,7 +48,7 @@ fn a_compile_time_file_error_renders_at_the_let_declaration() {
         using std::bits::{unsigned};\n\
         #[top] entity E {}\n\
         impl E {\n\
-          let data: unsigned[8][2] = read(\"__siox_missing_span_fixture__.bin\");\n\
+          let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\");\n\
         }\n";
     let (file, output) = compile("missing_file", source);
     let text = rendered(&output);

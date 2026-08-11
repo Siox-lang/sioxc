@@ -1110,6 +1110,7 @@ impl<'a> Parser<'a> {
                 let span = start.to(self.prev_span());
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(callee),
+                    type_args: Vec::new(),
                     args: vec![arg],
                     bang: false,
                     span,
@@ -1698,6 +1699,18 @@ impl<'a> Parser<'a> {
                     let args = self.parse_call_args();
                     e = Expr::Call {
                         callee: Box::new(e),
+                        type_args: Vec::new(),
+                        args,
+                        bang: false,
+                        span: start.to(self.prev_span()),
+                    };
+                }
+                TokenKind::Lt if matches!(e, Expr::Path(_)) && self.angle_then_lparen(self.pos) => {
+                    let type_args = self.parse_call_type_args();
+                    let args = self.parse_call_args();
+                    e = Expr::Call {
+                        callee: Box::new(e),
+                        type_args,
                         args,
                         bang: false,
                         span: start.to(self.prev_span()),
@@ -1709,6 +1722,7 @@ impl<'a> Parser<'a> {
                     let args = self.parse_call_args();
                     e = Expr::Call {
                         callee: Box::new(e),
+                        type_args: Vec::new(),
                         args,
                         bang: true,
                         span: start.to(self.prev_span()),
@@ -1730,6 +1744,22 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RParen, "to close a call");
+        args
+    }
+
+    /// Explicit type arguments on a constructor-like call: `read<T>(path)`.
+    /// These are deliberately type-only; value-generic function arguments are
+    /// inferred from ordinary parameters in Phase 1.
+    fn parse_call_type_args(&mut self) -> Vec<Type> {
+        self.expect(TokenKind::Lt, "to open call type arguments");
+        let mut args = Vec::new();
+        while !self.at_generic_end() && !self.at(TokenKind::Eof) {
+            args.push(self.parse_type());
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.close_generic("to close call type arguments");
         args
     }
 
@@ -2287,6 +2317,15 @@ impl<'a> Parser<'a> {
     fn angle_then_brace(&self, i: usize) -> bool {
         match self.matched_angle_end(i) {
             Some(end) => self.kind_at(end) == &TokenKind::LBrace,
+            None => false,
+        }
+    }
+
+    /// True if the `<...>` starting at `i` is immediately followed by `(`,
+    /// marking an explicitly typed call such as `read<string>(path)`.
+    fn angle_then_lparen(&self, i: usize) -> bool {
+        match self.matched_angle_end(i) {
+            Some(end) => self.kind_at(end) == &TokenKind::LParen,
             None => false,
         }
     }
@@ -3001,6 +3040,31 @@ mod tests {
         assert!(
             matches!(value, Expr::Binary { op: BinOp::Shr, .. }),
             "`a >> b` stays a shift"
+        );
+    }
+
+    #[test]
+    fn typed_construct_calls_keep_their_type_argument() {
+        let module = parse_ok(
+            "module m;\nimpl E { let rom: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\"); }\n",
+        );
+        let Item::Impl(implementation) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Let(declaration) = &implementation.items[0] else {
+            panic!("expected let")
+        };
+        let Some(Expr::Call {
+            type_args, args, ..
+        }) = &declaration.value
+        else {
+            panic!("expected typed call")
+        };
+        assert_eq!(type_args.len(), 1);
+        assert_eq!(args.len(), 1);
+        assert_eq!(
+            crate::syntax::pretty::type_str(&type_args[0]),
+            "unsigned[16]"
         );
     }
 

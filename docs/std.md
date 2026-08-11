@@ -36,6 +36,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
 | `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables (`Unicode`/`Ascii`) planned |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
+| `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
 | `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
 
@@ -188,7 +189,10 @@ pub enum Severity { Note, Warning, Error, Failure }
 
 - **File services execute at the owning phase.** Hardware/top initializers bake
   ROM images during compilation; native `#[test]` locals open fixtures at run
-  time and own fixed byte arrays or dynamically sized Unicode strings.
+  time and own fixed binary arrays or dynamically sized Unicode strings. The
+  surface is one typed construct: `read<string>` decodes UTF-8,
+  `read<integer>` reads raw binary, and packed numeric `read<T>` constructs `T`
+  from that integer representation.
 - **Real math exists** through `std::math` and the native C math ABI. `real`
   remains IEEE binary64; quad precision is a future LLVM/runtime capability,
   not an advertised compiler feature.

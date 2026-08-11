@@ -11,6 +11,14 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Changed
+- **File input is one typed construct, `read<T>`.** `read<string>` decodes
+  UTF-8, `read<integer>` reads raw little-endian binary, and packed numeric
+  requests such as `read<unsigned[16]>` reuse the integer path and ordinary
+  conversion. The old split `read(path)` / `read_to_string(path)` surface has
+  been removed. Scalar and array destinations work in compile-time ROM images
+  and native testbenches, including values wider than one ABI word.
+
 ### Fixed
 - **A register can now be clocked by a derived clock.** A clock divider or
   ripple counter — `if clk.rising() { h = not h; }` then
@@ -218,7 +226,7 @@ assertions, and VCD export — predates this changelog. See
   correct only for consts that happened to be zero (`LOW`). Now collected to a
   fixpoint (literals, logic chars, enum variants, other consts, const-fn
   arithmetic) and resolved on the interpreter, JIT, and native binary.
-- **File reads are now source-relative.** `read`/`read_to_string`/`exists`
+- **File reads are now source-relative.** `read<T>`/`exists`
   resolve a relative path against the `.siox` file's own directory (like
   `include_bytes!`), not the process working directory, so a program that bakes
   in a data file works no matter where it is compiled from. Absolute paths are
@@ -400,9 +408,8 @@ interpreter that doubles as a differential oracle).
   the non-fatal sibling of `assert!`: reports to stderr and counts in the
   test summary (`ok ... 1 passed; 0 failed; 2 warnings`) without failing.
   All three engines.
-- **`std::fs` primitives** — Rust-shaped file IO: `read(path)` fills a
-  declared array with the file's bytes, `read_to_string(path)` gives a
-  string its length, `exists(path)` probes. No handles, no modes, no `with`
+- **`std::fs` primitives** — typed file IO: `read<T>(path)` constructs binary
+  values or decodes a string, and `exists(path)` probes. No handles, no modes, no `with`
   — nothing to close. In initializer position the *compiler* reads the file
   (include_bytes! style): contents bake into `Signal.init`, so the native
   binary carries its ROM with zero runtime IO (verified: binary passes after

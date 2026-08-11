@@ -127,7 +127,9 @@ File inputs follow the phase that owns their storage. Hardware/top
 initializers are elaboration-time ROM images in `Design::Signal::init`;
 `#[test]` locals are excluded from hardware IR and the generated native harness
 owns their runtime byte/code-point buffers. Both resolve relative paths against
-the source directory recorded in `Design::base_dir`.
+the source directory recorded in `Design::base_dir`. The single `read<T>`
+construct selects UTF-8 for `string`; numeric types share the raw integer path
+and then use their normal integer representation/conversion.
 
 ## Cross-cutting conventions
 

@@ -68,7 +68,7 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
            #[test] entity HarnessName {}
            impl HarnessName {
                let g_io_failed: unsigned[1] = 0;
-               let missing: string = read_to_string("not-there.txt");
+               let missing: string = read<string>("not-there.txt");
            }"#,
     )
     .unwrap();
@@ -98,7 +98,7 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
     );
     assert!(
         report.contains("native_names::HarnessName ... FAILED")
-            && report.contains("read_to_string")
+            && report.contains("read<string>")
             && report.contains("not-there.txt"),
         "harness helper was shadowed or failure was unclear:\n{report}"
     );

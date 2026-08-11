@@ -5,14 +5,15 @@ module std::fs;
 // Runtime-provided, like std::rand. std ships the PRIMITIVE only: format
 // loaders (hex images, CSV stimulus, ...) are parsing libraries, not std.
 //
-//   read(path)             file bytes fill the declared array
-//                          (`let rom: unsigned[8][256] = read("rom.bin");`
-//                          little-endian packing for wider elements; a
-//                          shorter file leaves the tail at 0, a longer one
-//                          errors). A hardware/top initializer is a ROM image
-//                          read by the compiler. A #[test] local is opened by
-//                          the generated executable each time that test runs.
-//   read_to_string(path)   UTF-8 file contents. The compiler bakes a
-//                          hardware/top initializer; a #[test] owns runtime
+//   read<string>(path)     decodes UTF-8 into Char values. The compiler bakes
+//                          a hardware/top initializer; a #[test] owns runtime
 //                          Char[] length and code-point storage.
+//   read<integer>(path)    reads raw little-endian binary integers.
+//   read<T>(path)          reads those integers and constructs T from each one,
+//                          e.g. `let rom: unsigned[16][256] =
+//                          read<unsigned[16]>("rom.bin");`. Each value consumes
+//                          ceil(T'length / 8) bytes. Short data zero-fills; data
+//                          beyond the scalar/array target is an error. Hardware
+//                          reads occur during compilation; #[test] reads occur
+//                          in the generated executable.
 //   exists(path)           runtime path probe in a #[test] (never fails)

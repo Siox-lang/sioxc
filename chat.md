@@ -8063,3 +8063,28 @@ and 297 bitpack unit tests plus all integrations, strict all-feature Clippy,
 and 171/171 corpus programs in both default and bitpack modes. The final marker
 and documentation audit now describes all remaining TODO items as post-baseline
 capability growth rather than first-version blockers.
+
+### 2026-08-11 — Codex — unifying file reads as `read<T>` construction
+
+Migrating the split `read`/`read_to_string` intrinsic surface to one explicit
+generic constructor: `read<string>` selects UTF-8 text and `read<integer>`
+selects raw binary. Numeric requests such as `read<unsigned[16]>` use the raw
+integer path and construct each requested element through the ordinary
+`T(integer)` conversion. Scope includes generic call syntax, semantic
+validation, hardware and native lowering, std/docs, diagnostics, and both
+test suites; the old spelling will be removed rather than retained as a shim.
+
+Completed the migration. Calls now retain explicit type arguments through the
+AST, resolver, printer, specialization, semantic checks, IR, and native harness.
+Hardware and runtime reads support scalar or fixed-array numeric construction,
+little-endian `read<integer>` storage, UTF-8 `read<string>` (including aliases),
+and arbitrary-width values split across as many ABI words as their type needs.
+The legacy `read_to_string` primitive and untyped `read` contract are gone.
+
+Coverage includes parser/pretty round trips, invalid contract diagnostics,
+source-span diagnostics, runtime missing/oversized/invalid-UTF-8 failures,
+scalar and array reads, and 128-bit runtime and compile-time ROM images. The
+exact local CI matrix passes: fmt, frontend check/Clippy, build, default and
+bitpack tests, all-target/all-feature Clippy, and 171/171 corpus programs in
+both value representations. A generated `fs_test` binary was also run directly
+from `/tmp`, proving source-relative fixture ownership.

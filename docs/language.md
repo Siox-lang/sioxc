@@ -2539,22 +2539,25 @@ one of three forms: **hardware error conditions are ordinary signals**
 range violations, missing files) fail the test, like a panic; and
 **recoverable conditions** use explicit status values/signals or `warn!`.
 `exists("fixture.bin")` probes a literal source-relative path without failing;
-`read` and `read_to_string` failures themselves are fatal. A `Result`-style
+`read<T>` failures are fatal. A `Result`-style
 value would ride on future payload-carrying enums — never a keyword.
 
 File-returning primitives are typed initializers. In hardware/top declarations,
 the compiler opens the literal source-relative path and bakes a ROM image into
 the design. In a native `#[test]`, the generated executable opens the path when
-the test runs: `read` fills a fixed declared array in declaration order and
-`read_to_string` may create a runtime-sized Unicode string. Short fixed inputs
-zero-fill; oversized, missing, or invalid inputs fail the owning compile or test
-phase.
+the test runs. `read<string>` decodes UTF-8 and may create a runtime-sized
+Unicode string. `read<integer>` consumes raw little-endian binary, while a
+packed numeric request such as `read<unsigned[16]>` reads the integer data and
+uses the ordinary `unsigned[16](integer)` construction. One numeric element
+consumes `ceil(width / 8)` file bytes. A destination may be one requested value
+or a fixed array of it; short input zero-fills, and oversized, missing, or
+invalid input fails the owning compile or test phase.
 
 Testbench `let`s run in **statement order**; a name not connected to a DUT
 port is a plain local. `for` binds its loop variable, and any array iterates
 directly, Python-style — length is the `'length` system attribute. It is an
 elaboration-time fact for declared arrays and a runtime value for an
-unconstrained string returned by `read_to_string`. Other scalar values are not
+unconstrained string returned by `read<string>`. Other scalar values are not
 iterable.
 
 A numeric range `left..right` in a `for` is **inclusive and directional**, exactly
@@ -2689,7 +2692,7 @@ Errors:
 - Invalid attribute value type.
 - Invalid method call.
 - Invalid pattern.
-- Compile-time hardware/top `read`/`read_to_string` failure or data that does
+- Compile-time hardware/top `read<T>` failure or data that does
   not fit its declared target (E-P023). The same failure in a native `#[test]`
   is reported by the generated executable and fails that test.
 - Use of Phase 2-only analogue syntax.

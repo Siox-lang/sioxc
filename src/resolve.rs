@@ -1102,8 +1102,16 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(lhs);
                 self.resolve_expr(rhs);
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => {
                 self.resolve_expr(callee);
+                for ty in type_args {
+                    self.resolve_type(ty);
+                }
                 for a in args {
                     self.resolve_expr(a);
                 }

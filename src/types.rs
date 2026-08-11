@@ -3320,6 +3320,53 @@ impl<'a> Checker<'a> {
         let Some(t) = decl_ty else { return };
         self.check_value_range(t, value);
         let lhs = self.ast_ty(t);
+        // `read<T>` constructs either one `T`, a fixed array of `T`, or a
+        // string. Its dynamic/context-sized result deliberately has no
+        // standalone `Ty`, so validate it against the declared destination
+        // here rather than letting `Ty::Error` silently accept every shape.
+        if let Some(requested_type) = read_call_type(value) {
+            let requested = self.ast_ty(requested_type);
+            let text = matches!(
+                requested,
+                Ty::Array {
+                    ref elem,
+                    family: None,
+                    ..
+                } if matches!(elem.as_ref(), Ty::Char)
+            );
+            let compatible = if text {
+                matches!(
+                    lhs,
+                    Ty::Array {
+                        ref elem,
+                        family: None,
+                        ..
+                    } if matches!(elem.as_ref(), Ty::Char)
+                )
+            } else {
+                lhs == requested
+                    || matches!(
+                        lhs,
+                        Ty::Array {
+                            ref elem,
+                            family: None,
+                            ..
+                        } if elem.as_ref() == &requested
+                    )
+            };
+            if !compatible {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(value),
+                    format!(
+                        "`read<{}>` cannot initialize {}; declare one value or an array of the requested type",
+                        crate::syntax::pretty::type_str(requested_type),
+                        self.ty_display(&lhs)
+                    ),
+                );
+            }
+            return;
+        }
         // `let x: Named = { .. }` is a construction (instance/struct literal),
         // not a data assignment: a positional/empty block lexes as a concat,
         // and a dotted one as a name-less construct. Either way it is checked
@@ -3715,7 +3762,7 @@ impl<'a> Checker<'a> {
             "exists" => self.ty_from_head("Bool"),
             "seed" | "print" | "assert" | "warn" | "await" | "wait" | "tick" | "clock" | "stop"
             | "finish" => Ty::Void,
-            "read" | "read_to_string" | "resize" => Ty::Error,
+            "read" | "resize" => Ty::Error,
             _ => Ty::Error,
         }
     }
@@ -3818,6 +3865,7 @@ impl<'a> Checker<'a> {
     fn check_runtime_call_contract(
         &mut self,
         callee: &Expr,
+        type_args: &[Type],
         args: &[Expr],
         bang: bool,
         sym: &HashMap<String, Ty>,
@@ -3840,7 +3888,58 @@ impl<'a> Checker<'a> {
         // A source declaration shadows a runtime primitive with the same
         // leaf name (`fn read<Bus>(bus)` is common in protocol traits).
         if self.fn_arity.contains_key(function) {
+            if !type_args.is_empty() {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    "explicit call type arguments are currently reserved for `read<T>`".to_string(),
+                );
+            }
             return;
+        }
+        if function == "read" {
+            if type_args.len() != 1 {
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    "`read` needs exactly one constructed type".to_string(),
+                    "write `read<string>(\"text.txt\")` for UTF-8 or `read<integer>(\"data.bin\")` for binary"
+                        .to_string(),
+                );
+            } else {
+                let requested = self.ast_ty(&type_args[0]);
+                let supported = matches!(requested, Ty::Integer)
+                    || matches!(
+                        requested,
+                        Ty::Array {
+                            ref elem,
+                            family: None,
+                            ..
+                        } if matches!(elem.as_ref(), Ty::Char)
+                    )
+                    || matches!(
+                        requested,
+                        Ty::Array {
+                            len,
+                            family: Some(_),
+                            ..
+                        } if len > 0
+                    );
+                if !supported {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        type_head_span(&type_args[0]).unwrap_or(expr_span(callee)),
+                        "`read<T>` needs `string`, `integer`, or a sized packed numeric type constructible from `integer`"
+                            .to_string(),
+                    );
+                }
+            }
+        } else if !type_args.is_empty() {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(callee),
+                "explicit call type arguments are currently reserved for `read<T>`".to_string(),
+            );
         }
         if matches!(function, "tick" | "clock") {
             let replacement = if function == "tick" {
@@ -3859,7 +3958,7 @@ impl<'a> Checker<'a> {
 
         let exact = match function {
             "rand" | "uniform" | "stop" | "finish" => Some(0),
-            "seed" | "exists" | "read" | "read_to_string" | "await" => Some(1),
+            "seed" | "exists" | "read" | "await" => Some(1),
             "randint" | "resize" => Some(2),
             _ => None,
         };
@@ -3894,7 +3993,6 @@ impl<'a> Checker<'a> {
                 | "seed"
                 | "exists"
                 | "read"
-                | "read_to_string"
                 | "await"
                 | "randint"
                 | "resize"
@@ -3924,7 +4022,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            "exists" | "read" | "read_to_string" => {
+            "exists" | "read" => {
                 let Some(argument) = args.first() else { return };
                 if !matches!(argument, Expr::StrLit { .. }) {
                     self.error_with_help(
@@ -3972,7 +4070,7 @@ impl<'a> Checker<'a> {
         // by a `fn`. Kept beside `check_runtime_call_arity`'s list.
         if matches!(
             name,
-            "rand" | "uniform" | "randint" | "seed" | "exists" | "read" | "read_to_string"
+            "rand" | "uniform" | "randint" | "seed" | "exists" | "read"
         ) {
             return true;
         }
@@ -5168,6 +5266,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Call {
                 callee,
+                type_args,
                 args,
                 bang,
                 span,
@@ -5226,7 +5325,7 @@ impl<'a> Checker<'a> {
                 self.check_conversion_arity(callee, args);
                 self.check_generic_bounds(callee, args, sym);
                 self.check_call_arity(callee, args, sym);
-                self.check_runtime_call_contract(callee, args, *bang, sym);
+                self.check_runtime_call_contract(callee, type_args, args, *bang, sym);
             }
             Expr::Construct { args, .. } => {
                 for c in args {
@@ -6453,6 +6552,21 @@ fn type_head_name(ty: &Type) -> Option<&str> {
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_name(base),
         Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
     }
+}
+
+/// Requested construction type of a `read<T>(path)` expression.
+fn read_call_type(expression: &Expr) -> Option<&Type> {
+    let Expr::Call {
+        callee, type_args, ..
+    } = expression
+    else {
+        return None;
+    };
+    let Expr::Path(path) = callee.as_ref() else {
+        return None;
+    };
+    (path.segments.len() == 1 && path.segments[0].text == "read" && type_args.len() == 1)
+        .then(|| &type_args[0])
 }
 
 /// A dotted path string for a write target: `Expr::Path` or a `Field` chain
@@ -8710,9 +8824,28 @@ mod tests {
         );
         assert_eq!(check_src(&tb("seed(1.5);")), 1, "seed needs an integer");
         assert_eq!(
-            check_src(&tb("read(7);")),
+            check_src(&tb("read<integer>(7);")),
             1,
             "file primitives need literal paths"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let value: unsigned[16] = read<unsigned[16]>(\"word.bin\");"
+            )),
+            0,
+            "a numeric read constructs its requested scalar type"
+        );
+        assert_eq!(
+            check_src(&tb(
+                "let value: unsigned[8] = read<unsigned[16]>(\"word.bin\");"
+            )),
+            1,
+            "the destination must contain the requested constructed type"
+        );
+        assert_eq!(
+            check_src(&tb("let value: integer = read_to_string(\"word.bin\");")),
+            1,
+            "the old split text-read primitive is removed"
         );
         assert_eq!(check_src(&tb("finish(1);")), 1, "finish is nullary");
         assert_eq!(

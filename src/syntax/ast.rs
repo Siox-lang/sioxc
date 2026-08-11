@@ -487,9 +487,13 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
-    /// `f(a, b)` / `tick(clk)` / `assert!(...)`.
+    /// `f(a, b)` / `read<string>(path)` / `assert!(...)`.
     Call {
         callee: Box<Expr>,
+        /// Explicit type construction arguments. Phase 1 uses this for
+        /// constructor-like intrinsics such as `read<T>`; ordinary generic
+        /// functions continue to infer their type parameters from values.
+        type_args: Vec<Type>,
         args: Vec<Expr>,
         bang: bool,
         span: Span,

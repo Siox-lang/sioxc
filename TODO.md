@@ -27,6 +27,10 @@ observable.
 Native harness locals use an injective private C namespace, so user names and
 distinct flattened source paths cannot shadow helpers or one another; linker
 paths remain native OS paths rather than requiring UTF-8.
+File construction is unified as `read<T>`: `string` selects UTF-8, `integer`
+selects raw binary, and packed numeric types reuse that integer path followed
+by their ordinary conversion. Scalar, fixed-array, runtime, compile-time ROM,
+and arbitrary-width multiword cases are covered.
 
 The first-valid-version policy decisions are resolved: native test fixtures
 are runtime inputs, while hardware/top file initializers are compile-time ROM

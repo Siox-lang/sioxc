@@ -21,22 +21,26 @@ the box.
 
 ## File I/O
 
-Testbenches can read fixtures from disk with `read`, `read_to_string`, and
-`exists` (in `std::fs`). Paths resolve **relative to the source file**, so a test
+Testbenches can read fixtures from disk with `read<T>` and `exists` (in
+`std::fs`). Paths resolve **relative to the source file**, so a test
 and its data travel together:
 
 ```siox
-let rom: unsigned[8][256] = read("rom.bin");     // fixed declared capacity
-let banner: string = read_to_string("banner.txt");
+let rom: unsigned[16][256] = read<unsigned[16]>("rom.bin");
+let raw: integer = read<integer>("word.bin");
+let banner: string = read<string>("banner.txt");
 ```
 
 In a native `--test` binary these reads happen when the generated executable
-runs. A fixed `read` target keeps its declared length (short files zero-fill;
-long files fail), while an unconstrained `string` owns a dynamic Unicode
-code-point buffer. Missing files, invalid UTF-8, and capacity failures fail the
-test with the operation and path. These aggregate-returning functions are used
-as typed local initializers. Hardware/top initializers remain different by
-design: `read` there is a compile-time ROM-image input baked into the object.
+runs. `read<string>` decodes UTF-8. `read<integer>` reads raw little-endian
+binary, and `read<T>` for a packed numeric type applies the ordinary
+`T(integer)` construction to each value. Each numeric value consumes
+`ceil(T'length / 8)` bytes. A fixed target keeps its declared length (short
+files zero-fill; long files fail), while an unconstrained `string` owns a
+dynamic Unicode code-point buffer. Missing files, invalid UTF-8, and capacity
+failures fail the test with the operation and path. Hardware/top initializers
+remain different by design: the same call is a compile-time ROM image baked
+into the object.
 
 ## Editor support (`siox-lsp`)
 

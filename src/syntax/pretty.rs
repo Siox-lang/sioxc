@@ -698,12 +698,28 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             )
         }
         Expr::Call {
-            callee, args, bang, ..
+            callee,
+            type_args,
+            args,
+            bang,
+            ..
         } => {
             let a = args.iter().map(expr).collect::<Vec<_>>().join(", ");
             let b = if *bang { "!" } else { "" };
+            let types = if type_args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<{}>",
+                    type_args
+                        .iter()
+                        .map(type_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             (
-                format!("{}{b}({a})", expr_prec(callee, POSTFIX_PREC)),
+                format!("{}{types}{b}({a})", expr_prec(callee, POSTFIX_PREC)),
                 POSTFIX_PREC,
             )
         }
@@ -835,6 +851,13 @@ mod tests {
     fn roundtrips_trait_type_args() {
         roundtrip(
             "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
+        );
+    }
+
+    #[test]
+    fn roundtrips_typed_construct_calls() {
+        roundtrip(
+            "module m;\nimpl E {\n    let bytes: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\");\n    let text: string = read<string>(\"banner.txt\");\n}\n",
         );
     }
 

@@ -422,11 +422,11 @@ static signed sx_utf8_next(const unsigned char *data, size_t length,
 }
 static sx_dyn_array sx_read_text(const char *path) {
     sx_dyn_array result = {0};
-    sx_bytes bytes = sx_read_file("read_to_string", path);
+    sx_bytes bytes = sx_read_file("read<string>", path);
     if (g_io_failed) return result;
     size_t capacity = bytes.length ? bytes.length : 1;
     if (capacity > SIZE_MAX / sizeof(sx_value)) {
-        sx_io_fail("read_to_string", path, "file is too large");
+        sx_io_fail("read<string>", path, "file is too large");
         return result;
     }
     result.values = sx_io_alloc(capacity * sizeof(sx_value));
@@ -435,7 +435,7 @@ static sx_dyn_array sx_read_text(const char *path) {
     while (cursor < bytes.length) {
         uint32_t value;
         if (sx_utf8_next(bytes.data, bytes.length, &cursor, &value) < 0) {
-            sx_io_fail("read_to_string", path, "file is not valid UTF-8");
+            sx_io_fail("read<string>", path, "file is not valid UTF-8");
             return result;
         }
         result.values[result.length++] = (sx_value)value;
@@ -444,19 +444,20 @@ static sx_dyn_array sx_read_text(const char *path) {
     result.text_length = bytes.length;
     return result;
 }
-static signed sx_read_values(const char *path, sx_value *out, size_t count,
+static signed sx_read_values(const char *operation, const char *path,
+                             sx_value *out, size_t count,
                              size_t element_bytes, uint32_t element_bits) {
-    sx_bytes bytes = sx_read_file("read", path);
+    sx_bytes bytes = sx_read_file(operation, path);
     if (g_io_failed) return 0;
     if (element_bytes && count > SIZE_MAX / element_bytes) {
-        sx_io_fail("read", path, "declared target is too large");
+        sx_io_fail(operation, path, "declared target is too large");
         return 0;
     }
     size_t capacity = count * element_bytes;
     if (bytes.length > capacity) {
         snprintf(g_io_message, sizeof g_io_message,
-                 "read(\"%s\"): %zu bytes do not fit (%zu elements x %zu bytes)",
-                 path, bytes.length, count, element_bytes);
+                 "%s(\"%s\"): %zu bytes do not fit (%zu elements x %zu bytes)",
+                 operation, path, bytes.length, count, element_bytes);
         g_io_failed = 1;
         return 0;
     }
@@ -1022,7 +1023,7 @@ struct Ctx<'a> {
     /// Declared `(left, right)` bounds for range attributes, preserving
     /// direction independently from flattened storage order.
     local_ranges: std::cell::RefCell<HashMap<String, (i64, i64)>>,
-    /// Runtime-owned `string` locals produced by `read_to_string`. Their
+    /// Runtime-owned `string` locals produced by `read<string>`. Their
     /// element count is not known while C is generated, so they use one
     /// `sx_dyn_array` rather than flattened per-character locals.
     dynamic_strings: std::cell::RefCell<std::collections::HashSet<String>>,
@@ -1414,19 +1415,25 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
     out
 }
 
-/// The literal path of a `read`/`read_to_string` call, if `e` is one.
-fn fs_read_path(e: &ast::Expr, which: &str) -> Option<String> {
-    let ast::Expr::Call { callee, args, .. } = e else {
+/// The constructed type and literal path of a `read<T>(path)` call.
+fn fs_read_call(e: &ast::Expr) -> Option<(&ast::Type, String)> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        ..
+    } = e
+    else {
         return None;
     };
     let ast::Expr::Path(p) = callee.as_ref() else {
         return None;
     };
-    if p.segments.len() != 1 || p.segments[0].text != which {
+    if p.segments.len() != 1 || p.segments[0].text != "read" {
         return None;
     }
-    match args.first() {
-        Some(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
+    match (type_args.as_slice(), args.as_slice()) {
+        ([requested], [ast::Expr::StrLit { text, .. }]) => Some((requested, text.clone())),
         _ => None,
     }
 }
@@ -1741,6 +1748,53 @@ impl Ctx<'_> {
                 .is_some_and(|ty| self.type_is(ty, expected))
     }
 
+    /// Whether this spelling is `string` or an alias chain that reaches it.
+    /// Stop at the public string name before following its `Char[]` alias;
+    /// `type_is` intentionally resolves through that alias for scalar ABI
+    /// classification and therefore cannot answer this surface-type question.
+    fn type_is_string(&self, ty: &ast::Type) -> bool {
+        let mut current = ty;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if is_single_string_type(current) {
+                return true;
+            }
+            let ast::Type::Path(path) = current else {
+                return false;
+            };
+            let [name] = path.segments.as_slice() else {
+                return false;
+            };
+            if !seen.insert(name.text.as_str()) {
+                return false;
+            }
+            let Some(alias) = self.type_aliases.get(&name.text) else {
+                return false;
+            };
+            current = alias;
+        }
+    }
+
+    fn resolved_sized_string_indices(&self, ty: &ast::Type) -> Option<Vec<i64>> {
+        let mut current = ty;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if let Some(indices) = sized_string_indices(current, self.const_ranges, self.consts) {
+                return Some(indices);
+            }
+            let ast::Type::Path(path) = current else {
+                return None;
+            };
+            let [name] = path.segments.as_slice() else {
+                return None;
+            };
+            if !seen.insert(name.text.as_str()) {
+                return None;
+            }
+            current = self.type_aliases.get(&name.text)?;
+        }
+    }
+
     fn emit_runtime_storage_write(
         &self,
         path: &str,
@@ -1780,21 +1834,23 @@ impl Ctx<'_> {
         let serial = self.tmp.get();
         self.tmp.set(serial + 1);
 
-        if let Some(path) = fs_read_path(value, "read_to_string") {
-            if !is_single_string_type(ty) {
-                return Err(format!(
-                    "read_to_string(\"{path}\") needs a `string` target"
-                ));
+        let Some((requested, path)) = fs_read_call(value) else {
+            return Ok(false);
+        };
+
+        if self.type_is_string(requested) {
+            if !self.type_is_string(ty) {
+                return Err(format!("read<string>(\"{path}\") needs a `string` target"));
             }
             let full = c_escape(&self.design.base_dir.join(&path).to_string_lossy());
-            if let Some(indices) = sized_string_indices(ty, self.const_ranges, self.consts) {
+            if let Some(indices) = self.resolved_sized_string_indices(ty) {
                 self.declare_typed_storage(name, ty, b)?;
                 b.push_str(&format!(
                     "    sx_dyn_array _fst{serial} = sx_read_text(\"{full}\");\n\
                          if (g_io_failed) {{ g_msg = g_io_message; return 1; }}\n\
                          if (_fst{serial}.length > {}) {{\n\
                              snprintf(g_io_message, sizeof g_io_message, \
-                     \"read_to_string(\\\"{}\\\"): %zu characters do not fit a {}-element string\", \
+                     \"read<string>(\\\"{}\\\"): %zu characters do not fit a {}-element string\", \
                      _fst{serial}.length); g_msg = g_io_message; return 1;\n\
                          }}\n",
                     indices.len(),
@@ -1826,38 +1882,41 @@ impl Ctx<'_> {
             return Ok(true);
         }
 
-        let Some(path) = fs_read_path(value, "read") else {
-            return Ok(false);
-        };
-        let Some((_element, indices)) = self.array_parts(ty) else {
-            return Err(format!("read(\"{path}\") needs a fixed-size array target"));
-        };
         self.declare_typed_storage(name, ty, b)?;
-        let first = indices.first().copied().unwrap_or(0);
-        let first_key = format!("{name}[{first}]");
+        let targets = self
+            .array_parts(ty)
+            .map(|(_, indices)| {
+                indices
+                    .into_iter()
+                    .map(|index| format!("{name}[{index}]"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![name.clone()]);
+        let first_key = targets.first().cloned().unwrap_or_else(|| name.clone());
         if !self.locals.borrow().contains(&first_key) && !self.map.contains_key(&first_key) {
             return Err(format!(
-                "read(\"{path}\") currently needs scalar or packed-vector array elements"
+                "read<{}>(\"{path}\") needs scalar or packed-vector storage",
+                siox::syntax::pretty::type_str(requested)
             ));
         }
-        let width = self.name_width(&first_key).unwrap_or(8).max(1);
+        let width = self
+            .name_width(&first_key)
+            .unwrap_or_else(|| if self.type_is(ty, "integer") { 64 } else { 8 })
+            .max(1);
         let bytes = width.div_ceil(8);
         let full = c_escape(&self.design.base_dir.join(&path).to_string_lossy());
-        let storage = indices.len().max(1);
+        let storage = targets.len().max(1);
+        let operation = c_escape(&format!(
+            "read<{}>",
+            siox::syntax::pretty::type_str(requested)
+        ));
         b.push_str(&format!(
             "    sx_value _fsr{serial}[{storage}];\n\
-                 if (!sx_read_values(\"{full}\", _fsr{serial}, {}, {bytes}, {width})) \
+                 if (!sx_read_values(\"{operation}\", \"{full}\", _fsr{serial}, {}, {bytes}, {width})) \
              {{ g_msg = g_io_message; return 1; }}\n",
-            indices.len()
+            targets.len()
         ));
-        for (position, index) in indices.into_iter().enumerate() {
-            let key = format!("{name}[{index}]");
-            if let Some(head) = type_head_name(ty) {
-                self.local_types
-                    .borrow_mut()
-                    .entry(key.clone())
-                    .or_insert_with(|| head.to_string());
-            }
+        for (position, key) in targets.into_iter().enumerate() {
             self.emit_runtime_storage_write(&key, &format!("_fsr{serial}[{position}]"), b, "    ")?;
         }
         Ok(true)
@@ -2674,11 +2733,13 @@ impl Ctx<'_> {
             },
             E::Call {
                 callee,
+                type_args,
                 args,
                 bang,
                 span,
             } => E::Call {
                 callee: Box::new(go(callee)),
+                type_args: type_args.clone(),
                 args: args.iter().map(go).collect(),
                 bang: *bang,
                 span: *span,
@@ -6100,10 +6161,11 @@ impl Ctx<'_> {
                         "({{ FILE *_f = fopen(\"{full}\", \"rb\"); signed _e = _f != 0; if (_f) fclose(_f); _e; }})"
                     ))
                 }
-                "read" | "read_to_string" => Err(format!(
-                    "runtime `{name}()` returns owned aggregate storage and is only valid \
-                     as a typed #[test] local initializer (`let x: T = {name}(..);`)"
-                )),
+                "read" => Err(
+                    "runtime `read<T>()` returns owned aggregate storage and is only valid \
+                     as a typed #[test] local initializer (`let x: T = read<T>(..);`)"
+                        .to_string(),
+                ),
                 "rand" => Ok("sx_rand()".to_string()),
                 "uniform" => Ok("sx_uniform()".to_string()),
                 "randint" => {
@@ -6546,7 +6608,7 @@ impl Ctx<'_> {
                     self.fns.contains_key(n)
                         || matches!(
                             n,
-                            "exists" | "rand" | "randint" | "uniform" | "read" | "read_to_string"
+                            "exists" | "rand" | "randint" | "uniform" | "read"
                         )
                 }) =>
             {
