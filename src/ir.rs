@@ -1113,13 +1113,69 @@ impl<'a> Lowering<'a> {
             // the testbench path (`CounterTest.dut.*`), so two instances of one
             // entity are distinct. Stimulus statements are interpreted by the
             // runner, and testbench<->DUT connections go through the runner's
-            // signal map — so no top-level connection drivers here.
+            // signal map — so no top-level connection drivers here. Its local
+            // values still need concrete layouts: the native runner consumes
+            // the finished IR rather than independently specializing AST
+            // declarations.
+            self.persist_testbench_layouts(name, &env);
             self.lower_testbench_duts(name, &env);
             return;
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
         self.lower_body(name, name, &env, &HashMap::new(), &HashMap::new());
+    }
+
+    /// Persist concrete layouts for testbench-owned values without creating
+    /// hardware signals for them. Native execution owns their storage, while
+    /// `Design` remains the authoritative source for aggregate shape, ranges,
+    /// scalar families, and widths.
+    fn persist_testbench_layouts(&mut self, entity: &str, env: &HashMap<String, i64>) {
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(entity).cloned().unwrap_or_default();
+        for im in impls {
+            for item in &im.items {
+                let ast::ImplItem::Let(declaration) = item else {
+                    continue;
+                };
+                if instance_let_parts(declaration, &self.entities).is_some() {
+                    continue;
+                }
+                let Some(ty) = declaration.ty.as_ref() else {
+                    continue;
+                };
+                let layout = self.source_layout(ty, env);
+                self.persist_layout_tree(entity, &declaration.name.text, &layout);
+            }
+        }
+    }
+
+    fn persist_layout_tree(&mut self, entity: &str, name: &str, layout: &SourceLayout) {
+        self.out
+            .source_layouts
+            .insert(format!("{entity}.{name}"), layout.clone());
+        match &layout.kind {
+            LayoutKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.persist_layout_tree(
+                        entity,
+                        &format!("{name}.{}", field.name),
+                        &field.layout,
+                    );
+                }
+            }
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } => {
+                for index in loop_range(range.left, range.right) {
+                    self.persist_layout_tree(entity, &format!("{name}[{index}]"), element);
+                }
+            }
+            LayoutKind::Array { range: None, .. }
+            | LayoutKind::Packed { .. }
+            | LayoutKind::Scalar { .. }
+            | LayoutKind::Opaque { .. } => {}
+        }
     }
 
     /// Lower each `let inst: Sub = { .. }` DUT of a testbench into its own
@@ -10631,6 +10687,20 @@ pub enum ProcessKind {
 }
 
 impl Design {
+    /// Semantic width presented to backends for one flattened signal. When a
+    /// persisted source layout exists it is the authority; hand-built IR used
+    /// by backend tests remains valid without layout metadata.
+    pub fn signal_width(&self, id: SignalId) -> Option<u32> {
+        let signal = self.signals.get(id.0 as usize)?;
+        match self.source_layouts.get(&signal.path) {
+            Some(layout) => layout
+                .bit_width()
+                .and_then(|width| u32::try_from(width).ok())
+                .or_else(|| (signal.width == 0).then_some(0)),
+            None => Some(signal.width),
+        }
+    }
+
     /// Check the IR is well-formed enough for a backend to compile: signal
     /// ids in range, no `Unknown` (unlowered) expressions, concrete widths,
     /// and valid slice bounds. Returns a list of problems — empty means the
@@ -10668,6 +10738,33 @@ impl Design {
         for (i, s) in self.signals.iter().enumerate() {
             if s.width == 0 && referenced.contains(&SignalId(i as u32)) {
                 issues.push(format!("signal `{}` has unknown width (0)", s.path));
+            }
+            let Some(layout) = self.source_layouts.get(&s.path) else {
+                continue;
+            };
+            if matches!(
+                &layout.kind,
+                LayoutKind::Struct { .. } | LayoutKind::Array { .. }
+            ) {
+                issues.push(format!(
+                    "signal `{}` still has an aggregate source layout instead of a flattened leaf",
+                    s.path
+                ));
+                continue;
+            }
+            match layout
+                .bit_width()
+                .and_then(|width| u32::try_from(width).ok())
+            {
+                Some(width) if width != s.width => issues.push(format!(
+                    "signal `{}` width {} disagrees with its source layout width {width}",
+                    s.path, s.width
+                )),
+                None if s.width != 0 => issues.push(format!(
+                    "signal `{}` has no concrete width in its source layout",
+                    s.path
+                )),
+                _ => {}
             }
         }
         let target = |id: SignalId, what: &str, issues: &mut Vec<String>| {
@@ -13884,6 +13981,33 @@ mod tests {
     }
 
     #[test]
+    fn persisted_leaf_layout_is_the_backend_width_authority() {
+        let mut design = lower_src("module m; #[top] entity E { value: unsigned[8] in } impl E {}");
+        let id = SignalId(
+            design
+                .signals
+                .iter()
+                .position(|signal| signal.path == "E.value")
+                .expect("value signal") as u32,
+        );
+        assert_eq!(design.signal_width(id), Some(8));
+
+        design.signals[id.0 as usize].width = 9;
+        assert_eq!(
+            design.signal_width(id),
+            Some(8),
+            "the persisted source layout, not duplicated Signal metadata, owns backend width"
+        );
+        let issues = design.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("disagrees with its source layout width 8")),
+            "{issues:#?}"
+        );
+    }
+
+    #[test]
     fn processes_carry_sensitivity_and_write_sets() {
         let d = lower_src(COUNTER);
         let sig =
@@ -14671,6 +14795,46 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn testbench_locals_persist_layouts_without_becoming_hardware_signals() {
+        let design = lower_src(
+            "module m;\n\
+             struct Pair<T> { left: T, right: T }\n\
+             #[test] entity T {}\n\
+             impl T {\n\
+                 let pairs: Pair<unsigned[8]>[2..1] = [\n\
+                     { .left = 1, .right = 2 },\n\
+                     { .left = 3, .right = 4 },\n\
+                 ];\n\
+             }\n",
+        );
+
+        let root = design
+            .source_layouts
+            .get("T.pairs")
+            .expect("testbench local should retain its concrete layout");
+        assert_eq!(root.bit_width(), Some(32));
+        assert_eq!(root.leaf_count(), Some(4));
+        assert!(matches!(
+            root.kind,
+            LayoutKind::Array {
+                range: Some(LayoutRange { left: 2, right: 1 }),
+                ..
+            }
+        ));
+        assert!(matches!(
+            design
+                .source_layouts
+                .get("T.pairs[2].left")
+                .map(|layout| &layout.kind),
+            Some(LayoutKind::Packed { width: 8, .. })
+        ));
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.contains("pairs")));
     }
 
     #[test]

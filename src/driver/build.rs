@@ -14,13 +14,13 @@ use std::path::Path;
 use std::process::Command;
 
 use siox::elab::{Hierarchy, InstanceId};
-use siox::ir::{Design, SignalId};
+use siox::ir::{Design, LayoutKind, ScalarDomain, SignalId, SourceLayout};
 use siox::syntax::ast;
 use siox::syntax::Module;
 
 type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
-type StructFields = Vec<(String, ast::Type)>;
-type RawStructLayouts = HashMap<String, (Option<String>, StructFields)>;
+type StructFieldNames = Vec<String>;
+type RawStructFieldNames = HashMap<String, (Option<String>, StructFieldNames)>;
 
 /// Build a native simulator binary that runs *all* `#[test]` entities, like
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
@@ -172,10 +172,10 @@ pub fn build(
         .collect();
     // The tables are folded per testbench, below, so each sees its own
     // constants as well as the module's.
-    // Struct field layouts (base-first, inheritance flattened) so a struct-typed
-    // testbench local can be materialized as one C local per leaf field. Every
-    // impl method by (type head, name), for `recv.method(args)` in stimulus.
-    let structs = collect_structs(modules);
+    // Nominal field order remains useful for syntax that has no concrete value
+    // path (module constants and synthetic inlined literals). Concrete storage
+    // shape comes only from `Design::source_layouts`.
+    let struct_field_names = collect_struct_field_names(modules);
     let methods = collect_methods(modules);
     let derived_widths = siox::ir::derived_widths(modules);
 
@@ -642,7 +642,13 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             consts,
             const_exprs,
             const_array_exprs,
-        } = const_tables(&scoped_decls, &enums, &fns, &type_aliases, &structs);
+        } = const_tables(
+            &scoped_decls,
+            &enums,
+            &fns,
+            &type_aliases,
+            &struct_field_names,
+        );
         let clocks = scan_clocks(&items, &aliases)?;
         let instance_names: std::collections::HashSet<String> = hier
             .instance(root)
@@ -680,7 +686,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             local_types: Default::default(),
             op_impls: &op_impls,
             methods: &methods,
-            structs: &structs,
+            struct_field_names: &struct_field_names,
             derived_widths: &derived_widths,
             tmp_seq: std::cell::Cell::new(0),
             const_exprs: &const_exprs,
@@ -1034,9 +1040,9 @@ struct Ctx<'a> {
     op_impls: &'a NativeOperatorImpls<'a>,
     /// Impl methods `(type head, method) -> fn`, for `recv.method(args)`.
     methods: &'a HashMap<(String, String), &'a ast::FnDecl>,
-    /// Struct layouts (name -> base-first field list) so a struct-typed
-    /// testbench local materializes as one C local per leaf field.
-    structs: &'a HashMap<String, Vec<(String, ast::Type)>>,
+    /// Base-first nominal field order for syntax-only values that have no
+    /// concrete IR path. This intentionally carries no widths or nested shape.
+    struct_field_names: &'a HashMap<String, StructFieldNames>,
     /// Derived-type inherited widths (`struct Byte : Logic[8]` -> 8), so a bare
     /// derived-vector local masks to the right width.
     derived_widths: &'a HashMap<String, u32>,
@@ -1106,29 +1112,24 @@ struct DynamicTargetVariant {
     condition: Option<String>,
 }
 
-/// Struct layouts keyed by name, each a base-first flattened field list
-/// (`struct B : A` prepends A's fields), so a struct-typed testbench local can
-/// be materialized as one C local per field.
-fn collect_structs(modules: &[Module]) -> HashMap<String, StructFields> {
-    let mut raw: RawStructLayouts = HashMap::new();
+/// Base-first nominal field order (`struct B : A` prepends A's fields). This
+/// supports positional source syntax only; it is not a type/storage layout.
+fn collect_struct_field_names(modules: &[Module]) -> HashMap<String, StructFieldNames> {
+    let mut raw: RawStructFieldNames = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(s) = item {
                 let base = s.base.as_ref().and_then(type_head_name).map(str::to_string);
-                let own = s
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.text.clone(), f.ty.clone()))
-                    .collect();
+                let own = s.fields.iter().map(|f| f.name.text.clone()).collect();
                 raw.insert(s.name.text.clone(), (base, own));
             }
         }
     }
     fn flat(
         name: &str,
-        raw: &RawStructLayouts,
+        raw: &RawStructFieldNames,
         seen: &mut std::collections::HashSet<String>,
-    ) -> StructFields {
+    ) -> StructFieldNames {
         if !seen.insert(name.to_string()) {
             return Vec::new();
         }
@@ -1664,19 +1665,6 @@ fn literal_fits_word(text: &str) -> bool {
     parsed.is_ok_and(|v| v <= u128::from(u64::MAX))
 }
 
-/// `base.field`, synthesized so a struct-valued branch can be rewritten into
-/// one selection per field.
-fn field_of(base: &ast::Expr, field: &str, span: siox::diag::Span) -> ast::Expr {
-    ast::Expr::Field {
-        base: Box::new(base.clone()),
-        field: ast::Ident {
-            text: field.to_string(),
-            span,
-        },
-        span,
-    }
-}
-
 fn mask_c(e: &str, w: u32) -> String {
     if w > 0 {
         format!("sx_mask(({e}), {w})")
@@ -1884,12 +1872,26 @@ impl Ctx<'_> {
 
         self.declare_typed_storage(name, ty, b)?;
         let targets = self
-            .array_parts(ty)
-            .map(|(_, indices)| {
-                indices
+            .persisted_layout(name)
+            .and_then(|layout| match &layout.kind {
+                LayoutKind::Array {
+                    range: Some(range), ..
+                } => Some(*range),
+                _ => None,
+            })
+            .map(|range| {
+                directional_indices(range.left, range.right)
                     .into_iter()
                     .map(|index| format!("{name}[{index}]"))
                     .collect::<Vec<_>>()
+            })
+            .or_else(|| {
+                self.array_parts(ty).map(|(_, indices)| {
+                    indices
+                        .into_iter()
+                        .map(|index| format!("{name}[{index}]"))
+                        .collect::<Vec<_>>()
+                })
             })
             .unwrap_or_else(|| vec![name.clone()]);
         let first_key = targets.first().cloned().unwrap_or_else(|| name.clone());
@@ -2000,7 +2002,10 @@ impl Ctx<'_> {
     /// index (`unsigned[128][2]`) is the array dimension represented here.
     fn try_declare_array_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(ty) = &l.ty else { return Ok(false) };
-        if self.array_parts(ty).is_none() {
+        let persisted_array = self
+            .persisted_layout(&l.name.text)
+            .is_some_and(|layout| matches!(&layout.kind, LayoutKind::Array { .. }));
+        if !persisted_array && self.array_parts(ty).is_none() {
             return Ok(false);
         }
         self.declare_typed_storage(&l.name.text, ty, b)?;
@@ -2048,56 +2053,187 @@ impl Ctx<'_> {
             }
             return Ok(());
         }
-        if let Some((element, indices)) = self.array_parts(ty) {
-            self.local_indices
-                .borrow_mut()
-                .insert(prefix.to_string(), indices.clone());
-            for index in indices {
-                self.declare_typed_storage(&format!("{prefix}[{index}]"), element, b)?;
-            }
-            return Ok(());
+        // Concrete testbench declarations were already specialized by IR.
+        // Consume that authoritative tree so generic field substitutions,
+        // views, and nested range direction are not independently
+        // reconstructed in the generated-C backend.
+        if let Some(layout) = self.persisted_layout(prefix).cloned() {
+            return self.declare_layout_storage(prefix, &layout, b);
         }
+        // Unconstrained/dynamically sized strings are handled above their
+        // callers and deliberately have no static layout. Every other typed
+        // testbench declaration must have been persisted by IR; silently
+        // rebuilding it from AST here would restore a second layout authority.
         let head = type_head_name(ty);
-        if let Some(fields) = head
-            .and_then(|name| self.structs.get(name))
-            .filter(|fields| !fields.is_empty())
-        {
-            if let Some(head) = head {
+        Err(format!(
+            "IR did not retain a concrete layout for testbench local `{prefix}`{}",
+            head.map(|name| format!(" of type `{name}`"))
+                .unwrap_or_default()
+        ))
+    }
+
+    fn persisted_layout(&self, local_path: &str) -> Option<&SourceLayout> {
+        self.design
+            .source_layouts
+            .get(&format!("{}.{}", self.name, local_path))
+    }
+
+    fn concrete_field_names(&self, local_path: &str) -> Option<Vec<String>> {
+        let LayoutKind::Struct { fields, .. } = &self.persisted_layout(local_path)?.kind else {
+            return None;
+        };
+        Some(fields.iter().map(|field| field.name.clone()).collect())
+    }
+
+    /// Field names for expression-only values that do not have a concrete
+    /// storage path (for example, an inlined function parameter). Prefer a
+    /// concrete, non-view IR specialization; the AST table is only a fallback
+    /// for a nominal type that never occurs as a declared design value.
+    fn nominal_field_names(&self, type_name: &str) -> Option<Vec<String>> {
+        let mut candidates = self.design.source_layouts.values().filter_map(|layout| {
+            let LayoutKind::Struct { name, view, fields } = &layout.kind else {
+                return None;
+            };
+            (name == type_name).then(|| {
+                (
+                    view.is_some(),
+                    fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+        });
+        let first = candidates.next();
+        let from_ir = candidates.fold(first, |best, candidate| match best {
+            Some(current) if current.0 <= candidate.0 => Some(current),
+            _ => Some(candidate),
+        });
+        from_ir
+            .map(|(_, fields)| fields)
+            .or_else(|| self.struct_field_names.get(type_name).cloned())
+    }
+
+    fn layout_is_composite(layout: &SourceLayout) -> bool {
+        matches!(
+            layout.kind,
+            LayoutKind::Struct { .. } | LayoutKind::Array { .. }
+        )
+    }
+
+    /// Materialize a concrete IR layout as flattened C storage. Connected
+    /// leaves already live in the design object; unconnected leaves receive a
+    /// native local. Both paths record the same scalar metadata used by
+    /// formatting, conversions, range attributes, and operator dispatch.
+    fn declare_layout_storage(
+        &self,
+        prefix: &str,
+        layout: &SourceLayout,
+        b: &mut String,
+    ) -> Result<(), String> {
+        match &layout.kind {
+            LayoutKind::Struct { name, fields, .. } => {
                 self.local_types
                     .borrow_mut()
-                    .insert(prefix.to_string(), head.to_string());
+                    .insert(prefix.to_string(), name.clone());
+                for field in fields {
+                    self.declare_layout_storage(
+                        &format!("{prefix}.{}", field.name),
+                        &field.layout,
+                        b,
+                    )?;
+                }
+                Ok(())
             }
-            for (field, field_ty) in fields {
-                self.declare_typed_storage(&format!("{prefix}.{field}"), field_ty, b)?;
+            LayoutKind::Array { range, element } => {
+                let range = range.ok_or_else(|| {
+                    format!("concrete testbench array `{prefix}` has no index range")
+                })?;
+                if matches!(
+                    &element.kind,
+                    LayoutKind::Scalar {
+                        domain: ScalarDomain::Character,
+                        ..
+                    }
+                ) {
+                    self.local_types
+                        .borrow_mut()
+                        .insert(prefix.to_string(), "string".to_string());
+                }
+                let indices = directional_indices(range.left, range.right);
+                self.local_ranges
+                    .borrow_mut()
+                    .insert(prefix.to_string(), (range.left, range.right));
+                self.local_indices
+                    .borrow_mut()
+                    .insert(prefix.to_string(), indices.clone());
+                for index in indices {
+                    self.declare_layout_storage(&format!("{prefix}[{index}]"), element, b)?;
+                }
+                Ok(())
             }
-            return Ok(());
+            LayoutKind::Packed {
+                width,
+                family,
+                range,
+                ..
+            } => {
+                if let Some(range) = range {
+                    self.local_ranges
+                        .borrow_mut()
+                        .insert(prefix.to_string(), (range.left, range.right));
+                }
+                self.local_families
+                    .borrow_mut()
+                    .insert(prefix.to_string(), family.clone());
+                self.local_types
+                    .borrow_mut()
+                    .insert(prefix.to_string(), family.clone());
+                self.declare_layout_leaf(prefix, *width, b)
+            }
+            LayoutKind::Scalar {
+                width,
+                domain,
+                nominal,
+                value_range,
+            } => {
+                if let Some(range) = value_range {
+                    self.local_ranges
+                        .borrow_mut()
+                        .insert(prefix.to_string(), *range);
+                }
+                let name = nominal.clone().unwrap_or_else(|| match domain {
+                    ScalarDomain::Bits => "bits".to_string(),
+                    ScalarDomain::Integer => "integer".to_string(),
+                    ScalarDomain::Real => "real".to_string(),
+                    ScalarDomain::Character => "Char".to_string(),
+                    ScalarDomain::Enum(name) => name.clone(),
+                });
+                self.local_types
+                    .borrow_mut()
+                    .insert(prefix.to_string(), name);
+                self.declare_layout_leaf(prefix, *width, b)
+            }
+            LayoutKind::Opaque { name, width } => {
+                self.local_types
+                    .borrow_mut()
+                    .insert(prefix.to_string(), name.clone());
+                self.declare_layout_leaf(prefix, width.unwrap_or(64), b)
+            }
         }
-        let family = self.declared_family(ty);
-        let width = family
-            .as_ref()
-            .map(|(_, width)| *width)
-            .or_else(|| self.declared_width(ty));
-        if let Some((name, _)) = family {
-            self.local_families
-                .borrow_mut()
-                .insert(prefix.to_string(), name);
+    }
+
+    fn declare_layout_leaf(&self, prefix: &str, width: u32, b: &mut String) -> Result<(), String> {
+        if width == 0 {
+            return Err(format!(
+                "testbench local `{prefix}` has an unresolved width"
+            ));
         }
-        if let Some(width) = width {
-            self.local_widths
-                .borrow_mut()
-                .insert(prefix.to_string(), width);
-        }
-        if let Some(head) = head {
-            self.local_types
-                .borrow_mut()
-                .insert(prefix.to_string(), head.to_string());
-        }
+        self.local_widths
+            .borrow_mut()
+            .insert(prefix.to_string(), width);
         if !self.map.contains_key(prefix) {
-            let c_ty = if width.is_some_and(|bits| bits > 64) {
-                "sx_value"
-            } else {
-                "uint64_t"
-            };
+            let c_ty = if width > 64 { "sx_value" } else { "uint64_t" };
             b.push_str(&format!("    {c_ty} {} = 0;\n", c_local_ident(prefix)));
             self.locals.borrow_mut().insert(prefix.to_string());
         }
@@ -2115,299 +2251,34 @@ impl Ctx<'_> {
     /// *connected* struct port (fields in the signal map) returns `false` so the
     /// existing signal path handles it. Returns `true` when handled.
     fn try_declare_struct_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
-        let Some(head) = l.ty.as_ref().and_then(|t| type_head_name(t)) else {
-            return Ok(false);
-        };
-        // Only a genuine field-aggregate is expanded into per-field locals. A
-        // type that *inherits from an array* — `unsigned`/`signed` (`struct unsigned :
-        // Logic[]`) or a user enum vector (`: SomeEnum[]`) — carries no named
-        // fields, so it is a scalar/vector leaf and flows through the scalar
-        // path (check the base: an array parent means "vector", not "struct").
-        let Some(fields) = self.structs.get(head).filter(|f| !f.is_empty()) else {
-            return Ok(false);
-        };
-        let connected = self.map.contains_key(&l.name.text)
-            || fields
-                .iter()
-                .any(|(f, _)| self.map.contains_key(&format!("{}.{}", l.name.text, f)));
-        if connected {
-            // The values live in signals, so there is nothing to declare — but
-            // the leaves' declared types are still needed to display and
-            // dispatch on them. Without this a connected `signed` field read
-            // back as its bit pattern (253 for -3) while the identical field
-            // on an unconnected struct read correctly.
-            self.local_types
-                .borrow_mut()
-                .insert(l.name.text.clone(), head.to_string());
-            for (f, fty) in fields {
-                let key = format!("{}.{}", l.name.text, f);
-                if let Some((fam, w)) = self.declared_family(fty) {
-                    self.local_families.borrow_mut().insert(key.clone(), fam);
-                    self.local_widths.borrow_mut().insert(key, w);
-                } else if let Some(w) = self.declared_width(fty) {
-                    self.local_widths.borrow_mut().insert(key, w);
+        if let Some(layout) = self.persisted_layout(&l.name.text).cloned() {
+            if matches!(layout.kind, LayoutKind::Struct { .. }) {
+                let prefix = &l.name.text;
+                let connected = self.map.keys().any(|name| {
+                    name == prefix
+                        || name
+                            .strip_prefix(prefix)
+                            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+                });
+                self.declare_layout_storage(prefix, &layout, b)?;
+                if connected {
+                    // The general let path writes a connected initializer, but
+                    // it now sees layout-derived leaf metadata registered above.
+                    return Ok(false);
                 }
+                if let Some(value) = &l.value {
+                    let wrote = self.write_composite(prefix, value, b, "    ")?;
+                    let defaulted = matches!(value,
+                        ast::Expr::Call { callee, args, .. }
+                            if args.is_empty() && self.c_default_construction(callee).is_some());
+                    if !wrote && !defaulted {
+                        return Err(format!("unsupported aggregate initializer for `{prefix}`"));
+                    }
+                }
+                return Ok(true);
             }
-            return Ok(false);
         }
-        self.local_types
-            .borrow_mut()
-            .insert(l.name.text.clone(), head.to_string());
-        // A call returns a struct literal once its body is rewritten with the
-        // arguments bound, which `struct_call_rewrite` already does for the
-        // assignment path. The declaration knew only a literal, so
-        // `let p: Pair = makePair(6)` initialized nothing and every field read
-        // back as zero — silently, while the same call written as a separate
-        // assignment was right, and while hardware folds the identical
-        // initializer.
-        let rewritten = l
-            .value
-            .as_ref()
-            .and_then(|value| self.struct_call_rewrite(value, 0));
-        let value = rewritten.as_ref().or(l.value.as_ref());
-        let init: HashMap<&str, &ast::Expr> = match value {
-            Some(ast::Expr::Construct { args, .. }) => args
-                .iter()
-                .enumerate()
-                .filter_map(|(i, a)| {
-                    let v = a.value.as_ref()?;
-                    // Positional args bind to the struct's field at position i.
-                    let name = match &a.field {
-                        Some(f) => f.text.as_str(),
-                        None => fields.get(i).map(|(n, _)| n.as_str())?,
-                    };
-                    Some((name, v))
-                })
-                .collect(),
-            // A positional name-less struct literal `{ 3, 4 }` lexes as a brace
-            // concat; parts bind to fields by declaration order.
-            Some(ast::Expr::Concat { parts, .. }) => parts
-                .iter()
-                .enumerate()
-                .filter_map(|(i, e)| Some((fields.get(i).map(|(n, _)| n.as_str())?, e)))
-                .collect(),
-            _ => HashMap::new(),
-        };
-        // A struct-valued branch initializer (`let r: P = if c { a } else { b };`)
-        // has no path to copy from, so every field kept its default and `r.a`
-        // silently read 0. Give each field its own select between the
-        // branches' corresponding fields.
-        let branch_fields: Vec<(String, ast::Expr)> = match &l.value {
-            Some(ast::Expr::IfExpr {
-                cond,
-                then,
-                els,
-                span,
-            }) if expr_path(then).is_some() && expr_path(els).is_some() => fields
-                .iter()
-                .map(|(fname, _)| {
-                    let of = |base: &ast::Expr| field_of(base, fname, *span);
-                    (
-                        fname.clone(),
-                        ast::Expr::IfExpr {
-                            cond: cond.clone(),
-                            then: Box::new(of(then)),
-                            els: Box::new(of(els)),
-                            span: *span,
-                        },
-                    )
-                })
-                .collect(),
-            // The same for a `match`: each arm's value is a struct, so each
-            // field selects between the arms' corresponding fields. Teaching
-            // only the `if` shape left `let r: P = match k { .. };` with every
-            // field at its default.
-            Some(ast::Expr::Match {
-                scrutinee,
-                arms,
-                span,
-            }) if arms
-                .iter()
-                .all(|a| a.value_expr().and_then(expr_path).is_some()) =>
-            {
-                fields
-                    .iter()
-                    .map(|(fname, _)| {
-                        let arms = arms
-                            .iter()
-                            .map(|a| ast::MatchArm {
-                                pattern: a.pattern.clone(),
-                                body: ast::Block {
-                                    stmts: vec![ast::Stmt::Expr(field_of(
-                                        a.value_expr().expect("checked above"),
-                                        fname,
-                                        *span,
-                                    ))],
-                                    span: a.body.span,
-                                },
-                                span: a.span,
-                            })
-                            .collect();
-                        (
-                            fname.clone(),
-                            ast::Expr::Match {
-                                scrutinee: scrutinee.clone(),
-                                arms,
-                                span: *span,
-                            },
-                        )
-                    })
-                    .collect()
-            }
-            _ => Vec::new(),
-        };
-        let init: HashMap<&str, &ast::Expr> = if branch_fields.is_empty() {
-            init
-        } else {
-            branch_fields
-                .iter()
-                .map(|(name, value)| (name.as_str(), value))
-                .collect()
-        };
-        // `{ ..base, .x = v }`: fields not overridden are copied from `base`.
-        let spread_base: Option<String> = match &l.value {
-            Some(ast::Expr::Construct {
-                spread: Some(base), ..
-            }) => expr_path(base),
-            Some(value) => expr_path(value),
-            _ => None,
-        };
-        self.declare_struct_fields(&l.name.text, fields, &init, spread_base.as_deref(), b)?;
-        Ok(true)
-    }
-
-    /// Emit `uint64_t` locals for each field of a struct local, recursing into
-    /// nested struct fields (`p.inner.x`). `init` supplies literal field values.
-    fn declare_struct_fields(
-        &self,
-        prefix: &str,
-        fields: &[(String, ast::Type)],
-        init: &HashMap<&str, &ast::Expr>,
-        spread_base: Option<&str>,
-        b: &mut String,
-    ) -> Result<(), String> {
-        for (fname, fty) in fields {
-            let key = format!("{prefix}.{fname}");
-            // An indexed aggregate field keeps its array dimension. Looking
-            // only at `type_head_name` would mistake `Child[2]` for one nested
-            // `Child` and materialize `field.x` instead of
-            // `field[0].x`, `field[1].x`.
-            if self.array_parts(fty).is_some()
-                || sized_string_indices(fty, self.const_ranges, self.consts).is_some()
-            {
-                self.declare_typed_storage(&key, fty, b)?;
-                if let Some(value) = init.get(fname.as_str()) {
-                    if !self.write_composite(&key, value, b, "    ")? {
-                        return Err(format!("cannot initialize aggregate struct field `{key}`"));
-                    }
-                } else if let Some(base) = spread_base {
-                    let source_name = format!("{base}.{fname}");
-                    let source = self.composite_reads(&source_name);
-                    let target = self.composite_targets(&key);
-                    if source.keys().ne(target.keys()) {
-                        return Err(format!(
-                            "composite assignment shape mismatch: `{key}` and `{source_name}`"
-                        ));
-                    }
-                    for (suffix, expression) in source {
-                        let (_, destination) = &target[&suffix];
-                        b.push_str(&format!("    {destination} = {expression};\n"));
-                    }
-                }
-                continue;
-            }
-            // A nested *field-aggregate* field expands to its own leaves; a
-            // field that inherits from an array (a `unsigned`/`signed`/enum vector,
-            // which has no fields) is a scalar leaf.
-            let fhead = type_head_name(fty);
-            if let Some(sub) = fhead
-                .and_then(|h| self.structs.get(h))
-                .filter(|f| !f.is_empty())
-            {
-                self.local_types
-                    .borrow_mut()
-                    .insert(key.clone(), fhead.unwrap().to_string());
-                let nested = init.get(fname.as_str()).copied();
-                let sub_init: HashMap<&str, &ast::Expr> = match nested {
-                    Some(ast::Expr::Construct { args, .. }) => args
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(position, argument)| {
-                            let value = argument.value.as_ref()?;
-                            let field = argument
-                                .field
-                                .as_ref()
-                                .map(|field| field.text.as_str())
-                                .or_else(|| sub.get(position).map(|(field, _)| field.as_str()))?;
-                            Some((field, value))
-                        })
-                        .collect(),
-                    Some(ast::Expr::Concat { parts, .. }) => parts
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(position, value)| {
-                            Some((sub.get(position)?.0.as_str(), value))
-                        })
-                        .collect(),
-                    _ => HashMap::new(),
-                };
-                let explicit_base = match nested {
-                    Some(ast::Expr::Construct {
-                        spread: Some(base), ..
-                    }) => expr_path(base),
-                    Some(value) => expr_path(value),
-                    None => None,
-                };
-                let inherited_base = spread_base.map(|base| format!("{base}.{fname}"));
-                let sub_base = if nested.is_some() {
-                    explicit_base
-                } else {
-                    inherited_base
-                };
-                self.declare_struct_fields(&key, sub, &sub_init, sub_base.as_deref(), b)?;
-                continue;
-            }
-            let leaf_width = if let Some((fam, w)) = self.declared_family(fty) {
-                self.local_families.borrow_mut().insert(key.clone(), fam);
-                self.local_widths.borrow_mut().insert(key.clone(), w);
-                Some(w)
-            } else if let Some(w) = self.declared_width(fty) {
-                self.local_widths.borrow_mut().insert(key.clone(), w);
-                Some(w)
-            } else {
-                None
-            };
-            if let Some(head) = fhead {
-                self.local_types
-                    .borrow_mut()
-                    .insert(key.clone(), head.to_string());
-            }
-            let init_e = match init.get(fname.as_str()) {
-                Some(v) => {
-                    let e = self.value_for_local(&key, v)?;
-                    match self.local_widths.borrow().get(&key) {
-                        Some(&w) => mask_c(&e, w),
-                        None => e,
-                    }
-                }
-                // Not overridden: copy the spread base's field if it exists
-                // (a declared struct local), else default 0.
-                None => match spread_base {
-                    Some(bp) if self.locals.borrow().contains(&format!("{bp}.{fname}")) => {
-                        c_local_ident(&format!("{bp}.{fname}"))
-                    }
-                    _ => "0".to_string(),
-                },
-            };
-            let c_ty = if leaf_width.is_some_and(|width| width > 64) {
-                "sx_value"
-            } else {
-                "uint64_t"
-            };
-            b.push_str(&format!("    {c_ty} {} = {init_e};\n", c_local_ident(&key)));
-            self.locals.borrow_mut().insert(key);
-        }
-        Ok(())
+        Ok(false)
     }
 
     /// Expand a name that holds a struct into a literal reading its fields:
@@ -2415,26 +2286,25 @@ impl Ctx<'_> {
     /// plain name rather than a literal.
     fn struct_name_literal(&self, e: &ast::Expr) -> Option<ast::Expr> {
         let path = expr_path(e)?;
-        let ty = self.arg_type_name(e)?;
-        // A field-less newtype expands to an empty literal, which the
-        // caller already rejects when it finds no fields to distribute —
-        // no separate guard needed here.
-        let fields = self.structs.get(&ty)?;
+        let fields = self.concrete_field_names(&path).or_else(|| {
+            let ty = self.arg_type_name(e)?;
+            self.nominal_field_names(&ty)
+        })?;
         let span = siox::syntax::ast::expr_span(e);
         let ident = |t: &str| ast::Ident {
             text: t.to_string(),
             span,
         };
         let args = fields
-            .iter()
-            .map(|(field, _)| ast::ConnectArg {
-                field: Some(ident(field)),
+            .into_iter()
+            .map(|field| ast::ConnectArg {
+                field: Some(ident(&field)),
                 value: Some(ast::Expr::Field {
                     base: Box::new(ast::Expr::Path(ast::Path {
                         segments: vec![ident(&path)],
                         span,
                     })),
-                    field: ident(field),
+                    field: ident(&field),
                     span,
                 }),
                 span,
@@ -2669,7 +2539,7 @@ impl Ctx<'_> {
         // composites of either kind.
         let returned = f.ret.as_ref()?;
         let returns_struct = type_head_name(returned)
-            .and_then(|head| self.structs.get(head))
+            .and_then(|head| self.nominal_field_names(head))
             .is_some_and(|fields| !fields.is_empty());
         // `array_parts` is `None` for a packed vector and `Some` for a real
         // array, which is exactly the distinction wanted here.
@@ -3025,16 +2895,14 @@ impl Ctx<'_> {
             ast::Expr::Construct {
                 ty, args, spread, ..
             } => {
-                let type_name = ty
-                    .as_ref()
-                    .and_then(type_head_name)
-                    .map(str::to_string)
-                    .or_else(|| self.local_types.borrow().get(name).cloned());
-                let fields = type_name
-                    .as_ref()
-                    .and_then(|head| self.structs.get(head))
-                    .cloned()
-                    .unwrap_or_default();
+                let fields = self.concrete_field_names(name).or_else(|| {
+                    let type_name = ty
+                        .as_ref()
+                        .and_then(type_head_name)
+                        .map(str::to_string)
+                        .or_else(|| self.local_types.borrow().get(name).cloned());
+                    type_name.and_then(|head| self.nominal_field_names(&head))
+                });
                 let mut wrote = false;
 
                 if let Some(spread) = spread.as_deref() {
@@ -3058,11 +2926,16 @@ impl Ctx<'_> {
                 }
 
                 for (position, arg) in args.iter().enumerate() {
-                    let field_name = arg
-                        .field
-                        .as_ref()
-                        .map(|field| field.text.as_str())
-                        .or_else(|| fields.get(position).map(|(field, _)| field.as_str()));
+                    let field_name =
+                        arg.field
+                            .as_ref()
+                            .map(|field| field.text.as_str())
+                            .or_else(|| {
+                                fields
+                                    .as_ref()
+                                    .and_then(|fields| fields.get(position))
+                                    .map(String::as_str)
+                            });
                     let Some(field_name) = field_name else {
                         return Err(format!(
                             "cannot bind positional field {} while assigning `{name}`",
@@ -3081,12 +2954,15 @@ impl Ctx<'_> {
                 Ok(wrote)
             }
             ast::Expr::Concat { parts, .. } => {
-                let type_name = self.local_types.borrow().get(name).cloned();
-                let fields = type_name
-                    .as_ref()
-                    .and_then(|head| self.structs.get(head))
-                    .cloned()
-                    .unwrap_or_default();
+                let fields = self.concrete_field_names(name).or_else(|| {
+                    self.local_types
+                        .borrow()
+                        .get(name)
+                        .and_then(|head| self.nominal_field_names(head))
+                });
+                let Some(fields) = fields else {
+                    return Ok(false);
+                };
                 if fields.is_empty() {
                     return Ok(false);
                 }
@@ -3097,7 +2973,7 @@ impl Ctx<'_> {
                         parts.len()
                     ));
                 }
-                for ((field, _), value) in fields.iter().zip(parts) {
+                for (field, value) in fields.iter().zip(parts) {
                     self.write_composite_field_staged(
                         &format!("{name}.{field}"),
                         value,
@@ -4440,7 +4316,7 @@ impl Ctx<'_> {
                     // unsigned(Logic[])`), so "is a struct" is not the
                     // question — "has fields to spread" is.
                     type_head_name(t)
-                        .and_then(|h| self.structs.get(h))
+                        .and_then(|h| self.nominal_field_names(h))
                         .is_some_and(|fields| !fields.is_empty())
                         || is_single_string_type(t)
                         // `array_parts` is None for a packed vector and Some
@@ -6104,7 +5980,7 @@ impl Ctx<'_> {
             let first = syms.keys().copied().min()?;
             return Some(format!("{first}ULL"));
         }
-        (self.structs.contains_key(&name)
+        (self.nominal_field_names(&name).is_some()
             || self.type_name_is(&name, "unsigned")
             || self.type_name_is(&name, "signed"))
         .then(|| "0ULL".to_string())
@@ -6263,12 +6139,14 @@ impl Ctx<'_> {
                 // reported the argument as a name that is not in scope. Its
                 // leaves bind under `v[0]`, `v[1]`, which is how the body
                 // spells them and how an indexed path resolves here.
-                let composite =
-                    p.ty.as_ref()
+                let argument_layout = expr_path(a).and_then(|path| self.persisted_layout(&path));
+                let composite = argument_layout.is_some_and(Self::layout_is_composite)
+                    || p.ty
+                        .as_ref()
                         .and_then(type_head_name)
-                        .and_then(|head| self.structs.get(head))
+                        .and_then(|head| self.nominal_field_names(head))
                         .is_some_and(|fields| !fields.is_empty())
-                        || p.ty.as_ref().is_some_and(|t| self.array_parts(t).is_some());
+                    || p.ty.as_ref().is_some_and(|t| self.array_parts(t).is_some());
                 if composite {
                     if let Some(path) = expr_path(a) {
                         let leaves = self.composite_reads(&path);
@@ -6298,8 +6176,8 @@ impl Ctx<'_> {
                     if let Some(named) =
                         p.ty.as_ref()
                             .and_then(type_head_name)
-                            .and_then(|head| self.structs.get(head))
-                            .and_then(|fields| literal_struct_fields(a, fields))
+                            .and_then(|head| self.nominal_field_names(head))
+                            .and_then(|fields| literal_struct_fields(a, &fields))
                     {
                         for (field, value) in named {
                             let value = format!("({})", self.expr(value)?);
@@ -7532,7 +7410,7 @@ struct ConstTables {
 /// not a literal, which the caller handles its own way.
 fn literal_struct_fields<'a>(
     value: &'a ast::Expr,
-    fields: &StructFields,
+    fields: &[String],
 ) -> Option<Vec<(String, &'a ast::Expr)>> {
     match value {
         ast::Expr::Construct { args, .. } => args
@@ -7541,7 +7419,7 @@ fn literal_struct_fields<'a>(
             .map(|(position, arg)| {
                 let field = match &arg.field {
                     Some(name) => name.text.clone(),
-                    None => fields.get(position)?.0.clone(),
+                    None => fields.get(position)?.clone(),
                 };
                 Some((field, arg.value.as_ref()?))
             })
@@ -7550,7 +7428,7 @@ fn literal_struct_fields<'a>(
             parts
                 .iter()
                 .zip(fields)
-                .map(|(part, (field, _))| (field.clone(), part))
+                .map(|(part, field)| (field.clone(), part))
                 .collect(),
         ),
         _ => None,
@@ -7567,9 +7445,9 @@ fn literal_struct_fields<'a>(
 /// is the positional form.
 fn struct_const_fields<'a>(
     declaration: &'a ast::ConstDecl,
-    structs: &HashMap<String, StructFields>,
+    struct_field_names: &HashMap<String, StructFieldNames>,
 ) -> Option<Vec<(String, &'a ast::Expr)>> {
-    let declared = type_head_name(&declaration.ty).and_then(|head| structs.get(head))?;
+    let declared = type_head_name(&declaration.ty).and_then(|head| struct_field_names.get(head))?;
     match &declaration.value {
         ast::Expr::Construct { args, .. } => args
             .iter()
@@ -7577,7 +7455,7 @@ fn struct_const_fields<'a>(
             .map(|(position, arg)| {
                 let field = match &arg.field {
                     Some(name) => name.text.clone(),
-                    None => declared.get(position)?.0.clone(),
+                    None => declared.get(position)?.clone(),
                 };
                 Some((field, arg.value.as_ref()?))
             })
@@ -7586,7 +7464,7 @@ fn struct_const_fields<'a>(
             parts
                 .iter()
                 .zip(declared)
-                .map(|(part, (field, _))| (field.clone(), part))
+                .map(|(part, field)| (field.clone(), part))
                 .collect(),
         ),
         _ => None,
@@ -7598,7 +7476,7 @@ fn const_tables(
     enums: &HashMap<String, HashMap<String, u64>>,
     fns: &HashMap<String, &ast::FnDecl>,
     type_aliases: &HashMap<String, ast::Type>,
-    structs: &HashMap<String, StructFields>,
+    struct_field_names: &HashMap<String, StructFieldNames>,
 ) -> ConstTables {
     let real_consts: std::collections::HashSet<String> = const_decls
         .iter()
@@ -7631,7 +7509,7 @@ fn const_tables(
             // path a read spells (`K.a`) — the same shape hardware folds it
             // into. Without it the testbench refused `K.a` as something "siox
             // build cannot translate yet", on a declaration stage 4 accepted.
-            if let Some(fields) = struct_const_fields(c, structs) {
+            if let Some(fields) = struct_const_fields(c, struct_field_names) {
                 if consts.contains_key(&format!("{}.", c.name.text)) {
                     continue;
                 }
@@ -7672,7 +7550,7 @@ fn const_tables(
             // the dotted path a read spells. The scalar table holds a single
             // entry per name, so a struct constant put nothing in it and every
             // read of `K.a` was reported as untranslatable.
-            if let Some(fields) = struct_const_fields(declaration, structs) {
+            if let Some(fields) = struct_const_fields(declaration, struct_field_names) {
                 if const_exprs.contains_key(&format!("{}.", declaration.name.text)) {
                     continue;
                 }

@@ -66,8 +66,8 @@ Remaining:
 ## IR
 
 Owns the elaborated digital model: signals, processes, drivers, events,
-initializers, type/enum metadata, and semantic lints. Code: `src/ir.rs`,
-`src/ir.rs`.
+initializers, type/enum metadata, and semantic lints. Code: `src/ir.rs`;
+consumed by `src/driver/` and `src/llvm/`.
 
 Current baseline:
 
@@ -107,13 +107,14 @@ Current baseline:
   packed vector families, enums, kernel scalars, and ranged numeric domains.
   Signal flattening and range/index lowering consume this tree, whose checked
   width/leaf-count operations cannot silently overflow.
+- ✅ Testbench-owned values retain the same layouts without becoming hardware
+  signals. Native declaration storage, positional aggregate materialization,
+  composite choice/copy handling, ranges, scalar families, and widths consume
+  those concrete IR layouts. The remaining nominal field-order table contains
+  names only and is restricted to source syntax with no concrete value path.
 
 Remaining:
 
-- 🟡 **Finish layout consumer migration.** Concrete signal storage and range
-  operations use `SourceLayout`; expression-level struct materialization and
-  the native test harness still consult declaration-shaped field tables. Move
-  those consumers to IR layouts, then delete their duplicate reconstruction.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
@@ -134,6 +135,10 @@ Current baseline:
   host SIMD features.
 - ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
   events, and the unbounded low-word-first ABI are covered.
+- ✅ LLVM obtains each flattened signal width through its persisted
+  `SourceLayout` when present. IR validation rejects aggregate layouts at leaf
+  signal paths and rejects stale `Signal::width` metadata that disagrees with
+  the layout before code generation.
 - ✅ Every advertised Cargo feature changes a real compiler boundary: `cli`
   and `llvm` select dependencies/components, `simd` selects host target
   features, and `bitpack` selects the alternate storage layout. Arbitrary-width
@@ -146,8 +151,6 @@ Remaining:
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
   precision before exposing a Cargo feature or language type.
-- 🟡 **Aggregate layouts.** Consume the persistent recursive IR layouts once
-  the IR item above lands; do not infer source aggregate sizing in the backend.
 - 🔴 **Optimization measurements.** Add repeatable size/runtime benchmarks for
   default, `bitpack`, and host-SIMD builds so optimizations are justified by
   data rather than only structural tests.

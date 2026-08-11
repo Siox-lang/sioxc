@@ -93,15 +93,14 @@ pub(crate) fn build_module<'ctx>(
             issues.join("\n  - ")
         ));
     }
-    if let Some(signal) = design
-        .signals
-        .iter()
-        .find(|signal| signal.width > LLVM_MAX_INT_BITS)
-    {
+    if let Some((id, signal, width)) = design.signals.iter().enumerate().find_map(|(id, signal)| {
+        let width = design.signal_width(SignalId(id as u32))?;
+        (width > LLVM_MAX_INT_BITS).then_some((id, signal, width))
+    }) {
         return Err(format!(
-            "signal `{}` is {} bits wide, but this LLVM backend supports integer \
+            "signal `{}` (id {id}) is {width} bits wide, but this LLVM backend supports integer \
              values up to {LLVM_MAX_INT_BITS} bits",
-            signal.path, signal.width
+            signal.path
         ));
     }
     let cg = Codegen::new(ctx, design);
@@ -177,8 +176,11 @@ fn width_mask(w: u32) -> u64 {
 fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
     let mut slots = Vec::with_capacity(design.signals.len());
     let (mut word, mut bit) = (0u32, 0u32);
-    for s in &design.signals {
-        let w = s.width.max(1);
+    for (id, _) in design.signals.iter().enumerate() {
+        let w = design
+            .signal_width(SignalId(id as u32))
+            .expect("validated signal width")
+            .max(1);
         if w > 64 {
             if bit != 0 {
                 word += 1;
@@ -207,7 +209,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             let fields: Vec<_> = design
                 .signals
                 .iter()
-                .map(|s| storage_int(ctx, s.width).into())
+                .enumerate()
+                .map(|(id, _)| {
+                    storage_int(
+                        ctx,
+                        design
+                            .signal_width(SignalId(id as u32))
+                            .expect("validated signal width"),
+                    )
+                    .into()
+                })
                 .collect();
             ctx.struct_type(&fields, true)
         };
@@ -246,10 +257,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .expect("LLVM supports the logical width")
     }
 
+    fn signal_width(&self, id: SignalId) -> u32 {
+        self.design
+            .signal_width(id)
+            .expect("Design::validate accepted this signal layout")
+    }
+
     /// The storage integer type of signal `id` (a field of [`Codegen::state_ty`]).
     #[cfg(not(feature = "bitpack"))]
     fn slot_ty(&self, id: SignalId) -> inkwell::types::IntType<'ctx> {
-        storage_int(self.ctx, self.design.signals[id.0 as usize].width)
+        storage_int(self.ctx, self.signal_width(id))
     }
 
     fn build(&self) {
@@ -324,7 +341,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .build_load(ty, self.slot_ptr(arr, id), "v")
             .unwrap()
             .into_int_value();
-        self.fit(v, self.value_ty(self.design.signals[id.0 as usize].width))
+        self.fit(v, self.value_ty(self.signal_width(id)))
     }
 
     /// Zero-extend or truncate `v` to `ty`. Storage, compute and ABI widths all
@@ -407,7 +424,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             (id.0 / 64, id.0 % 64, 1)
         } else {
             let (word, shift) = self.slots[id.0 as usize];
-            (word, shift, self.design.signals[id.0 as usize].width)
+            (word, shift, self.signal_width(id))
         };
         let i64 = self.i64t();
         if w > 64 {
@@ -458,7 +475,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             (id.0 / 64, id.0 % 64, 1)
         } else {
             let (word, shift) = self.slots[id.0 as usize];
-            (word, shift, self.design.signals[id.0 as usize].width)
+            (word, shift, self.signal_width(id))
         };
         let i64 = self.i64t();
         if w > 64 {
@@ -535,7 +552,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for id in 0..self.n {
             let signal = &self.design.signals[id as usize];
             let init = self
-                .value_ty(signal.width)
+                .value_ty(self.signal_width(SignalId(id)))
                 .const_int_arbitrary_precision(&signal.init);
             self.store("cur", SignalId(id), init);
             self.store("old", SignalId(id), init);
@@ -596,7 +613,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             // Mask to the signal's width, exactly like the interpreter's
             // `set` — outside writers (runner, native harness, FFI) may hand
             // in a value wider than the signal.
-            let w = self.design.signals[id].width;
+            let w = self.signal_width(SignalId(id as u32));
             let stored = if w > 0 && w < 64 {
                 let m = i64.const_int((1u64 << w) - 1, false);
                 self.builder.build_and(val, m, "m").unwrap()
@@ -688,7 +705,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_switch(sig, done, &cases).unwrap();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let w = self.design.signals[id].width;
+            let w = self.signal_width(SignalId(id as u32));
             let first_word = self
                 .builder
                 .build_int_compare(IntPredicate::EQ, word, i32.const_zero(), "word0")
@@ -746,7 +763,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let cty = self.value_ty(self.design.signals[id].width);
+            let cty = self.value_ty(self.signal_width(SignalId(id as u32)));
             let shift = self
                 .builder
                 .build_int_mul(self.fit(word, cty), cty.const_int(bits as u64, false), "sh")
@@ -926,17 +943,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         active: Option<IntValue<'ctx>>,
     ) -> IntValue<'ctx> {
         let signal = &self.design.signals[target.0 as usize];
+        let width = self.signal_width(target);
         let Some(_) = signal.range else {
             return if signal.integer {
-                self.emit_signed_operand_at(expr, signal.width)
+                self.emit_signed_operand_at(expr, width)
             } else {
-                self.emit_at(expr, signal.width)
+                self.emit_at(expr, width)
             };
         };
-        let check_width = self.expr_width(expr).max(signal.width).max(64);
+        let check_width = self.expr_width(expr).max(width).max(64);
         let value = self.emit_signed_operand_at(expr, check_width);
         self.record_range_value(target, value, active);
-        self.fit(value, self.value_ty(signal.width))
+        self.fit(value, self.value_ty(width))
     }
 
     fn record_range_value(
@@ -1108,7 +1126,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 None => e,
             };
         }
-        let w = self.design.signals[target.0 as usize].width;
+        let w = self.signal_width(*target);
         let masked = self.fit(val, self.value_ty(w));
         self.store("cur", *target, masked);
         self.mark_event(*target, prev, masked);
@@ -1141,7 +1159,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             }
             Expr::Real(_) | Expr::CCall { .. } => 64,
             Expr::Logic(_) => 1,
-            Expr::Current(id) | Expr::Old(id) => self.design.signals[id.0 as usize].width.max(1),
+            Expr::Current(id) | Expr::Old(id) => self.signal_width(*id).max(1),
             Expr::Event(_) => 1,
             Expr::Unary { rhs, .. } => self.expr_width(rhs),
             Expr::Binary { op, lhs, rhs } => {
@@ -1359,7 +1377,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         match e {
             Expr::Current(id) | Expr::Old(id) => {
                 let signal = &self.design.signals[id.0 as usize];
-                let natural = signal.width.max(1);
+                let natural = self.signal_width(*id).max(1);
                 let value = self.emit_at(e, natural);
                 let negative_capable =
                     signal.integer && signal.range.map(|(lo, _)| lo < 0).unwrap_or(true);

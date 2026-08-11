@@ -8131,3 +8131,26 @@ matrix passes in both storage layouts and across the complete corpus, and a
 freshly emitted FIFO native binary runs its test successfully. Remaining work
 is to migrate expression-level aggregate materialization and the native harness
 off their raw struct tables, followed by direct LLVM aggregate consumption.
+
+### 2026-08-11 — Codex — completing native SourceLayout consumption
+
+Continuing the persistent-layout roadmap item in `src/driver/build.rs`. I am
+moving concrete native testbench aggregate declarations and positional
+materialization onto `Design::source_layouts`, fixing the two initializer
+regressions exposed when the old declaration-shaped struct fallback was
+removed, and will retain AST field data only where an expression is genuinely
+synthetic and has no concrete IR path. Full native and corpus gates follow
+before this increment is committed.
+
+This migration is complete. IR now persists recursive layouts for testbench
+locals without allocating hardware signals. The native emitter uses those
+layouts for declarations, nested arrays/strings, scalar metadata, and
+positional aggregate writes; its old typed struct reconstruction is reduced to
+a names-only field-order index for constants and synthetic expressions without
+a concrete path. LLVM reads every flattened signal width through the persisted
+leaf layout when present, and IR validation rejects stale width disagreement or
+an aggregate attached to a leaf. The exact local CI matrix passes: fmt, both
+clippy configurations, frontend-only check, default and bitpack Rust tests,
+and all 171 corpus programs in both layouts. Focused emitted binaries for
+generate-if, instance arrays/placement, and nested wide/string aggregates also
+run successfully in both layouts.

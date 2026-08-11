@@ -37,6 +37,10 @@ flowchart LR
   struct/view, and unresolved shapes; preserves view directions, written ranges
   and source spans; and computes aggregate bit width and leaf count with checked
   arithmetic. IR storage flattening and range/index operations consume it.
+- Testbench locals retain layouts without becoming hardware signals. The
+  native harness uses them for flattened storage and aggregate materialization;
+  LLVM reads flattened signal widths through their leaf layouts and validates
+  them against stale duplicate signal metadata before code generation.
 
 ## Exactness rule
 
@@ -46,8 +50,7 @@ builds run the same semantic tests, including arbitrary-width and X/Z cases.
 
 ## Remaining related work
 
-- Move expression-level struct materialization and the native test harness off
-  their declaration-shaped field tables and onto the persisted layouts.
-- Have LLVM consume the layouts directly if non-flattened aggregate IR values
-  are introduced.
+- If non-flattened aggregate IR values are introduced, represent them directly
+  with `SourceLayout` and use its checked recursive sizing instead of adding a
+  backend-specific aggregate model.
 - Add repeatable memory/runtime benchmarks for default and packed state.

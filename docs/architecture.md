@@ -128,8 +128,15 @@ struct/view identity and view-field directions, ordered recursively-substituted
 fields, ordinary versus packed arrays, written range direction, scalar domains,
 value constraints, and source spans. IR signal flattening traverses this
 tree rather than reconstructing shape from AST declarations; checked recursive
-width and leaf-count queries prepare the same boundary for future aggregate
-LLVM values.
+width and leaf-count queries define the same boundary for native consumers.
+Testbench locals retain layouts without becoming hardware signals, so the
+generated harness uses the already-specialized tree for flattened C storage
+and positional aggregate writes. LLVM obtains flattened signal widths through
+the corresponding leaf layouts; IR validation rejects a stale duplicated
+signal width or an aggregate layout attached directly to a leaf signal. A
+names-only nominal field-order index remains for positional syntax in constants
+and synthetic inlined expressions that have no concrete value path; it is not
+a storage or sizing model.
 
 File inputs follow the phase that owns their storage. Hardware/top
 initializers are elaboration-time ROM images in `Design::Signal::init`;

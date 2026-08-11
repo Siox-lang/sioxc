@@ -14,11 +14,15 @@ assertions, and VCD export — predates this changelog. See
 ### Changed
 - **IR now owns concrete recursive source layouts.** `Design::source_layouts`
   persists nominal structs/views with view-field directions, substituted nested
-  fields, ordinary and packed arrays with written ranges, scalar domains, and ranged numeric
-  constraints for aggregate roots and every leaf. Signal storage flattening
-  and range/index lowering consume that language-neutral tree instead of
-  repeatedly walking AST declarations; recursive bit-width and leaf-count
-  queries use checked arithmetic.
+  fields, ordinary and packed arrays with written ranges, scalar domains, and
+  ranged numeric constraints for aggregate roots and every leaf. Testbench
+  locals retain layouts without becoming hardware signals. Signal storage
+  flattening, range/index lowering, native aggregate materialization, and LLVM
+  leaf sizing consume that language-neutral tree instead of repeatedly walking
+  AST declarations; recursive bit-width and leaf-count queries use checked
+  arithmetic, and validation rejects stale signal widths that disagree with a
+  persisted leaf. The native emitter's remaining nominal struct index stores
+  field names only for positional source syntax without a concrete value path.
 - **Foreign C declarations now enforce their implemented scalar ABI.**
   `real`, `integer`, and packed numeric values up to 64 bits remain supported;
   generic, void, character, aggregate, and multiword signatures now produce an
