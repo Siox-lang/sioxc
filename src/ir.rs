@@ -72,6 +72,153 @@ pub struct Design {
     /// metadata (`struct F(E[]); impl Vector for F {}`), not a std type-name
     /// convention. Consumers use it to render metavalue companions.
     pub vector_element_enums: HashMap<u32, String>,
+    /// Concrete source value -> its complete recursive type layout. Keys use
+    /// the same hierarchical spelling as `Signal::path`; aggregates have an
+    /// entry even though storage is flattened into leaf signals. Backends and
+    /// tooling consume this instead of reconstructing struct inheritance,
+    /// generic substitutions, array ranges, or packed-vector shape from the
+    /// frontend AST.
+    pub source_layouts: HashMap<String, SourceLayout>,
+}
+
+/// An inclusive source range in written order. `left > right` is descending;
+/// layout never sorts the endpoints because direction is observable through
+/// the language's range attributes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutRange {
+    pub left: i64,
+    pub right: i64,
+}
+
+impl LayoutRange {
+    /// Number of positions in the inclusive range, checked without converting
+    /// either endpoint to an unsigned host integer first.
+    pub fn len(self) -> Option<u64> {
+        u64::try_from((i128::from(self.left) - i128::from(self.right)).unsigned_abs())
+            .ok()?
+            .checked_add(1)
+    }
+
+    pub fn is_empty(self) -> bool {
+        false
+    }
+
+    pub fn ascending(self) -> bool {
+        self.left <= self.right
+    }
+}
+
+/// The representation semantics of one scalar storage leaf. Nominal identity
+/// remains on `LayoutKind::Scalar`; this enum describes how engines interpret
+/// its bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScalarDomain {
+    Bits,
+    Integer,
+    Real,
+    Character,
+    Enum(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayoutDirection {
+    In,
+    Out,
+    InOut,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutField {
+    pub name: String,
+    /// Direction supplied by an applied view. Ordinary struct fields have no
+    /// direction; permissions belong to the connection using the layout.
+    pub direction: Option<LayoutDirection>,
+    pub layout: SourceLayout,
+}
+
+/// A frontend-independent, recursively complete layout for one concrete source
+/// value. `span` anchors diagnostics; `kind` retains the distinction between a
+/// packed vector (one signal) and an ordinary repeated array (one layout per
+/// element), which a bit count alone cannot recover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLayout {
+    pub span: crate::diag::Span,
+    pub kind: LayoutKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayoutKind {
+    Scalar {
+        width: u32,
+        domain: ScalarDomain,
+        nominal: Option<String>,
+        /// Dynamic value constraint for ranged numerics, not an index range.
+        value_range: Option<(i64, i64)>,
+    },
+    /// A source array represented by one packed signal.
+    Packed {
+        width: u32,
+        family: String,
+        range: Option<LayoutRange>,
+        element_enum: Option<String>,
+    },
+    /// A source array represented recursively (and currently flattened into
+    /// one signal per scalar leaf).
+    Array {
+        range: Option<LayoutRange>,
+        element: Box<SourceLayout>,
+    },
+    Struct {
+        name: String,
+        /// Applied directional view, when this value was declared through one.
+        view: Option<String>,
+        fields: Vec<LayoutField>,
+    },
+    /// A best-effort placeholder for an unresolved/parametric source type.
+    /// Keeping it in the tree is more useful to diagnostics and tools than
+    /// silently dropping that branch.
+    Opaque { name: String, width: Option<u32> },
+}
+
+impl SourceLayout {
+    /// Total logical bits in this value, with recursive checked arithmetic.
+    /// Unknown widths and an overflow return `None` rather than inventing a
+    /// truncated aggregate size.
+    pub fn bit_width(&self) -> Option<u64> {
+        match &self.kind {
+            LayoutKind::Scalar { width, .. } | LayoutKind::Packed { width, .. } => {
+                (*width != 0).then_some(u64::from(*width))
+            }
+            LayoutKind::Array { range, element } => {
+                (*range)?.len()?.checked_mul(element.bit_width()?)
+            }
+            LayoutKind::Struct { fields, .. } => fields.iter().try_fold(0u64, |total, field| {
+                total.checked_add(field.layout.bit_width()?)
+            }),
+            LayoutKind::Opaque { width, .. } => width.map(u64::from),
+        }
+    }
+
+    /// Number of scalar storage leaves after recursive aggregate flattening.
+    pub fn leaf_count(&self) -> Option<u64> {
+        match &self.kind {
+            LayoutKind::Scalar { .. } | LayoutKind::Packed { .. } => Some(1),
+            LayoutKind::Array { range, element } => {
+                (*range)?.len()?.checked_mul(element.leaf_count()?)
+            }
+            LayoutKind::Struct { fields, .. } => fields.iter().try_fold(0u64, |total, field| {
+                total.checked_add(field.layout.leaf_count()?)
+            }),
+            LayoutKind::Opaque { .. } => None,
+        }
+    }
+
+    pub fn index_range(&self) -> Option<LayoutRange> {
+        match &self.kind {
+            LayoutKind::Packed { range, .. } | LayoutKind::Array { range, .. } => *range,
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -417,10 +564,6 @@ struct Lowering<'a> {
     /// body), the uninitialized value a signal of that type powers on to. Beats
     /// the structural first-variant default. (`New for Logic` -> `'U'`.)
     new_defaults: HashMap<String, u64>,
-    /// Signal/array name -> its declared index range `(left, right)` in written
-    /// order (`Logic[7..0]` -> `(7, 0)`; width-only `Bit[4]` -> `(0, 3)`). Backs
-    /// the VHDL range attributes `::left`/`::right`/`::high`/`::low`/`::ascending`.
-    local_range: HashMap<String, (i64, i64)>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Named, storage-free directional views.
@@ -719,7 +862,6 @@ impl<'a> Lowering<'a> {
             enum_variants: HashMap::new(),
             enum_first_disc: HashMap::new(),
             new_defaults: HashMap::new(),
-            local_range: HashMap::new(),
             structs: HashMap::new(),
             views: HashMap::new(),
             view_dirs: HashMap::new(),
@@ -2662,7 +2804,7 @@ impl<'a> Lowering<'a> {
                 };
                 out.push((path.to_string(), v, lo, hi, indices.len(), noun, span));
             }
-        } else if let Some(&(left, right)) = self.local_range.get(path) {
+        } else if let Some((left, right)) = self.persisted_range(path) {
             let (lo, hi) = (left.min(right), left.max(right));
             if v < lo || v > hi {
                 let len = (hi - lo + 1) as usize;
@@ -3982,12 +4124,6 @@ impl<'a> Lowering<'a> {
             }
             _ => ty,
         };
-        // Record the declared index range so `::left`/`::right`/`::high`/
-        // `::low`/`::ascending` can read it (a written range keeps its
-        // direction; a width-only index is ascending `0..N-1`).
-        if let Some(range) = self.declared_range(ty, env) {
-            self.local_range.insert(name.to_string(), range);
-        }
         // An unconstrained array (`Char[]`) has no length to flatten with.
         if let ast::Type::Indexed { index: None, .. } = ty {
             self.sink.emit(
@@ -3999,142 +4135,348 @@ impl<'a> Lowering<'a> {
             );
             return;
         }
-        // A genuine field-aggregate flattens to per-field signals; a struct
-        // with no fields (a derived vector like `struct Byte : Logic[8]`) is a
-        // scalar leaf and takes its inherited width below.
-        if let Some(fields) = self.struct_fields(ty).filter(|f| !f.is_empty()) {
-            match ty {
-                ast::Type::Path(p) => {
-                    self.local_struct
-                        .insert(name.to_string(), p.segments[0].text.clone());
-                    self.local_struct_repr
-                        .insert(name.to_string(), p.segments[0].text.clone());
-                }
-                // A generic struct (`Box<unsigned[8]>`) dispatches on its head,
-                // exactly as the plain form does — methods are keyed by the
-                // struct name, not by the arguments. Without this the receiver
-                // had no type name at all, so `b.set(7)` found no method and
-                // was dropped without a word, while the same call on a
-                // non-generic struct worked.
-                ast::Type::Generic { base, .. } => {
-                    if let Some(head) = type_head_name(base) {
-                        self.local_struct.insert(name.to_string(), head.to_string());
-                        self.local_struct_repr
-                            .insert(name.to_string(), head.to_string());
-                    }
-                }
-                ast::Type::View { view, target, .. } => {
-                    if let Some(role) = view.segments.last() {
-                        self.local_struct
-                            .insert(name.to_string(), role.text.clone());
-                    }
-                    if let Some(backing) = type_head_name(target) {
-                        self.local_struct_repr
-                            .insert(name.to_string(), backing.to_string());
-                    }
-                }
-                _ => {}
-            }
-            for (fname, fty) in fields {
-                self.add_typed_signal(
-                    entity,
-                    &format!("{name}.{fname}"),
-                    &fty,
-                    env,
-                    declaration_span,
+        let layout = self.source_layout(ty, env);
+        self.add_layout_signal(entity, name, &layout, declaration_span);
+    }
+
+    /// Persist and flatten one already-resolved layout. This is now the sole
+    /// recursive storage traversal; AST declarations are consulted only while
+    /// constructing the root `SourceLayout` above.
+    fn add_layout_signal(
+        &mut self,
+        entity: &str,
+        name: &str,
+        layout: &SourceLayout,
+        declaration_span: crate::diag::Span,
+    ) {
+        self.out
+            .source_layouts
+            .insert(format!("{entity}.{name}"), layout.clone());
+        match &layout.kind {
+            LayoutKind::Struct {
+                name: representation,
+                view,
+                fields,
+            } => {
+                self.local_struct.insert(
+                    name.to_string(),
+                    view.clone().unwrap_or_else(|| representation.clone()),
                 );
-            }
-        } else if let Some((elem, indices)) =
-            array_of(ty, env, &self.const_ranges, &self.vector_families)
-        {
-            let elem = elem.clone();
-            self.local_array.insert(name.to_string(), indices.clone());
-            for i in indices {
-                self.add_typed_signal(
-                    entity,
-                    &format!("{name}[{i}]"),
-                    &elem,
-                    env,
-                    declaration_span,
-                );
-            }
-        } else if let Some((w, enum_name)) = self.enum_representation(ty) {
-            self.local_enum.insert(name.to_string(), enum_name.clone());
-            self.add_signal(entity, name, w, declaration_span);
-            if let Some(&id) = self.locals.get(name) {
-                self.sig_type.insert(id.0, enum_name.clone());
-                // Record the enum type so consumers render variants symbolically.
-                self.out.signals[id.0 as usize].enum_type = Some(enum_name.clone());
-                // `new()` default: an uninitialized enum signal powers on to its
-                // `impl New for T` value if one exists (`Logic` -> `'U'`),
-                // otherwise its first variant (`T'LEFT`) — always a valid member,
-                // not a bare `0`. An explicit `let x = V` overwrites this below.
-                if let Some(&d) = self
-                    .new_defaults
-                    .get(&enum_name)
-                    .or_else(|| self.enum_first_disc.get(&enum_name))
-                {
-                    self.out.signals[id.0 as usize].init = vec![d];
+                self.local_struct_repr
+                    .insert(name.to_string(), representation.clone());
+                for field in fields {
+                    self.add_layout_signal(
+                        entity,
+                        &format!("{name}.{}", field.name),
+                        &field.layout,
+                        declaration_span,
+                    );
                 }
             }
-        } else if let Some((w, is_real, range)) = self.ranged_numeric(ty) {
-            // `integer<left..right>` stores in the smallest width covering the
-            // range (two's complement when lo < 0); `real<..>` stays f64. The
-            // bounds ride on the signal for the simulation's range checks.
-            self.add_signal(entity, name, w, declaration_span);
-            if let Some(&id) = self.locals.get(name) {
-                if is_real {
-                    self.out.signals[id.0 as usize].real = true;
-                } else {
-                    self.out.signals[id.0 as usize].integer = true;
+            LayoutKind::Array { range, element } => {
+                let Some(range) = range else {
+                    return;
+                };
+                let indices = loop_range(range.left, range.right);
+                self.local_array.insert(name.to_string(), indices.clone());
+                for index in indices {
+                    self.add_layout_signal(
+                        entity,
+                        &format!("{name}[{index}]"),
+                        element,
+                        declaration_span,
+                    );
                 }
-                self.out.signals[id.0 as usize].range = range;
             }
-        } else {
-            self.add_signal(
-                entity,
-                name,
-                type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges),
-                declaration_span,
-            );
-            // A Logic-vector family `F[N]` dispatches its operators to
-            // `impl _ for F` (spec 3.25). unsigned/signed are recognized the same way
-            // as any user `struct F : Logic[]`.
-            if let ast::Type::Indexed { base, .. } = ty {
-                if let ast::Type::Path(p) = base.as_ref() {
-                    let head = p.segments.last().map(|s| s.text.as_str()).unwrap_or("");
-                    if self.vector_families.contains(head) {
-                        self.local_numeric
-                            .insert(name.to_string(), head.to_string());
-                        if let Some(&id) = self.locals.get(name) {
-                            self.sig_type.insert(id.0, head.to_string());
-                            if let Some(element) = self.vector_element_enum(head) {
-                                self.out.vector_element_enums.insert(id.0, element);
-                            }
-                        }
+            LayoutKind::Packed {
+                width,
+                family,
+                element_enum,
+                ..
+            } => {
+                self.add_signal(entity, name, *width, declaration_span);
+                self.local_numeric.insert(name.to_string(), family.clone());
+                if let Some(&id) = self.locals.get(name) {
+                    self.sig_type.insert(id.0, family.clone());
+                    if let Some(element) = element_enum {
+                        self.out.vector_element_enums.insert(id.0, element.clone());
                     }
                 }
             }
-            // A `real` slot holds f64 bits and takes float arithmetic; a
-            // `Char` slot holds a symbol.
-            if let ast::Type::Path(p) = ty {
-                if p.segments.len() == 1 {
-                    if let Some(&id) = self.locals.get(name) {
-                        let head = p.segments[0].text.as_str();
-                        if head == "real" || struct_derives_kernel(head, "real", &self.structs) {
-                            self.out.signals[id.0 as usize].real = true;
-                        } else if head == "integer" {
-                            self.out.signals[id.0 as usize].integer = true;
-                        } else if head == "Char"
-                            || struct_derives_kernel(head, "Char", &self.structs)
+            LayoutKind::Scalar {
+                width,
+                domain,
+                value_range,
+                ..
+            } => {
+                self.add_signal(entity, name, *width, declaration_span);
+                let Some(&id) = self.locals.get(name) else {
+                    return;
+                };
+                let signal = &mut self.out.signals[id.0 as usize];
+                signal.range = *value_range;
+                match domain {
+                    ScalarDomain::Bits => {}
+                    ScalarDomain::Integer => signal.integer = true,
+                    ScalarDomain::Real => signal.real = true,
+                    ScalarDomain::Character => {
+                        signal.char = true;
+                        self.local_char.insert(name.to_string());
+                    }
+                    ScalarDomain::Enum(enum_name) => {
+                        self.local_enum.insert(name.to_string(), enum_name.clone());
+                        self.sig_type.insert(id.0, enum_name.clone());
+                        signal.enum_type = Some(enum_name.clone());
+                        if let Some(&default) = self
+                            .new_defaults
+                            .get(enum_name)
+                            .or_else(|| self.enum_first_disc.get(enum_name))
                         {
-                            self.out.signals[id.0 as usize].char = true;
-                            self.local_char.insert(name.to_string());
+                            signal.init = vec![default];
                         }
                     }
                 }
+            }
+            LayoutKind::Opaque { width, .. } => {
+                self.add_signal(entity, name, width.unwrap_or(0), declaration_span);
             }
         }
+    }
+
+    /// Build the language-neutral recursive layout persisted on `Design`.
+    /// Alias expansion, generic substitution, inherited fields, and concrete
+    /// ranges happen here once; consumers must not need the source AST to
+    /// recover them again.
+    fn source_layout(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> SourceLayout {
+        self.source_layout_at(ty, env, &mut HashSet::new())
+    }
+
+    fn source_layout_at(
+        &self,
+        ty: &ast::Type,
+        env: &HashMap<String, i64>,
+        expanding: &mut HashSet<String>,
+    ) -> SourceLayout {
+        let ty = self.normalize_layout_type(ty);
+        let span = source_type_span(&ty);
+        let rendered = crate::syntax::pretty::type_str(&ty);
+
+        if let Some(fields) = self.struct_fields(&ty).filter(|fields| !fields.is_empty()) {
+            let recursion_key = rendered.clone();
+            if !expanding.insert(recursion_key.clone()) {
+                return SourceLayout {
+                    span,
+                    kind: LayoutKind::Opaque {
+                        name: rendered,
+                        width: None,
+                    },
+                };
+            }
+            let (name, view) = match &ty {
+                ast::Type::View { view, target, .. } => (
+                    type_head_name(target).unwrap_or("<anonymous>").to_string(),
+                    view.segments.last().map(|name| name.text.clone()),
+                ),
+                ast::Type::Generic { base, .. } => (
+                    type_head_name(base).unwrap_or("<anonymous>").to_string(),
+                    None,
+                ),
+                _ => (
+                    type_head_name(&ty).unwrap_or("<anonymous>").to_string(),
+                    None,
+                ),
+            };
+            let directions = self
+                .view_of(&ty)
+                .and_then(|view_key| self.view_dirs.get(&view_key));
+            let fields = fields
+                .into_iter()
+                .map(|(name, ty)| {
+                    let direction =
+                        directions
+                            .and_then(|directions| directions.get(&name))
+                            .map(|direction| match direction {
+                                ast::Direction::In => LayoutDirection::In,
+                                ast::Direction::Out => LayoutDirection::Out,
+                                ast::Direction::Inout => LayoutDirection::InOut,
+                            });
+                    LayoutField {
+                        name,
+                        direction,
+                        layout: self.source_layout_at(&ty, env, expanding),
+                    }
+                })
+                .collect();
+            expanding.remove(&recursion_key);
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Struct { name, view, fields },
+            };
+        }
+
+        if let Some((element, indices)) =
+            array_of(&ty, env, &self.const_ranges, &self.vector_families)
+        {
+            let range = indices
+                .first()
+                .copied()
+                .zip(indices.last().copied())
+                .map(|(left, right)| LayoutRange { left, right });
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Array {
+                    range,
+                    element: Box::new(self.source_layout_at(element, env, expanding)),
+                },
+            };
+        }
+
+        if let Some(family) = self.packed_family(&ty, env) {
+            let width = type_width(&ty, env, &self.free_fns, &self.structs, &self.const_ranges);
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Packed {
+                    width,
+                    range: self.layout_range(&ty, env, &mut HashSet::new()),
+                    element_enum: self.vector_element_enum(&family),
+                    family,
+                },
+            };
+        }
+
+        if let Some((width, enum_name)) = self.enum_representation(&ty) {
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Scalar {
+                    width,
+                    domain: ScalarDomain::Enum(enum_name.clone()),
+                    nominal: Some(enum_name),
+                    value_range: None,
+                },
+            };
+        }
+
+        if let Some((width, real, value_range)) = self.ranged_numeric(&ty) {
+            return SourceLayout {
+                span,
+                kind: LayoutKind::Scalar {
+                    width,
+                    domain: if real {
+                        ScalarDomain::Real
+                    } else {
+                        ScalarDomain::Integer
+                    },
+                    nominal: None,
+                    value_range,
+                },
+            };
+        }
+
+        let width = type_width(&ty, env, &self.free_fns, &self.structs, &self.const_ranges);
+        let head = type_head_name(&ty);
+        let domain = match head {
+            Some("real") => Some(ScalarDomain::Real),
+            Some("integer") => Some(ScalarDomain::Integer),
+            Some("Char") => Some(ScalarDomain::Character),
+            Some(name) if struct_derives_kernel(name, "real", &self.structs) => {
+                Some(ScalarDomain::Real)
+            }
+            Some(name) if struct_derives_kernel(name, "integer", &self.structs) => {
+                Some(ScalarDomain::Integer)
+            }
+            Some(name) if struct_derives_kernel(name, "Char", &self.structs) => {
+                Some(ScalarDomain::Character)
+            }
+            Some(_) if width != 0 => Some(ScalarDomain::Bits),
+            _ => None,
+        };
+        match domain {
+            Some(domain) => SourceLayout {
+                span,
+                kind: LayoutKind::Scalar {
+                    width,
+                    domain,
+                    nominal: head
+                        .filter(|name| !matches!(*name, "integer" | "real" | "Char"))
+                        .map(str::to_string),
+                    value_range: None,
+                },
+            },
+            None => SourceLayout {
+                span,
+                kind: LayoutKind::Opaque {
+                    name: rendered,
+                    width: (width != 0).then_some(width),
+                },
+            },
+        }
+    }
+
+    /// Apply the same concrete alias/type-parameter rules signal lowering uses
+    /// before building layout metadata for nested fields.
+    fn normalize_layout_type(&self, ty: &ast::Type) -> ast::Type {
+        let substituted = if self.cur_type_env.is_empty() {
+            ty.clone()
+        } else {
+            subst_type_params(ty, &self.cur_type_env)
+        };
+        match &substituted {
+            ast::Type::Path(path) if path.segments.len() == 1 => {
+                self.resolve_alias(&substituted).clone()
+            }
+            ast::Type::Indexed {
+                base,
+                index: Some(index),
+                span,
+            } => match self.resolve_alias(base) {
+                ast::Type::Indexed {
+                    base: element,
+                    index: None,
+                    ..
+                } => ast::Type::Indexed {
+                    base: element.clone(),
+                    index: Some(index.clone()),
+                    span: *span,
+                },
+                _ => substituted,
+            },
+            _ => substituted,
+        }
+    }
+
+    fn packed_family(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> Option<String> {
+        match ty {
+            ast::Type::Indexed { base, .. } => {
+                let name = type_head_name(base)?;
+                self.vector_families
+                    .contains(name)
+                    .then(|| name.to_string())
+            }
+            ast::Type::Path(_) => {
+                let name = type_head_name(ty)?;
+                (self.vector_families.contains(name)
+                    && type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges) != 0)
+                    .then(|| name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn layout_range(
+        &self,
+        ty: &ast::Type,
+        env: &HashMap<String, i64>,
+        seen: &mut HashSet<String>,
+    ) -> Option<LayoutRange> {
+        if let Some((left, right)) = self.declared_range(ty, env) {
+            return Some(LayoutRange { left, right });
+        }
+        let name = type_head_name(ty)?;
+        if !seen.insert(name.to_string()) {
+            return None;
+        }
+        let base = self.structs.get(name)?.base.as_ref()?;
+        self.layout_range(base, env, seen)
     }
 
     fn vector_element_enum(&self, family: &str) -> Option<String> {
@@ -7541,7 +7883,7 @@ impl<'a> Lowering<'a> {
         let declared = block_binding
             .as_ref()
             .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
-            .or_else(|| self.local_range.get(&path).copied())?;
+            .or_else(|| self.persisted_range(&path))?;
         match index {
             ast::Expr::Range { lo, hi, .. } => Some((
                 eval_const(lo, &self.cur_env)?,
@@ -7582,10 +7924,13 @@ impl<'a> Lowering<'a> {
     /// label 8 in bit 0 and label 15 in bit 7. Direction still controls slice
     /// ordering, but does not waste storage below the declared low bound.
     fn packed_positions(&self, path: &str) -> Option<Vec<(i64, u32)>> {
-        if self.local_array.contains_key(path) {
+        if matches!(
+            self.persisted_layout(path).map(|layout| &layout.kind),
+            Some(LayoutKind::Array { .. })
+        ) {
             return None;
         }
-        let &(left, right) = self.local_range.get(path)?;
+        let (left, right) = self.persisted_range(path)?;
         let low = left.min(right);
         let high = left.max(right);
         let signal = *self.locals.get(path)?;
@@ -7630,7 +7975,7 @@ impl<'a> Lowering<'a> {
         let (left, right) = self
             .block_local_binding(base)
             .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
-            .or_else(|| self.local_range.get(&path).copied())?;
+            .or_else(|| self.persisted_range(&path))?;
         let low = left.min(right);
         let to_storage = |label: i64| {
             let offset = i128::from(label) - i128::from(low);
@@ -9718,6 +10063,18 @@ impl<'a> Lowering<'a> {
 
     /// Lower a system attribute. `clk.rising()`/`falling`/`edge` expand into
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
+    fn persisted_layout(&self, local_path: &str) -> Option<&SourceLayout> {
+        self.out
+            .source_layouts
+            .get(&format!("{}.{}", self.cur_instance_path, local_path))
+    }
+
+    fn persisted_range(&self, local_path: &str) -> Option<(i64, i64)> {
+        self.persisted_layout(local_path)
+            .and_then(SourceLayout::index_range)
+            .map(|range| (range.left, range.right))
+    }
+
     fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
         // `::length` is elaboration-time metadata: an array's element count,
         // else a signal's bit width (they coincide for a flat vector, so one
@@ -9734,8 +10091,18 @@ impl<'a> Lowering<'a> {
                 }
                 return Expr::Const(self.block_local_width(&ty) as u64);
             }
-            if let Some(indices) = expr_path(base).and_then(|p| self.local_array.get(&p)) {
-                return Expr::Const(indices.len() as u64);
+            if let Some(layout) = expr_path(base).and_then(|path| self.persisted_layout(&path)) {
+                let length = match &layout.kind {
+                    LayoutKind::Array { range, .. } => range.and_then(LayoutRange::len),
+                    LayoutKind::Packed { width, .. } | LayoutKind::Scalar { width, .. } => {
+                        Some(u64::from(*width))
+                    }
+                    LayoutKind::Opaque { width, .. } => width.map(u64::from),
+                    LayoutKind::Struct { .. } => None,
+                };
+                if let Some(length) = length {
+                    return Expr::Const(length);
+                }
             }
             if let Some(sig) = self.base_signal(base) {
                 return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
@@ -9750,7 +10117,7 @@ impl<'a> Lowering<'a> {
                 .block_local_type(base)
                 .and_then(|ty| self.declared_range(&ty, &self.cur_env));
             if let Some((l, r)) = local_declared
-                .or_else(|| expr_path(base).and_then(|p| self.local_range.get(&p).copied()))
+                .or_else(|| expr_path(base).and_then(|path| self.persisted_range(&path)))
             {
                 let v = match attr {
                     "left" => l,
@@ -10753,6 +11120,15 @@ fn lower_const_value(
 
 /// Bit width from a type annotation, substituting parameters from `env` (so
 /// `unsigned[W]` with `W=8` is width 8). `0` means parametric / not yet known.
+fn source_type_span(ty: &ast::Type) -> crate::diag::Span {
+    match ty {
+        ast::Type::Path(path) => path.span,
+        ast::Type::Indexed { span, .. }
+        | ast::Type::Generic { span, .. }
+        | ast::Type::View { span, .. } => *span,
+    }
+}
+
 fn type_width(
     t: &ast::Type,
     env: &HashMap<String, i64>,
@@ -12701,6 +13077,17 @@ mod tests {
         );
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.ready")));
+        assert!(matches!(
+            d.source_layouts.get("Producer.bus").map(|layout| &layout.kind),
+            Some(LayoutKind::Struct {
+                name,
+                view: Some(view),
+                fields,
+            }) if name == "HandshakeBus"
+                && view == "Handshake"
+                && fields.iter().map(|field| field.direction.clone()).collect::<Vec<_>>()
+                    == [Some(LayoutDirection::Out), Some(LayoutDirection::In)]
+        ));
     }
 
     #[test]
@@ -13469,6 +13856,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let issues = bad.validate();
         assert!(
@@ -14209,6 +14597,80 @@ mod tests {
                 && signal.width == 8
         }));
         assert!(!design.to_ir_string().contains("Unknown"));
+    }
+
+    #[test]
+    fn design_persists_recursive_concrete_source_layouts() {
+        let design = lower_src(
+            "module m;\n\
+             struct Header { flag: Bit, code: unsigned[7..0] }\n\
+             struct Packet<T> { header: Header, payload: T }\n\
+             #[top] entity E {\n\
+                 packets: Packet<unsigned[16]>[3..1] in,\n\
+                 count: integer<-3..4> in,\n\
+             }\n\
+             impl E {}\n",
+        );
+
+        let packets = design
+            .source_layouts
+            .get("E.packets")
+            .expect("the aggregate root keeps a layout despite having no signal");
+        assert_eq!(
+            packets.index_range(),
+            Some(LayoutRange { left: 3, right: 1 })
+        );
+        assert_eq!(packets.bit_width(), Some(75));
+        assert_eq!(packets.leaf_count(), Some(9));
+        let LayoutKind::Array { element, .. } = &packets.kind else {
+            panic!("packets should remain a source array: {packets:#?}");
+        };
+        let LayoutKind::Struct { name, fields, .. } = &element.kind else {
+            panic!("the array element should retain Packet: {element:#?}");
+        };
+        assert_eq!(name, "Packet");
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["header", "payload"]
+        );
+        assert!(matches!(
+            fields[1].layout.kind,
+            LayoutKind::Packed {
+                width: 16,
+                range: Some(LayoutRange { left: 0, right: 15 }),
+                ..
+            }
+        ));
+
+        let code = design
+            .source_layouts
+            .get("E.packets[3].header.code")
+            .expect("every flattened leaf also has its own concrete layout");
+        assert!(matches!(
+            code.kind,
+            LayoutKind::Packed {
+                width: 8,
+                range: Some(LayoutRange { left: 7, right: 0 }),
+                ..
+            }
+        ));
+
+        let count = design
+            .source_layouts
+            .get("E.count")
+            .expect("ranged integer");
+        assert!(matches!(
+            count.kind,
+            LayoutKind::Scalar {
+                width: 4,
+                domain: ScalarDomain::Integer,
+                value_range: Some((-3, 4)),
+                ..
+            }
+        ));
     }
 
     #[test]

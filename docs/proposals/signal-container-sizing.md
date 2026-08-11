@@ -32,6 +32,11 @@ flowchart LR
   non-dense values.
 - Structs and hardware arrays flatten into leaf signals, so each leaf receives
   its own minimal representation.
+- `Design::source_layouts` retains the pre-flattening recursive shape for every
+  concrete value and leaf. `SourceLayout` distinguishes scalar, packed, array,
+  struct/view, and unresolved shapes; preserves view directions, written ranges
+  and source spans; and computes aggregate bit width and leaf count with checked
+  arithmetic. IR storage flattening and range/index operations consume it.
 
 ## Exactness rule
 
@@ -41,7 +46,8 @@ builds run the same semantic tests, including arbitrary-width and X/Z cases.
 
 ## Remaining related work
 
-- Persist complete recursive source layouts in IR metadata instead of
-  reconstructing some named/repeated shapes.
-- Use those layouts if non-flattened aggregate IR values are introduced.
+- Move expression-level struct materialization and the native test harness off
+  their declaration-shaped field tables and onto the persisted layouts.
+- Have LLVM consume the layouts directly if non-flattened aggregate IR values
+  are introduced.
 - Add repeatable memory/runtime benchmarks for default and packed state.

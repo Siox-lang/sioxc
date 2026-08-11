@@ -61,6 +61,7 @@ mod bitpack_tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let llvm = emit_module_ir(&design).unwrap();
         assert!(
@@ -1675,6 +1676,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // State layout, accessors, settle, and the add+mask are present. The
@@ -1711,6 +1713,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("i512"), "{ll}");
@@ -1730,6 +1733,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -1751,6 +1755,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let error = emit_module_ir(&design).unwrap_err();
         assert!(error.contains("E.enormous"), "{error}");
@@ -1775,6 +1780,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -1824,6 +1830,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -1858,6 +1865,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -1896,6 +1904,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("fptosi double"), "missing conversion:\n{ll}");
@@ -1944,6 +1953,7 @@ mod tests {
             meta_of: Default::default(),
             vector_element_enums: Default::default(),
             vector_element_of_family: Default::default(),
+            source_layouts: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // In the settle body, the store to b's slot precedes the store to y's.

@@ -8107,3 +8107,27 @@ through `sqrt`, `scalbln`, and `labs`. Documentation and the API roadmap record
 the supported boundary and leave pointers/layouts/custom library discovery for
 the future general FFI layer. The exact local CI matrix passes, including both
 value layouts and both complete `/home/max/siox-tests` corpus runs.
+
+### 2026-08-11 — Codex — persisting recursive source layouts in IR
+
+Working in `src/ir.rs` and the architecture/layout documentation. The current
+lowerer repeatedly reconstructs structs, inherited fields, generic field
+substitutions, arrays, and packed-vector shapes from AST declarations; the
+native harness builds a second struct table independently. I am adding one
+language-neutral recursive layout tree to `Design`, recording every concrete
+declared value and its leaves, then moving IR flattening/sizing consumers onto
+that metadata with nested/generic/ranged layout tests. LLVM/native migration
+will follow the persisted boundary rather than receiving another AST-shaped
+table.
+
+The first migration is complete. `Design::source_layouts` now records scalar,
+packed, array, struct/view, and best-effort opaque layouts with source spans,
+written ranges, concrete generic fields, scalar domains, value constraints,
+and checked recursive width/leaf counts. IR signal flattening traverses this
+tree, and range attributes, bounds checks, slices, and packed-position mapping
+read it; the duplicate `local_range` table is removed. Focused nested generic,
+array/struct, ranged numeric, and applied-view tests pass. The exact local CI
+matrix passes in both storage layouts and across the complete corpus, and a
+freshly emitted FIFO native binary runs its test successfully. Remaining work
+is to migrate expression-level aggregate materialization and the native harness
+off their raw struct tables, followed by direct LLVM aggregate consumption.

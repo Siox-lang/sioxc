@@ -101,12 +101,19 @@ Current baseline:
   flattened aggregate leaves and metavalue companions. Every diagnostic
   emitted by IR lowering has a stable code and primary source span; late
   signal lints anchor to the owning port or `let` declaration.
+- ✅ `Design::source_layouts` retains a language-neutral recursive layout for
+  every concrete declared value and leaf: nominal structs/views and view-field
+  directions, inherited and generic-substituted fields, arrays with ranges,
+  packed vector families, enums, kernel scalars, and ranged numeric domains.
+  Signal flattening and range/index lowering consume this tree, whose checked
+  width/leaf-count operations cannot silently overflow.
 
 Remaining:
 
-- 🟡 **Persist complete source layouts.** Expression types reach lowering, but
-  named/repeated/composite layout is still partly reconstructed from
-  declarations. Store recursive source layouts directly in IR metadata.
+- 🟡 **Finish layout consumer migration.** Concrete signal storage and range
+  operations use `SourceLayout`; expression-level struct materialization and
+  the native test harness still consult declaration-shaped field tables. Move
+  those consumers to IR layouts, then delete their duplicate reconstruction.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle

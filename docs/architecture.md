@@ -121,7 +121,15 @@ reference to a conditionally omitted child can name both the slot and its
 declaration instead of becoming an anonymous unknown expression. Every scalar
 `ir::Signal` retains its owning port or `let` declaration span; flattened
 aggregate leaves and synthetic metavalue companions inherit that same anchor,
-so normalized-design lints do not lose their source location.
+so normalized-design lints do not lose their source location. Aggregate roots
+do not have storage signals, so `Design::source_layouts` separately preserves
+their complete concrete shape. Its language-neutral `SourceLayout` tree stores
+struct/view identity and view-field directions, ordered recursively-substituted
+fields, ordinary versus packed arrays, written range direction, scalar domains,
+value constraints, and source spans. IR signal flattening traverses this
+tree rather than reconstructing shape from AST declarations; checked recursive
+width and leaf-count queries prepare the same boundary for future aggregate
+LLVM values.
 
 File inputs follow the phase that owns their storage. Hardware/top
 initializers are elaboration-time ROM images in `Design::Signal::init`;
