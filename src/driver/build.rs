@@ -6679,11 +6679,18 @@ impl Ctx<'_> {
                         Ok(index) => index,
                         Err(error) => return Some(Err(error)),
                     };
-                    // Out-of-range aggregate reads have historically yielded
-                    // zero in the native engine; preserve that rule while
-                    // making the declared labels and nested shape correct.
-                    let mut result = String::from("0ULL");
-                    for logical in indices.into_iter().rev() {
+                    // Aggregate indexing falls back to the last declared
+                    // element at every dimension (spec 3.13), unlike packed
+                    // vectors whose out-of-range bit is zero. Seed the mux
+                    // with that last element and compare only the earlier
+                    // labels, exactly as hardware lowering does.
+                    let (last, earlier) = indices.split_last()?;
+                    let mut result =
+                        match read_from(cx, &format!("{path}[{last}]"), rest, suffix, true)? {
+                            Ok(value) => value,
+                            Err(error) => return Some(Err(error)),
+                        };
+                    for logical in earlier.iter().rev() {
                         let selected =
                             match read_from(cx, &format!("{path}[{logical}]"), rest, suffix, true)?
                             {

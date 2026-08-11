@@ -7912,3 +7912,28 @@ One existing cross-engine policy gap is now explicit in `TODO.md`: an
 out-of-range runtime array *read* selects the last element in hardware and zero
 in the native emitter. Writes agree on no-op. I have not silently selected one
 read rule; the language needs to specify it before both engines are aligned.
+
+### 2026-08-11 — Codex — aligning out-of-range aggregate reads
+
+The item above is not actually an unspecified policy: `docs/language.md`
+already says that an out-of-range runtime aggregate read selects the last
+declared element at each dimension, while a packed-vector read returns zero.
+Hardware implements that split and the native aggregate mux alone starts from
+zero. Taking the native emitter correction with a differential regression;
+packed-vector fallback remains unchanged.
+
+### 2026-08-11 — Codex — aggregate read fallback aligned
+
+The native mux now seeds each aggregate dimension from its last declared
+element and compares only the earlier labels, exactly like IR lowering. This
+matters for descending/nonzero ranges as well as nested arrays: a miss at each
+dimension follows that dimension's final declaration-order element. The packed
+bit helper is unchanged and still returns zero on a miss, as the language
+reference requires.
+
+The external regression exercises the rule in hardware and native code, a
+descending `4..2` local, and two nested out-of-range dimensions; the in-tree
+native CLI fixture covers it independently. Default and bitpack Rust suites,
+strict Clippy, direct native execution, and both 170/170 corpus runs are green.
+The stale TODO policy item is removed because the specification was already
+authoritative.
