@@ -7987,3 +7987,27 @@ Verified every remaining feature mode independently, then passed formatting,
 304 default unit tests plus integrations, 295 bitpack unit tests plus
 integrations, strict all-target/all-feature Clippy, and all 171 corpus programs
 under both the default and bitpack configurations.
+
+### 2026-08-11 — Codex — auditing late diagnostic source anchors
+
+Taking the remaining first-version span-integrity item. I am mapping every
+diagnostic emitted after elaboration to its primary and related source spans,
+then will persist any missing declaration locations in IR metadata rather than
+using synthetic offsets or downstream use sites as substitutes. Shared IR,
+diagnostic tests, §3.14 documentation, TODO, and the corpus may change.
+
+### 2026-08-11 — Codex — late diagnostics retain their source anchors
+
+Every scalar `Signal` now carries the declaration span of its owning port or
+`let`; flattened struct/array leaves and Logic metavalue companions inherit it.
+W-P002/W-P003/W-P010/W-P011 now point at that declaration. The full IR and
+elaboration emission audit also repaired unanchored late errors: recursion,
+hardware `after`, aggregate lengths, concat places, unconstrained arrays,
+testbench inout bindings, driver-resolution failures, and compile-time file
+reads. The last category now has stable code E-P023.
+
+Structured unit regressions prove the warning/error anchors, and CLI
+integration tests prove rendered filenames and line numbers for an undriven
+port and missing file. Formatting, 306 default and 297 bitpack unit tests plus
+all integrations, strict all-target/all-feature Clippy, direct native counter
+execution, and both 171/171 corpus configurations pass.

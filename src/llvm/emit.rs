@@ -41,6 +41,7 @@ mod bitpack_tests {
     fn events_use_one_bit_per_signal() {
         let signal = |index| Signal {
             path: format!("s{index}"),
+            declaration_span: siox::diag::Span::new(siox::diag::FileId(0), 0..0),
             width: 32,
             real: false,
             integer: false,
@@ -1640,6 +1641,7 @@ mod tests {
     fn sig(path: &str, width: u32) -> Signal {
         Signal {
             path: path.into(),
+            declaration_span: siox::diag::Span::new(siox::diag::FileId(0), 0..0),
             width,
             real: false,
             integer: false,

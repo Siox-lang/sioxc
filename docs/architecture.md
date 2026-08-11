@@ -118,7 +118,10 @@ later-stage data, and is used both for diagnostics and as the key that links a
 name-use site to the declaration it resolves to. `Hierarchy` also carries each
 concrete parent instance's declared and built entity-array slots into IR, so a
 reference to a conditionally omitted child can name both the slot and its
-declaration instead of becoming an anonymous unknown expression.
+declaration instead of becoming an anonymous unknown expression. Every scalar
+`ir::Signal` retains its owning port or `let` declaration span; flattened
+aggregate leaves and synthetic metavalue companions inherit that same anchor,
+so normalized-design lints do not lose their source location.
 
 ## Cross-cutting conventions
 

@@ -266,6 +266,9 @@ pub mod codes {
     /// generate elaboration, but its ports are referenced as though the child
     /// existed. This differs from E-P003: the index is inside the declaration.
     pub const INSTANCE_NOT_ELABORATED: &str = "E-P022";
+    /// A file requested by a compile-time `read`/`read_to_string` initializer
+    /// could not be opened, or its contents do not fit the declared target.
+    pub const COMPILE_TIME_IO: &str = "E-P023";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements

@@ -27,8 +27,6 @@ observable.
 
 First-valid-version decisions still open:
 
-- 🟡 **Late diagnostic spans.** Frontend errors are source-anchored, but the
-  remaining IR-only warnings still need complete declaration/source spans.
 - 🟡 **Testbench file I/O semantics.** Decide whether build-time baked file
   reads are acceptable for the first version; otherwise runtime file reads are
   required before calling the simulation surface complete.
@@ -94,6 +92,10 @@ Current baseline:
 - ✅ Parallel driver contexts fold without warning when their type implements
   `Resolve`; otherwise they are an E-P014 error with contributing source spans.
   The obsolete W-P001 category is retired.
+- ✅ Every scalar IR signal retains its source declaration span, including
+  flattened aggregate leaves and metavalue companions. Every diagnostic
+  emitted by IR lowering has a stable code and primary source span; late
+  signal lints anchor to the owning port or `let` declaration.
 
 Remaining:
 
@@ -159,6 +161,9 @@ Current baseline:
 - ✅ Generated test executables accept `--vcd <path>` and write hierarchy,
   femtosecond timestamps, changed arbitrary-width values, Logic x/z, real
   values, and symbolic enums directly from the native scheduler.
+- ✅ Late lowering diagnostics retain source anchors through IR metadata;
+  compile-time file failures use E-P023 and all normalized signal lints point
+  at their declarations.
 
 Remaining:
 
@@ -167,9 +172,6 @@ Remaining:
 - 🔴 **Runtime file reads.** `read`/`read_to_string` fixtures are currently read
   while building a test executable and baked into it. Add runtime
   `fopen`/`fread` plus dynamic-length string/array ownership.
-- 🟡 **Diagnostic source coverage.** Frontend diagnostics carry spans and stable
-  codes. Continue threading declaration/source spans into IR-only warnings so
-  every late diagnostic can highlight its origin.
 - 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, vendor-neutral
   artifact after hierarchy elaboration and synthesizable-logic normalization.
   Vivado, Quartus, and other vendor adapters should consume it for synthesis,

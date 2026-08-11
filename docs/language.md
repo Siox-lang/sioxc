@@ -2678,6 +2678,8 @@ Errors:
 - Invalid attribute value type.
 - Invalid method call.
 - Invalid pattern.
+- Compile-time `read`/`read_to_string` failure or data that does not fit its
+  declared target (E-P023).
 - Use of Phase 2-only analogue syntax.
 - Signal driven from multiple independent contexts when its type has no
   `impl Resolve` (E-P014).

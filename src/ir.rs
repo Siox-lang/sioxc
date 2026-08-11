@@ -81,6 +81,11 @@ pub struct SignalId(pub u32);
 pub struct Signal {
     /// Hierarchical path, e.g. `Counter.count`.
     pub path: String,
+    /// Source declaration that created this scalar storage leaf. Flattened
+    /// fields/elements and metavalue companions retain their owning port or
+    /// `let` declaration so diagnostics emitted after lowering still have an
+    /// authoritative source anchor.
+    pub declaration_span: crate::diag::Span,
     /// Bit width; `0` means "not yet known" (a parametric width).
     pub width: u32,
     /// A `real`-typed value: the 64-bit slot holds f64 bits, and arithmetic
@@ -447,7 +452,7 @@ struct Lowering<'a> {
     /// Functions whose inlining hit the depth guard. Lowering runs behind
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
-    depth_exceeded: std::cell::RefCell<Vec<String>>,
+    depth_exceeded: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
     /// Value names that resolved to nothing while lowering. Name
     /// resolution deliberately leaves plain value identifiers to later
     /// stages, and this is the stage that knows every signal, constant
@@ -984,7 +989,10 @@ impl<'a> Lowering<'a> {
         // one name binds an `out` and `in` ports (a DUT feeding another, or
         // its own input), the out drives the ins as real hardware, so the
         // value propagates on every settle without runner involvement.
-        let mut bindings: HashMap<String, Vec<(SignalId, Option<ast::Direction>)>> = HashMap::new();
+        let mut bindings: HashMap<
+            String,
+            Vec<(SignalId, Option<ast::Direction>, crate::diag::Span)>,
+        > = HashMap::new();
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
@@ -1008,7 +1016,11 @@ impl<'a> Lowering<'a> {
                                     continue;
                                 };
                                 if let Some(&(sig, dir)) = sub_ports.get(&port) {
-                                    bindings.entry(tbname).or_default().push((sig, dir));
+                                    bindings.entry(tbname).or_default().push((
+                                        sig,
+                                        dir,
+                                        ast::expr_span(&value),
+                                    ));
                                     continue;
                                 }
                                 // A struct/bus port is not one signal: it is
@@ -1026,7 +1038,7 @@ impl<'a> Lowering<'a> {
                                     bindings
                                         .entry(format!("{tbname}.{leaf}"))
                                         .or_default()
-                                        .push((sig, dir));
+                                        .push((sig, dir, ast::expr_span(&value)));
                                 }
                             }
                         }
@@ -1040,12 +1052,21 @@ impl<'a> Lowering<'a> {
             // testbench signal to build it on. Connecting an `inout` here used
             // to bind nothing at all and read back high-Z, as though no one
             // were driving — report it instead of simulating a lie.
-            if ports.iter().any(|(_, d)| *d == Some(ast::Direction::Inout)) {
+            if ports
+                .iter()
+                .any(|(_, d, _)| *d == Some(ast::Direction::Inout))
+            {
+                let span = ports
+                    .iter()
+                    .find(|(_, d, _)| *d == Some(ast::Direction::Inout))
+                    .map(|(_, _, span)| *span)
+                    .expect("an inout binding has a source span");
                 self.sink.emit(
                     crate::diag::Diagnostic::error(format!(
                         "`{tbname}` connects an `inout` port between testbench instances"
                     ))
                     .with_code(crate::diag::codes::INVALID_METHOD_CALL)
+                    .at(span)
                     .help(
                         "a shared tristate net is built inside an entity — wire the \
                          instances there and drive that entity from the testbench",
@@ -1055,13 +1076,13 @@ impl<'a> Lowering<'a> {
             }
             let outs: Vec<SignalId> = ports
                 .iter()
-                .filter(|(_, d)| *d == Some(ast::Direction::Out))
-                .map(|&(s, _)| s)
+                .filter(|(_, d, _)| *d == Some(ast::Direction::Out))
+                .map(|&(s, _, _)| s)
                 .collect();
             let ins: Vec<SignalId> = ports
                 .iter()
-                .filter(|(_, d)| *d == Some(ast::Direction::In))
-                .map(|&(s, _)| s)
+                .filter(|(_, d, _)| *d == Some(ast::Direction::In))
+                .map(|&(s, _, _)| s)
                 .collect();
             if outs.is_empty() || ins.is_empty() {
                 continue;
@@ -1336,7 +1357,7 @@ impl<'a> Lowering<'a> {
         // shared net (resolving across instances) and reads of `pin` read the
         // resolved value — Verilog's bidirectional-port model.
         for p in &edecl.ports {
-            self.add_typed_signal(path, &p.name.text, &p.ty, env);
+            self.add_typed_signal(path, &p.name.text, &p.ty, env, p.span);
         }
         // An aliased `inout` port repoints its (leaf) name at the shared parent
         // net (keeping the type metadata just registered), so the body drives and
@@ -1424,7 +1445,7 @@ impl<'a> Lowering<'a> {
                     };
                     if unconstrained {
                         if let Some(ast::Expr::StrLit { text, .. }) = &l.value {
-                            self.add_char_array(path, &l.name.text, text.chars().count());
+                            self.add_char_array(path, &l.name.text, text.chars().count(), l.span);
                             continue;
                         }
                         // `let s: string = read_to_string("f.txt");` — the
@@ -1437,7 +1458,7 @@ impl<'a> Lowering<'a> {
                             match std::fs::read_to_string(self.base_dir.join(fpath)) {
                                 Ok(text) => {
                                     let chars: Vec<char> = text.chars().collect();
-                                    self.add_char_array(path, &l.name.text, chars.len());
+                                    self.add_char_array(path, &l.name.text, chars.len(), l.span);
                                     for (i, c) in chars.iter().enumerate() {
                                         if let Some(&id) =
                                             self.locals.get(&format!("{}[{i}]", l.name.text))
@@ -1447,17 +1468,21 @@ impl<'a> Lowering<'a> {
                                         }
                                     }
                                 }
-                                Err(e) => self.sink.emit(crate::diag::Diagnostic::error(format!(
-                                    "read_to_string(\"{fpath}\"): {e}"
-                                ))),
+                                Err(e) => self.sink.emit(
+                                    crate::diag::Diagnostic::error(format!(
+                                        "read_to_string(\"{fpath}\"): {e}"
+                                    ))
+                                    .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                    .at(l.span),
+                                ),
                             }
                             continue;
                         }
                     }
                     if let Some(ty) = &l.ty {
-                        self.add_typed_signal(path, &l.name.text, ty, env);
+                        self.add_typed_signal(path, &l.name.text, ty, env, l.span);
                     } else {
-                        self.add_signal(path, &l.name.text, 0);
+                        self.add_signal(path, &l.name.text, 0, l.span);
                     }
                     // A string initializer on a flattened array
                     // (`let arr: Color[3] = "rgb"`) seeds each element: a
@@ -1626,13 +1651,17 @@ impl<'a> Lowering<'a> {
                                         .max(1);
                                     let per = ew.div_ceil(8) as usize;
                                     if bytes.len() > per * indices.len() {
-                                        self.sink.emit(crate::diag::Diagnostic::error(format!(
-                                            "read(\"{fpath}\"): {} bytes do not fit `{}` \
-                                             ({} elements x {per} bytes)",
-                                            bytes.len(),
-                                            l.name.text,
-                                            indices.len()
-                                        )));
+                                        self.sink.emit(
+                                            crate::diag::Diagnostic::error(format!(
+                                                "read(\"{fpath}\"): {} bytes do not fit `{}` \
+                                                 ({} elements x {per} bytes)",
+                                                bytes.len(),
+                                                l.name.text,
+                                                indices.len()
+                                            ))
+                                            .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                            .at(l.span),
+                                        );
                                     }
                                     for (n, i) in indices.iter().enumerate() {
                                         let mut v = 0u64;
@@ -1653,9 +1682,13 @@ impl<'a> Lowering<'a> {
                                         }
                                     }
                                 }
-                                Err(e) => self.sink.emit(crate::diag::Diagnostic::error(format!(
-                                    "read(\"{fpath}\"): {e}"
-                                ))),
+                                Err(e) => self.sink.emit(
+                                    crate::diag::Diagnostic::error(format!(
+                                        "read(\"{fpath}\"): {e}"
+                                    ))
+                                    .with_code(crate::diag::codes::COMPILE_TIME_IO)
+                                    .at(l.span),
+                                ),
                             }
                             continue;
                         }
@@ -2076,13 +2109,15 @@ impl<'a> Lowering<'a> {
             }
         }
         for t in looped {
-            let path = self.out.signals[t as usize].path.clone();
+            let signal = &self.out.signals[t as usize];
+            let path = signal.path.clone();
             self.sink.emit(
                 crate::diag::Diagnostic::warning(format!(
                     "`{path}` is in a combinational loop — its value depends on itself \
                      with no register in the path, so it has no settled value"
                 ))
                 .with_code(crate::diag::codes::COMBINATIONAL_LOOP)
+                .at(signal.declaration_span)
                 .help("break the loop with a clocked register, or an unconditional default"),
             );
         }
@@ -2107,10 +2142,12 @@ impl<'a> Lowering<'a> {
             if !seen.insert(sig.0) || driven.contains(&sig.0) {
                 continue;
             }
-            let path = self.out.signals[sig.0 as usize].path.clone();
+            let signal = &self.out.signals[sig.0 as usize];
+            let path = signal.path.clone();
             self.sink.emit(
                 crate::diag::Diagnostic::warning(format!("output port `{path}` is never driven"))
                     .with_code(crate::diag::codes::UNDRIVEN_OUTPUT)
+                    .at(signal.declaration_span)
                     .help("drive it inside the entity, or make it an `in`/`inout` port"),
             );
         }
@@ -2121,10 +2158,12 @@ impl<'a> Lowering<'a> {
             if !seen.insert(sig.0) || driven.contains(&sig.0) {
                 continue;
             }
-            let path = self.out.signals[sig.0 as usize].path.clone();
+            let signal = &self.out.signals[sig.0 as usize];
+            let path = signal.path.clone();
             self.sink.emit(
                 crate::diag::Diagnostic::warning(format!("signal `{path}` is never driven"))
                     .with_code(crate::diag::codes::UNDRIVEN_OUTPUT)
+                    .at(signal.declaration_span)
                     .help("assign it, give it an initial value, or remove it"),
             );
         }
@@ -2157,10 +2196,12 @@ impl<'a> Lowering<'a> {
             if !seen.insert(signal.0) || read.contains(&signal.0) || !driven.contains(&signal.0) {
                 continue;
             }
-            let path = self.out.signals[signal.0 as usize].path.clone();
+            let signal = &self.out.signals[signal.0 as usize];
+            let path = signal.path.clone();
             self.sink.emit(
                 crate::diag::Diagnostic::warning(format!("signal `{path}` is never read"))
                     .with_code(crate::diag::codes::UNUSED_SIGNAL)
+                    .at(signal.declaration_span)
                     .help("remove it, or use its value in observable logic"),
             );
         }
@@ -2197,13 +2238,15 @@ impl<'a> Lowering<'a> {
             {
                 continue;
             }
-            let path = self.out.signals[*t as usize].path.clone();
+            let signal = &self.out.signals[*t as usize];
+            let path = signal.path.clone();
             self.sink.emit(
                 crate::diag::Diagnostic::warning(format!(
                     "`{path}` is only assigned under a condition, so it holds its \
                      previous value otherwise (inferred latch)"
                 ))
                 .with_code(crate::diag::codes::POSSIBLE_LATCH)
+                .at(signal.declaration_span)
                 .help("give it an unconditional default assignment"),
             );
         }
@@ -2738,16 +2781,17 @@ impl<'a> Lowering<'a> {
     /// const-fold, or the recursion is unbounded and there is no finite circuit
     /// for it. Without this the bail-out silently leaves `Unknown` mid-driver.
     fn report_depth_exceeded(&mut self) {
-        let mut names = std::mem::take(&mut *self.depth_exceeded.borrow_mut());
-        names.sort();
-        names.dedup();
-        for name in names {
+        let mut calls = std::mem::take(&mut *self.depth_exceeded.borrow_mut());
+        calls.sort_by_key(|(name, span)| (span.file.0, span.start, name.clone()));
+        calls.dedup();
+        for (name, span) in calls {
             self.sink.emit(
                 crate::diag::Diagnostic::error(format!(
                     "`{name}` recursed deeper than the inline limit, so it has no \
                      finite hardware form"
                 ))
                 .with_code(crate::diag::codes::UNBOUNDED_RECURSION)
+                .at(span)
                 .help(
                     "recursion must terminate at compile time — give it a \
                      constant-foldable argument, or rewrite it as a loop",
@@ -2803,6 +2847,7 @@ impl<'a> Lowering<'a> {
                 .cloned();
             let has_resolve = direct_resolve || element_resolve.is_some();
             let path = self.out.signals[*t as usize].path.clone();
+            let declaration_span = self.out.signals[*t as usize].declaration_span;
             if !has_resolve {
                 // Lead with the mistake (several sources driving one signal),
                 // not its symptom (a missing `Resolve` impl) — the usual cause
@@ -2822,6 +2867,9 @@ impl<'a> Lowering<'a> {
                     for (i, s) in rest.iter().enumerate() {
                         d = d.label(*s, format!("conflicting source {}", i + 2));
                     }
+                    d = d.label(declaration_span, "signal declared here");
+                } else {
+                    d = d.at(declaration_span);
                 }
                 self.sink.emit(d.help(format!(
                     "only one source may drive `{path}`; a bus needs converse \
@@ -2839,9 +2887,16 @@ impl<'a> Lowering<'a> {
                 {
                     replaced.push((*t, value, Some(meta)));
                 } else {
-                    self.sink.emit(crate::diag::Diagnostic::error(format!(
-                        "could not instantiate element-wise `impl Resolve for {element}[]` folding `{path}`"
-                    )));
+                    self.sink.emit(
+                        crate::diag::Diagnostic::error(format!(
+                            "could not instantiate element-wise `impl Resolve for {element}[]` folding `{path}`"
+                        ))
+                        .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                        .at(declaration_span)
+                        .help(
+                            "the element Resolve implementation must have a finite hardware form",
+                        ),
+                    );
                 }
                 continue;
             }
@@ -2870,9 +2925,14 @@ impl<'a> Lowering<'a> {
                 match self.inline_resolve(&ty, folded.clone(), c) {
                     Some(r) => folded = r,
                     None => {
-                        self.sink.emit(crate::diag::Diagnostic::error(format!(
-                            "could not inline `impl Resolve for {ty}` folding `{path}`"
-                        )));
+                        self.sink.emit(
+                            crate::diag::Diagnostic::error(format!(
+                                "could not inline `impl Resolve for {ty}` folding `{path}`"
+                            ))
+                            .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                            .at(declaration_span)
+                            .help("the Resolve implementation must have a finite hardware form"),
+                        );
                         break;
                     }
                 }
@@ -3570,10 +3630,17 @@ impl<'a> Lowering<'a> {
         ctx
     }
 
-    fn add_signal(&mut self, entity: &str, name: &str, width: u32) {
+    fn add_signal(
+        &mut self,
+        entity: &str,
+        name: &str,
+        width: u32,
+        declaration_span: crate::diag::Span,
+    ) {
         let id = SignalId(self.out.signals.len() as u32);
         self.out.signals.push(Signal {
             path: format!("{entity}.{name}"),
+            declaration_span,
             width,
             real: false,
             integer: false,
@@ -3601,6 +3668,7 @@ impl<'a> Lowering<'a> {
         let sig = &self.out.signals[id.0 as usize];
         let companion = Signal {
             path: format!("{}$meta", sig.path),
+            declaration_span: sig.declaration_span,
             width: sig.width * 4,
             real: false,
             integer: false,
@@ -3623,6 +3691,7 @@ impl<'a> Lowering<'a> {
         let sig = &self.out.signals[id.0 as usize];
         let companion = Signal {
             path: format!("{}$meta", sig.path),
+            declaration_span: sig.declaration_span,
             width: sig.width * 4,
             real: false,
             integer: false,
@@ -3811,6 +3880,7 @@ impl<'a> Lowering<'a> {
         name: &str,
         ty: &ast::Type,
         env: &HashMap<String, i64>,
+        declaration_span: crate::diag::Span,
     ) {
         // A generic entity's type parameters (`T -> unsigned[8]`) substitute first,
         // so a port/signal typed `T` becomes its concrete type here.
@@ -3870,7 +3940,8 @@ impl<'a> Lowering<'a> {
                 crate::diag::Diagnostic::error(format!(
                     "unconstrained array type for `{name}`: the range must be set here                      (e.g. an explicit length)"
                 ))
-                .with_code(crate::diag::codes::TYPE_MISMATCH),
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(declaration_span),
             );
             return;
         }
@@ -3911,7 +3982,13 @@ impl<'a> Lowering<'a> {
                 _ => {}
             }
             for (fname, fty) in fields {
-                self.add_typed_signal(entity, &format!("{name}.{fname}"), &fty, env);
+                self.add_typed_signal(
+                    entity,
+                    &format!("{name}.{fname}"),
+                    &fty,
+                    env,
+                    declaration_span,
+                );
             }
         } else if let Some((elem, indices)) =
             array_of(ty, env, &self.const_ranges, &self.vector_families)
@@ -3919,11 +3996,17 @@ impl<'a> Lowering<'a> {
             let elem = elem.clone();
             self.local_array.insert(name.to_string(), indices.clone());
             for i in indices {
-                self.add_typed_signal(entity, &format!("{name}[{i}]"), &elem, env);
+                self.add_typed_signal(
+                    entity,
+                    &format!("{name}[{i}]"),
+                    &elem,
+                    env,
+                    declaration_span,
+                );
             }
         } else if let Some((w, enum_name)) = self.enum_representation(ty) {
             self.local_enum.insert(name.to_string(), enum_name.clone());
-            self.add_signal(entity, name, w);
+            self.add_signal(entity, name, w, declaration_span);
             if let Some(&id) = self.locals.get(name) {
                 self.sig_type.insert(id.0, enum_name.clone());
                 // Record the enum type so consumers render variants symbolically.
@@ -3944,7 +4027,7 @@ impl<'a> Lowering<'a> {
             // `integer<left..right>` stores in the smallest width covering the
             // range (two's complement when lo < 0); `real<..>` stays f64. The
             // bounds ride on the signal for the simulation's range checks.
-            self.add_signal(entity, name, w);
+            self.add_signal(entity, name, w, declaration_span);
             if let Some(&id) = self.locals.get(name) {
                 if is_real {
                     self.out.signals[id.0 as usize].real = true;
@@ -3958,6 +4041,7 @@ impl<'a> Lowering<'a> {
                 entity,
                 name,
                 type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges),
+                declaration_span,
             );
             // A Logic-vector family `F[N]` dispatches its operators to
             // `impl _ for F` (spec 3.25). unsigned/signed are recognized the same way
@@ -5155,7 +5239,8 @@ impl<'a> Lowering<'a> {
                             "`after` delays are only allowed in #[test] testbenches (Phase 1)"
                                 .to_string(),
                         )
-                        .with_code(crate::diag::codes::TYPE_MISMATCH),
+                        .with_code(crate::diag::codes::TYPE_MISMATCH)
+                        .at(*span),
                     );
                 }
                 if self.assign_block_local(target, value, &cond) {
@@ -5284,11 +5369,15 @@ impl<'a> Lowering<'a> {
                             ast::Expr::StrLit { text, .. } => {
                                 let chars: Vec<char> = text.chars().collect();
                                 if chars.len() != indices.len() {
-                                    self.sink.emit(crate::diag::Diagnostic::error(format!(
-                                        "string literal length {} does not match `{tpath}` length {}",
-                                        chars.len(),
-                                        indices.len()
-                                    )));
+                                    self.sink.emit(
+                                        crate::diag::Diagnostic::error(format!(
+                                            "string literal length {} does not match `{tpath}` length {}",
+                                            chars.len(),
+                                            indices.len()
+                                        ))
+                                        .with_code(crate::diag::codes::TYPE_MISMATCH)
+                                        .at(ast::expr_span(value)),
+                                    );
                                     return;
                                 }
                                 for (c, i) in chars.iter().zip(&indices) {
@@ -5314,11 +5403,15 @@ impl<'a> Lowering<'a> {
                             // `a = [e0, e1, ...];` drives one element per value.
                             ast::Expr::Array { elems, .. } => {
                                 if elems.len() != indices.len() {
-                                    self.sink.emit(crate::diag::Diagnostic::error(format!(
-                                        "array literal length {} does not match `{tpath}` length {}",
-                                        elems.len(),
-                                        indices.len()
-                                    )));
+                                    self.sink.emit(
+                                        crate::diag::Diagnostic::error(format!(
+                                            "array literal length {} does not match `{tpath}` length {}",
+                                            elems.len(),
+                                            indices.len()
+                                        ))
+                                        .with_code(crate::diag::codes::TYPE_MISMATCH)
+                                        .at(ast::expr_span(value)),
+                                    );
                                     return;
                                 }
                                 for (e, i) in elems.iter().zip(&indices) {
@@ -5493,10 +5586,14 @@ impl<'a> Lowering<'a> {
                     for part in parts {
                         let w = self.ast_width(part);
                         let Some(t) = self.target_signal(part) else {
-                            self.sink.emit(crate::diag::Diagnostic::error(
-                                "each part of a concat assignment target must be a signal"
-                                    .to_string(),
-                            ));
+                            self.sink.emit(
+                                crate::diag::Diagnostic::error(
+                                    "each part of a concat assignment target must be a signal"
+                                        .to_string(),
+                                )
+                                .with_code(crate::diag::codes::INVALID_ASSIGN_TARGET)
+                                .at(ast::expr_span(part)),
+                            );
                             continue;
                         };
                         let expr = Expr::Slice {
@@ -5844,7 +5941,7 @@ impl<'a> Lowering<'a> {
                     target,
                     value,
                     after,
-                    ..
+                    span,
                 } => {
                     if after.is_some() {
                         self.sink.emit(
@@ -5852,7 +5949,8 @@ impl<'a> Lowering<'a> {
                                 "`after` delays are only allowed in #[test] testbenches (Phase 1)"
                                     .to_string(),
                             )
-                            .with_code(crate::diag::codes::TYPE_MISMATCH),
+                            .with_code(crate::diag::codes::TYPE_MISMATCH)
+                            .at(*span),
                         );
                     }
                     if self.assign_block_local(target, value, &cond) {
@@ -5910,10 +6008,14 @@ impl<'a> Lowering<'a> {
                         for part in parts {
                             let w = self.ast_width(part);
                             let Some(t) = self.target_signal(part) else {
-                                self.sink.emit(crate::diag::Diagnostic::error(
-                                    "each part of a concat assignment target must be a signal"
-                                        .to_string(),
-                                ));
+                                self.sink.emit(
+                                    crate::diag::Diagnostic::error(
+                                        "each part of a concat assignment target must be a signal"
+                                            .to_string(),
+                                    )
+                                    .with_code(crate::diag::codes::INVALID_ASSIGN_TARGET)
+                                    .at(ast::expr_span(part)),
+                                );
                                 continue;
                             };
                             let expr = Expr::Slice {
@@ -7577,12 +7679,18 @@ impl<'a> Lowering<'a> {
     }
 
     /// Declare `name` as a `Char[n]` array (string-literal inference).
-    fn add_char_array(&mut self, entity: &str, name: &str, n: usize) {
+    fn add_char_array(
+        &mut self,
+        entity: &str,
+        name: &str,
+        n: usize,
+        declaration_span: crate::diag::Span,
+    ) {
         self.local_array
             .insert(name.to_string(), (0..n as i64).collect());
         for i in 0..n {
             let elem = format!("{name}[{i}]");
-            self.add_signal(entity, &elem, 32);
+            self.add_signal(entity, &elem, 32, declaration_span);
             if let Some(&id) = self.locals.get(&elem) {
                 self.out.signals[id.0 as usize].char = true;
             }
@@ -8376,7 +8484,9 @@ impl<'a> Lowering<'a> {
             // Bailing here leaves an `Unknown` in the middle of a driver, so
             // record it — otherwise lowering "succeeds" and the design only
             // fails much later with a generic engine message.
-            self.depth_exceeded.borrow_mut().push(name.to_string());
+            self.depth_exceeded
+                .borrow_mut()
+                .push((name.to_string(), ast::expr_span(callee)));
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -8587,7 +8697,7 @@ impl<'a> Lowering<'a> {
         if self.inline_depth.get() > 16 {
             self.depth_exceeded
                 .borrow_mut()
-                .push(format!("{ty}.{}", field.text));
+                .push((format!("{ty}.{}", field.text), ast::expr_span(callee)));
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -12106,7 +12216,7 @@ mod tests {
         lower(modules, &hier, &mut sink)
     }
 
-    fn lower_diags(src: &str) -> Vec<String> {
+    fn lower_diagnostics(src: &str) -> Vec<crate::diag::Diagnostic> {
         let src =
             format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
         let mut sink = DiagnosticSink::new();
@@ -12116,10 +12226,99 @@ mod tests {
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let hier = crate::elab::elaborate(modules, &typed, &mut sink);
         let _ = lower(modules, &hier, &mut sink);
-        sink.diagnostics()
+        sink.diagnostics().to_vec()
+    }
+
+    fn lower_diags(src: &str) -> Vec<String> {
+        lower_diagnostics(src)
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    #[test]
+    fn late_ir_lints_point_at_the_signal_declaration() {
+        let source = "module m;\n\
+            entity L { c: Logic in, looped: unsigned[8] out, latched: unsigned[8] out, forgotten: unsigned[8] out }\n\
+            impl L {\n\
+              let discarded: unsigned[8];\n\
+              looped = looped;\n\
+              if c == '1' { latched = 1; }\n\
+              discarded = 2;\n\
+            }\n\
+            #[top] entity Top {}\n\
+            impl Top {\n\
+              let c: Logic = '0';\n\
+              let looped: unsigned[8]; let latched: unsigned[8]; let forgotten: unsigned[8];\n\
+              let dut: L = { .c = c, .looped = looped, .latched = latched, .forgotten = forgotten };\n\
+            }\n";
+        let diagnostics = lower_diagnostics(source);
+        let cases = [
+            (crate::diag::codes::COMBINATIONAL_LOOP, "looped", "looped:"),
+            (crate::diag::codes::POSSIBLE_LATCH, "latched", "latched:"),
+            (
+                crate::diag::codes::UNDRIVEN_OUTPUT,
+                "forgotten",
+                "forgotten:",
+            ),
+            (
+                crate::diag::codes::UNUSED_SIGNAL,
+                "discarded",
+                "let discarded:",
+            ),
+        ];
+        for (code, signal, declaration) in cases {
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.code == Some(code) && diagnostic.message.contains(signal)
+                })
+                .unwrap_or_else(|| panic!("missing {code} for {declaration}: {diagnostics:#?}"));
+            let span = diagnostic
+                .primary
+                .unwrap_or_else(|| panic!("{code} has no primary span: {diagnostic:#?}"));
+            let rendered = &source[span.start as usize..span.end as usize];
+            assert!(
+                rendered.contains(declaration),
+                "{code} points at {rendered:?}, not declaration {declaration:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn late_ir_errors_keep_stable_codes_and_source_spans() {
+        let cases = [
+            (
+                "module m;\n#[top] entity E {}\nimpl E { let data: unsigned[8][2] = read(\"__siox_missing_span_fixture__.bin\"); }\n",
+                crate::diag::codes::COMPILE_TIME_IO,
+                "let data:",
+            ),
+            (
+                "module m;\nfn recurse(v: unsigned[8]) -> unsigned[8] { return recurse(v); }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = recurse(a); }\n",
+                crate::diag::codes::UNBOUNDED_RECURSION,
+                "recurse",
+            ),
+            (
+                "module m;\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = a after 1; }\n",
+                crate::diag::codes::TYPE_MISMATCH,
+                "y = a after 1",
+            ),
+        ];
+        for (source, code, source_text) in cases {
+            let diagnostics = lower_diagnostics(source);
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code == Some(code))
+                .unwrap_or_else(|| panic!("missing {code}: {diagnostics:#?}"));
+            let span = diagnostic
+                .primary
+                .unwrap_or_else(|| panic!("{code} has no primary span: {diagnostic:#?}"));
+            let rendered = &source[span.start as usize..span.end as usize];
+            assert!(
+                rendered.contains(source_text),
+                "{code} points at {rendered:?}, not {source_text:?}"
+            );
+        }
     }
 
     /// Generate loops are unrolled after type checking, so the source-level
@@ -13153,6 +13352,7 @@ mod tests {
 
         let sig = |w: u32| Signal {
             path: "s".into(),
+            declaration_span: crate::diag::Span::new(crate::diag::FileId(0), 0..0),
             width: w,
             real: false,
             integer: false,
