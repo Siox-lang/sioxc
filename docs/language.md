@@ -2660,14 +2660,13 @@ Export simulation traces for debugging.
 - Record hierarchy paths.
 - Record enum values as symbolic names.
 - Record struct fields recursively.
-- Export VCD first.
-- Add FST later if desired.
+- Export VCD and compressed FST from the same scheduler change points.
 
 ### Example CLI
 
 The original `siox sim ...` sketch is obsolete: `sioxc` has no `sim` command.
-The generated native test executable owns the VCD option and writes the file
-directly: `./tests --vcd trace.vcd`.
+The generated native test executable owns the waveform options and writes the
+files directly: `./tests --vcd trace.vcd` or `./tests --fst trace.fst`.
 
 ### Endgoal
 

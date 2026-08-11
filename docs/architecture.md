@@ -264,8 +264,9 @@ error and can be consumed by a future backend with a different value model.
 Integer literals and match-pattern masks use the same low-word-first
 arbitrary-width representation. The native test harness chooses its C
 `_BitInt` width from the widest type or nested expression in that design and
-exchanges every ABI word. Generated native test executables write requested VCD changes directly
-while scheduling; waveform values do not round-trip through the compiler.
+exchanges every ABI word. Generated native test executables write requested VCD
+and compressed FST changes directly while scheduling; waveform values do not
+round-trip through the compiler. Both writers observe the same settle points.
 Structural inheritance walks terminate by detecting actual cycles, so a valid
 deep type hierarchy is not rejected at an arbitrary depth.
 

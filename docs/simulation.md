@@ -70,44 +70,49 @@ earliest pending event and advances to it:
 Native time is an unsigned 64-bit femtosecond count. A literal whose unit
 conversion cannot fit that timeline is a build error. Runtime additions
 saturate at `18446744073709551615fs` instead of wrapping to time zero; the
-event-wheel sentinel and multi-test VCD timestamps use the same rule.
+event-wheel sentinel and multi-test waveform timestamps use the same rule.
 
 ## Waveforms
 
-Waveform output uses
-[VCD](https://en.wikipedia.org/wiki/Value_change_dump) (Value Change Dump), the
-format every digital waveform viewer reads. The generated native test
-executable owns the file: while running its scheduler it opens the requested
-`.vcd` and writes declarations and timestamped value changes directly. `sioxc`
-does not receive samples back, and the compiler library does not retain a trace
-or waveform writer.
+Waveform output supports text
+[VCD](https://en.wikipedia.org/wiki/Value_change_dump) (Value Change Dump) and
+compressed FST. The generated native test executable owns the files: while
+running its scheduler it writes hierarchy declarations and timestamped value
+changes directly. `sioxc` does not receive samples back, and the compiler
+library does not retain a trace or waveform writer.
 
 ```bash
 sioxc --test counter_test.siox -o counter-tests
 ./counter-tests --vcd counter.vcd
+./counter-tests --fst counter.fst
+./counter-tests --vcd counter.vcd --fst counter.fst
 ```
 
-The optional test-name filter may appear before or after `--vcd`. When several
-tests run, their traces are placed consecutively on one monotonic timeline.
-siox does not ship a viewer; the resulting file is opened in an external
-waveform application.
+`--vcd=<path>` and `--fst=<path>` are equivalent spellings. A test-name filter
+may appear before or after either option. VCD and FST can be emitted together
+to different paths and receive the exact same scheduler-side change points.
+When several tests run, their traces are placed consecutively on one monotonic
+timeline. siox does not ship a viewer; the resulting file is opened in an
+external waveform application.
 
 **How siox values appear:**
 
 - **Buses** (`unsigned[8]`, `signed[16]`) are binary vectors.
-- **Nine-value `Logic`** retains the IEEE discriminant internally. VCD maps
+- **Nine-value `Logic`** retains the IEEE discriminant internally. Waveforms map
   high-impedance states to `z`, unknown-like metavalues to `x`, and ordinary
   binary elements to `0`/`1`; `Bit` remains two-value.
-- **Named enums** — an FSM `State`, `Bool` — dump as VCD `string` variables, so
+- **Named enums** — an FSM `State`, `Bool` — dump as string variables, so
   the viewer shows `Idle`/`Run`/`Done`/`true`/`false` instead of a raw
   discriminant (the de-facto VCD string extension Surfer and GTKWave both read).
 - **Struct and array signals** flatten to one trace per leaf (`p.valid`,
   `regs[2]`).
 
-**Viewing:** any VCD viewer — [Surfer](https://surfer-project.org/) (modern,
-Rust, native or in-browser) or [GTKWave](https://gtkwave.sourceforge.net/) (the
-long-standing workhorse).
+**Viewing:** [Surfer](https://surfer-project.org/) is a modern native/browser
+viewer; [GTKWave](https://gtkwave.sourceforge.net/) is the long-standing
+workhorse and provides the reference FST implementation.
 
 **Notes:** the timescale is `1fs`, so a `10ns` period shows as `#10000000`
 between edges; only signals that actually change are re-emitted, keeping traces
-compact; FST (compressed) output for very large designs is a future addition.
+compact. FST is written through the pinned MIT-licensed libfst sources embedded
+in `sioxc`; the resulting test executable needs ordinary zlib but does not need
+GTKWave, `vcd2fst`, or a separately installed libfst.

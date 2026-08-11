@@ -8155,6 +8155,25 @@ and all 171 corpus programs in both layouts. Focused emitted binaries for
 generate-if, instance arrays/placement, and nested wide/string aggregates also
 run successfully in both layouts.
 
+### 2026-08-11 — Codex — native FST waveform output
+
+Starting the Output-roadmap FST item in `src/driver/build.rs`, waveform tests,
+and simulation/output documentation. The generated test executable will write
+FST directly from the same scheduler sampling calls as VCD. I am vendoring the
+MIT-licensed upstream `libfst` writer sources at GTKWave's pinned revision so a
+generated binary does not depend on an installed GTKWave or `vcd2fst`, and will
+validate emitted files through libfst's reader rather than checking only a
+magic header.
+
+Completed native FST output. Generated test executables accept `--fst` in both
+argument forms, can write VCD and FST together, reject path collisions, and
+close both writers on every normal exit. VCD and FST share one settle sampler
+and monotonic multi-test timeline. Reader-backed integration tests cover
+hierarchy, filtering, timestamps, Logic x/z, symbolic enums, real values, and
+192-bit multiword values. Formatting, frontend-only checks, default/all-feature
+clippy, both Rust test layouts, direct native output, and all 171 corpus files
+in both layouts pass.
+
 ### 2026-08-12 — Codex — stable compiler embedding API
 
 Adding a public options/result compiler boundary above the existing passes, then

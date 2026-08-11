@@ -104,6 +104,9 @@ test result: ok. 1 passed; 0 failed
 
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
+- **Waveforms:** `--vcd trace.vcd` writes portable text; `--fst trace.fst`
+  writes compressed FST. Either option may precede or follow the test filter,
+  and both may be requested together with different paths.
 - **A directory:** corpus orchestration belongs to the build/test tooling, not
   the compiler. `scripts/test-corpus.sh` compiles and runs each `.siox` file.
 - **Native binary:** `sioxc --test <file> -o <bin>` builds a standalone test

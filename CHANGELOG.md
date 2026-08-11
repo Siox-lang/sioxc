@@ -52,6 +52,14 @@ assertions, and VCD export — predates this changelog. See
   coincident edges, and cross-domain sampling (already correct) are unaffected.
 
 ### Added
+- **Native test executables write compressed FST waveforms directly.**
+  `--fst <path>` and `--fst=<path>` use the same scheduler-side samples and
+  monotonic multi-test timeline as `--vcd`; both outputs may be requested
+  together. Hierarchy, arbitrary-width multiword values, real values,
+  nine-value Logic mapped to 4-state x/z, and symbolic enums survive the
+  format. The generated executable embeds GTKWave's pinned MIT-licensed
+  libfst writer and needs no installed GTKWave or `vcd2fst`; integration tests
+  decode each file with libfst's reader and compare its timestamps with VCD.
 - **A public compiler embedding API now owns pipeline orchestration.**
   `siox::compiler::{Compiler, CompileRequest, SourceInput, Emit}` accepts disk
   files or unsaved editor buffers and returns a presentation-neutral

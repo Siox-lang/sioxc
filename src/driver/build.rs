@@ -22,6 +22,13 @@ type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, O
 type StructFieldNames = Vec<String>;
 type RawStructFieldNames = HashMap<String, (Option<String>, StructFieldNames)>;
 
+const LIBFST_API_C: &str = include_str!("../../third_party/libfst/fstapi.c");
+const LIBFST_API_H: &str = include_str!("../../third_party/libfst/fstapi.h");
+const LIBFST_FASTLZ_C: &str = include_str!("../../third_party/libfst/fastlz.c");
+const LIBFST_FASTLZ_H: &str = include_str!("../../third_party/libfst/fastlz.h");
+const LIBFST_LZ4_C: &str = include_str!("../../third_party/libfst/lz4.c");
+const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/lz4.h");
+
 /// Build a native simulator binary that runs *all* `#[test]` entities, like
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
 /// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
@@ -182,7 +189,7 @@ pub fn build(
     // Header, one `signed test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
     prog.push_str(
-        "#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n",
+        "#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include \"fstapi.h\"\n",
     );
     for name in &extern_fns {
         let f = fns[name];
@@ -529,7 +536,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
          \x20   double d = (double)(sx_rand() >> 11) / (double)(1ULL << 53);\n\
          \x20   return sx_b64(d);\n}\n",
     );
-    prog.push_str(&gen_vcd_runtime(design));
+    prog.push_str(&gen_wave_runtime(design));
     // The event wheel: earliest pending clock edge, and one step of the
     // scheduler (advance to that edge, toggle the due clocks, settle).
     prog.push_str(
@@ -719,13 +726,26 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     let csrc = tmp.join("sim.c");
     siox::llvm::emit_object(design, &obj)?;
     std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
+    for (name, contents) in [
+        ("fstapi.c", LIBFST_API_C),
+        ("fstapi.h", LIBFST_API_H),
+        ("fastlz.c", LIBFST_FASTLZ_C),
+        ("fastlz.h", LIBFST_FASTLZ_H),
+        ("lz4.c", LIBFST_LZ4_C),
+        ("lz4.h", LIBFST_LZ4_H),
+    ] {
+        std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
+    }
     if std::env::var("SIOX_DEBUG_C").is_ok() {
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);
     }
     let status = Command::new("clang")
         .arg(&csrc)
         .arg(&obj)
-        .args(["-O2", "-lm", "-o"])
+        .arg(tmp.join("fstapi.c"))
+        .arg(tmp.join("fastlz.c"))
+        .arg(tmp.join("lz4.c"))
+        .args(["-O2", "-lm", "-lz", "-o"])
         .arg(out)
         .status()
         .map_err(|e| format!("failed to run clang: {e}"))?;
@@ -737,8 +757,8 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
 }
 
 #[derive(Default)]
-struct VcdScope {
-    children: BTreeMap<String, VcdScope>,
+struct WaveScope {
+    children: BTreeMap<String, WaveScope>,
     signals: Vec<(usize, String)>,
 }
 
@@ -769,7 +789,7 @@ fn logic_vcd_symbols_for_type(design: &Design, type_name: &str) -> Option<HashMa
     Some(out)
 }
 
-fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &VcdScope, design: &Design) {
+fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &WaveScope, design: &Design) {
     out.push_str(&format!("$scope module {name} $end\n"));
     for &(id, ref signal_name) in &scope.signals {
         let signal = &design.signals[id];
@@ -798,10 +818,10 @@ fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &VcdScope, design:
 /// Generate the VCD writer into the native executable. Values are sampled
 /// directly from the design ABI after each settle; no trace is returned to the
 /// compiler process.
-fn gen_vcd_runtime(design: &Design) -> String {
+fn gen_wave_runtime(design: &Design) -> String {
     let companions: std::collections::HashSet<usize> =
         design.meta_of.values().map(|id| *id as usize).collect();
-    let mut root = VcdScope::default();
+    let mut root = WaveScope::default();
     for (id, signal) in design.signals.iter().enumerate() {
         if companions.contains(&id) {
             continue;
@@ -935,28 +955,225 @@ fn gen_vcd_runtime(design: &Design) -> String {
     }
     c.push_str(
         "    if (_wrote) { if (_initial) fputs(\"$end\\n\", g_vcd); g_vcd_started = 1; g_vcd_last_time = _time; }\n\
-         }\n\
-         static void sx_run_settle(uint64_t now) { sx_settle(); sx_vcd_sample(now); (void)sx_check_ranges(); }\n\n",
+         }\n",
+    );
+    c.push_str(&gen_fst_runtime(design, &root, &companions));
+    c.push_str(
+        "static void sx_wave_begin_test(void) { sx_vcd_begin_test(); sx_fst_begin_test(); }\n\
+         static void sx_run_settle(uint64_t now) {\n\
+         \x20   sx_settle();\n\
+         \x20   sx_vcd_sample(now);\n\
+         \x20   sx_fst_sample(now);\n\
+         \x20   (void)sx_check_ranges();\n\
+         }\n\n",
+    );
+    c
+}
+
+fn emit_fst_scope_registration(out: &mut String, name: &str, scope: &WaveScope, design: &Design) {
+    out.push_str(&format!(
+        "    fstWriterSetScope(g_fst, FST_ST_VCD_MODULE, \"{}\", 0);\n",
+        c_escape(name)
+    ));
+    for &(id, ref signal_name) in &scope.signals {
+        let signal = &design.signals[id];
+        let (kind, width) = if signal.real {
+            ("FST_VT_VCD_REAL", 1)
+        } else if signal.enum_type.as_ref().is_some_and(|ty| {
+            logic_vcd_symbols(design, signal).is_none() && design.enum_syms.contains_key(ty)
+        }) {
+            ("FST_VT_GEN_STRING", 0)
+        } else if logic_vcd_symbols(design, signal).is_some() {
+            ("FST_VT_VCD_WIRE", 1)
+        } else {
+            ("FST_VT_VCD_WIRE", signal.width.max(1))
+        };
+        out.push_str(&format!(
+            "    g_fst_handle[{id}] = fstWriterCreateVar(g_fst, {kind}, FST_VD_IMPLICIT, {width}, \"{}\", 0);\n\
+             \x20   if (!g_fst_handle[{id}]) {{ sx_fst_close(); return 0; }}\n",
+            c_escape(signal_name)
+        ));
+    }
+    for (child_name, child) in &scope.children {
+        emit_fst_scope_registration(out, child_name, child, design);
+    }
+    out.push_str("    fstWriterSetUpscope(g_fst);\n");
+}
+
+fn gen_fst_runtime(
+    design: &Design,
+    root: &WaveScope,
+    companions: &std::collections::HashSet<usize>,
+) -> String {
+    let n = design.signals.len().max(1);
+    let max_width = design
+        .signals
+        .iter()
+        .map(|signal| signal.width)
+        .max()
+        .unwrap_or(1)
+        .max(64);
+    let mut registration = String::new();
+    for (name, scope) in &root.children {
+        emit_fst_scope_registration(&mut registration, name, scope, design);
+    }
+    let mut c = format!(
+        "static fstWriterContext *g_fst;\n\
+         static fstHandle g_fst_handle[{n}];\n\
+         static sx_value g_fst_last[{n}];\n\
+         static unsigned char g_fst_seen[{n}];\n\
+         static uint64_t g_fst_base, g_fst_last_time;\n\
+         static signed g_fst_started;\n\
+         static char g_fst_value[{}];\n\
+         static void sx_fst_close(void) {{\n\
+         \x20   if (g_fst) {{ fstWriterClose(g_fst); g_fst = 0; }}\n\
+         }}\n\
+         static signed sx_fst_open(const char *path) {{\n\
+         \x20   g_fst = fstWriterCreate(path, 1);\n\
+         \x20   if (!g_fst) {{ fprintf(stderr, \"cannot open FST output %s\\n\", path); return 0; }}\n\
+         \x20   fstWriterSetPackType(g_fst, FST_WR_PT_LZ4);\n\
+         \x20   fstWriterSetTimescale(g_fst, -15);\n\
+         \x20   fstWriterSetVersion(g_fst, \"siox native test executable\");\n\
+         {registration}\
+         \x20   return 1;\n\
+         }}\n\
+         static void sx_fst_begin_test(void) {{\n\
+         \x20   if (!g_fst) return;\n\
+         \x20   g_fst_base = g_fst_started && g_fst_last_time != UINT64_MAX \
+         ? g_fst_last_time + 1 : (g_fst_started ? UINT64_MAX : 0);\n\
+         \x20   memset(g_fst_seen, 0, sizeof(g_fst_seen));\n\
+         }}\n\
+         static void sx_fst_sample(uint64_t now) {{\n\
+         \x20   if (!g_fst) return;\n\
+         \x20   uint64_t _time = UINT64_MAX - g_fst_base < now \
+         ? UINT64_MAX : g_fst_base + now;\n\
+         \x20   signed _wrote = 0;\n",
+        u64::from(max_width) + 1
+    );
+    let timestamp = "if (!_wrote) { fstWriterEmitTimeChange(g_fst, _time); _wrote = 1; }";
+    for (id, signal) in design.signals.iter().enumerate() {
+        if companions.contains(&id) {
+            continue;
+        }
+        let width = signal.width.max(1);
+        let meta = design
+            .meta_of
+            .get(&(id as u32))
+            .copied()
+            .map(|value| value as usize);
+        c.push_str(&format!("    {{ sx_value _v = sx_read({id});"));
+        if let Some(meta_id) = meta {
+            c.push_str(&format!(
+                " sx_value _m = sx_read({meta_id}); if (!g_fst_seen[{id}] || _v != g_fst_last[{id}] || !g_fst_seen[{meta_id}] || _m != g_fst_last[{meta_id}]) {{ {timestamp} "
+            ));
+            let table = design
+                .vector_element_enums
+                .get(&(id as u32))
+                .map(String::as_str)
+                .and_then(|name| logic_vcd_symbols_for_type(design, name))
+                .unwrap_or_default();
+            c.push_str(&format!(
+                "for (signed _b = {}; _b >= 0; --_b) {{ unsigned _d = (unsigned)((_m >> (_b * 4)) & 15); signed _ch = 'x'; switch (_d) {{",
+                width - 1
+            ));
+            let mut entries = table.into_iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(disc, _)| *disc);
+            for (disc, ch) in entries {
+                c.push_str(&format!("case {disc}: _ch = '{ch}'; break;"));
+            }
+            c.push_str(
+                "} if (_ch != 'x' && _ch != 'z') _ch = ((_v >> _b) & 1) ? '1' : '0'; g_fst_value[",
+            );
+            c.push_str(&(width - 1).to_string());
+            c.push_str(" - _b] = (char)_ch; } g_fst_value[");
+            c.push_str(&width.to_string());
+            c.push_str("] = 0; fstWriterEmitValueChange(g_fst, g_fst_handle[");
+            c.push_str(&id.to_string());
+            c.push_str("], g_fst_value); g_fst_last[");
+            c.push_str(&meta_id.to_string());
+            c.push_str("] = _m; g_fst_seen[");
+            c.push_str(&meta_id.to_string());
+            c.push_str("] = 1;");
+        } else {
+            c.push_str(&format!(
+                " if (!g_fst_seen[{id}] || _v != g_fst_last[{id}]) {{ {timestamp} "
+            ));
+            if signal.real {
+                c.push_str(&format!(
+                    "double _d = sx_f64((uint64_t)_v); fstWriterEmitValueChange(g_fst, g_fst_handle[{id}], &_d);"
+                ));
+            } else if let Some(table) = logic_vcd_symbols(design, signal) {
+                c.push_str("signed _ch = 'x'; switch ((uint64_t)_v) {");
+                let mut entries = table.into_iter().collect::<Vec<_>>();
+                entries.sort_by_key(|(disc, _)| *disc);
+                for (disc, ch) in entries {
+                    c.push_str(&format!("case {disc}ULL: _ch = '{ch}'; break;"));
+                }
+                c.push_str(&format!(
+                    "}} g_fst_value[0] = (char)_ch; g_fst_value[1] = 0; fstWriterEmitValueChange(g_fst, g_fst_handle[{id}], g_fst_value);"
+                ));
+            } else if let Some(symbols) = signal
+                .enum_type
+                .as_ref()
+                .and_then(|name| design.enum_syms.get(name))
+            {
+                c.push_str("const char *_s; switch ((uint64_t)_v) {");
+                let mut entries = symbols.iter().collect::<Vec<_>>();
+                entries.sort_by_key(|(disc, _)| **disc);
+                for (&disc, symbol) in entries {
+                    c.push_str(&format!(
+                        "case {disc}ULL: _s = \"{}\"; break;",
+                        c_escape(symbol)
+                    ));
+                }
+                c.push_str("default: snprintf(g_fst_value, sizeof g_fst_value, \"%llu\", (unsigned long long)_v); _s = g_fst_value; break; } fstWriterEmitVariableLengthValueChange(g_fst, g_fst_handle[");
+                c.push_str(&id.to_string());
+                c.push_str("], _s, (uint32_t)strlen(_s));");
+            } else {
+                c.push_str(&format!(
+                    "for (signed _b = {}; _b >= 0; --_b) g_fst_value[{} - _b] = ((_v >> _b) & 1) ? '1' : '0'; g_fst_value[{}] = 0; fstWriterEmitValueChange(g_fst, g_fst_handle[{id}], g_fst_value);",
+                    width - 1,
+                    width - 1,
+                    width
+                ));
+            }
+        }
+        c.push_str(&format!(
+            " g_fst_last[{id}] = _v; g_fst_seen[{id}] = 1; }} }}\n"
+        ));
+    }
+    c.push_str(
+        "    if (_wrote) { g_fst_started = 1; g_fst_last_time = _time; }\n\
+         }\n",
     );
     c
 }
 
 /// The libtest-style `main` that runs each `test_<name>` and reports results.
-/// Accepts an optional name-substring filter and `--vcd <path>`.
+/// Accepts an optional name-substring filter plus `--vcd <path>` and/or
+/// `--fst <path>` waveform outputs.
 fn gen_main(names: &[(String, String)]) -> String {
     let mut m = String::new();
     m.push_str("signed main(signed argc, char **argv) {\n");
     m.push_str(
-        "    const char *filter = 0, *vcd_path = 0;\n\
+        "    const char *filter = 0, *vcd_path = 0, *fst_path = 0;\n\
          \x20   for (signed i = 1; i < argc; i++) {\n\
          \x20       if (!strcmp(argv[i], \"--vcd\")) {\n\
          \x20           if (++i == argc) { fprintf(stderr, \"--vcd requires a path\\n\"); return 2; }\n\
          \x20           vcd_path = argv[i];\n\
          \x20       } else if (!strncmp(argv[i], \"--vcd=\", 6)) vcd_path = argv[i] + 6;\n\
+         \x20       else if (!strcmp(argv[i], \"--fst\")) {\n\
+         \x20           if (++i == argc) { fprintf(stderr, \"--fst requires a path\\n\"); return 2; }\n\
+         \x20           fst_path = argv[i];\n\
+         \x20       } else if (!strncmp(argv[i], \"--fst=\", 6)) fst_path = argv[i] + 6;\n\
          \x20       else if (!filter) filter = argv[i];\n\
          \x20       else { fprintf(stderr, \"unexpected argument: %s\\n\", argv[i]); return 2; }\n\
          \x20   }\n\
-         \x20   if (vcd_path && !sx_vcd_open(vcd_path)) return 2;\n",
+         \x20   if (vcd_path && fst_path && !strcmp(vcd_path, fst_path)) {\n\
+         \x20       fprintf(stderr, \"VCD and FST outputs must use different paths\\n\"); return 2;\n\
+         \x20   }\n\
+         \x20   if (vcd_path && !sx_vcd_open(vcd_path)) return 2;\n\
+         \x20   if (fst_path && !sx_fst_open(fst_path)) { sx_vcd_close(); return 2; }\n",
     );
     m.push_str("    signed failed = 0, ran = 0, filtered = 0;\n");
     // Count how many tests match, so the "running N tests" line is post-filter.
@@ -979,7 +1196,9 @@ fn gen_main(names: &[(String, String)]) -> String {
          \x20   if (g_warnings) printf(\"; %d warning%s\", g_warnings, g_warnings == 1 ? \"\" : \"s\");\n\
          \x20   printf(\"\\n\");\n",
     );
-    m.push_str("    sx_io_reset();\n    sx_vcd_close();\n    return failed ? 1 : 0;\n}\n");
+    m.push_str(
+        "    sx_io_reset();\n    sx_fst_close();\n    sx_vcd_close();\n    return failed ? 1 : 0;\n}\n",
+    );
     m
 }
 
@@ -3545,7 +3764,7 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_vcd_begin_test();\n",
+            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_wave_begin_test();\n",
             self.name
         ));
 

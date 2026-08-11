@@ -4,7 +4,7 @@
 event-driven simulator for it, built as a regular Rust package. It is in **Phase 1:
 simulation-first** — the compiler parses, resolves, type-checks, elaborates,
 lowers to a digital IR, and emits native delta-cycle simulations with
-assertions and direct VCD output. There is no analogue, schematic, or synthesis
+assertions and direct VCD/FST output. There is no analogue, schematic, or synthesis
 layer yet
 (those are Phase 2 and 3 — see [roadmap.md](roadmap.md)).
 
@@ -14,7 +14,7 @@ layer yet
 | -------- | ---------- |
 | [language.md](language.md) | The **Phase 1 language specification** — an at-a-glance tour up front, then the authority for syntax and semantics. Kept current as the language evolves. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
-| [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD waveforms. |
+| [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD/FST waveforms. |
 | [testing.md](testing.md) | **Testing** — compiling `#[test]` testbenches with `sioxc --test`, running the resulting executable, assertions, and compiler tests. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
 | [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
@@ -60,7 +60,7 @@ builds without LLVM.
 
 The whole pipeline runs **end to end**: source → parse → resolve → typecheck →
 elaborate → digital IR → simulation with `#[test]` discovery, `await`/`clock`
-timing, assertions, and VCD waveforms. Structural **hierarchy** works — an
+timing, assertions, and VCD/FST waveforms. Structural **hierarchy** works — an
 entity may instantiate sub-entities, each instance lowering into its own signals
 with port connections wired as drivers.
 

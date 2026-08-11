@@ -92,14 +92,17 @@ to select a subset: `./counter-tests examples::counter::CounterTest`.
 
 ## See the waveforms
 
-The compiled test executable—not `sioxc`—writes the requested `.vcd` while it
-runs:
+The compiled test executable—not `sioxc`—writes the requested waveform while
+it runs. Use portable text VCD or compressed FST for larger traces:
 
 ```bash
 ./counter-tests --vcd counter.vcd
+./counter-tests --fst counter.fst
+# Both may be written in one run:
+./counter-tests --vcd counter.vcd --fst counter.fst
 ```
 
-The file can then be opened in a waveform viewer such as
+The files can then be opened in a waveform viewer such as
 [GTKWave](https://gtkwave.sourceforge.net/) or
 [Surfer](https://surfer-project.org/).
 
@@ -109,7 +112,8 @@ The file can then be opened in a waveform viewer such as
 | --- | --- |
 | `sioxc file.siox --emit metadata` | type-check and elaborate without code generation |
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
-| `./tests --vcd out.vcd [filter]` | run generated tests and write a VCD |
+| `./tests --vcd out.vcd [filter]` | run generated tests and write text VCD |
+| `./tests --fst out.fst [filter]` | run generated tests and write compressed FST |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it

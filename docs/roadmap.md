@@ -30,13 +30,14 @@ Implemented foundation:
 - nine-value IEEE 1076-2019 Logic, resolution, vector metavalues, and
   arbitrary-width numeric values;
 - standard-library source, native `#[test]` executables, assertions, timing,
-  fixture reads, diagnostics, generated VCD output, LSP support, and CI corpus.
+  fixture reads, diagnostics, generated VCD/FST output, LSP support, and CI
+  corpus.
 
 The first valid Phase-1 baseline is implemented. Further work is organized by
 AST/IR/LLVM/Output/API/std in [`TODO.md`](../TODO.md). Major product growth
-includes native compressed waveform output, a stable embedding/scheduler API,
-cocotb integration, multi-file project tooling, and broader reusable std
-models; those are not blockers for the baseline compiler and simulator.
+includes a stable scheduler API, cocotb integration, multi-file project
+tooling, and broader reusable std models; those are not blockers for the
+baseline compiler and simulator.
 
 ## Phase 2 — analogue and mixed signal
 

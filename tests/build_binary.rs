@@ -6,6 +6,47 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
+/// Decode an FST with the same upstream libfst reader that GTKWave uses. This
+/// checks the complete block/hierarchy encoding, not a file signature.
+fn decode_fst(fst: &std::path::Path) -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let decoder = fst.with_extension("fst-dump");
+    let build = Command::new("clang")
+        .arg(root.join("tests/fixtures/fst_dump.c"))
+        .arg(root.join("third_party/libfst/fstapi.c"))
+        .arg(root.join("third_party/libfst/fastlz.c"))
+        .arg(root.join("third_party/libfst/lz4.c"))
+        .arg("-I")
+        .arg(root.join("third_party/libfst"))
+        .args(["-O2", "-lz", "-o"])
+        .arg(&decoder)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "libfst test decoder failed to build:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let decoded = Command::new(&decoder).arg(fst).output().unwrap();
+    assert!(
+        decoded.status.success(),
+        "libfst rejected {}:\n{}",
+        fst.display(),
+        String::from_utf8_lossy(&decoded.stderr)
+    );
+    let _ = std::fs::remove_file(decoder);
+    String::from_utf8(decoded.stdout).expect("libfst produced non-UTF-8 VCD")
+}
+
+fn waveform_times(trace: &str) -> Vec<u64> {
+    trace
+        .lines()
+        .filter_map(|line| line.strip_prefix('#'))
+        .map(|time| time.parse().expect("malformed waveform timestamp"))
+        .collect()
+}
+
 #[cfg(unix)]
 #[test]
 fn native_output_path_does_not_need_to_be_utf8() {
@@ -114,6 +155,7 @@ fn test_no_run_builds_a_runnable_binary() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let out = std::env::temp_dir().join(format!("siox_counter_{}", std::process::id()));
     let vcd = out.with_extension("vcd");
+    let fst = out.with_extension("fst");
 
     // Build from the repo root so `./std` resolves. The counter fixture lives
     // in-tree (the runnable `.siox` corpus moved to the siox-tests repo, but a
@@ -130,7 +172,10 @@ fn test_no_run_builds_a_runnable_binary() {
 
     // The binary runs the testbench and exits 0 on PASS.
     let run = Command::new(&out)
-        .args(["--vcd", vcd.to_str().unwrap()])
+        .arg("--vcd")
+        .arg(&vcd)
+        .arg("--fst")
+        .arg(&fst)
         .status()
         .unwrap();
     assert!(run.success(), "native simulator returned {:?}", run.code());
@@ -155,8 +200,49 @@ fn test_no_run_builds_a_runnable_binary() {
         1,
         "same-time changes must share one timestamp"
     );
+    let fst_trace = decode_fst(&fst);
+    assert!(fst_trace.contains("$scope module CounterTest $end"));
+    assert!(fst_trace.contains("$scope module dut $end"));
+    assert!(fst_trace.contains("b00001010"));
+    assert_eq!(
+        waveform_times(&fst_trace),
+        waveform_times(&trace),
+        "FST and VCD must sample the same scheduler-side change points"
+    );
+
+    let fst_equals = out.with_extension("equals.fst");
+    let equals = Command::new(&out)
+        .arg("examples::counter_test::CounterTest")
+        .arg(format!("--fst={}", fst_equals.display()))
+        .output()
+        .unwrap();
+    assert!(
+        equals.status.success(),
+        "--fst=<path> or filtering failed:\n{}{}",
+        String::from_utf8_lossy(&equals.stdout),
+        String::from_utf8_lossy(&equals.stderr)
+    );
+    assert!(decode_fst(&fst_equals).contains("#105000000"));
+
+    let missing = Command::new(&out).arg("--fst").output().unwrap();
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--fst requires a path"));
+
+    let same_path = out.with_extension("same.wave");
+    let same = Command::new(&out)
+        .arg("--vcd")
+        .arg(&same_path)
+        .arg("--fst")
+        .arg(&same_path)
+        .output()
+        .unwrap();
+    assert_eq!(same.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&same.stderr)
+        .contains("VCD and FST outputs must use different paths"));
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&vcd);
+    let _ = std::fs::remove_file(&fst);
+    let _ = std::fs::remove_file(&fst_equals);
 }
 
 #[test]
@@ -326,6 +412,7 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     let source = std::env::temp_dir().join(format!("{stem}.siox"));
     let out = std::env::temp_dir().join(&stem);
     let vcd = out.with_extension("vcd");
+    let fst = out.with_extension("fst");
     std::fs::write(
         &source,
         "module vcd_values;
@@ -335,22 +422,30 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          entity Values {
              scalar: Logic out,
              bus: unsigned[4] out,
-             state: State out
+             state: State out,
+             wide: unsigned[192] out,
+             real_value: real out
          }
          impl Values {
              scalar = 'Z';
              bus = \"1X0Z\";
              state = State::Run;
+             wide = 6277101735386680763835789423207666416102355444464034512895;
+             real_value = 2.5;
          }
          #[test] entity WaveTest {}
          impl WaveTest {
              let scalar: Logic;
              let bus: unsigned[4];
              let state: State;
+             let wide: unsigned[192];
+             let real_value: real;
              let dut: Values = {
                  .scalar = scalar,
                  .bus = bus,
                  .state = state,
+                 .wide = wide,
+                 .real_value = real_value,
              };
              assert!(scalar == 'Z', \"scalar setup\");
          }",
@@ -368,7 +463,10 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         .unwrap();
     assert!(status.success(), "VCD value fixture failed to compile");
     let run = Command::new(&out)
-        .args(["--vcd", vcd.to_str().unwrap()])
+        .arg("--vcd")
+        .arg(&vcd)
+        .arg("--fst")
+        .arg(&fst)
         .status()
         .unwrap();
     assert!(run.success(), "VCD value fixture failed to run");
@@ -385,9 +483,116 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         trace.contains("sRun "),
         "enum symbol was not preserved:\n{trace}"
     );
+    let wide_bits = format!("b{} ", "1".repeat(192));
+    assert!(
+        trace.contains(&wide_bits),
+        "wide VCD value was truncated:\n{trace}"
+    );
+    assert!(trace.contains("r2.5 "), "real VCD value was lost:\n{trace}");
+    let fst_trace = decode_fst(&fst);
+    assert!(fst_trace.contains('z'), "FST lost Logic 'Z':\n{fst_trace}");
+    assert!(
+        fst_trace.contains("b1x0z "),
+        "FST lost vector metavalues:\n{fst_trace}"
+    );
+    assert!(
+        fst_trace.contains("sRun "),
+        "FST lost the symbolic enum value:\n{fst_trace}"
+    );
+    assert!(
+        fst_trace.contains(&wide_bits),
+        "FST truncated a multiword value:\n{fst_trace}"
+    );
+    assert!(
+        fst_trace.contains("r2.5 "),
+        "FST lost a real value:\n{fst_trace}"
+    );
+    assert_eq!(waveform_times(&fst_trace), waveform_times(&trace));
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(out);
     let _ = std::fs::remove_file(vcd);
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let stem = format!("siox_fst_multitest_{}", std::process::id());
+    let source = std::env::temp_dir().join(format!("{stem}.siox"));
+    let out = std::env::temp_dir().join(&stem);
+    let vcd = out.with_extension("vcd");
+    let fst = out.with_extension("fst");
+    std::fs::write(
+        &source,
+        "module fst_multitest;
+         entity Echo { x: Bit in, y: Bit out }
+         impl Echo { y = x; }
+         #[test] entity First {}
+         impl First {
+             let x: Bit = '0';
+             let y: Bit;
+             let dut: Echo = { .x = x, .y = y };
+             x = '1';
+             await 2fs;
+         }
+         #[test] entity Second {}
+         impl Second {
+             let x: Bit = '0';
+             let y: Bit;
+             let dut: Echo = { .x = x, .y = y };
+             x = '1';
+             await 3fs;
+         }",
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "multi-test FST fixture failed to build:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&out)
+        .arg("--vcd")
+        .arg(&vcd)
+        .arg("--fst")
+        .arg(&fst)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "multi-test FST fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let vcd_trace = std::fs::read_to_string(&vcd).unwrap();
+    let fst_trace = decode_fst(&fst);
+    let times = waveform_times(&fst_trace);
+    assert_eq!(times, waveform_times(&vcd_trace));
+    assert_eq!(times.first(), Some(&0));
+    assert!(
+        times.windows(2).all(|window| window[0] < window[1]),
+        "multi-test FST timeline was not strictly monotonic: {times:?}"
+    );
+    assert!(fst_trace.contains("$scope module First $end"));
+    assert!(fst_trace.contains("$scope module Second $end"));
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_file(vcd);
+    let _ = std::fs::remove_file(fst);
 }
 
 #[test]

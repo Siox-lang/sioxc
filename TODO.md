@@ -174,9 +174,11 @@ Current baseline:
   bits. Composite right-hand sides are staged before writes; aggregate reads
   fall back to the last declared element at each out-of-range dimension, and
   out-of-range writes are no-ops.
-- ✅ Generated test executables accept `--vcd <path>` and write hierarchy,
-  femtosecond timestamps, changed arbitrary-width values, Logic x/z, real
-  values, and symbolic enums directly from the native scheduler.
+- ✅ Generated test executables accept `--vcd <path>` and `--fst <path>` and
+  write hierarchy, femtosecond timestamps, changed arbitrary-width values,
+  Logic x/z, real values, and symbolic enums directly from the same native
+  scheduler change points. FST uses the embedded, pinned libfst writer and is
+  interoperability-tested through its reader.
 - ✅ Late lowering diagnostics retain source anchors through IR metadata;
   compile-time file failures use E-P023 and all normalized signal lints point
   at their declarations.
@@ -189,8 +191,6 @@ Current baseline:
 
 Remaining:
 
-- 🔴 **FST output.** Add compressed waveform output for large simulations using
-  the same scheduler-side change points as VCD.
 - 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, vendor-neutral
   artifact after hierarchy elaboration and synthesizable-logic normalization.
   Vivado, Quartus, and other vendor adapters should consume it for synthesis,
