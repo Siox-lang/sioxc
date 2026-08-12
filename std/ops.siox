@@ -33,8 +33,8 @@ pub trait Suffix<char: string, T> {
 // Partial source forms (`..right`, `left..`, `..`) are completed from the indexed
 // object's declared bounds before dispatch.
 pub struct Range {
-    left: integer,
-    right: integer
+    pub left: integer,
+    pub right: integer
 }
 
 // `value[index]` falls back to Index when `value` is not an intrinsic packed

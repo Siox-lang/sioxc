@@ -123,7 +123,12 @@ impl Printer {
         self.indent += 1;
         for (i, f) in s.fields.iter().enumerate() {
             let sep = sep(i, s.fields.len());
-            self.line(&format!("{}: {}{sep}", f.name.text, type_str(&f.ty)));
+            self.line(&format!(
+                "{}{}: {}{sep}",
+                pub_kw(f.is_pub),
+                f.name.text,
+                type_str(&f.ty)
+            ));
         }
         self.indent -= 1;
         self.line("}");
@@ -282,6 +287,7 @@ impl Printer {
     }
 
     fn fn_decl(&mut self, f: &FnDecl) {
+        let kw = pub_kw(f.is_pub);
         let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
         let ret = match &f.ret {
             Some(t) => format!(" -> {}", type_str(t)),
@@ -290,7 +296,7 @@ impl Printer {
         match &f.body {
             Some(body) => {
                 self.line(&format!(
-                    "fn {}{}({ps}){ret} {{",
+                    "{kw}fn {}{}({ps}){ret} {{",
                     f.name.text,
                     params(&f.generics)
                 ));
@@ -302,7 +308,7 @@ impl Printer {
                 self.line("}");
             }
             None => self.line(&format!(
-                "fn {}{}({ps}){ret};",
+                "{kw}fn {}{}({ps}){ret};",
                 f.name.text,
                 params(&f.generics)
             )),
@@ -844,6 +850,13 @@ mod tests {
              struct Header { valid: Bit }\n\
              struct Packet { header: Header, data: unsigned[8] }\n\
              struct Word(Bit[]);\n",
+        );
+    }
+
+    #[test]
+    fn roundtrips_member_visibility() {
+        roundtrip(
+            "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value(self) -> integer { return self.value; } }\n",
         );
     }
 

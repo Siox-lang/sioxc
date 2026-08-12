@@ -104,7 +104,7 @@ impl Typed {
 /// Deferred to elaboration, where the needed information exists: width-level
 /// conversions (`unsigned[8]` !-> `unsigned[16]`) and method-call resolution.
 pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink) -> Typed {
-    let mut checker = Checker::new(sink, resolved);
+    let mut checker = Checker::new(sink, resolved, modules);
     checker.collect(modules);
     checker.check_struct_field_cycles();
     for m in modules {
@@ -167,6 +167,14 @@ type TraitDefaultSignature = (String, Option<Type>, MethodParams, bool);
 type InheritedMethodSignature = (String, String, Option<Type>, MethodParams, bool);
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
+#[derive(Clone)]
+struct MemberVisibility {
+    is_pub: bool,
+    owner: String,
+    module: String,
+    span: Span,
+}
+
 struct Checker<'a> {
     /// Entities carrying `#[test]`: testbenches, where the stimulus
     /// primitives (`await`, `assert!`, `print!`, `warn!`) are meaningful.
@@ -206,6 +214,9 @@ struct Checker<'a> {
     /// trait declares without a default body). Spec 3.20: a trait is a
     /// compile-time contract, so a partial impl is an error.
     trait_required: HashMap<String, Vec<String>>,
+    /// Trait name -> exported flag, owning module, and declaration span.
+    /// Methods in a trait impl inherit this visibility.
+    trait_visibility: HashMap<String, (bool, String, Span)>,
     /// (operator trait, implementing type) -> (input type, output type).
     /// Multiple entries are overloads selected by the right operand.
     operator_sigs: OperatorSignatures,
@@ -220,6 +231,9 @@ struct Checker<'a> {
     enum_bases: HashMap<String, String>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
+    /// Raw representation fields are private unless exported. Views are
+    /// checked separately because applying one is an explicit interface.
+    field_visibility: HashMap<(String, String), MemberVisibility>,
     /// Struct name -> each field's `(name, declared type head, span)`. A
     /// struct that transitively contains itself has no finite layout, and
     /// flattening one in elaboration recursed until the stack gave out with
@@ -285,6 +299,7 @@ struct Checker<'a> {
     /// associated call syntax are distinct and cannot substitute for each
     /// other merely because the owner/name pair exists.
     method_has_self: HashMap<(String, String), bool>,
+    method_visibility: HashMap<(String, String), MemberVisibility>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
@@ -293,10 +308,12 @@ struct Checker<'a> {
     /// resolver correctly binds `Self` locally, but its synthetic definition
     /// is not the impl target and must not become a distinct nominal type.
     current_self_ty: std::cell::RefCell<Option<Ty>>,
+    file_modules: HashMap<crate::diag::FileId, String>,
+    entity_names: HashSet<String>,
 }
 
 impl<'a> Checker<'a> {
-    fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved) -> Self {
+    fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved, modules: &[Module]) -> Self {
         // Seed the std::attrs targets so the standard attributes validate while
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
         let mut attr_targets = HashMap::new();
@@ -324,6 +341,45 @@ impl<'a> Checker<'a> {
         ] {
             attr_value_kinds.insert(name.to_string(), ty);
         }
+        let file_modules: HashMap<crate::diag::FileId, String> = modules
+            .iter()
+            .map(|module| {
+                let name = module
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                (module.span.file, name)
+            })
+            .collect();
+        let entity_names = modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .filter_map(|item| match item {
+                Item::Entity(entity) => Some(entity.name.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let trait_visibility = modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .filter_map(|item| match item {
+                Item::Trait(trait_) => Some((
+                    trait_.name.text.clone(),
+                    (
+                        trait_.is_pub,
+                        file_modules
+                            .get(&trait_.span.file)
+                            .cloned()
+                            .unwrap_or_else(|| format!("<file:{}>", trait_.span.file.0)),
+                        trait_.name.span,
+                    ),
+                )),
+                _ => None,
+            })
+            .collect();
         Checker {
             test_entities: HashSet::new(),
             in_testbench: std::cell::Cell::new(false),
@@ -339,6 +395,7 @@ impl<'a> Checker<'a> {
             trait_defaults: HashMap::new(),
             trait_impls_by_type: HashMap::new(),
             trait_required: HashMap::new(),
+            trait_visibility,
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
@@ -346,6 +403,7 @@ impl<'a> Checker<'a> {
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
             structs: HashMap::new(),
+            field_visibility: HashMap::new(),
             struct_field_types: HashMap::new(),
             field_decl_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
@@ -364,9 +422,12 @@ impl<'a> Checker<'a> {
             methods: HashMap::new(),
             method_param_types: HashMap::new(),
             method_has_self: HashMap::new(),
+            method_visibility: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
             current_self_ty: std::cell::RefCell::new(None),
+            file_modules,
+            entity_names,
         }
     }
 
@@ -482,6 +543,28 @@ impl<'a> Checker<'a> {
                             );
                             self.method_has_self
                                 .insert(key, f.params.iter().any(|parameter| parameter.is_self));
+                            let trait_contract = im.trait_.as_ref().and_then(|path| {
+                                path.segments
+                                    .last()
+                                    .and_then(|name| self.trait_visibility.get(&name.text).cloned())
+                            });
+                            self.method_visibility.insert(
+                                (ty.clone(), f.name.text.clone()),
+                                MemberVisibility {
+                                    is_pub: trait_contract
+                                        .as_ref()
+                                        .map(|(is_pub, _, _)| *is_pub)
+                                        .unwrap_or(f.is_pub || im.trait_.is_some()),
+                                    owner: ty.clone(),
+                                    module: trait_contract
+                                        .as_ref()
+                                        .map(|(_, module, _)| module.clone())
+                                        .unwrap_or_else(|| self.module_of(im.span)),
+                                    span: trait_contract
+                                        .map(|(_, _, span)| span)
+                                        .unwrap_or(f.name.span),
+                                },
+                            );
                         }
                     }
                 }
@@ -785,6 +868,18 @@ impl<'a> Checker<'a> {
                         .map(|f| (f.name.text.clone(), f.ty.clone()))
                         .collect(),
                 );
+                let module = self.module_of(st.span);
+                for field in &st.fields {
+                    self.field_visibility.insert(
+                        (st.name.text.clone(), field.name.text.clone()),
+                        MemberVisibility {
+                            is_pub: field.is_pub,
+                            owner: st.name.text.clone(),
+                            module: module.clone(),
+                            span: field.name.span,
+                        },
+                    );
+                }
                 self.struct_field_types.insert(
                     st.name.text.clone(),
                     st.fields
@@ -1536,6 +1631,23 @@ impl<'a> Checker<'a> {
                     f.name.span,
                     format!("view field `{}` is declared more than once", f.name.text),
                 );
+            } else if let Some(visibility) = self.field_visibility_for(target, &f.name.text) {
+                // A view is allowed to make private storage part of an
+                // interface only when it is declared by that storage's own
+                // module. Otherwise a foreign module could publish private
+                // representation simply by wrapping it in a view.
+                if !visibility.is_pub && self.module_of(view.span) != visibility.module {
+                    self.sink.emit(
+                        Diagnostic::error(format!(
+                            "view `{}` cannot expose private field `{target}.{}` from another module",
+                            view.name.text, f.name.text
+                        ))
+                        .with_code(codes::PRIVATE_MEMBER)
+                        .at(f.name.span)
+                        .label(visibility.span, "private field declared here")
+                        .help("declare the view in the struct's module, or make the backing field `pub`"),
+                    );
+                }
             }
         }
         for field in fields {
@@ -1655,7 +1767,8 @@ impl<'a> Checker<'a> {
         // A bus port (`bus: Stream Source`) types as the *view*, which owns no
         // fields, so the walk below found no struct and returned silently —
         // leaving every field access through a bus unchecked.
-        let head = self.view_backing(&head).unwrap_or(head);
+        let through_view = self.view_backing(&head);
+        let head = through_view.clone().unwrap_or(head);
         // The backing struct's own methods are callable through the bus, and
         // reach here as field nodes just as the view's own methods do.
         if self
@@ -1675,6 +1788,12 @@ impl<'a> Checker<'a> {
                 return;
             };
             if fields.contains(&field.text) {
+                // Applying a view is the explicit structural interface for
+                // its backing storage. It exposes the fields it names without
+                // making raw `Struct.field` access public everywhere.
+                if through_view.is_none() {
+                    self.check_field_visibility(&name, field);
+                }
                 return;
             }
             cur = base_ty
@@ -1696,6 +1815,32 @@ impl<'a> Checker<'a> {
         self.sink.emit(d);
     }
 
+    fn check_field_visibility(&mut self, owner: &str, field: &Ident) {
+        let Some(visibility) = self
+            .field_visibility
+            .get(&(owner.to_string(), field.text.clone()))
+            .cloned()
+        else {
+            return;
+        };
+        if visibility.is_pub || self.member_access_allowed(&visibility, field.span) {
+            return;
+        }
+        self.sink.emit(
+            Diagnostic::error(format!(
+                "field `{}.{}` is private to module `{}`",
+                owner, field.text, visibility.module
+            ))
+            .with_code(codes::PRIVATE_MEMBER)
+            .at(field.span)
+            .label(visibility.span, "declared private here")
+            .help(format!(
+                "mark the field `pub`, or expose the operation through a `pub fn` in `impl {}`",
+                visibility.owner
+            )),
+        );
+    }
+
     /// A method call whose name no impl provides for the receiver's type.
     /// It used to lower to `Unknown` — silently producing a driver with an
     /// unknown value, or (worse) an unknown *condition*, so an `if
@@ -1714,6 +1859,9 @@ impl<'a> Checker<'a> {
         };
         let key = (head.clone(), field.text.clone());
         if self.methods.contains_key(&key) {
+            if !self.check_method_visibility(&key, field.span) {
+                return;
+            }
             if !self.method_has_self.get(&key).copied().unwrap_or(false) {
                 self.error_with_help(
                     codes::INVALID_METHOD_CALL,
@@ -1728,6 +1876,34 @@ impl<'a> Checker<'a> {
             }
             self.check_collected_method_args(&head, &field.text, *span, args, sym);
             return;
+        }
+        // A view receiver may use inherent methods of its backing struct.
+        if let Some(backing) = self.view_backing(&head) {
+            let backing_key = (backing.clone(), field.text.clone());
+            if self.methods.contains_key(&backing_key) {
+                if !self.check_method_visibility(&backing_key, field.span) {
+                    return;
+                }
+                if !self
+                    .method_has_self
+                    .get(&backing_key)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    self.error_with_help(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        format!(
+                            "associated function `{}::{}` has no `self` receiver",
+                            backing, field.text
+                        ),
+                        format!("call it as `{}::{}(...)`", backing, field.text),
+                    );
+                    return;
+                }
+                self.check_collected_method_args(&backing, &field.text, *span, args, sym);
+                return;
+            }
         }
         // Only complain about a type we actually know methods for.
         if !self.methods.keys().any(|(h, _)| *h == head) {
@@ -1776,6 +1952,9 @@ impl<'a> Checker<'a> {
         if !self.methods.contains_key(&key) {
             return;
         }
+        if !self.check_method_visibility(&key, expr_span(callee)) {
+            return;
+        }
         if self.method_has_self.get(&key).copied().unwrap_or(false) {
             self.error_with_help(
                 codes::INVALID_METHOD_CALL,
@@ -1786,6 +1965,30 @@ impl<'a> Checker<'a> {
             return;
         }
         self.check_collected_method_args(owner, name, expr_span(callee), args, sym);
+    }
+
+    fn check_method_visibility(&mut self, key: &(String, String), use_span: Span) -> bool {
+        let Some(visibility) = self.method_visibility.get(key).cloned() else {
+            return true;
+        };
+        if visibility.is_pub || self.member_access_allowed(&visibility, use_span) {
+            return true;
+        }
+        self.sink.emit(
+            Diagnostic::error(format!(
+                "method `{}::{}` is private to module `{}`",
+                key.0, key.1, visibility.module
+            ))
+            .with_code(codes::PRIVATE_MEMBER)
+            .at(use_span)
+            .label(visibility.span, "declared private here")
+            .help("mark the inherent method `pub` to include it in the type's API"),
+        );
+        false
+    }
+
+    fn member_access_allowed(&self, visibility: &MemberVisibility, use_span: Span) -> bool {
+        self.module_of(use_span) == visibility.module
     }
 
     fn check_collected_method_args(
@@ -1889,6 +2092,31 @@ impl<'a> Checker<'a> {
         let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
         let concrete_self = self.ast_ty(self_ty(im));
         let saved_self = self.current_self_ty.replace(Some(concrete_self));
+        let backing = type_head_name(self_ty(im)).unwrap_or("<error>").to_string();
+        for item in &im.items {
+            let ImplItem::Fn(function) = item else {
+                continue;
+            };
+            if function.is_pub && im.trait_.is_some() {
+                self.error_with_help(
+                    codes::PRIVATE_MEMBER,
+                    function.name.span,
+                    "trait implementation methods inherit the trait's visibility".to_string(),
+                    "remove `pub` from this method".to_string(),
+                );
+            }
+            if function.is_pub && self.entity_names.contains(&backing) {
+                self.error_with_help(
+                    codes::PRIVATE_MEMBER,
+                    function.name.span,
+                    format!(
+                        "entity method `{backing}::{}` cannot be public yet",
+                        function.name.text
+                    ),
+                    "expose behavior through ports; cross-hierarchy method calls do not yet have defined hardware semantics".to_string(),
+                );
+            }
+        }
         self.check_impl_inner(im);
         self.current_self_ty.replace(saved_self);
         *self.type_params.borrow_mut() = saved_params;
@@ -5965,6 +6193,35 @@ impl<'a> Checker<'a> {
         targets.next().is_none().then(|| first.to_string())
     }
 
+    fn field_visibility_for(&self, head: &str, field: &str) -> Option<MemberVisibility> {
+        let mut current = head.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return None;
+            }
+            if let Some(visibility) = self
+                .field_visibility
+                .get(&(current.clone(), field.to_string()))
+            {
+                return Some(visibility.clone());
+            }
+            current = self
+                .structs
+                .get(&current)
+                .and_then(|(base, _)| base.as_ref())
+                .and_then(type_head_name)?
+                .to_string();
+        }
+    }
+
+    fn module_of(&self, span: Span) -> String {
+        self.file_modules
+            .get(&span.file)
+            .cloned()
+            .unwrap_or_else(|| format!("<file:{}>", span.file.0))
+    }
+
     /// The element type head of a *plain* array operand (`Logic[3]` ->
     /// `Logic`). A nominal vector family has its own head and is handled by
     /// the ordinary lookup.
@@ -6142,6 +6399,25 @@ impl<'a> Checker<'a> {
     ) {
         let fields = self.base_struct_fields_named(head);
         if fields.is_empty() {
+            return;
+        }
+
+        if let Some(private) = fields.iter().find_map(|field| {
+            let visibility = self.field_visibility_for(head, field)?;
+            (!visibility.is_pub && !self.member_access_allowed(&visibility, expr_span(value)))
+                .then_some(visibility)
+        }) {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "cannot construct `{head}` here because it has private fields"
+                ))
+                .with_code(codes::PRIVATE_MEMBER)
+                .at(expr_span(value))
+                .label(private.span, "private field declared here")
+                .help(format!(
+                    "construct it in `impl {head}` and expose a `pub` constructor, or make its representation fields `pub`"
+                )),
+            );
             return;
         }
 
@@ -6999,6 +7275,104 @@ mod tests {
         let parse_resolve_errors = sink.error_count();
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.error_count() - parse_resolve_errors
+    }
+
+    fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
+        sink
+    }
+
+    #[test]
+    fn private_struct_members_are_module_scoped_and_pub_crosses_the_boundary() {
+        let provider = "module model;\n\
+            pub struct Packet { hidden: integer, pub visible: integer }\n\
+            impl Packet { fn secret(self) -> integer { return self.hidden; } pub fn get(self) -> integer { return self.hidden; } }\n";
+        let consumer = "module user;\n\
+            fn inspect(p: Packet) -> integer { return p.hidden + p.visible + p.secret() + p.get(); }\n";
+        let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
+        let private = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .count();
+        assert_eq!(
+            private, 2,
+            "private field and method are rejected, public ones pass"
+        );
+    }
+
+    #[test]
+    fn an_applied_view_is_an_explicit_structural_interface() {
+        let provider = "module bus;\n\
+            pub struct Stream { data: integer }\n\
+            pub view Source for Stream { data out }\n\
+            pub entity Producer { bus: Stream Source }\n\
+            impl Producer { bus.data = 1; }\n";
+        let sink = check_modules(&[(provider, FileId(0))]);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(codes::PRIVATE_MEMBER)),
+            "the view deliberately exposes its backing field"
+        );
+    }
+
+    #[test]
+    fn public_entity_methods_wait_for_cross_hierarchy_call_semantics() {
+        let sink = check_modules(&[(
+            "module m;\npub entity Device { value: integer out }\nimpl Device { pub fn read(self) -> integer { return value; } }\n",
+            FileId(0),
+        )]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::PRIVATE_MEMBER)
+                && diagnostic.message.contains("cannot be public yet")
+        }));
+    }
+
+    #[test]
+    fn a_private_trait_keeps_its_implementation_methods_private() {
+        let provider = "module model;\n\
+            pub struct Value(integer);\n\
+            trait Hidden { fn reveal(self) -> integer; }\n\
+            impl Hidden for Value { fn reveal(self) -> integer { return 1; } }\n";
+        let consumer =
+            "module user;\nfn inspect(value: Value) -> integer { return value.reveal(); }\n";
+        let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::PRIVATE_MEMBER) && diagnostic.message.contains("reveal")
+        }));
+    }
+
+    #[test]
+    fn a_view_does_not_publish_backing_struct_methods() {
+        let provider = "module bus;\n\
+            pub struct Stream { data: integer }\n\
+            pub view Source for Stream { data out }\n\
+            impl Stream { fn secret(self) -> integer { return self.data; } }\n\
+            pub entity Producer { bus: Stream Source }\n";
+        let consumer = "module user;\nimpl Producer { let seen: integer = bus.secret(); }\n";
+        let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::PRIVATE_MEMBER) && diagnostic.message.contains("secret")
+        }));
+    }
+
+    #[test]
+    fn a_foreign_view_cannot_publish_private_backing_fields() {
+        let provider = "module bus;\npub struct Stream { data: integer }\n";
+        let consumer =
+            "module user;\npub view Source for Stream { data out }\npub entity Producer { bus: Stream Source }\n";
+        let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::PRIVATE_MEMBER)
+                && diagnostic.message.contains("cannot expose private field")
+        }));
     }
 
     /// Exhaustiveness was only ever computed over enum variants, so a hole in
@@ -8374,7 +8748,7 @@ mod tests {
             let mut sink = DiagnosticSink::new();
             let m = crate::syntax::parse_module(FileId(0), src, &mut sink);
             let r = crate::resolve::resolve(std::slice::from_ref(&m), &mut sink);
-            let c = Checker::new(&mut sink, &r);
+            let c = Checker::new(&mut sink, &r, std::slice::from_ref(&m));
             c.type_of(&value_expr(&m), &HashMap::new())
         };
         // helper: the value in `impl E { y = <value>; }`

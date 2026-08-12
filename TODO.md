@@ -48,6 +48,11 @@ Current baseline:
   and frontend diagnostics are implemented.
 - ✅ Imports and qualified paths enforce `pub`; `pub using` aliases retain
   visibility.
+- ✅ Container-relative visibility covers module functions, extern functions,
+  struct fields and literals, inherent methods, and public-interface privacy.
+  Entity ports and trait methods are inherently visible; views explicitly
+  expose backing fields. Public entity methods remain rejected until
+  cross-hierarchy call/scheduling semantics are designed.
 - ✅ Entity, struct, view, trait, and function generic parameters participate
   in unused-parameter analysis, including uses in a separate `impl`.
 - ✅ `Hierarchy` retains each concrete instance array's declared and generated

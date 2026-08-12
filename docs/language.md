@@ -94,6 +94,9 @@ precise reference.
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
   receiver's fields.
+- **Container-relative visibility** — module items, struct fields, and
+  inherent methods are private by default; `pub` exports them. Entity ports
+  and trait methods are interface members and need no separate `pub`.
 - **Newtypes** — `enum B(A);` / `struct B(A);` reuse a representation under a
   new identity, with the derivation conversion synthesised automatically.
   Derivation never adds members or generally inherits behaviour; bigger types
@@ -269,6 +272,73 @@ entity Counter {
 ```
 
 Reason: an entity is the interface. Parameters that define the shape or behavior of an entity go in `<...>`, not inside the entity body.
+
+---
+
+### 3.1.1 Visibility follows the owning container
+
+Module declarations are private to their declared module by default. The
+boundary is the `module a::b;` path, not a source file: two files declaring the
+same module share its private declarations. Add `pub` to export an item:
+
+```siox
+module devices::spi;
+
+entity InternalHelper { done: Bit out }  // private to devices::spi
+pub entity SpiMaster { mosi: Bit out }   // exported
+
+fn helper() -> integer { return 0; }     // module-private
+pub fn utility() -> integer { return 1; }
+```
+
+A struct's fields describe representation and are likewise private by
+default. Code in the defining module may inspect and construct that
+representation; code in another module may use only fields marked `pub` and
+cannot use a struct literal when any of its fields are private:
+
+```siox
+pub struct Counter {
+    value: unsigned[32],
+    pub maximum: unsigned[32]
+}
+
+impl Counter {
+    fn reset(self) { self.value = 0; }          // module-private method
+    pub fn limit(self) -> unsigned[32] {        // exported type API
+        return self.maximum;
+    }
+}
+```
+
+This matches Rust's module privacy: writing an `impl Counter` in a foreign
+module does not grant access to `Counter`'s private representation. Public
+function and method signatures, public struct fields, public entity ports, and
+other exported interfaces may not name private types; such an interface would
+be impossible for its users to name and is rejected.
+
+Entity ports are structural interface endpoints, not ordinary fields. They
+are inherently visible when the entity is visible, so `pub` on an individual
+port is rejected as redundant. Its `in`, `out`, or `inout` suffix controls
+direction, not visibility. State and helper functions declared in the entity's
+`impl` remain private. Public entity methods are currently rejected because a
+call across an instance boundary has no defined scheduling, connectivity, or
+synthesis semantics yet; behavior must be exposed through ports.
+
+Trait methods similarly inherit the trait's visibility. An implementation
+therefore writes `fn`, never `pub fn`. Inherent struct and view methods are
+private by default and may be exported with `pub fn`.
+
+An applied view is an explicit structural interface over its backing struct.
+The view may expose private backing fields through a port without making raw
+`Struct.field` access public. This lets protocol storage remain encapsulated
+while `Stream Source` and `Stream Sink` expose exactly the directional role
+chosen by the entity interface.
+
+Newtype construction (`pub struct Id(integer);`) currently follows the
+visibility of the newtype itself because the parenthesized representation has
+no field modifier. If private tuple-style constructors are needed later, they
+will require an explicit syntax rather than silently changing existing
+conversion behavior.
 
 ---
 
@@ -1152,7 +1222,9 @@ Port direction is primarily compiler/type-checker information, not a normal user
 Structs define layout and field types, but do not contain direction. A view
 defines a named protocol role such as `Source`, `Sink`, `Master`, or `Slave`.
 Direction belongs to each leaf of that role; there is no direction on the view
-declaration itself.
+declaration itself. Applying the view also explicitly exposes its named leaves
+as that structural interface; the backing fields need not be `pub` for raw
+value access.
 
 A view always projects a reusable struct:
 

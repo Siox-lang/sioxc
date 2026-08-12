@@ -21,7 +21,8 @@
 //!   ports, locals) are resolved best-effort and never produce a false
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Declarations still occupy one crate-wide namespace, but accesses from a
-//!   different source module must cross a `pub` boundary.
+//!   different module must cross a `pub` boundary. Several source files may
+//!   belong to the same module and therefore share its private declarations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -120,6 +121,19 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
                 .join("::")
         })
         .collect();
+    r.file_modules = modules
+        .iter()
+        .map(|m| {
+            let path = m
+                .path
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            (m.span.file, path)
+        })
+        .collect();
     for m in modules {
         for item in &m.items {
             r.collect_item(item);
@@ -137,6 +151,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_item(item);
         }
     }
+    r.check_public_interfaces(modules);
     // The std library is not linted (its imports serve the whole library, not
     // this compilation); only warn about unused imports in the user's files.
     let std_files: std::collections::HashSet<crate::diag::FileId> = modules
@@ -198,6 +213,9 @@ struct Resolver<'a> {
     /// never read, which is a different mistake from importing a name the
     /// module does not have — and used to be reported as the latter.
     loaded_modules: HashSet<String>,
+    /// Source file -> declared module path. Privacy belongs to the module,
+    /// never to the physical file that happened to contain a declaration.
+    file_modules: HashMap<crate::diag::FileId, String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -219,6 +237,7 @@ impl<'a> Resolver<'a> {
             impl_used_decl_params: HashSet::new(),
             current_impl_owner: None,
             loaded_modules: HashSet::new(),
+            file_modules: HashMap::new(),
         }
     }
 
@@ -285,11 +304,11 @@ impl<'a> Resolver<'a> {
     fn collect_item(&mut self, item: &Item) {
         match item {
             Item::Fn(f) => {
-                self.declare(&f.name.text, DefKind::Fn, true, f.name.span);
+                self.declare(&f.name.text, DefKind::Fn, f.is_pub, f.name.span);
             }
             Item::ExternBlock { fns, .. } => {
                 for f in fns {
-                    self.declare(&f.name.text, DefKind::Fn, true, f.name.span);
+                    self.declare(&f.name.text, DefKind::Fn, f.is_pub, f.name.span);
                 }
             }
             Item::Using(u) => match &u.kind {
@@ -401,7 +420,7 @@ impl<'a> Resolver<'a> {
                     d.name.clone(),
                     !d.is_pub
                         && d.span
-                            .is_some_and(|decl_span| decl_span.file != imp_span.file),
+                            .is_some_and(|decl_span| !self.same_module(decl_span, imp_span)),
                 )
             });
             if let Some((name, true)) = bad {
@@ -1038,7 +1057,7 @@ impl<'a> Resolver<'a> {
         if p.segments.len() == 1 {
             let name = p.segments[0].text.clone();
             if let Some(id) = self.lookup(&name) {
-                self.out.uses.insert(p.span, id);
+                self.record_qualified_use(p.span, id);
                 self.mark_impl_param_use(id);
             } else {
                 let help = match self.suggest(&name) {
@@ -1175,7 +1194,7 @@ impl<'a> Resolver<'a> {
                     // disagree: `Pair::new()` worked and `Phase::new()` was
                     // "not a variant of enum `Phase`".
                     if var == "new" {
-                        self.out.uses.insert(p.segments[0].span, id);
+                        self.record_qualified_use(p.segments[0].span, id);
                         return;
                     }
                     match self.variant(id, &var) {
@@ -1192,7 +1211,7 @@ impl<'a> Resolver<'a> {
                             // over the whole path, and overwriting that entry
                             // would lose the variant the path resolves to.
                             if p.segments[0].span != p.span {
-                                self.out.uses.insert(p.segments[0].span, id);
+                                self.record_qualified_use(p.segments[0].span, id);
                             }
                         }
                         None => self.error(
@@ -1203,7 +1222,7 @@ impl<'a> Resolver<'a> {
                     }
                     return;
                 }
-                self.out.uses.insert(p.segments[0].span, id);
+                self.record_qualified_use(p.segments[0].span, id);
                 return;
             }
             // A module-qualified declaration (`pkg::VALUE`). Modules are not
@@ -1215,7 +1234,7 @@ impl<'a> Resolver<'a> {
             }
         } else if let Some(name) = p.segments.first() {
             if let Some(id) = self.lookup(&name.text) {
-                self.out.uses.insert(p.span, id);
+                self.record_qualified_use(p.span, id);
                 self.mark_impl_param_use(id);
             }
         }
@@ -1344,9 +1363,20 @@ impl<'a> Resolver<'a> {
     }
 
     fn record_qualified_use(&mut self, use_span: Span, id: DefId) {
+        // A private import is diagnosed at the import itself. Keep resolving
+        // uses through that binding so one mistake does not cascade onto every
+        // later reference in the importing module.
+        if self
+            .import_sites
+            .iter()
+            .any(|(span, imported)| *imported == id && self.same_module(*span, use_span))
+        {
+            self.out.uses.insert(use_span, id);
+            return;
+        }
         let private = self.out.def(id).and_then(|d| {
             d.span
-                .filter(|decl_span| !d.is_pub && decl_span.file != use_span.file)
+                .filter(|decl_span| !d.is_pub && !self.same_module(*decl_span, use_span))
                 .map(|decl_span| (d.name.clone(), decl_span))
         });
         if let Some((name, decl_span)) = private {
@@ -1361,6 +1391,149 @@ impl<'a> Resolver<'a> {
             );
         } else {
             self.out.uses.insert(use_span, id);
+        }
+    }
+
+    fn check_public_interfaces(&mut self, modules: &[Module]) {
+        for module in modules {
+            for item in &module.items {
+                match item {
+                    Item::Const(c) if c.is_pub => self.check_public_type(&c.ty, "public constant"),
+                    Item::Fn(f) if f.is_pub => self.check_public_fn(f, "public function"),
+                    Item::ExternBlock { fns, .. } => {
+                        for f in fns.iter().filter(|f| f.is_pub) {
+                            self.check_public_fn(f, "public extern function");
+                        }
+                    }
+                    Item::Struct(s) if s.is_pub => {
+                        self.check_public_params(&s.params, "public struct");
+                        if let Some(base) = &s.base {
+                            self.check_public_type(base, "public struct representation");
+                        }
+                        for field in s.fields.iter().filter(|field| field.is_pub) {
+                            self.check_public_type(&field.ty, "public struct field");
+                        }
+                    }
+                    Item::View(v) if v.is_pub => {
+                        self.check_public_params(&v.params, "public view");
+                        self.check_public_type(&v.target, "public view backing type");
+                    }
+                    Item::Enum(e) if e.is_pub => {
+                        if let Some(repr) = &e.repr {
+                            self.check_public_type(repr, "public enum representation");
+                        }
+                    }
+                    Item::Entity(e) if e.is_pub => {
+                        self.check_public_params(&e.params, "public entity");
+                        for port in &e.ports {
+                            self.check_public_type(&port.ty, "public entity port");
+                        }
+                    }
+                    Item::Trait(t) if t.is_pub => {
+                        self.check_public_params(&t.params, "public trait");
+                        for f in &t.items {
+                            self.check_public_fn(f, "public trait method");
+                        }
+                    }
+                    Item::AttrDecl(a) if a.is_pub => {
+                        self.check_public_type(&a.ty, "public attribute")
+                    }
+                    Item::Using(u) if u.is_pub => {
+                        if let UsingKind::Alias { ty, .. } = &u.kind {
+                            self.check_public_type(ty, "public type alias");
+                        }
+                    }
+                    Item::Impl(im) if im.trait_.is_none() => {
+                        for f in im.items.iter().filter_map(|item| match item {
+                            ImplItem::Fn(f) if f.is_pub => Some(f),
+                            _ => None,
+                        }) {
+                            self.check_public_fn(f, "public inherent method");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn check_public_fn(&mut self, function: &FnDecl, context: &str) {
+        self.check_public_params(&function.generics, context);
+        for parameter in &function.params {
+            if let Some(ty) = &parameter.ty {
+                self.check_public_type(ty, context);
+            }
+        }
+        if let Some(ret) = &function.ret {
+            self.check_public_type(ret, context);
+        }
+    }
+
+    fn check_public_params(&mut self, params: &Params, context: &str) {
+        for param in &params.params {
+            if let Some(bound) = &param.bound {
+                self.check_public_type(bound, context);
+            }
+        }
+    }
+
+    fn check_public_type(&mut self, ty: &Type, context: &str) {
+        match ty {
+            Type::Path(path) => self.check_public_path(path, context),
+            Type::Indexed { base, .. } => self.check_public_type(base, context),
+            Type::Generic { base, args, .. } => {
+                self.check_public_type(base, context);
+                for arg in args {
+                    match arg {
+                        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                            self.check_public_type(ty, context)
+                        }
+                        GenericArg::Positional(_) | GenericArg::Named { .. } => {}
+                    }
+                }
+            }
+            Type::View { view, target, .. } => {
+                self.check_public_path(view, context);
+                self.check_public_type(target, context);
+            }
+        }
+    }
+
+    fn check_public_path(&mut self, path: &Path, context: &str) {
+        let Some(id) = self.out.resolved(path.span) else {
+            return;
+        };
+        let Some(definition) = self.out.def(id).cloned() else {
+            return;
+        };
+        if definition.is_pub
+            || matches!(
+                definition.kind,
+                DefKind::Builtin | DefKind::Param | DefKind::Local
+            )
+        {
+            return;
+        }
+        let mut diagnostic = Diagnostic::error(format!(
+            "{context} exposes private type `{}`",
+            definition.name
+        ))
+        .with_code(codes::PRIVATE_INTERFACE)
+        .at(path.span)
+        .help("make the referenced type public, or keep this declaration private");
+        if let Some(span) = definition.span {
+            diagnostic = diagnostic.label(span, "private type declared here");
+        }
+        self.sink.emit(diagnostic);
+    }
+
+    fn same_module(&self, a: Span, b: Span) -> bool {
+        match (
+            self.file_modules.get(&a.file),
+            self.file_modules.get(&b.file),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => a.file == b.file,
         }
     }
 
@@ -1596,6 +1769,49 @@ mod tests {
             private_errors[0].contains("Secret"),
             "flags Secret, not Public: {private_errors:?}"
         );
+    }
+
+    #[test]
+    fn private_items_are_shared_by_files_in_the_same_module() {
+        let mut sink = DiagnosticSink::new();
+        let declaration = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\nstruct Secret { value: integer }\n",
+            &mut sink,
+        );
+        let use_site = crate::syntax::parse_module(
+            FileId(1),
+            "module a;\nusing a::{Secret};\nfn keep(value: Secret) -> Secret { return value; }\n",
+            &mut sink,
+        );
+        resolve(&[declaration, use_site], &mut sink);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(codes::PRIVATE_IMPORT)),
+            "a module's privacy boundary is not a physical source file: {:?}",
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_public_signature_cannot_expose_a_private_type() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\nstruct Secret { value: integer }\npub fn leak(value: Secret) -> Secret { return value; }\n",
+            &mut sink,
+        );
+        resolve(&[module], &mut sink);
+        let leaks = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_INTERFACE))
+            .count();
+        assert_eq!(leaks, 2, "both parameter and return type are unusable API");
     }
 
     #[test]

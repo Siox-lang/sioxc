@@ -8227,3 +8227,21 @@ branches, retained products, and `returns Compilation`. The data graph names
 the concrete Rust products and `Artifact` variants, includes metadata's
 intentional no-artifact path, and ends at the caller through the same explicit
 return boundary. Supporting prose defines solid versus dotted arrows.
+
+### 2026-08-12 — Codex — container-relative visibility implementation
+
+Starting the agreed visibility model across syntax, resolution, typing, std,
+tests, corpus, and `docs/language.md`. The implementation will close indirect
+bypasses through struct literals, field writes, downstream impls, views, trait
+impls, and native lowering. Same-module inherent/trait impls receive private
+access to their target; foreign-module impls do not. Entity ports remain the
+structural interface, while `pub fn` on entity impls will be rejected until a
+hardware meaning is designed.
+
+Completed the visibility pass. Module functions/externs, struct fields and
+inherent methods now retain and enforce `pub`; privacy follows the declared
+module across files. Entity ports and trait methods reject redundant `pub`,
+views explicitly expose their backing leaves, public APIs cannot leak private
+types (E-P025), and public entity methods remain rejected pending defined
+cross-hierarchy hardware semantics. Updated std (`Complex`, `Range`), docs and
+TODO. Gates: `cargo test` green; corpus 171 passed, 0 failed.

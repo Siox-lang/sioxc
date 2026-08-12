@@ -133,6 +133,7 @@ pub struct ViewField {
 
 #[derive(Clone, Debug)]
 pub struct Field {
+    pub is_pub: bool,
     pub name: Ident,
     pub ty: Type,
     pub span: Span,
@@ -255,6 +256,9 @@ pub struct Attr {
 
 #[derive(Clone, Debug)]
 pub struct FnDecl {
+    /// Module functions and inherent methods are private unless explicitly
+    /// exported. Trait requirements inherit the trait's visibility.
+    pub is_pub: bool,
     pub name: Ident,
     /// Type parameters with optional trait bounds: `fn max<T: Ord>(...)`.
     /// Bounds are checked at each call site (fns inline, so a call is a

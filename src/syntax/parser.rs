@@ -178,6 +178,12 @@ impl<'a> Parser<'a> {
         // `extern "C" { fn ...; }` — a foreign-function block.
         if is_extern && self.at(TokenKind::StrLit) {
             let start = self.span();
+            if is_pub {
+                self.error_at(
+                    self.prev_span(),
+                    "an extern block has no visibility; mark its functions `pub` individually",
+                );
+            }
             let t = self.bump();
             let abi = self.text_of(t.span).trim_matches('"').to_string();
             if abi != "C" {
@@ -187,11 +193,11 @@ impl<'a> Parser<'a> {
             let mut fns = Vec::new();
             while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
                 let before = self.pos;
-                self.eat(TokenKind::Pub);
+                let fn_is_pub = self.eat(TokenKind::Pub);
                 if self.eat(TokenKind::Fn) {
                     let fstart = self.span();
                     let name = self.parse_ident();
-                    let f = self.parse_fn_after_name(fstart, name);
+                    let f = self.parse_fn_after_name(fstart, name, fn_is_pub);
                     if f.body.is_some() {
                         self.error_at(f.name.span, "extern functions have no body");
                     }
@@ -222,13 +228,21 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Item::Fn(self.parse_fn_after_name(start, name))
+                Item::Fn(self.parse_fn_after_name(start, name, is_pub))
             }
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
             TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
-            TokenKind::Impl => Item::Impl(self.parse_impl(attrs)),
+            TokenKind::Impl => {
+                if is_pub {
+                    self.error_at(
+                        self.prev_span(),
+                        "an `impl` block has no visibility; mark inherent methods `pub` individually",
+                    );
+                }
+                Item::Impl(self.parse_impl(attrs))
+            }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
             TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
             _ => {
@@ -401,10 +415,12 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let fstart = self.span();
+            let field_is_pub = self.eat(TokenKind::Pub);
             let fname = self.parse_ident();
             self.expect(TokenKind::Colon, "before a field type");
             let ty = self.parse_type();
             fields.push(Field {
+                is_pub: field_is_pub,
                 name: fname,
                 ty,
                 span: fstart.to(self.prev_span()),
@@ -603,6 +619,12 @@ impl<'a> Parser<'a> {
         // name and cascade three more diagnostics across the same line.
         if let Some(dir) = self.eat_direction() {
             return self.legacy_leading_direction_port(start, dir);
+        }
+        if self.eat(TokenKind::Pub) {
+            self.error_at(
+                self.prev_span(),
+                "entity ports are already part of the interface; remove `pub`",
+            );
         }
         let name = self.parse_ident();
         self.expect(TokenKind::Colon, "before a port type");
@@ -806,6 +828,13 @@ impl<'a> Parser<'a> {
         if !attrs.is_empty() && !self.at(TokenKind::Let) {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
+        let is_pub = self.eat(TokenKind::Pub);
+        if is_pub && !self.at(TokenKind::Fn) {
+            self.error_at(
+                self.prev_span(),
+                "only functions may be `pub` inside an implementation",
+            );
+        }
         match self.kind() {
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
             // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
@@ -820,7 +849,7 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Some(ImplItem::Fn(self.parse_fn_after_name(start, name)))
+                Some(ImplItem::Fn(self.parse_fn_after_name(start, name, is_pub)))
             }
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
@@ -863,7 +892,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_fn_after_name(&mut self, start: Span, name: Ident) -> FnDecl {
+    fn parse_fn_after_name(&mut self, start: Span, name: Ident, is_pub: bool) -> FnDecl {
         let mut generics = self.parse_params_opt();
         let params = self.parse_fn_params();
         let ret = if self.eat(TokenKind::Arrow) {
@@ -879,6 +908,7 @@ impl<'a> Parser<'a> {
             None
         };
         FnDecl {
+            is_pub,
             name,
             generics,
             params,
@@ -985,12 +1015,18 @@ impl<'a> Parser<'a> {
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
             let istart = self.span();
+            if self.eat(TokenKind::Pub) {
+                self.error_at(
+                    self.prev_span(),
+                    "trait methods inherit the trait's visibility; remove `pub`",
+                );
+            }
             if !self.eat(TokenKind::Fn) {
                 self.error_here("expected a `fn` method signature in trait body");
                 break;
             }
             let mname = self.parse_ident();
-            items.push(self.parse_fn_after_name(istart, mname));
+            items.push(self.parse_fn_after_name(istart, mname, false));
             if self.pos == before {
                 self.bump();
             }
@@ -2861,6 +2897,46 @@ mod tests {
         assert!(matches!(i.items[1], ImplItem::Let(_)));
         assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::If(_))));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
+    }
+
+    #[test]
+    fn visibility_is_retained_on_functions_fields_and_methods() {
+        let m = parse_ok(
+            "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get(self) -> integer { return self.open; } fn secret(self) -> integer { return self.closed; } }\n",
+        );
+        assert!(matches!(&m.items[0], Item::Fn(function) if function.is_pub));
+        assert!(matches!(&m.items[1], Item::Fn(function) if !function.is_pub));
+        let Item::Struct(struct_) = &m.items[2] else {
+            panic!("expected struct")
+        };
+        assert!(struct_.fields[0].is_pub);
+        assert!(!struct_.fields[1].is_pub);
+        let Item::Impl(impl_) = &m.items[3] else {
+            panic!("expected impl")
+        };
+        assert!(matches!(&impl_.items[0], ImplItem::Fn(function) if function.is_pub));
+        assert!(matches!(&impl_.items[1], ImplItem::Fn(function) if !function.is_pub));
+    }
+
+    #[test]
+    fn interface_members_reject_redundant_visibility() {
+        let mut sink = DiagnosticSink::new();
+        crate::syntax::parse_module(
+            FileId(0),
+            "module m;\nentity E { pub value: integer out }\ntrait T { pub fn value(self) -> integer; }\n",
+            &mut sink,
+        );
+        let messages: Vec<&str> = sink
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("ports are already")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("inherit the trait")));
     }
 
     #[test]
