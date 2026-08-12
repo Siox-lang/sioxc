@@ -19,28 +19,56 @@ Cargo Git and depends only on the backend-independent `siox` crate.
 
 ```mermaid
 flowchart TB
-    subgraph ASTL["AST layer"]
-        SY["syntax"] --> RE["resolve"] --> TY["types"] --> EL["elab"]
-        DIAG["diag"] -. spans + diagnostics .-> SY
+    CALL["caller<br/>sioxc / siox-lsp / tools"] -->|CompileRequest| API["siox::compiler<br/>Compiler::compile"]
+    API -->|loads source inputs as needed| SY
+
+    subgraph FRONTEND["frontend pipeline"]
+        SY["syntax<br/>tokens + AST"] -->|modules| RE["resolve<br/>Resolved"]
+        RE -->|definitions + bindings| TY["types<br/>Typed"]
+        TY -->|typed modules| EL["elab<br/>Hierarchy"]
+        EL -->|concrete hierarchy| IR["ir<br/>Design"]
+
+        DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
         DIAG -.-> TY
         DIAG -.-> EL
+        DIAG -.-> IR
     end
-    EL --> IR["IR layer<br/>Design"]
-    IR --> LL["LLVM layer<br/>native state + codegen"]
-    LL --> OUT["Output layer<br/>object / native tests"]
-    IR --> OUT
-    IR --> API["compiler API<br/>CompileRequest → Compilation"]
-    EL --> API
-    TY --> API
-    RE --> API
-    SY --> API
-    LSP["siox-lsp"] --> API
-    STD["std source"] --> SY
-    CLI["sioxc CLI"] --> API
-    API ==> LL
-    API ==> OUT
+
+    IR -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
+    IR -->|test executable requested| HARNESS["generated C harness<br/>scheduler + VCD/FST"]
+    LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
+    LL -->|object or test requested| OBJ["native object"]
+    OBJ -->|test executable requested| LINK["Clang + native linker"]
+    HARNESS --> LINK
+    LINK --> TEST["native test executable"]
+
+    SY -->|tokens / source / AST requested| FRONT_TEXT["frontend text artifact"]
+    EL -->|tree requested| FRONT_TEXT
+    IR -->|IR requested| FRONT_TEXT
+
+    SY -. retained phase product .-> RESULT
+    RE -. retained phase product .-> RESULT
+    TY -. retained phase product .-> RESULT
+    EL -. retained phase product .-> RESULT
+    IR -. retained phase product .-> RESULT
+    FRONT_TEXT -->|optional Artifact::Text| RESULT["Compilation<br/>diagnostics + phase products<br/>statistics + optional artifact or failure"]
+    IR -. metadata requested; no artifact .-> RESULT
+    DIAG -->|SourceMap + diagnostics| RESULT
+    FAILURE["optional input / selection / validation / backend failure"] -->|CompileFailure| RESULT
+    LLVM_TEXT -->|Emit::LlvmIr artifact| RESULT
+    OBJ -->|Emit::Object artifact| RESULT
+    TEST -->|Emit::TestExecutable artifact| RESULT
+    RESULT -->|returns Compilation| CALL
 ```
+
+Solid arrows show work or values moving to another compiler/output stage.
+Dotted arrows do not invoke another stage: `Compilation` retains each product
+that completed. `CompileRequest` enters through `Compiler::compile`; the final
+`Compilation` return carries diagnostics even when a later phase or backend
+fails. A request stops once its selected output is ready—for example, AST and
+tree requests do not continue through IR. Frontend-only requests stop before
+`siox::llvm` and harness generation.
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 The compiler API discovers `#[test]` entities and generates a C harness
@@ -115,16 +143,48 @@ as `crate::<module>`; the binary imports the library as `siox::<module>`.
 
 ```mermaid
 flowchart LR
-    A["source text"] --> B["ast::Module"]
-    B --> C["Resolved"]
-    C --> D["Typed"]
-    D --> E["Hierarchy"]
-    E --> F["Design"]
-    F --> G["LLVM module"]
-    G --> H["native object"]
-    F --> I["metadata / IR output"]
-    H --> J["linked test executable"]
+    SOURCE["source text"] --> TOKENS["Vec&lt;Token&gt;"]
+    TOKENS --> MODULES["Vec&lt;ast::Module&gt;"]
+    MODULES --> RESOLVED["Resolved"]
+    RESOLVED --> TYPED["Typed"]
+    TYPED --> HIERARCHY["Hierarchy"]
+    HIERARCHY --> DESIGN["ir::Design"]
+
+    TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
+    MODULES -->|Emit::Source / Ast| TEXT
+    HIERARCHY -->|Emit::Tree| TEXT
+    DESIGN -->|Emit::Ir| TEXT
+    DESIGN -->|LLVM output requested| BACKEND["siox::llvm"]
+    BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
+    BACKEND -->|object or test requested| OBJECT["native object"]
+    DESIGN -->|Emit::TestExecutable| HARNESS["generated C harness"]
+    OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
+    HARNESS --> LINK
+    LINK --> EXECUTABLE["Artifact::File<br/>test executable"]
+
+    TEXT --> ARTIFACT["optional Artifact"]
+    LLVM_TEXT --> ARTIFACT
+    OBJECT -->|Emit::Object| ARTIFACT
+    EXECUTABLE --> ARTIFACT
+    TOKENS -.-> PRODUCTS["completed phase products"]
+    MODULES -.-> PRODUCTS
+    RESOLVED -.-> PRODUCTS
+    TYPED -.-> PRODUCTS
+    HIERARCHY -.-> PRODUCTS
+    DESIGN -.-> PRODUCTS
+    PRODUCTS -. retained .-> COMPILATION["Compilation<br/>products + diagnostics + statistics<br/>optional artifact + failure"]
+    DESIGN -. Emit::Metadata; no Artifact .-> COMPILATION
+    DIAGNOSTICS["SourceMap + diagnostics"] --> COMPILATION
+    FAILURE["optional CompileFailure"] --> COMPILATION
+    ARTIFACT --> COMPILATION
+    COMPILATION -->|returned by Compiler::compile| CALLER["sioxc / siox-lsp / tools"]
 ```
+
+This diagram names the concrete values rather than control flow. A request may
+stop after any requested text product, after metadata analysis (with no
+artifact), or after native output. `Compilation` is the envelope returned in
+all cases: completed products remain available independently of whether its
+optional artifact was produced or a `CompileFailure` occurred.
 
 `diag::Span` (a byte range plus `FileId`) is attached to AST nodes and most
 later-stage data, and is used both for diagnostics and as the key that links a

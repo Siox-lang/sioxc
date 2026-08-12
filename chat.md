@@ -8212,3 +8212,18 @@ Replacing the mixed data-flow/ownership graph in `docs/README.md` with a
 request → orchestrated pipeline → result view. The return edge is explicitly
 labeled `returns Compilation`, and the result node names diagnostics, retained
 phase products, statistics, and the optional artifact or failure.
+
+### 2026-08-12 — Codex — clarified the architecture graphs
+
+Applying the same request/pipeline/result model to both Mermaid diagrams in
+`docs/architecture.md`. Solid arrows will describe pass or artifact data flow;
+dotted arrows will describe diagnostic support and phase-product retention;
+the caller edges will explicitly distinguish `CompileRequest` from the returned
+`Compilation`.
+
+Completed both graph rewrites. The overview now shows the caller's
+`CompileRequest`, early frontend stopping points, LLVM and native-harness
+branches, retained products, and `returns Compilation`. The data graph names
+the concrete Rust products and `Artifact` variants, includes metadata's
+intentional no-artifact path, and ends at the caller through the same explicit
+return boundary. Supporting prose defines solid versus dotted arrows.
