@@ -8,8 +8,8 @@ transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
-The compiler bootstraps only the single `Operator` name. Its public contract
-lives in `std::ops`; every operator is an
+The compiler bootstraps the `Operator`, `Prefix`, and `Suffix` hook names. Their
+public contracts live in `std::ops`; every operator is an
 `Operator<"symbol", Input, Output>` implementation, and a user operator
 (a non-standard symbol) carries an attributed precedence discovered before
 expression parsing.
@@ -28,7 +28,7 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded: `Bit`/`Logic`/`Bool`, `unsigned`/`signed`, `Boolean`/`Ordering`, `string`, `time`/`frequency` |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/vector types, core traits (`Boolean`, `Vector`, `New`, `From`, `Resolve`, indexing/ranges), `string`, `time`/`frequency` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
@@ -90,6 +90,9 @@ declared by `impl Prefix<"x", _> for unsigned` in `std::bits` (spec 3.24); a pla
 ```siox
 pub enum Ordering { Less, Equal, Greater }
 pub trait Boolean { fn as_bool(self) -> Bool; }
+pub trait New { fn new() -> Self; }
+pub trait From { fn from(value: Self) -> Self; }
+pub trait Resolve { fn resolve(self, rhs: Self) -> Self; }
 ```
 
 **`Ordering`** — the result of `impl Operator<"<=>", T, Ordering>` (the `apply`

@@ -8245,3 +8245,23 @@ views explicitly expose their backing leaves, public APIs cannot leak private
 types (E-P025), and public entity methods remain rejected pending defined
 cross-hierarchy hardware semantics. Updated std (`Complex`, `Range`), docs and
 TODO. Gates: `cargo test` green; corpus 171 passed, 0 failed.
+
+### 2026-08-12 — Codex — module-aware name resolution hardening
+
+Auditing first-version robustness found that `using a::{Thing}` selected a
+crate-global leaf named `Thing`, even when only `b::Thing` declared it, and any
+loaded module's declarations could leak into unqualified scope. Reworking
+resolution around module-owned declarations, explicit per-module imports,
+public re-exports, exact qualified paths, and the implicit prelude. The later
+semantic/lowering tables still key nominal identities by leaf name, so distinct
+modules declaring the same leaf remain an explicit error until that full
+pipeline is namespaced.
+
+Completed the hardening pass. Imports and qualified type/value/attribute paths
+now select exact module exports; loading a module no longer creates accidental
+unqualified scope, public re-export chains resolve independent of source order,
+and local/import/attribute collisions are diagnosed. Compiler hook names keep
+a stable bootstrap identity while `From`, `New`, and `Resolve` are intentional
+prelude traits. Updated std dependencies, language/architecture/std docs, and
+TODO with the remaining leaf-keyed semantic-table limitation. Gates:
+`cargo test`, strict all-target/all-feature Clippy, and corpus 171/171 green.

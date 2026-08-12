@@ -46,8 +46,9 @@ Current baseline:
 - ✅ Partial ranges, custom operators/indexing, applied views, nested generic
   type arguments, visibility, persistent expression types, direction checks,
   and frontend diagnostics are implemented.
-- ✅ Imports and qualified paths enforce `pub`; `pub using` aliases retain
-  visibility.
+- ✅ Imports and qualified paths resolve against their exact module and enforce
+  `pub`; loaded modules do not leak names into scope, import collisions are
+  rejected, and `pub using` re-exports retain visibility.
 - ✅ Container-relative visibility covers module functions, extern functions,
   struct fields and literals, inherent methods, and public-interface privacy.
   Entity ports and trait methods are inherently visible; views explicitly
@@ -67,6 +68,12 @@ Remaining:
 - 🔴 **Incremental/query interface.** Phase products are explicit and stable,
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
+- 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
+  `(module, name)`, but type checking, elaboration, and IR still key several
+  nominal tables by the leaf name. The compiler deliberately reports two
+  loaded declarations with the same leaf as a duplicate rather than silently
+  selecting the wrong one. Lift those downstream tables to `DefId` before
+  allowing equal leaf names in distinct modules.
 
 ## IR
 

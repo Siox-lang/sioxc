@@ -272,6 +272,9 @@ compile, so the core types always carry their std semantics — the kernel
 word fallback only applies when the std root has no prelude at all. `resolve`
 seeds only the kernel scalars (`integer`, `real`, and Unicode `Char`);
 `Bit`, `Logic`, `Bool`, `unsigned`, and `signed` come from std declarations.
+The resolver additionally bootstraps the `Operator`, `Prefix`, and `Suffix`
+hook names and syntax-level attributes; their canonical contracts and values
+remain declarations in `std::ops` and `std::attrs`.
 Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
 Array-derived numeric newtypes retain their family name for trait dispatch,
 but there is no separate semantic `Vector` type.

@@ -2205,6 +2205,12 @@ Implement:
 using std::logic::{Bit, Logic};
 ```
 
+An import is resolved against the exact module named before `::{...}`. Loading
+a module does not otherwise place its declarations in scope, and an imported
+name may not collide with another import or a declaration in the importing
+module. `pub using` re-exports the imported name as part of the importing
+module's interface.
+
 Aliases create local names:
 
 ```siox
@@ -2216,6 +2222,11 @@ Fully-qualified paths remain valid:
 ```siox
 std::logic::Bit
 ```
+
+They likewise select that exact module; the compiler never substitutes an
+equally named declaration from a different loaded module. The implicit
+`std::prelude` is the one exception to explicit importing. Its public
+re-exports are available in every module.
 
 ### Endgoal
 

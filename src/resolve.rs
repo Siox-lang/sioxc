@@ -20,9 +20,12 @@
 //!   strictly (an unknown one is an error). Plain value identifiers (signals,
 //!   ports, locals) are resolved best-effort and never produce a false
 //!   "unknown name" — full value/port/field scoping lands with type checking.
-//! - Declarations still occupy one crate-wide namespace, but accesses from a
-//!   different module must cross a `pub` boundary. Several source files may
-//!   belong to the same module and therefore share its private declarations.
+//! - Lookup is module-aware: loaded modules do not leak declarations into one
+//!   another, imports bind the exact named module, and qualified paths select
+//!   that module. The later semantic tables still require declaration leaf
+//!   names to be crate-unique, so a cross-module collision is diagnosed rather
+//!   than ambiguously resolved. Several source files may belong to the same
+//!   module and therefore share its private declarations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -47,7 +50,8 @@ pub struct DefId(pub u32);
 /// What kind of thing a [`DefId`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefKind {
-    /// Primitive type or seeded attribute (`Bit`, `unsigned`, `top`, ...).
+    /// Compiler-provided type, operator hook, or attribute (`integer`,
+    /// `Operator`, `top`, ...).
     Builtin,
     Struct,
     View,
@@ -71,12 +75,21 @@ pub enum DefKind {
 #[derive(Clone, Debug)]
 pub struct DefInfo {
     pub name: String,
+    /// Declaring module path. `None` only for compiler builtins.
+    pub module: Option<String>,
     pub kind: DefKind,
     pub is_pub: bool,
     /// Declaration site, or `None` for builtins.
     pub span: Option<Span>,
     /// Owning definition, e.g. the enum a variant belongs to.
     pub parent: Option<DefId>,
+}
+
+#[derive(Clone)]
+struct ImportSite {
+    span: Span,
+    id: DefId,
+    accessible: bool,
 }
 
 /// The result of resolving a set of modules: the definition table plus a map
@@ -135,18 +148,36 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         })
         .collect();
     for m in modules {
+        r.set_current_module(m);
         for item in &m.items {
             r.collect_item(item);
         }
     }
     r.check_declaration_cycles(modules);
     r.inherit_enum_variants();
-    for m in modules {
-        for item in &m.items {
-            r.resolve_imports(item);
+    // Resolve direct imports first, then public re-export chains. Collection
+    // has already seen every declaration, so source order is irrelevant; the
+    // bounded fixed point is only for `module facade; pub using base::{T}`.
+    for _ in 0..=modules.len() {
+        let mut progress = false;
+        for m in modules {
+            r.set_current_module(m);
+            for item in &m.items {
+                progress |= r.resolve_imports(item, false);
+            }
+        }
+        if !progress {
+            break;
         }
     }
     for m in modules {
+        r.set_current_module(m);
+        for item in &m.items {
+            r.resolve_imports(item, true);
+        }
+    }
+    for m in modules {
+        r.set_current_module(m);
         for item in &m.items {
             r.resolve_item(item);
         }
@@ -175,13 +206,31 @@ fn type_head(t: &Type) -> Option<&str> {
     }
 }
 
+fn path_text(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
 struct Resolver<'a> {
     sink: &'a mut DiagnosticSink,
     out: Resolved,
     /// Module-level + builtin type/value namespace.
     globals: HashMap<String, DefId>,
+    /// Compiler-provided names remain available even when std declares the
+    /// source-level trait/type with the same spelling.
+    builtins: HashMap<String, DefId>,
+    /// Exact `(module path, leaf)` ownership for imports and qualified paths.
+    module_defs: HashMap<(String, String), DefId>,
+    module_attrs: HashMap<(String, String), DefId>,
+    /// Names explicitly imported into each source module. Re-exports retain
+    /// their public flag here instead of mutating the target declaration.
+    module_imports: HashMap<(String, String), (DefId, bool, Span)>,
     /// Attribute namespace (kept separate; attrs share no names with types).
     attrs: HashMap<String, DefId>,
+    builtin_attrs: HashMap<String, DefId>,
     /// Enum `DefId` -> (variant name -> variant `DefId`).
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
     /// Enum name -> its `DefId`, and enum name -> base head name (derivation).
@@ -191,7 +240,7 @@ struct Resolver<'a> {
     scopes: Vec<HashMap<String, DefId>>,
     /// `using` import sites `(name span, imported DefId)`, for the unused-import
     /// lint after all references are resolved.
-    import_sites: Vec<(Span, DefId)>,
+    import_sites: Vec<ImportSite>,
     /// Generic-parameter declaration sites (`<W>`, `<T>` on an entity/struct/
     /// trait/fn), for the unused-parameter lint. Impl params are excluded — a
     /// type parameter used only in the impl target reads as used.
@@ -216,6 +265,7 @@ struct Resolver<'a> {
     /// Source file -> declared module path. Privacy belongs to the module,
     /// never to the physical file that happened to contain a declaration.
     file_modules: HashMap<crate::diag::FileId, String>,
+    current_module: Option<String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -224,7 +274,12 @@ impl<'a> Resolver<'a> {
             sink,
             out: Resolved::default(),
             globals: HashMap::new(),
+            builtins: HashMap::new(),
+            module_defs: HashMap::new(),
+            module_attrs: HashMap::new(),
+            module_imports: HashMap::new(),
             attrs: HashMap::new(),
+            builtin_attrs: HashMap::new(),
             enum_variants: HashMap::new(),
             enum_ids: HashMap::new(),
             enum_derives: HashMap::new(),
@@ -238,6 +293,7 @@ impl<'a> Resolver<'a> {
             current_impl_owner: None,
             loaded_modules: HashSet::new(),
             file_modules: HashMap::new(),
+            current_module: None,
         }
     }
 
@@ -247,6 +303,7 @@ impl<'a> Resolver<'a> {
         for name in ["integer", "real", "Char", "string", "range"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
+            self.builtins.insert(name.to_string(), id);
         }
         // Operator traits and the literal suffix/prefix hooks are compiler
         // mechanisms (spec 3.24/3.25): `impl Add for T` / `impl Suffix for T`
@@ -254,12 +311,26 @@ impl<'a> Resolver<'a> {
         for name in OPERATORS.iter().copied().chain(["Suffix", "Prefix"]) {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
+            self.builtins.insert(name.to_string(), id);
         }
         // std::attrs metadata attributes (spec 3.5).
         for name in ["top", "test", "keep", "library", "name", "precedence"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.attrs.insert(name.to_string(), id);
+            self.builtin_attrs.insert(name.to_string(), id);
         }
+    }
+
+    fn set_current_module(&mut self, module: &Module) {
+        self.current_module = Some(
+            module
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::"),
+        );
     }
 
     /// Nominal enum derivation: a derived enum's associated-variant paths
@@ -345,6 +416,11 @@ impl<'a> Resolver<'a> {
                     None,
                 );
                 self.globals.entry(v.name.text.clone()).or_insert(id);
+                if let Some(module) = &self.current_module {
+                    self.module_defs
+                        .entry((module.clone(), v.name.text.clone()))
+                        .or_insert(id);
+                }
             }
             Item::Enum(e) => {
                 let id = self.declare(&e.name.text, DefKind::Enum, e.is_pub, e.name.span);
@@ -393,11 +469,7 @@ impl<'a> Resolver<'a> {
                     Some(a.name.span),
                     None,
                 );
-                if self.attrs.contains_key(&a.name.text) {
-                    // Redeclaring a seeded/known attribute is harmless; keep the
-                    // user's declaration as the resolution target.
-                }
-                self.attrs.insert(a.name.text.clone(), id);
+                self.register_attr(&a.name.text, id, a.name.span);
             }
             // Impls declare no top-level name.
             Item::Impl(_) => {}
@@ -405,8 +477,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// Unused-import lint (W-P005): a `using base::{name}` whose imported
-    /// declaration is never referenced elsewhere in the same file. Usage is
-    /// scoped by file (an import serves its own module), and the import's own
+    /// declaration is never referenced elsewhere in the same module. The
+    /// import's own
     /// name span is excluded so the binding doesn't count as a use of itself.
     /// Reject a `using` that imports a non-`pub` item from another module.
     fn lint_private_imports(
@@ -414,15 +486,10 @@ impl<'a> Resolver<'a> {
         _std_files: &std::collections::HashSet<crate::diag::FileId>,
     ) {
         let sites = self.import_sites.clone();
-        for (imp_span, id) in sites {
-            let bad = self.out.def(id).map(|d| {
-                (
-                    d.name.clone(),
-                    !d.is_pub
-                        && d.span
-                            .is_some_and(|decl_span| !self.same_module(decl_span, imp_span)),
-                )
-            });
+        for site in sites {
+            let imp_span = site.span;
+            let id = site.id;
+            let bad = self.out.def(id).map(|d| (d.name.clone(), !site.accessible));
             if let Some((name, true)) = bad {
                 self.sink.emit(
                     Diagnostic::error(format!(
@@ -438,7 +505,9 @@ impl<'a> Resolver<'a> {
 
     fn lint_unused_imports(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
         let sites = std::mem::take(&mut self.import_sites);
-        for (imp_span, id) in sites {
+        for site in sites {
+            let imp_span = site.span;
+            let id = site.id;
             if std_files.contains(&imp_span.file) {
                 continue;
             }
@@ -446,7 +515,7 @@ impl<'a> Resolver<'a> {
                 .out
                 .uses
                 .iter()
-                .any(|(s, d)| *d == id && s.file == imp_span.file && *s != imp_span);
+                .any(|(s, d)| *d == id && self.same_module(*s, imp_span) && *s != imp_span);
             if !used {
                 let name = self.out.def(id).map(|d| d.name.clone()).unwrap_or_default();
                 self.sink.emit(
@@ -487,31 +556,82 @@ impl<'a> Resolver<'a> {
     }
 
     /// Bind each `using base::{names}` name to the declaration another loaded
-    /// module (or a builtin) provides. Runs after all modules are collected;
-    /// an import that matches nothing is a hard error.
-    fn resolve_imports(&mut self, item: &Item) {
-        let Item::Using(u) = item else { return };
+    /// module provides. Runs after all modules are collected; an import that
+    /// matches nothing is a hard error.
+    fn resolve_imports(&mut self, item: &Item, report: bool) -> bool {
+        let Item::Using(u) = item else { return false };
         let UsingKind::Import { base, names } = &u.kind else {
-            return;
+            return false;
         };
+        let base_str = base
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let importing_module = self.current_module.clone().unwrap_or_default();
+        let mut progress = false;
         for n in names {
             let found = self
-                .globals
-                .get(&n.text)
-                .or_else(|| self.attrs.get(&n.text))
-                .copied();
+                .module_defs
+                .get(&(base_str.clone(), n.text.clone()))
+                .copied()
+                .map(|id| {
+                    let public = self.out.def(id).is_some_and(|definition| definition.is_pub);
+                    (id, public || (base_str == importing_module && !u.is_pub))
+                })
+                .or_else(|| {
+                    self.module_attrs
+                        .get(&(base_str.clone(), n.text.clone()))
+                        .copied()
+                        .map(|id| {
+                            let public =
+                                self.out.def(id).is_some_and(|definition| definition.is_pub);
+                            (id, public || (base_str == importing_module && !u.is_pub))
+                        })
+                })
+                .or_else(|| {
+                    self.module_imports
+                        .get(&(base_str.clone(), n.text.clone()))
+                        .map(|(id, is_pub, _)| {
+                            (*id, *is_pub || (base_str == importing_module && !u.is_pub))
+                        })
+                });
             match found {
-                Some(id) => {
-                    self.out.uses.insert(n.span, id);
-                    self.import_sites.push((n.span, id));
+                Some((id, accessible)) => {
+                    let key = (importing_module.clone(), n.text.clone());
+                    if let Some(existing) = self.module_defs.get(&key).copied() {
+                        if report {
+                            self.report_import_collision(&n.text, n.span, existing);
+                        }
+                        continue;
+                    }
+                    match self.module_imports.entry(key) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert((id, u.is_pub, n.span));
+                            self.import_sites.push(ImportSite {
+                                span: n.span,
+                                id,
+                                accessible,
+                            });
+                            self.out.uses.insert(n.span, id);
+                            progress = true;
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            if entry.get().0 == id {
+                                // Several physical files may contribute to one
+                                // declared module. Repeating the same binding
+                                // is harmless; any public occurrence makes it
+                                // a module re-export, independent of file order.
+                                entry.get_mut().1 |= u.is_pub;
+                            } else if report && entry.get().2 != n.span {
+                                let existing = entry.get().0;
+                                self.report_import_collision(&n.text, n.span, existing);
+                            }
+                        }
+                    }
                 }
-                None => {
-                    let base_str = base
-                        .segments
-                        .iter()
-                        .map(|s| s.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join("::");
+                None if report => {
                     // A module that was never loaded is a different mistake
                     // from a module that lacks the name. Only `std::` paths
                     // are read from disk, so `using mylib::{Inc}` reported
@@ -550,8 +670,27 @@ impl<'a> Resolver<'a> {
                     }
                     self.sink.emit(diag);
                 }
+                None => {}
             }
         }
+        progress
+    }
+
+    fn report_import_collision(&mut self, name: &str, span: Span, existing: DefId) {
+        let mut diagnostic = Diagnostic::error(format!(
+            "imported name `{name}` conflicts with an existing name in this module"
+        ))
+        .with_code(codes::DUPLICATE_ITEM)
+        .at(span)
+        .help("remove one import or rename the local declaration");
+        if let Some(previous) = self
+            .out
+            .def(existing)
+            .and_then(|definition| definition.span)
+        {
+            diagnostic = diagnostic.label(previous, format!("`{name}` first introduced here"));
+        }
+        self.sink.emit(diagnostic);
     }
 
     /// A type declaration that reaches itself (`using A = B; using B = A`, or
@@ -642,6 +781,16 @@ impl<'a> Resolver<'a> {
     /// user declaration (shadowing a builtin is allowed).
     fn declare(&mut self, name: &str, kind: DefKind, is_pub: bool, span: Span) -> DefId {
         let id = self.add_def(name.to_string(), kind, is_pub, Some(span), None);
+        self.register_global(name, id, span);
+        id
+    }
+
+    fn register_global(&mut self, name: &str, id: DefId, span: Span) {
+        if let Some(module) = &self.current_module {
+            self.module_defs
+                .entry((module.clone(), name.to_string()))
+                .or_insert(id);
+        }
         if let Some(prev) = self.globals.get(name).copied() {
             if self.out.kind_of(prev) != Some(DefKind::Builtin) {
                 let mut diag = Diagnostic::error(format!("duplicate item `{name}`"))
@@ -652,11 +801,36 @@ impl<'a> Resolver<'a> {
                     diag = diag.label(prev_span, format!("`{name}` first declared here"));
                 }
                 self.sink.emit(diag);
-                return id; // keep the first declaration as the resolution target
+                return; // keep the first declaration as the resolution target
             }
         }
         self.globals.insert(name.to_string(), id);
-        id
+    }
+
+    fn register_attr(&mut self, name: &str, id: DefId, span: Span) {
+        if let Some(previous) = self.attrs.get(name).copied() {
+            if self.out.kind_of(previous) != Some(DefKind::Builtin) {
+                let mut diagnostic = Diagnostic::error(format!("duplicate attribute `{name}`"))
+                    .with_code(codes::DUPLICATE_ITEM)
+                    .at(span)
+                    .help("rename or remove one of them");
+                if let Some(previous_span) = self
+                    .out
+                    .def(previous)
+                    .and_then(|definition| definition.span)
+                {
+                    diagnostic =
+                        diagnostic.label(previous_span, format!("`{name}` first declared here"));
+                }
+                self.sink.emit(diagnostic);
+                return;
+            }
+        }
+        self.attrs.insert(name.to_string(), id);
+        if let Some(module) = &self.current_module {
+            self.module_attrs
+                .insert((module.clone(), name.to_string()), id);
+        }
     }
 
     fn add_def(
@@ -670,6 +844,7 @@ impl<'a> Resolver<'a> {
         let id = DefId(self.out.defs.len() as u32);
         self.out.defs.push(DefInfo {
             name,
+            module: self.current_module.clone(),
             kind,
             is_pub,
             span,
@@ -1005,7 +1180,7 @@ impl<'a> Resolver<'a> {
         let segs = &a.name.segments;
         let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
         if segs.len() == 1 {
-            if let Some(id) = self.attrs.get(last).copied() {
+            if let Some(id) = self.lookup_attr(last) {
                 self.out.uses.insert(a.name.span, id);
             } else {
                 self.error(
@@ -1014,8 +1189,21 @@ impl<'a> Resolver<'a> {
                     format!("unknown attribute `{last}` (declare it with `attr` before use)"),
                 );
             }
-        } else if let Some(id) = self.attrs.get(last).copied() {
-            self.record_qualified_use(a.name.span, id);
+        } else {
+            let module = segs[..segs.len() - 1]
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if let Some(id) = self.lookup_module_export(&module, last, true) {
+                self.record_qualified_use(a.name.span, id);
+            } else {
+                self.error(
+                    codes::UNKNOWN_NAME,
+                    a.name.span,
+                    format!("unknown attribute `{}`", path_text(&a.name)),
+                );
+            }
         }
         if let Some(v) = &a.value {
             self.resolve_expr(v);
@@ -1073,8 +1261,19 @@ impl<'a> Resolver<'a> {
             }
         } else {
             let last = p.segments.last().unwrap().text.clone();
-            if let Some(id) = self.globals.get(&last).copied() {
+            let module = p.segments[..p.segments.len() - 1]
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if let Some(id) = self.lookup_module_export(&module, &last, false) {
                 self.record_qualified_use(p.span, id);
+            } else {
+                self.error(
+                    codes::UNKNOWN_NAME,
+                    p.span,
+                    format!("unknown type `{}`", path_text(p)),
+                );
             }
         }
     }
@@ -1228,7 +1427,12 @@ impl<'a> Resolver<'a> {
             // A module-qualified declaration (`pkg::VALUE`). Modules are not
             // definitions themselves yet, so resolve the exported leaf.
             if let Some(last) = p.segments.last() {
-                if let Some(id) = self.globals.get(&last.text).copied() {
+                let module = p.segments[..p.segments.len() - 1]
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if let Some(id) = self.lookup_module_export(&module, &last.text, false) {
                     self.record_qualified_use(p.span, id);
                 }
             }
@@ -1369,7 +1573,7 @@ impl<'a> Resolver<'a> {
         if self
             .import_sites
             .iter()
-            .any(|(span, imported)| *imported == id && self.same_module(*span, use_span))
+            .any(|site| site.id == id && self.same_module(site.span, use_span))
         {
             self.out.uses.insert(use_span, id);
             return;
@@ -1594,7 +1798,64 @@ impl<'a> Resolver<'a> {
                 return Some(*id);
             }
         }
-        self.globals.get(name).copied()
+        if let Some(module) = &self.current_module {
+            if let Some(id) = self
+                .module_defs
+                .get(&(module.clone(), name.to_string()))
+                .copied()
+            {
+                return Some(id);
+            }
+            if let Some((id, _, _)) = self.module_imports.get(&(module.clone(), name.to_string())) {
+                return Some(*id);
+            }
+            if module != "std::prelude" {
+                if let Some((id, true, _)) = self
+                    .module_imports
+                    .get(&("std::prelude".to_string(), name.to_string()))
+                {
+                    return Some(*id);
+                }
+            }
+        }
+        self.builtins.get(name).copied()
+    }
+
+    fn lookup_attr(&self, name: &str) -> Option<DefId> {
+        if let Some(module) = &self.current_module {
+            if let Some(id) = self.module_attrs.get(&(module.clone(), name.to_string())) {
+                return Some(*id);
+            }
+            if let Some((id, _, _)) = self.module_imports.get(&(module.clone(), name.to_string())) {
+                if self.out.kind_of(*id) == Some(DefKind::Attr) {
+                    return Some(*id);
+                }
+            }
+            if let Some((id, true, _)) = self
+                .module_imports
+                .get(&("std::prelude".to_string(), name.to_string()))
+            {
+                if self.out.kind_of(*id) == Some(DefKind::Attr) {
+                    return Some(*id);
+                }
+            }
+        }
+        self.builtin_attrs.get(name).copied()
+    }
+
+    fn lookup_module_export(&self, module: &str, name: &str, attr: bool) -> Option<DefId> {
+        let direct = if attr {
+            self.module_attrs
+                .get(&(module.to_string(), name.to_string()))
+        } else {
+            self.module_defs
+                .get(&(module.to_string(), name.to_string()))
+        };
+        direct.copied().or_else(|| {
+            self.module_imports
+                .get(&(module.to_string(), name.to_string()))
+                .and_then(|(id, is_pub, _)| is_pub.then_some(*id))
+        })
     }
 
     /// The closest in-scope name to `name` (edit distance <= 2), for a
@@ -1604,7 +1865,19 @@ impl<'a> Resolver<'a> {
             .scopes
             .iter()
             .flat_map(|s| s.keys())
-            .chain(self.globals.keys());
+            .chain(self.current_module.iter().flat_map(|module| {
+                self.module_defs
+                    .keys()
+                    .filter(move |(owner, _)| owner == module)
+                    .map(|(_, name)| name)
+                    .chain(
+                        self.module_imports
+                            .keys()
+                            .filter(move |(owner, _)| owner == module)
+                            .map(|(_, name)| name),
+                    )
+            }))
+            .chain(self.builtins.keys());
         let mut best: Option<(usize, &String)> = None;
         for cand in candidates {
             let d = levenshtein(name, cand);
@@ -1812,6 +2085,158 @@ mod tests {
             .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_INTERFACE))
             .count();
         assert_eq!(leaks, 2, "both parameter and return type are unusable API");
+    }
+
+    #[test]
+    fn an_import_only_binds_the_requested_modules_declaration() {
+        let mut sink = DiagnosticSink::new();
+        let a = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\npub struct Actual { value: integer }\n",
+            &mut sink,
+        );
+        let b = crate::syntax::parse_module(
+            FileId(1),
+            "module b;\npub struct Thing { value: integer }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(2),
+            "module user;\nusing a::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
+            &mut sink,
+        );
+        resolve(&[a, b, user], &mut sink);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::UNRESOLVED_IMPORT)
+                && diagnostic.message.contains("no `Thing` in `a`")
+        }));
+    }
+
+    #[test]
+    fn loaded_modules_do_not_leak_names_into_unqualified_scope() {
+        let mut sink = DiagnosticSink::new();
+        let library = crate::syntax::parse_module(
+            FileId(0),
+            "module library;\npub struct HiddenUnlessImported { value: integer }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module user;\nfn take(value: HiddenUnlessImported) -> integer { return 0; }\n",
+            &mut sink,
+        );
+        resolve(&[library, user], &mut sink);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::UNKNOWN_NAME)
+                && diagnostic.message.contains("HiddenUnlessImported")
+        }));
+    }
+
+    #[test]
+    fn qualified_paths_resolve_the_exact_module() {
+        let mut sink = DiagnosticSink::new();
+        let a = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\npub struct Actual { value: integer }\n",
+            &mut sink,
+        );
+        let b = crate::syntax::parse_module(
+            FileId(1),
+            "module b;\npub struct Thing { value: integer }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(2),
+            "module user;\nfn wrong(value: a::Thing) -> integer { return 0; }\nfn right(value: b::Thing) -> integer { return 1; }\n",
+            &mut sink,
+        );
+        resolve(&[a, b, user], &mut sink);
+        let wrong = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(codes::UNKNOWN_NAME)
+                    && diagnostic.message.contains("a::Thing")
+            })
+            .count();
+        assert_eq!(wrong, 1, "only the wrong qualified path is rejected");
+    }
+
+    #[test]
+    fn public_imports_reexport_their_target() {
+        let mut sink = DiagnosticSink::new();
+        let base = crate::syntax::parse_module(
+            FileId(0),
+            "module base;\npub struct Thing { value: integer }\n",
+            &mut sink,
+        );
+        let facade = crate::syntax::parse_module(
+            FileId(1),
+            "module facade;\npub using base::{Thing};\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(2),
+            "module user;\nusing facade::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
+            &mut sink,
+        );
+        resolve(&[user, facade, base], &mut sink);
+        assert!(
+            sink.diagnostics().iter().all(|diagnostic| {
+                diagnostic.code != Some(codes::UNRESOLVED_IMPORT)
+                    && diagnostic.code != Some(codes::PRIVATE_IMPORT)
+            }),
+            "public re-export should resolve regardless of module order: {:?}",
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_import_cannot_silently_shadow_a_local_declaration() {
+        let mut sink = DiagnosticSink::new();
+        let library = crate::syntax::parse_module(
+            FileId(0),
+            "module library;\npub struct Thing { value: integer }\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module user;\nstruct Thing { value: integer }\nusing library::{Thing};\n",
+            &mut sink,
+        );
+        resolve(&[library, user], &mut sink);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                && diagnostic.message.contains("imported name `Thing`")
+        }));
+    }
+
+    #[test]
+    fn repeated_same_module_imports_of_one_target_are_not_ambiguous() {
+        let mut sink = DiagnosticSink::new();
+        let library = crate::syntax::parse_module(
+            FileId(0),
+            "module library;\npub struct Thing { value: integer }\n",
+            &mut sink,
+        );
+        let first = crate::syntax::parse_module(
+            FileId(1),
+            "module user;\nusing library::{Thing};\nfn first(value: Thing) -> Thing { return value; }\n",
+            &mut sink,
+        );
+        let second = crate::syntax::parse_module(
+            FileId(2),
+            "module user;\nusing library::{Thing};\nfn second(value: Thing) -> Thing { return value; }\n",
+            &mut sink,
+        );
+        resolve(&[library, first, second], &mut sink);
+        assert!(sink.diagnostics().iter().all(|diagnostic| {
+            diagnostic.code != Some(codes::DUPLICATE_ITEM)
+                && diagnostic.code != Some(codes::UNRESOLVED_IMPORT)
+        }));
     }
 
     #[test]
@@ -2176,6 +2601,41 @@ mod tests {
             "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { y: Bit out, }\n",
         );
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn a_qualified_attribute_uses_the_exact_module() {
+        let mut sink = DiagnosticSink::new();
+        let attrs = crate::syntax::parse_module(
+            FileId(0),
+            "module attrs;\npub attr known: integer for entity;\n",
+            &mut sink,
+        );
+        let user = crate::syntax::parse_module(
+            FileId(1),
+            "module user;\n#[attrs::missing = 1]\nentity E {}\n",
+            &mut sink,
+        );
+        resolve(&[attrs, user], &mut sink);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::UNKNOWN_NAME)
+                && diagnostic.message.contains("attrs::missing")
+        }));
+    }
+
+    #[test]
+    fn duplicate_attribute_declarations_are_reported() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module attrs;\nattr marker: integer for entity;\nattr marker: integer for struct;\n",
+            &mut sink,
+        );
+        resolve(&[module], &mut sink);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                && diagnostic.message.contains("duplicate attribute `marker`")
+        }));
     }
 
     #[test]
