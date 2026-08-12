@@ -39,7 +39,9 @@ executable; running and filtering it are separate operations.
 
 Signal values cross the harness ABI in low-word-first 64-bit words, so values
 such as `unsigned[128]` retain their per-type width. LLVM is the permanent
-backend, so building siox needs an LLVM toolchain.
+backend, so building `sioxc` needs LLVM 22. Emitting a native test executable
+also needs Clang and zlib to compile its generated harness and embedded FST
+writer.
 
 ## Simulation time and the event wheel
 

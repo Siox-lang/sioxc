@@ -20,7 +20,7 @@ flowchart LR
     SRC --> DISC["discriminant companion<br/>4 bits / element"]
     VALUE --> OP["operators / storage / ports"]
     DISC --> OP
-    OP --> READ["scalar reconstruction / VCD"]
+    OP --> READ["scalar reconstruction / waveforms"]
 ```
 
 - The value plane keeps ordinary numeric operations efficient.
@@ -39,8 +39,8 @@ flowchart LR
 - Numeric arithmetic with any metavalue produces an all-`X` result.
 - Numeric relational operations with a metavalue operand produce false.
 - Parallel drivers use the library resolution table.
-- VCD renders binary elements as `0`/`1`, high impedance as `z`, and
-  unknown-like metavalues as `x`.
+- VCD and FST render binary elements as `0`/`1`, high impedance as `z`, and
+  unknown-like metavalues as `x` from the same scheduler samples.
 
 ## Coverage
 

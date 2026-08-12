@@ -46,8 +46,12 @@ flowchart TB
 The compiler API discovers `#[test]` entities and generates a C harness
 containing the stimulus, scheduler, assertions, and reporting; it links that
 harness with the native design object when `Emit::TestExecutable` is requested.
-Therefore the `sioxc` feature set needs an LLVM toolchain; a
-`default-features = false` editor build does not.
+The harness contains the VCD writer, and the resulting executable incorporates
+the pinned libfst sources, so this artifact also needs Clang and zlib at
+build/link time but neither GTKWave nor an installed libfst. Therefore the
+`sioxc` feature set needs an LLVM toolchain; a
+`default-features = false` editor build does not need the native backend or
+harness toolchain.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

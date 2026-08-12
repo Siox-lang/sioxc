@@ -84,7 +84,16 @@ single-entry-file limitation (std modules load transitively).
 ### Compiler embedding API
 
 Editors and future project tools should compile through `siox::compiler`, not
-call the individual passes themselves:
+call the individual passes themselves. A frontend-only consumer can avoid the
+LLVM dependency:
+
+```toml
+[dependencies]
+siox = { git = "https://github.com/Siox-lang/sioxc", default-features = false }
+```
+
+Then compile a disk file or an unsaved editor buffer through the same request
+boundary:
 
 ```rust
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
@@ -110,6 +119,13 @@ top selection, invalid codegen IR, or unavailable backend are represented by
 `CompileFailure`. The API writes no terminal output and never executes an
 artifact, so a host remains responsible for presentation, caching, process
 execution, and project discovery.
+
+`Emit::Metadata`, `Source`, `Tokens`, `Ast`, `Tree`, and `Ir` work in the
+frontend-only build. `Emit::LlvmIr`, `Object`, and `TestExecutable` return a
+backend-unavailable `CompileFailure` unless the `llvm` feature is enabled.
+File artifacts require an output path when the host wants to control their
+location; `CompileRequest::with_output` sets it. The compiler writes the
+artifact but still never launches it.
 
 ## cocotb (planned)
 

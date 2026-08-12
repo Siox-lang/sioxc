@@ -10,7 +10,12 @@ some sharp edges.
 
 ## Get the compiler
 
-Build `sioxc` from source (needs [Rust](https://rustup.rs) 1.90 or newer):
+Build `sioxc` from source. The compiler needs:
+
+- [Rust](https://rustup.rs) 1.90 or newer;
+- LLVM 22 development libraries (the version selected in `Cargo.toml`);
+- Clang and zlib when building native `#[test]` executables. The generated
+  harness is C and its embedded FST writer links zlib.
 
 ```bash
 git clone https://github.com/Siox-lang/sioxc
@@ -20,8 +25,9 @@ cargo build --release
 
 That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
 call it by path. siox compiles designs through LLVM, which is the permanent
-backend, so building needs a matching local LLVM install (see `Cargo.toml` for
-the pinned version).
+backend. Frontend-only library consumers such as editors can instead disable
+default features and do not need LLVM; see the
+[embedding API documentation](docs/interoperability.md#compiler-embedding-api).
 
 ## Write your first circuit
 
@@ -104,7 +110,9 @@ it runs. Use portable text VCD or compressed FST for larger traces:
 
 The files can then be opened in a waveform viewer such as
 [GTKWave](https://gtkwave.sourceforge.net/) or
-[Surfer](https://surfer-project.org/).
+[Surfer](https://surfer-project.org/). Both formats contain the same hierarchy
+and scheduler change points; multiple selected tests occupy one monotonic
+timeline.
 
 ## The commands you'll use
 

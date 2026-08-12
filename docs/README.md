@@ -4,9 +4,9 @@
 event-driven simulator for it, built as a regular Rust package. It is in **Phase 1:
 simulation-first** — the compiler parses, resolves, type-checks, elaborates,
 lowers to a digital IR, and emits native delta-cycle simulations with
-assertions and direct VCD/FST output. There is no analogue, schematic, or synthesis
-layer yet
-(those are Phase 2 and 3 — see [roadmap.md](roadmap.md)).
+assertions and direct VCD/FST output. There is no analogue, schematic, or
+synthesis layer yet (those are Phase 2 and 3 — see
+[roadmap.md](roadmap.md)).
 
 ## Where to start
 
@@ -17,7 +17,7 @@ layer yet
 | [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD/FST waveforms. |
 | [testing.md](testing.md) | **Testing** — compiling `#[test]` testbenches with `sioxc --test`, running the resulting executable, assertions, and compiler tests. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
-| [interoperability.md](interoperability.md) | **Interop** — `extern "C"` functions, file I/O, the `siox-lsp` editor server, and the planned cocotb integration. |
+| [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, the `siox-lsp` editor server, and planned cocotb integration. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Design records and forward-looking proposals. Each document states which parts are implemented and which remain. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
@@ -77,16 +77,19 @@ left and the [CHANGELOG](../CHANGELOG.md) for what has landed.
 ## Build and run
 
 ```bash
-cargo build                       # build the library + binaries (needs an LLVM toolchain)
+cargo build                       # library + sioxc (Rust 1.90, LLVM 22)
 cargo test                        # run all tests
+cargo check --no-default-features --lib # frontend/API only; no LLVM
 
 cargo run --bin sioxc -- <file>           # compile the #[top] design
 cargo run --bin sioxc -- --test <file> -o tests # compile native #[test] executable
 ```
 
 A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
-`rustc foo.rs`). LLVM is the permanent backend, so building siox needs a
-matching local LLVM install (see `Cargo.toml` for the pinned version).
+`rustc foo.rs`). LLVM 22 is the selected native backend. Creating a native
+`#[test]` executable additionally invokes Clang on the generated C harness and
+links zlib for its embedded FST writer. A frontend-only API/LSP build with
+`default-features = false` needs neither LLVM nor these native-output tools.
 
 | Command | Does |
 | ------- | ---- |

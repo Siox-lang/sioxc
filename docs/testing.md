@@ -105,8 +105,11 @@ test result: ok. 1 passed; 0 failed
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
 - **Waveforms:** `--vcd trace.vcd` writes portable text; `--fst trace.fst`
-  writes compressed FST. Either option may precede or follow the test filter,
-  and both may be requested together with different paths.
+  writes compressed FST. `--vcd=<path>` and `--fst=<path>` are equivalent.
+  Either option may precede or follow the test filter, and both may be requested
+  together with different paths; using the same path is rejected. They share
+  the same 1 fs scheduler samples and place multiple tests consecutively on one
+  monotonic timeline.
 - **A directory:** corpus orchestration belongs to the build/test tooling, not
   the compiler. `scripts/test-corpus.sh` compiles and runs each `.siox` file.
 - **Native binary:** `sioxc --test <file> -o <bin>` builds a standalone test
@@ -119,6 +122,8 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
 - **Unit and integration tests** across the package (`cargo test`).
 - **Native backend tests** compile and link focused designs, then assert values
   through the exported word ABI, including multi-word values.
+- **Waveform interoperability tests** emit VCD and FST together, decode FST
+  with the pinned libfst reader, and compare hierarchy, values, and timestamps.
 - **Conformance corpus.** The runnable `.siox` programs (counters, FSMs, a FIFO,
   SPI, RISC-V fragments, …) live in the
   [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) repo. CI checks

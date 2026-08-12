@@ -8188,3 +8188,20 @@ now only parses flags and renders `Compilation`. Frontend-only checks and API
 tests, default/all-feature clippy, default and bitpack Rust suites, a staged-
 commit native executable, and all 171 external corpus programs pass. The FST
 implementation remains deliberately outside this commit.
+
+### 2026-08-12 — Codex — post-API/FST documentation audit
+
+Auditing the user and contributor documentation after the compiler embedding
+API and native FST work. I am clarifying build/link requirements, making the
+frontend-only API setup discoverable, documenting the complete waveform CLI
+contract, and replacing remaining VCD-only wording in implemented design
+records. No language or compiler behavior is changing.
+
+Completed the audit across the root README, docs index, architecture,
+interoperability, simulation, testing, TODO audit date, and the X/Z design
+record. The docs now state the Rust/LLVM/Clang/zlib split, show the
+frontend-only Cargo dependency, enumerate which `Emit` modes require LLVM, and
+document the complete VCD/FST argument and timeline contract. Local Markdown
+targets resolve (the only naive-scanner hits are siox indexing expressions in
+code), all Rust tests pass, and the external corpus reports 171 passed and 0
+failed.
