@@ -33,21 +33,34 @@ consumers use frontend products without needing LLVM.
 
 ```mermaid
 flowchart LR
-    SRC([".siox source"]) --> AST["AST<br/>syntax"]
-    STD["std/*.siox"] --> AST
-    AST --> SEM["Resolved + Typed"]
-    SEM --> HIER["Hierarchy"]
-    HIER --> IR["Digital IR<br/>Design"]
+    CLI["sioxc"] -->|CompileRequest| API["siox::compiler"]
+    LSP["siox-lsp / tools"] -->|CompileRequest| API
+
+    API -->|loads| SRC["entry source + std"]
+    SRC --> AST["Parse<br/>AST"]
+    AST --> RES["Resolve"]
+    RES --> TYPE["Type-check"]
+    TYPE --> ELAB["Elaborate<br/>Hierarchy"]
+    ELAB --> IR["Lower<br/>Digital IR"]
+
+    IR --> FRONT["frontend artifact<br/>metadata / dumps"]
     IR --> LLVM["LLVM backend"]
-    LLVM --> OUT["object / test executable"]
-    IR --> DUMP["IR + metadata output"]
-    AST --> API["siox::compiler"]
-    SEM --> API
-    HIER --> API
-    IR --> API
-    API --> CLI["sioxc"]
-    API --> LSP["siox-lsp / tools"]
+    IR --> HARNESS["native test harness"]
+    LLVM --> OBJ["native object"]
+    OBJ --> TEST["test executable"]
+    HARNESS --> TEST
+
+    FRONT --> RESULT["Compilation<br/>diagnostics + retained phase products<br/>statistics + optional artifact or failure"]
+    OBJ --> RESULT
+    TEST --> RESULT
+    RESULT -->|returns Compilation| API
 ```
+
+The arrows through parse, resolve, type-check, elaboration, and IR are compiler
+work. The final arrow back to `siox::compiler` is the function return, not
+another compiler stage: callers receive one `Compilation` containing the
+diagnostics and every completed phase product, plus statistics and an optional
+artifact or host failure.
 
 `diag` (spans, diagnostics, source map) underpins every stage, and
 `siox::compiler` wires them together behind a disk/in-memory request/result

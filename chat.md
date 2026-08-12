@@ -8205,3 +8205,10 @@ document the complete VCD/FST argument and timeline contract. Local Markdown
 targets resolve (the only naive-scanner hits are siox indexing expressions in
 code), all Rust tests pass, and the external corpus reports 171 passed and 0
 failed.
+
+### 2026-08-12 — Codex — clarified the documentation pipeline graph
+
+Replacing the mixed data-flow/ownership graph in `docs/README.md` with a
+request → orchestrated pipeline → result view. The return edge is explicitly
+labeled `returns Compilation`, and the result node names diagnostics, retained
+phase products, statistics, and the optional artifact or failure.
