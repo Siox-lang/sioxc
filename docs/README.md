@@ -36,7 +36,7 @@ flowchart LR
     CLI["sioxc"] -->|CompileRequest| API["siox::compiler"]
     LSP["siox-lsp / tools"] -->|CompileRequest| API
 
-    API -->|loads| SRC["entry source + std"]
+    API -->|loads| SRC["entry source + imported modules + std"]
     SRC --> AST["Parse<br/>AST"]
     AST --> RES["Resolve"]
     RES --> TYPE["Type-check"]

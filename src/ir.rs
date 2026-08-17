@@ -33,6 +33,58 @@ use crate::syntax::Module;
 type OperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
 type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);
 
+/// Functions available to lowering and constant evaluation.
+///
+/// Module-level and foreign functions use the resolver's stable declaration
+/// identity, so equal leaf names in different modules cannot overwrite one
+/// another. Static associated functions do not yet receive their own `DefId`;
+/// they remain in a deliberately separate `Type::name` registry.
+pub struct FunctionIndex<'a> {
+    resolved: &'a Resolved,
+    free: HashMap<DefId, &'a ast::FnDecl>,
+    associated: HashMap<String, &'a ast::FnDecl>,
+}
+
+impl<'a> FunctionIndex<'a> {
+    pub fn new(resolved: &'a Resolved) -> Self {
+        Self {
+            resolved,
+            free: HashMap::new(),
+            associated: HashMap::new(),
+        }
+    }
+
+    /// Register a module-level or foreign function declaration.
+    pub fn insert_free(&mut self, function: &'a ast::FnDecl) {
+        if let Some(id) = self.resolved.declared(function.name.span) {
+            self.free.insert(id, function);
+        }
+    }
+
+    /// Register a static associated function, replacing an inherited default.
+    pub fn insert_associated(&mut self, key: String, function: &'a ast::FnDecl) {
+        self.associated.insert(key, function);
+    }
+
+    /// Register an inherited static default unless the impl overrides it.
+    pub fn insert_associated_default(&mut self, key: String, function: &'a ast::FnDecl) {
+        self.associated.entry(key).or_insert(function);
+    }
+
+    /// Resolve a call expression to the declaration selected by name
+    /// resolution, falling back to the separate associated-function registry.
+    pub fn get(&self, callee: &ast::Expr) -> Option<&'a ast::FnDecl> {
+        if let ast::Expr::Path(path) = callee {
+            if let Some(id) = self.resolved.resolved(path.span) {
+                if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Fn) {
+                    return self.free.get(&id).copied();
+                }
+            }
+        }
+        call_fn_key(callee).and_then(|key| self.associated.get(&key).copied())
+    }
+}
+
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
 /// `(operator, left type, right type, span)` for an unmatched operator.
 type BadOperator = (String, String, Option<String>, crate::diag::Span);
@@ -590,8 +642,9 @@ struct Lowering<'a> {
     blanket_array_impls: HashMap<String, String>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
     suffix_impls: HashMap<String, (String, &'a ast::FnDecl)>,
-    /// Module-level functions, inlined at call sites / const-evaluated.
-    free_fns: HashMap<String, &'a ast::FnDecl>,
+    /// Module-level and static associated functions, inlined at call sites /
+    /// const-evaluated without collapsing namespaced free functions by leaf.
+    free_fns: FunctionIndex<'a>,
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
@@ -893,7 +946,7 @@ impl<'a> Lowering<'a> {
             op_impls: HashMap::new(),
             blanket_array_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
-            free_fns: HashMap::new(),
+            free_fns: FunctionIndex::new(resolved),
             inline_depth: std::cell::Cell::new(0),
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
@@ -950,11 +1003,11 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::Item::Fn(f) => {
-                        self.free_fns.insert(f.name.text.clone(), f);
+                        self.free_fns.insert_free(f);
                     }
                     ast::Item::ExternBlock { fns, .. } => {
                         for f in fns {
-                            self.free_fns.insert(f.name.text.clone(), f);
+                            self.free_fns.insert_free(f);
                         }
                     }
                     ast::Item::Struct(s) => {
@@ -1088,8 +1141,7 @@ impl<'a> Lowering<'a> {
             // The impl's own statics went in during collection, so this only
             // supplies what it omitted.
             self.free_fns
-                .entry(format!("{ty}::{}", f.name.text))
-                .or_insert(f);
+                .insert_associated_default(format!("{ty}::{}", f.name.text), f);
         }
         // Constants are order-independent. Keep the narrow signed value table
         // for widths/generate conditions, and a separate exact literal table
@@ -1117,7 +1169,8 @@ impl<'a> Lowering<'a> {
         for it in &im.items {
             if let ast::ImplItem::Fn(f) = it {
                 if !f.params.iter().any(|p| p.is_self) {
-                    self.free_fns.insert(format!("{ty}::{}", f.name.text), f);
+                    self.free_fns
+                        .insert_associated(format!("{ty}::{}", f.name.text), f);
                 }
             }
         }
@@ -3423,7 +3476,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Call { callee, .. } = value else {
             return false;
         };
-        call_fn_key(callee).is_some_and(|k| self.free_fns.contains_key(&k))
+        self.free_fns.get(callee).is_some()
     }
 
     /// The expression a call returns, with the arguments written at the call
@@ -3436,7 +3489,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Call { callee, args, .. } = value else {
             return None;
         };
-        let f = *call_fn_key(callee).and_then(|k| self.free_fns.get(&k))?;
+        let f = self.free_fns.get(callee)?;
         let [ast::Stmt::Return {
             value: Some(returned),
             ..
@@ -3476,7 +3529,7 @@ impl<'a> Lowering<'a> {
         let ast::Expr::Call { callee, args, .. } = value else {
             return None;
         };
-        let f = *call_fn_key(callee).and_then(|k| self.free_fns.get(&k))?;
+        let f = self.free_fns.get(callee)?;
         let body = f.body.as_ref()?;
         let [ast::Stmt::Return {
             value: Some(returned),
@@ -7823,8 +7876,9 @@ impl<'a> Lowering<'a> {
                 // 64 below is the kernel-integer default; taking it for a
                 // `signed[8]` result made a nested inline read `self'length`
                 // as 64 and test bit 63 for the sign.
-                _ => call_fn_key(callee)
-                    .and_then(|k| self.free_fns.get(&k))
+                _ => self
+                    .free_fns
+                    .get(callee)
                     .and_then(|f| f.ret.as_ref())
                     .map(|ret| {
                         type_width(
@@ -8576,8 +8630,8 @@ impl<'a> Lowering<'a> {
             }
         }
         // A module function whose declared return type is `integer`.
-        call_fn_key(callee)
-            .and_then(|k| self.free_fns.get(&k))
+        self.free_fns
+            .get(callee)
             .and_then(|f| f.ret.as_ref())
             .and_then(type_head_name)
             == Some("integer")
@@ -8930,9 +8984,8 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let name = call_fn_key(callee)?;
-        let name = name.as_str();
-        let f = *self.free_fns.get(name)?;
+        let display_name = call_fn_key(callee)?;
+        let f = self.free_fns.get(callee)?;
         // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
             let is_type = |t: &Option<ast::Type>, expected: &str| {
@@ -8955,7 +9008,7 @@ impl<'a> Lowering<'a> {
             let integer_ret = is_type(&f.ret, "integer");
             let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
             return Some(Val::Scalar(Expr::CCall {
-                name: name.to_string(),
+                name: f.name.text.clone(),
                 args,
                 f64_args,
                 integer_args,
@@ -8986,7 +9039,7 @@ impl<'a> Lowering<'a> {
             // fails much later with a generic engine message.
             self.depth_exceeded
                 .borrow_mut()
-                .push((name.to_string(), ast::expr_span(callee)));
+                .push((display_name, ast::expr_span(callee)));
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -9370,8 +9423,7 @@ impl<'a> Lowering<'a> {
     /// substituted with their concrete expressions, then assignments and
     /// nested method calls are lowered as ordinary drivers.
     fn free_stmt_body(&mut self, callee: &ast::Expr, args: &[ast::Expr]) -> Option<Vec<ast::Stmt>> {
-        let name = call_fn_key(callee)?;
-        let f = self.free_fns.get(&name).copied()?;
+        let f = self.free_fns.get(callee)?;
         let body = f.body.as_ref()?;
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
@@ -9590,8 +9642,7 @@ impl<'a> Lowering<'a> {
                 // unsigned.
                 let ret = self
                     .free_fns
-                    .get(&head)
-                    .or_else(|| call_fn_key(callee).and_then(|k| self.free_fns.get(&k)))
+                    .get(callee)
                     .and_then(|f| f.ret.as_ref())
                     .and_then(type_head_name)?;
                 // A struct return counts too: `twice(v) + v` needs a type for
@@ -10533,21 +10584,22 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
     }
 }
 
-/// The lookup key for a call to a free or associated function: a bare name
-/// (`clog2`) for a module-level fn, or `Type::name` for a *static* associated
-/// fn declared in an `impl` block (`Unicode::code(c)`). Associated fns are
-/// registered under the same key at collection time, so the whole free-fn
-/// inlining/const-folding machinery serves both. `None` for anything else
-/// (deeper paths, non-path callees).
+/// The source spelling of a free or associated function path: a bare name
+/// (`clog2`), a fully qualified module function (`math::bits::clog2`), or
+/// `Type::name` for a static associated function (`Unicode::code`). Semantic
+/// lookup of free functions uses [`FunctionIndex`] and never this string.
+/// `None` only for an empty or non-path callee.
 pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
     let ast::Expr::Path(p) = callee else {
         return None;
     };
-    match p.segments.as_slice() {
-        [f] => Some(f.text.clone()),
-        [ty, f] => Some(format!("{}::{}", ty.text, f.text)),
-        _ => None,
-    }
+    (!p.segments.is_empty()).then(|| {
+        p.segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
+    })
 }
 
 /// The enum-variant names a pattern tree names directly (`State::Idle`, `'0'`),
@@ -11274,7 +11326,7 @@ fn source_type_span(ty: &ast::Type) -> crate::diag::Span {
 fn type_width(
     t: &ast::Type,
     env: &HashMap<String, i64>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
     structs: &HashMap<String, &ast::StructDecl>,
     ranges: &HashMap<String, (i64, i64)>,
 ) -> u32 {
@@ -11287,7 +11339,7 @@ fn type_width(
 fn type_width_at(
     t: &ast::Type,
     env: &HashMap<String, i64>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
     structs: &HashMap<String, &ast::StructDecl>,
     ranges: &HashMap<String, (i64, i64)>,
     seen: &mut HashSet<String>,
@@ -11390,7 +11442,9 @@ fn struct_derives_kernel(
 
 /// Const-evaluate a width expression against a parameter environment.
 fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
-    eval_const_fns(e, env, &HashMap::new(), 0)
+    let resolved = Resolved::default();
+    let fns = FunctionIndex::new(&resolved);
+    eval_const_fns(e, env, &fns, 0)
 }
 
 /// [`eval_const`] with module functions in scope: a call whose arguments
@@ -11399,7 +11453,7 @@ fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
 pub fn eval_const_fns(
     e: &ast::Expr,
     env: &HashMap<String, i64>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
     if depth > 64 {
@@ -11423,7 +11477,7 @@ pub fn eval_const_fns(
             if name == "integer" || name == "Char" {
                 return eval_const_fns(args.first()?, env, fns, depth + 1);
             }
-            let f = fns.get(name.as_str())?;
+            let f = fns.get(callee)?;
             let body = f.body.as_ref()?;
             let mut fenv = HashMap::new();
             for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
@@ -11470,7 +11524,7 @@ pub fn eval_const_fns(
 pub fn eval_const_stmts(
     stmts: &[ast::Stmt],
     env: &HashMap<String, i64>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
     for st in stmts {
@@ -11526,7 +11580,9 @@ pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
             }
         }
     }
-    let (empty_env, empty_fns) = (HashMap::new(), HashMap::new());
+    let empty_env = HashMap::new();
+    let empty_resolved = Resolved::default();
+    let empty_fns = FunctionIndex::new(&empty_resolved);
     structs
         .iter()
         .filter_map(|(name, s)| {
@@ -12526,6 +12582,8 @@ fn is_int_type(ty: &ast::Type) -> bool {
 /// else the bits needed for the variant count.
 fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
     let empty = HashMap::new();
+    let empty_resolved = Resolved::default();
+    let empty_fns = FunctionIndex::new(&empty_resolved);
     let enums = enum_index(modules);
     let mut out = HashMap::new();
     for (name, e) in &enums {
@@ -12539,13 +12597,7 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
             .as_ref()
             .filter(|_| enum_base_name(e, &enums).is_none())
         {
-            type_width(
-                repr,
-                &empty,
-                &HashMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-            )
+            type_width(repr, &empty, &empty_fns, &HashMap::new(), &HashMap::new())
         } else {
             let variants = effective_variants(name, &enums, &mut Vec::new());
             let n = variants.len().max(1) as u32;
@@ -12897,6 +12949,55 @@ mod tests {
         assert!(names.contains("Top.right.z"));
         assert!(!names.contains("Top.left.z"));
         assert!(!names.contains("Top.right.y"));
+    }
+
+    #[test]
+    fn equal_free_function_leaves_lower_the_resolved_bodies() {
+        let sources = [
+            (
+                "module a::math; pub fn select() -> integer { return 11; }",
+                FileId(0),
+            ),
+            (
+                "module b::math; pub fn select() -> integer { return 22; }",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                 impl Top { left = a::math::select(); right = b::math::select(); }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |path: &str| {
+            let signal = design
+                .signals
+                .iter()
+                .position(|signal| signal.path == path)
+                .expect("missing output signal") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(signal))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven("Top.left"), Some(Expr::Const(11))));
+        assert!(matches!(driven("Top.right"), Some(Expr::Const(22))));
     }
 
     #[test]

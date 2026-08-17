@@ -2230,6 +2230,10 @@ name may not collide with another import or a declaration in the importing
 module. `pub using` re-exports the imported name as part of the importing
 module's interface.
 
+For a file compiled directly by `sioxc`, an ordinary module path maps relative
+to the entry file (`using bus::spi::{Master}` loads `bus/spi.siox`). `std::`
+paths map relative to the configured `--std` directory instead.
+
 Aliases create local names:
 
 ```siox

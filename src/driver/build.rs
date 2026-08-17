@@ -14,7 +14,8 @@ use std::path::Path;
 use std::process::Command;
 
 use siox::elab::{Hierarchy, InstanceId};
-use siox::ir::{Design, LayoutKind, ScalarDomain, SignalId, SourceLayout};
+use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, SourceLayout};
+use siox::resolve::Resolved;
 use siox::syntax::ast;
 use siox::syntax::Module;
 
@@ -35,6 +36,7 @@ const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/lz4.h");
 /// in the same object.
 pub fn build(
     modules: &[Module],
+    resolved: &Resolved,
     hier: &Hierarchy,
     design: &Design,
     out: &Path,
@@ -110,22 +112,22 @@ pub fn build(
             _ => None,
         })
         .collect();
-    let mut fns: HashMap<String, &ast::FnDecl> = HashMap::new();
-    let mut extern_fns = std::collections::HashSet::new();
+    let mut fns = FunctionIndex::new(resolved);
+    let mut extern_fns = Vec::new();
     let mut trait_decls: HashMap<&str, &ast::TraitDecl> = HashMap::new();
     let mut static_defaults: Vec<(String, &str)> = Vec::new();
     for m in modules {
         for item in &m.items {
             match item {
                 ast::Item::Fn(f) => {
-                    fns.insert(f.name.text.clone(), f);
+                    fns.insert_free(f);
                 }
                 ast::Item::ExternBlock {
                     abi, fns: block, ..
                 } if abi == "C" => {
                     for f in block {
-                        extern_fns.insert(f.name.text.clone());
-                        fns.insert(f.name.text.clone(), f);
+                        extern_fns.push(f);
+                        fns.insert_free(f);
                     }
                 }
                 // A *static* associated fn (no `self`) is callable as
@@ -137,7 +139,7 @@ pub fn build(
                     for it in &im.items {
                         if let ast::ImplItem::Fn(f) = it {
                             if !f.params.iter().any(|p| p.is_self) {
-                                fns.insert(format!("{ty}::{}", f.name.text), f);
+                                fns.insert_associated(format!("{ty}::{}", f.name.text), f);
                             }
                         }
                     }
@@ -165,7 +167,7 @@ pub fn build(
             .iter()
             .filter(|f| f.body.is_some() && !f.params.iter().any(|p| p.is_self))
         {
-            fns.entry(format!("{ty}::{}", f.name.text)).or_insert(f);
+            fns.insert_associated_default(format!("{ty}::{}", f.name.text), f);
         }
     }
     // Module consts (LOW/HIGH, user consts), to a fixpoint so order-independent.
@@ -191,8 +193,8 @@ pub fn build(
     prog.push_str(
         "#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include \"fstapi.h\"\n",
     );
-    for name in &extern_fns {
-        let f = fns[name];
+    for f in &extern_fns {
+        let name = &f.name.text;
         let ret = f
             .ret
             .as_ref()
@@ -706,7 +708,6 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             tmp: Default::default(),
             message_id: Default::default(),
             fns: &fns,
-            extern_fns: &extern_fns,
             type_aliases: &type_aliases,
             fn_env: Default::default(),
             fn_type_env: Default::default(),
@@ -1293,11 +1294,9 @@ struct Ctx<'a> {
     /// Unique local-static buffer suffix for formatted assertion/warning
     /// messages. Each call owns storage sized from its actual format arity.
     message_id: std::cell::Cell<usize>,
-    /// Module-level functions (testbench-callable; translated to C ternaries).
-    fns: &'a HashMap<String, &'a ast::FnDecl>,
-    /// Functions declared in an `extern "C"` block. Their signatures drive
-    /// native ABI conversion instead of requiring a Siox body to inline.
-    extern_fns: &'a std::collections::HashSet<String>,
+    /// Module-level functions (testbench-callable; translated to C ternaries)
+    /// indexed by resolved identity, plus static associated functions.
+    fns: &'a FunctionIndex<'a>,
     /// Module type aliases, used when deciding native and foreign ABI kinds.
     type_aliases: &'a HashMap<String, ast::Type>,
     /// Parameter-substitution stack while translating a fn body.
@@ -1691,7 +1690,7 @@ fn eval_c_const(
     e: &ast::Expr,
     consts: &HashMap<String, u128>,
     enums: &HashMap<String, HashMap<String, u64>>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<u128> {
     match e {
         ast::Expr::Int { text, .. } => {
@@ -2735,8 +2734,7 @@ impl Ctx<'_> {
                 }
                 // A module-level function.
                 _ => {
-                    let key = siox::ir::call_fn_key(callee)?;
-                    let f = *self.fns.get(key.as_str())?;
+                    let f = self.fns.get(callee)?;
                     for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
                         if let Some(n) = &p.name {
                             binds.insert(n.text.clone(), a.clone());
@@ -5299,7 +5297,7 @@ impl Ctx<'_> {
                 ast::Expr::Field { base, field, .. } => self
                     .arg_type_name(base)
                     .and_then(|ty| self.methods.get(&(ty, field.text.clone())).copied()),
-                _ => siox::ir::call_fn_key(callee).and_then(|k| self.fns.get(k.as_str()).copied()),
+                _ => self.fns.get(callee),
             }
             .and_then(|f| f.ret.as_ref())
             .and_then(type_head_name);
@@ -5401,8 +5399,7 @@ impl Ctx<'_> {
                 .get(&(receiver, field.text.clone()))
                 .and_then(|f| f.ret.clone());
         }
-        let key = siox::ir::call_fn_key(callee)?;
-        self.fns.get(&key).and_then(|f| f.ret.clone())
+        self.fns.get(callee).and_then(|f| f.ret.clone())
     }
 
     /// The head name of a call's declared return type. `is_real_operand`
@@ -5423,9 +5420,8 @@ impl Ctx<'_> {
                 .and_then(type_head_name)
                 .map(str::to_string);
         }
-        let key = siox::ir::call_fn_key(callee)?;
         self.fns
-            .get(&key)
+            .get(callee)
             .and_then(|f| f.ret.as_ref())
             .and_then(type_head_name)
             .map(str::to_string)
@@ -5482,10 +5478,10 @@ impl Ctx<'_> {
                 {
                     return true;
                 }
-                if let Some(key) = siox::ir::call_fn_key(callee) {
+                if siox::ir::call_fn_key(callee).is_some() {
                     return self
                         .fns
-                        .get(&key)
+                        .get(callee)
                         .and_then(|function| function.ret.as_ref())
                         .and_then(type_head_name)
                         == Some("real");
@@ -5671,10 +5667,10 @@ impl Ctx<'_> {
                             .is_some_and(|ty| self.type_is(ty, "integer"));
                     }
                 }
-                if let Some(key) = siox::ir::call_fn_key(callee) {
+                if siox::ir::call_fn_key(callee).is_some() {
                     return self
                         .fns
-                        .get(&key)
+                        .get(callee)
                         .and_then(|function| function.ret.as_ref())
                         .is_some_and(|ty| self.type_is(ty, "integer"));
                 }
@@ -6124,8 +6120,7 @@ impl Ctx<'_> {
         callee: &ast::Expr,
         args: &[ast::Expr],
     ) -> Option<Result<Vec<ast::Stmt>, String>> {
-        let key = siox::ir::call_fn_key(callee)?;
-        let f = self.fns.get(key.as_str())?;
+        let f = self.fns.get(callee)?;
         let body = f.body.as_ref()?;
         let mut map: HashMap<String, ast::Expr> = HashMap::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
@@ -6235,7 +6230,7 @@ impl Ctx<'_> {
             return Err("unsupported call in testbench expression".into());
         };
         let name = key.as_str();
-        let Some(f) = self.fns.get(name) else {
+        let Some(f) = self.fns.get(callee) else {
             // Runtime-provided functions (std::rand).
             return match name {
                 "exists" => {
@@ -6271,7 +6266,7 @@ impl Ctx<'_> {
                 _ => Err(format!("unsupported call `{name}` in testbench expression")),
             };
         };
-        if self.extern_fns.contains(name) {
+        if f.body.is_none() {
             let mut converted = Vec::new();
             for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
                 if param.ty.as_ref().is_some_and(|ty| self.type_is(ty, "real")) {
@@ -6287,7 +6282,7 @@ impl Ctx<'_> {
                     converted.push(self.expr(arg)?);
                 }
             }
-            let call = format!("{name}({})", converted.join(", "));
+            let call = format!("{}({})", f.name.text, converted.join(", "));
             return Ok(
                 if f.ret.as_ref().is_some_and(|ty| self.type_is(ty, "real")) {
                     format!("sx_b64({call})")
@@ -6699,15 +6694,11 @@ impl Ctx<'_> {
             // A free-function call — a user fn or a runtime one (`exists`,
             // `rand`) — rather than a type conversion.
             ast::Expr::Call { callee, args, .. }
-                if matches!(callee.as_ref(), ast::Expr::Path(p)
-                if p.segments.len() == 1 && {
-                    let n = p.segments[0].text.as_str();
-                    self.fns.contains_key(n)
-                        || matches!(
-                            n,
-                            "exists" | "rand" | "randint" | "uniform" | "read"
-                        )
-                }) =>
+                if self.fns.get(callee).is_some()
+                    || matches!(callee.as_ref(), ast::Expr::Path(p)
+                        if p.segments.len() == 1
+                            && matches!(p.segments[0].text.as_str(),
+                                "exists" | "rand" | "randint" | "uniform" | "read")) =>
             {
                 return self.c_fn_call(callee, args);
             }
@@ -7693,7 +7684,7 @@ fn struct_const_fields<'a>(
 fn const_tables(
     const_decls: &[&ast::ConstDecl],
     enums: &HashMap<String, HashMap<String, u64>>,
-    fns: &HashMap<String, &ast::FnDecl>,
+    fns: &FunctionIndex<'_>,
     type_aliases: &HashMap<String, ast::Type>,
     struct_field_names: &HashMap<String, StructFieldNames>,
 ) -> ConstTables {

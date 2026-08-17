@@ -8362,3 +8362,22 @@ to explicit public fields/methods instead of weakening the rule. Gates: 347
 library tests plus every integration/native test pass, strict all-target/all-
 feature Clippy passes, and all 171 external corpus fixtures compile, execute,
 and pass their waveform checks.
+### 2026-08-17 — Codex — namespaced free-function lowering
+
+Migrating `src/ir.rs`, `src/driver/build.rs`, and `src/compiler.rs` so
+module-level and extern function calls retain their resolver `DefId` through
+constant evaluation, IR lowering, and native test generation. Static associated
+functions remain in a separate `Type::name` registry because resolution does
+not assign those methods standalone declaration IDs yet. The audit also found
+that `sioxc` followed only `std::` dependencies, so ordinary imported modules
+now load transitively relative to the entry source directory. Regression tests
+exercise two modules exporting the same function leaf through IR and a real
+native executable.
+
+Completed with nested paths (`a::math::select` and `b::math::select`) so the
+test also covers transitive local-module loading and arbitrary-depth qualified
+calls. Remaining leaf-keyed declaration categories stay guarded, and imported
+local custom-operator pre-discovery is recorded explicitly in `TODO.md` rather
+than hidden by this loader change. Gates: 339 library tests, every Rust
+integration/native test, strict all-target/all-feature Clippy, and all 171
+external corpus compile/run/waveform cases pass.

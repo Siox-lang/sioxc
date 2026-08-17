@@ -8360,7 +8360,7 @@ mod tests {
         assert!(sink
             .diagnostics()
             .iter()
-            .any(|diagnostic| diagnostic.code == Some(codes::DUPLICATE_ITEM)));
+            .all(|diagnostic| diagnostic.code != Some(codes::DUPLICATE_ITEM)));
     }
 
     #[test]

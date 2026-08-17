@@ -48,7 +48,9 @@ Current baseline:
   and frontend diagnostics are implemented.
 - ✅ Imports and qualified paths resolve against their exact module and enforce
   `pub`; loaded modules do not leak names into scope, import collisions are
-  rejected, and `pub using` re-exports retain visibility.
+  rejected, and `pub using` re-exports retain visibility. `sioxc` follows
+  ordinary module imports relative to the entry source directory as well as
+  `std::` imports relative to `--std`.
 - ✅ Container-relative visibility covers module functions, extern functions,
   type-owned struct fields and literals, type-owned inherent methods, private
   entity implementation state, and public-interface privacy.
@@ -72,18 +74,23 @@ Remaining:
 - 🔴 **Incremental/query interface.** Phase products are explicit and stable,
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
+- 🟡 **Imported custom-operator discovery.** Local source dependencies now load
+  transitively, but the entry file is parsed before those dependencies are
+  inspected for `#[precedence]` operator declarations. Add a dependency
+  discovery/preparse pass so a custom operator declared only in an imported
+  local module is known while parsing its users.
 - 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
-  keys nominal declarations and free-function contracts by stable identity.
+  keys nominal declarations and free-function contracts by stable identity;
+  free-function lowering, const evaluation, extern dispatch, and the native
+  test harness use the same resolved identity and allow equal leaves in
+  different modules.
   Elaboration and IR now carry entity identity through hierarchy construction,
   generic specialization, recursive lowering, and instance connection lookup.
-  Structs, enums, views, aliases, traits/operators, constants, and free-function
-  lowering still include leaf-keyed tables, and equal-named root entities would
-  still collide in emitted signal/test symbols. The compiler therefore
-  deliberately reports two loaded declarations with the same leaf as a
-  duplicate rather than silently selecting the wrong one. Lift those final
-  tables and define qualified output identities before allowing equal leaf
-  names in distinct modules.
+  Structs, enums, views, aliases, traits/operators, and constants still include
+  leaf-keyed tables, and equal-named root entities would still collide in
+  emitted signal/test symbols. Those remaining declaration categories stay
+  crate-unique until their tables and qualified output identities are lifted.
 
 ## IR
 

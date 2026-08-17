@@ -22,9 +22,9 @@
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Lookup is module-aware: loaded modules do not leak declarations into one
 //!   another, imports bind the exact named module, and qualified paths select
-//!   that module. The later semantic tables still require declaration leaf
-//!   names to be crate-unique, so a cross-module collision is diagnosed rather
-//!   than ambiguously resolved. Several source files may belong to the same
+//!   that module. Free functions retain that identity through lowering;
+//!   declaration categories whose later semantic tables are still leaf-keyed
+//!   remain crate-unique for now. Several source files may belong to the same
 //!   module and therefore share its private declarations.
 
 use std::collections::{HashMap, HashSet};
@@ -829,13 +829,21 @@ impl<'a> Resolver<'a> {
     }
 
     fn register_global(&mut self, name: &str, id: DefId, span: Span) {
+        let current_module = self.current_module.as_deref();
         if let Some(module) = &self.current_module {
             self.module_defs
                 .entry((module.clone(), name.to_string()))
                 .or_insert(id);
         }
         if let Some(prev) = self.globals.get(name).copied() {
-            if self.out.kind_of(prev) != Some(DefKind::Builtin) {
+            let separate_free_functions = self.out.kind_of(prev) == Some(DefKind::Fn)
+                && self.out.kind_of(id) == Some(DefKind::Fn)
+                && self
+                    .out
+                    .def(prev)
+                    .and_then(|definition| definition.module.as_deref())
+                    != current_module;
+            if self.out.kind_of(prev) != Some(DefKind::Builtin) && !separate_free_functions {
                 let mut diag = Diagnostic::error(format!("duplicate item `{name}`"))
                     .with_code(codes::DUPLICATE_ITEM)
                     .at(span)
@@ -847,7 +855,7 @@ impl<'a> Resolver<'a> {
                 return; // keep the first declaration as the resolution target
             }
         }
-        self.globals.insert(name.to_string(), id);
+        self.globals.entry(name.to_string()).or_insert(id);
     }
 
     fn register_attr(&mut self, name: &str, id: DefId, span: Span) {

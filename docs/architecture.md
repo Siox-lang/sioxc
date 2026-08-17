@@ -276,7 +276,8 @@ general trait inheritance. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style
 `Operator` impls — including
 `signed`'s sign-aware `<=>` (signed comparison is library source, not compiler
-code). The CLI loads `std::` modules transitively from `--std <dir>` (default
+code). The CLI loads ordinary modules transitively relative to the entry file
+and loads `std::` modules from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every
 compile, so the core types always carry their std semantics — the kernel
 word fallback only applies when the std root has no prelude at all. `resolve`

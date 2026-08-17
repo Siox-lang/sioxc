@@ -339,10 +339,12 @@ impl Compiler {
         // and avoids cloning every token before the parser takes ownership.
         result.entry_tokens = Lexer::new(file, &source).tokenize(&mut DiagnosticSink::new());
         result.modules.push(entry);
-        load_std_deps(
+        load_deps(
             &mut result.sources,
             &mut result.modules,
             &mut result.diagnostics,
+            &path,
+            path.parent().unwrap_or_else(|| Path::new(".")),
             &self.std_root,
             &operators,
         );
@@ -538,9 +540,10 @@ impl Compiler {
         if !Self::validate_design(result) {
             return;
         }
+        let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
         let design = result.design.as_ref().expect("lowering completed");
-        match build::build(&result.modules, hierarchy, design, &output) {
+        match build::build(&result.modules, resolved, hierarchy, design, &output) {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
                     kind: FileArtifact::TestExecutable,
@@ -605,14 +608,17 @@ fn select_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Comp
     }
 }
 
-fn load_std_deps(
+fn load_deps(
     sources: &mut SourceMap,
     modules: &mut Vec<Module>,
     sink: &mut DiagnosticSink,
+    entry_path: &Path,
+    source_root: &Path,
     std_root: &Path,
     operators: &HashMap<String, u8>,
 ) {
-    let mut loaded = HashSet::new();
+    let load_key = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut loaded = HashSet::from([load_key(entry_path)]);
     let mut queue = using_bases(&modules[0]);
     let wants_std = queue.iter().any(|base| {
         base.segments
@@ -639,10 +645,8 @@ fn load_std_deps(
     }
 
     while let Some(base) = queue.pop() {
-        let Some(path) = std_file(std_root, &base) else {
-            continue;
-        };
-        if !loaded.insert(path.clone()) {
+        let path = module_file(source_root, std_root, &base);
+        if !loaded.insert(load_key(&path)) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {
@@ -700,21 +704,23 @@ fn using_bases(module: &Module) -> Vec<AstPath> {
         .collect()
 }
 
-fn std_file(std_root: &Path, base: &AstPath) -> Option<PathBuf> {
+fn module_file(source_root: &Path, std_root: &Path, base: &AstPath) -> PathBuf {
     let segments: Vec<&str> = base
         .segments
         .iter()
         .map(|segment| segment.text.as_str())
         .collect();
-    if segments.first() != Some(&"std") {
-        return None;
-    }
-    let mut path = std_root.to_path_buf();
-    for segment in &segments[1..] {
+    let is_std = segments.first() == Some(&"std");
+    let mut path = if is_std {
+        std_root.to_path_buf()
+    } else {
+        source_root.to_path_buf()
+    };
+    for segment in &segments[usize::from(is_std)..] {
         path.push(segment);
     }
     path.set_extension("siox");
-    Some(path)
+    path
 }
 
 fn tokens_string(source: &str, tokens: &[Token]) -> String {

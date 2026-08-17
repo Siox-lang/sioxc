@@ -147,6 +147,71 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
 }
 
 #[test]
+fn native_calls_keep_equal_function_leaves_module_specific() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_function_identity_{}", std::process::id()));
+    std::fs::create_dir_all(directory.join("a")).unwrap();
+    std::fs::create_dir_all(directory.join("b")).unwrap();
+    std::fs::write(
+        directory.join("a/math.siox"),
+        "module a::math; pub const load_a: integer = 1; \
+         pub fn select() -> integer { return 11; }",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("b/math.siox"),
+        "module b::math; pub const load_b: integer = 2; \
+         pub fn select() -> integer { return 22; }",
+    )
+    .unwrap();
+    let source = directory.join("identity.siox");
+    let output = directory.join("identity-test");
+    std::fs::write(
+        &source,
+        r#"module identity;
+           using a::math::{load_a};
+           using b::math::{load_b};
+           #[test] entity FunctionIdentity {}
+           impl FunctionIdentity {
+               let left: integer = a::math::select();
+               let right: integer = b::math::select();
+               assert!(left == 11 and right == 22 and load_a == 1 and load_b == 2,
+                       "qualified calls keep their module identity");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "namespaced function fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "namespaced function fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn test_no_run_builds_a_runnable_binary() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
