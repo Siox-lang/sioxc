@@ -8474,3 +8474,27 @@ different ranged-integer layouts and integer/real native calls distinct. Gates:
 350 all-feature library tests plus every Rust integration/native test pass,
 strict all-target/all-feature Clippy is clean, and all 171 corpus fixtures
 compile, execute, and pass waveform checks.
+
+### 2026-08-17 — Codex — namespaced enum identity
+
+Editing resolver enum inheritance, IR discriminant/default/representation
+tables, native symbol handling, and output metadata. Equal enum leaves currently
+collide before resolution and later tables would mix their variants; this slice
+will retain the selected enum identity through defaults, assignments, display,
+VCD/FST symbols, and native tests before admitting the declarations.
+
+Completed on `main`. Enum declarations and derived enums now retain resolver
+identity through inheritance, explicit/implicit discriminants, widths,
+first-variant defaults (including nested struct fields), match/constant
+lowering, native comparisons and display, and VCD/FST symbol tables. Equal
+leaves are admitted across modules and output names qualify only on collision.
+Compiler-created `Bool`/`Logic`/`Ordering` values still select the canonical std
+declaration when user code declares a namesake.
+
+The boundary audit also fixed two default-construction gaps exposed by the
+external corpus: flattened native aggregate leaves now receive their type's
+structural default, and `T::new()` recognizes only the actual `new` member so
+ordinary associated functions are not mistaken for constructors. Verification:
+351 all-feature library tests, every Rust integration test (including 19 native
+build/run cases), strict all-target/all-feature Clippy, and all 171 external
+corpus compile/run/VCD/round-trip fixtures pass.

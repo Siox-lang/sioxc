@@ -55,7 +55,8 @@ pub fn build(
     if tests.is_empty() {
         return Err("no #[test] entity to build a test binary from".into());
     }
-    let enums = siox::ir::enum_discriminants(modules);
+    let mut fns = FunctionIndex::new(resolved);
+    let enums = siox::ir::enum_discriminants(modules, &fns);
     let families = siox::ir::vector_families(modules);
     let mut op_impls: NativeOperatorImpls<'_> = HashMap::new();
     for m in modules {
@@ -101,7 +102,6 @@ pub fn build(
             }
         }
     }
-    let mut fns = FunctionIndex::new(resolved);
     let type_aliases: HashMap<String, ast::Type> = modules
         .iter()
         .flat_map(|module| &module.items)
@@ -1694,16 +1694,7 @@ fn eval_c_const(
         ast::Expr::Path(path) => fns
             .constant_path_key(path)
             .and_then(|key| consts.get(&key).copied())
-            .or_else(|| {
-                (path.segments.len() >= 2)
-                    .then(|| {
-                        enums
-                            .get(&path.segments[0].text)
-                            .and_then(|variants| variants.get(&path.segments[1].text))
-                            .map(|&discriminant| discriminant as u128)
-                    })
-                    .flatten()
-            }),
+            .or_else(|| enum_variant_value(path, enums, fns).map(u128::from)),
         ast::Expr::Unary { op, rhs, .. } => {
             let value = eval_c_const(rhs, consts, enums, fns)?;
             Some(match op {
@@ -1749,6 +1740,18 @@ fn eval_c_const(
     }
 }
 
+fn enum_variant_value(
+    path: &ast::Path,
+    enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &FunctionIndex<'_>,
+) -> Option<u64> {
+    let (enumeration, variant) = fns.enum_variant_key(path)?;
+    enums
+        .get(&enumeration)
+        .and_then(|variants| variants.get(&variant))
+        .copied()
+}
+
 fn emit_c_const(
     expression: &ast::Expr,
     constants: &HashMap<String, String>,
@@ -1764,14 +1767,7 @@ fn emit_c_const(
             .constant_path_key(path)
             .and_then(|key| constants.get(&key).cloned())
             .or_else(|| {
-                (path.segments.len() >= 2)
-                    .then(|| {
-                        enums
-                            .get(&path.segments[0].text)
-                            .and_then(|variants| variants.get(&path.segments[1].text))
-                            .map(|value| format!("((sx_value){value}ULL)"))
-                    })
-                    .flatten()
+                enum_variant_value(path, enums, fns).map(|value| format!("((sx_value){value}ULL)"))
             }),
         ast::Expr::Unary {
             op: ast::UnOp::Neg,
@@ -2414,7 +2410,7 @@ impl Ctx<'_> {
                 self.local_types
                     .borrow_mut()
                     .insert(prefix.to_string(), family.clone());
-                self.declare_layout_leaf(prefix, *width, b)
+                self.declare_layout_leaf(prefix, *width, 0, b)
             }
             LayoutKind::Scalar {
                 width,
@@ -2436,19 +2432,26 @@ impl Ctx<'_> {
                 });
                 self.local_types
                     .borrow_mut()
-                    .insert(prefix.to_string(), name);
-                self.declare_layout_leaf(prefix, *width, b)
+                    .insert(prefix.to_string(), name.clone());
+                let default = self.design.new_defaults.get(&name).copied().unwrap_or(0);
+                self.declare_layout_leaf(prefix, *width, default, b)
             }
             LayoutKind::Opaque { name, width } => {
                 self.local_types
                     .borrow_mut()
                     .insert(prefix.to_string(), name.clone());
-                self.declare_layout_leaf(prefix, width.unwrap_or(64), b)
+                self.declare_layout_leaf(prefix, width.unwrap_or(64), 0, b)
             }
         }
     }
 
-    fn declare_layout_leaf(&self, prefix: &str, width: u32, b: &mut String) -> Result<(), String> {
+    fn declare_layout_leaf(
+        &self,
+        prefix: &str,
+        width: u32,
+        default: u64,
+        b: &mut String,
+    ) -> Result<(), String> {
         if width == 0 {
             return Err(format!(
                 "testbench local `{prefix}` has an unresolved width"
@@ -2459,7 +2462,10 @@ impl Ctx<'_> {
             .insert(prefix.to_string(), width);
         if !self.map.contains_key(prefix) {
             let c_ty = if width > 64 { "sx_value" } else { "uint64_t" };
-            b.push_str(&format!("    {c_ty} {} = 0;\n", c_local_ident(prefix)));
+            b.push_str(&format!(
+                "    {c_ty} {} = {default}ULL;\n",
+                c_local_ident(prefix)
+            ));
             self.locals.borrow_mut().insert(prefix.to_string());
         }
         Ok(())
@@ -3872,8 +3878,8 @@ impl Ctx<'_> {
                                 // (`Logic` -> `'U'`), matching native + hardware.
                                 None => {
                                     l.ty.as_ref()
-                                        .and_then(type_head_name)
-                                        .and_then(|h| self.design.new_defaults.get(h))
+                                        .and_then(|ty| self.fns.type_head_key(ty))
+                                        .and_then(|head| self.design.new_defaults.get(&head))
                                         .map(|v| format!("{v}ULL"))
                                         .unwrap_or_else(|| "0".to_string())
                                 }
@@ -3900,15 +3906,6 @@ impl Ctx<'_> {
                                 c_local_ident(&l.name.text)
                             ));
                             self.locals.borrow_mut().insert(l.name.text.clone());
-                            // Record an enum/Logic local's type so `print!`
-                            // renders its symbol, not the raw discriminant.
-                            if let Some(h) = l.ty.as_ref().and_then(|t| type_head_name(t)) {
-                                if self.enums.contains_key(h) {
-                                    self.local_types
-                                        .borrow_mut()
-                                        .insert(l.name.text.clone(), h.to_string());
-                                }
-                            }
                         }
                     }
                 },
@@ -4574,8 +4571,8 @@ impl Ctx<'_> {
                     // top-level local gets.
                     None => {
                         l.ty.as_ref()
-                            .and_then(type_head_name)
-                            .and_then(|h| self.design.new_defaults.get(h))
+                            .and_then(|ty| self.fns.type_head_key(ty))
+                            .and_then(|head| self.design.new_defaults.get(&head))
                             .map(|v| format!("{v}ULL"))
                             .unwrap_or_else(|| "0".to_string())
                     }
@@ -4922,9 +4919,10 @@ impl Ctx<'_> {
                     // rendered as `Done` while the literal variant — the one
                     // form that says its type outright — printed `2`.
                     let ast::Expr::Path(p) = w else { return None };
-                    let head = p.segments.first()?.text.clone();
-                    (p.segments.len() >= 2 && self.design.enum_syms.contains_key(&head))
-                        .then_some(head)
+                    self.fns
+                        .enum_variant_key(p)
+                        .map(|(enumeration, _)| enumeration)
+                        .filter(|enumeration| self.design.enum_syms.contains_key(enumeration))
                 });
             let enum_syms = ety.as_ref().and_then(|e| self.design.enum_syms.get(e));
             if let ast::Expr::StrLit { text, .. } = a {
@@ -5299,6 +5297,11 @@ impl Ctx<'_> {
     /// `None` means "not known here", and the caller stays permissive rather
     /// than rejecting something it merely cannot see.
     fn arg_type_name(&self, e: &ast::Expr) -> Option<String> {
+        if let ast::Expr::Path(path) = e {
+            if let Some((enumeration, _)) = self.fns.enum_variant_key(path) {
+                return Some(enumeration);
+            }
+        }
         // A call reads as its declared return type, so an operator whose left
         // operand is itself a call (`twice(a) + a`) can still find its impl.
         if let ast::Expr::Call { callee, args, .. } = e {
@@ -5309,9 +5312,9 @@ impl Ctx<'_> {
                 _ => self.fns.get(callee),
             }
             .and_then(|f| f.ret.as_ref())
-            .and_then(type_head_name);
+            .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns));
             if let Some(ret) = ret {
-                return Some(ret.to_string());
+                return Some(ret);
             }
             let _ = args;
         }
@@ -6195,11 +6198,10 @@ impl Ctx<'_> {
         let name = match callee {
             ast::Expr::Index { base, .. } => expr_path(base)?,
             _ => match callee {
-                ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.clone(),
-                // `T::new()`, the trait spelling of the same thing.
-                ast::Expr::Path(p) if p.segments.len() == 2 && p.segments[1].text == "new" => {
-                    p.segments[0].text.clone()
-                }
+                ast::Expr::Path(p) => self
+                    .fns
+                    .type_owner_key(p)
+                    .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone()))?,
                 _ => return None,
             },
         };
@@ -6545,12 +6547,12 @@ impl Ctx<'_> {
         Ok(match pattern {
             ast::Pattern::Wildcard => None,
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                let d = self
-                    .enums
-                    .get(&p.segments[0].text)
-                    .and_then(|m| m.get(&p.segments[1].text))
-                    .copied()
-                    .ok_or_else(|| format!("unknown variant `{}`", p.segments[1].text))?;
+                let d = enum_variant_value(p, self.enums, self.fns).ok_or_else(|| {
+                    format!(
+                        "unknown variant `{}`",
+                        p.segments.last().expect("variant path").text
+                    )
+                })?;
                 Some(format!("(({scrut}) == {d}ULL)"))
             }
             ast::Pattern::BitPattern { text, .. } => {
@@ -6785,12 +6787,14 @@ impl Ctx<'_> {
                     // rejects: `Bit(l)` on a `Logic` handed `'X'` straight into
                     // a `Bit`, which has nowhere to put it, and printed `?`.
                     ast::Expr::Path(p)
-                        if p.segments.len() == 1
-                            && self.enums.contains_key(&p.segments[0].text) =>
+                        if self
+                            .fns
+                            .enum_path_key(p)
+                            .is_some_and(|key| self.enums.contains_key(&key)) =>
                     {
-                        let target = p.segments[0].text.as_str();
+                        let target = self.fns.enum_path_key(p).expect("guarded enum path");
                         if let Some(src) = self.arg_type_name(arg) {
-                            if !self.enum_conversion_exists(&src, target) {
+                            if !self.enum_conversion_exists(&src, &target) {
                                 return Err(format!(
                                     "no conversion from `{src}` to `{target}`: `T(x)` needs \
                                      an `impl From<S> for T`, or a derivation chain between \
@@ -6933,16 +6937,12 @@ impl Ctx<'_> {
                     return Ok(value.clone());
                 }
                 // Enum::Variant -> discriminant.
-                let d = self
-                    .enums
-                    .get(&p.segments[0].text)
-                    .and_then(|m| m.get(&p.segments[1].text))
-                    .ok_or_else(|| {
-                        format!(
-                            "`{}` is not a variant of `{}`",
-                            p.segments[1].text, p.segments[0].text
-                        )
-                    })?;
+                let d = enum_variant_value(p, self.enums, self.fns).ok_or_else(|| {
+                    format!(
+                        "`{}` is not a resolved enum variant",
+                        p.segments.last().expect("variant path").text
+                    )
+                })?;
                 format!("{d}ULL")
             }
             // An element of a constant lookup table, at a constant index or a

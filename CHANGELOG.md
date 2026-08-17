@@ -12,6 +12,13 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Enums now retain namespace identity through simulation output.** Separate
+  modules may declare equal enum and derived-enum leaves. Qualified variants,
+  inherited discriminants, representation widths, first-variant defaults
+  (including defaults nested in aggregate fields), native comparisons/formatting,
+  and VCD/FST symbol metadata remain tied to the selected declaration. A user
+  enum sharing a standard enum's leaf remains distinct; output type names
+  qualify only when leaves collide.
 - **Type aliases now retain namespace identity through execution.** Separate
   modules may export equal alias leaves, including equal multi-hop chains, and
   qualified uses keep the selected width, range, scalar kind, native function

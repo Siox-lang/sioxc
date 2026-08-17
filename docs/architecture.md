@@ -340,6 +340,15 @@ cycle edges use resolver-selected declaration identity, so equal alias leaves
 in separate modules remain distinct through IR, native execution, and foreign
 ABI classification.
 
+Enum declarations use the same resolver identity for inheritance,
+discriminants, representation widths, first-variant defaults, match lowering,
+and native/waveform symbol tables. Ordinary unique enum names stay short in IR
+and output metadata; when separate modules declare the same leaf, their keys
+become qualified so consumers cannot merge the two symbol domains.
+Compiler-created scalar results select the canonical standard declaration by
+identity, so an unrelated user enum named `Bool`, `Logic`, or `Ordering` cannot
+retarget standard-library expressions.
+
 ## Signal widths
 
 LLVM represents each value at its own semantic bit width. The ABI exchanges

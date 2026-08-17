@@ -94,12 +94,15 @@ Remaining:
   output roots. Equal entity leaves are admitted across modules; colliding roots
   receive qualified tree/IR paths and injective native test symbols, while an
   ambiguous bare `--top` must be qualified. Type aliases now also retain
-  resolved identity through cycle checking, IR
-  representation, native scalar semantics, and foreign ABI classification;
-  equal alias leaves and chains are admitted across modules. Structs, enums,
-  views, and traits/operators still include leaf-keyed tables. Those remaining
-  declaration categories stay crate-unique until their tables and qualified
-  output identities are lifted.
+  resolved identity through cycle checking, IR representation, native scalar
+  semantics, and foreign ABI classification; equal alias leaves and chains are
+  admitted across modules. Enums now retain
+  identity through inherited variants, discriminants, widths, defaults,
+  matching, native formatting, and waveform symbol metadata; colliding enum
+  names qualify only at the output boundary. Structs, views, and
+  traits/operators still include leaf-keyed tables. Those remaining declaration
+  categories stay crate-unique until their tables and qualified output
+  identities are lifted.
 
 ## IR
 

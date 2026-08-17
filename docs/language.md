@@ -704,6 +704,19 @@ enum State {
 }
 ```
 
+Enum identity includes its declaring module. Separate modules may export the
+same enum leaf; qualified types and variants select the intended declaration:
+
+```siox
+left: protocols::spi::State in,
+ready = protocols::spi::State::Idle;
+```
+
+Inherited variants, discriminants, first-variant defaults, match patterns, and
+waveform symbols retain that identity. Output metadata uses the short enum name
+when it is unique and the qualified name when another loaded module declares
+the same leaf.
+
 Enum with explicit discriminants — the *values* are pinned, and the width
 follows from them (§3.28); an enum never declares a storage width of its own:
 

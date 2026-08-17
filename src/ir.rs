@@ -132,6 +132,110 @@ impl<'a> FunctionIndex<'a> {
             .unwrap_or_else(|| name.text.clone())
     }
 
+    /// Stable table key for an enum declaration.
+    pub fn enum_decl_key(&self, name: &ast::Ident) -> String {
+        self.resolved
+            .declared(name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Enum))
+            .and_then(|id| self.enum_id_key(id))
+            .unwrap_or_else(|| name.text.clone())
+    }
+
+    /// Resolver-selected identity of a path that names an enum.
+    pub fn enum_path_key(&self, path: &ast::Path) -> Option<String> {
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Enum))
+            .then(|| self.enum_id_key(id))
+            .flatten()
+    }
+
+    /// Enum named directly by a type/call path, or by the owner portion of
+    /// `Enum::new`.
+    pub fn enum_owner_key(&self, path: &ast::Path) -> Option<String> {
+        self.enum_path_key(path).or_else(|| {
+            let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
+            let id = self.resolved.resolved(owner.span)?;
+            (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Enum))
+                .then(|| self.enum_id_key(id))
+                .flatten()
+        })
+    }
+
+    /// Nominal type named directly by a constructor path, or by the owner of
+    /// `T::new`. Structs are still crate-unique and therefore retain their
+    /// leaf key; enum and alias owners use their identity-preserving keys.
+    pub fn type_owner_key(&self, path: &ast::Path) -> Option<String> {
+        let type_key = |id: DefId| match self.resolved.kind_of(id)? {
+            crate::resolve::DefKind::Enum => self.enum_id_key(id),
+            crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
+            crate::resolve::DefKind::Struct => self
+                .resolved
+                .def(id)
+                .map(|definition| definition.name.clone()),
+            _ => None,
+        };
+        self.resolved
+            .resolved(path.span)
+            .and_then(type_key)
+            .or_else(|| {
+                (path.segments.last()?.text == "new").then_some(())?;
+                let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
+                self.resolved.resolved(owner.span).and_then(type_key)
+            })
+    }
+
+    /// Enum identity and variant leaf selected by a variant expression path.
+    pub fn enum_variant_key(&self, path: &ast::Path) -> Option<(String, String)> {
+        let variant = self.resolved.resolved(path.span)?;
+        let definition = self.resolved.def(variant)?;
+        if definition.kind != crate::resolve::DefKind::EnumVariant {
+            return None;
+        }
+        let written_owner = path
+            .segments
+            .get(path.segments.len().checked_sub(2)?)
+            .and_then(|name| self.resolved.resolved(name.span))
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Enum));
+        let owner = self.enum_id_key(written_owner.or(definition.parent)?)?;
+        Some((owner, definition.name.clone()))
+    }
+
+    /// Preserve the ordinary leaf in the common case and qualify colliding
+    /// enum leaves. Output metadata is user-facing, while the qualified form
+    /// remains injective when separate modules both declare (for example)
+    /// `State`. A canonical standard-library enum retains its historical leaf
+    /// key so compiler-known `Bool`, `Logic`, and `Ordering` tables do not move
+    /// merely because user code declares a namesake; that user declaration is
+    /// the one that receives a qualified key.
+    fn enum_id_key(&self, id: DefId) -> Option<String> {
+        let definition = self.resolved.def(id)?;
+        let colliders: Vec<_> = self
+            .resolved
+            .defs()
+            .iter()
+            .filter(|other| {
+                other.kind == crate::resolve::DefKind::Enum
+                    && other.name == definition.name
+                    && other.module != definition.module
+            })
+            .collect();
+        let is_std = definition
+            .module
+            .as_deref()
+            .is_some_and(|module| module == "std" || module.starts_with("std::"));
+        let other_std = colliders.iter().any(|other| {
+            other
+                .module
+                .as_deref()
+                .is_some_and(|module| module == "std" || module.starts_with("std::"))
+        });
+        if !colliders.is_empty() && (!is_std || other_std) {
+            self.resolved.qualified_name(id)
+        } else {
+            Some(definition.name.clone())
+        }
+    }
+
     /// Resolver-selected key for a type-alias use. Non-alias single-segment
     /// paths retain their surface spelling so kernel and local types can use
     /// the same callers without entering the module-alias table.
@@ -152,7 +256,8 @@ impl<'a> FunctionIndex<'a> {
     pub fn type_head_key(&self, ty: &ast::Type) -> Option<String> {
         match ty {
             ast::Type::Path(path) => self
-                .type_alias_path_key(path)
+                .enum_path_key(path)
+                .or_else(|| self.type_alias_path_key(path))
                 .or_else(|| path.segments.last().map(|name| name.text.clone())),
             ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
                 self.type_head_key(base)
@@ -570,10 +675,11 @@ pub fn lower_in(
     // afterwards left the fold with nothing to look the variant up in, so the
     // constant never entered the tables and every read of it reported the
     // name as unknown.
-    l.enum_variants = enum_discriminants(modules);
-    l.enum_first_disc = enum_first_discriminants(modules);
+    l.enum_variants = enum_discriminants(modules, &l.free_fns);
+    l.enum_first_disc = enum_first_discriminants(modules, &l.free_fns);
     l.collect(modules);
-    l.new_defaults = l.compute_new_defaults();
+    l.new_defaults = l.enum_first_disc.clone();
+    l.new_defaults.extend(l.compute_new_defaults());
     l.out.new_defaults = l.new_defaults.clone();
     // Reverse each enum's variant map (name -> disc) into disc -> symbol, so
     // consumers can render stored discriminants symbolically.
@@ -587,7 +693,7 @@ pub fn lower_in(
             )
         })
         .collect();
-    l.enum_reprs = enum_reprs(modules);
+    l.enum_reprs = enum_reprs(modules, &l.free_fns);
     l.vector_families = vector_families(modules);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a
@@ -600,9 +706,9 @@ pub fn lower_in(
         }
     }
     {
-        let enums = enum_index(modules);
+        let enums = enum_index(modules, &l.free_fns);
         for (name, e) in &enums {
-            if let Some(b) = enum_base_name(e, &enums) {
+            if let Some(b) = enum_base_name(e, &enums, &l.free_fns) {
                 l.enum_bases.insert(name.clone(), b);
             }
         }
@@ -1587,12 +1693,8 @@ impl<'a> Lowering<'a> {
             // constant never entered the tables and every read of it reported
             // the name as unknown; binding it to a signal first happened to
             // work, which is what made it look supported.
-            if path.segments.len() == 2 {
-                if let Some(&disc) = self
-                    .enum_variants
-                    .get(&path.segments[0].text)
-                    .and_then(|variants| variants.get(&path.segments[1].text))
-                {
+            if path.segments.len() >= 2 {
+                if let Some(disc) = self.enum_variant_path(path) {
                     self.consts.insert(name.to_string(), disc as i64);
                     self.const_values
                         .insert(name.to_string(), Expr::Const(disc));
@@ -4010,9 +4112,7 @@ impl<'a> Lowering<'a> {
                 .or_else(|| self.char_disc(*ch, DEFAULT_LOGIC_TYPE)),
             // --- enum variants: a name resolved to its discriminant ---
             // Includes `Bool`'s `true`/`false` (desugared to `Bool::true` etc.).
-            ast::Expr::Path(p) if p.segments.len() >= 2 => {
-                self.enum_variant(&p.segments[0].text, &p.segments[1].text)
-            }
+            ast::Expr::Path(p) if p.segments.len() >= 2 => self.enum_variant_path(p),
             // A radix bit-string initializer (`let v: unsigned[8] = x"AB"`) —
             // its value bits (metavalue positions carried separately, stage 1b).
             ast::Expr::BitStrLit { base, digits, .. } => {
@@ -4744,11 +4844,19 @@ impl<'a> Lowering<'a> {
         let mut seen = HashSet::new();
         while seen.insert(current.to_string()) {
             let base = self.structs.get(current)?.base.as_ref()?;
-            let head = match base {
-                ast::Type::Indexed { base, .. } => type_head_name(base)?,
-                ast::Type::Path(_) => type_head_name(base)?,
+            let element = match base {
+                ast::Type::Indexed { base, .. } => base.as_ref(),
+                ast::Type::Path(_) => base,
                 _ => return None,
             };
+            if let ast::Type::Path(path) = element {
+                if let Some(key) = self.free_fns.enum_path_key(path) {
+                    if self.enum_reprs.contains_key(&key) {
+                        return Some(key);
+                    }
+                }
+            }
+            let head = type_head_name(element)?;
             if self.enum_reprs.contains_key(head) {
                 return Some(head.to_string());
             }
@@ -4810,13 +4918,19 @@ impl<'a> Lowering<'a> {
         let ast::Type::Path(path) = ty else {
             return None;
         };
-        let mut name = path.segments.last()?.text.as_str();
+        let mut name = self.free_fns.enum_path_key(path).unwrap_or_else(|| {
+            path.segments
+                .last()
+                .expect("non-empty type path")
+                .text
+                .clone()
+        });
         let mut seen = HashSet::new();
-        while seen.insert(name.to_string()) {
-            if let Some(width) = self.enum_reprs.get(name) {
-                return Some((*width, name.to_string()));
+        while seen.insert(name.clone()) {
+            if let Some(width) = self.enum_reprs.get(&name) {
+                return Some((*width, name));
             }
-            let declaration = self.structs.get(name)?;
+            let declaration = self.structs.get(&name)?;
             if !declaration.fields.is_empty() {
                 return None;
             }
@@ -4828,7 +4942,7 @@ impl<'a> Lowering<'a> {
             if matches!(base, ast::Type::Indexed { .. }) {
                 return None;
             }
-            name = type_head_name(base)?;
+            name = self.free_fns.type_head_key(base)?;
         }
         None
     }
@@ -5354,16 +5468,20 @@ impl<'a> Lowering<'a> {
             }
             return Val::Fields(fields);
         }
-        let Some(head) = type_head_name(ty) else {
+        let Some(head) = (match ty {
+            ast::Type::Path(path) => self.free_fns.enum_path_key(path),
+            _ => None,
+        })
+        .or_else(|| type_head_name(ty).map(str::to_string)) else {
             return Val::Scalar(Expr::Const(0));
         };
-        if let Some(fields) = self.struct_default_leaves(head, "") {
+        if let Some(fields) = self.struct_default_leaves(&head, "") {
             return Val::Fields(fields);
         }
         let value = self
             .new_defaults
-            .get(head)
-            .or_else(|| self.enum_first_disc.get(head))
+            .get(&head)
+            .or_else(|| self.enum_first_disc.get(&head))
             .copied()
             .unwrap_or(0);
         Val::Scalar(Expr::Const(value))
@@ -6496,12 +6614,7 @@ impl<'a> Lowering<'a> {
     ) -> Option<Expr> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
-                let disc = self
-                    .enum_variants
-                    .get(&p.segments[0].text)
-                    .and_then(|m| m.get(&p.segments[1].text))
-                    .copied()
-                    .unwrap_or(0);
+                let disc = self.enum_variant_path(p).unwrap_or(0);
                 Some(eq(scrut.clone(), Expr::Const(disc)))
             }
             ast::Pattern::BitPattern { text, .. } => {
@@ -7595,10 +7708,8 @@ impl<'a> Lowering<'a> {
                 }
                 if path.segments.len() >= 2 {
                     return self
-                        .enum_variants
-                        .get(&path.segments[0].text)
-                        .and_then(|variants| variants.get(&path.segments[1].text))
-                        .map(|&discriminant| Expr::Const(discriminant))
+                        .enum_variant_path(path)
+                        .map(Expr::Const)
                         .unwrap_or(Expr::Unknown);
                 }
                 // A generic parameter of the entity being lowered has no
@@ -8449,6 +8560,11 @@ impl<'a> Lowering<'a> {
             .copied()
     }
 
+    fn enum_variant_path(&self, path: &ast::Path) -> Option<u64> {
+        let (enumeration, variant) = self.free_fns.enum_variant_key(path)?;
+        self.enum_variant(&enumeration, &variant)
+    }
+
     /// Decode a bit-string literal into `(value, discs)`, MSB-first: `value` is
     /// the per-element 0/1 bit (element *i* at bit *i*); `discs` is the full
     /// per-element `std_ulogic` discriminant packed 4 bits each (element *i* at
@@ -9003,23 +9119,24 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
         let target = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
+            ast::Expr::Path(p) => self
+                .free_fns
+                .enum_path_key(p)
+                .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone()))?,
             _ => return None,
         };
         let arg = args.first()?;
         let src = self.operand_type_name(arg);
-        let found = self.lower_from_inner(target, arg, src.as_deref(), env);
+        let found = self.lower_from_inner(&target, arg, src.as_deref(), env);
         // This is the last conversion strategy tried, so a `None` here is an
         // `Unknown` in the driver. Record it while the target, the source and
         // a span are all still in hand.
         if found.is_none()
-            && (self.structs.contains_key(target) || self.enum_variants.contains_key(target))
+            && (self.structs.contains_key(&target) || self.enum_variants.contains_key(&target))
         {
-            self.bad_conversions.borrow_mut().push((
-                target.to_string(),
-                src.clone(),
-                ast::expr_span(callee),
-            ));
+            self.bad_conversions
+                .borrow_mut()
+                .push((target, src.clone(), ast::expr_span(callee)));
         }
         found
     }
@@ -9088,20 +9205,23 @@ impl<'a> Lowering<'a> {
         // The head type name — a bare `T` or the family of a sized `T[N]` (the
         // width is irrelevant to a zero default).
         let name = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
+            ast::Expr::Path(p) => self
+                .free_fns
+                .type_owner_key(p)
+                .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone()))?,
             ast::Expr::Index { base, .. } => match base.as_ref() {
-                ast::Expr::Path(p) if p.segments.len() == 1 => &p.segments[0].text,
+                ast::Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.clone(),
                 _ => return None,
             },
             _ => return None,
         };
-        if let Some(&d) = self.enum_first_disc.get(name) {
+        if let Some(&d) = self.enum_first_disc.get(&name) {
             return Some(Val::Scalar(Expr::Const(d)));
         }
-        if let Some(fields) = self.struct_default_leaves(name, "") {
+        if let Some(fields) = self.struct_default_leaves(&name, "") {
             return Some(Val::Fields(fields));
         }
-        (self.vector_families.contains(name)
+        (self.vector_families.contains(&name)
             || matches!(name.as_str(), "integer" | "Char" | "real"))
         .then_some(Val::Scalar(Expr::Const(0)))
     }
@@ -9119,6 +9239,14 @@ impl<'a> Lowering<'a> {
             } else {
                 format!("{prefix}.{fname}")
             };
+            if let ast::Type::Path(enum_path) = &fty {
+                if let Some(enum_key) = self.free_fns.enum_path_key(enum_path) {
+                    if let Some(&d) = self.enum_first_disc.get(&enum_key) {
+                        out.push((path, Expr::Const(d)));
+                        continue;
+                    }
+                }
+            }
             if let Some(h) = type_head_name(&fty) {
                 if let Some(nested) = self.struct_default_leaves(h, &path) {
                     out.extend(nested);
@@ -9809,7 +9937,10 @@ impl<'a> Lowering<'a> {
             ast::Expr::Call { callee, .. } => {
                 let head = match callee.as_ref() {
                     ast::Expr::Index { base, .. } => expr_path(base),
-                    ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+                    ast::Expr::Path(p) => self
+                        .free_fns
+                        .enum_path_key(p)
+                        .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone())),
                     _ => None,
                 }?;
                 // A conversion reads as its target: a vector family
@@ -9826,19 +9957,19 @@ impl<'a> Lowering<'a> {
                     .free_fns
                     .get(callee)
                     .and_then(|f| f.ret.as_ref())
-                    .and_then(type_head_name)?;
+                    .and_then(|ty| self.free_fns.type_head_key(ty))?;
                 // A struct return counts too: `twice(v) + v` needs a type for
                 // its left operand before any `Operator` impl can be found,
                 // and without one the whole expression produced nothing.
-                (self.vector_families.contains(ret)
-                    || self.enum_variants.contains_key(ret)
-                    || self.structs.contains_key(ret))
-                .then(|| ret.to_string())
+                (self.vector_families.contains(&ret)
+                    || self.enum_variants.contains_key(&ret)
+                    || self.structs.contains_key(&ret))
+                .then_some(ret)
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => self
-                .enum_variants
-                .contains_key(&p.segments[0].text)
-                .then(|| p.segments[0].text.clone()),
+                .free_fns
+                .enum_variant_key(p)
+                .map(|(enumeration, _)| enumeration),
             // An *array* element is a signal in its own right and resolves by
             // its flattened name. A *bit* of a packed vector is not, so it
             // reads as the vector's element type — otherwise it had no type
@@ -10800,7 +10931,7 @@ pub fn call_fn_key(callee: &ast::Expr) -> Option<String> {
 fn collect_named_variants(p: &ast::Pattern, out: &mut std::collections::HashSet<String>) {
     match p {
         ast::Pattern::Path(path) if path.segments.len() >= 2 => {
-            out.insert(path.segments[1].text.clone());
+            out.insert(path.segments.last().expect("variant path").text.clone());
         }
         ast::Pattern::CharLit { ch, .. } => {
             out.insert(format!("'{ch}'"));
@@ -11858,12 +11989,15 @@ fn is_bit_vector_struct(
     elem.is_some_and(|head| families.contains(head))
 }
 
-fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
+fn enum_index<'a>(
+    modules: &'a [Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, &'a ast::EnumDecl> {
     let mut out = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Enum(e) = item {
-                out.insert(e.name.text.clone(), e);
+                out.insert(fns.enum_decl_key(&e.name), e);
             }
         }
     }
@@ -11872,9 +12006,13 @@ fn enum_index(modules: &[Module]) -> HashMap<String, &ast::EnumDecl> {
 
 /// The `: Type` head name when it names another enum — i.e. a derivation
 /// base rather than a numeric repr.
-fn enum_base_name(e: &ast::EnumDecl, enums: &HashMap<String, &ast::EnumDecl>) -> Option<String> {
-    let name = type_head_name(e.repr.as_ref()?)?;
-    enums.contains_key(name).then(|| name.to_string())
+fn enum_base_name(
+    e: &ast::EnumDecl,
+    enums: &HashMap<String, &ast::EnumDecl>,
+    fns: &FunctionIndex<'_>,
+) -> Option<String> {
+    let name = fns.type_head_key(e.repr.as_ref()?)?;
+    enums.contains_key(&name).then_some(name)
 }
 
 /// An enum's effective variants, base chain first then its own declared ones
@@ -11882,6 +12020,7 @@ fn enum_base_name(e: &ast::EnumDecl, enums: &HashMap<String, &ast::EnumDecl>) ->
 fn effective_variants(
     name: &str,
     enums: &HashMap<String, &ast::EnumDecl>,
+    fns: &FunctionIndex<'_>,
     seen: &mut Vec<String>,
 ) -> Vec<(String, Option<i64>)> {
     let Some(e) = enums.get(name) else {
@@ -11891,8 +12030,8 @@ fn effective_variants(
         return Vec::new(); // cycle guard
     }
     seen.push(name.to_string());
-    let mut out = match enum_base_name(e, enums) {
-        Some(base) => effective_variants(&base, enums, seen),
+    let mut out = match enum_base_name(e, enums, fns) {
+        Some(base) => effective_variants(&base, enums, fns, seen),
         None => Vec::new(),
     };
     for v in &e.variants {
@@ -11910,13 +12049,16 @@ fn effective_variants(
 /// from a derivation base (`enum Extended : Base` gets Base's variants too).
 /// Consumers (runner, native emitter) share this so derived-enum variant
 /// references resolve identically.
-pub fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String, u64>> {
-    let enums = enum_index(modules);
+pub fn enum_discriminants(
+    modules: &[Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, HashMap<String, u64>> {
+    let enums = enum_index(modules, fns);
     let mut out = HashMap::new();
     for name in enums.keys() {
         let mut vars = HashMap::new();
         let mut next = 0u64;
-        for (v, disc) in effective_variants(name, &enums, &mut Vec::new()) {
+        for (v, disc) in effective_variants(name, &enums, fns, &mut Vec::new()) {
             let d = disc.map(|d| d as u64).unwrap_or(next);
             vars.insert(v, d);
             next = d + 1;
@@ -11931,11 +12073,14 @@ pub fn enum_discriminants(modules: &[Module]) -> HashMap<String, HashMap<String,
 /// only the first (declaration-order, base chain first) variant's value, so an
 /// enum whose first variant carries a non-zero `= n` still defaults to a valid
 /// member rather than a bare `0`.
-pub fn enum_first_discriminants(modules: &[Module]) -> HashMap<String, u64> {
-    let enums = enum_index(modules);
+pub fn enum_first_discriminants(
+    modules: &[Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, u64> {
+    let enums = enum_index(modules, fns);
     let mut out = HashMap::new();
     for name in enums.keys() {
-        if let Some((_, disc)) = effective_variants(name, &enums, &mut Vec::new()).first() {
+        if let Some((_, disc)) = effective_variants(name, &enums, fns, &mut Vec::new()).first() {
             out.insert(name.clone(), disc.map(|d| d as u64).unwrap_or(0));
         }
     }
@@ -12791,11 +12936,11 @@ fn is_int_type(ty: &ast::Type) -> bool {
 
 /// Build `enum name -> bit width`: the `repr` width if given (`enum S: unsigned[2]`),
 /// else the bits needed for the variant count.
-fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
+fn enum_reprs(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u32> {
     let empty = HashMap::new();
     let empty_resolved = Resolved::default();
     let empty_fns = FunctionIndex::new(&empty_resolved);
-    let enums = enum_index(modules);
+    let enums = enum_index(modules, fns);
     let mut out = HashMap::new();
     for (name, e) in &enums {
         // A numeric `: repr` sets the width explicitly; otherwise the width is
@@ -12806,11 +12951,11 @@ fn enum_reprs(modules: &[Module]) -> HashMap<String, u32> {
         let w = if let Some(repr) = e
             .repr
             .as_ref()
-            .filter(|_| enum_base_name(e, &enums).is_none())
+            .filter(|_| enum_base_name(e, &enums, fns).is_none())
         {
             type_width(repr, &empty, &empty_fns, &HashMap::new(), &HashMap::new())
         } else {
-            let variants = effective_variants(name, &enums, &mut Vec::new());
+            let variants = effective_variants(name, &enums, fns, &mut Vec::new());
             let n = variants.len().max(1) as u32;
             let count_bits = if n <= 1 {
                 1
@@ -13302,6 +13447,74 @@ mod tests {
         assert_eq!(signal(".right").width, 8);
         assert_eq!(signal(".right").range, Some((-128, 127)));
         assert!(signal(".left").integer && signal(".right").integer);
+    }
+
+    #[test]
+    fn equal_enum_leaves_keep_variants_widths_and_symbols_distinct() {
+        let sources = [
+            (
+                "module a; pub enum Base { Idle = 3, Run = 7 } pub enum State(Base);",
+                FileId(0),
+            ),
+            (
+                "module b; pub enum Base { Low = 1, High = 9 } pub enum State(Base);",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { left: a::State out, right: b::State out } \
+                 impl Top { left = a::State::Run; right = b::State::High; }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let signal = |suffix: &str| {
+            design
+                .signals
+                .iter()
+                .find(|signal| signal.path.ends_with(suffix))
+                .expect("missing enum signal")
+        };
+        assert_eq!(signal(".left").width, 3);
+        assert_eq!(signal(".left").enum_type.as_deref(), Some("a::State"));
+        assert_eq!(signal(".right").width, 4);
+        assert_eq!(signal(".right").enum_type.as_deref(), Some("b::State"));
+        assert_eq!(
+            design.enum_syms["a::State"].get(&7).map(String::as_str),
+            Some("Run")
+        );
+        assert_eq!(
+            design.enum_syms["b::State"].get(&9).map(String::as_str),
+            Some("High")
+        );
+        let driven = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("missing driven enum signal") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven(".left"), Some(Expr::Const(7))));
+        assert!(matches!(driven(".right"), Some(Expr::Const(9))));
     }
 
     #[test]
@@ -13916,7 +14129,7 @@ mod tests {
              struct Packet { header: Header, data: unsigned[8] }\n\
              #[top]\n\
              entity E { o: Packet out }\n\
-             impl E { o = Packet(); }\n",
+             impl E { o = Packet::new(); }\n",
         );
         let drv = |suffix: &str| -> u64 {
             let sig = d

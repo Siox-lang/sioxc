@@ -6112,7 +6112,7 @@ impl<'a> Checker<'a> {
                             // impossible to assign to a value of that newtype.
                             let qualifier = p
                                 .segments
-                                .first()
+                                .get(p.segments.len().saturating_sub(2))
                                 .and_then(|s| self.resolved.resolved(s.span))
                                 .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Enum));
                             match qualifier.or(d.parent) {
@@ -6591,6 +6591,24 @@ impl<'a> Checker<'a> {
                 .enumerate()
                 .find(|(index, _)| {
                     self.definition_key(DefId(*index as u32)).as_deref() == Some(name)
+                })
+                // Compiler-created values such as comparison results and
+                // system attributes name their library type by its stable
+                // kernel leaf. Prefer the canonical std declaration before
+                // the compatibility leaf fallback, otherwise an unrelated
+                // user enum called `Bool` or `Logic` can retarget every such
+                // value merely by appearing earlier in the module list.
+                .or_else(|| {
+                    self.resolved
+                        .defs()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, definition)| {
+                            definition.name == name
+                                && definition.module.as_deref().is_some_and(|module| {
+                                    module == "std" || module.starts_with("std::")
+                                })
+                        })
                 })
                 .or_else(|| {
                     self.resolved

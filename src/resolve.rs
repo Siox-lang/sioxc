@@ -174,7 +174,6 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.collect_item(item);
         }
     }
-    r.inherit_enum_variants();
     // Resolve direct imports first, then public re-export chains. Collection
     // has already seen every declaration, so source order is irrelevant; the
     // bounded fixed point is only for `module facade; pub using base::{T}`.
@@ -196,6 +195,20 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_imports(item, true);
         }
     }
+    // Enum inheritance must be available before bodies containing inherited
+    // variant paths are resolved. Resolve just each base head after imports,
+    // then build the inherited variant registry by stable declaration id.
+    for m in modules {
+        r.set_current_module(m);
+        for item in &m.items {
+            if let Item::Enum(enumeration) = item {
+                if let Some(path) = enumeration.repr.as_ref().and_then(type_head_path) {
+                    r.pre_resolve_type_path(path);
+                }
+            }
+        }
+    }
+    r.inherit_enum_variants(modules);
     for m in modules {
         r.set_current_module(m);
         for item in &m.items {
@@ -280,9 +293,6 @@ struct Resolver<'a> {
     builtin_attrs: HashMap<String, DefId>,
     /// Enum `DefId` -> (variant name -> variant `DefId`).
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
-    /// Enum name -> its `DefId`, and enum name -> base head name (derivation).
-    enum_ids: HashMap<String, DefId>,
-    enum_derives: HashMap<String, String>,
     /// Lexical scopes for params/locals, innermost last.
     scopes: Vec<HashMap<String, DefId>>,
     /// `using` import sites `(name span, imported DefId)`, for the unused-import
@@ -332,8 +342,6 @@ impl<'a> Resolver<'a> {
             attrs: HashMap::new(),
             builtin_attrs: HashMap::new(),
             enum_variants: HashMap::new(),
-            enum_ids: HashMap::new(),
-            enum_derives: HashMap::new(),
             scopes: Vec::new(),
             import_sites: Vec::new(),
             param_sites: Vec::new(),
@@ -388,22 +396,35 @@ impl<'a> Resolver<'a> {
     /// Nominal enum derivation: a derived enum's associated-variant paths
     /// (`Child::InheritedVariant`) resolve to the base's variants. Merge
     /// base-chain variant entries into each derived enum's table.
-    fn inherit_enum_variants(&mut self) {
-        let names: Vec<String> = self.enum_ids.keys().cloned().collect();
-        for name in &names {
+    fn inherit_enum_variants(&mut self, modules: &[Module]) {
+        let derives: HashMap<DefId, DefId> = modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .filter_map(|item| {
+                let Item::Enum(enumeration) = item else {
+                    return None;
+                };
+                let owner = self.out.declared(enumeration.name.span)?;
+                let base = enumeration
+                    .repr
+                    .as_ref()
+                    .and_then(type_head_path)
+                    .and_then(|path| self.out.resolved(path.span))?;
+                (self.out.kind_of(base) == Some(DefKind::Enum)).then_some((owner, base))
+            })
+            .collect();
+        let ids: Vec<DefId> = self.enum_variants.keys().copied().collect();
+        for id in ids {
             // Walk the derivation chain (nearest base first) collecting the
             // variant maps of every ancestor enum.
             let mut inherited: Vec<HashMap<String, DefId>> = Vec::new();
-            let mut cur = name.clone();
+            let mut cur = id;
             let mut seen = HashSet::new();
-            while let Some(base) = self.enum_derives.get(&cur).cloned() {
-                if !seen.insert(cur.clone()) {
+            while let Some(&base) = derives.get(&cur) {
+                if !seen.insert(cur) {
                     break;
                 }
-                let Some(&bid) = self.enum_ids.get(&base) else {
-                    break;
-                };
-                if let Some(m) = self.enum_variants.get(&bid) {
+                if let Some(m) = self.enum_variants.get(&base) {
                     inherited.push(m.clone());
                 }
                 cur = base;
@@ -411,7 +432,6 @@ impl<'a> Resolver<'a> {
             if inherited.is_empty() {
                 continue;
             }
-            let id = self.enum_ids[name];
             let own = self.enum_variants.entry(id).or_default();
             // Ancestors furthest-first, without overwriting nearer/own entries.
             for m in inherited.into_iter().rev() {
@@ -493,12 +513,6 @@ impl<'a> Resolver<'a> {
                     vars.insert(v.name.text.clone(), vid);
                 }
                 self.enum_variants.insert(id, vars);
-                self.enum_ids.insert(e.name.text.clone(), id);
-                if let Some(t) = &e.repr {
-                    if let Some(h) = type_head(t) {
-                        self.enum_derives.insert(e.name.text.clone(), h.to_string());
-                    }
-                }
             }
             Item::Entity(e) => {
                 self.declare(&e.name.text, DefKind::Entity, e.is_pub, e.name.span);
@@ -870,6 +884,7 @@ impl<'a> Resolver<'a> {
                 (Some(DefKind::Fn), Some(DefKind::Fn))
                     | (Some(DefKind::Const), Some(DefKind::Const))
                     | (Some(DefKind::Entity), Some(DefKind::Entity))
+                    | (Some(DefKind::Enum), Some(DefKind::Enum))
                     | (Some(DefKind::TypeAlias), Some(DefKind::TypeAlias))
             ) && self
                 .out
@@ -1473,6 +1488,28 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve an enum's derivation head before inherited variant paths are
+    /// visited, without diagnosing an unknown name twice. The ordinary item
+    /// pass later calls `resolve_type_path` and owns any error.
+    fn pre_resolve_type_path(&mut self, path: &Path) {
+        let id = match path.segments.as_slice() {
+            [name] => self.lookup(&name.text),
+            segments if !segments.is_empty() => {
+                let leaf = &segments[segments.len() - 1].text;
+                let module = segments[..segments.len() - 1]
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                self.lookup_module_export(&module, leaf, false)
+            }
+            _ => None,
+        };
+        if let Some(id) = id {
+            self.record_qualified_use(path.span, id);
+        }
+    }
+
     fn resolve_expr(&mut self, e: &Expr) {
         match e {
             // Literal leaves; a suffix (`1ns`) is not a value path — it binds
@@ -1578,17 +1615,28 @@ impl<'a> Resolver<'a> {
 
     fn resolve_value_path(&mut self, p: &Path) {
         if p.segments.len() >= 2 {
-            let head = p.segments[0].text.clone();
-            if let Some(id) = self.lookup(&head) {
+            let enum_position = p.segments.len() - 2;
+            let head = p.segments[enum_position].text.clone();
+            let enum_id = if enum_position == 0 {
+                self.lookup(&head)
+            } else {
+                let module = p.segments[..enum_position]
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                self.lookup_module_export(&module, &head, false)
+            };
+            if let Some(id) = enum_id {
                 if self.out.kind_of(id) == Some(DefKind::Enum) {
-                    let var = p.segments[1].text.clone();
+                    let var = p.segments.last().expect("two segments").text.clone();
                     // `Phase::new()` is the `New` trait's constructor, not a
                     // variant — the same default `Phase()` builds. Resolving
                     // `Enum::x` as a variant first made the documented pair
                     // disagree: `Pair::new()` worked and `Phase::new()` was
                     // "not a variant of enum `Phase`".
                     if var == "new" {
-                        self.record_qualified_use(p.segments[0].span, id);
+                        self.record_qualified_use(p.segments[enum_position].span, id);
                         return;
                     }
                     match self.variant(id, &var) {
@@ -1604,8 +1652,8 @@ impl<'a> Resolver<'a> {
                             // (`true` -> `Bool::true`) synthesizes a qualifier
                             // over the whole path, and overwriting that entry
                             // would lose the variant the path resolves to.
-                            if p.segments[0].span != p.span {
-                                self.record_qualified_use(p.segments[0].span, id);
+                            if p.segments[enum_position].span != p.span {
+                                self.record_qualified_use(p.segments[enum_position].span, id);
                             }
                         }
                         None => self.error(

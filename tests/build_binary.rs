@@ -221,6 +221,93 @@ fn native_calls_constants_and_aliases_keep_equal_leaves_module_specific() {
 }
 
 #[test]
+fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!("siox_enum_identity_{}", std::process::id()));
+    std::fs::create_dir_all(directory.join("a")).unwrap();
+    std::fs::create_dir_all(directory.join("b")).unwrap();
+    std::fs::write(
+        directory.join("a/state.siox"),
+        "module a::state; pub const load_a: integer = 1; \
+         pub enum Base { Idle = 3, Run = 7 } pub enum State(Base); \
+         pub const CURRENT: State = State::Run;",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("b/state.siox"),
+        "module b::state; pub const load_b: integer = 2; \
+         pub enum Base { Low = 1, High = 9 } pub enum State(Base); \
+         pub const CURRENT: State = State::High;",
+    )
+    .unwrap();
+    let source = directory.join("identity.siox");
+    let output = directory.join("identity-test");
+    std::fs::write(
+        &source,
+        r#"module identity;
+           using a::state::{load_a};
+           using b::state::{load_b};
+           enum Bool { Off = 4, On = 5 }
+           struct LeftBox { pub state: a::state::State }
+           struct RightBox { pub state: b::state::State }
+           #[test] entity EnumIdentity {}
+           impl EnumIdentity {
+               let left: a::state::State = a::state::State::Run;
+               let right: b::state::State = b::state::State::High;
+               let default_left: a::state::State;
+               let default_right: b::state::State;
+               let left_box: LeftBox;
+               let right_box: RightBox;
+               let local_bool: Bool;
+               assert!(left == a::state::State::Run and
+                       right == b::state::State::High and
+                       default_left == a::state::State::Idle and
+                       default_right == b::state::State::Low and
+                       a::state::CURRENT == a::state::State::Run and
+                       b::state::CURRENT == b::state::State::High and
+                       a::state::State() == a::state::State::Idle and
+                       b::state::State() == b::state::State::Low and
+                       load_a == 1 and load_b == 2,
+                       "qualified enums keep module identity");
+               assert!(left_box.state == a::state::State::Idle and
+                       right_box.state == b::state::State::Low,
+                       "qualified enum fields keep structural defaults");
+               assert!(local_bool == Bool::Off,
+                       "a user Bool remains distinct from std Bool");
+               print!("states {} {} {} {} {}", left, right,
+                      a::state::State::Run, b::state::State::High, local_bool);
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "namespaced enum fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "namespaced enums failed:\n{report}");
+    assert!(report.contains("states Run High Run High Off"), "{report}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn native_equal_test_entity_leaves_keep_distinct_roots_and_symbols() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
