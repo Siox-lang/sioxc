@@ -312,6 +312,11 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Struct literals are reached both from their contextual consumer and
+    /// from the ordinary expression walk. Keep structural/privacy diagnostics
+    /// single-shot while still checking the consumer's expected type on every
+    /// contextual visit.
+    checked_struct_literals: std::cell::RefCell<HashSet<Span>>,
     /// Concrete meaning of the `Self` type while checking one impl. The
     /// resolver correctly binds `Self` locally, but its synthetic definition
     /// is not the impl target and must not become a distinct nominal type.
@@ -452,6 +457,7 @@ impl<'a> Checker<'a> {
             private_entity_members: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
+            checked_struct_literals: std::cell::RefCell::new(HashSet::new()),
             current_self_ty: std::cell::RefCell::new(None),
             current_impl_owner: std::cell::RefCell::new(None),
             file_modules,
@@ -5829,11 +5835,29 @@ impl<'a> Checker<'a> {
                 self.check_call_arity(callee, args, sym);
                 self.check_runtime_call_contract(callee, type_args, args, *bang, sym);
             }
-            Expr::Construct { args, .. } => {
+            Expr::Construct {
+                ty, args, spread, ..
+            } => {
+                // An explicitly typed literal is self-describing even when it
+                // is nested inside another expression (`Packet { .. }.get()`).
+                // Contextual checks cover name-less literals, but relying only
+                // on those consumers let nested constructions bypass private
+                // representation and field-shape validation.
+                if let Some(ty) = ty {
+                    let expected = self.ast_ty(ty);
+                    if let Some(head) = self.type_key(ty) {
+                        if self.structs.contains_key(&head) {
+                            self.check_struct_literal_for_head(&expected, &head, e, sym);
+                        }
+                    }
+                }
                 for c in args {
                     if let Some(v) = &c.value {
                         self.check_expr(v, sym);
                     }
+                }
+                if let Some(base) = spread {
+                    self.check_expr(base, sym);
                 }
                 // `{ .a = '1', .a = '0' }` silently kept one of them.
                 let mut seen: HashSet<&str> = HashSet::new();
@@ -6688,6 +6712,40 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        // Expected-vs-explicit type belongs to the consumer relationship, not
+        // to the literal itself. Run it before the single-shot guard so an
+        // expression walk may validate `B { .. }` and a later assignment may
+        // still diagnose that `A` was required.
+        if let Expr::Construct {
+            ty: Some(actual),
+            span,
+            ..
+        } = value
+        {
+            let actual = self.ast_ty(actual);
+            if !compatible(expected, &actual) {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    *span,
+                    format!(
+                        "cannot construct {} where {} is required",
+                        self.ty_display(&actual),
+                        self.ty_display(expected)
+                    ),
+                );
+                return;
+            }
+        }
+
+        let literal_span = expr_span(value);
+        if !self
+            .checked_struct_literals
+            .borrow_mut()
+            .insert(literal_span)
+        {
+            return;
+        }
+
         if let Some(private) = fields.iter().find_map(|field| {
             let visibility = self.field_visibility_for(head, field)?;
             (!visibility.is_pub && !self.member_access_allowed(&visibility, expr_span(value)))
@@ -6709,31 +6767,8 @@ impl<'a> Checker<'a> {
 
         let (args, spread, span) = match value {
             Expr::Construct {
-                ty: explicit,
-                args,
-                spread,
-                span,
-            } => {
-                // `let a: A = B { ... }` is a type mismatch even though both
-                // sides are constructions. `check_init` deliberately leaves
-                // name-less construction to this contextual checker.
-                if let Some(actual) = explicit {
-                    let actual = self.ast_ty(actual);
-                    if !compatible(expected, &actual) {
-                        self.error(
-                            codes::TYPE_MISMATCH,
-                            *span,
-                            format!(
-                                "cannot construct {} where {} is required",
-                                self.ty_display(&actual),
-                                self.ty_display(expected)
-                            ),
-                        );
-                        return;
-                    }
-                }
-                (args.as_slice(), spread.as_deref(), *span)
-            }
+                args, spread, span, ..
+            } => (args.as_slice(), spread.as_deref(), *span),
             // A name-less positional literal (`{ a, b }`) is represented as
             // concatenation until its declared struct type supplies context.
             Expr::Concat { parts, span } => {
@@ -7642,6 +7677,34 @@ mod tests {
             private, 1,
             "only the module function's construction is outside Packet's private domain"
         );
+    }
+
+    #[test]
+    fn nested_explicit_struct_literals_cannot_bypass_private_construction() {
+        let sink = check_modules(&[(
+            "module model;\n\
+             struct Packet { hidden: integer, pub visible: integer }\n\
+             impl Packet {\n\
+                 fn own() -> integer { return Packet { .hidden = 1, .visible = 2 }.hidden; }\n\
+             }\n\
+             fn inspect() -> integer { return Packet { .hidden = 1, .visible = 2 }.visible; }\n",
+            FileId(0),
+        )]);
+        let private: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .collect();
+        assert_eq!(
+            private.len(),
+            1,
+            "the nested construction outside Packet's impl is rejected exactly once: {:?}",
+            private
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(private[0].message.contains("cannot construct"));
     }
 
     #[test]

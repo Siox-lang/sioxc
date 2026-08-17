@@ -350,7 +350,16 @@ An applied view is an explicit structural interface over its backing struct.
 The view may expose private backing fields through a port without making raw
 `Struct.field` access public. This lets protocol storage remain encapsulated
 while `Stream Source` and `Stream Sink` expose exactly the directional role
-chosen by the entity interface.
+chosen by the entity interface. Because each projected field becomes part of
+that interface, its type must still be public when the view is public. A public
+view over `pub struct Bus { payload: PrivatePayload }` is rejected if it
+projects `payload`, even though keeping the raw field private is otherwise
+valid.
+
+Privacy applies to construction wherever the literal occurs, not only at a
+binding site. `Packet { .hidden = 1 }.public_field` cannot use a nested
+expression to bypass a private representation; construction must happen in an
+inherent `impl Packet` and be exposed through a public constructor method.
 
 Newtype construction (`pub struct Id(integer);`) currently follows the
 visibility of the newtype itself because the parenthesized representation has

@@ -8396,3 +8396,23 @@ the Compiler API and a linked native test executable, and places a conflicting
 same-symbol declaration in an unrelated file to prove it is ignored. Gates:
 340 library tests, all Rust integration/native tests, strict all-target/all-
 feature Clippy, and all 171 external corpus compile/run/waveform cases pass.
+
+### 2026-08-17 — Codex — visibility gap hardening
+
+Auditing the container-relative visibility implementation against the proposed
+model and editing `src/types.rs`, `src/resolve.rs`, their regressions, and the
+visibility documentation. The focused fixes cover explicitly typed struct
+literals used as nested expressions (which could bypass private construction)
+and public views whose projected backing field names a private type. Public
+entity methods remain an explicitly tracked architecture task because an
+instance call needs hierarchy, scheduling, and synthesis semantics beyond an
+access check.
+
+Completed the hardening pass. Explicit typed struct constructions now validate
+privacy and field shape even as nested expressions, remain single-diagnostic
+when a contextual consumer checks them again, and walk spread bases. Public
+views validate the types of every projected field through aliases and struct
+derivation, while still allowing the backing field itself to remain private.
+Added the entity-method architecture gap to `TODO.md`. Gates: 343 library tests
+plus all integration/native tests pass, strict all-target/all-feature Clippy is
+clean, and all 171 corpus fixtures compile, execute, and pass waveform checks.

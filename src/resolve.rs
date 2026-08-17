@@ -1761,6 +1761,28 @@ impl<'a> Resolver<'a> {
     }
 
     fn check_public_interfaces(&mut self, modules: &[Module]) {
+        let structs: HashMap<DefId, &StructDecl> = modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .filter_map(|item| match item {
+                Item::Struct(structure) => self
+                    .out
+                    .declared(structure.name.span)
+                    .map(|id| (id, structure)),
+                _ => None,
+            })
+            .collect();
+        let aliases: HashMap<DefId, &Type> = modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .filter_map(|item| match item {
+                Item::Using(Using {
+                    kind: UsingKind::Alias { name, ty },
+                    ..
+                }) => self.out.declared(name.span).map(|id| (id, ty)),
+                _ => None,
+            })
+            .collect();
         for module in modules {
             for item in &module.items {
                 match item {
@@ -1783,6 +1805,21 @@ impl<'a> Resolver<'a> {
                     Item::View(v) if v.is_pub => {
                         self.check_public_params(&v.params, "public view");
                         self.check_public_type(&v.target, "public view backing type");
+                        for field in &v.fields {
+                            if let Some(ty) = self.view_field_type(
+                                &v.target,
+                                &field.name.text,
+                                &structs,
+                                &aliases,
+                            ) {
+                                // A view deliberately exposes even a private
+                                // backing field. Its type is consequently part
+                                // of the exported structural interface and must
+                                // be nameable independently of the field's raw
+                                // representation visibility.
+                                self.check_public_type(&ty, "public view field");
+                            }
+                        }
                     }
                     Item::Enum(e) if e.is_pub => {
                         if let Some(repr) = &e.repr {
@@ -1823,6 +1860,57 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    fn view_field_type(
+        &self,
+        target: &Type,
+        field: &str,
+        structs: &HashMap<DefId, &StructDecl>,
+        aliases: &HashMap<DefId, &Type>,
+    ) -> Option<Type> {
+        let mut current = self.struct_type_id(target, structs, aliases, &mut HashSet::new())?;
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current) {
+                return None;
+            }
+            let structure = structs.get(&current)?;
+            if let Some(found) = structure.fields.iter().find(|item| item.name.text == field) {
+                return Some(found.ty.clone());
+            }
+            current = self.struct_type_id(
+                structure.base.as_ref()?,
+                structs,
+                aliases,
+                &mut HashSet::new(),
+            )?;
+        }
+    }
+
+    fn struct_type_id(
+        &self,
+        ty: &Type,
+        structs: &HashMap<DefId, &StructDecl>,
+        aliases: &HashMap<DefId, &Type>,
+        seen_aliases: &mut HashSet<DefId>,
+    ) -> Option<DefId> {
+        let id = match ty {
+            Type::Path(path) => self.out.resolved(path.span)?,
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => {
+                return self.struct_type_id(base, structs, aliases, seen_aliases);
+            }
+            Type::View { target, .. } => {
+                return self.struct_type_id(target, structs, aliases, seen_aliases);
+            }
+        };
+        if structs.contains_key(&id) {
+            return Some(id);
+        }
+        let alias = aliases.get(&id)?;
+        seen_aliases
+            .insert(id)
+            .then(|| self.struct_type_id(alias, structs, aliases, seen_aliases))?
     }
 
     /// An inherent method is externally reachable only when its owning type
@@ -2391,6 +2479,59 @@ mod tests {
             .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_INTERFACE))
             .count();
         assert_eq!(leaks, 2, "both parameter and return type are unusable API");
+    }
+
+    #[test]
+    fn a_public_view_cannot_project_a_private_field_type() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module bus;\n\
+             struct Hidden(integer);\n\
+             pub struct Lines { secret: Hidden }\n\
+             pub view Source for Lines { secret out }\n",
+            &mut sink,
+        );
+        resolve(&[module], &mut sink);
+        let leaks: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_INTERFACE))
+            .collect();
+        assert_eq!(
+            leaks.len(),
+            1,
+            "the private field itself may be projected, but its type must be public: {:?}",
+            leaks
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(leaks[0].message.contains("public view field"));
+    }
+
+    #[test]
+    fn a_public_view_may_project_a_private_field_of_public_type() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module bus;\n\
+             pub struct Payload(integer);\n\
+             pub struct Lines { payload: Payload }\n\
+             pub view Source for Lines { payload out }\n",
+            &mut sink,
+        );
+        resolve(&[module], &mut sink);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(codes::PRIVATE_INTERFACE)),
+            "field privacy and projected type visibility are independent: {:?}",
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

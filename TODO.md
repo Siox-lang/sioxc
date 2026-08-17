@@ -76,6 +76,11 @@ Remaining:
 - 🔴 **Incremental/query interface.** Phase products are explicit and stable,
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
+- 🟡 **Public entity methods.** Visibility is parsed and checked, but `pub fn`
+  on an entity remains rejected: `instance.method()` has no defined hierarchy,
+  scheduling, connectivity, or synthesis semantics. Decide whether such a call
+  elaborates into ports/handshake logic or remains unsupported before exposing
+  behavioral entity APIs; ordinary struct/view methods are already complete.
 - 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
   keys nominal declarations and free-function contracts by stable identity;
