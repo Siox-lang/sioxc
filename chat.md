@@ -8381,3 +8381,18 @@ local custom-operator pre-discovery is recorded explicitly in `TODO.md` rather
 than hidden by this loader change. Gates: 339 library tests, every Rust
 integration/native test, strict all-target/all-feature Clippy, and all 171
 external corpus compile/run/waveform cases pass.
+### 2026-08-17 — Codex — imported custom-operator discovery
+
+Editing `src/compiler.rs`, operator integration tests, and the module-loading
+documentation so the compiler discovers `#[precedence]` declarations from the
+exact transitive dependency graph before it performs the full parse. This
+closes the local-module gap recorded in `TODO.md` without scanning unrelated
+project files into the operator grammar.
+
+Completed as a lexical dependency-discovery pass followed by one full parse
+with the finished precedence table. Regression coverage follows an operator
+through a transitive `pub using`, exercises textual and punctuation symbols via
+the Compiler API and a linked native test executable, and places a conflicting
+same-symbol declaration in an unrelated file to prove it is ignored. Gates:
+340 library tests, all Rust integration/native tests, strict all-target/all-
+feature Clippy, and all 171 external corpus compile/run/waveform cases pass.

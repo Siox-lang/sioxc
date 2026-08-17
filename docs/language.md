@@ -1781,6 +1781,12 @@ implements `apply(self)` with no rhs. Using an operator on a user struct/enum
 without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.
 
+Operator declarations may live in an imported module. Before parsing
+expressions, the compiler follows the exact transitive `using` graph and reads
+their precedence attributes; it does not scan unrelated source files. Thus a
+re-exported operator behaves identically to one declared in the entry file,
+without letting an unreferenced module change expression grouping.
+
 Logical shifts are total operations: a shift count greater than or equal to
 the operand width produces zero. This applies identically in compiled design
 logic and native testbench expressions; it never inherits C undefined behavior

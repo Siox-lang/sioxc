@@ -9,7 +9,7 @@
 //! The embedding API never prints and never executes generated artifacts.
 //! `sioxc` is a thin command-line adapter over this module.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ use crate::diag::{Diagnostic, DiagnosticSink, FileId, Severity, SourceMap};
 use crate::elab::Hierarchy;
 use crate::ir::Design;
 use crate::resolve::Resolved;
-use crate::syntax::ast::{Item, Module, Path as AstPath, UsingKind};
+use crate::syntax::ast::{Item, Module};
 use crate::syntax::token::{Token, TokenKind};
 use crate::syntax::{lexer::Lexer, parser, pretty};
 use crate::types::Typed;
@@ -323,11 +323,16 @@ impl Compiler {
             return result;
         }
 
-        let mut operators = discover_std_operators(&self.std_root);
-        operators.extend(parser::discover_custom_operators(
+        let mut operators = parser::discover_custom_operators(&source, &result.entry_tokens);
+        let dependencies = discover_dependencies(
             &source,
             &result.entry_tokens,
-        ));
+            &path,
+            path.parent().unwrap_or_else(|| Path::new(".")),
+            &self.std_root,
+            &mut operators,
+            &mut result.diagnostics,
+        );
         let entry = parser::Parser::new(
             &source,
             std::mem::take(&mut result.entry_tokens),
@@ -339,15 +344,17 @@ impl Compiler {
         // and avoids cloning every token before the parser takes ownership.
         result.entry_tokens = Lexer::new(file, &source).tokenize(&mut DiagnosticSink::new());
         result.modules.push(entry);
-        load_deps(
-            &mut result.sources,
-            &mut result.modules,
-            &mut result.diagnostics,
-            &path,
-            path.parent().unwrap_or_else(|| Path::new(".")),
-            &self.std_root,
-            &operators,
-        );
+        for dependency in dependencies {
+            let file = result.sources.add(
+                dependency.path.display().to_string(),
+                dependency.source.clone(),
+            );
+            let tokens = Lexer::new(file, &dependency.source).tokenize(&mut result.diagnostics);
+            let module = parser::Parser::new(&dependency.source, tokens, &mut result.diagnostics)
+                .with_custom_operators(&operators)
+                .parse_module();
+            result.modules.push(module);
+        }
         result.stats.entry_items = result.entry().map_or(0, |module| module.items.len());
         result.stats.modules = result.modules.len();
 
@@ -608,109 +615,124 @@ fn select_top(modules: &[Module], explicit: Option<&str>) -> Result<String, Comp
     }
 }
 
-fn load_deps(
-    sources: &mut SourceMap,
-    modules: &mut Vec<Module>,
-    sink: &mut DiagnosticSink,
+struct DependencySource {
+    path: PathBuf,
+    source: String,
+}
+
+/// Read the exact transitive import graph before the full parse and collect
+/// every custom-operator declaration it contains. Expression grouping needs
+/// the complete precedence table up front; parsing a dependency only after its
+/// importer would make that dependency's operators appear undeclared in the
+/// importer. Discovery is lexical, so malformed expressions do not hide later
+/// `using` declarations and unrelated project files never affect the grammar.
+fn discover_dependencies(
+    entry_source: &str,
+    entry_tokens: &[Token],
     entry_path: &Path,
     source_root: &Path,
     std_root: &Path,
-    operators: &HashMap<String, u8>,
-) {
+    operators: &mut HashMap<String, u8>,
+    sink: &mut DiagnosticSink,
+) -> Vec<DependencySource> {
     let load_key = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut loaded = HashSet::from([load_key(entry_path)]);
-    let mut queue = using_bases(&modules[0]);
-    let wants_std = queue.iter().any(|base| {
-        base.segments
-            .first()
-            .is_some_and(|segment| segment.text == "std")
-    });
-    if wants_std && !std_root.is_dir() {
-        sink.emit(
-            Diagnostic::error(format!("no standard library at `{}`", std_root.display()))
-                .with_code(crate::diag::codes::UNRESOLVED_IMPORT)
-                .help("configure Compiler with the directory containing logic.siox, bits.siox, and the other std modules"),
-        );
-        return;
-    }
+    let mut queue: VecDeque<Vec<String>> =
+        discover_import_modules(entry_source, entry_tokens).into();
     if std_root.join("prelude.siox").exists() {
-        let segment = |text: &str| crate::syntax::ast::Ident {
-            text: text.to_string(),
-            span: crate::diag::Span::new(FileId(0), 0..0),
-        };
-        queue.push(AstPath {
-            segments: vec![segment("std"), segment("prelude")],
-            span: crate::diag::Span::new(FileId(0), 0..0),
-        });
+        queue.push_back(vec!["std".to_string(), "prelude".to_string()]);
     }
 
-    while let Some(base) = queue.pop() {
-        let path = module_file(source_root, std_root, &base);
+    let mut missing_std_reported = false;
+    let mut dependencies = Vec::new();
+    while let Some(module) = queue.pop_front() {
+        let is_std = module.first().is_some_and(|segment| segment == "std");
+        if is_std && !std_root.is_dir() {
+            if !missing_std_reported {
+                sink.emit(
+                    Diagnostic::error(format!("no standard library at `{}`", std_root.display()))
+                        .with_code(crate::diag::codes::UNRESOLVED_IMPORT)
+                        .help("configure Compiler with the directory containing logic.siox, bits.siox, and the other std modules"),
+                );
+                missing_std_reported = true;
+            }
+            continue;
+        }
+        let path = module_file(source_root, std_root, &module);
         if !loaded.insert(load_key(&path)) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let file = sources.add(path.display().to_string(), source.clone());
-        let tokens = Lexer::new(file, &source).tokenize(sink);
-        let module = parser::Parser::new(&source, tokens, sink)
-            .with_custom_operators(operators)
-            .parse_module();
-        queue.extend(using_bases(&module));
-        modules.push(module);
+        let mut discovery_sink = DiagnosticSink::new();
+        let tokens = Lexer::new(FileId(0), &source).tokenize(&mut discovery_sink);
+        operators.extend(parser::discover_custom_operators(&source, &tokens));
+        queue.extend(discover_import_modules(&source, &tokens));
+        dependencies.push(DependencySource { path, source });
     }
+    dependencies
 }
 
-fn discover_std_operators(std_root: &Path) -> HashMap<String, u8> {
-    fn visit(directory: &Path, operators: &mut HashMap<String, u8>) {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, operators);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "siox")
-            {
-                let Ok(source) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let mut sink = DiagnosticSink::new();
-                let tokens = Lexer::new(FileId(0), &source).tokenize(&mut sink);
-                operators.extend(parser::discover_custom_operators(&source, &tokens));
+/// Module paths named by top-level `using` declarations. This intentionally
+/// recognizes only the two import spellings and skips aliases:
+/// `using a::b::Name;` -> `a::b`, `using a::b::{Name}` -> `a::b`.
+fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
+    let token_text = |token: &Token| {
+        source
+            .get(token.span.start as usize..token.span.end as usize)
+            .unwrap_or("")
+    };
+    let mut modules = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Using {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut segments = Vec::new();
+        while let Some(segment) = tokens.get(cursor) {
+            if segment.kind != TokenKind::Ident {
+                break;
             }
+            segments.push(token_text(segment).to_string());
+            cursor += 1;
+            if tokens
+                .get(cursor)
+                .is_some_and(|next| next.kind == TokenKind::ColonColon)
+                && tokens
+                    .get(cursor + 1)
+                    .is_some_and(|next| next.kind == TokenKind::Ident)
+            {
+                cursor += 1;
+                continue;
+            }
+            break;
+        }
+        if segments.is_empty()
+            || tokens
+                .get(cursor)
+                .is_some_and(|next| next.kind == TokenKind::Eq)
+        {
+            continue;
+        }
+        let braced = tokens
+            .get(cursor)
+            .is_some_and(|next| next.kind == TokenKind::ColonColon)
+            && tokens
+                .get(cursor + 1)
+                .is_some_and(|next| next.kind == TokenKind::LBrace);
+        if !braced {
+            segments.pop();
+        }
+        if !segments.is_empty() {
+            modules.push(segments);
         }
     }
-
-    let mut operators = HashMap::new();
-    visit(std_root, &mut operators);
-    operators
+    modules
 }
 
-fn using_bases(module: &Module) -> Vec<AstPath> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Using(using) => match &using.kind {
-                UsingKind::Import { base, .. } => Some(base.clone()),
-                UsingKind::Alias { .. } => None,
-            },
-            _ => None,
-        })
-        .collect()
-}
-
-fn module_file(source_root: &Path, std_root: &Path, base: &AstPath) -> PathBuf {
-    let segments: Vec<&str> = base
-        .segments
-        .iter()
-        .map(|segment| segment.text.as_str())
-        .collect();
-    let is_std = segments.first() == Some(&"std");
+fn module_file(source_root: &Path, std_root: &Path, segments: &[String]) -> PathBuf {
+    let is_std = segments.first().is_some_and(|segment| segment == "std");
     let mut path = if is_std {
         std_root.to_path_buf()
     } else {
@@ -735,4 +757,29 @@ fn tokens_string(source: &str, tokens: &[Token]) -> String {
         let _ = writeln!(out, "   {index:>4}  {kind:<13} {shown}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discover_import_modules;
+    use crate::diag::{DiagnosticSink, FileId};
+    use crate::syntax::lexer::Lexer;
+
+    #[test]
+    fn lexical_dependency_discovery_matches_both_import_spellings() {
+        let source = "module user;\n\
+            using alpha::math::{Value, \"%%\"};\n\
+            pub using beta::logic::Flag;\n\
+            using Alias = gamma::Ignored;\n\
+            using Local;\n";
+        let mut sink = DiagnosticSink::new();
+        let tokens = Lexer::new(FileId(0), source).tokenize(&mut sink);
+        assert_eq!(
+            discover_import_modules(source, &tokens),
+            [
+                vec!["alpha".to_string(), "math".to_string()],
+                vec!["beta".to_string(), "logic".to_string()],
+            ]
+        );
+    }
 }

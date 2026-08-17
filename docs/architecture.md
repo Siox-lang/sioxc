@@ -283,6 +283,10 @@ compile, so the core types always carry their std semantics — the kernel
 word fallback only applies when the std root has no prelude at all. `resolve`
 seeds only the kernel scalars (`integer`, `real`, and Unicode `Char`);
 `Bit`, `Logic`, `Bool`, `unsigned`, and `signed` come from std declarations.
+Before the full Pratt parse, `compiler` lexically follows that exact transitive
+import graph and collects every `#[precedence]` operator declaration. Imported
+operators therefore group expressions correctly in their users, while an
+unrelated `.siox` file cannot alter the active grammar.
 The resolver additionally bootstraps the `Operator`, `Prefix`, and `Suffix`
 hook names and syntax-level attributes; their canonical contracts and values
 remain declarations in `std::ops` and `std::attrs`.

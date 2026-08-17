@@ -37,7 +37,8 @@ flowchart LR
     LSP["siox-lsp / tools"] -->|CompileRequest| API
 
     API -->|loads| SRC["entry source + imported modules + std"]
-    SRC --> AST["Parse<br/>AST"]
+    SRC --> DISC["Discover import graph<br/>+ operator precedence"]
+    DISC --> AST["Parse<br/>AST"]
     AST --> RES["Resolve"]
     RES --> TYPE["Type-check"]
     TYPE --> ELAB["Elaborate<br/>Hierarchy"]
