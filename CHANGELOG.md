@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Entities now retain namespace identity through roots and output.** Separate
+  modules may declare equal entity leaves without a duplicate error. Colliding
+  roots use qualified tree/IR/waveform paths, native tests use injective C
+  symbols and qualified filters, and a bare ambiguous `--top` is rejected in
+  favor of an exact qualified entity name.
 - **Module constants now retain resolver-backed namespace identity.** Equal
   constant leaves may coexist in different modules and resolve correctly in
   declared-type checking, constant functions, widths and ranges, IR folding,

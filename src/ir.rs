@@ -595,7 +595,7 @@ pub fn lower_in(
     // its per-parent instance-array facts keyed by the same dotted paths IR
     // uses while recursively lowering bodies.
     for &root in &hier.roots {
-        let path = hier.instance(root).entity.clone();
+        let path = hier.root_path(root);
         l.collect_instance_array_facts(hier, root, &path);
     }
     // Lower only the top-level designs — the `#[top]`/`#[test]` roots. Their
@@ -604,12 +604,12 @@ pub fn lower_in(
     let mut roots = Vec::new();
     for &r in &hier.roots {
         let ent = hier.instance(r).entity_id;
-        if !roots.contains(&ent) {
-            roots.push(ent);
+        if !roots.iter().any(|(id, _)| *id == ent) {
+            roots.push((ent, hier.root_path(r)));
         }
     }
-    for name in &roots {
-        l.lower_entity(*name);
+    for (entity, path) in &roots {
+        l.lower_entity(*entity, path);
     }
     l.report_depth_exceeded();
     l.report_bad_operators();
@@ -1215,11 +1215,10 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn lower_entity(&mut self, entity_id: DefId) {
+    fn lower_entity(&mut self, entity_id: DefId, root_path: &str) {
         let Some(edecl) = self.entities.get(&entity_id).copied() else {
             return;
         };
-        let name = edecl.name.text.as_str();
         // Extern entities are black boxes.
         if edecl.is_extern {
             return;
@@ -1240,13 +1239,13 @@ impl<'a> Lowering<'a> {
             // values still need concrete layouts: the native runner consumes
             // the finished IR rather than independently specializing AST
             // declarations.
-            self.persist_testbench_layouts(entity_id, name, &env);
-            self.lower_testbench_duts(entity_id, name, &env);
+            self.persist_testbench_layouts(entity_id, root_path, &env);
+            self.lower_testbench_duts(entity_id, root_path, &env);
             return;
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        self.lower_body(entity_id, name, &env, &HashMap::new(), &HashMap::new());
+        self.lower_body(entity_id, root_path, &env, &HashMap::new(), &HashMap::new());
     }
 
     /// Persist concrete layouts for testbench-owned values without creating
@@ -13120,6 +13119,53 @@ mod tests {
         assert!(names.contains("Top.right.z"));
         assert!(!names.contains("Top.left.z"));
         assert!(!names.contains("Top.right.y"));
+    }
+
+    #[test]
+    fn equal_root_entity_leaves_get_distinct_qualified_paths() {
+        let sources = [
+            (
+                "module a; #[top] pub entity Root { value: integer out } \
+                 impl Root { value = 11; }",
+                FileId(0),
+            ),
+            (
+                "module b; #[top] pub entity Root { value: integer out } \
+                 impl Root { value = 22; }",
+                FileId(1),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |path: &str| {
+            let signal = design
+                .signals
+                .iter()
+                .position(|signal| signal.path == path)
+                .expect("missing root output") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(signal))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven("a::Root.value"), Some(Expr::Const(11))));
+        assert!(matches!(driven("b::Root.value"), Some(Expr::Const(22))));
+        assert_eq!(hierarchy.to_tree_string(), "a::Root\nb::Root\n");
     }
 
     #[test]

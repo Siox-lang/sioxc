@@ -106,7 +106,12 @@ sites map to `DefId`; type checking uses those IDs (or a qualified key derived
 from one) for semantic registries. A leaf spelling is only presentation, not a
 safe lookup key. Hierarchy instances carry both a display name and their entity
 `DefId`; elaboration and recursive IR lowering use the ID, while tree output and
-signal paths retain concise source names. Module constants follow the same rule:
+signal paths retain concise source names. When separate modules contribute
+equal-named roots to one compilation, `Hierarchy::root_path` qualifies only
+those roots; IR paths, tree output, waveform scopes, and native test lookup all
+share that collision-free spelling. Native C test functions use a separate
+injective symbol, and compiler top selection requires a qualified name when a
+bare entity leaf is ambiguous. Module constants follow the same rule:
 their declared types, folded values, range/array/struct entries, and native
 expressions use a qualified key derived from the resolver, while constants local
 to an `impl` remain lexical leaf bindings. Other nominal IR registries are being

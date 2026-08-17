@@ -15,7 +15,7 @@ use std::process::Command;
 
 use siox::elab::{Hierarchy, InstanceId};
 use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, SourceLayout};
-use siox::resolve::Resolved;
+use siox::resolve::{DefId, Resolved};
 use siox::syntax::ast;
 use siox::syntax::Module;
 
@@ -50,7 +50,7 @@ pub fn build(
         .roots
         .iter()
         .copied()
-        .filter(|&r| is_test_entity(modules, &hier.instance(r).entity))
+        .filter(|&root| is_test_entity(modules, resolved, hier.instance(root).entity_id))
         .collect();
     if tests.is_empty() {
         return Err("no #[test] entity to build a test binary from".into());
@@ -632,10 +632,15 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
 
     let mut names = Vec::new();
     for &root in &tests {
-        let name = hier.instance(root).entity.clone();
-        let qualified = qualified_test_name(modules, &name);
+        let instance = hier.instance(root);
+        let name = hier.root_path(root);
+        let qualified = hier
+            .qualified_entity_name(instance.entity_id)
+            .unwrap_or(&instance.entity)
+            .to_string();
+        let symbol = format!("r{}", root.0);
         let (map, aliases) = build_map(hier, root, design);
-        let items = test_items(modules, &name);
+        let items = test_items(modules, resolved, instance.entity_id);
         // A testbench's own constants. Folded per test so two entities that
         // each declare `LIMIT` cannot collide in one table, and through the
         // same routine as the module-level ones so the kinds cannot diverge.
@@ -665,17 +670,19 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             .iter()
             .map(|&c| hier.instance(c).name.clone())
             .collect();
-        let entity_ports: HashMap<String, Vec<(String, ast::Type)>> = modules
+        let entity_ports: HashMap<DefId, Vec<(String, ast::Type)>> = modules
             .iter()
             .flat_map(|m| &m.items)
             .filter_map(|it| match it {
-                ast::Item::Entity(e) => Some((
-                    e.name.text.clone(),
-                    e.ports
-                        .iter()
-                        .map(|p| (p.name.text.clone(), p.ty.clone()))
-                        .collect(),
-                )),
+                ast::Item::Entity(e) => resolved.declared(e.name.span).map(|id| {
+                    (
+                        id,
+                        e.ports
+                            .iter()
+                            .map(|p| (p.name.text.clone(), p.ty.clone()))
+                            .collect(),
+                    )
+                }),
                 _ => None,
             })
             .collect();
@@ -685,6 +692,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             enums: &enums,
             families: &families,
             name: &name,
+            symbol: &symbol,
             clocks,
             locals: Default::default(),
             local_widths: Default::default(),
@@ -708,6 +716,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             tmp: Default::default(),
             message_id: Default::default(),
             fns: &fns,
+            resolved,
             type_aliases: &type_aliases,
             fn_env: Default::default(),
             fn_type_env: Default::default(),
@@ -716,7 +725,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             value_bits,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
-        names.push((name, qualified));
+        names.push((symbol, qualified));
     }
     prog.push_str(&gen_main(&names));
 
@@ -1203,31 +1212,6 @@ fn gen_main(names: &[(String, String)]) -> String {
     m
 }
 
-fn qualified_test_name(modules: &[Module], entity: &str) -> String {
-    modules
-        .iter()
-        .find(|m| {
-            m.items
-                .iter()
-                .any(|item| matches!(item, ast::Item::Entity(e) if e.name.text == entity))
-        })
-        .map(|m| {
-            let module = m
-                .path
-                .segments
-                .iter()
-                .map(|s| s.text.as_str())
-                .collect::<Vec<_>>()
-                .join("::");
-            if module.is_empty() {
-                entity.to_string()
-            } else {
-                format!("{module}::{entity}")
-            }
-        })
-        .unwrap_or_else(|| entity.to_string())
-}
-
 /// Translation context: the design, this test's name -> signal map, and enum
 /// discriminants.
 struct Ctx<'a> {
@@ -1235,7 +1219,10 @@ struct Ctx<'a> {
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
     families: &'a std::collections::HashSet<String>,
+    /// Collision-safe root storage path (qualified only when needed).
     name: &'a str,
+    /// Injective C identifier suffix for this test function.
+    symbol: &'a str,
     /// `clock(clk, ..)`-registered background clocks: (signal id, half period fs).
     clocks: Vec<(u32, u64)>,
     /// Names currently bound as C locals (unconnected `let`s, loop variables).
@@ -1298,6 +1285,8 @@ struct Ctx<'a> {
     /// Module-level functions (testbench-callable; translated to C ternaries)
     /// indexed by resolved identity, plus static associated functions.
     fns: &'a FunctionIndex<'a>,
+    /// Resolver identity used for nominal entity tables in the native harness.
+    resolved: &'a Resolved,
     /// Module type aliases, used when deciding native and foreign ABI kinds.
     type_aliases: &'a HashMap<String, ast::Type>,
     /// Parameter-substitution stack while translating a fn body.
@@ -1309,10 +1298,10 @@ struct Ctx<'a> {
     /// `let dut: Sub [= {..}]`) — their `let`s are wired by elaboration and
     /// emit no testbench code.
     instance_names: std::collections::HashSet<String>,
-    /// Entity name -> its ports in declaration order, so a *positional*
+    /// Entity identity -> its ports in declaration order, so a *positional*
     /// connection (`{ x, 4 }`) resolves to the port it fills and an
     /// instance's ports can be given the family their type declares.
-    entity_ports: HashMap<String, Vec<(String, ast::Type)>>,
+    entity_ports: HashMap<DefId, Vec<(String, ast::Type)>>,
     /// Harness-wide `_BitInt` width, also the upper bound for decimal
     /// formatting capacity.
     value_bits: u32,
@@ -3788,7 +3777,7 @@ impl Ctx<'_> {
         let mut b = String::new();
         b.push_str(&format!(
             "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_wave_begin_test();\n",
-            self.name
+            self.symbol
         ));
 
         // The test's event wheel: sim time + per-clock next-edge state. Arrays
@@ -3974,8 +3963,8 @@ impl Ctx<'_> {
     fn record_instance_port_families(&self, l: &ast::LetDecl) {
         let Some(ports) =
             l.ty.as_ref()
-                .and_then(type_head_name)
-                .and_then(|head| self.entity_ports.get(head))
+                .and_then(|ty| resolved_type_def_id(ty, self.resolved))
+                .and_then(|id| self.entity_ports.get(&id))
         else {
             return;
         };
@@ -3999,8 +3988,8 @@ impl Ctx<'_> {
         // so both forms arrive here.
         let ports =
             l.ty.as_ref()
-                .and_then(type_head_name)
-                .and_then(|head| self.entity_ports.get(head));
+                .and_then(|ty| resolved_type_def_id(ty, self.resolved))
+                .and_then(|id| self.entity_ports.get(&id));
         let by_position = |i: usize| ports.and_then(|ps| ps.get(i)).map(|(n, _)| n.clone());
         let pairs: Vec<(String, &ast::Expr)> = match &l.value {
             Some(ast::Expr::Construct { args, .. }) => args
@@ -7633,11 +7622,11 @@ fn duration_fs(args: &[ast::Expr]) -> Result<u64, String> {
     }
 }
 
-fn is_test_entity(modules: &[Module], entity: &str) -> bool {
+fn is_test_entity(modules: &[Module], resolved: &Resolved, entity: crate::resolve::DefId) -> bool {
     for m in modules {
         for it in &m.items {
             if let ast::Item::Entity(e) = it {
-                if e.name.text == entity {
+                if resolved.declared(e.name.span) == Some(entity) {
                     return e
                         .attrs
                         .iter()
@@ -7891,7 +7880,7 @@ fn build_map(
     // so two instances of one entity stay distinct (matches siox-run's map).
     // `aliases` keeps EVERY binding of a name (one clock into many DUTs), so a
     // write drives all connected ports.
-    let tb = &hier.instance(root).entity;
+    let tb = hier.root_path(root);
     let mut map = HashMap::new();
     let mut aliases: HashMap<String, Vec<SignalId>> = HashMap::new();
     for &child_id in &hier.instance(root).children {
@@ -7928,18 +7917,33 @@ fn build_map(
     (map, aliases)
 }
 
-fn test_items<'a>(modules: &'a [Module], entity: &str) -> Vec<&'a ast::ImplItem> {
+fn test_items<'a>(
+    modules: &'a [Module],
+    resolved: &Resolved,
+    entity: crate::resolve::DefId,
+) -> Vec<&'a ast::ImplItem> {
     let mut items = Vec::new();
     for m in modules {
         for it in &m.items {
             if let ast::Item::Impl(im) = it {
-                if im.trait_.is_none() && type_head_name(&im.target) == Some(entity) {
+                if im.trait_.is_none() && resolved_type_def_id(&im.target, resolved) == Some(entity)
+                {
                     items.extend(im.items.iter());
                 }
             }
         }
     }
     items
+}
+
+fn resolved_type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<crate::resolve::DefId> {
+    match ty {
+        ast::Type::Path(path) => resolved.resolved(path.span),
+        ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
+            resolved_type_def_id(base, resolved)
+        }
+        ast::Type::View { view, .. } => resolved.resolved(view.span),
+    }
 }
 
 fn type_head_name(t: &ast::Type) -> Option<&str> {

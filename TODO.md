@@ -90,11 +90,13 @@ Remaining:
   declared-type lookup, compile-time evaluation, IR tables, and native output,
   including constant functions that refer to their module's constants.
   Elaboration and IR now carry entity identity through hierarchy construction,
-  generic specialization, recursive lowering, and instance connection lookup.
-  Structs, enums, views, aliases, and traits/operators still include leaf-keyed
-  tables, and equal-named root entities would still collide in emitted
-  signal/test symbols. Those remaining declaration categories stay crate-unique
-  until their tables and qualified output identities are lifted.
+  generic specialization, recursive lowering, instance connection lookup, and
+  output roots. Equal entity leaves are admitted across modules; colliding roots
+  receive qualified tree/IR paths and injective native test symbols, while an
+  ambiguous bare `--top` must be qualified. Structs, enums, views, aliases, and
+  traits/operators still include leaf-keyed tables. Those remaining declaration
+  categories stay crate-unique until their tables and qualified output
+  identities are lifted.
 
 ## IR
 

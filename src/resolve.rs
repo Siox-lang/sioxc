@@ -22,8 +22,8 @@
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Lookup is module-aware: loaded modules do not leak declarations into one
 //!   another, imports bind the exact named module, and qualified paths select
-//!   that module. Free functions and module constants retain that identity
-//!   through type checking, constant evaluation, and lowering;
+//!   that module. Entities, free functions, and module constants retain that
+//!   identity through type checking, elaboration, evaluation, and lowering;
 //!   declaration categories whose later semantic tables are still leaf-keyed
 //!   remain crate-unique for now. Several source files may belong to the same
 //!   module and therefore share its private declarations.
@@ -841,6 +841,7 @@ impl<'a> Resolver<'a> {
                 (self.out.kind_of(prev), self.out.kind_of(id)),
                 (Some(DefKind::Fn), Some(DefKind::Fn))
                     | (Some(DefKind::Const), Some(DefKind::Const))
+                    | (Some(DefKind::Entity), Some(DefKind::Entity))
             ) && self
                 .out
                 .def(prev)

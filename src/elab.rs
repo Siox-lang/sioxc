@@ -137,6 +137,10 @@ pub struct Hierarchy {
     pub roots: Vec<InstanceId>,
     pub instances: Vec<Instance>,
     pub(crate) expr_types: HashMap<Span, Ty>,
+    /// Stable display/storage spelling for each entity declaration. Keeping it
+    /// beside the instance forest lets downstream consumers disambiguate equal
+    /// root leaves without rediscovering module ownership from source text.
+    entity_names: HashMap<DefId, String>,
 }
 
 impl Hierarchy {
@@ -144,16 +148,46 @@ impl Hierarchy {
         &self.instances[id.0 as usize]
     }
 
+    /// Qualified declaration name for an entity identity.
+    pub fn qualified_entity_name(&self, id: DefId) -> Option<&str> {
+        self.entity_names.get(&id).map(String::as_str)
+    }
+
+    /// Root path used by IR and output consumers. Preserve the familiar leaf
+    /// for an unambiguous root; qualify only when two roots share that leaf.
+    pub fn root_path(&self, root: InstanceId) -> String {
+        let instance = self.instance(root);
+        let collides = self
+            .roots
+            .iter()
+            .filter(|&&candidate| self.instance(candidate).entity == instance.entity)
+            .count()
+            > 1;
+        if collides {
+            self.qualified_entity_name(instance.entity_id)
+                .unwrap_or(&instance.entity)
+                .to_string()
+        } else {
+            instance.entity.clone()
+        }
+    }
+
     /// Render the instance tree (backs `siox tree`).
     pub fn to_tree_string(&self) -> String {
         let mut out = String::new();
         for &root in &self.roots {
-            self.write_instance(&mut out, root, 0, true);
+            self.write_instance(&mut out, root, 0, Some(&self.root_path(root)));
         }
         out
     }
 
-    fn write_instance(&self, out: &mut String, id: InstanceId, depth: usize, is_root: bool) {
+    fn write_instance(
+        &self,
+        out: &mut String,
+        id: InstanceId,
+        depth: usize,
+        root_name: Option<&str>,
+    ) {
         let inst = self.instance(id);
         let pad = "  ".repeat(depth);
         let params = format_params(&inst.params);
@@ -166,8 +200,8 @@ impl Hierarchy {
                 None => format!(" #[{n}]"),
             })
             .collect::<String>();
-        if is_root {
-            out.push_str(&format!("{pad}{}{params}{tag}{attrs}\n", inst.entity));
+        if let Some(root_name) = root_name {
+            out.push_str(&format!("{pad}{root_name}{params}{tag}{attrs}\n"));
         } else {
             out.push_str(&format!(
                 "{pad}{}: {}{params}{tag}{attrs}\n",
@@ -178,7 +212,7 @@ impl Hierarchy {
             out.push_str(&format!("{pad}  .{}: {} <- {}\n", c.port, c.ty, c.signal));
         }
         for &child in &inst.children {
-            self.write_instance(out, child, depth + 1, false);
+            self.write_instance(out, child, depth + 1, None);
         }
     }
 }
@@ -332,6 +366,9 @@ impl<'a> Elaborator<'a> {
                     Item::Entity(e) => {
                         if let Some(id) = self.resolved.declared(e.name.span) {
                             self.entities.insert(id, e);
+                            if let Some(name) = self.resolved.qualified_name(id) {
+                                self.out.entity_names.insert(id, name);
+                            }
                         }
                     }
                     Item::Struct(_) => {}
@@ -1628,6 +1665,13 @@ mod tests {
         let resolved = crate::resolve::resolve(&modules, &mut sink);
         let typed = crate::types::check(&modules, &resolved, &mut sink);
         let hierarchy = elaborate(&modules, &resolved, &typed, &mut sink);
+
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(crate::diag::codes::DUPLICATE_ITEM)),
+            "separate modules may declare the same entity leaf"
+        );
 
         let root = hierarchy.instance(hierarchy.roots[0]);
         let children: Vec<&Instance> = root

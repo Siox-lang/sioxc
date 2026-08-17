@@ -291,6 +291,12 @@ fn helper() -> integer { return 0; }     // module-private
 pub fn utility() -> integer { return 1; }
 ```
 
+The module path is part of declaration identity. Separate modules may therefore
+export the same entity leaf (`a::Root`, `b::Root`); a qualified path or import
+selects one. If both are roots of the same compilation, tree/IR/waveform output
+qualifies their root scopes. Likewise, `sioxc --top Root` is rejected when the
+leaf is ambiguous and `sioxc --top a::Root` selects exactly that declaration.
+
 A struct's fields describe representation and are private to the owning type
 by default. Any implementation of that exact type in its defining module may
 inspect and construct the representation, including an `impl` in another file
@@ -648,6 +654,10 @@ entity CounterTest { ... }
 #[library = "work", name = "ExternalCounter"]
 extern entity Counter { ... }
 ```
+
+More than one `#[test]` entity may share a leaf when they belong to different
+modules. Generated executables report and filter them by qualified test name,
+and keep their simulation roots and native function symbols independent.
 
 The compiler may have special passes that consume known attributes, but normal language expressions should not depend on arbitrary metadata.
 

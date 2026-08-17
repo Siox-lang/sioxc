@@ -216,6 +216,96 @@ fn native_calls_and_constants_keep_equal_leaves_module_specific() {
 }
 
 #[test]
+fn native_equal_test_entity_leaves_keep_distinct_roots_and_symbols() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!("siox_root_identity_{}", std::process::id()));
+    std::fs::create_dir_all(directory.join("a")).unwrap();
+    std::fs::create_dir_all(directory.join("b")).unwrap();
+    std::fs::write(
+        directory.join("a/root.siox"),
+        "module a::root; pub const load_a: integer = 1; \
+         entity Worker { y: integer out } impl Worker { y = 11; } \
+         #[test] pub entity Same {} \
+         impl Same { let dut: Worker = {}; await 1ns; \
+                     assert!(dut.y == 11, \"module a root\"); }",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("b/root.siox"),
+        "module b::root; pub const load_b: integer = 2; \
+         entity Worker { y: integer out } impl Worker { y = 22; } \
+         #[test] pub entity Same {} \
+         impl Same { let dut: Worker = {}; await 1ns; \
+                     assert!(dut.y == 22, \"module b root\"); }",
+    )
+    .unwrap();
+    let source = directory.join("identity.siox");
+    let output = directory.join("identity-test");
+    let vcd = directory.join("identity.vcd");
+    std::fs::write(
+        &source,
+        "module identity; using a::root::{load_a}; using b::root::{load_b};",
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "namespaced root fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output)
+        .args(["--vcd", vcd.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "namespaced roots failed:\n{report}");
+    assert!(report.contains("test a::root::Same ... ok"), "{report}");
+    assert!(report.contains("test b::root::Same ... ok"), "{report}");
+    let trace = std::fs::read_to_string(&vcd).unwrap();
+    assert!(
+        trace.contains("$scope module a::root::Same $end"),
+        "{trace}"
+    );
+    assert!(
+        trace.contains("$scope module b::root::Same $end"),
+        "{trace}"
+    );
+
+    let filtered = Command::new(&output).arg("b::root::Same").output().unwrap();
+    let filtered_report = String::from_utf8_lossy(&filtered.stdout).to_string()
+        + &String::from_utf8_lossy(&filtered.stderr);
+    assert!(
+        filtered.status.success(),
+        "filtered root failed:\n{filtered_report}"
+    );
+    assert!(
+        filtered_report.contains("running 1 test"),
+        "{filtered_report}"
+    );
+    assert!(
+        filtered_report.contains("test b::root::Same ... ok")
+            && !filtered_report.contains("test a::root::Same ... ok"),
+        "{filtered_report}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn test_no_run_builds_a_runnable_binary() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

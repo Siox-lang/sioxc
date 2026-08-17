@@ -8438,3 +8438,24 @@ that is fixed with a dedicated qualified-range regression. Gates: 347
 all-feature library tests plus every Rust integration/native test pass, strict
 all-target/all-feature Clippy is clean, and all 171 corpus fixtures compile,
 execute, and pass waveform checks.
+
+### 2026-08-17 — Codex — namespaced entity roots
+
+Editing resolver, hierarchy/root naming, compiler top selection, IR lowering,
+native test generation, and their documentation/regressions. Entity
+elaboration already carries `DefId`, but equal leaves are still rejected at
+resolution and equal-named roots reuse IR paths and C test symbols. This slice
+will admit distinct module entities, qualify only colliding root paths, reject
+ambiguous bare `--top` selections, and prove two equal-named native tests run
+independently.
+
+Completed the entity-identity slice. Resolver admission, hierarchy root paths,
+tree/IR/waveform naming, compiler top selection, native test item lookup, and C
+symbols now share stable entity identity without changing ordinary single-root
+paths. The native regression compiles two `Same` tests from different modules,
+runs both, verifies both VCD root scopes, and filters one by qualified name.
+Its child entities also share `Worker`; the final audit migrated native
+positional/value connection and port-family metadata from leaf keys to `DefId`.
+Gates: 349 all-feature library tests plus every Rust integration/native test
+pass, strict all-target/all-feature Clippy is clean, and all 171 corpus fixtures
+compile, execute, and pass waveform checks.

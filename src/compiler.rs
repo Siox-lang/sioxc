@@ -396,7 +396,7 @@ impl Compiler {
                 &mut result.diagnostics,
             ),
             Emit::Object { top } => {
-                let top = match select_top(&result.modules, top.as_deref()) {
+                let top = match select_top(&result.modules, resolved, top.as_deref()) {
                     Ok(top) => top,
                     Err(failure) => {
                         result.failure = Some(failure);
@@ -577,27 +577,62 @@ fn backend_unavailable() -> CompileFailure {
     )
 }
 
-fn select_top(modules: &[Module], explicit: Option<&str>) -> Result<String, CompileFailure> {
-    if let Some(top) = explicit {
-        return Ok(top.to_string());
-    }
-    let tops: Vec<&str> = modules
+fn select_top(
+    modules: &[Module],
+    resolved: &Resolved,
+    explicit: Option<&str>,
+) -> Result<String, CompileFailure> {
+    let entities: Vec<_> = modules
         .iter()
         .flat_map(|module| &module.items)
         .filter_map(|item| match item {
-            Item::Entity(entity)
-                if entity.attrs.iter().any(|attribute| {
-                    attribute
-                        .name
-                        .segments
-                        .last()
-                        .is_some_and(|name| name.text == "top")
-                }) =>
-            {
-                Some(entity.name.text.as_str())
-            }
+            Item::Entity(entity) => resolved.declared(entity.name.span).map(|id| {
+                let qualified = resolved
+                    .qualified_name(id)
+                    .unwrap_or_else(|| entity.name.text.clone());
+                (entity, qualified)
+            }),
             _ => None,
         })
+        .collect();
+
+    if let Some(top) = explicit {
+        if let Some((_, qualified)) = entities.iter().find(|(_, qualified)| qualified == top) {
+            return Ok(qualified.clone());
+        }
+        let matches: Vec<&str> = entities
+            .iter()
+            .filter(|(entity, _)| entity.name.text == top)
+            .map(|(_, qualified)| qualified.as_str())
+            .collect();
+        return match matches.as_slice() {
+            [qualified] => Ok((*qualified).to_string()),
+            [] => Err(CompileFailure::new(
+                FailureKind::Selection,
+                format!("no entity named `{top}`"),
+            )),
+            _ => Err(CompileFailure::new(
+                FailureKind::Selection,
+                format!(
+                    "entity name `{top}` is ambiguous ({}); select one by its qualified name",
+                    matches.join(", ")
+                ),
+            )),
+        };
+    }
+
+    let tops: Vec<&str> = entities
+        .iter()
+        .filter(|(entity, _)| {
+            entity.attrs.iter().any(|attribute| {
+                attribute
+                    .name
+                    .segments
+                    .last()
+                    .is_some_and(|name| name.text == "top")
+            })
+        })
+        .map(|(_, qualified)| qualified.as_str())
         .collect();
     match tops.as_slice() {
         [top] => Ok((*top).to_string()),
@@ -761,8 +796,10 @@ fn tokens_string(source: &str, tokens: &[Token]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::discover_import_modules;
+    use super::{discover_import_modules, select_top, FailureKind};
     use crate::diag::{DiagnosticSink, FileId};
+    use crate::resolve;
+    use crate::syntax;
     use crate::syntax::lexer::Lexer;
 
     #[test]
@@ -780,6 +817,32 @@ mod tests {
                 vec!["alpha".to_string(), "math".to_string()],
                 vec!["beta".to_string(), "logic".to_string()],
             ]
+        );
+    }
+
+    #[test]
+    fn explicit_top_requires_qualification_when_entity_leaves_collide() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [
+            syntax::parse_module(
+                FileId(0),
+                "module a; pub entity Root {} impl Root {}",
+                &mut sink,
+            ),
+            syntax::parse_module(
+                FileId(1),
+                "module b; pub entity Root {} impl Root {}",
+                &mut sink,
+            ),
+        ];
+        let resolved = resolve::resolve(&modules, &mut sink);
+        let ambiguous = select_top(&modules, &resolved, Some("Root")).unwrap_err();
+        assert_eq!(ambiguous.kind, FailureKind::Selection);
+        assert!(ambiguous.message.contains("a::Root"));
+        assert!(ambiguous.message.contains("b::Root"));
+        assert_eq!(
+            select_top(&modules, &resolved, Some("b::Root")).unwrap(),
+            "b::Root"
         );
     }
 }
