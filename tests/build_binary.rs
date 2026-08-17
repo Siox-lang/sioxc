@@ -147,7 +147,7 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
 }
 
 #[test]
-fn native_calls_keep_equal_function_leaves_module_specific() {
+fn native_calls_and_constants_keep_equal_leaves_module_specific() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -160,13 +160,15 @@ fn native_calls_keep_equal_function_leaves_module_specific() {
     std::fs::write(
         directory.join("a/math.siox"),
         "module a::math; pub const load_a: integer = 1; \
-         pub fn select() -> integer { return 11; }",
+         pub const VALUE: integer = 11; \
+         pub fn select() -> integer { return VALUE; }",
     )
     .unwrap();
     std::fs::write(
         directory.join("b/math.siox"),
         "module b::math; pub const load_b: integer = 2; \
-         pub fn select() -> integer { return 22; }",
+         pub const VALUE: integer = 22; \
+         pub fn select() -> integer { return VALUE; }",
     )
     .unwrap();
     let source = directory.join("identity.siox");
@@ -180,8 +182,10 @@ fn native_calls_keep_equal_function_leaves_module_specific() {
            impl FunctionIdentity {
                let left: integer = a::math::select();
                let right: integer = b::math::select();
-               assert!(left == 11 and right == 22 and load_a == 1 and load_b == 2,
-                       "qualified calls keep their module identity");
+               assert!(left == 11 and right == 22 and
+                       a::math::VALUE == 11 and b::math::VALUE == 22 and
+                       load_a == 1 and load_b == 2,
+                       "qualified calls and constants keep their module identity");
            }"#,
     )
     .unwrap();

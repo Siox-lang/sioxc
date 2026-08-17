@@ -8416,3 +8416,25 @@ derivation, while still allowing the backing field itself to remain private.
 Added the entity-method architecture gap to `TODO.md`. Gates: 343 library tests
 plus all integration/native tests pass, strict all-target/all-feature Clippy is
 clean, and all 171 corpus fixtures compile, execute, and pass waveform checks.
+
+### 2026-08-17 — Codex — namespaced module constants
+
+Migrating module constants from leaf spellings to resolver-backed qualified
+identity through type inference, constant evaluation, IR lowering, and native
+test generation. Implementation-local constants and parameters remain local
+leaf bindings. Regression coverage will use equal constant leaves from two
+modules, including a real linked native executable, before the resolver's
+temporary cross-module duplicate guard is relaxed for constants.
+
+The audit also found that constant-function evaluation discarded its caller's
+module-constant environment. Including that path in this slice, plus the
+architecture/language and roadmap updates, so the namespace guarantee covers
+constants reached indirectly rather than only direct expressions.
+
+Completed the namespace migration across resolver, type facts, scalar/real/
+range/array/struct IR tables, constant functions, and native emission. The
+corpus exposed one remaining leaf lookup in packed type-width calculation;
+that is fixed with a dedicated qualified-range regression. Gates: 347
+all-feature library tests plus every Rust integration/native test pass, strict
+all-target/all-feature Clippy is clean, and all 171 corpus fixtures compile,
+execute, and pass waveform checks.

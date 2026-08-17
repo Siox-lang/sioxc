@@ -273,6 +273,10 @@ struct Checker<'a> {
     /// to type as `Error` even for a known declaration, suppressing checks in
     /// assignments, conditions, arguments, and enclosing expressions.
     fn_return_types: HashMap<DefId, Option<Type>>,
+    /// Module constant definition -> its declared value type. Constant paths
+    /// are values, not nominal types; retaining the declaration identity lets
+    /// equal leaves in different modules keep distinct contracts.
+    const_types: HashMap<DefId, Type>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -446,6 +450,7 @@ impl<'a> Checker<'a> {
             fn_arity: HashMap::new(),
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
+            const_types: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -879,6 +884,11 @@ impl<'a> Checker<'a> {
                             .collect(),
                     );
                     self.fn_return_types.insert(id, f.ret.clone());
+                }
+            }
+            Item::Const(constant) => {
+                if let Some(id) = self.resolved.declared(constant.name.span) {
+                    self.const_types.insert(id, constant.ty.clone());
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {
@@ -6074,6 +6084,14 @@ impl<'a> Checker<'a> {
                 family: None,
             },
             Expr::Path(p) => {
+                if let Some(ty) = self
+                    .resolved
+                    .resolved(p.span)
+                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))
+                    .and_then(|id| self.const_types.get(&id))
+                {
+                    return self.ast_ty(ty);
+                }
                 if p.segments.len() == 1 {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
                 } else {
@@ -8424,6 +8442,35 @@ mod tests {
             .diagnostics()
             .iter()
             .all(|diagnostic| diagnostic.code != Some(codes::DUPLICATE_ITEM)));
+    }
+
+    #[test]
+    fn equal_constant_leaves_keep_module_specific_types() {
+        let integer = "module a;\npub const VALUE: integer = 11;\n";
+        let real = "module b;\npub const VALUE: real = 2.5;\n";
+        let valid = "module user;\nfn use_both() {\n  let i: integer = a::VALUE;\n  let r: real = b::VALUE;\n}\n";
+        let sink = check_modules(&[(integer, FileId(0)), (real, FileId(1)), (valid, FileId(2))]);
+        assert!(sink.diagnostics().iter().all(|diagnostic| {
+            !matches!(
+                diagnostic.code,
+                Some(codes::TYPE_MISMATCH | codes::DUPLICATE_ITEM)
+            )
+        }));
+
+        let invalid = "module user;\nfn wrong() {\n  let i: integer = b::VALUE;\n  let r: real = a::VALUE;\n}\n";
+        let sink = check_modules(&[
+            (integer, FileId(3)),
+            (real, FileId(4)),
+            (invalid, FileId(5)),
+        ]);
+        assert_eq!(
+            sink.diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH))
+                .count(),
+            1,
+            "the real constant must not be typed from the integer declaration; integer-to-real promotion remains legal"
+        );
     }
 
     #[test]

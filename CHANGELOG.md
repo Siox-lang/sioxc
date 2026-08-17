@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Module constants now retain resolver-backed namespace identity.** Equal
+  constant leaves may coexist in different modules and resolve correctly in
+  declared-type checking, constant functions, widths and ranges, IR folding,
+  and generated native tests. Implementation constants remain lexical to their
+  owning `impl`; qualified module range constants no longer collapse to a
+  zero-width signal.
 - **IR now owns concrete recursive source layouts.** `Design::source_layouts`
   persists nominal structs/views with view-field directions, substituted nested
   fields, ordinary and packed arrays with written ranges, scalar domains, and

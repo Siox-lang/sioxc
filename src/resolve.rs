@@ -22,7 +22,8 @@
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Lookup is module-aware: loaded modules do not leak declarations into one
 //!   another, imports bind the exact named module, and qualified paths select
-//!   that module. Free functions retain that identity through lowering;
+//!   that module. Free functions and module constants retain that identity
+//!   through type checking, constant evaluation, and lowering;
 //!   declaration categories whose later semantic tables are still leaf-keyed
 //!   remain crate-unique for now. Several source files may belong to the same
 //!   module and therefore share its private declarations.
@@ -836,14 +837,16 @@ impl<'a> Resolver<'a> {
                 .or_insert(id);
         }
         if let Some(prev) = self.globals.get(name).copied() {
-            let separate_free_functions = self.out.kind_of(prev) == Some(DefKind::Fn)
-                && self.out.kind_of(id) == Some(DefKind::Fn)
-                && self
-                    .out
-                    .def(prev)
-                    .and_then(|definition| definition.module.as_deref())
-                    != current_module;
-            if self.out.kind_of(prev) != Some(DefKind::Builtin) && !separate_free_functions {
+            let separate_namespaced_values = matches!(
+                (self.out.kind_of(prev), self.out.kind_of(id)),
+                (Some(DefKind::Fn), Some(DefKind::Fn))
+                    | (Some(DefKind::Const), Some(DefKind::Const))
+            ) && self
+                .out
+                .def(prev)
+                .and_then(|definition| definition.module.as_deref())
+                != current_module;
+            if self.out.kind_of(prev) != Some(DefKind::Builtin) && !separate_namespaced_values {
                 let mut diag = Diagnostic::error(format!("duplicate item `{name}`"))
                     .with_code(codes::DUPLICATE_ITEM)
                     .at(span)
@@ -2628,6 +2631,48 @@ mod tests {
             })
             .count();
         assert_eq!(wrong, 1, "only the wrong qualified path is rejected");
+    }
+
+    #[test]
+    fn equal_constant_leaves_keep_their_module_identity() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [
+            crate::syntax::parse_module(
+                FileId(0),
+                "module a; pub const VALUE: integer = 11;",
+                &mut sink,
+            ),
+            crate::syntax::parse_module(
+                FileId(1),
+                "module b; pub const VALUE: integer = 22;",
+                &mut sink,
+            ),
+            crate::syntax::parse_module(
+                FileId(2),
+                "module user; const SUM: integer = a::VALUE + b::VALUE;",
+                &mut sink,
+            ),
+        ];
+        let resolved = resolve(&modules, &mut sink);
+        assert!(sink
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != Some(codes::DUPLICATE_ITEM)));
+        let Item::Const(sum) = &modules[2].items[0] else {
+            panic!("expected SUM constant");
+        };
+        let Expr::Binary { lhs, rhs, .. } = &sum.value else {
+            panic!("expected binary initializer");
+        };
+        let ids = [lhs.as_ref(), rhs.as_ref()].map(|expression| {
+            let Expr::Path(path) = expression else {
+                panic!("expected constant path");
+            };
+            resolved.resolved(path.span).expect("resolved constant")
+        });
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(resolved.qualified_name(ids[0]).as_deref(), Some("a::VALUE"));
+        assert_eq!(resolved.qualified_name(ids[1]).as_deref(), Some("b::VALUE"));
     }
 
     #[test]

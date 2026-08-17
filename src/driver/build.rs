@@ -171,11 +171,11 @@ pub fn build(
         }
     }
     // Module consts (LOW/HIGH, user consts), to a fixpoint so order-independent.
-    let const_decls: Vec<&ast::ConstDecl> = modules
+    let const_decls: Vec<(String, &ast::ConstDecl)> = modules
         .iter()
         .flat_map(|m| &m.items)
         .filter_map(|it| match it {
-            ast::Item::Const(c) => Some(c),
+            ast::Item::Const(c) => Some((fns.constant_decl_key(c), c)),
             _ => None,
         })
         .collect();
@@ -641,7 +641,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         // same routine as the module-level ones so the kinds cannot diverge.
         let mut scoped_decls = const_decls.clone();
         scoped_decls.extend(items.iter().filter_map(|item| match item {
-            ast::ImplItem::Const(c) => Some(c),
+            ast::ImplItem::Const(c) => Some((c.name.text.clone(), c)),
             _ => None,
         }));
         let ConstTables {
@@ -1274,11 +1274,12 @@ struct Ctx<'a> {
     /// Declared type head of a testbench local (`let p: Pkt` -> "Pkt"), for
     /// resolving a method call's receiver type.
     local_types: std::cell::RefCell<HashMap<String, String>>,
-    /// Module-level `const` values, for bare-name references.
+    /// Module-level `const` values keyed by resolved qualified identity, plus
+    /// implementation-local constants keyed by their local leaf.
     const_exprs: &'a HashMap<String, String>,
     /// Module-level `const` lookup tables, one expression per element.
     const_array_exprs: &'a HashMap<String, Vec<String>>,
-    /// Integer module constants, also usable as local type widths.
+    /// Integer constants, also usable as local type widths.
     consts: &'a HashMap<String, u128>,
     /// Module constants declared as `real`; their stored C expressions are f64
     /// bit patterns and must be decoded when used as operands.
@@ -1701,11 +1702,19 @@ fn eval_c_const(
             })
         }
         ast::Expr::CharLit { ch, .. } => Some(logic_lit_value(*ch, enums) as u128),
-        ast::Expr::Path(p) if p.segments.len() == 1 => consts.get(&p.segments[0].text).copied(),
-        ast::Expr::Path(p) if p.segments.len() >= 2 => enums
-            .get(&p.segments[0].text)
-            .and_then(|m| m.get(&p.segments[1].text))
-            .map(|&d| d as u128),
+        ast::Expr::Path(path) => fns
+            .constant_path_key(path)
+            .and_then(|key| consts.get(&key).copied())
+            .or_else(|| {
+                (path.segments.len() >= 2)
+                    .then(|| {
+                        enums
+                            .get(&path.segments[0].text)
+                            .and_then(|variants| variants.get(&path.segments[1].text))
+                            .map(|&discriminant| discriminant as u128)
+                    })
+                    .flatten()
+            }),
         ast::Expr::Unary { op, rhs, .. } => {
             let value = eval_c_const(rhs, consts, enums, fns)?;
             Some(match op {
@@ -1755,30 +1764,37 @@ fn emit_c_const(
     expression: &ast::Expr,
     constants: &HashMap<String, String>,
     enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<String> {
     match expression {
         ast::Expr::Int { text, .. } => Some(c_word_literal(&parse_word_literal(text))),
         ast::Expr::CharLit { ch, .. } => {
             Some(format!("((sx_value){})", logic_lit_value(*ch, enums)))
         }
-        ast::Expr::Path(path) if path.segments.len() == 1 => {
-            constants.get(&path.segments[0].text).cloned()
-        }
-        ast::Expr::Path(path) if path.segments.len() >= 2 => enums
-            .get(&path.segments[0].text)
-            .and_then(|variants| variants.get(&path.segments[1].text))
-            .map(|value| format!("((sx_value){value}ULL)")),
+        ast::Expr::Path(path) => fns
+            .constant_path_key(path)
+            .and_then(|key| constants.get(&key).cloned())
+            .or_else(|| {
+                (path.segments.len() >= 2)
+                    .then(|| {
+                        enums
+                            .get(&path.segments[0].text)
+                            .and_then(|variants| variants.get(&path.segments[1].text))
+                            .map(|value| format!("((sx_value){value}ULL)"))
+                    })
+                    .flatten()
+            }),
         ast::Expr::Unary {
             op: ast::UnOp::Neg,
             rhs,
             ..
         } => {
-            let rhs = emit_c_const(rhs, constants, enums)?;
+            let rhs = emit_c_const(rhs, constants, enums, fns)?;
             Some(format!("(-({rhs}))"))
         }
         ast::Expr::Binary { op, lhs, rhs, .. } => {
-            let lhs = emit_c_const(lhs, constants, enums)?;
-            let rhs = emit_c_const(rhs, constants, enums)?;
+            let lhs = emit_c_const(lhs, constants, enums, fns)?;
+            let rhs = emit_c_const(rhs, constants, enums, fns)?;
             match op {
                 ast::BinOp::Div => Some(format!("sx_udiv(({lhs}), ({rhs}))")),
                 ast::BinOp::Shl => Some(format!("sx_shl(({lhs}), ({rhs}))")),
@@ -1790,9 +1806,9 @@ fn emit_c_const(
             cond, then, els, ..
         } => Some(format!(
             "(({}) ? ({}) : ({}))",
-            emit_c_const(cond, constants, enums)?,
-            emit_c_const(then, constants, enums)?,
-            emit_c_const(els, constants, enums)?
+            emit_c_const(cond, constants, enums, fns)?,
+            emit_c_const(then, constants, enums, fns)?,
+            emit_c_const(els, constants, enums, fns)?
         )),
         ast::Expr::SuffixLit { text, suffix, .. } => {
             let value = c_word_literal(&parse_word_literal(text));
@@ -1811,6 +1827,7 @@ fn emit_c_real_const(
     consts: &HashMap<String, String>,
     real_consts: &std::collections::HashSet<String>,
     enums: &HashMap<String, HashMap<String, u64>>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<String> {
     match e {
         ast::Expr::Int { text, .. } => {
@@ -1820,10 +1837,10 @@ fn emit_c_real_const(
                 .ok()
                 .map(|_| format!("((double)({normalized}))"))
         }
-        ast::Expr::Path(path) if path.segments.len() == 1 => {
-            let name = &path.segments[0].text;
-            let value = consts.get(name)?;
-            Some(if real_consts.contains(name) {
+        ast::Expr::Path(path) => {
+            let key = fns.constant_path_key(path)?;
+            let value = consts.get(&key)?;
+            Some(if real_consts.contains(&key) {
                 format!("sx_f64({value})")
             } else {
                 format!("((double)({value}))")
@@ -1835,7 +1852,7 @@ fn emit_c_real_const(
             ..
         } => Some(format!(
             "(-({}))",
-            emit_c_real_const(rhs, consts, real_consts, enums)?
+            emit_c_real_const(rhs, consts, real_consts, enums, fns)?
         )),
         ast::Expr::Binary { op, lhs, rhs, .. }
             if matches!(
@@ -1845,18 +1862,18 @@ fn emit_c_real_const(
         {
             Some(format!(
                 "(({}) {} ({}))",
-                emit_c_real_const(lhs, consts, real_consts, enums)?,
+                emit_c_real_const(lhs, consts, real_consts, enums, fns)?,
                 c_binop(op).ok()?,
-                emit_c_real_const(rhs, consts, real_consts, enums)?
+                emit_c_real_const(rhs, consts, real_consts, enums, fns)?
             ))
         }
         ast::Expr::IfExpr {
             cond, then, els, ..
         } => Some(format!(
             "(({}) ? ({}) : ({}))",
-            emit_c_const(cond, consts, enums)?,
-            emit_c_real_const(then, consts, real_consts, enums)?,
-            emit_c_real_const(els, consts, real_consts, enums)?
+            emit_c_const(cond, consts, enums, fns)?,
+            emit_c_real_const(then, consts, real_consts, enums, fns)?,
+            emit_c_real_const(els, consts, real_consts, enums, fns)?
         )),
         ast::Expr::SuffixLit { text, suffix, .. }
             if suffix.text == "Hz" || suffix.text.ends_with("Hz") =>
@@ -1985,7 +2002,9 @@ impl Ctx<'_> {
         let mut current = ty;
         let mut seen = std::collections::HashSet::new();
         loop {
-            if let Some(indices) = sized_string_indices(current, self.const_ranges, self.consts) {
+            if let Some(indices) =
+                sized_string_indices(current, self.const_ranges, self.consts, self.fns)
+            {
                 return Some(indices);
             }
             let ast::Type::Path(path) = current else {
@@ -2158,7 +2177,7 @@ impl Ctx<'_> {
         let declared_indices = match ty {
             ast::Type::Indexed {
                 index: Some(index), ..
-            } => index_values(index, self.const_ranges, self.consts),
+            } => index_values(index, self.const_ranges, self.consts, self.fns),
             _ => None,
         };
         let indices = declared_indices
@@ -2247,12 +2266,13 @@ impl Ctx<'_> {
         ty: &ast::Type,
         b: &mut String,
     ) -> Result<(), String> {
-        if let Some((left, right)) = type_index_bounds(ty, self.const_ranges, self.consts) {
+        if let Some((left, right)) = type_index_bounds(ty, self.const_ranges, self.consts, self.fns)
+        {
             self.local_ranges
                 .borrow_mut()
                 .insert(prefix.to_string(), (left, right));
         }
-        if let Some(indices) = sized_string_indices(ty, self.const_ranges, self.consts) {
+        if let Some(indices) = sized_string_indices(ty, self.const_ranges, self.consts, self.fns) {
             self.local_types
                 .borrow_mut()
                 .insert(prefix.to_string(), "string".into());
@@ -3424,7 +3444,8 @@ impl Ctx<'_> {
             }
             return Some((
                 head.to_string(),
-                u32::try_from(index_values(i, self.const_ranges, self.consts)?.len()).ok()?,
+                u32::try_from(index_values(i, self.const_ranges, self.consts, self.fns)?.len())
+                    .ok()?,
             ));
         }
         None
@@ -3447,7 +3468,10 @@ impl Ctx<'_> {
                 return None;
             }
         }
-        Some((base, index_values(index, self.const_ranges, self.consts)?))
+        Some((
+            base,
+            index_values(index, self.const_ranges, self.consts, self.fns)?,
+        ))
     }
 
     /// The bit width a testbench name carries: a local's declared width or the
@@ -3752,7 +3776,8 @@ impl Ctx<'_> {
             if !self.families.contains(head) {
                 return None;
             }
-            return u32::try_from(index_values(i, self.const_ranges, self.consts)?.len()).ok();
+            return u32::try_from(index_values(i, self.const_ranges, self.consts, self.fns)?.len())
+                .ok();
         }
         None
     }
@@ -3809,11 +3834,9 @@ impl Ctx<'_> {
                                 .borrow_mut()
                                 .insert(l.name.text.clone(), fam);
                         }
-                        if let Some((left, right)) = l
-                            .ty
-                            .as_ref()
-                            .and_then(|ty| type_index_bounds(ty, self.const_ranges, self.consts))
-                        {
+                        if let Some((left, right)) = l.ty.as_ref().and_then(|ty| {
+                            type_index_bounds(ty, self.const_ranges, self.consts, self.fns)
+                        }) {
                             self.local_ranges
                                 .borrow_mut()
                                 .insert(l.name.text.clone(), (left, right));
@@ -5489,17 +5512,23 @@ impl Ctx<'_> {
             }
             _ => {}
         }
+        if self
+            .fns
+            .constant_expr_key(e)
+            .is_some_and(|key| self.real_consts.contains(&key))
+        {
+            return true;
+        }
         let Some(path) = expr_path(e) else {
             return false;
         };
-        if self.real_consts.contains(&path)
-            || self
-                .fn_type_env
-                .borrow()
-                .last()
-                .and_then(|types| types.get(&path))
-                .map(String::as_str)
-                == Some("real")
+        if self
+            .fn_type_env
+            .borrow()
+            .last()
+            .and_then(|types| types.get(&path))
+            .map(String::as_str)
+            == Some("real")
         {
             return true;
         }
@@ -5677,6 +5706,13 @@ impl Ctx<'_> {
             }
             _ => {}
         }
+        if self
+            .fns
+            .constant_expr_key(e)
+            .is_some_and(|key| self.integer_consts.contains(&key))
+        {
+            return true;
+        }
         let Some(path) = expr_path(e) else {
             return false;
         };
@@ -5686,7 +5722,6 @@ impl Ctx<'_> {
             .and_then(|types| types.get(&path))
             .map(String::as_str)
             == Some("integer")
-            || self.integer_consts.contains(&path)
             || self
                 .local_types
                 .borrow()
@@ -6889,7 +6924,11 @@ impl Ctx<'_> {
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 if let Some(&id) = self.map.get(&p.segments[0].text) {
                     format!("sx_read({})", id.0)
-                } else if let Some(value) = self.const_exprs.get(&p.segments[0].text) {
+                } else if let Some(value) = self
+                    .fns
+                    .constant_path_key(p)
+                    .and_then(|key| self.const_exprs.get(&key))
+                {
                     value.clone()
                 } else {
                     // Every binder has been consulted by now — a function
@@ -6901,6 +6940,13 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::Path(p) if p.segments.len() >= 2 => {
+                if let Some(value) = self
+                    .fns
+                    .constant_path_key(p)
+                    .and_then(|key| self.const_exprs.get(&key))
+                {
+                    return Ok(value.clone());
+                }
                 // Enum::Variant -> discriminant.
                 let d = self
                     .enums
@@ -6919,9 +6965,13 @@ impl Ctx<'_> {
             // forms missed the table entirely and were reported as something
             // the emitter cannot translate.
             ast::Expr::Index { base, index, .. }
-                if expr_path(base).is_some_and(|b| self.const_array_exprs.contains_key(&b)) =>
+                if self
+                    .fns
+                    .constant_expr_key(base)
+                    .is_some_and(|key| self.const_array_exprs.contains_key(&key)) =>
             {
-                let values = &self.const_array_exprs[&expr_path(base).unwrap()];
+                let key = self.fns.constant_expr_key(base).unwrap();
+                let values = &self.const_array_exprs[&key];
                 let idx = self.expr(index)?;
                 // C folds the chain away when the index is a literal.
                 let mut out = String::from("0ULL");
@@ -6965,7 +7015,11 @@ impl Ctx<'_> {
                 // mangled C local; otherwise it's a connected signal.
                 if self.locals.borrow().contains(&path) {
                     c_local_ident(&path)
-                } else if let Some(value) = self.const_exprs.get(&path) {
+                } else if let Some(value) = self
+                    .fns
+                    .constant_expr_key(e)
+                    .and_then(|key| self.const_exprs.get(&key))
+                {
                     // A struct constant's field. It has no signal — a constant
                     // is a value, not storage — so the dotted path answers from
                     // the constant table, one entry per field, exactly as a
@@ -7682,7 +7736,7 @@ fn struct_const_fields<'a>(
 }
 
 fn const_tables(
-    const_decls: &[&ast::ConstDecl],
+    const_decls: &[(String, &ast::ConstDecl)],
     enums: &HashMap<String, HashMap<String, u64>>,
     fns: &FunctionIndex<'_>,
     type_aliases: &HashMap<String, ast::Type>,
@@ -7690,23 +7744,27 @@ fn const_tables(
 ) -> ConstTables {
     let real_consts: std::collections::HashSet<String> = const_decls
         .iter()
-        .filter(|declaration| resolved_type_name(&declaration.ty, type_aliases) == Some("real"))
-        .map(|declaration| declaration.name.text.clone())
+        .filter(|(_, declaration)| {
+            resolved_type_name(&declaration.ty, type_aliases) == Some("real")
+        })
+        .map(|(key, _)| key.clone())
         .collect();
     let integer_consts: std::collections::HashSet<String> = const_decls
         .iter()
-        .filter(|declaration| resolved_type_name(&declaration.ty, type_aliases) == Some("integer"))
-        .map(|declaration| declaration.name.text.clone())
+        .filter(|(_, declaration)| {
+            resolved_type_name(&declaration.ty, type_aliases) == Some("integer")
+        })
+        .map(|(key, _)| key.clone())
         .collect();
     let const_ranges: HashMap<String, (i64, i64)> = const_decls
         .iter()
-        .filter(|declaration| type_head_name(&declaration.ty) == Some("range"))
-        .filter_map(|declaration| {
+        .filter(|(_, declaration)| type_head_name(&declaration.ty) == Some("range"))
+        .filter_map(|(key, declaration)| {
             let ast::Expr::Range { lo, hi, .. } = &declaration.value else {
                 return None;
             };
             Some((
-                declaration.name.text.clone(),
+                key.clone(),
                 (signed_index_bound(lo)?, signed_index_bound(hi)?),
             ))
         })
@@ -7714,13 +7772,13 @@ fn const_tables(
     let mut consts: HashMap<String, u128> = HashMap::new();
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
-        for c in const_decls {
+        for (name, c) in const_decls {
             // A struct constant is one entry per field, keyed by the dotted
             // path a read spells (`K.a`) — the same shape hardware folds it
             // into. Without it the testbench refused `K.a` as something "siox
             // build cannot translate yet", on a declaration stage 4 accepted.
             if let Some(fields) = struct_const_fields(c, struct_field_names) {
-                if consts.contains_key(&format!("{}.", c.name.text)) {
+                if consts.contains_key(&format!("{name}.")) {
                     continue;
                 }
                 let folded: Option<Vec<(String, u128)>> = fields
@@ -7729,19 +7787,19 @@ fn const_tables(
                     .collect();
                 if let Some(folded) = folded {
                     for (field, value) in folded {
-                        consts.insert(format!("{}.{field}", c.name.text), value);
+                        consts.insert(format!("{name}.{field}"), value);
                     }
                     // A marker so the fixed point does not refold this decl.
-                    consts.insert(format!("{}.", c.name.text), 0);
+                    consts.insert(format!("{name}."), 0);
                     progressed = true;
                 }
                 continue;
             }
-            if consts.contains_key(&c.name.text) {
+            if consts.contains_key(name) {
                 continue;
             }
             if let Some(v) = eval_c_const(&c.value, &consts, enums, fns) {
-                consts.insert(c.name.text.clone(), v);
+                consts.insert(name.clone(), v);
                 progressed = true;
             }
         }
@@ -7755,39 +7813,41 @@ fn const_tables(
     let mut const_exprs: HashMap<String, String> = HashMap::new();
     for _ in 0..=const_decls.len() {
         let mut progressed = false;
-        for declaration in const_decls {
+        for (name, declaration) in const_decls {
             // A struct constant is one emitted expression per field, keyed by
             // the dotted path a read spells. The scalar table holds a single
             // entry per name, so a struct constant put nothing in it and every
             // read of `K.a` was reported as untranslatable.
             if let Some(fields) = struct_const_fields(declaration, struct_field_names) {
-                if const_exprs.contains_key(&format!("{}.", declaration.name.text)) {
+                if const_exprs.contains_key(&format!("{name}.")) {
                     continue;
                 }
                 let folded: Option<Vec<(String, String)>> = fields
                     .into_iter()
-                    .map(|(field, value)| Some((field, emit_c_const(value, &const_exprs, enums)?)))
+                    .map(|(field, value)| {
+                        Some((field, emit_c_const(value, &const_exprs, enums, fns)?))
+                    })
                     .collect();
                 if let Some(folded) = folded {
                     for (field, value) in folded {
-                        const_exprs.insert(format!("{}.{field}", declaration.name.text), value);
+                        const_exprs.insert(format!("{name}.{field}"), value);
                     }
-                    const_exprs.insert(format!("{}.", declaration.name.text), String::new());
+                    const_exprs.insert(format!("{name}."), String::new());
                     progressed = true;
                 }
                 continue;
             }
-            if const_exprs.contains_key(&declaration.name.text) {
+            if const_exprs.contains_key(name) {
                 continue;
             }
-            let expression = if real_consts.contains(&declaration.name.text) {
-                emit_c_real_const(&declaration.value, &const_exprs, &real_consts, enums)
+            let expression = if real_consts.contains(name) {
+                emit_c_real_const(&declaration.value, &const_exprs, &real_consts, enums, fns)
                     .map(|value| format!("sx_b64((double)({value}))"))
             } else {
-                emit_c_const(&declaration.value, &const_exprs, enums)
+                emit_c_const(&declaration.value, &const_exprs, enums, fns)
             };
             if let Some(expression) = expression {
-                const_exprs.insert(declaration.name.text.clone(), expression);
+                const_exprs.insert(name.clone(), expression);
                 progressed = true;
             }
         }
@@ -7799,16 +7859,16 @@ fn const_tables(
     // table above holds a single entry per name, so an indexed read of a
     // `const` array found nothing there and was called untranslatable.
     let mut const_array_exprs: HashMap<String, Vec<String>> = HashMap::new();
-    for declaration in const_decls {
+    for (name, declaration) in const_decls {
         let ast::Expr::Array { elems, .. } = &declaration.value else {
             continue;
         };
         let values: Option<Vec<String>> = elems
             .iter()
-            .map(|e| emit_c_const(e, &const_exprs, enums))
+            .map(|e| emit_c_const(e, &const_exprs, enums, fns))
             .collect();
         if let Some(values) = values {
-            const_array_exprs.insert(declaration.name.text.clone(), values);
+            const_array_exprs.insert(name.clone(), values);
         }
     }
 
@@ -7907,6 +7967,7 @@ fn sized_string_indices(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
     consts: &HashMap<String, u128>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<Vec<i64>> {
     let ast::Type::Indexed {
         base,
@@ -7923,13 +7984,14 @@ fn sized_string_indices(
     ) {
         return None;
     }
-    index_values(index, const_ranges, consts)
+    index_values(index, const_ranges, consts, fns)
 }
 
 fn index_values(
     index: &ast::Expr,
     const_ranges: &HashMap<String, (i64, i64)>,
     consts: &HashMap<String, u128>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<Vec<i64>> {
     match index {
         ast::Expr::Int { text, .. } => {
@@ -7937,16 +7999,16 @@ fn index_values(
             Some((0..count).collect())
         }
         ast::Expr::Range { lo, hi, .. } => {
-            let left = signed_index_bound(lo)?;
-            let right = signed_index_bound(hi)?;
+            let left = const_index_bound(lo, consts, fns)?;
+            let right = const_index_bound(hi, consts, fns)?;
             Some(directional_indices(left, right))
         }
-        ast::Expr::Path(path) if path.segments.len() == 1 => {
-            let name = &path.segments[0].text;
-            if let Some(&(left, right)) = const_ranges.get(name) {
+        ast::Expr::Path(path) => {
+            let key = fns.constant_path_key(path)?;
+            if let Some(&(left, right)) = const_ranges.get(&key) {
                 Some(directional_indices(left, right))
             } else {
-                let count = i64::try_from(*consts.get(name)?).ok()?;
+                let count = i64::try_from(*consts.get(&key)?).ok()?;
                 Some((0..count).collect())
             }
         }
@@ -7966,6 +8028,7 @@ fn type_index_bounds(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
     consts: &HashMap<String, u128>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<(i64, i64)> {
     let ast::Type::Indexed {
         index: Some(index), ..
@@ -7973,8 +8036,20 @@ fn type_index_bounds(
     else {
         return None;
     };
-    let indices = index_values(index, const_ranges, consts)?;
+    let indices = index_values(index, const_ranges, consts, fns)?;
     Some((*indices.first()?, *indices.last()?))
+}
+
+fn const_index_bound(
+    expression: &ast::Expr,
+    consts: &HashMap<String, u128>,
+    fns: &FunctionIndex<'_>,
+) -> Option<i64> {
+    let env: HashMap<String, i64> = consts
+        .iter()
+        .filter_map(|(key, &value)| Some((key.clone(), i64::try_from(value).ok()?)))
+        .collect();
+    siox::ir::eval_const_fns(expression, &env, fns, 0)
 }
 
 fn signed_index_bound(expr: &ast::Expr) -> Option<i64> {

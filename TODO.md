@@ -86,13 +86,15 @@ Remaining:
   keys nominal declarations and free-function contracts by stable identity;
   free-function lowering, const evaluation, extern dispatch, and the native
   test harness use the same resolved identity and allow equal leaves in
-  different modules.
+  different modules. Module constants likewise use resolved identity through
+  declared-type lookup, compile-time evaluation, IR tables, and native output,
+  including constant functions that refer to their module's constants.
   Elaboration and IR now carry entity identity through hierarchy construction,
   generic specialization, recursive lowering, and instance connection lookup.
-  Structs, enums, views, aliases, traits/operators, and constants still include
-  leaf-keyed tables, and equal-named root entities would still collide in
-  emitted signal/test symbols. Those remaining declaration categories stay
-  crate-unique until their tables and qualified output identities are lifted.
+  Structs, enums, views, aliases, and traits/operators still include leaf-keyed
+  tables, and equal-named root entities would still collide in emitted
+  signal/test symbols. Those remaining declaration categories stay crate-unique
+  until their tables and qualified output identities are lifted.
 
 ## IR
 

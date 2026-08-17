@@ -83,6 +83,45 @@ impl<'a> FunctionIndex<'a> {
         }
         call_fn_key(callee).and_then(|key| self.associated.get(&key).copied())
     }
+
+    /// Stable table key for a module constant declaration. Implementation
+    /// constants have no module-level declaration identity and deliberately
+    /// retain their local leaf spelling.
+    pub fn constant_decl_key(&self, constant: &ast::ConstDecl) -> String {
+        self.resolved
+            .declared(constant.name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Const))
+            .and_then(|id| self.resolved.qualified_name(id))
+            .unwrap_or_else(|| constant.name.text.clone())
+    }
+
+    /// Resolver-selected key for a constant path. A bare implementation
+    /// constant or function parameter is local and falls back to its leaf;
+    /// multi-segment non-constant paths (notably enum variants) return `None`.
+    pub fn constant_path_key(&self, path: &ast::Path) -> Option<String> {
+        if let Some(id) = self.resolved.resolved(path.span) {
+            if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Const) {
+                return self.resolved.qualified_name(id);
+            }
+        }
+        match path.segments.as_slice() {
+            [name] => Some(name.text.clone()),
+            _ => None,
+        }
+    }
+
+    /// Constant key for scalar/struct paths (`N`, `a::N`, `K.field`). Indexing
+    /// is handled by the separate constant-array table, whose base uses this
+    /// same helper.
+    pub fn constant_expr_key(&self, expression: &ast::Expr) -> Option<String> {
+        match expression {
+            ast::Expr::Path(path) => self.constant_path_key(path),
+            ast::Expr::Field { base, field, .. } => {
+                Some(format!("{}.{}", self.constant_expr_key(base)?, field.text))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
@@ -1028,7 +1067,7 @@ impl<'a> Lowering<'a> {
                     // constants (`const BYTE: range = 7..0`) keep their
                     // written direction. Aliases substitute during lowering.
                     ast::Item::Const(c) => {
-                        constant_decls.push(c);
+                        constant_decls.push((self.free_fns.constant_decl_key(c), c));
                     }
                     ast::Item::Using(u) => {
                         if let ast::UsingKind::Alias { name, ty } = &u.kind {
@@ -1148,9 +1187,9 @@ impl<'a> Lowering<'a> {
         // for signal values so a 128-bit constant never passes through i64.
         for _ in 0..=constant_decls.len() {
             let mut progressed = false;
-            for constant in &constant_decls {
+            for (key, constant) in &constant_decls {
                 let scope = self.consts.clone();
-                progressed |= self.fold_const(constant, &scope);
+                progressed |= self.fold_const(key, constant, &scope);
             }
             if !progressed {
                 break;
@@ -1407,8 +1446,12 @@ impl<'a> Lowering<'a> {
     /// of implementation constants folded integers only, so a `const` holding
     /// a lookup table or a real reported its own name as unknown while the
     /// module-level spelling of it worked.
-    fn fold_const(&mut self, constant: &ast::ConstDecl, scope: &HashMap<String, i64>) -> bool {
-        let name = &constant.name.text;
+    fn fold_const(
+        &mut self,
+        name: &str,
+        constant: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
         if self.const_ranges.contains_key(name)
             || self.consts.contains_key(name)
             || self.consts_real.contains_key(name)
@@ -1418,8 +1461,10 @@ impl<'a> Lowering<'a> {
             return false;
         }
         if let ast::Expr::Range { lo, hi, .. } = &constant.value {
-            if let (Some(left), Some(right)) = (eval_const(lo, scope), eval_const(hi, scope)) {
-                self.const_ranges.insert(name.clone(), (left, right));
+            if let (Some(left), Some(right)) =
+                (self.eval_const(lo, scope), self.eval_const(hi, scope))
+            {
+                self.const_ranges.insert(name.to_string(), (left, right));
                 return true;
             }
         } else if let ast::Expr::Array { elems, .. } = &constant.value {
@@ -1428,10 +1473,10 @@ impl<'a> Lowering<'a> {
             // name a constant not yet resolved).
             let values: Option<Vec<Expr>> = elems
                 .iter()
-                .map(|e| lower_const_value(e, &self.const_values, scope))
+                .map(|e| lower_const_value(e, &self.const_values, scope, &self.free_fns))
                 .collect();
             if let Some(values) = values {
-                self.const_arrays.insert(name.clone(), values);
+                self.const_arrays.insert(name.to_string(), values);
                 return true;
             }
         } else if let Some(args) = type_head_name(&constant.ty)
@@ -1445,10 +1490,12 @@ impl<'a> Lowering<'a> {
             };
             for (field, value) in fields {
                 let key = format!("{name}.{field}");
-                if let Some(narrow) = eval_const(&value, scope) {
+                if let Some(narrow) = self.eval_const(&value, scope) {
                     self.consts.insert(key.clone(), narrow);
                 }
-                let Some(lowered) = lower_const_value(&value, &self.const_values, scope) else {
+                let Some(lowered) =
+                    lower_const_value(&value, &self.const_values, scope, &self.free_fns)
+                else {
                     return false;
                 };
                 self.const_values.insert(key, lowered);
@@ -1467,10 +1514,12 @@ impl<'a> Lowering<'a> {
             };
             for (field, value) in fields {
                 let key = format!("{name}.{field}");
-                if let Some(narrow) = eval_const(&value, scope) {
+                if let Some(narrow) = self.eval_const(&value, scope) {
                     self.consts.insert(key.clone(), narrow);
                 }
-                let Some(lowered) = lower_const_value(&value, &self.const_values, scope) else {
+                let Some(lowered) =
+                    lower_const_value(&value, &self.const_values, scope, &self.free_fns)
+                else {
                     return false;
                 };
                 self.const_values.insert(key, lowered);
@@ -1479,17 +1528,18 @@ impl<'a> Lowering<'a> {
         } else if let ast::Expr::Int { text, .. } = &constant.value {
             if text.contains('.') {
                 if let Ok(value) = text.replace('_', "").parse::<f64>() {
-                    self.consts_real.insert(name.clone(), value);
+                    self.consts_real.insert(name.to_string(), value);
                     return true;
                 }
             } else if let Some(value) = integer_const(text) {
                 if let Expr::Const(word) = value {
                     if let Ok(narrow) = i64::try_from(word) {
-                        self.consts.insert(name.clone(), narrow);
+                        self.consts.insert(name.to_string(), narrow);
                     }
-                    self.const_values.insert(name.clone(), Expr::Const(word));
+                    self.const_values
+                        .insert(name.to_string(), Expr::Const(word));
                 } else {
-                    self.const_values.insert(name.clone(), value);
+                    self.const_values.insert(name.to_string(), value);
                 }
                 return true;
             }
@@ -1505,32 +1555,38 @@ impl<'a> Lowering<'a> {
                     .get(&path.segments[0].text)
                     .and_then(|variants| variants.get(&path.segments[1].text))
                 {
-                    self.consts.insert(name.clone(), disc as i64);
-                    self.const_values.insert(name.clone(), Expr::Const(disc));
+                    self.consts.insert(name.to_string(), disc as i64);
+                    self.const_values
+                        .insert(name.to_string(), Expr::Const(disc));
                     return true;
                 }
             }
-            if path.segments.len() == 1 {
-                let source = &path.segments[0].text;
-                if let Some(value) = self.const_values.get(source).cloned() {
-                    self.const_values.insert(name.clone(), value);
+            if let Some(source) = self.free_fns.constant_path_key(path) {
+                if let Some(value) = self.const_values.get(&source).cloned() {
+                    self.const_values.insert(name.to_string(), value);
                     return true;
-                } else if let Some(&value) = self.consts.get(source) {
-                    self.consts.insert(name.clone(), value);
+                } else if let Some(&value) = self.consts.get(&source) {
+                    self.consts.insert(name.to_string(), value);
                     return true;
                 }
             }
-        } else if let Some(value) = lower_const_value(&constant.value, &self.const_values, scope) {
-            self.const_values.insert(name.clone(), value);
-            if let Some(narrow) = eval_const(&constant.value, scope) {
-                self.consts.insert(name.clone(), narrow);
+        } else if let Some(value) =
+            lower_const_value(&constant.value, &self.const_values, scope, &self.free_fns)
+        {
+            self.const_values.insert(name.to_string(), value);
+            if let Some(narrow) = self.eval_const(&constant.value, scope) {
+                self.consts.insert(name.to_string(), narrow);
             }
             return true;
-        } else if let Some(value) = eval_const(&constant.value, scope) {
-            self.consts.insert(name.clone(), value);
+        } else if let Some(value) = self.eval_const(&constant.value, scope) {
+            self.consts.insert(name.to_string(), value);
             return true;
         }
         false
+    }
+
+    fn eval_const(&self, expression: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
+        eval_const_fns(expression, env, &self.free_fns, 0)
     }
 
     fn lower_body(
@@ -1621,7 +1677,7 @@ impl<'a> Lowering<'a> {
                 for c in &body_consts {
                     let mut scope = self.consts.clone();
                     scope.extend(renamed.iter().map(|(k, v)| (k.clone(), *v)));
-                    if self.fold_const(c, &scope) {
+                    if self.fold_const(&c.name.text, c, &scope) {
                         progressed = true;
                         // Array sizes and slice bounds resolve through the
                         // env, so an integer constant has to reach it too.
@@ -1703,7 +1759,15 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Stmt(s) = item {
-                    gather_generate(s, env, &[], &self.entities, self.resolved, &mut subinsts);
+                    gather_generate(
+                        s,
+                        env,
+                        &[],
+                        &self.entities,
+                        self.resolved,
+                        &self.free_fns,
+                        &mut subinsts,
+                    );
                 }
             }
         }
@@ -2329,7 +2393,7 @@ impl<'a> Lowering<'a> {
         for (i, a) in args.iter().enumerate() {
             match a {
                 ast::GenericArg::Named { name, value } => {
-                    if let Some(v) = eval_const(value, env) {
+                    if let Some(v) = self.eval_const(value, env) {
                         out.insert(name.text.clone(), v);
                     }
                 }
@@ -2341,7 +2405,7 @@ impl<'a> Lowering<'a> {
                     if p.bound.is_none() {
                         continue;
                     }
-                    if let Some(v) = eval_const(e, env) {
+                    if let Some(v) = self.eval_const(e, env) {
                         out.insert(p.name.text.clone(), v);
                     }
                 }
@@ -2842,16 +2906,16 @@ impl<'a> Lowering<'a> {
                 let bounds: Vec<i64> = match index.as_ref() {
                     E::Range { lo, hi, .. } => [lo, hi]
                         .iter()
-                        .filter_map(|b| eval_const(b, &self.cur_env))
+                        .filter_map(|b| self.eval_const(b, &self.cur_env))
                         .collect(),
                     // An omitted bound is supplied by the vector itself, so
                     // only the written one can be wrong.
                     E::PartialRange { lo, hi, .. } => [lo, hi]
                         .iter()
                         .filter_map(|b| b.as_deref())
-                        .filter_map(|b| eval_const(b, &self.cur_env))
+                        .filter_map(|b| self.eval_const(b, &self.cur_env))
                         .collect(),
-                    other => eval_const(other, &self.cur_env).into_iter().collect(),
+                    other => self.eval_const(other, &self.cur_env).into_iter().collect(),
                 };
                 for v in bounds {
                     self.check_one_index(&path, v, *span, out);
@@ -3044,7 +3108,7 @@ impl<'a> Lowering<'a> {
         // idiom this protects is the ordinary one for a generated chain —
         // `if i == 0 { s[0] = d; } else { s[i] = s[i - 1]; }` — whose `else`
         // reads `s[-1]` on the very iteration that does not take it.
-        let taken = eval_const(&iff.cond, &self.cur_env).map(|v| v != 0);
+        let taken = self.eval_const(&iff.cond, &self.cur_env).map(|v| v != 0);
         if taken != Some(false) {
             for s in &iff.then.stmts {
                 self.collect_stmt_bad_indices(s, out);
@@ -4468,9 +4532,13 @@ impl<'a> Lowering<'a> {
             };
         }
 
-        if let Some((element, indices)) =
-            array_of(&ty, env, &self.const_ranges, &self.vector_families)
-        {
+        if let Some((element, indices)) = array_of(
+            &ty,
+            env,
+            &self.const_ranges,
+            &self.vector_families,
+            &self.free_fns,
+        ) {
             let range = indices
                 .first()
                 .copied()
@@ -4673,12 +4741,13 @@ impl<'a> Lowering<'a> {
         }
         let (a, b) = match arg {
             ast::Expr::Range { lo, hi, .. } => (
-                eval_const(lo, &self.cur_env)?,
-                eval_const(hi, &self.cur_env)?,
+                self.eval_const(lo, &self.cur_env)?,
+                self.eval_const(hi, &self.cur_env)?,
             ),
-            ast::Expr::Path(p) if p.segments.len() == 1 => {
-                self.const_ranges.get(&p.segments[0].text).copied()?
-            }
+            ast::Expr::Path(path) => self
+                .free_fns
+                .constant_path_key(path)
+                .and_then(|key| self.const_ranges.get(&key).copied())?,
             _ => return None,
         };
         let (lo, hi) = (a.min(b), a.max(b));
@@ -4935,9 +5004,10 @@ impl<'a> Lowering<'a> {
                 body,
                 ..
             } => {
-                let (Some(left), Some(right)) =
-                    (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
-                else {
+                let (Some(left), Some(right)) = (
+                    self.eval_const(lo, &self.cur_env),
+                    self.eval_const(hi, &self.cur_env),
+                ) else {
                     seen.clear();
                     return;
                 };
@@ -4949,7 +5019,7 @@ impl<'a> Lowering<'a> {
                 }
             }
             ast::Stmt::If(conditional) => {
-                let Some(selected) = eval_const(&conditional.cond, &self.cur_env) else {
+                let Some(selected) = self.eval_const(&conditional.cond, &self.cur_env) else {
                     seen.clear();
                     return;
                 };
@@ -5058,6 +5128,7 @@ impl<'a> Lowering<'a> {
                     &self.cur_env,
                     &self.const_ranges,
                     &self.vector_families,
+                    &self.free_fns,
                 )
                 .map(|(element, _)| element.clone())
             }
@@ -5118,7 +5189,7 @@ impl<'a> Lowering<'a> {
             return None;
         }
         let positions = self.block_packed_positions(ty)?;
-        if let Some(logical) = eval_const(index, &self.cur_env) {
+        if let Some(logical) = self.eval_const(index, &self.cur_env) {
             let physical = positions
                 .iter()
                 .find_map(|&(label, position)| (label == logical).then_some(position))?;
@@ -5173,9 +5244,13 @@ impl<'a> Lowering<'a> {
                 )
             }
             AccessStep::Index(index) => {
-                if let Some((element_ty, indices)) =
-                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
-                {
+                if let Some((element_ty, indices)) = array_of(
+                    ty,
+                    &self.cur_env,
+                    &self.const_ranges,
+                    &self.vector_families,
+                    &self.free_fns,
+                ) {
                     let (&last, earlier) = indices.split_last()?;
                     let lowered_index = self.lower_expr(index);
                     let element = |position: i64| {
@@ -5224,9 +5299,13 @@ impl<'a> Lowering<'a> {
     }
 
     fn block_local_default(&self, ty: &ast::Type) -> Val {
-        if let Some((element, indices)) =
-            array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
-        {
+        if let Some((element, indices)) = array_of(
+            ty,
+            &self.cur_env,
+            &self.const_ranges,
+            &self.vector_families,
+            &self.free_fns,
+        ) {
             let mut fields = Vec::new();
             for index in indices {
                 Self::prefix_block_value(
@@ -5269,9 +5348,13 @@ impl<'a> Lowering<'a> {
     /// an array literal needs exactly that context to name its flattened
     /// elements.
     fn lower_block_value(&self, value: &ast::Expr, ty: &ast::Type) -> Val {
-        if let Some((element, indices)) =
-            array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)
-        {
+        if let Some((element, indices)) = array_of(
+            ty,
+            &self.cur_env,
+            &self.const_ranges,
+            &self.vector_families,
+            &self.free_fns,
+        ) {
             if let ast::Expr::Array { elems, .. } = value {
                 let mut fields = Vec::new();
                 for (index, expression) in indices.into_iter().zip(elems) {
@@ -5407,7 +5490,7 @@ impl<'a> Lowering<'a> {
                             if !matches!(
                                 index.as_ref(),
                                 ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                            ) && eval_const(index, &self.cur_env).is_none()
+                            ) && self.eval_const(index, &self.cur_env).is_none()
                             {
                                 if let Some(positions) = self.block_packed_positions(&previous.ty) {
                                     let lowered_index = self.lower_expr(index);
@@ -5453,6 +5536,7 @@ impl<'a> Lowering<'a> {
                                 &self.cur_env,
                                 &self.const_ranges,
                                 &self.vector_families,
+                                &self.free_fns,
                             ),
                         ) {
                             let new_element = self.lower_block_value(value, element_ty);
@@ -5690,8 +5774,13 @@ impl<'a> Lowering<'a> {
                 )
             }
             AccessStep::Index(index) => {
-                let (element_ty, indices) =
-                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families)?;
+                let (element_ty, indices) = array_of(
+                    ty,
+                    &self.cur_env,
+                    &self.const_ranges,
+                    &self.vector_families,
+                    &self.free_fns,
+                )?;
                 let lowered_index = self.lower_expr(index);
                 let mut target_ty = None;
                 for position in indices {
@@ -5749,9 +5838,10 @@ impl<'a> Lowering<'a> {
                 body,
                 ..
             } => {
-                if let (Some(a), Some(b)) =
-                    (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
-                {
+                if let (Some(a), Some(b)) = (
+                    self.eval_const(lo, &self.cur_env),
+                    self.eval_const(hi, &self.cur_env),
+                ) {
                     let saved = self.cur_env.get(&var.text).copied();
                     for i in loop_range(a, b) {
                         self.cur_env.insert(var.text.clone(), i);
@@ -5882,6 +5972,7 @@ impl<'a> Lowering<'a> {
                                     &self.cur_env,
                                     &self.const_ranges,
                                     &self.vector_families,
+                                    &self.free_fns,
                                 ),
                             ) {
                                 for (target_index, source_index) in
@@ -6184,7 +6275,7 @@ impl<'a> Lowering<'a> {
                         updates,
                         ctx: self.cur_ctx,
                     });
-                } else if let Some(k) = eval_const(&iff.cond, &self.cur_env) {
+                } else if let Some(k) = self.eval_const(&iff.cond, &self.cur_env) {
                     // A generate-if: the condition is a compile-time constant
                     // (a parameter/const), so only the taken branch is lowered.
                     // Its instances were gathered structurally; lowering the
@@ -6653,9 +6744,10 @@ impl<'a> Lowering<'a> {
                     body,
                     ..
                 } => {
-                    let (Some(a), Some(b)) =
-                        (eval_const(lo, &self.cur_env), eval_const(hi, &self.cur_env))
-                    else {
+                    let (Some(a), Some(b)) = (
+                        self.eval_const(lo, &self.cur_env),
+                        self.eval_const(hi, &self.cur_env),
+                    ) else {
                         continue;
                     };
                     let saved = self.cur_env.get(&var.text).copied();
@@ -6760,7 +6852,7 @@ impl<'a> Lowering<'a> {
                 }
                 let signal = *self.locals.get(path)?;
                 let positions = self.packed_positions(path)?;
-                if let Some(logical) = eval_const(index, &self.cur_env) {
+                if let Some(logical) = self.eval_const(index, &self.cur_env) {
                     let physical = positions
                         .iter()
                         .find_map(|&(label, position)| (label == logical).then_some(position))?;
@@ -6897,7 +6989,7 @@ impl<'a> Lowering<'a> {
             return None;
         }
         // A constant index already resolves to one element's leaves.
-        if eval_const(index, &self.cur_env).is_some() {
+        if self.eval_const(index, &self.cur_env).is_some() {
             return None;
         }
         let base_path = expr_path(base)?;
@@ -7070,7 +7162,7 @@ impl<'a> Lowering<'a> {
                 }
                 let signal = *self.locals.get(path)?;
                 let positions = self.packed_positions(path)?;
-                if let Some(logical) = eval_const(index, &self.cur_env) {
+                if let Some(logical) = self.eval_const(index, &self.cur_env) {
                     let position = positions
                         .into_iter()
                         .find_map(|(label, position)| (label == logical).then_some(position))?;
@@ -7286,7 +7378,7 @@ impl<'a> Lowering<'a> {
                 Some(format!("{}.{}", self.folded_elem_path(base)?, field.text))
             }
             ast::Expr::Index { base, index, .. } => {
-                let i = eval_const(index, &self.cur_env)?;
+                let i = self.eval_const(index, &self.cur_env)?;
                 Some(format!("{}[{}]", self.folded_elem_path(base)?, i))
             }
             _ => None,
@@ -7434,23 +7526,42 @@ impl<'a> Lowering<'a> {
                 words_const(self.decode_bit_string_words('b', text).0)
             }
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
-            ast::Expr::Path(p) if p.segments.len() == 1 => {
-                let name = &p.segments[0].text;
-                if let Some(Val::Scalar(value)) = self.block_local_value(e) {
-                    return value;
+            ast::Expr::Path(path) => {
+                let leaf = path
+                    .segments
+                    .last()
+                    .map(|name| name.text.as_str())
+                    .unwrap_or("");
+                if path.segments.len() == 1 {
+                    if let Some(Val::Scalar(value)) = self.block_local_value(e) {
+                        return value;
+                    }
+                    if let Some(id) = self.locals.get(leaf) {
+                        return Expr::Current(*id);
+                    }
                 }
-                if let Some(id) = self.locals.get(name) {
-                    return Expr::Current(*id);
+                // Module constants use their resolved qualified identity;
+                // implementation constants and parameters retain a local leaf
+                // key. This lookup intentionally precedes enum variants so
+                // `a::VALUE` is not mistaken for `Enum::Variant`.
+                if let Some(key) = self.free_fns.constant_path_key(path) {
+                    if let Some(value) = self.const_values.get(&key) {
+                        return value.clone();
+                    }
+                    if let Some(&v) = self.cur_env.get(&key) {
+                        return Expr::Const(v as u64);
+                    }
+                    if let Some(&f) = self.consts_real.get(&key) {
+                        return Expr::Real(f);
+                    }
                 }
-                // Module constants read as values (`x * PI`).
-                if let Some(value) = self.const_values.get(name) {
-                    return value.clone();
-                }
-                if let Some(&v) = self.cur_env.get(name) {
-                    return Expr::Const(v as u64);
-                }
-                if let Some(&f) = self.consts_real.get(name) {
-                    return Expr::Real(f);
+                if path.segments.len() >= 2 {
+                    return self
+                        .enum_variants
+                        .get(&path.segments[0].text)
+                        .and_then(|variants| variants.get(&path.segments[1].text))
+                        .map(|&discriminant| Expr::Const(discriminant))
+                        .unwrap_or(Expr::Unknown);
                 }
                 // A generic parameter of the entity being lowered has no
                 // value when that entity is analysed on its own rather than
@@ -7464,7 +7575,7 @@ impl<'a> Lowering<'a> {
                     .lower_stack
                     .last()
                     .and_then(|entity| self.entities.get(entity))
-                    .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == *name));
+                    .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == leaf));
                 if !parametric {
                     // Nothing declares this name. Every signal, constant and
                     // in-scope parameter is known here, so record it rather
@@ -7472,7 +7583,7 @@ impl<'a> Lowering<'a> {
                     // ok.
                     self.unresolved_names
                         .borrow_mut()
-                        .push((name.clone(), p.span));
+                        .push((leaf.to_string(), path.span));
                 }
                 Expr::Unknown
             }
@@ -7482,10 +7593,14 @@ impl<'a> Lowering<'a> {
             // scalar per name. Both lowered to `Unknown` and were reported as
             // a driver index with no name attached.
             ast::Expr::Index { base, index, .. }
-                if expr_path(base).is_some_and(|b| self.const_arrays.contains_key(&b)) =>
+                if self
+                    .free_fns
+                    .constant_expr_key(base)
+                    .is_some_and(|key| self.const_arrays.contains_key(&key)) =>
             {
-                let values = &self.const_arrays[&expr_path(base).unwrap()];
-                if let Some(i) = eval_const(index, &self.consts) {
+                let key = self.free_fns.constant_expr_key(base).unwrap();
+                let values = &self.const_arrays[&key];
+                if let Some(i) = self.eval_const(index, &self.consts) {
                     return usize::try_from(i)
                         .ok()
                         .and_then(|i| values.get(i).cloned())
@@ -7509,13 +7624,6 @@ impl<'a> Lowering<'a> {
                 }
                 acc
             }
-            // `Enum::Variant` lowers to its discriminant constant.
-            ast::Expr::Path(p) if p.segments.len() >= 2 => self
-                .enum_variants
-                .get(&p.segments[0].text)
-                .and_then(|m| m.get(&p.segments[1].text))
-                .map(|&d| Expr::Const(d))
-                .unwrap_or(Expr::Unknown),
             // A bit slice `base[a..b]` (constant bounds, possibly a named
             // range constant). Direction follows the written order: `7..4`
             // (descending) extracts MSB-first — the natural bit order —
@@ -7578,7 +7686,11 @@ impl<'a> Lowering<'a> {
                 // constant is a value, not storage — so the dotted path is
                 // looked up in the constant table the same way a plain `N`
                 // is, one entry per field.
-                if let Some(value) = expr_path(e).and_then(|p| self.const_values.get(&p)) {
+                if let Some(value) = self
+                    .free_fns
+                    .constant_expr_key(e)
+                    .and_then(|key| self.const_values.get(&key))
+                {
                     return value.clone();
                 }
                 // A constant index into an array literal (`[3, 4][0]`). This is
@@ -7587,7 +7699,8 @@ impl<'a> Lowering<'a> {
                 // there is no signal to find — the element is simply picked.
                 if let ast::Expr::Index { base, index, .. } = e {
                     if let ast::Expr::Array { elems, .. } = base.as_ref() {
-                        if let Some(element) = eval_const(index, &self.cur_env)
+                        if let Some(element) = self
+                            .eval_const(index, &self.cur_env)
                             .and_then(|i| usize::try_from(i).ok())
                             .and_then(|i| elems.get(i))
                         {
@@ -7819,7 +7932,7 @@ impl<'a> Lowering<'a> {
         // Any constant expression, not just a bare literal: `0 - 2` is two
         // bits by its operands' own reckoning, so a negative literal divisor
         // failed the sign test the same way a positive one passed it.
-        if other > 0 && eval_const(e, &self.cur_env).is_some() {
+        if other > 0 && self.eval_const(e, &self.cur_env).is_some() {
             return other;
         }
         self.ast_width(e)
@@ -7862,13 +7975,13 @@ impl<'a> Lowering<'a> {
                         .as_deref()
                         .is_some_and(|h| self.vector_families.contains(h)) =>
                 {
-                    eval_const(index, &self.cur_env)
+                    self.eval_const(index, &self.cur_env)
                         .map(|w| w as u32)
                         .unwrap_or(64)
                 }
                 ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                     args.get(1)
-                        .and_then(|n| eval_const(n, &self.cur_env))
+                        .and_then(|n| self.eval_const(n, &self.cur_env))
                         .map(|w| w as u32)
                         .unwrap_or(64)
                 }
@@ -8041,24 +8154,39 @@ impl<'a> Lowering<'a> {
             .or_else(|| self.persisted_range(&path))?;
         match index {
             ast::Expr::Range { lo, hi, .. } => Some((
-                eval_const(lo, &self.cur_env)?,
-                eval_const(hi, &self.cur_env)?,
+                self.eval_const(lo, &self.cur_env)?,
+                self.eval_const(hi, &self.cur_env)?,
             )),
             ast::Expr::PartialRange { lo, hi, .. } => {
                 let (left, right) = declared;
                 Some((
                     match lo {
-                        Some(lo) => eval_const(lo, &self.cur_env)?,
+                        Some(lo) => self.eval_const(lo, &self.cur_env)?,
                         None => left,
                     },
                     match hi {
-                        Some(hi) => eval_const(hi, &self.cur_env)?,
+                        Some(hi) => self.eval_const(hi, &self.cur_env)?,
                         None => right,
                     },
                 ))
             }
-            ast::Expr::Path(p) if p.segments.len() == 1 => {
-                self.const_ranges.get(&p.segments[0].text).copied()
+            ast::Expr::Path(constant) => {
+                if let Some(bounds) = self
+                    .free_fns
+                    .constant_path_key(constant)
+                    .and_then(|key| self.const_ranges.get(&key).copied())
+                {
+                    Some(bounds)
+                } else if self.locals.contains_key(&path)
+                    || block_binding
+                        .as_ref()
+                        .is_some_and(|binding| matches!(binding.value, Val::Scalar(_)))
+                {
+                    let n = self.eval_const(index, &self.cur_env)?;
+                    Some((n, n))
+                } else {
+                    None
+                }
             }
             // A single constant index is the one-bit slice `w[n..n]`, but only
             // on a packed vector — which is one signal. An array's elements are
@@ -8067,7 +8195,7 @@ impl<'a> Lowering<'a> {
             _ if self.locals.contains_key(&path)
                 || block_binding.is_some_and(|binding| matches!(binding.value, Val::Scalar(_))) =>
             {
-                let n = eval_const(index, &self.cur_env)?;
+                let n = self.eval_const(index, &self.cur_env)?;
                 Some((n, n))
             }
             _ => None,
@@ -9105,7 +9233,14 @@ impl<'a> Lowering<'a> {
         // expression does not.
         let has_array_param = f.params.iter().filter(|p| !p.is_self).any(|p| {
             p.ty.as_ref().is_some_and(|ty| {
-                array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families).is_some()
+                array_of(
+                    ty,
+                    &self.cur_env,
+                    &self.const_ranges,
+                    &self.vector_families,
+                    &self.free_fns,
+                )
+                .is_some()
             })
         });
         let array_args: HashMap<String, ast::Expr> = if has_array_param {
@@ -9319,7 +9454,14 @@ impl<'a> Lowering<'a> {
         let array_args: HashMap<String, ast::Expr> =
             if f.params.iter().filter(|p| !p.is_self).any(|p| {
                 p.ty.as_ref().is_some_and(|ty| {
-                    array_of(ty, &self.cur_env, &self.const_ranges, &self.vector_families).is_some()
+                    array_of(
+                        ty,
+                        &self.cur_env,
+                        &self.const_ranges,
+                        &self.vector_families,
+                        &self.free_fns,
+                    )
+                    .is_some()
                 })
             }) {
                 f.params
@@ -9534,7 +9676,7 @@ impl<'a> Lowering<'a> {
                 let n = args.get(1)?;
                 let w = match self.lower_scalar_env(n, env) {
                     Expr::Const(c) => c as u32,
-                    _ => eval_const(n, &self.cur_env)? as u32,
+                    _ => self.eval_const(n, &self.cur_env)? as u32,
                 };
                 (Some(w), true)
             }
@@ -9545,7 +9687,7 @@ impl<'a> Lowering<'a> {
             {
                 let w = match self.lower_scalar_env(index, env) {
                     Expr::Const(c) => c as u32,
-                    _ => eval_const(index, &self.cur_env)? as u32,
+                    _ => self.eval_const(index, &self.cur_env)? as u32,
                 };
                 (Some(w), false)
             }
@@ -10198,16 +10340,25 @@ impl<'a> Lowering<'a> {
         match idx.as_ref() {
             // A written range keeps its direction (`[7..0]` is descending); the
             // `Range` fields are first/second as written, not numerically sorted.
-            ast::Expr::Range { lo, hi, .. } => Some((eval_const(lo, env)?, eval_const(hi, env)?)),
+            ast::Expr::Range { lo, hi, .. } => {
+                Some((self.eval_const(lo, env)?, self.eval_const(hi, env)?))
+            }
             // A named range constant (`const BYTE: range = 7..0;`).
-            ast::Expr::Path(p)
-                if p.segments.len() == 1 && self.const_ranges.contains_key(&p.segments[0].text) =>
-            {
-                self.const_ranges.get(&p.segments[0].text).copied()
+            ast::Expr::Path(path) => {
+                if let Some(bounds) = self
+                    .free_fns
+                    .constant_path_key(path)
+                    .and_then(|key| self.const_ranges.get(&key).copied())
+                {
+                    Some(bounds)
+                } else {
+                    let n = self.eval_const(idx, env)?;
+                    Some((0, (n - 1).max(0)))
+                }
             }
             // A width-only index (`Bit[4]`, `unsigned[8]`) is ascending `0..N-1`.
             _ => {
-                let n = eval_const(idx, env)?;
+                let n = self.eval_const(idx, env)?;
                 Some((0, (n - 1).max(0)))
             }
         }
@@ -10238,6 +10389,7 @@ impl<'a> Lowering<'a> {
                     &self.cur_env,
                     &self.const_ranges,
                     &self.vector_families,
+                    &self.free_fns,
                 ) {
                     return Expr::Const(indices.len() as u64);
                 }
@@ -11272,34 +11424,34 @@ fn lower_const_value(
     expression: &ast::Expr,
     exact: &HashMap<String, Expr>,
     narrow: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<Expr> {
     match expression {
         ast::Expr::Int { text, .. } if text.contains('.') => {
             text.replace('_', "").parse().ok().map(Expr::Real)
         }
         ast::Expr::Int { text, .. } => integer_const(text),
-        ast::Expr::Path(path) if path.segments.len() == 1 => {
-            exact.get(&path.segments[0].text).cloned().or_else(|| {
-                narrow
-                    .get(&path.segments[0].text)
-                    .map(|value| Expr::Const(*value as u64))
-            })
-        }
+        ast::Expr::Path(path) => fns.constant_path_key(path).and_then(|key| {
+            exact
+                .get(&key)
+                .cloned()
+                .or_else(|| narrow.get(&key).map(|value| Expr::Const(*value as u64)))
+        }),
         ast::Expr::Unary { op, rhs, .. } => Some(Expr::Unary {
             op: lower_unop(*op),
-            rhs: Box::new(lower_const_value(rhs, exact, narrow)?),
+            rhs: Box::new(lower_const_value(rhs, exact, narrow, fns)?),
         }),
         ast::Expr::Binary { op, lhs, rhs, .. } => Some(Expr::Binary {
             op: lower_binop(op.clone())?,
-            lhs: Box::new(lower_const_value(lhs, exact, narrow)?),
-            rhs: Box::new(lower_const_value(rhs, exact, narrow)?),
+            lhs: Box::new(lower_const_value(lhs, exact, narrow, fns)?),
+            rhs: Box::new(lower_const_value(rhs, exact, narrow, fns)?),
         }),
         ast::Expr::IfExpr {
             cond, then, els, ..
         } => Some(Expr::Select {
-            cond: Box::new(lower_const_value(cond, exact, narrow)?),
-            then: Box::new(lower_const_value(then, exact, narrow)?),
-            els: Box::new(lower_const_value(els, exact, narrow)?),
+            cond: Box::new(lower_const_value(cond, exact, narrow, fns)?),
+            then: Box::new(lower_const_value(then, exact, narrow, fns)?),
+            els: Box::new(lower_const_value(els, exact, narrow, fns)?),
         }),
         ast::Expr::SuffixLit { text, suffix, .. } => Some(Expr::Binary {
             op: BinOp::Mul,
@@ -11390,10 +11542,13 @@ fn type_width_at(
             // through to the integer path found no integer and produced a
             // zero-width signal in silence — the literal `unsigned[7..0]`
             // spelling of the same thing was eight bits.
-            ast::Expr::Path(p)
-                if p.segments.len() == 1 && ranges.contains_key(&p.segments[0].text) =>
+            ast::Expr::Path(path)
+                if fns
+                    .constant_path_key(path)
+                    .is_some_and(|key| ranges.contains_key(&key)) =>
             {
-                let (a, b) = ranges[&p.segments[0].text];
+                let key = fns.constant_path_key(path).expect("guarded range key");
+                let (a, b) = ranges[&key];
                 u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
                     .ok()
                     .and_then(|width| width.checked_add(1))
@@ -11461,7 +11616,9 @@ pub fn eval_const_fns(
     }
     match e {
         ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
-        ast::Expr::Path(p) if p.segments.len() == 1 => env.get(&p.segments[0].text).copied(),
+        ast::Expr::Path(path) => fns
+            .constant_path_key(path)
+            .and_then(|key| env.get(&key).copied()),
         ast::Expr::IfExpr {
             cond, then, els, ..
         } => {
@@ -11479,7 +11636,12 @@ pub fn eval_const_fns(
             }
             let f = fns.get(callee)?;
             let body = f.body.as_ref()?;
-            let mut fenv = HashMap::new();
+            // Parameters shadow local leaves, while resolver-qualified module
+            // constants remain available inside the called function body.
+            // Starting from an empty map made `fn f() { return VALUE; }`
+            // cease to be constant even though `VALUE` was in the caller's
+            // compile-time environment.
+            let mut fenv = env.clone();
             for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
                 let n = p.name.as_ref()?;
                 fenv.insert(n.text.clone(), eval_const_fns(a, env, fns, depth + 1)?);
@@ -11830,6 +11992,7 @@ fn gather_generate(
     loop_idx: &[i64],
     entities: &HashMap<DefId, &ast::EntityDecl>,
     resolved: &Resolved,
+    fns: &FunctionIndex<'_>,
     out: &mut Vec<(String, ast::Type, Vec<ast::ConnectArg>)>,
 ) {
     match s {
@@ -11870,7 +12033,10 @@ fn gather_generate(
             body,
             ..
         } => {
-            if let (Some(a), Some(b)) = (eval_const(lo, env), eval_const(hi, env)) {
+            if let (Some(a), Some(b)) = (
+                eval_const_fns(lo, env, fns, 0),
+                eval_const_fns(hi, env, fns, 0),
+            ) {
                 for i in loop_range(a, b) {
                     let mut e = env.clone();
                     e.insert(var.text.clone(), i);
@@ -11881,7 +12047,7 @@ fn gather_generate(
                         // `Sub<W=i>` and `wires[i]` become concrete before the
                         // instance is recorded.
                         let st = subst_stmt(st, &var.text, i);
-                        gather_generate(&st, &e, &idx, entities, resolved, out);
+                        gather_generate(&st, &e, &idx, entities, resolved, fns, out);
                     }
                 }
             }
@@ -11890,16 +12056,16 @@ fn gather_generate(
         // constant-folded and only the taken branch's instances are gathered.
         // A non-constant condition is behavioral, not a generate-if.
         ast::Stmt::If(iff) => {
-            if let Some(c) = eval_const(&iff.cond, env) {
+            if let Some(c) = eval_const_fns(&iff.cond, env, fns, 0) {
                 if c != 0 {
                     for st in &iff.then.stmts {
-                        gather_generate(st, env, loop_idx, entities, resolved, out);
+                        gather_generate(st, env, loop_idx, entities, resolved, fns, out);
                     }
                 } else {
                     match iff.else_.as_deref() {
                         Some(ast::ElseBranch::Block(b)) => {
                             for st in &b.stmts {
-                                gather_generate(st, env, loop_idx, entities, resolved, out);
+                                gather_generate(st, env, loop_idx, entities, resolved, fns, out);
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
@@ -11909,6 +12075,7 @@ fn gather_generate(
                                 loop_idx,
                                 entities,
                                 resolved,
+                                fns,
                                 out,
                             );
                         }
@@ -12539,6 +12706,7 @@ fn array_of<'t>(
     env: &HashMap<String, i64>,
     const_ranges: &HashMap<String, (i64, i64)>,
     families: &std::collections::HashSet<String>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<(&'t ast::Type, Vec<i64>)> {
     let ast::Type::Indexed {
         base,
@@ -12557,16 +12725,19 @@ fn array_of<'t>(
         return None;
     }
     let bounds = match index.as_ref() {
-        ast::Expr::Range { lo, hi, .. } => Some((eval_const(lo, env)?, eval_const(hi, env)?)),
-        ast::Expr::Path(p) if p.segments.len() == 1 => {
-            const_ranges.get(&p.segments[0].text).copied()
-        }
+        ast::Expr::Range { lo, hi, .. } => Some((
+            eval_const_fns(lo, env, fns, 0)?,
+            eval_const_fns(hi, env, fns, 0)?,
+        )),
+        ast::Expr::Path(path) => fns
+            .constant_path_key(path)
+            .and_then(|key| const_ranges.get(&key).copied()),
         _ => None,
     };
     let indices = match bounds {
         Some((a, b)) if a <= b => (a..=b).collect(),
         Some((a, b)) => (b..=a).rev().collect(),
-        None => (0..eval_const(index, env).unwrap_or(0).max(0)).collect(),
+        None => (0..eval_const_fns(index, env, fns, 0).unwrap_or(0).max(0)).collect(),
     };
     Some((base, indices))
 }
@@ -12998,6 +13169,78 @@ mod tests {
         };
         assert!(matches!(driven("Top.left"), Some(Expr::Const(11))));
         assert!(matches!(driven("Top.right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn equal_module_constant_leaves_lower_the_resolved_values() {
+        let sources = [
+            ("module a; pub const VALUE: integer = 11;", FileId(0)),
+            ("module b; pub const VALUE: integer = 22;", FileId(1)),
+            (
+                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                 impl Top { left = a::VALUE; right = b::VALUE; }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |path: &str| {
+            let signal = design
+                .signals
+                .iter()
+                .position(|signal| signal.path == path)
+                .expect("missing output signal") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(signal))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven("Top.left"), Some(Expr::Const(11))));
+        assert!(matches!(driven("Top.right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn module_range_constant_keeps_its_qualified_width_identity() {
+        let design = lower_src(
+            "module widths; const SPAN: range = 7..0; \
+             #[top] entity Top { len: integer out } \
+             impl Top { let bits: unsigned[SPAN]; len = bits'length; }",
+        );
+        let bits = design
+            .signals
+            .iter()
+            .find(|signal| signal.path == "Top.bits")
+            .expect("missing range-sized signal");
+        assert_eq!(bits.width, 8);
+
+        let len = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "Top.len")
+            .expect("missing length output") as u32;
+        assert!(matches!(
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(len))
+                .map(|driver| &driver.expr),
+            Some(Expr::Const(8))
+        ));
     }
 
     #[test]
