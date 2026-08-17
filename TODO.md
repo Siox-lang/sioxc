@@ -71,10 +71,13 @@ Remaining:
 - 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
   keys nominal declarations and free-function contracts by stable identity.
-  Elaboration and IR still key several nominal tables by the leaf name, so the
-  compiler deliberately reports two loaded declarations with the same leaf as
-  a duplicate rather than silently selecting the wrong one. Lift those final
-  tables before allowing equal leaf names in distinct modules.
+  Elaboration and IR now carry entity identity through hierarchy construction,
+  generic specialization, recursive lowering, and instance connection lookup.
+  Structs, enums, views, aliases, traits/operators, constants, and free-function
+  lowering still include leaf-keyed tables, so the compiler deliberately
+  reports two loaded declarations with the same leaf as a duplicate rather
+  than silently selecting the wrong one. Lift those final tables before
+  allowing equal leaf names in distinct modules.
 
 ## IR
 

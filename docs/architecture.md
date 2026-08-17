@@ -104,9 +104,12 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 Resolution is the owner of nominal identity. Both declaration sites and use
 sites map to `DefId`; type checking uses those IDs (or a qualified key derived
 from one) for semantic registries. A leaf spelling is only presentation, not a
-safe lookup key. Elaboration and IR are being migrated to the same rule; until
-that is complete, resolution rejects equal declaration leaves across modules
-instead of allowing a later stage to select the wrong declaration.
+safe lookup key. Hierarchy instances carry both a display name and their entity
+`DefId`; elaboration and recursive IR lowering use the ID, while tree output and
+signal paths retain concise source names. Other nominal IR registries are being
+migrated to the same rule; until that is complete, resolution rejects equal
+declaration leaves across modules instead of allowing a later stage to select
+the wrong declaration.
 
 Package components:
 

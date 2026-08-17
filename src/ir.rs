@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::diag::DiagnosticSink;
 use crate::elab::Hierarchy;
+use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::{self, BinOp as AstBinOp, UnOp as AstUnOp};
 use crate::syntax::Module;
 
@@ -412,8 +413,13 @@ pub enum BinOp {
 /// Lower the elaborated design into simulation IR. Relative file-read paths
 /// resolve against the current working directory (see [`lower_in`] to set a
 /// source-relative base directory).
-pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) -> Design {
-    lower_in(modules, hier, sink, std::path::Path::new(""))
+pub fn lower(
+    modules: &[Module],
+    resolved: &Resolved,
+    hier: &Hierarchy,
+    sink: &mut DiagnosticSink,
+) -> Design {
+    lower_in(modules, resolved, hier, sink, std::path::Path::new(""))
 }
 
 /// Lower with `base_dir` as the root that relative `read<T>`
@@ -421,11 +427,12 @@ pub fn lower(modules: &[Module], hier: &Hierarchy, sink: &mut DiagnosticSink) ->
 /// bakes in a data file works regardless of the working directory.
 pub fn lower_in(
     modules: &[Module],
+    resolved: &Resolved,
     hier: &Hierarchy,
     sink: &mut DiagnosticSink,
     base_dir: &std::path::Path,
 ) -> Design {
-    let mut l = Lowering::new(sink);
+    let mut l = Lowering::new(sink, resolved);
     l.expr_types = hier.expr_types.clone();
     l.base_dir = base_dir.to_path_buf();
     l.out.base_dir = base_dir.to_path_buf();
@@ -480,19 +487,17 @@ pub fn lower_in(
     // instance, so `unsigned[W]` lowers with the instance's concrete `W`.
     let mut seen = Vec::new();
     for inst in &hier.instances {
-        if !seen.contains(&inst.entity) {
-            seen.push(inst.entity.clone());
-            l.entity_params
-                .entry(inst.entity.clone())
-                .or_insert_with(|| {
-                    inst.params
-                        .iter()
-                        .filter_map(|(n, v)| match v {
-                            crate::elab::ParamValue::Int(i) => Some((n.clone(), *i)),
-                            crate::elab::ParamValue::Unknown => None,
-                        })
-                        .collect()
-                });
+        if !seen.contains(&inst.entity_id) {
+            seen.push(inst.entity_id);
+            l.entity_params.entry(inst.entity_id).or_insert_with(|| {
+                inst.params
+                    .iter()
+                    .filter_map(|(n, v)| match v {
+                        crate::elab::ParamValue::Int(i) => Some((n.clone(), *i)),
+                        crate::elab::ParamValue::Unknown => None,
+                    })
+                    .collect()
+            });
         }
     }
     // Hierarchy owns the authoritative result of generate elaboration. Keep
@@ -507,13 +512,13 @@ pub fn lower_in(
     // each per-instance, so no entity is lowered standalone by type.
     let mut roots = Vec::new();
     for &r in &hier.roots {
-        let ent = hier.instance(r).entity.clone();
+        let ent = hier.instance(r).entity_id;
         if !roots.contains(&ent) {
             roots.push(ent);
         }
     }
     for name in &roots {
-        l.lower_entity(name);
+        l.lower_entity(*name);
     }
     l.report_depth_exceeded();
     l.report_bad_operators();
@@ -537,14 +542,15 @@ pub fn lower_in(
 
 struct Lowering<'a> {
     sink: &'a mut DiagnosticSink,
+    resolved: &'a Resolved,
     expr_types: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Root for relative compile-time file reads (the source directory).
     base_dir: std::path::PathBuf,
     /// Signals given a default by a match wildcard arm — excluded from the
     /// possible-latch lint even though their lowered drivers are conditional.
     lint_defaulted: std::collections::HashSet<u32>,
-    entities: HashMap<String, &'a ast::EntityDecl>,
-    impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
+    entities: HashMap<DefId, &'a ast::EntityDecl>,
+    impls: HashMap<DefId, Vec<&'a ast::ImplDecl>>,
     /// Trait name -> its declaration, for the defaulted methods an
     /// implementing type inherits (spec 3.20: a trait body is a contract, and
     /// a method *with* a body is a default the impl may omit — which the type
@@ -553,7 +559,7 @@ struct Lowering<'a> {
     /// Type head -> the traits it implements, for that fallback.
     implemented_traits: HashMap<String, Vec<String>>,
     /// Entity name -> its instance's concrete parameter values.
-    entity_params: HashMap<String, HashMap<String, i64>>,
+    entity_params: HashMap<DefId, HashMap<String, i64>>,
     /// Enum name -> variant name -> discriminant value.
     enum_variants: HashMap<String, HashMap<String, u64>>,
     /// Enum name -> discriminant of its *first* (declaration-order) variant,
@@ -673,7 +679,7 @@ struct Lowering<'a> {
     /// skipped instead of recursing forever. The elaborator has already
     /// emitted the `cyclic instantiation` diagnostic; this just keeps lowering
     /// from overflowing on the same cycle (best-effort, spec cross-cutting).
-    lower_stack: Vec<String>,
+    lower_stack: Vec<DefId>,
     /// Plain (non-bus-mode, non-`inout`) `out` port signals, for the
     /// undriven-output warning after all drivers are collected.
     plain_out_ports: Vec<SignalId>,
@@ -827,6 +833,22 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
 }
 
 impl<'a> Lowering<'a> {
+    fn nominal_id(&self, name: &str) -> Option<DefId> {
+        self.resolved
+            .defs()
+            .iter()
+            .enumerate()
+            .find(|(index, definition)| {
+                definition.name == name
+                    || self
+                        .resolved
+                        .qualified_name(DefId(*index as u32))
+                        .as_deref()
+                        == Some(name)
+            })
+            .map(|(index, _)| DefId(index as u32))
+    }
+
     fn collect_instance_array_facts(
         &mut self,
         hierarchy: &Hierarchy,
@@ -848,9 +870,10 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn new(sink: &'a mut DiagnosticSink) -> Self {
+    fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved) -> Self {
         Lowering {
             sink,
+            resolved,
             expr_types: HashMap::new(),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),
@@ -922,7 +945,9 @@ impl<'a> Lowering<'a> {
             for item in &m.items {
                 match item {
                     ast::Item::Entity(e) => {
-                        self.entities.insert(e.name.text.clone(), e);
+                        if let Some(id) = self.resolved.declared(e.name.span) {
+                            self.entities.insert(id, e);
+                        }
                     }
                     ast::Item::Fn(f) => {
                         self.free_fns.insert(f.name.text.clone(), f);
@@ -962,8 +987,8 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
-                        if let Some(name) = type_head_name(&im.target) {
-                            self.impls.entry(name.to_string()).or_default().push(im);
+                        if let Some(id) = type_def_id(&im.target, self.resolved) {
+                            self.impls.entry(id).or_default().push(im);
                         }
                     }
                     // A trait impl's first fn is the operator body for
@@ -1098,16 +1123,22 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn lower_entity(&mut self, name: &str) {
-        let Some(edecl) = self.entities.get(name).copied() else {
+    fn lower_entity(&mut self, entity_id: DefId) {
+        let Some(edecl) = self.entities.get(&entity_id).copied() else {
             return;
         };
+        let name = edecl.name.text.as_str();
         // Extern entities are black boxes.
         if edecl.is_extern {
             return;
         }
         let mut env = self.consts.clone();
-        env.extend(self.entity_params.get(name).cloned().unwrap_or_default());
+        env.extend(
+            self.entity_params
+                .get(&entity_id)
+                .cloned()
+                .unwrap_or_default(),
+        );
         if has_attr(edecl, "test") {
             // A testbench: lower only its DUT instances, each per-instance under
             // the testbench path (`CounterTest.dut.*`), so two instances of one
@@ -1117,27 +1148,32 @@ impl<'a> Lowering<'a> {
             // values still need concrete layouts: the native runner consumes
             // the finished IR rather than independently specializing AST
             // declarations.
-            self.persist_testbench_layouts(name, &env);
-            self.lower_testbench_duts(name, &env);
+            self.persist_testbench_layouts(entity_id, name, &env);
+            self.lower_testbench_duts(entity_id, name, &env);
             return;
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        self.lower_body(name, name, &env, &HashMap::new(), &HashMap::new());
+        self.lower_body(entity_id, name, &env, &HashMap::new(), &HashMap::new());
     }
 
     /// Persist concrete layouts for testbench-owned values without creating
     /// hardware signals for them. Native execution owns their storage, while
     /// `Design` remains the authoritative source for aggregate shape, ranges,
     /// scalar families, and widths.
-    fn persist_testbench_layouts(&mut self, entity: &str, env: &HashMap<String, i64>) {
-        let impls: Vec<&ast::ImplDecl> = self.impls.get(entity).cloned().unwrap_or_default();
+    fn persist_testbench_layouts(
+        &mut self,
+        entity_id: DefId,
+        entity: &str,
+        env: &HashMap<String, i64>,
+    ) {
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(&entity_id).cloned().unwrap_or_default();
         for im in impls {
             for item in &im.items {
                 let ast::ImplItem::Let(declaration) = item else {
                     continue;
                 };
-                if instance_let_parts(declaration, &self.entities).is_some() {
+                if instance_let_parts(declaration, &self.entities, self.resolved).is_some() {
                     continue;
                 }
                 let Some(ty) = declaration.ty.as_ref() else {
@@ -1181,8 +1217,8 @@ impl<'a> Lowering<'a> {
     /// Lower each `let inst: Sub = { .. }` DUT of a testbench into its own
     /// namespace `<testbench>.<inst>.*` (with the DUT's internal logic and
     /// sub-instances). No testbench signals, statements, or top connections.
-    fn lower_testbench_duts(&mut self, name: &str, env: &HashMap<String, i64>) {
-        let impls: Vec<&ast::ImplDecl> = self.impls.get(name).cloned().unwrap_or_default();
+    fn lower_testbench_duts(&mut self, entity_id: DefId, name: &str, env: &HashMap<String, i64>) {
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(&entity_id).cloned().unwrap_or_default();
         // Every port a testbench name is connected to, across all DUTs — when
         // one name binds an `out` and `in` ports (a DUT feeding another, or
         // its own input), the out drives the ins as real hardware, so the
@@ -1194,8 +1230,9 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
-                        if let Some(sub) = type_head_name(&cty) {
+                    if let Some((cty, args)) = instance_let_parts(l, &self.entities, self.resolved)
+                    {
+                        if let Some(sub) = type_def_id(&cty, self.resolved) {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
                             sub_env.extend(self.construct_params(&cty, sub, env));
@@ -1445,13 +1482,13 @@ impl<'a> Lowering<'a> {
 
     fn lower_body(
         &mut self,
-        ename: &str,
+        entity_id: DefId,
         path: &str,
         env: &HashMap<String, i64>,
         type_env: &HashMap<String, ast::Type>,
         aliases: &HashMap<String, SignalId>,
     ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
-        let Some(edecl) = self.entities.get(ename).copied() else {
+        let Some(edecl) = self.entities.get(&entity_id).copied() else {
             return HashMap::new();
         };
 
@@ -1473,7 +1510,8 @@ impl<'a> Lowering<'a> {
         let mut renamed = env.clone();
         let mut renamed_types = type_env.clone();
         {
-            let bodies: Vec<&ast::ImplDecl> = self.impls.get(ename).cloned().unwrap_or_default();
+            let bodies: Vec<&ast::ImplDecl> =
+                self.impls.get(&entity_id).cloned().unwrap_or_default();
             for im in bodies {
                 let ast::Type::Generic { args, .. } = &im.target else {
                     continue;
@@ -1513,7 +1551,7 @@ impl<'a> Lowering<'a> {
         {
             let body_consts: Vec<&ast::ConstDecl> = self
                 .impls
-                .get(ename)
+                .get(&entity_id)
                 .map(|impls| {
                     impls
                         .iter()
@@ -1548,7 +1586,7 @@ impl<'a> Lowering<'a> {
         let type_env = &renamed_types;
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
         let saved_type_env = std::mem::replace(&mut self.cur_type_env, type_env.clone());
-        self.lower_stack.push(ename.to_string());
+        self.lower_stack.push(entity_id);
         // Ports (struct/array-typed ones flatten to leaves), then the port map.
         // An `inout` port aliased to a parent net reuses that net's signal
         // instead of allocating its own: the body's `pin = expr` then drives the
@@ -1604,7 +1642,7 @@ impl<'a> Lowering<'a> {
 
         // `let` items: instance bindings are collected for recursion; the rest
         // become state signals.
-        let impls: Vec<&ast::ImplDecl> = self.impls.get(ename).cloned().unwrap_or_default();
+        let impls: Vec<&ast::ImplDecl> = self.impls.get(&entity_id).cloned().unwrap_or_default();
         let mut subinsts: Vec<(String, ast::Type, Vec<ast::ConnectArg>)> = Vec::new();
         // Generate loops (`for i in 0..n { let s: Sub = { .. } }`) unroll here,
         // substituting the loop index into each instance's type args and
@@ -1612,7 +1650,7 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Stmt(s) = item {
-                    gather_generate(s, env, &[], &self.entities, &mut subinsts);
+                    gather_generate(s, env, &[], &self.entities, self.resolved, &mut subinsts);
                 }
             }
         }
@@ -1625,7 +1663,8 @@ impl<'a> Lowering<'a> {
                     // e.g. `unsigned[8]`) is a signal even when some entity is also
                     // named `T` — let it fall through to the signal path, where
                     // `add_typed_signal` substitutes `T` via `cur_type_env`.
-                    if let Some((cty, args)) = instance_let_parts(l, &self.entities) {
+                    if let Some((cty, args)) = instance_let_parts(l, &self.entities, self.resolved)
+                    {
                         let is_type_param =
                             type_head_name(&cty).is_some_and(|h| self.cur_type_env.contains_key(h));
                         if !is_type_param {
@@ -1801,10 +1840,12 @@ impl<'a> Lowering<'a> {
                     // stimulus fed externally — neither is a forgotten drive.
                     // An instance array (`let stage: Inc[N]`, Inc an entity) is
                     // built element-wise, not driven — never a signal to check.
-                    let is_instance_array =
-                        l.ty.as_ref().and_then(type_head_name).is_some_and(|h| {
-                            self.entities.contains_key(h) && !self.cur_type_env.contains_key(h)
-                        });
+                    let is_instance_array = l.ty.as_ref().is_some_and(|ty| {
+                        type_def_id(ty, self.resolved)
+                            .is_some_and(|id| self.entities.contains_key(&id))
+                            && !type_head_name(ty)
+                                .is_some_and(|head| self.cur_type_env.contains_key(head))
+                    });
                     if is_instance_array {
                         self.instance_arrays.insert(l.name.text.clone());
                     }
@@ -1977,18 +2018,18 @@ impl<'a> Lowering<'a> {
         // parent's. The recursion saves/restores this body's scope, so the
         // parent's names resolve again here.
         for (inst, cty, conns) in &subinsts {
-            let Some(sub_ename) = type_head_name(cty) else {
+            let Some(sub_id) = type_def_id(cty, self.resolved) else {
                 continue;
             };
             // Cyclic instantiation (already diagnosed by the elaborator): don't
             // recurse back into an entity that is still being lowered.
-            if self.lower_stack.iter().any(|e| e == sub_ename) {
+            if self.lower_stack.contains(&sub_id) {
                 continue;
             }
             let sub_path = format!("{path}.{inst}");
             let mut sub_env = self.consts.clone();
-            sub_env.extend(self.construct_params(cty, sub_ename, env));
-            let sub_type_env = self.construct_type_params(cty, sub_ename);
+            sub_env.extend(self.construct_params(cty, sub_id, env));
+            let sub_type_env = self.construct_type_params(cty, sub_id);
 
             // Resolve `inout` connections to the parent net they share *before*
             // lowering the child, so its port aliases to that net. A scalar
@@ -1996,9 +2037,9 @@ impl<'a> Lowering<'a> {
             // (falls back to the in/out wiring below).
             // Normalized `(port, value)` connections (positional bound to port
             // order), used both for inout aliasing and the wiring below.
-            let norm = self.norm_conns(conns, sub_ename);
+            let norm = self.norm_conns(conns, sub_id);
             let mut aliases: HashMap<String, SignalId> = HashMap::new();
-            if let Some(decl) = self.entities.get(sub_ename).copied() {
+            if let Some(decl) = self.entities.get(&sub_id).copied() {
                 for p in &decl.ports {
                     if p.dir != Some(ast::Direction::Inout) {
                         continue;
@@ -2030,8 +2071,7 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            let sub_ports =
-                self.lower_body(sub_ename, &sub_path, &sub_env, &sub_type_env, &aliases);
+            let sub_ports = self.lower_body(sub_id, &sub_path, &sub_env, &sub_type_env, &aliases);
             // Expose the sub-instance's ports in this scope so `inst.port`
             // (and `stage[i].port`) reads resolve to the child's signal —
             // an output need not be wired to a local to be read.
@@ -2225,14 +2265,14 @@ impl<'a> Lowering<'a> {
     fn construct_params(
         &self,
         ty: &ast::Type,
-        ename: &str,
+        entity_id: DefId,
         env: &HashMap<String, i64>,
     ) -> HashMap<String, i64> {
         let mut out = HashMap::new();
         let ast::Type::Generic { args, .. } = ty else {
             return out;
         };
-        let decl = self.entities.get(ename);
+        let decl = self.entities.get(&entity_id);
         for (i, a) in args.iter().enumerate() {
             match a {
                 ast::GenericArg::Named { name, value } => {
@@ -2261,9 +2301,14 @@ impl<'a> Lowering<'a> {
     /// Type-parameter bindings for a generic entity instance (`Buf<unsigned[8]>` ->
     /// `T -> unsigned[8]`): the entity's bare type params (bound `None`), matched to
     /// the construct's generic args positionally or by name.
-    fn construct_type_params(&self, ty: &ast::Type, ename: &str) -> HashMap<String, ast::Type> {
+    fn construct_type_params(
+        &self,
+        ty: &ast::Type,
+        entity_id: DefId,
+    ) -> HashMap<String, ast::Type> {
         let mut out = HashMap::new();
-        let (Some(decl), ast::Type::Generic { args, .. }) = (self.entities.get(ename), ty) else {
+        let (Some(decl), ast::Type::Generic { args, .. }) = (self.entities.get(&entity_id), ty)
+        else {
             return out;
         };
         let type_params: Vec<&ast::Param> = decl
@@ -4635,10 +4680,10 @@ impl<'a> Lowering<'a> {
     /// positional args (`Inv { a, b }`) bind by the sub-entity's port order,
     /// explicit args (`.clk = clk`) bind by name. Every arg carries a value, so
     /// downstream sites don't special-case the connection shape.
-    fn norm_conns(&self, conns: &[ast::ConnectArg], ename: &str) -> Vec<(String, ast::Expr)> {
+    fn norm_conns(&self, conns: &[ast::ConnectArg], entity_id: DefId) -> Vec<(String, ast::Expr)> {
         let order: Vec<String> = self
             .entities
-            .get(ename)
+            .get(&entity_id)
             .map(|d| d.ports.iter().map(|p| p.name.text.clone()).collect())
             .unwrap_or_default();
         conns
@@ -4655,7 +4700,7 @@ impl<'a> Lowering<'a> {
                 // lexes as. It connected nothing and the child read zeros.
                 let port_ty = self
                     .entities
-                    .get(ename)
+                    .get(&entity_id)
                     .and_then(|d| d.ports.iter().find(|p| p.name.text == port))
                     .map(|p| p.ty.clone());
                 let value = self.as_struct_literal(port_ty.as_ref(), &c.value.clone()?);
@@ -5637,7 +5682,7 @@ impl<'a> Lowering<'a> {
             ..
         } = stmt
         {
-            if type_head_name(t).is_some_and(|n| self.entities.contains_key(n)) {
+            if type_def_id(t, self.resolved).is_some_and(|id| self.entities.contains_key(&id)) {
                 return;
             }
         }
@@ -7365,7 +7410,7 @@ impl<'a> Lowering<'a> {
                 let parametric = self
                     .lower_stack
                     .last()
-                    .and_then(|entity| self.entities.get(entity.as_str()))
+                    .and_then(|entity| self.entities.get(entity))
                     .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == *name));
                 if !parametric {
                     // Nothing declares this name. Every signal, constant and
@@ -9089,7 +9134,7 @@ impl<'a> Lowering<'a> {
     /// (`impl Tr for T { fn name(self, ..) }`, held in `op_impls` keyed by
     /// trait+type). Inherent impls win; first match otherwise.
     fn find_method(&self, ty: &str, name: &str, input: Option<&str>) -> Option<&'a ast::FnDecl> {
-        if let Some(impls) = self.impls.get(ty) {
+        if let Some(impls) = self.nominal_id(ty).and_then(|id| self.impls.get(&id)) {
             for im in impls {
                 for it in &im.items {
                     if let ast::ImplItem::Fn(f) = it {
@@ -11668,7 +11713,8 @@ fn literal_leaves<'a>(
 /// `entities` decides whether an annotation names an entity.
 fn instance_let_parts(
     l: &ast::LetDecl,
-    entities: &HashMap<String, &ast::EntityDecl>,
+    entities: &HashMap<DefId, &ast::EntityDecl>,
+    resolved: &Resolved,
 ) -> Option<(ast::Type, Vec<ast::ConnectArg>)> {
     // A *named* construction is a sub-instance only when the name is an
     // entity's. Every other branch below checks that; this one did not, so
@@ -11683,7 +11729,7 @@ fn instance_let_parts(
         ..
     }) = &l.value
     {
-        if type_head_name(cty).is_some_and(|n| entities.contains_key(n)) {
+        if type_def_id(cty, resolved).is_some_and(|id| entities.contains_key(&id)) {
             return Some((cty.clone(), args.clone()));
         }
     }
@@ -11693,7 +11739,7 @@ fn instance_let_parts(
     if matches!(ann, ast::Type::Indexed { .. }) {
         return None;
     }
-    if !type_head_name(ann).is_some_and(|n| entities.contains_key(n)) {
+    if !type_def_id(ann, resolved).is_some_and(|id| entities.contains_key(&id)) {
         return None;
     }
     match &l.value {
@@ -11726,12 +11772,13 @@ fn gather_generate(
     s: &ast::Stmt,
     env: &HashMap<String, i64>,
     loop_idx: &[i64],
-    entities: &HashMap<String, &ast::EntityDecl>,
+    entities: &HashMap<DefId, &ast::EntityDecl>,
+    resolved: &Resolved,
     out: &mut Vec<(String, ast::Type, Vec<ast::ConnectArg>)>,
 ) {
     match s {
         ast::Stmt::Let(l) => {
-            if let Some((cty, args)) = instance_let_parts(l, entities) {
+            if let Some((cty, args)) = instance_let_parts(l, entities, resolved) {
                 // A generated instance (inside a loop) gets the enclosing loop
                 // indices appended for a unique name, matching the elaborator's
                 // `<name>_<i>` convention.
@@ -11778,7 +11825,7 @@ fn gather_generate(
                         // `Sub<W=i>` and `wires[i]` become concrete before the
                         // instance is recorded.
                         let st = subst_stmt(st, &var.text, i);
-                        gather_generate(&st, &e, &idx, entities, out);
+                        gather_generate(&st, &e, &idx, entities, resolved, out);
                     }
                 }
             }
@@ -11790,13 +11837,13 @@ fn gather_generate(
             if let Some(c) = eval_const(&iff.cond, env) {
                 if c != 0 {
                     for st in &iff.then.stmts {
-                        gather_generate(st, env, loop_idx, entities, out);
+                        gather_generate(st, env, loop_idx, entities, resolved, out);
                     }
                 } else {
                     match iff.else_.as_deref() {
                         Some(ast::ElseBranch::Block(b)) => {
                             for st in &b.stmts {
-                                gather_generate(st, env, loop_idx, entities, out);
+                                gather_generate(st, env, loop_idx, entities, resolved, out);
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
@@ -11805,6 +11852,7 @@ fn gather_generate(
                                 env,
                                 loop_idx,
                                 entities,
+                                resolved,
                                 out,
                             );
                         }
@@ -12533,6 +12581,16 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
     }
 }
 
+fn type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<DefId> {
+    match ty {
+        ast::Type::Path(path) => resolved.resolved(path.span),
+        ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
+            type_def_id(base, resolved)
+        }
+        ast::Type::View { view, .. } => resolved.resolved(view.span),
+    }
+}
+
 fn is_blanket_array_impl(im: &ast::ImplDecl) -> bool {
     let ast::Type::Indexed {
         base, index: None, ..
@@ -12772,8 +12830,8 @@ mod tests {
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
-        let hier = crate::elab::elaborate(modules, &typed, &mut sink);
-        lower(modules, &hier, &mut sink)
+        let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
+        lower(modules, &resolved, &hier, &mut sink)
     }
 
     fn lower_diagnostics(src: &str) -> Vec<crate::diag::Diagnostic> {
@@ -12784,8 +12842,8 @@ mod tests {
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
-        let hier = crate::elab::elaborate(modules, &typed, &mut sink);
-        let _ = lower(modules, &hier, &mut sink);
+        let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
+        let _ = lower(modules, &resolved, &hier, &mut sink);
         sink.diagnostics().to_vec()
     }
 
@@ -12794,6 +12852,51 @@ mod tests {
             .iter()
             .map(|d| format!("{:?}: {}", d.code, d.message))
             .collect()
+    }
+
+    #[test]
+    fn equal_entity_leaves_lower_the_resolved_bodies() {
+        let sources = [
+            (
+                "module a; pub entity Cell { a: Bit in, y: Bit out } \
+                 impl Cell { y = a; }",
+                FileId(0),
+            ),
+            (
+                "module b; pub entity Cell { b: Bit in, z: Bit out } \
+                 impl Cell { z = b; }",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { a: Bit in, b: Bit in, y: Bit out, z: Bit out } \
+                 impl Top { \
+                   let left: a::Cell = { .a = a, .y = y }; \
+                   let right: b::Cell = { .b = b, .z = z }; \
+                 }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        let names: HashSet<&str> = design
+            .signals
+            .iter()
+            .map(|signal| signal.path.as_str())
+            .collect();
+
+        assert!(names.contains("Top.left.a"));
+        assert!(names.contains("Top.left.y"));
+        assert!(names.contains("Top.right.b"));
+        assert!(names.contains("Top.right.z"));
+        assert!(!names.contains("Top.left.z"));
+        assert!(!names.contains("Top.right.y"));
     }
 
     #[test]
@@ -13085,8 +13188,8 @@ mod tests {
         let modules = std::slice::from_ref(&module);
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
-        let hier = crate::elab::elaborate(modules, &typed, &mut sink);
-        let _ = lower(modules, &hier, &mut sink);
+        let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
+        let _ = lower(modules, &resolved, &hier, &mut sink);
 
         let conflicts: Vec<_> = sink
             .diagnostics()

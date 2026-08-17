@@ -8288,3 +8288,19 @@ intentional prelude export. Elaboration and IR remain behind the temporary
 duplicate-leaf guard. Gates: full Rust suite and strict Clippy green. The full
 corpus ran 170/171; its sole failure exposed the qualified `Range` index
 contract, which was corrected and rerun through the corpus harness at 1/1.
+
+### 2026-08-17 — Codex — entity identity through elaboration and IR
+
+Continuing the namespace migration in the shared elaboration/lowering path.
+Hierarchy nodes now retain the resolved entity `DefId` beside their short
+display name. Root selection, instance discovery, cycle detection, generic
+specialization, port validation, recursive body lookup, testbench DUT lowering,
+and generate-instance collection all use stable entity identity. Added
+cross-module tests with two different `Cell` declarations to prove both their
+ports and their bodies survive elaboration and IR lowering independently. The
+remaining duplicate-leaf guard still protects leaf-keyed struct, enum, view,
+alias, operator/trait, constant, and free-function lowering tables.
+
+Gates: full Rust suite, strict Clippy, and the 171-case external corpus all
+pass. The corpus exercised native testbench generation and execution as well
+as check-only fixtures; its emitted warnings are the expected lint fixtures.

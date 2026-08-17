@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
+use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 use crate::types::{Ty, Typed};
@@ -117,6 +118,8 @@ pub struct Instance {
     pub attrs: Vec<(String, Option<String>)>,
     /// Entity type being instantiated.
     pub entity: String,
+    /// Stable identity of `entity`; the string above is presentation only.
+    pub entity_id: DefId,
     pub params: Vec<(String, ParamValue)>,
     /// How this instance's ports connect to the parent's signals (empty for a
     /// root, which has no parent).
@@ -181,8 +184,13 @@ impl Hierarchy {
 }
 
 /// Elaborate starting from every `#[top]` / `#[test]` entity.
-pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -> Hierarchy {
-    elaborate_roots(modules, typed, sink, is_root)
+pub fn elaborate(
+    modules: &[Module],
+    resolved: &Resolved,
+    typed: &Typed,
+    sink: &mut DiagnosticSink,
+) -> Hierarchy {
+    elaborate_roots(modules, resolved, typed, sink, |entity, _| is_root(entity))
 }
 
 /// Elaborate for `check`: the usual roots, plus every entity that nothing
@@ -196,23 +204,24 @@ pub fn elaborate(modules: &[Module], typed: &Typed, sink: &mut DiagnosticSink) -
 /// parent, so it is not rooted twice.
 pub fn elaborate_for_check(
     modules: &[Module],
+    resolved: &Resolved,
     typed: &Typed,
     sink: &mut DiagnosticSink,
 ) -> Hierarchy {
-    let instantiated = instantiated_entities(modules);
-    elaborate_roots(modules, typed, sink, |ent| {
-        is_root(ent) || !instantiated.contains(&ent.name.text)
+    let instantiated = instantiated_entities(modules, resolved);
+    elaborate_roots(modules, resolved, typed, sink, |ent, id| {
+        is_root(ent) || !instantiated.contains(&id)
     })
 }
 
 /// Entity names used as the type of an instance `let` anywhere. Such a name is
 /// reached through its parent, so `check` need not root it itself.
-fn instantiated_entities(modules: &[Module]) -> HashSet<String> {
-    let declared: HashSet<&str> = modules
+fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<DefId> {
+    let declared: HashSet<DefId> = modules
         .iter()
         .flat_map(|m| &m.items)
         .filter_map(|item| match item {
-            Item::Entity(e) => Some(e.name.text.as_str()),
+            Item::Entity(e) => resolved.declared(e.name.span),
             _ => None,
         })
         .collect();
@@ -222,9 +231,9 @@ fn instantiated_entities(modules: &[Module]) -> HashSet<String> {
             let Item::Impl(im) = item else { continue };
             for it in &im.items {
                 let ImplItem::Let(l) = it else { continue };
-                let head = l.ty.as_ref().and_then(type_head_name);
-                if let Some(head) = head.filter(|h| declared.contains(h)) {
-                    out.insert(head.to_string());
+                let entity = l.ty.as_ref().and_then(|ty| type_def_id(ty, resolved));
+                if let Some(entity) = entity.filter(|id| declared.contains(id)) {
+                    out.insert(entity);
                 }
             }
         }
@@ -238,21 +247,26 @@ fn instantiated_entities(modules: &[Module]) -> HashSet<String> {
 /// instantiated children. `roots` is empty if the entity isn't found.
 pub fn elaborate_top(
     modules: &[Module],
+    resolved: &Resolved,
     typed: &Typed,
     sink: &mut DiagnosticSink,
     top: &str,
 ) -> Hierarchy {
-    elaborate_roots(modules, typed, sink, |ent| ent.name.text == top)
+    elaborate_roots(modules, resolved, typed, sink, |ent, id| {
+        ent.name.text == top || resolved.qualified_name(id).as_deref() == Some(top)
+    })
 }
 
 fn elaborate_roots(
     modules: &[Module],
+    resolved: &Resolved,
     typed: &Typed,
     sink: &mut DiagnosticSink,
-    is_selected: impl Fn(&EntityDecl) -> bool,
+    is_selected: impl Fn(&EntityDecl, DefId) -> bool,
 ) -> Hierarchy {
     let mut e = Elaborator {
         sink,
+        resolved,
         misplaced: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
@@ -266,7 +280,10 @@ fn elaborate_roots(
     for m in modules {
         for item in &m.items {
             if let Item::Entity(ent) = item {
-                if is_selected(ent) {
+                let Some(entity_id) = resolved.declared(ent.name.span) else {
+                    continue;
+                };
+                if is_selected(ent, entity_id) {
                     let params = ent
                         .params
                         .params
@@ -275,7 +292,7 @@ fn elaborate_roots(
                         .collect();
                     let id = e.build(
                         &ent.name.text,
-                        &ent.name.text,
+                        entity_id,
                         params,
                         Vec::new(),
                         Vec::new(),
@@ -292,34 +309,48 @@ fn elaborate_roots(
 
 struct Elaborator<'a> {
     sink: &'a mut DiagnosticSink,
+    resolved: &'a Resolved,
     /// Instances found where structural elaboration cannot reach them: inside
     /// a behavioural `if`, whose condition is not a constant and so is a
     /// process, not a generate. Recorded during gathering (which borrows
     /// `&self`) and reported once, deduplicated by span — one entity is
     /// elaborated once per instantiation of it.
     misplaced: std::cell::RefCell<Vec<(String, Span)>>,
-    entities: HashMap<String, &'a EntityDecl>,
-    /// Entity name -> its inherent impls (where instances live).
-    impls: HashMap<String, Vec<&'a ImplDecl>>,
+    entities: HashMap<DefId, &'a EntityDecl>,
+    /// Entity identity -> its inherent impls (where instances live).
+    impls: HashMap<DefId, Vec<&'a ImplDecl>>,
     /// Bit-vector families (`struct F : Logic[]`), for width-typing vectors.
-    families: HashSet<String>,
+    families: HashSet<DefId>,
     out: Hierarchy,
 }
 
 impl<'a> Elaborator<'a> {
     fn collect(&mut self, modules: &'a [Module]) {
-        self.families = crate::ir::vector_families(modules);
         for m in modules {
             for item in &m.items {
                 match item {
                     Item::Entity(e) => {
-                        self.entities.insert(e.name.text.clone(), e);
+                        if let Some(id) = self.resolved.declared(e.name.span) {
+                            self.entities.insert(id, e);
+                        }
                     }
                     Item::Struct(_) => {}
                     Item::View(_) => {}
                     Item::Impl(im) if im.trait_.is_none() => {
-                        if let Some(name) = type_head_name(&im.target) {
-                            self.impls.entry(name.to_string()).or_default().push(im);
+                        if let Some(id) = type_def_id(&im.target, self.resolved) {
+                            self.impls.entry(id).or_default().push(im);
+                        }
+                    }
+                    Item::Impl(im)
+                        if im.trait_.as_ref().is_some_and(|trait_| {
+                            trait_
+                                .segments
+                                .last()
+                                .is_some_and(|name| name.text == "Vector")
+                        }) =>
+                    {
+                        if let Some(id) = type_def_id(&im.target, self.resolved) {
+                            self.families.insert(id);
                         }
                     }
                     _ => {}
@@ -331,15 +362,20 @@ impl<'a> Elaborator<'a> {
     fn build(
         &mut self,
         inst_name: &str,
-        entity_name: &str,
+        entity_id: DefId,
         params: Vec<(String, ParamValue)>,
         connections: Vec<Connection>,
         attrs: Vec<(String, Option<String>)>,
-        stack: &mut Vec<String>,
+        stack: &mut Vec<DefId>,
     ) -> InstanceId {
+        let entity_name = self
+            .entities
+            .get(&entity_id)
+            .map(|entity| entity.name.text.as_str())
+            .unwrap_or("<unknown>");
         // Cycle guard: an entity may not (transitively) instantiate itself.
-        if stack.iter().any(|s| s == entity_name) {
-            let span = self.entities.get(entity_name).map(|e| e.name.span);
+        if stack.contains(&entity_id) {
+            let span = self.entities.get(&entity_id).map(|e| e.name.span);
             if let Some(span) = span {
                 self.error(
                     codes::DUPLICATE_ITEM,
@@ -351,6 +387,7 @@ impl<'a> Elaborator<'a> {
                 name: inst_name.to_string(),
                 attrs,
                 entity: entity_name.to_string(),
+                entity_id,
                 params,
                 connections,
                 instance_arrays: Vec::new(),
@@ -361,23 +398,25 @@ impl<'a> Elaborator<'a> {
 
         let is_extern = self
             .entities
-            .get(entity_name)
+            .get(&entity_id)
             .map(|e| e.is_extern)
             .unwrap_or(true);
-        let env = self.with_impl_binders(entity_name, param_env(&params));
-        let specs = self.gather_instances(entity_name, is_extern, &env);
-        let instance_arrays = self.instance_array_facts(entity_name, &env, &specs);
+        let env = self.with_impl_binders(entity_id, param_env(&params));
+        let specs = self.gather_instances(entity_id, is_extern, &env);
+        let instance_arrays = self.instance_array_facts(entity_id, &env, &specs);
         // This instance's own signals (ports + impl lets), for width-checking the
         // connections of the children it instantiates.
-        let parent_signals = self.entity_signals(entity_name, &env);
+        let parent_signals = self.entity_signals(entity_id, &env);
 
-        stack.push(entity_name.to_string());
+        stack.push(entity_id);
         let mut children = Vec::new();
         for spec in specs {
-            let sub = type_head_name(spec.ty).unwrap_or("");
+            let Some(sub_id) = type_def_id(spec.ty, self.resolved) else {
+                continue;
+            };
             // Only entity constructions are instances; struct/data constructs
             // are ignored here.
-            if let Some(sub_decl) = self.entities.get(sub).copied() {
+            if let Some(sub_decl) = self.entities.get(&sub_id).copied() {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
@@ -386,7 +425,7 @@ impl<'a> Elaborator<'a> {
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
                 // count as connected for the missing-connection check.
-                let driven = self.post_decl_driven(entity_name, &spec.name);
+                let driven = self.post_decl_driven(entity_id, &spec.name);
                 let cconns = self.resolve_connections(
                     sub_decl,
                     &spec.args,
@@ -412,7 +451,7 @@ impl<'a> Elaborator<'a> {
                         )
                     })
                     .collect();
-                let child = self.build(&spec.name, sub, cparams, cconns, child_attrs, stack);
+                let child = self.build(&spec.name, sub_id, cparams, cconns, child_attrs, stack);
                 children.push(child);
             }
         }
@@ -422,6 +461,7 @@ impl<'a> Elaborator<'a> {
             name: inst_name.to_string(),
             attrs,
             entity: entity_name.to_string(),
+            entity_id,
             params,
             connections,
             instance_arrays,
@@ -439,12 +479,12 @@ impl<'a> Elaborator<'a> {
     /// child's parameter as unbound. Add each binder's names alongside.
     fn with_impl_binders(
         &self,
-        entity_name: &str,
+        entity_id: DefId,
         mut env: HashMap<String, i64>,
     ) -> HashMap<String, i64> {
         let (Some(edecl), Some(impls)) = (
-            self.entities.get(entity_name).copied(),
-            self.impls.get(entity_name),
+            self.entities.get(&entity_id).copied(),
+            self.impls.get(&entity_id),
         ) else {
             return env;
         };
@@ -473,7 +513,7 @@ impl<'a> Elaborator<'a> {
 
     fn gather_instances(
         &self,
-        entity_name: &str,
+        entity_id: DefId,
         is_extern: bool,
         env: &HashMap<String, i64>,
     ) -> Vec<InstanceSpec<'a>> {
@@ -486,7 +526,7 @@ impl<'a> Elaborator<'a> {
         // when an entity happens to be named `T`.
         let tparams: HashSet<String> = self
             .entities
-            .get(entity_name)
+            .get(&entity_id)
             .map(|e| {
                 e.params
                     .params
@@ -496,7 +536,7 @@ impl<'a> Elaborator<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        if let Some(impls) = self.impls.get(entity_name) {
+        if let Some(impls) = self.impls.get(&entity_id) {
             for im in impls {
                 for item in &im.items {
                     match item {
@@ -516,17 +556,17 @@ impl<'a> Elaborator<'a> {
     /// missing slot would be a false positive.
     fn instance_array_facts(
         &self,
-        entity_name: &str,
+        entity_id: DefId,
         env: &HashMap<String, i64>,
         specs: &[InstanceSpec<'a>],
     ) -> Vec<InstanceArrayFact> {
         let mut out = Vec::new();
-        let Some(impls) = self.impls.get(entity_name) else {
+        let Some(impls) = self.impls.get(&entity_id) else {
             return out;
         };
         let type_params: HashSet<&str> = self
             .entities
-            .get(entity_name)
+            .get(&entity_id)
             .into_iter()
             .flat_map(|entity| &entity.params.params)
             .filter(|parameter| parameter.bound.is_none())
@@ -545,9 +585,12 @@ impl<'a> Elaborator<'a> {
                 else {
                     continue;
                 };
-                if !type_head_name(base).is_some_and(|name| {
-                    self.entities.contains_key(name) && !type_params.contains(name)
-                }) {
+                let base_parameter =
+                    type_head_name(base).is_some_and(|name| type_params.contains(name));
+                if base_parameter
+                    || !type_def_id(base, self.resolved)
+                        .is_some_and(|id| self.entities.contains_key(&id))
+                {
                     continue;
                 }
                 let declared = match index.as_ref() {
@@ -624,7 +667,7 @@ impl<'a> Elaborator<'a> {
         if type_head_name(ann).is_some_and(|n| tparams.contains(n)) {
             return None;
         }
-        if !type_head_name(ann).is_some_and(|n| self.entities.contains_key(n)) {
+        if !type_def_id(ann, self.resolved).is_some_and(|id| self.entities.contains_key(&id)) {
             return None;
         }
         match &l.value {
@@ -774,7 +817,10 @@ impl<'a> Elaborator<'a> {
                         // A bare type parameter names data, not an instance,
                         // even when an entity happens to share its name — the
                         // same exclusion `gather_instances` makes.
-                        if self.entities.contains_key(head) && !tparams.contains(head) {
+                        if type_def_id(l.ty.as_ref().expect("checked above"), self.resolved)
+                            .is_some_and(|id| self.entities.contains_key(&id))
+                            && !tparams.contains(head)
+                        {
                             self.misplaced
                                 .borrow_mut()
                                 .push((l.name.text.clone(), l.span));
@@ -843,9 +889,9 @@ impl<'a> Elaborator<'a> {
     /// The ports of instance `inst` (inside entity `entity_name`'s impls) that
     /// are driven post-declaration by `inst.port = ...` statements — the third
     /// struct-style connection form (`let dut: E; dut.a = a;`).
-    fn post_decl_driven(&self, entity_name: &str, inst: &str) -> HashSet<String> {
+    fn post_decl_driven(&self, entity_id: DefId, inst: &str) -> HashSet<String> {
         let mut out = HashSet::new();
-        if let Some(impls) = self.impls.get(entity_name) {
+        if let Some(impls) = self.impls.get(&entity_id) {
             for im in impls {
                 for item in &im.items {
                     if let ImplItem::Stmt(s) = item {
@@ -1011,7 +1057,7 @@ impl<'a> Elaborator<'a> {
                 }
             }
             let signal = render_signal(e, render_env);
-            let ty = concrete_ty(port_ty, env, &self.families);
+            let ty = concrete_ty(port_ty, env, &self.families, self.resolved);
             connected.insert(port.clone());
             conns.push(Connection {
                 port,
@@ -1054,22 +1100,28 @@ impl<'a> Elaborator<'a> {
     /// child instances.
     fn entity_signals(
         &self,
-        entity_name: &str,
+        entity_id: DefId,
         env: &HashMap<String, i64>,
     ) -> HashMap<String, EType> {
         let families = &self.families;
         let mut sigs = HashMap::new();
-        if let Some(edecl) = self.entities.get(entity_name) {
+        if let Some(edecl) = self.entities.get(&entity_id) {
             for p in &edecl.ports {
-                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env, families));
+                sigs.insert(
+                    p.name.text.clone(),
+                    concrete_ty(&p.ty, env, families, self.resolved),
+                );
             }
         }
-        if let Some(impls) = self.impls.get(entity_name) {
+        if let Some(impls) = self.impls.get(&entity_id) {
             for im in impls {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(l.name.text.clone(), concrete_ty(t, env, families));
+                            sigs.insert(
+                                l.name.text.clone(),
+                                concrete_ty(t, env, families, self.resolved),
+                            );
                         }
                     }
                 }
@@ -1252,7 +1304,12 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>) -> EType {
+fn concrete_ty(
+    t: &Type,
+    env: &HashMap<String, i64>,
+    families: &HashSet<DefId>,
+    resolved: &Resolved,
+) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
@@ -1269,7 +1326,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
             // nested `unsigned[8][4]`) is an array of its element type.
             if let Type::Path(p) = base.as_ref() {
                 if let Some(name) = p.segments.last().map(|s| s.text.as_str()) {
-                    if families.contains(name) {
+                    if type_def_id(base, resolved).is_some_and(|id| families.contains(&id)) {
                         return EType::Array {
                             elem: Box::new(EType::Named(name.to_string())),
                             len,
@@ -1278,7 +1335,7 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>, families: &HashSet<String>)
                 }
             }
             EType::Array {
-                elem: Box::new(concrete_ty(base, env, families)),
+                elem: Box::new(concrete_ty(base, env, families, resolved)),
                 len,
             }
         }
@@ -1486,6 +1543,14 @@ fn type_head_name(ty: &Type) -> Option<&str> {
     }
 }
 
+fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
+    match ty {
+        Type::Path(path) => resolved.resolved(path.span),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_def_id(base, resolved),
+        Type::View { view, .. } => resolved.resolved(view.span),
+    }
+}
+
 fn format_params(params: &[(String, ParamValue)]) -> String {
     if params.is_empty() {
         return String::new();
@@ -1517,7 +1582,7 @@ mod tests {
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let before = sink.error_count();
-        let hier = elaborate(modules, &typed, &mut sink);
+        let hier = elaborate(modules, &resolved, &typed, &mut sink);
         (hier, sink.error_count() - before)
     }
 
@@ -1531,8 +1596,49 @@ mod tests {
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let before = sink.error_count();
-        elaborate_for_check(modules, &typed, &mut sink);
+        elaborate_for_check(modules, &resolved, &typed, &mut sink);
         sink.error_count() - before
+    }
+
+    #[test]
+    fn equal_entity_leaves_keep_their_resolved_identity() {
+        let sources = [
+            (
+                "module a; pub entity Cell { a: Bit in } impl Cell {}",
+                FileId(0),
+            ),
+            (
+                "module b; pub entity Cell { b: Bit in } impl Cell {}",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { a: Bit in, b: Bit in } \
+                 impl Top { \
+                   let left: a::Cell = { .a = a }; \
+                   let right: b::Cell = { .b = b }; \
+                 }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = elaborate(&modules, &resolved, &typed, &mut sink);
+
+        let root = hierarchy.instance(hierarchy.roots[0]);
+        let children: Vec<&Instance> = root
+            .children
+            .iter()
+            .map(|child| hierarchy.instance(*child))
+            .collect();
+        assert_eq!(children.len(), 2);
+        assert_ne!(children[0].entity_id, children[1].entity_id);
+        assert_eq!(children[0].connections[0].port, "a");
+        assert_eq!(children[1].connections[0].port, "b");
     }
 
     /// An entity instantiated inside a *behavioural* `if` — one whose
@@ -1755,7 +1861,7 @@ mod tests {
         let resolved = crate::resolve::resolve(modules, &mut sink);
         let typed = crate::types::check(modules, &resolved, &mut sink);
         let before = sink.error_count();
-        let _ = elaborate(modules, &typed, &mut sink);
+        let _ = elaborate(modules, &resolved, &typed, &mut sink);
         assert_eq!(
             sink.error_count() - before,
             0,

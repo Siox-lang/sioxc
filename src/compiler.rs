@@ -378,10 +378,14 @@ impl Compiler {
         }
 
         let typed = result.typed.as_ref().expect("type checking completed");
+        let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = match &request.emit {
-            Emit::Metadata => {
-                crate::elab::elaborate_for_check(&result.modules, typed, &mut result.diagnostics)
-            }
+            Emit::Metadata => crate::elab::elaborate_for_check(
+                &result.modules,
+                resolved,
+                typed,
+                &mut result.diagnostics,
+            ),
             Emit::Object { top } => {
                 let top = match select_top(&result.modules, top.as_deref()) {
                     Ok(top) => top,
@@ -392,6 +396,7 @@ impl Compiler {
                 };
                 let hierarchy = crate::elab::elaborate_top(
                     &result.modules,
+                    resolved,
                     typed,
                     &mut result.diagnostics,
                     &top,
@@ -405,7 +410,7 @@ impl Compiler {
                 }
                 hierarchy
             }
-            _ => crate::elab::elaborate(&result.modules, typed, &mut result.diagnostics),
+            _ => crate::elab::elaborate(&result.modules, resolved, typed, &mut result.diagnostics),
         };
         result.stats.instances = Some(hierarchy.instances.len());
         result.stats.roots = Some(hierarchy.roots.len());
@@ -419,6 +424,7 @@ impl Compiler {
         let base_dir = path.parent().unwrap_or_else(|| Path::new(""));
         let design = crate::ir::lower_in(
             &result.modules,
+            resolved,
             &hierarchy,
             &mut result.diagnostics,
             base_dir,
