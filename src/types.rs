@@ -2198,7 +2198,6 @@ impl<'a> Checker<'a> {
                 self.check_expr(v, &sym);
             }
         }
-        let mut declared_locals: HashSet<String> = HashSet::new();
         for item in &im.items {
             match item {
                 ImplItem::Const(c) => {
@@ -2209,20 +2208,8 @@ impl<'a> Checker<'a> {
                     self.require_let_annotation(l);
                     self.check_struct_literal_fields(l, &sym);
                     self.check_signal_reset_value(l);
-                    // Two `let`s of one name in the same body: the second
-                    // silently shadowed a scalar, and for a struct produced C
-                    // with the field locals defined twice, which failed at
-                    // link with a clang error naming a mangled symbol.
-                    if !declared_locals.insert(l.name.text.clone()) {
-                        self.error_with_help(
-                            codes::DUPLICATE_ITEM,
-                            l.name.span,
-                            format!("`{}` is declared more than once here", l.name.text),
-                            "each `let` in a body introduces a new name; rename one \
-                             of them, or assign to the first instead"
-                                .to_string(),
-                        );
-                    }
+                    // Resolution owns implementation-member coherence across
+                    // this block and every split inherent impl of the type.
                     // Per-instance attributes: valid for `let` targets or when
                     // a named target matches the declaration's type (the
                     // instance's entity, or the annotated type head).

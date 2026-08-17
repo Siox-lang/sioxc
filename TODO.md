@@ -54,6 +54,9 @@ Current baseline:
   Entity ports and trait methods are inherently visible; views explicitly
   expose backing fields. Public entity methods remain rejected until
   cross-hierarchy call/scheduling semantics are designed.
+- ✅ Inherent impls are owned by the nominal type's module. Foreign extensions
+  use traits; aliases and kernel types cannot gain inherent members; split impl
+  blocks share a coherent member namespace, including applied-view identity.
 - ✅ Entity, struct, view, trait, and function generic parameters participate
   in unused-parameter analysis, including uses in a separate `impl`.
 - ✅ `Hierarchy` retains each concrete instance array's declared and generated
@@ -68,12 +71,6 @@ Remaining:
 - 🔴 **Incremental/query interface.** Phase products are explicit and stable,
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
-- 🟡 **Inherent-impl ownership and coherence.** Visibility is enforced at use
-  sites, but a foreign module can still add an inherent `impl` to a public type,
-  and duplicate inherent method names across impl blocks have no explicit
-  coherence rule. Decide whether to follow Rust and require inherent impls in
-  the type's defining module, then diagnose duplicate methods before public
-  method APIs are considered stable.
 - 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
   keys nominal declarations and free-function contracts by stable identity.

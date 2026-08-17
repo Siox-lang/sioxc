@@ -8319,3 +8319,18 @@ freezing accidental behavior.
 
 Gates: 336 library tests, all Rust integration/native tests, strict Clippy,
 and all 171 external corpus cases pass.
+
+### 2026-08-17 — Codex — inherent impl coherence
+
+Implemented the Rust-style ownership rule recorded by the visibility audit:
+only a nominal type's defining module may add inherent impls. Type aliases and
+compiler kernel types are not independent nominal owners and must be extended
+through traits or a wrapper type. Added stable `E-P026` diagnostics for invalid
+owners. Resolution now owns the combined member namespace across split inherent
+impl blocks, rejecting collisions among methods, constants, state, and mode
+fields before type checking or IR registries can overwrite them. Applied views
+are keyed by `(view, backing type)`, preserving same-named roles on distinct
+buses. Same-module files remain one ownership domain.
+
+Gates: 342 library tests, all Rust integration/native tests, strict Clippy,
+and all 171 external corpus cases pass.

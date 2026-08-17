@@ -311,10 +311,12 @@ impl Counter {
 ```
 
 This matches Rust's module privacy: writing an `impl Counter` in a foreign
-module does not grant access to `Counter`'s private representation. Public
-function and method signatures, public struct fields, public entity ports, and
-other exported interfaces may not name private types; such an interface would
-be impossible for its users to name and is rejected.
+module is rejected. Inherent impls belong to the nominal type's defining module;
+extensions from elsewhere must be expressed as trait impls. A type alias and a
+compiler kernel type are not new nominal owners, so neither may receive an
+inherent impl. Public function and method signatures, public struct fields,
+public entity ports, and other exported interfaces may not name private types;
+such an interface would be impossible for its users to name and is rejected.
 
 Entity ports are structural interface endpoints, not ordinary fields. They
 are inherently visible when the entity is visible, so `pub` on an individual
@@ -329,6 +331,9 @@ therefore writes `fn`, never `pub fn`. Inherent struct and view methods are
 private by default and may be exported with `pub fn`. As with Rust, a member's
 effective visibility cannot exceed its owner: a `pub fn` on a module-private
 type is callable throughout that module but does not create an external API.
+All split inherent impl blocks for one type share a member namespace. Repeating
+a method, constant, state declaration, or mode field is an error instead of a
+source-order override.
 
 An applied view is an explicit structural interface over its backing struct.
 The view may expose private backing fields through a port without making raw
@@ -1333,7 +1338,8 @@ impl Send<Byte> for Queue Source  { /* ... */ }
 
 The nominal identity is the pair `(backing struct, view)`. `Stream Source` and
 `Queue Source` are therefore distinct types even though both views are named
-`Source`.
+`Source`. Inherent-member coherence uses that same pair, so both applied views
+may independently define a method with the same name.
 
 ```siox
 let wire: Stream<unsigned[32]>;

@@ -234,6 +234,24 @@ fn path_text(path: &Path) -> String {
         .join("::")
 }
 
+fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
+    Some(match item {
+        ImplItem::Let(declaration) => (&declaration.name.text, declaration.name.span, "state"),
+        ImplItem::Const(constant) => (&constant.name.text, constant.name.span, "constant"),
+        ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
+        ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
+        ImplItem::Stmt(_) => return None,
+    })
+}
+
+/// Semantic owner of an inherent impl. Applied views are overloaded by their
+/// backing type, so both declarations participate in the identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ImplOwner {
+    nominal: DefId,
+    backing: Option<DefId>,
+}
+
 struct Resolver<'a> {
     sink: &'a mut DiagnosticSink,
     out: Resolved,
@@ -277,6 +295,10 @@ struct Resolver<'a> {
     current_impl_renames: HashMap<String, DefId>,
     impl_used_decl_params: HashSet<DefId>,
     current_impl_owner: Option<String>,
+    /// Named members contributed by every inherent impl of one semantic owner.
+    /// Split impl blocks share a scope, so duplicates must be rejected before
+    /// type checking/lowering can silently overwrite a registry entry.
+    inherent_members: HashMap<(ImplOwner, String), (Span, &'static str)>,
     /// The `module` path of every source that was actually loaded. A `using`
     /// naming a path absent from this set imports from a file the compiler
     /// never read, which is a different mistake from importing a name the
@@ -311,6 +333,7 @@ impl<'a> Resolver<'a> {
             current_impl_renames: HashMap::new(),
             impl_used_decl_params: HashSet::new(),
             current_impl_owner: None,
+            inherent_members: HashMap::new(),
             loaded_modules: HashSet::new(),
             file_modules: HashMap::new(),
             current_module: None,
@@ -1005,6 +1028,25 @@ impl<'a> Resolver<'a> {
             }
         }
         self.resolve_type(&im.target);
+        if im.trait_.is_none() {
+            self.check_inherent_impl_coherence(im);
+        } else {
+            // Different traits may deliberately use the same method name, but
+            // one trait impl block cannot declare one member twice.
+            let owner = im
+                .trait_
+                .as_ref()
+                .map(path_text)
+                .unwrap_or_else(|| "trait impl".to_string());
+            self.check_duplicate_names(
+                im.items
+                    .iter()
+                    .filter_map(impl_member)
+                    .map(|(name, span, _)| (name, span)),
+                "implementation member",
+                &owner,
+            );
+        }
         for attr in &im.attrs {
             self.resolve_attr(attr);
         }
@@ -1084,6 +1126,95 @@ impl<'a> Resolver<'a> {
             }
         }
         self.exit();
+    }
+
+    fn check_inherent_impl_coherence(&mut self, im: &ImplDecl) {
+        let Some(owner) = self.impl_owner(&im.target) else {
+            // Unknown targets already receive the ordinary resolution error.
+            return;
+        };
+        let Some(definition) = self.out.def(owner.nominal).cloned() else {
+            return;
+        };
+        let display = self
+            .impl_owner_display(owner)
+            .unwrap_or_else(|| definition.name.clone());
+        if !matches!(
+            definition.kind,
+            DefKind::Struct | DefKind::View | DefKind::Enum | DefKind::Entity
+        ) {
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "cannot define an inherent impl for non-owned type `{display}`"
+                ))
+                .with_code(codes::IMPL_COHERENCE)
+                .at(im.span)
+                .help("define a nominal wrapper type, or implement a trait instead"),
+            );
+            return;
+        }
+        let defining_module = definition.module.as_deref();
+        if defining_module != self.current_module.as_deref() {
+            let module = defining_module.unwrap_or("<compiler>");
+            let mut diagnostic = Diagnostic::error(format!(
+                "inherent impl for `{display}` must be declared in its defining module `{module}`"
+            ))
+            .with_code(codes::IMPL_COHERENCE)
+            .at(im.span)
+            .help("move this impl beside the type declaration, or express the extension as a trait impl");
+            if let Some(span) = definition.span {
+                diagnostic = diagnostic.label(span, "type defined here");
+            }
+            self.sink.emit(diagnostic);
+            return;
+        }
+
+        for (name, span, kind) in im.items.iter().filter_map(impl_member) {
+            let key = (owner, name.clone());
+            if let Some(&(previous, previous_kind)) = self.inherent_members.get(&key) {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "duplicate inherent member `{name}` for `{display}`"
+                    ))
+                    .with_code(codes::DUPLICATE_ITEM)
+                    .at(span)
+                    .label(previous, format!("first declared here as {previous_kind}"))
+                    .help("rename or remove one of the members"),
+                );
+            } else {
+                self.inherent_members.insert(key, (span, kind));
+            }
+        }
+    }
+
+    fn impl_owner(&self, ty: &Type) -> Option<ImplOwner> {
+        match ty {
+            Type::Path(path) => Some(ImplOwner {
+                nominal: self.out.resolved(path.span)?,
+                backing: None,
+            }),
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => self.impl_owner(base),
+            Type::View { view, target, .. } => Some(ImplOwner {
+                nominal: self.out.resolved(view.span)?,
+                backing: Some(self.type_definition(target)?),
+            }),
+        }
+    }
+
+    fn type_definition(&self, ty: &Type) -> Option<DefId> {
+        match ty {
+            Type::Path(path) => self.out.resolved(path.span),
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => self.type_definition(base),
+            Type::View { view, .. } => self.out.resolved(view.span),
+        }
+    }
+
+    fn impl_owner_display(&self, owner: ImplOwner) -> Option<String> {
+        let nominal = self.out.qualified_name(owner.nominal)?;
+        match owner.backing {
+            Some(backing) => Some(format!("{} {}", self.out.qualified_name(backing)?, nominal)),
+            None => Some(nominal),
+        }
     }
 
     fn resolve_impl_item(&mut self, item: &ImplItem) {
@@ -2027,6 +2158,125 @@ mod tests {
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         resolve(std::slice::from_ref(&module), &mut sink);
         sink
+    }
+
+    fn module_diagnostics(sources: &[(&str, FileId)]) -> DiagnosticSink {
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        resolve(&modules, &mut sink);
+        sink
+    }
+
+    #[test]
+    fn foreign_modules_cannot_add_inherent_impls() {
+        let sink = module_diagnostics(&[
+            (
+                "module owner;\npub struct Device { pub value: integer }\n",
+                FileId(0),
+            ),
+            (
+                "module user;\nusing owner::{Device};\nimpl Device { pub fn read(self) -> integer { return self.value; } }\n",
+                FileId(1),
+            ),
+        ]);
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::IMPL_COHERENCE))
+            .collect();
+        assert_eq!(errors.len(), 1, "foreign impl must fail once: {errors:?}");
+        assert!(errors[0].message.contains("defining module `owner`"));
+        assert!(errors[0]
+            .labels
+            .iter()
+            .any(|label| label.message == "type defined here"));
+    }
+
+    #[test]
+    fn inherent_impl_ownership_is_the_module_not_the_source_file() {
+        let sink = module_diagnostics(&[
+            ("module owner;\npub struct Device(integer);\n", FileId(0)),
+            (
+                "module owner;\nimpl Device { pub fn read(self) -> integer { return 0; } }\n",
+                FileId(1),
+            ),
+        ]);
+        assert!(sink
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != Some(codes::IMPL_COHERENCE)));
+    }
+
+    #[test]
+    fn compiler_types_and_aliases_do_not_gain_inherent_impls() {
+        let sink = diagnostics(
+            "module m;\nusing Count = integer;\n\
+             impl integer { fn raw(self) -> integer { return self; } }\n\
+             impl Count { fn alias(self) -> integer { return self; } }\n",
+        );
+        assert_eq!(
+            sink.diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::IMPL_COHERENCE))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn split_inherent_impls_share_one_member_namespace() {
+        let sink = diagnostics(
+            "module m;\nstruct Register(integer);\n\
+             impl Register { fn read(self) -> integer { return 0; } }\n\
+             impl Register { fn read(self) -> integer { return 1; } }\n",
+        );
+        let duplicates: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                    && diagnostic.message.contains("inherent member `read`")
+            })
+            .collect();
+        assert_eq!(duplicates.len(), 1, "duplicate method must fail once");
+        assert!(duplicates[0]
+            .labels
+            .iter()
+            .any(|label| label.message.contains("first declared here as method")));
+    }
+
+    #[test]
+    fn different_inherent_member_kinds_cannot_shadow_across_blocks() {
+        let sink = diagnostics(
+            "module m;\nentity Device {}\n\
+             impl Device { let state: integer = 0; }\n\
+             impl Device { const state: integer = 1; }\n",
+        );
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                && diagnostic.message.contains("inherent member `state`")
+        }));
+    }
+
+    #[test]
+    fn applied_view_owners_include_the_backing_type() {
+        let sink = diagnostics(
+            "module m;\n\
+             struct Stream { value: integer }\n\
+             struct Queue { value: integer }\n\
+             view Source for Stream { value out }\n\
+             view Source for Queue { value out }\n\
+             impl Stream Source { fn get(self) -> integer { return self.value; } }\n\
+             impl Queue Source { fn get(self) -> integer { return self.value; } }\n",
+        );
+        assert!(sink.diagnostics().iter().all(|diagnostic| {
+            diagnostic.code != Some(codes::IMPL_COHERENCE)
+                && !(diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                    && diagnostic.message.contains("inherent member `get`"))
+        }));
     }
 
     #[test]

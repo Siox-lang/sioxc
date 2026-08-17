@@ -276,6 +276,9 @@ pub mod codes {
     /// A public declaration whose signature contains a private nominal type.
     /// Such an API would be exported but impossible to name from its users.
     pub const PRIVATE_INTERFACE: &str = "E-P025";
+    /// An inherent implementation violates the ownership/coherence rules:
+    /// only the defining module may add inherent members to a nominal type.
+    pub const IMPL_COHERENCE: &str = "E-P026";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
