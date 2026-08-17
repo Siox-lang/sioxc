@@ -8498,3 +8498,32 @@ ordinary associated functions are not mistaken for constructors. Verification:
 351 all-feature library tests, every Rust integration test (including 19 native
 build/run cases), strict all-target/all-feature Clippy, and all 171 external
 corpus compile/run/VCD/round-trip fixtures pass.
+
+### 2026-08-18 — Codex — namespaced struct identity
+
+Auditing and editing resolver/type/elaboration struct ownership, IR recursive
+layouts/defaults, method dispatch, and native aggregate storage. Equal struct
+leaves are still rejected because downstream tables use their surface name;
+they will only be admitted after field inheritance, generic specialization,
+constructors, methods, flattened paths, and native tests retain the selected
+declaration identity end to end.
+
+Completed on `main`. Equal struct leaves now retain resolver identity through
+generic ownership, derivation, fields and visibility domains, recursive
+layouts/defaults, constructors, module constants, inherent/static methods,
+flattened signal paths, and native aggregate storage. Qualified associated
+paths attach identity to their owning type segment, and associated-function
+lookup uses that identity for both imported and fully qualified spellings.
+Standard-library vector structs keep their canonical short IR key when a user
+declares a namesake; the user type remains qualified and independent.
+
+The visibility audit confirmed that module exports, type-private fields and
+literals, split inherent impls, entity ports/private state, trait visibility,
+views, and public-interface privacy already implement the container model. A
+new collision regression proves two `Pair` declarations can invert field and
+method visibility without overwriting each other. Public entity methods remain
+deliberately rejected until cross-hierarchy scheduling/connectivity/synthesis
+semantics are designed. Verification: 353 all-feature library tests, every
+Rust integration test including 20 native build/run cases, strict all-target /
+all-feature Clippy, and all 171 external corpus compile/run/VCD/round-trip
+fixtures pass.

@@ -296,6 +296,10 @@ export the same entity leaf (`a::Root`, `b::Root`); a qualified path or import
 selects one. If both are roots of the same compilation, tree/IR/waveform output
 qualifies their root scopes. Likewise, `sioxc --top Root` is rejected when the
 leaf is ambiguous and `sioxc --top a::Root` selects exactly that declaration.
+Struct identity follows the same module rule. `a::Pair` and `b::Pair` retain
+independent fields, representation widths, constructors, inherent methods,
+constants, and privacy domains; a `pub` field or method on one never changes
+the visibility of the other.
 
 A struct's fields describe representation and are private to the owning type
 by default. Any implementation of that exact type in its defining module may

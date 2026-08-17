@@ -80,8 +80,11 @@ impl<'a> FunctionIndex<'a> {
                     return self.free.get(&id).copied();
                 }
             }
+            if let Some(key) = self.associated_path_key(path) {
+                return self.associated.get(&key).copied();
+            }
         }
-        call_fn_key(callee).and_then(|key| self.associated.get(&key).copied())
+        None
     }
 
     /// Stable table key for a module constant declaration. Implementation
@@ -161,17 +164,30 @@ impl<'a> FunctionIndex<'a> {
         })
     }
 
+    /// Stable table key for a struct declaration.
+    pub fn struct_decl_key(&self, name: &ast::Ident) -> String {
+        self.resolved
+            .declared(name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Struct))
+            .and_then(|id| self.struct_id_key(id))
+            .unwrap_or_else(|| name.text.clone())
+    }
+
+    /// Resolver-selected identity of a path that names a struct.
+    pub fn struct_path_key(&self, path: &ast::Path) -> Option<String> {
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Struct))
+            .then(|| self.struct_id_key(id))
+            .flatten()
+    }
+
     /// Nominal type named directly by a constructor path, or by the owner of
-    /// `T::new`. Structs are still crate-unique and therefore retain their
-    /// leaf key; enum and alias owners use their identity-preserving keys.
+    /// `T::new`. Every declared owner uses its identity-preserving key.
     pub fn type_owner_key(&self, path: &ast::Path) -> Option<String> {
         let type_key = |id: DefId| match self.resolved.kind_of(id)? {
             crate::resolve::DefKind::Enum => self.enum_id_key(id),
             crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
-            crate::resolve::DefKind::Struct => self
-                .resolved
-                .def(id)
-                .map(|definition| definition.name.clone()),
+            crate::resolve::DefKind::Struct => self.struct_id_key(id),
             _ => None,
         };
         self.resolved
@@ -182,6 +198,24 @@ impl<'a> FunctionIndex<'a> {
                 let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
                 self.resolved.resolved(owner.span).and_then(type_key)
             })
+    }
+
+    /// Stable lookup key for `Type::function`, based on the resolved owner
+    /// rather than the spelling at the call site.  Thus an imported
+    /// `Pair::tag` and its fully qualified `a::record::Pair::tag` spelling
+    /// select the same implementation without conflating another module's
+    /// `Pair`.
+    fn associated_path_key(&self, path: &ast::Path) -> Option<String> {
+        let function = path.segments.last()?;
+        let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
+        let id = self.resolved.resolved(owner.span)?;
+        let owner = match self.resolved.kind_of(id)? {
+            crate::resolve::DefKind::Enum => self.enum_id_key(id),
+            crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
+            crate::resolve::DefKind::Struct => self.struct_id_key(id),
+            _ => None,
+        }?;
+        Some(format!("{owner}::{}", function.text))
     }
 
     /// Enum identity and variant leaf selected by a variant expression path.
@@ -236,6 +270,38 @@ impl<'a> FunctionIndex<'a> {
         }
     }
 
+    /// Struct counterpart of [`Self::enum_id_key`]. Standard vector/kernel
+    /// newtypes retain their historical short keys; a user namesake receives
+    /// a qualified key, while unrelated user collisions qualify both sides.
+    fn struct_id_key(&self, id: DefId) -> Option<String> {
+        let definition = self.resolved.def(id)?;
+        let colliders: Vec<_> = self
+            .resolved
+            .defs()
+            .iter()
+            .filter(|other| {
+                other.kind == crate::resolve::DefKind::Struct
+                    && other.name == definition.name
+                    && other.module != definition.module
+            })
+            .collect();
+        let is_std = definition
+            .module
+            .as_deref()
+            .is_some_and(|module| module == "std" || module.starts_with("std::"));
+        let other_std = colliders.iter().any(|other| {
+            other
+                .module
+                .as_deref()
+                .is_some_and(|module| module == "std" || module.starts_with("std::"))
+        });
+        if !colliders.is_empty() && (!is_std || other_std) {
+            self.resolved.qualified_name(id)
+        } else {
+            Some(definition.name.clone())
+        }
+    }
+
     /// Resolver-selected key for a type-alias use. Non-alias single-segment
     /// paths retain their surface spelling so kernel and local types can use
     /// the same callers without entering the module-alias table.
@@ -257,6 +323,7 @@ impl<'a> FunctionIndex<'a> {
         match ty {
             ast::Type::Path(path) => self
                 .enum_path_key(path)
+                .or_else(|| self.struct_path_key(path))
                 .or_else(|| self.type_alias_path_key(path))
                 .or_else(|| path.segments.last().map(|name| name.text.clone())),
             ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
@@ -694,7 +761,7 @@ pub fn lower_in(
         })
         .collect();
     l.enum_reprs = enum_reprs(modules, &l.free_fns);
-    l.vector_families = vector_families(modules);
+    l.vector_families = vector_families(modules, &l.free_fns);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a
     // packed vector the same way lowering does.
@@ -1070,17 +1137,32 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
 
 impl<'a> Lowering<'a> {
     fn nominal_id(&self, name: &str) -> Option<DefId> {
-        self.resolved
-            .defs()
-            .iter()
-            .enumerate()
-            .find(|(index, definition)| {
+        let definitions = self.resolved.defs();
+        let qualified = definitions.iter().enumerate().find(|(index, _)| {
+            self.resolved
+                .qualified_name(DefId(*index as u32))
+                .as_deref()
+                == Some(name)
+        });
+        // Compiler-known standard types deliberately keep a short IR key
+        // when a user declares a namesake. Prefer that canonical declaration
+        // for a short lookup; qualified user keys have already matched above.
+        let standard = (!name.contains("::")).then(|| {
+            definitions.iter().enumerate().find(|(_, definition)| {
                 definition.name == name
-                    || self
-                        .resolved
-                        .qualified_name(DefId(*index as u32))
+                    && definition
+                        .module
                         .as_deref()
-                        == Some(name)
+                        .is_some_and(|module| module == "std" || module.starts_with("std::"))
+            })
+        });
+        qualified
+            .or_else(|| standard.flatten())
+            .or_else(|| {
+                definitions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, definition)| definition.name == name)
             })
             .map(|(index, _)| DefId(index as u32))
     }
@@ -1194,10 +1276,11 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::Item::Struct(s) => {
-                        self.structs.insert(s.name.text.clone(), s);
+                        self.structs
+                            .insert(self.free_fns.struct_decl_key(&s.name), s);
                     }
                     ast::Item::View(v) => {
-                        let key = declared_view_key(v);
+                        let key = declared_view_key(v, &self.free_fns);
                         self.views.insert(key.clone(), v);
                         self.view_dirs.insert(
                             key,
@@ -1235,15 +1318,15 @@ impl<'a> Lowering<'a> {
                     // (spec 3.24).
                     ast::Item::Impl(im) => {
                         let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
-                        let target = type_head_name(&im.target);
-                        if let (Some(tr), Some(ty)) = (tr, target) {
+                        let target = self.free_fns.type_head_key(&im.target);
+                        if let (Some(tr), Some(ty)) = (tr, target.as_ref()) {
                             self.implemented_traits
-                                .entry(ty.to_string())
+                                .entry(ty.clone())
                                 .or_default()
                                 .push(tr.text.clone());
                         }
                         self.register_static_fns(im);
-                        if let (Some(tr), Some(ty)) = (tr, target) {
+                        if let (Some(tr), Some(ty)) = (tr, target.as_ref()) {
                             if tr.text == "Suffix" {
                                 let symbol = im.trait_args.first().and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::StrLit {
@@ -1255,7 +1338,7 @@ impl<'a> Lowering<'a> {
                                     for it in &im.items {
                                         if let ast::ImplItem::Fn(f) = it {
                                             self.suffix_impls
-                                                .insert(symbol.clone(), (ty.to_string(), f));
+                                                .insert(symbol.clone(), (ty.clone(), f));
                                         }
                                     }
                                 }
@@ -1293,7 +1376,7 @@ impl<'a> Lowering<'a> {
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
-                                            .entry((operator.clone(), ty.to_string()))
+                                            .entry((operator.clone(), ty.clone()))
                                             .or_default()
                                             .push((f, rhs_arg.clone()));
                                     }
@@ -1347,7 +1430,7 @@ impl<'a> Lowering<'a> {
     /// in expressions through the same const-folding/inlining path as a
     /// module-level `fn`. Methods take `self` and dispatch via the receiver.
     fn register_static_fns(&mut self, im: &'a ast::ImplDecl) {
-        let Some(ty) = type_head_name(&im.target) else {
+        let Some(ty) = self.free_fns.type_head_key(&im.target) else {
             return;
         };
         for it in &im.items {
@@ -1623,8 +1706,10 @@ impl<'a> Lowering<'a> {
                 self.const_arrays.insert(name.to_string(), values);
                 return true;
             }
-        } else if let Some(args) = type_head_name(&constant.ty)
-            .and_then(|head| self.positional_struct_args(head, &constant.value))
+        } else if let Some(args) = self
+            .free_fns
+            .type_head_key(&constant.ty)
+            .and_then(|head| self.positional_struct_args(&head, &constant.value))
         {
             // `const P: Pair = { 6, 7 };` — the same constant written without
             // field names. The declared type says these braces are a struct
@@ -3838,8 +3923,7 @@ impl<'a> Lowering<'a> {
                     let inner_ty = fields
                         .iter()
                         .find(|(n, _)| *n == field)
-                        .and_then(|(_, t)| type_head_name(t))
-                        .map(str::to_string);
+                        .and_then(|(_, ty)| self.free_fns.type_head_key(ty));
                     self.seed_struct_literal(
                         &path,
                         inner_ty.as_deref(),
@@ -4012,8 +4096,8 @@ impl<'a> Lowering<'a> {
     /// re-derived per site.
     fn as_struct_literal(&self, ty: Option<&ast::Type>, value: &ast::Expr) -> ast::Expr {
         let Some(args) = ty
-            .and_then(type_head_name)
-            .and_then(|head| self.positional_struct_args(head, value))
+            .and_then(|ty| self.free_fns.type_head_key(ty))
+            .and_then(|head| self.positional_struct_args(&head, value))
         else {
             return value.clone();
         };
@@ -4056,7 +4140,7 @@ impl<'a> Lowering<'a> {
         ty: &ast::Type,
         args: &[ast::ConnectArg],
     ) -> Option<Vec<(String, ast::Expr)>> {
-        let declared = self.structs.get(type_head_name(ty)?)?;
+        let declared = self.structs.get(&self.free_fns.type_head_key(ty)?)?;
         let mut out = Vec::new();
         for (position, arg) in args.iter().enumerate() {
             let field = match &arg.field {
@@ -4128,9 +4212,12 @@ impl<'a> Lowering<'a> {
             // Byte(200);` seeds 200. `eval_const_fns` has no rule for a call,
             // so the signal kept its default and read 0.
             ast::Expr::Call { callee, args, .. }
-                if expr_path(callee)
-                    .and_then(|name| self.structs.get(&name).cloned())
-                    .is_some_and(|s| s.fields.is_empty() && s.base.is_some()) =>
+                if (match callee.as_ref() {
+                    ast::Expr::Path(path) => self.free_fns.struct_path_key(path),
+                    _ => None,
+                })
+                .and_then(|name| self.structs.get(&name).cloned())
+                .is_some_and(|s| s.fields.is_empty() && s.base.is_some()) =>
             {
                 self.const_init_value(args.first()?, target, is_char)
             }
@@ -4156,8 +4243,8 @@ impl<'a> Lowering<'a> {
                 if let Some(body) = &f.body {
                     for st in &body.stmts {
                         if let ast::Stmt::Return { value: Some(e), .. } = st {
-                            let is_char =
-                                ty == "Char" || struct_derives_kernel(ty, "Char", &self.structs);
+                            let is_char = ty == "Char"
+                                || struct_derives_kernel(ty, "Char", &self.structs, &self.free_fns);
                             if let Some(v) = self.const_init_value(e, Some(ty), is_char) {
                                 out.insert(ty.clone(), v);
                             }
@@ -4630,15 +4717,21 @@ impl<'a> Lowering<'a> {
             }
             let (name, view) = match &ty {
                 ast::Type::View { view, target, .. } => (
-                    type_head_name(target).unwrap_or("<anonymous>").to_string(),
+                    self.free_fns
+                        .type_head_key(target)
+                        .unwrap_or_else(|| "<anonymous>".to_string()),
                     view.segments.last().map(|name| name.text.clone()),
                 ),
                 ast::Type::Generic { base, .. } => (
-                    type_head_name(base).unwrap_or("<anonymous>").to_string(),
+                    self.free_fns
+                        .type_head_key(base)
+                        .unwrap_or_else(|| "<anonymous>".to_string()),
                     None,
                 ),
                 _ => (
-                    type_head_name(&ty).unwrap_or("<anonymous>").to_string(),
+                    self.free_fns
+                        .type_head_key(&ty)
+                        .unwrap_or_else(|| "<anonymous>".to_string()),
                     None,
                 ),
             };
@@ -4733,18 +4826,18 @@ impl<'a> Lowering<'a> {
         }
 
         let width = type_width(&ty, env, &self.free_fns, &self.structs, &self.const_ranges);
-        let head = type_head_name(&ty);
-        let domain = match head {
+        let head = self.free_fns.type_head_key(&ty);
+        let domain = match head.as_deref() {
             Some("real") => Some(ScalarDomain::Real),
             Some("integer") => Some(ScalarDomain::Integer),
             Some("Char") => Some(ScalarDomain::Character),
-            Some(name) if struct_derives_kernel(name, "real", &self.structs) => {
+            Some(name) if struct_derives_kernel(name, "real", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Real)
             }
-            Some(name) if struct_derives_kernel(name, "integer", &self.structs) => {
+            Some(name) if struct_derives_kernel(name, "integer", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Integer)
             }
-            Some(name) if struct_derives_kernel(name, "Char", &self.structs) => {
+            Some(name) if struct_derives_kernel(name, "Char", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Character)
             }
             Some(_) if width != 0 => Some(ScalarDomain::Bits),
@@ -4757,8 +4850,7 @@ impl<'a> Lowering<'a> {
                     width,
                     domain,
                     nominal: head
-                        .filter(|name| !matches!(*name, "integer" | "real" | "Char"))
-                        .map(str::to_string),
+                        .filter(|name| !matches!(name.as_str(), "integer" | "real" | "Char")),
                     value_range: None,
                 },
             },
@@ -4807,16 +4899,14 @@ impl<'a> Lowering<'a> {
     fn packed_family(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> Option<String> {
         match ty {
             ast::Type::Indexed { base, .. } => {
-                let name = type_head_name(base)?;
-                self.vector_families
-                    .contains(name)
-                    .then(|| name.to_string())
+                let name = self.free_fns.type_head_key(base)?;
+                self.vector_families.contains(&name).then_some(name)
             }
             ast::Type::Path(_) => {
-                let name = type_head_name(ty)?;
-                (self.vector_families.contains(name)
+                let name = self.free_fns.type_head_key(ty)?;
+                (self.vector_families.contains(&name)
                     && type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges) != 0)
-                    .then(|| name.to_string())
+                    .then_some(name)
             }
             _ => None,
         }
@@ -4831,19 +4921,19 @@ impl<'a> Lowering<'a> {
         if let Some((left, right)) = self.declared_range(ty, env) {
             return Some(LayoutRange { left, right });
         }
-        let name = type_head_name(ty)?;
-        if !seen.insert(name.to_string()) {
+        let name = self.free_fns.type_head_key(ty)?;
+        if !seen.insert(name.clone()) {
             return None;
         }
-        let base = self.structs.get(name)?.base.as_ref()?;
+        let base = self.structs.get(&name)?.base.as_ref()?;
         self.layout_range(base, env, seen)
     }
 
     fn vector_element_enum(&self, family: &str) -> Option<String> {
-        let mut current = family;
+        let mut current = family.to_string();
         let mut seen = HashSet::new();
-        while seen.insert(current.to_string()) {
-            let base = self.structs.get(current)?.base.as_ref()?;
+        while seen.insert(current.clone()) {
+            let base = self.structs.get(&current)?.base.as_ref()?;
             let element = match base {
                 ast::Type::Indexed { base, .. } => base.as_ref(),
                 ast::Type::Path(_) => base,
@@ -4856,9 +4946,9 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            let head = type_head_name(element)?;
-            if self.enum_reprs.contains_key(head) {
-                return Some(head.to_string());
+            let head = self.free_fns.type_head_key(element)?;
+            if self.enum_reprs.contains_key(&head) {
+                return Some(head);
             }
             current = head;
         }
@@ -4915,16 +5005,10 @@ impl<'a> Lowering<'a> {
     /// The bit width of `ty` if it names a known enum or a fieldless nominal
     /// type whose representation ultimately derives from one.
     fn enum_representation(&self, ty: &ast::Type) -> Option<(u32, String)> {
-        let ast::Type::Path(path) = ty else {
+        let ast::Type::Path(_) = ty else {
             return None;
         };
-        let mut name = self.free_fns.enum_path_key(path).unwrap_or_else(|| {
-            path.segments
-                .last()
-                .expect("non-empty type path")
-                .text
-                .clone()
-        });
+        let mut name = self.free_fns.type_head_key(ty)?;
         let mut seen = HashSet::new();
         while seen.insert(name.clone()) {
             if let Some(width) = self.enum_reprs.get(&name) {
@@ -4988,8 +5072,8 @@ impl<'a> Lowering<'a> {
             // A generic application: substitute the type parameters into the
             // base struct's field types.
             ast::Type::Generic { base, args, .. } => {
-                let sname = type_head_name(base)?;
-                let s = self.structs.get(sname)?;
+                let sname = self.free_fns.type_head_key(base)?;
+                let s = self.structs.get(&sname)?;
                 let mut subst: HashMap<String, ast::Type> = HashMap::new();
                 for (index, arg) in args.iter().enumerate() {
                     let Some(ty) = (match arg {
@@ -5014,7 +5098,7 @@ impl<'a> Lowering<'a> {
                         subst.insert(parameter, ty);
                     }
                 }
-                let fields = self.raw_struct_fields(sname)?;
+                let fields = self.raw_struct_fields(&sname)?;
                 Some(
                     fields
                         .into_iter()
@@ -5024,10 +5108,10 @@ impl<'a> Lowering<'a> {
             }
             // An applied view reuses the backing struct's representation.
             ast::Type::View { target, .. } => self.struct_fields(target),
-            ast::Type::Path(p) if p.segments.len() == 1 => {
-                let name = &p.segments[0].text;
-                self.raw_struct_fields(name)
-            }
+            ast::Type::Path(p) => self
+                .free_fns
+                .struct_path_key(p)
+                .and_then(|name| self.raw_struct_fields(&name)),
             _ => None,
         }
     }
@@ -5050,8 +5134,10 @@ impl<'a> Lowering<'a> {
         };
         let mut out = Vec::new();
         for (f, ty) in fields {
-            let nested = type_head_name(&ty)
-                .map(|h| self.struct_leaf_names_at(h, seen))
+            let nested = self
+                .free_fns
+                .type_head_key(&ty)
+                .map(|h| self.struct_leaf_names_at(&h, seen))
                 .unwrap_or_default();
             if nested.is_empty() {
                 out.push(f);
@@ -5088,11 +5174,11 @@ impl<'a> Lowering<'a> {
             return Some(format!(
                 "{}@{}",
                 view.segments.last()?.text,
-                type_head_name(target)?
+                self.free_fns.type_head_key(target)?
             ));
         }
-        let head = type_head_name(ty)?;
-        self.views.contains_key(head).then(|| head.to_string())
+        let head = self.free_fns.type_head_key(ty)?;
+        self.views.contains_key(&head).then_some(head)
     }
 
     /// Warn when specialization makes two unconditional assignments target
@@ -5468,11 +5554,7 @@ impl<'a> Lowering<'a> {
             }
             return Val::Fields(fields);
         }
-        let Some(head) = (match ty {
-            ast::Type::Path(path) => self.free_fns.enum_path_key(path),
-            _ => None,
-        })
-        .or_else(|| type_head_name(ty).map(str::to_string)) else {
+        let Some(head) = self.free_fns.type_head_key(ty) else {
             return Val::Scalar(Expr::Const(0));
         };
         if let Some(fields) = self.struct_default_leaves(&head, "") {
@@ -5551,13 +5633,13 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let head = type_head_name(ty).unwrap_or("");
-        if head == "Char" || struct_derives_kernel(head, "Char", &self.structs) {
+        let head = self.free_fns.type_head_key(ty).unwrap_or_default();
+        if head == "Char" || struct_derives_kernel(&head, "Char", &self.structs, &self.free_fns) {
             if let Expr::Logic(character) = expression {
                 expression = Expr::Const(character as u32 as u64);
             }
         }
-        if head == "real" || struct_derives_kernel(head, "real", &self.structs) {
+        if head == "real" || struct_derives_kernel(&head, "real", &self.structs, &self.free_fns) {
             return Val::Scalar(self.coerce_real(expression));
         }
         let width = self.block_local_width(ty);
@@ -8887,7 +8969,7 @@ impl<'a> Lowering<'a> {
     fn declares_kernel_integer(&self, e: &ast::Expr) -> bool {
         if self
             .block_local_type(e)
-            .and_then(|ty| type_head_name(&ty).map(str::to_string))
+            .and_then(|ty| self.free_fns.type_head_key(&ty))
             .is_some_and(|name| name == "integer")
         {
             return true;
@@ -9075,13 +9157,17 @@ impl<'a> Lowering<'a> {
             if !seen.insert(cur.clone()) {
                 break;
             }
-            let Some(b) = s.base.as_ref().and_then(type_head_name) else {
+            let Some(b) = s
+                .base
+                .as_ref()
+                .and_then(|ty| self.free_fns.type_head_key(ty))
+            else {
                 return false;
             };
             if b == base {
                 return true;
             }
-            cur = b.to_string();
+            cur = b;
         }
         false
     }
@@ -9100,8 +9186,12 @@ impl<'a> Lowering<'a> {
         let Some(s) = self.structs.get(name) else {
             return Vec::new();
         };
-        let mut out = match s.base.as_ref().and_then(type_head_name) {
-            Some(b) => self.struct_field_names_at(b, seen),
+        let mut out = match s
+            .base
+            .as_ref()
+            .and_then(|ty| self.free_fns.type_head_key(ty))
+        {
+            Some(b) => self.struct_field_names_at(&b, seen),
             None => Vec::new(),
         };
         out.extend(s.fields.iter().map(|f| f.name.text.clone()));
@@ -9247,12 +9337,12 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            if let Some(h) = type_head_name(&fty) {
-                if let Some(nested) = self.struct_default_leaves(h, &path) {
+            if let Some(h) = self.free_fns.type_head_key(&fty) {
+                if let Some(nested) = self.struct_default_leaves(&h, &path) {
                     out.extend(nested);
                     continue;
                 }
-                if let Some(&d) = self.enum_first_disc.get(h) {
+                if let Some(&d) = self.enum_first_disc.get(&h) {
                     out.push((path, Expr::Const(d)));
                     continue;
                 }
@@ -9783,13 +9873,12 @@ impl<'a> Lowering<'a> {
         // value-transparent (`time(v)`, `frequency(v)`), just as derivation is;
         // the target signal supplies any required real coercion.
         if let ast::Expr::Path(p) = callee {
-            if p.segments.len() == 1 {
-                let target = p.segments[0].text.as_str();
-                let scalar_newtype = self.structs.get(target).is_some_and(|s| {
+            if let Some(target) = self.free_fns.struct_path_key(p) {
+                let scalar_newtype = self.structs.get(&target).is_some_and(|s| {
                     s.fields.is_empty()
-                        && ["integer", "real", "Char"]
-                            .iter()
-                            .any(|kernel| struct_derives_kernel(target, kernel, &self.structs))
+                        && ["integer", "real", "Char"].iter().any(|kernel| {
+                            struct_derives_kernel(&target, kernel, &self.structs, &self.free_fns)
+                        })
                 });
                 if scalar_newtype {
                     return Some(self.lower_scalar_env(args.first()?, env));
@@ -9801,7 +9890,7 @@ impl<'a> Lowering<'a> {
                 // lowered to `Unknown`.
                 if let Some(base) = self
                     .structs
-                    .get(target)
+                    .get(&target)
                     .filter(|s| s.fields.is_empty())
                     .and_then(|s| s.base.as_ref())
                 {
@@ -9890,7 +9979,7 @@ impl<'a> Lowering<'a> {
     /// enum, or `integer` for a bare numeric literal.
     fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
         if let Some(ty) = self.block_local_type(e) {
-            return type_head_name(&ty).map(str::to_string);
+            return self.free_fns.type_head_key(&ty);
         }
         match e {
             // A branch-valued expression is whatever its branches are; the
@@ -9939,7 +10028,7 @@ impl<'a> Lowering<'a> {
                     ast::Expr::Index { base, .. } => expr_path(base),
                     ast::Expr::Path(p) => self
                         .free_fns
-                        .enum_path_key(p)
+                        .type_owner_key(p)
                         .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone())),
                     _ => None,
                 }?;
@@ -10153,7 +10242,7 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 self.block_local_type(rhs)
-                    .and_then(|ty| type_head_name(&ty).map(str::to_string))
+                    .and_then(|ty| self.free_fns.type_head_key(&ty))
                     .is_some_and(|family| self.vector_families.contains(&family))
                     || expr_path(rhs)
                         .and_then(|p| self.locals.get(&p))
@@ -10282,8 +10371,7 @@ impl<'a> Lowering<'a> {
                 // name-less `{ ..base, .. }`) from the spread base's struct type.
                 let struct_name: Option<String> = ty
                     .as_ref()
-                    .and_then(type_head_name)
-                    .map(str::to_string)
+                    .and_then(|ty| self.free_fns.type_head_key(ty))
                     .or_else(|| {
                         spread
                             .as_ref()
@@ -11668,7 +11756,7 @@ fn type_width_at(
     seen: &mut HashSet<String>,
 ) -> u32 {
     match t {
-        ast::Type::Path(p) => match p.segments.last().map(|s| s.text.as_str()) {
+        ast::Type::Path(_) => match fns.type_head_key(t).as_deref() {
             Some("integer") | Some("real") => 64, // native kernel word / f64 bits
             Some("Char") => 32,                   // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
@@ -11742,20 +11830,21 @@ fn struct_derives_kernel(
     name: &str,
     kernel: &str,
     structs: &HashMap<String, &ast::StructDecl>,
+    fns: &FunctionIndex<'_>,
 ) -> bool {
     if name == kernel {
         return true;
     }
-    let mut current = name;
+    let mut current = name.to_string();
     let mut seen = HashSet::new();
-    while seen.insert(current.to_string()) {
-        let Some(st) = structs.get(current) else {
+    while seen.insert(current.clone()) {
+        let Some(st) = structs.get(&current) else {
             return false;
         };
         if !st.fields.is_empty() {
             return false;
         }
-        let Some(base) = st.base.as_ref().and_then(type_head_name) else {
+        let Some(base) = st.base.as_ref().and_then(|ty| fns.type_head_key(ty)) else {
             return false;
         };
         if base == kernel {
@@ -11904,32 +11993,33 @@ pub fn eval_const_stmts(
 /// `struct Word : Byte` -> 8 (following the base chain). A derived type reuses
 /// its base array's size/range (spec: nominal derivation). Testbench evaluators
 /// consult this so a local of a derived vector type masks to the right width.
-pub fn derived_widths(modules: &[Module]) -> HashMap<String, u32> {
+pub fn derived_widths(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u32> {
     let mut structs: HashMap<String, &ast::StructDecl> = HashMap::new();
     for m in modules {
         for it in &m.items {
             if let ast::Item::Struct(s) = it {
-                structs.insert(s.name.text.clone(), s);
+                structs.insert(fns.struct_decl_key(&s.name), s);
             }
         }
     }
     let empty_env = HashMap::new();
-    let empty_resolved = Resolved::default();
-    let empty_fns = FunctionIndex::new(&empty_resolved);
     structs
         .iter()
         .filter_map(|(name, s)| {
             let w = s
                 .base
                 .as_ref()
-                .map(|b| type_width(b, &empty_env, &empty_fns, &structs, &HashMap::new()))
+                .map(|b| type_width(b, &empty_env, fns, &structs, &HashMap::new()))
                 .unwrap_or(0);
             (w > 0).then_some((name.clone(), w))
         })
         .collect()
 }
 
-pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> {
+pub fn vector_families(
+    modules: &[Module],
+    fns: &FunctionIndex<'_>,
+) -> std::collections::HashSet<String> {
     // `impl Vector for F` opts a family into packed numeric storage. Compute
     // inheritance to a fixpoint so `struct Byte(unsigned[8])` joins it too.
     let structs: Vec<&ast::StructDecl> = modules
@@ -11951,7 +12041,7 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
                     .and_then(|path| path.segments.last())
                     .is_some_and(|name| name.text == "Vector") =>
             {
-                type_head_name(&im.target).map(str::to_string)
+                fns.type_head_key(&im.target)
             }
             _ => None,
         })
@@ -11959,8 +12049,9 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
     loop {
         let mut changed = false;
         for st in &structs {
-            if !out.contains(&st.name.text) && is_bit_vector_struct(st, &out) {
-                out.insert(st.name.text.clone());
+            let key = fns.struct_decl_key(&st.name);
+            if !out.contains(&key) && is_bit_vector_struct(st, &out, fns) {
+                out.insert(key);
                 changed = true;
             }
         }
@@ -11976,17 +12067,20 @@ pub fn vector_families(modules: &[Module]) -> std::collections::HashSet<String> 
 fn is_bit_vector_struct(
     st: &ast::StructDecl,
     families: &std::collections::HashSet<String>,
+    fns: &FunctionIndex<'_>,
 ) -> bool {
     if !st.fields.is_empty() {
         return false;
     }
     let elem = match &st.base {
-        Some(ast::Type::Indexed { base, .. }) => type_head_name(base),
+        Some(ast::Type::Indexed { base, .. }) => fns.type_head_key(base),
         // A bare derived base (`struct Byte : unsigned`) reuses the base family.
-        Some(ast::Type::Path(p)) => p.segments.last().map(|s| s.text.as_str()),
+        Some(ast::Type::Path(p)) => fns
+            .struct_path_key(p)
+            .or_else(|| p.segments.last().map(|segment| segment.text.clone())),
         _ => None,
     };
-    elem.is_some_and(|head| families.contains(head))
+    elem.is_some_and(|head| families.contains(&head))
 }
 
 fn enum_index<'a>(
@@ -12904,8 +12998,10 @@ fn array_of<'t>(
     // A Logic-vector family (unsigned/signed/user) `F[N]` is one N-bit signal, not an
     // N-element array — but only when the base is DIRECTLY the family (`unsigned`),
     // not when it is itself indexed (`unsigned[8][4]` is an array of vectors).
-    let base_is_family = matches!(base.as_ref(), ast::Type::Path(p)
-        if p.segments.last().map(|s| s.text.as_str()).is_some_and(|h| families.contains(h)));
+    let base_is_family = matches!(base.as_ref(), ast::Type::Path(_))
+        && fns
+            .type_head_key(base)
+            .is_some_and(|head| families.contains(&head));
     if is_int_type(base) || base_is_family {
         return None;
     }
@@ -12938,8 +13034,6 @@ fn is_int_type(ty: &ast::Type) -> bool {
 /// else the bits needed for the variant count.
 fn enum_reprs(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u32> {
     let empty = HashMap::new();
-    let empty_resolved = Resolved::default();
-    let empty_fns = FunctionIndex::new(&empty_resolved);
     let enums = enum_index(modules, fns);
     let mut out = HashMap::new();
     for (name, e) in &enums {
@@ -12953,7 +13047,7 @@ fn enum_reprs(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u3
             .as_ref()
             .filter(|_| enum_base_name(e, &enums, fns).is_none())
         {
-            type_width(repr, &empty, &empty_fns, &HashMap::new(), &HashMap::new())
+            type_width(repr, &empty, fns, &HashMap::new(), &HashMap::new())
         } else {
             let variants = effective_variants(name, &enums, fns, &mut Vec::new());
             let n = variants.len().max(1) as u32;
@@ -13035,8 +13129,10 @@ fn blanket_requirement(im: &ast::ImplDecl) -> Option<String> {
     }
 }
 
-fn declared_view_key(view: &ast::ViewDecl) -> String {
-    let target = type_head_name(&view.target).unwrap_or("<error>");
+fn declared_view_key(view: &ast::ViewDecl, fns: &FunctionIndex<'_>) -> String {
+    let target = fns
+        .type_head_key(&view.target)
+        .unwrap_or_else(|| "<error>".to_string());
     format!("{}@{target}", view.name.text)
 }
 
@@ -13515,6 +13611,83 @@ mod tests {
         };
         assert!(matches!(driven(".left"), Some(Expr::Const(7))));
         assert!(matches!(driven(".right"), Some(Expr::Const(9))));
+    }
+
+    #[test]
+    fn equal_struct_leaves_keep_fields_layouts_and_drivers_distinct() {
+        let sources = [
+            (
+                "module a; pub struct Pair { pub left: integer<0..7> }",
+                FileId(0),
+            ),
+            (
+                "module b; pub struct Pair { pub right: integer<0..31> }",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { a_pair: a::Pair out, b_pair: b::Pair out } \
+                 impl Top { a_pair = { .left = 5 }; b_pair = { .right = 17 }; }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let left = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(".a_pair.left"))
+            .expect("module a field");
+        let right = design
+            .signals
+            .iter()
+            .find(|signal| signal.path.ends_with(".b_pair.right"))
+            .expect("module b field");
+        assert_eq!(left.width, 3);
+        assert_eq!(right.width, 5);
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.ends_with(".a_pair.right")));
+        assert!(design
+            .signals
+            .iter()
+            .all(|signal| !signal.path.ends_with(".b_pair.left")));
+        assert!(matches!(
+            &design.source_layouts["Top.a_pair"].kind,
+            LayoutKind::Struct { name, .. } if name == "a::Pair"
+        ));
+        assert!(matches!(
+            &design.source_layouts["Top.b_pair"].kind,
+            LayoutKind::Struct { name, .. } if name == "b::Pair"
+        ));
+        let driver_value = |signal: &Signal| {
+            let id = design
+                .signals
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, signal))
+                .expect("signal index") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(id))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driver_value(left), Some(Expr::Const(5))));
+        assert!(matches!(driver_value(right), Some(Expr::Const(17))));
     }
 
     #[test]

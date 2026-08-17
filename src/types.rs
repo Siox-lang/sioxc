@@ -7666,6 +7666,52 @@ mod tests {
     }
 
     #[test]
+    fn equal_struct_leaves_keep_independent_visibility_domains() {
+        let a = "module a::record;\n\
+            pub struct Pair { hidden: integer, pub shown: integer }\n\
+            impl Pair { fn secret(self) -> integer { return self.hidden; } pub fn open(self) -> integer { return self.shown; } }\n";
+        let b = "module b::record;\n\
+            pub struct Pair { pub hidden: integer, shown: integer }\n\
+            impl Pair { pub fn secret(self) -> integer { return self.hidden; } fn open(self) -> integer { return self.shown; } }\n";
+        let user = "module user;\n\
+            fn a_hidden(value: a::record::Pair) -> integer { return value.hidden; }\n\
+            fn a_shown(value: a::record::Pair) -> integer { return value.shown; }\n\
+            fn b_hidden(value: b::record::Pair) -> integer { return value.hidden; }\n\
+            fn b_shown(value: b::record::Pair) -> integer { return value.shown; }\n\
+            fn a_secret(value: a::record::Pair) -> integer { return value.secret(); }\n\
+            fn a_open(value: a::record::Pair) -> integer { return value.open(); }\n\
+            fn b_secret(value: b::record::Pair) -> integer { return value.secret(); }\n\
+            fn b_open(value: b::record::Pair) -> integer { return value.open(); }\n";
+        let sink = check_modules(&[(a, FileId(0)), (b, FileId(1)), (user, FileId(2))]);
+        let private: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .collect();
+        assert_eq!(
+            private.len(),
+            4,
+            "each declaration keeps its own field and method visibility: {:?}",
+            private
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(private
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("a::record::Pair.hidden")));
+        assert!(private
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("a::record::Pair::secret")));
+        assert!(private
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("b::record::Pair.shown")));
+        assert!(private
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("b::record::Pair::open")));
+    }
+
+    #[test]
     fn unrelated_code_in_the_defining_module_cannot_use_private_members() {
         let sink = check_modules(&[(
             "module model;\n\

@@ -22,11 +22,11 @@
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Lookup is module-aware: loaded modules do not leak declarations into one
 //!   another, imports bind the exact named module, and qualified paths select
-//!   that module. Entities, free functions, and module constants retain that
-//!   identity through type checking, elaboration, evaluation, and lowering;
-//!   declaration categories whose later semantic tables are still leaf-keyed
-//!   remain crate-unique for now. Several source files may belong to the same
-//!   module and therefore share its private declarations.
+//!   that module. Entities, structs, enums, aliases, free functions, and module
+//!   constants retain that identity through their implemented downstream
+//!   phases; declaration categories whose later semantic tables are still
+//!   leaf-keyed remain crate-unique for now. Several source files may belong
+//!   to the same module and therefore share its private declarations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -230,16 +230,6 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.out
 }
 
-/// The head identifier of a type expression (`unsigned[8]` -> `unsigned`), for
-/// derivation-base lookup.
-fn type_head(t: &Type) -> Option<&str> {
-    match t {
-        Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
-        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head(base),
-        Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
-    }
-}
-
 fn type_head_path(t: &Type) -> Option<&Path> {
     match t {
         Type::Path(path) => Some(path),
@@ -304,16 +294,16 @@ struct Resolver<'a> {
     param_sites: Vec<(Span, DefId)>,
     /// Declaration generic `(owner, name)` -> its definition, used to merge
     /// uses from a separate `impl Owner<T>` parameter scope.
-    decl_params: HashMap<(String, String), DefId>,
+    decl_params: HashMap<(DefId, String), DefId>,
     /// Owner -> its declared parameters in order, so an impl binder that
     /// *renames* (`impl<M> Counter<M>` for `entity Counter<W>`) can be matched
     /// to the declaration by position, the way Rust matches it.
-    decl_param_order: HashMap<String, Vec<DefId>>,
+    decl_param_order: HashMap<DefId, Vec<DefId>>,
     /// Inside the current impl: its binder's names mapped to the declaration
     /// parameters they stand for.
     current_impl_renames: HashMap<String, DefId>,
     impl_used_decl_params: HashSet<DefId>,
-    current_impl_owner: Option<String>,
+    current_impl_owner: Option<DefId>,
     /// Named members contributed by every inherent impl of one semantic owner.
     /// Split impl blocks share a scope, so duplicates must be rejected before
     /// type checking/lowering can silently overwrite a registry entry.
@@ -885,6 +875,7 @@ impl<'a> Resolver<'a> {
                     | (Some(DefKind::Const), Some(DefKind::Const))
                     | (Some(DefKind::Entity), Some(DefKind::Entity))
                     | (Some(DefKind::Enum), Some(DefKind::Enum))
+                    | (Some(DefKind::Struct), Some(DefKind::Struct))
                     | (Some(DefKind::TypeAlias), Some(DefKind::TypeAlias))
             ) && self
                 .out
@@ -986,7 +977,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Struct(s) => {
                 self.enter();
-                self.bind_params(&s.params, true, Some(&s.name.text));
+                self.bind_params(&s.params, true, self.out.declared(s.name.span));
                 // The derivation base is a type reference like any other —
                 // it was the one spot that never got resolved, so
                 // `struct B : NoSuchType` passed silently.
@@ -1000,7 +991,7 @@ impl<'a> Resolver<'a> {
             }
             Item::View(v) => {
                 self.enter();
-                self.bind_params(&v.params, true, Some(&v.name.text));
+                self.bind_params(&v.params, true, self.out.declared(v.name.span));
                 self.resolve_type(&v.target);
                 self.exit();
             }
@@ -1016,7 +1007,7 @@ impl<'a> Resolver<'a> {
             }
             Item::Entity(e) => {
                 self.enter();
-                self.bind_params(&e.params, true, Some(&e.name.text));
+                self.bind_params(&e.params, true, self.out.declared(e.name.span));
                 for a in &e.attrs {
                     self.resolve_attr(a);
                 }
@@ -1028,7 +1019,7 @@ impl<'a> Resolver<'a> {
             Item::Impl(im) => self.resolve_impl(im),
             Item::Trait(t) => {
                 self.enter();
-                self.bind_params(&t.params, true, Some(&t.name.text));
+                self.bind_params(&t.params, true, self.out.declared(t.name.span));
                 // `Self` refers to the implementing type inside a trait body.
                 self.bind_local("Self");
                 for f in &t.items {
@@ -1139,8 +1130,9 @@ impl<'a> Resolver<'a> {
         // the declaration's `W` up by the *name* `M` and found nothing, so a
         // renamed parameter counted as unused.
         let saved_renames = std::mem::take(&mut self.current_impl_renames);
-        if let Some(owner) = type_head(&im.target) {
-            if let Some(order) = self.decl_param_order.get(owner).cloned() {
+        let impl_owner = type_head_path(&im.target).and_then(|path| self.out.resolved(path.span));
+        if let Some(owner) = impl_owner {
+            if let Some(order) = self.decl_param_order.get(&owner).cloned() {
                 let args = match &im.target {
                     Type::Generic { args, .. } => args.as_slice(),
                     _ => &[],
@@ -1157,15 +1149,13 @@ impl<'a> Resolver<'a> {
             }
         }
         self.check_impl_binder(im);
-        let saved_impl_owner = self
-            .current_impl_owner
-            .replace(type_head(&im.target).unwrap_or_default().to_string());
+        let saved_impl_owner = std::mem::replace(&mut self.current_impl_owner, impl_owner);
         for it in &im.items {
             self.resolve_impl_item(it);
         }
         self.current_impl_owner = saved_impl_owner;
         self.current_impl_renames = saved_renames;
-        if let Some(owner) = type_head(&im.target) {
+        if let Some(owner) = impl_owner {
             for (name, impl_id, before) in impl_params {
                 let after = self
                     .out
@@ -1174,8 +1164,7 @@ impl<'a> Resolver<'a> {
                     .filter(|&&used| used == impl_id)
                     .count();
                 if after > before {
-                    if let Some(&decl_id) = self.decl_params.get(&(owner.to_string(), name.clone()))
-                    {
+                    if let Some(&decl_id) = self.decl_params.get(&(owner, name.clone())) {
                         self.impl_used_decl_params.insert(decl_id);
                     }
                 }
@@ -1664,7 +1653,12 @@ impl<'a> Resolver<'a> {
                     }
                     return;
                 }
-                self.record_qualified_use(p.segments[0].span, id);
+                // An associated value/function path records the declaration
+                // identity on its owning type, not on the first module
+                // qualifier.  `a::record::Pair::new` must therefore attach
+                // `Pair`'s DefId to the `Pair` segment; downstream lookup uses
+                // that span to distinguish equal type leaves across modules.
+                self.record_qualified_use(p.segments[enum_position].span, id);
                 return;
             }
             // A module-qualified declaration (`pkg::VALUE`). Modules are not
@@ -1697,16 +1691,26 @@ impl<'a> Resolver<'a> {
         if im.trait_.is_some() || matches!(im.target, Type::View { .. }) {
             return;
         }
-        let Some(owner) = type_head(&im.target) else {
+        let Some(owner_id) =
+            type_head_path(&im.target).and_then(|path| self.out.resolved(path.span))
+        else {
             return;
         };
-        let Some(declared) = self.decl_param_order.get(owner).map(Vec::len) else {
+        let Some(declared) = self.decl_param_order.get(&owner_id).map(Vec::len) else {
             return;
         };
         if declared == 0 {
             return;
         }
-        let owner = owner.to_string();
+        let owner = self
+            .out
+            .qualified_name(owner_id)
+            .or_else(|| {
+                self.out
+                    .def(owner_id)
+                    .map(|definition| definition.name.clone())
+            })
+            .unwrap_or_else(|| "<type>".to_string());
         let span = im.span;
         let args = match &im.target {
             Type::Generic { args, .. } => args.len(),
@@ -1794,7 +1798,7 @@ impl<'a> Resolver<'a> {
         if self.out.kind_of(id) != Some(DefKind::Param) {
             return;
         }
-        let Some(owner) = self.current_impl_owner.as_deref() else {
+        let Some(owner) = self.current_impl_owner else {
             return;
         };
         let Some(name) = self.out.def(id).map(|def| def.name.clone()) else {
@@ -1804,7 +1808,7 @@ impl<'a> Resolver<'a> {
             self.impl_used_decl_params.insert(decl_id);
             return;
         }
-        if let Some(&decl_id) = self.decl_params.get(&(owner.to_string(), name)) {
+        if let Some(&decl_id) = self.decl_params.get(&(owner, name)) {
             self.impl_used_decl_params.insert(decl_id);
         }
     }
@@ -2110,7 +2114,7 @@ impl<'a> Resolver<'a> {
     /// `lint`: record each param for the unused-parameter lint (true for a
     /// declaration's generics, false for an impl's — an impl type param used
     /// only in the target would otherwise read as unused).
-    fn bind_params(&mut self, params: &Params, lint: bool, owner: Option<&str>) {
+    fn bind_params(&mut self, params: &Params, lint: bool, owner: Option<DefId>) {
         for p in &params.params {
             let id = self.add_def(
                 p.name.text.clone(),
@@ -2123,12 +2127,8 @@ impl<'a> Resolver<'a> {
             if lint {
                 self.param_sites.push((p.name.span, id));
                 if let Some(owner) = owner {
-                    self.decl_params
-                        .insert((owner.to_string(), p.name.text.clone()), id);
-                    self.decl_param_order
-                        .entry(owner.to_string())
-                        .or_default()
-                        .push(id);
+                    self.decl_params.insert((owner, p.name.text.clone()), id);
+                    self.decl_param_order.entry(owner).or_default().push(id);
                 }
             }
             if let Some(bound) = &p.bound {

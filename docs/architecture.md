@@ -114,10 +114,14 @@ injective symbol, and compiler top selection requires a qualified name when a
 bare entity leaf is ambiguous. Module constants follow the same rule:
 their declared types, folded values, range/array/struct entries, and native
 expressions use a qualified key derived from the resolver, while constants local
-to an `impl` remain lexical leaf bindings. Other nominal IR registries are being
-migrated to stable identity; until each category is complete, resolution rejects
-equal declaration leaves across modules instead of allowing a later stage to
-select the wrong declaration.
+to an `impl` remain lexical leaf bindings. Struct declarations likewise carry
+the selected identity through field/privacy tables, recursive layouts and
+defaults, constructors, methods, constants, flattened paths, and native
+aggregate storage. A standard-library vector struct keeps its canonical short
+IR key when user code declares a namesake; the user declaration receives a
+qualified key. View and trait/operator registries are still being migrated;
+until each category is complete, resolution rejects equal leaves in that
+category instead of allowing a later stage to select the wrong declaration.
 
 Package components:
 

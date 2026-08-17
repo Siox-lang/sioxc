@@ -57,13 +57,13 @@ pub fn build(
     }
     let mut fns = FunctionIndex::new(resolved);
     let enums = siox::ir::enum_discriminants(modules, &fns);
-    let families = siox::ir::vector_families(modules);
+    let families = siox::ir::vector_families(modules, &fns);
     let mut op_impls: NativeOperatorImpls<'_> = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
                 let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
-                if let (Some(tr), Some(ty)) = (tr, type_head_name(&im.target)) {
+                if let (Some(tr), Some(ty)) = (tr, fns.type_head_key(&im.target)) {
                     let operator = if tr.text == "Operator" {
                         im.trait_args.first().and_then(|a| match a {
                             ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
@@ -93,7 +93,7 @@ pub fn build(
                                     .map(str::to_string)
                             });
                             op_impls
-                                .entry((operator.clone(), ty.to_string()))
+                                .entry((operator.clone(), ty.clone()))
                                 .or_default()
                                 .push((f, input));
                         }
@@ -133,7 +133,7 @@ pub fn build(
                 // A *static* associated fn (no `self`) is callable as
                 // `Type::name(..)`, keyed like a module-level fn.
                 ast::Item::Impl(im) => {
-                    let Some(ty) = type_head_name(&im.target) else {
+                    let Some(ty) = fns.type_head_key(&im.target) else {
                         continue;
                     };
                     for it in &im.items {
@@ -144,7 +144,7 @@ pub fn build(
                         }
                     }
                     if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
-                        static_defaults.push((ty.to_string(), tr.text.as_str()));
+                        static_defaults.push((ty, tr.text.as_str()));
                     }
                 }
                 ast::Item::Trait(t) => {
@@ -184,9 +184,9 @@ pub fn build(
     // Nominal field order remains useful for syntax that has no concrete value
     // path (module constants and synthetic inlined literals). Concrete storage
     // shape comes only from `Design::source_layouts`.
-    let struct_field_names = collect_struct_field_names(modules);
-    let methods = collect_methods(modules);
-    let derived_widths = siox::ir::derived_widths(modules);
+    let struct_field_names = collect_struct_field_names(modules, &fns);
+    let methods = collect_methods(modules, &fns);
+    let derived_widths = siox::ir::derived_widths(modules, &fns);
 
     // Header, one `signed test_<name>(void)` per test, then a libtest-style main.
     let mut prog = String::new();
@@ -229,7 +229,7 @@ pub fn build(
         .map(|signal| signal.width)
         .max()
         .unwrap_or(1)
-        .max(max_literal_type_width(modules, &derived_widths))
+        .max(max_literal_type_width(modules, &derived_widths, &fns))
         .max(siox::llvm::ABI_WORD_BITS);
     // ceil(bits * log10(2)) + sign/NUL slack, using a conservative integer
     // approximation so formatting storage scales with the actual value type.
@@ -1322,14 +1322,17 @@ struct DynamicTargetVariant {
 
 /// Base-first nominal field order (`struct B : A` prepends A's fields). This
 /// supports positional source syntax only; it is not a type/storage layout.
-fn collect_struct_field_names(modules: &[Module]) -> HashMap<String, StructFieldNames> {
+fn collect_struct_field_names(
+    modules: &[Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, StructFieldNames> {
     let mut raw: RawStructFieldNames = HashMap::new();
     for m in modules {
         for item in &m.items {
             if let ast::Item::Struct(s) = item {
-                let base = s.base.as_ref().and_then(type_head_name).map(str::to_string);
+                let base = s.base.as_ref().and_then(|ty| fns.type_head_key(ty));
                 let own = s.fields.iter().map(|f| f.name.text.clone()).collect();
-                raw.insert(s.name.text.clone(), (base, own));
+                raw.insert(fns.struct_decl_key(&s.name), (base, own));
             }
         }
     }
@@ -1362,7 +1365,11 @@ fn collect_struct_field_names(modules: &[Module]) -> HashMap<String, StructField
         .collect()
 }
 
-fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) -> u32 {
+fn max_literal_type_width(
+    modules: &[Module],
+    derived: &HashMap<String, u32>,
+    fns: &FunctionIndex<'_>,
+) -> u32 {
     fn literal_width(text: &str) -> u32 {
         if text.contains('.') {
             return 64;
@@ -1483,12 +1490,11 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
         block.stmts.iter().map(stmt_width).max().unwrap_or(0)
     }
 
-    fn width(ty: &ast::Type, derived: &HashMap<String, u32>) -> u32 {
+    fn width(ty: &ast::Type, derived: &HashMap<String, u32>, fns: &FunctionIndex<'_>) -> u32 {
         match ty {
-            ast::Type::Path(p) => p
-                .segments
-                .last()
-                .and_then(|s| derived.get(&s.text))
+            ast::Type::Path(p) => fns
+                .struct_path_key(p)
+                .and_then(|key| derived.get(&key))
                 .copied()
                 .unwrap_or(0),
             ast::Type::Indexed { base, index, .. } => {
@@ -1510,10 +1516,10 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                         _ => None,
                     })
                     .unwrap_or(0);
-                own.max(width(base, derived))
+                own.max(width(base, derived, fns))
             }
             ast::Type::Generic { base, .. } | ast::Type::View { target: base, .. } => {
-                width(base, derived)
+                width(base, derived, fns)
             }
         }
     }
@@ -1522,23 +1528,23 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
         for item in &module.items {
             match item {
                 ast::Item::Entity(e) => {
-                    widths.extend(e.ports.iter().map(|p| width(&p.ty, derived)))
+                    widths.extend(e.ports.iter().map(|p| width(&p.ty, derived, fns)))
                 }
                 ast::Item::Struct(s) => {
-                    widths.extend(s.fields.iter().map(|f| width(&f.ty, derived)))
+                    widths.extend(s.fields.iter().map(|f| width(&f.ty, derived, fns)))
                 }
                 ast::Item::Fn(f) => {
                     widths.extend(
                         f.params
                             .iter()
                             .filter_map(|p| p.ty.as_ref())
-                            .map(|t| width(t, derived)),
+                            .map(|t| width(t, derived, fns)),
                     );
-                    widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                    widths.extend(f.ret.as_ref().map(|t| width(t, derived, fns)));
                     widths.extend(f.body.as_ref().map(block_width));
                 }
                 ast::Item::Const(constant) => {
-                    widths.push(width(&constant.ty, derived));
+                    widths.push(width(&constant.ty, derived, fns));
                     widths.push(expr_width(&constant.value));
                 }
                 ast::Item::Enum(en) => {
@@ -1553,11 +1559,11 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                     for item in &im.items {
                         match item {
                             ast::ImplItem::Let(l) => {
-                                widths.extend(l.ty.as_ref().map(|t| width(t, derived)));
+                                widths.extend(l.ty.as_ref().map(|t| width(t, derived, fns)));
                                 widths.extend(l.value.as_ref().map(expr_width));
                             }
                             ast::ImplItem::Const(constant) => {
-                                widths.push(width(&constant.ty, derived));
+                                widths.push(width(&constant.ty, derived, fns));
                                 widths.push(expr_width(&constant.value));
                             }
                             ast::ImplItem::Fn(f) => {
@@ -1565,9 +1571,9 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
                                     f.params
                                         .iter()
                                         .filter_map(|p| p.ty.as_ref())
-                                        .map(|t| width(t, derived)),
+                                        .map(|t| width(t, derived, fns)),
                                 );
-                                widths.extend(f.ret.as_ref().map(|t| width(t, derived)));
+                                widths.extend(f.ret.as_ref().map(|t| width(t, derived, fns)));
                                 widths.extend(f.body.as_ref().map(block_width));
                             }
                             ast::ImplItem::Stmt(statement) => widths.push(stmt_width(statement)),
@@ -1584,7 +1590,10 @@ fn max_literal_type_width(modules: &[Module], derived: &HashMap<String, u32>) ->
 
 /// Every impl method by `(type head, method name)`, inherent and trait impls,
 /// mirroring the runner's `collect_methods`.
-fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl> {
+fn collect_methods<'a>(
+    modules: &'a [Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<(String, String), &'a ast::FnDecl> {
     let mut out = HashMap::new();
     let mut traits: HashMap<&str, &ast::TraitDecl> = HashMap::new();
     // (type head, trait name) for each `impl Trait for Type`.
@@ -1596,15 +1605,14 @@ fn collect_methods(modules: &[Module]) -> HashMap<(String, String), &ast::FnDecl
                     traits.insert(t.name.text.as_str(), t);
                 }
                 ast::Item::Impl(im) => {
-                    if let Some(ty) = type_head_name(&im.target) {
+                    if let Some(ty) = fns.type_head_key(&im.target) {
                         for it in &im.items {
                             if let ast::ImplItem::Fn(f) = it {
-                                out.entry((ty.to_string(), f.name.text.clone()))
-                                    .or_insert(f);
+                                out.entry((ty.clone(), f.name.text.clone())).or_insert(f);
                             }
                         }
                         if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
-                            implemented.push((ty.to_string(), tr.text.as_str()));
+                            implemented.push((ty, tr.text.as_str()));
                         }
                     }
                 }
@@ -2768,8 +2776,10 @@ impl Ctx<'_> {
         // `x`", a struct having no single signal to look up. The caller writes
         // composites of either kind.
         let returned = f.ret.as_ref()?;
-        let returns_struct = type_head_name(returned)
-            .and_then(|head| self.nominal_field_names(head))
+        let returns_struct = self
+            .fns
+            .type_head_key(returned)
+            .and_then(|head| self.nominal_field_names(&head))
             .is_some_and(|fields| !fields.is_empty());
         // `array_parts` is `None` for a packed vector and `Some` for a real
         // array, which is exactly the distinction wanted here.
@@ -3428,15 +3438,12 @@ impl Ctx<'_> {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_family(base);
             }
-            let head = match base.as_ref() {
-                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
-                _ => return None,
-            };
-            if !self.families.contains(head) {
+            let head = self.fns.type_head_key(base)?;
+            if !self.families.contains(&head) {
                 return None;
             }
             return Some((
-                head.to_string(),
+                head,
                 u32::try_from(index_values(i, self.const_ranges, self.consts, self.fns)?.len())
                     .ok()?,
             ));
@@ -3456,8 +3463,11 @@ impl Ctx<'_> {
             return None;
         };
         if let ast::Type::Path(path) = base.as_ref() {
-            let head = path.segments.last()?.text.as_str();
-            if self.families.contains(head) {
+            let head = self
+                .fns
+                .struct_path_key(path)
+                .or_else(|| path.segments.last().map(|segment| segment.text.clone()))?;
+            if self.families.contains(&head) {
                 return None;
             }
         }
@@ -3747,8 +3757,8 @@ impl Ctx<'_> {
         // A bare derived-vector type (`struct Byte : Logic[8]`) inherits its
         // base array's width.
         if let ast::Type::Path(p) = ty {
-            if let Some(seg) = p.segments.last() {
-                if let Some(&w) = self.derived_widths.get(&seg.text) {
+            if let Some(key) = self.fns.struct_path_key(p) {
+                if let Some(&w) = self.derived_widths.get(&key) {
                     return Some(w);
                 }
             }
@@ -3762,11 +3772,8 @@ impl Ctx<'_> {
             if matches!(base.as_ref(), ast::Type::Indexed { .. }) {
                 return self.declared_width(base);
             }
-            let head = match base.as_ref() {
-                ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str())?,
-                _ => return None,
-            };
-            if !self.families.contains(head) {
+            let head = self.fns.type_head_key(base)?;
+            if !self.families.contains(&head) {
                 return None;
             }
             return u32::try_from(index_values(i, self.const_ranges, self.consts, self.fns)?.len())
@@ -4540,8 +4547,9 @@ impl Ctx<'_> {
                     // A vector family is itself a newtype struct (`struct
                     // unsigned(Logic[])`), so "is a struct" is not the
                     // question — "has fields to spread" is.
-                    type_head_name(t)
-                        .and_then(|h| self.nominal_field_names(h))
+                    self.fns
+                        .type_head_key(t)
+                        .and_then(|h| self.nominal_field_names(&h))
                         .is_some_and(|fields| !fields.is_empty())
                         || is_single_string_type(t)
                         // `array_parts` is None for a packed vector and Some
@@ -6733,9 +6741,13 @@ impl Ctx<'_> {
                 let v = self.expr(arg)?;
                 let w = match callee.as_ref() {
                     ast::Expr::Index { base, index, .. }
-                        if expr_path(base)
-                            .as_deref()
-                            .is_some_and(|h| self.families.contains(h)) =>
+                        if (match base.as_ref() {
+                            ast::Expr::Path(path) => {
+                                self.fns.struct_path_key(path).or_else(|| expr_path(base))
+                            }
+                            _ => expr_path(base),
+                        })
+                        .is_some_and(|head| self.families.contains(&head)) =>
                     {
                         parse_u64(match index.as_ref() {
                             ast::Expr::Int { text, .. } => text,
@@ -6977,6 +6989,17 @@ impl Ctx<'_> {
                 self.c_dynamic_bit(base, index).unwrap()?
             }
             ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
+                // A qualified struct constant (`a::record::CURRENT.left`)
+                // deliberately has no local/signal path: its base is a
+                // multi-segment declaration path.  Consult the resolved
+                // constant table before asking for a storage path.
+                if let Some(value) = self
+                    .fns
+                    .constant_expr_key(e)
+                    .and_then(|key| self.const_exprs.get(&key))
+                {
+                    return Ok(value.clone());
+                }
                 let path = expr_path(e).ok_or_else(|| {
                     // Naming the base is the difference between "the tool has
                     // a gap" and a reader hunting a nameless message.
@@ -7000,16 +7023,6 @@ impl Ctx<'_> {
                 // mangled C local; otherwise it's a connected signal.
                 if self.locals.borrow().contains(&path) {
                     c_local_ident(&path)
-                } else if let Some(value) = self
-                    .fns
-                    .constant_expr_key(e)
-                    .and_then(|key| self.const_exprs.get(&key))
-                {
-                    // A struct constant's field. It has no signal — a constant
-                    // is a value, not storage — so the dotted path answers from
-                    // the constant table, one entry per field, exactly as a
-                    // plain `N` does.
-                    value.clone()
                 } else {
                     let id = self.map.get(&path).ok_or_else(|| unsup(&path))?;
                     self.check_scalar(*id)?;
@@ -7695,8 +7708,11 @@ fn literal_struct_fields<'a>(
 fn struct_const_fields<'a>(
     declaration: &'a ast::ConstDecl,
     struct_field_names: &HashMap<String, StructFieldNames>,
+    fns: &FunctionIndex<'_>,
 ) -> Option<Vec<(String, &'a ast::Expr)>> {
-    let declared = type_head_name(&declaration.ty).and_then(|head| struct_field_names.get(head))?;
+    let declared = fns
+        .type_head_key(&declaration.ty)
+        .and_then(|head| struct_field_names.get(&head))?;
     match &declaration.value {
         ast::Expr::Construct { args, .. } => args
             .iter()
@@ -7762,7 +7778,7 @@ fn const_tables(
             // path a read spells (`K.a`) — the same shape hardware folds it
             // into. Without it the testbench refused `K.a` as something "siox
             // build cannot translate yet", on a declaration stage 4 accepted.
-            if let Some(fields) = struct_const_fields(c, struct_field_names) {
+            if let Some(fields) = struct_const_fields(c, struct_field_names, fns) {
                 if consts.contains_key(&format!("{name}.")) {
                     continue;
                 }
@@ -7803,7 +7819,7 @@ fn const_tables(
             // the dotted path a read spells. The scalar table holds a single
             // entry per name, so a struct constant put nothing in it and every
             // read of `K.a` was reported as untranslatable.
-            if let Some(fields) = struct_const_fields(declaration, struct_field_names) {
+            if let Some(fields) = struct_const_fields(declaration, struct_field_names, fns) {
                 if const_exprs.contains_key(&format!("{name}.")) {
                     continue;
                 }

@@ -308,6 +308,94 @@ fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
 }
 
 #[test]
+fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_struct_identity_{}", std::process::id()));
+    std::fs::create_dir_all(directory.join("a")).unwrap();
+    std::fs::create_dir_all(directory.join("b")).unwrap();
+    std::fs::write(
+        directory.join("a/record.siox"),
+        "module a::record; pub const load_a: integer = 1; \
+         pub struct Pair { pub left: unsigned[8] } \
+         impl Pair { \
+             pub fn score(self) -> integer { return integer(self.left) + 10; } \
+             pub fn tag() -> integer { return 11; } \
+         } \
+         pub const CURRENT: Pair = { .left = 4 };",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("b/record.siox"),
+        "module b::record; pub const load_b: integer = 2; \
+         pub struct Pair { pub right: unsigned[16] } \
+         impl Pair { \
+             pub fn score(self) -> integer { return integer(self.right) + 20; } \
+             pub fn tag() -> integer { return 22; } \
+         } \
+         pub const CURRENT: Pair = { .right = 5 };",
+    )
+    .unwrap();
+    let source = directory.join("identity.siox");
+    let output = directory.join("identity-test");
+    std::fs::write(
+        &source,
+        r#"module identity;
+           using a::record::{load_a};
+           using b::record::{load_b};
+           struct unsigned { pub marker: integer }
+           #[test] entity StructIdentity {}
+           impl StructIdentity {
+               let left: a::record::Pair = { .left = 3 };
+               let right: b::record::Pair = { .right = 7 };
+               let default_left: a::record::Pair;
+               let default_right: b::record::Pair;
+               let constructed_left: a::record::Pair = a::record::Pair::new();
+               let constructed_right: b::record::Pair = b::record::Pair::new();
+               let named_like_std: unsigned = { .marker = 9 };
+               assert!(left.left == 3 and right.right == 7 and
+                       left.score() == 13 and right.score() == 27 and
+                       a::record::Pair::tag() == 11 and
+                       b::record::Pair::tag() == 22 and
+                       default_left.left == 0 and default_right.right == 0 and
+                       constructed_left.left == 0 and
+                       constructed_right.right == 0 and
+                       a::record::CURRENT.left == 4 and
+                       b::record::CURRENT.right == 5 and
+                       named_like_std.marker == 9 and
+                       load_a == 1 and load_b == 2,
+                       "qualified structs keep module identity");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "namespaced struct fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "namespaced structs failed:\n{report}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn native_equal_test_entity_leaves_keep_distinct_roots_and_symbols() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

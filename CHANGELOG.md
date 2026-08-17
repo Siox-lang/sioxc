@@ -12,6 +12,13 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Structs now retain namespace identity through execution and privacy checks.**
+  Separate modules may declare equal struct leaves without merging their
+  fields, widths, layouts, defaults, constructors, constants, inherent
+  methods, or field/method visibility. Qualified and imported associated
+  calls resolve through the owning declaration; native aggregate storage and
+  hardware lowering preserve the selected type, including when a user struct
+  shares a standard-library vector type's leaf.
 - **Enums now retain namespace identity through simulation output.** Separate
   modules may declare equal enum and derived-enum leaves. Qualified variants,
   inherited discriminants, representation widths, first-variant defaults

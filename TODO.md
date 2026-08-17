@@ -5,7 +5,7 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-12 against the compiler, standard library, documentation,
+Status audited 2026-08-18 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
@@ -96,10 +96,12 @@ Remaining:
   ambiguous bare `--top` must be qualified. Type aliases now also retain
   resolved identity through cycle checking, IR representation, native scalar
   semantics, and foreign ABI classification; equal alias leaves and chains are
-  admitted across modules. Enums now retain
-  identity through inherited variants, discriminants, widths, defaults,
-  matching, native formatting, and waveform symbol metadata; colliding enum
-  names qualify only at the output boundary. Structs, views, and
+  admitted across modules. Enums now retain identity through inherited
+  variants, discriminants, widths, defaults, matching, native formatting, and
+  waveform symbol metadata; colliding enum names qualify only at the output
+  boundary. Structs now retain identity through fields and privacy domains,
+  generic ownership, inheritance, layouts, defaults, constructors, constants,
+  inherent methods, flattened paths, and native aggregate storage. Views and
   traits/operators still include leaf-keyed tables. Those remaining declaration
   categories stay crate-unique until their tables and qualified output
   identities are lifted.
