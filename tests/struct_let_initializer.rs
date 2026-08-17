@@ -18,7 +18,7 @@ fn diagnostics(name: &str, body: &str) -> String {
     let src = format!(
         "module m;\n\
          using std::bits::{{unsigned}};\n\
-         struct Pair {{ a: unsigned[8], b: unsigned[8] }}\n\
+         struct Pair {{ pub a: unsigned[8], pub b: unsigned[8] }}\n\
          fn make(v: unsigned[8]) -> Pair {{ return Pair {{ .a = v, .b = v + 1 }}; }}\n\
          fn branchy(v: unsigned[8]) -> Pair {{\n\
              if v == 0 {{ return Pair {{ .a = 1, .b = 1 }}; }}\n\

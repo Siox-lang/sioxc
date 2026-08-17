@@ -8334,3 +8334,31 @@ buses. Same-module files remain one ownership domain.
 
 Gates: 342 library tests, all Rust integration/native tests, strict Clippy,
 and all 171 external corpus cases pass.
+
+### 2026-08-17 — Codex — type-owned privacy follow-up
+
+Implementing the proposed visibility model's type/entity-level boundary in
+`src/types.rs`, its regression tests, and `docs/language.md`. The existing
+module visibility is staying in resolution, while private struct fields and
+private inherent methods are being narrowed from "any code in the module" to
+the owning type's `impl` domain. Views remain an explicit structural escape
+hatch. Also auditing entity-instance member access so private impl state cannot
+disappear behind an unchecked field lookup.
+
+### 2026-08-17 — Codex — type-owned privacy complete
+
+Completed the visibility follow-up. Private struct fields, struct literals,
+and inherent methods now require the exact owning implementation domain; an
+unrelated function or neighboring impl in the same module no longer receives
+representation access. Same-module split impls retain access, and same-module
+trait impls may implement the type without granting a foreign trait impl access
+to private storage. Private trait methods continue to follow their trait's
+module visibility. Entity instance lookup now distinguishes public ports,
+private impl state, and unknown members, and every non-`self` entity method call
+is rejected until cross-hierarchy scheduling semantics exist.
+
+Migrated record-style embedded fixtures and all affected `siox-tests` records
+to explicit public fields/methods instead of weakening the rule. Gates: 347
+library tests plus every integration/native test pass, strict all-target/all-
+feature Clippy passes, and all 171 external corpus fixtures compile, execute,
+and pass their waveform checks.

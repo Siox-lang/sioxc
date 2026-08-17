@@ -291,10 +291,12 @@ fn helper() -> integer { return 0; }     // module-private
 pub fn utility() -> integer { return 1; }
 ```
 
-A struct's fields describe representation and are likewise private by
-default. Code in the defining module may inspect and construct that
-representation; code in another module may use only fields marked `pub` and
-cannot use a struct literal when any of its fields are private:
+A struct's fields describe representation and are private to the owning type
+by default. Any implementation of that exact type in its defining module may
+inspect and construct the representation, including an `impl` in another file
+belonging to the same module. Unrelated functions and implementations cannot
+use those fields merely because they share the module. They may use only fields
+marked `pub`, and cannot use a struct literal when any field is private:
 
 ```siox
 pub struct Counter {
@@ -303,34 +305,43 @@ pub struct Counter {
 }
 
 impl Counter {
-    fn reset(self) { self.value = 0; }          // module-private method
+    fn reset(self) { self.value = 0; }          // private to Counter impls
     pub fn limit(self) -> unsigned[32] {        // exported type API
         return self.maximum;
     }
 }
 ```
 
-This matches Rust's module privacy: writing an `impl Counter` in a foreign
-module is rejected. Inherent impls belong to the nominal type's defining module;
-extensions from elsewhere must be expressed as trait impls. A type alias and a
-compiler kernel type are not new nominal owners, so neither may receive an
-inherent impl. Public function and method signatures, public struct fields,
-public entity ports, and other exported interfaces may not name private types;
-such an interface would be impossible for its users to name and is rejected.
+Inherent impl ownership follows Rust's coherence shape: writing an `impl
+Counter` in a foreign module is rejected. Member privacy is deliberately
+narrower than Rust's module-level field privacy: only implementations of
+`Counter` receive access to its private representation. A trait impl receives
+that access only when declared in the type's own module; targeting a foreign
+type never grants representation access. Extensions from elsewhere must use
+traits and the type's public API. A type alias and a compiler kernel type are
+not new nominal owners, so neither may receive an inherent impl. Public
+function and method signatures, public struct fields, public entity ports, and
+other exported interfaces may not name private types; such an interface would
+be impossible for its users to name and is rejected.
 
 Entity ports are structural interface endpoints, not ordinary fields. They
 are inherently visible when the entity is visible, so `pub` on an individual
 port is rejected as redundant. Its `in`, `out`, or `inout` suffix controls
-direction, not visibility. State and helper functions declared in the entity's
-`impl` remain private. Public entity methods are currently rejected because a
-call across an instance boundary has no defined scheduling, connectivity, or
-synthesis semantics yet; behavior must be exposed through ports.
+direction, not visibility. State, constants, mode fields, and helper functions
+declared in the entity's `impl` remain private. Access such as
+`instance.hidden_state` is rejected even from the entity's module; only ports
+form the structural instance interface. Public entity methods are currently
+rejected because a call across an instance boundary has no defined scheduling,
+connectivity, or synthesis semantics yet; behavior must be exposed through
+ports.
 
 Trait methods similarly inherit the trait's visibility. An implementation
-therefore writes `fn`, never `pub fn`. Inherent struct and view methods are
-private by default and may be exported with `pub fn`. As with Rust, a member's
-effective visibility cannot exceed its owner: a `pub fn` on a module-private
-type is callable throughout that module but does not create an external API.
+therefore writes `fn`, never `pub fn`; a private trait and its methods remain
+usable throughout the trait's module. Inherent struct and view methods are
+private to the owning implementation domain by default and may be exported
+with `pub fn`. A member's effective visibility cannot exceed its owner: a
+`pub fn` on a module-private type is callable throughout that module but does
+not create an external API.
 All split inherent impl blocks for one type share a member namespace. Repeating
 a method, constant, state declaration, or mode field is an error instead of a
 source-order override.

@@ -2,7 +2,7 @@ module dynamic_array_write_fixture;
 
 using std::bits::unsigned;
 
-struct Pair { left: unsigned[8], right: unsigned[8] }
+struct Pair { pub left: unsigned[8], pub right: unsigned[8] }
 
 #[test]
 entity DynamicArrayWriteFixture {}

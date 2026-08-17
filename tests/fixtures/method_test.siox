@@ -6,9 +6,9 @@ module examples::method_test;
 
 using std::bits::unsigned;
 
-struct Pkt { a: unsigned[8], b: unsigned[8] }
+struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }
 impl Pkt {
-    fn sum(self) -> unsigned[8] { return self.a + self.b; }
+    pub fn sum(self) -> unsigned[8] { return self.a + self.b; }
 }
 
 entity D { x: unsigned[8] in, y: unsigned[8] out }

@@ -50,7 +50,8 @@ Current baseline:
   `pub`; loaded modules do not leak names into scope, import collisions are
   rejected, and `pub using` re-exports retain visibility.
 - ✅ Container-relative visibility covers module functions, extern functions,
-  struct fields and literals, inherent methods, and public-interface privacy.
+  type-owned struct fields and literals, type-owned inherent methods, private
+  entity implementation state, and public-interface privacy.
   Entity ports and trait methods are inherently visible; views explicitly
   expose backing fields. Public entity methods remain rejected until
   cross-hierarchy call/scheduling semantics are designed.

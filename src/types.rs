@@ -170,6 +170,9 @@ type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64
 #[derive(Clone)]
 struct MemberVisibility {
     is_pub: bool,
+    /// Inherent members and representation fields belong to the owning type.
+    /// Trait methods instead inherit the trait declaration's module boundary.
+    type_private: bool,
     owner: String,
     module: String,
     span: Span,
@@ -300,6 +303,11 @@ struct Checker<'a> {
     /// other merely because the owner/name pair exists.
     method_has_self: HashMap<(String, String), bool>,
     method_visibility: HashMap<(String, String), MemberVisibility>,
+    /// Entity implementation state is never part of the entity's structural
+    /// interface. Keep its declaration site so `instance.hidden` is diagnosed
+    /// as a privacy violation instead of falling through as an unchecked
+    /// field access.
+    private_entity_members: HashMap<(String, String), Span>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
@@ -308,6 +316,10 @@ struct Checker<'a> {
     /// resolver correctly binds `Self` locally, but its synthetic definition
     /// is not the impl target and must not become a distinct nominal type.
     current_self_ty: std::cell::RefCell<Option<Ty>>,
+    /// Semantic impl target while checking an implementation. Applied views
+    /// have the backing struct as `Self` but remain a distinct method owner,
+    /// so privacy checks need both identities.
+    current_impl_owner: std::cell::RefCell<Option<String>>,
     file_modules: HashMap<crate::diag::FileId, String>,
     entity_names: HashSet<String>,
 }
@@ -437,9 +449,11 @@ impl<'a> Checker<'a> {
             method_param_types: HashMap::new(),
             method_has_self: HashMap::new(),
             method_visibility: HashMap::new(),
+            private_entity_members: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
             current_self_ty: std::cell::RefCell::new(None),
+            current_impl_owner: std::cell::RefCell::new(None),
             file_modules,
             entity_names,
         }
@@ -549,41 +563,63 @@ impl<'a> Checker<'a> {
                 // declared return type, so `recv.method(args)` types (spec 3.20).
                 if let Some(ty) = self.type_key(&im.target) {
                     for it in &im.items {
-                        if let ImplItem::Fn(f) = it {
-                            let key = (ty.clone(), f.name.text.clone());
-                            self.methods.insert(key.clone(), f.ret.clone());
-                            self.method_param_types.insert(
-                                key.clone(),
-                                f.params
-                                    .iter()
-                                    .filter(|parameter| !parameter.is_self)
-                                    .map(|parameter| parameter.ty.clone())
-                                    .collect(),
-                            );
-                            self.method_has_self
-                                .insert(key, f.params.iter().any(|parameter| parameter.is_self));
-                            let trait_contract = im
-                                .trait_
-                                .as_ref()
-                                .and_then(|path| self.trait_key(path))
-                                .and_then(|key| self.trait_visibility.get(&key).cloned());
-                            self.method_visibility.insert(
-                                (ty.clone(), f.name.text.clone()),
-                                MemberVisibility {
-                                    is_pub: trait_contract
-                                        .as_ref()
-                                        .map(|(is_pub, _, _)| *is_pub)
-                                        .unwrap_or(f.is_pub || im.trait_.is_some()),
-                                    owner: ty.clone(),
-                                    module: trait_contract
-                                        .as_ref()
-                                        .map(|(_, module, _)| module.clone())
-                                        .unwrap_or_else(|| self.module_of(im.span)),
-                                    span: trait_contract
-                                        .map(|(_, _, span)| span)
-                                        .unwrap_or(f.name.span),
-                                },
-                            );
+                        match it {
+                            ImplItem::Fn(f) => {
+                                let key = (ty.clone(), f.name.text.clone());
+                                self.methods.insert(key.clone(), f.ret.clone());
+                                self.method_param_types.insert(
+                                    key.clone(),
+                                    f.params
+                                        .iter()
+                                        .filter(|parameter| !parameter.is_self)
+                                        .map(|parameter| parameter.ty.clone())
+                                        .collect(),
+                                );
+                                self.method_has_self.insert(
+                                    key,
+                                    f.params.iter().any(|parameter| parameter.is_self),
+                                );
+                                let trait_contract = im
+                                    .trait_
+                                    .as_ref()
+                                    .and_then(|path| self.trait_key(path))
+                                    .and_then(|key| self.trait_visibility.get(&key).cloned());
+                                self.method_visibility.insert(
+                                    (ty.clone(), f.name.text.clone()),
+                                    MemberVisibility {
+                                        is_pub: trait_contract
+                                            .as_ref()
+                                            .map(|(is_pub, _, _)| *is_pub)
+                                            .unwrap_or(f.is_pub || im.trait_.is_some()),
+                                        type_private: im.trait_.is_none(),
+                                        owner: ty.clone(),
+                                        module: trait_contract
+                                            .as_ref()
+                                            .map(|(_, module, _)| module.clone())
+                                            .unwrap_or_else(|| self.module_of(im.span)),
+                                        span: trait_contract
+                                            .map(|(_, _, span)| span)
+                                            .unwrap_or(f.name.span),
+                                    },
+                                );
+                            }
+                            ImplItem::Let(declaration) if self.entity_names.contains(&ty) => {
+                                self.private_entity_members.insert(
+                                    (ty.clone(), declaration.name.text.clone()),
+                                    declaration.name.span,
+                                );
+                            }
+                            ImplItem::Const(constant) if self.entity_names.contains(&ty) => {
+                                self.private_entity_members.insert(
+                                    (ty.clone(), constant.name.text.clone()),
+                                    constant.name.span,
+                                );
+                            }
+                            ImplItem::ModeField { name, .. } if self.entity_names.contains(&ty) => {
+                                self.private_entity_members
+                                    .insert((ty.clone(), name.text.clone()), name.span);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -902,6 +938,7 @@ impl<'a> Checker<'a> {
                         (struct_key.clone(), field.name.text.clone()),
                         MemberVisibility {
                             is_pub: field.is_pub,
+                            type_private: true,
                             owner: struct_key.clone(),
                             module: module.clone(),
                             span: field.name.span,
@@ -1779,11 +1816,11 @@ impl<'a> Checker<'a> {
         );
     }
 
-    /// `p.nosuch` on a struct: the field access lowered to `Unknown`, so the
-    /// driver silently carried no value. Struct receivers are checked, as are
-    /// bus ports through their view's backing struct; an instance port
-    /// (`dut.y`) and anything else unresolvable stay silent, and the check
-    /// walks the derivation chain so an inherited field counts as present.
+    /// `p.nosuch` on a struct/entity: the field access lowered to `Unknown`, so
+    /// the driver silently carried no value. Struct receivers are checked, as
+    /// are entity ports and bus ports through their view's backing struct; the
+    /// check walks a struct derivation chain so an inherited field counts as
+    /// present.
     fn check_field_exists(&mut self, base: &Expr, field: &Ident, sym: &HashMap<String, Ty>) {
         let Some(head) = self.ty_head(&self.type_of(base, sym)) else {
             return;
@@ -1794,6 +1831,43 @@ impl<'a> Checker<'a> {
             .methods
             .contains_key(&(head.clone(), field.text.clone()))
         {
+            return;
+        }
+        // An entity value exposes ports, not the storage declarations in its
+        // implementation. Previously every non-port field returned silently
+        // here because entities are not structs, so `instance.hidden` could
+        // survive semantic checking even though lowering had no such member.
+        if let Some(ports) = self.entities.get(&head) {
+            if ports.iter().any(|port| port.name == field.text) {
+                return;
+            }
+            if let Some(declaration) = self
+                .private_entity_members
+                .get(&(head.clone(), field.text.clone()))
+                .copied()
+            {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "implementation member `{}::{}` is private to the entity",
+                        self.key_leaf(&head),
+                        field.text
+                    ))
+                    .with_code(codes::PRIVATE_MEMBER)
+                    .at(field.span)
+                    .label(declaration, "private implementation member declared here")
+                    .help("expose entity behavior through ports"),
+                );
+            } else {
+                self.error(
+                    codes::UNKNOWN_NAME,
+                    field.span,
+                    format!(
+                        "entity `{}` has no port or method `{}`",
+                        self.key_leaf(&head),
+                        field.text
+                    ),
+                );
+            }
             return;
         }
         // A bus port (`bus: Stream Source`) types as the *view*, which owns no
@@ -1861,8 +1935,8 @@ impl<'a> Checker<'a> {
         }
         self.sink.emit(
             Diagnostic::error(format!(
-                "field `{}.{}` is private to module `{}`",
-                owner, field.text, visibility.module
+                "field `{}.{}` is private to its owning type",
+                owner, field.text
             ))
             .with_code(codes::PRIVATE_MEMBER)
             .at(field.span)
@@ -1892,6 +1966,19 @@ impl<'a> Checker<'a> {
         };
         let key = (head.clone(), field.text.clone());
         if self.methods.contains_key(&key) {
+            if self.entity_names.contains(&head) && !is_self_value(base) {
+                self.error_with_help(
+                    codes::PRIVATE_MEMBER,
+                    *span,
+                    format!(
+                        "entity method `{}::{}` cannot be called through an instance yet",
+                        self.key_leaf(&head),
+                        field.text
+                    ),
+                    "expose behavior through ports; cross-hierarchy method calls do not yet have defined hardware semantics".to_string(),
+                );
+                return;
+            }
             if !self.check_method_visibility(&key, field.span) {
                 return;
             }
@@ -2012,10 +2099,15 @@ impl<'a> Checker<'a> {
         if visibility.is_pub || self.member_access_allowed(&visibility, use_span) {
             return true;
         }
+        let boundary = if visibility.type_private {
+            "its owning type".to_string()
+        } else {
+            format!("module `{}`", visibility.module)
+        };
         self.sink.emit(
             Diagnostic::error(format!(
-                "method `{}::{}` is private to module `{}`",
-                key.0, key.1, visibility.module
+                "method `{}::{}` is private to {boundary}",
+                key.0, key.1,
             ))
             .with_code(codes::PRIVATE_MEMBER)
             .at(use_span)
@@ -2026,7 +2118,24 @@ impl<'a> Checker<'a> {
     }
 
     fn member_access_allowed(&self, visibility: &MemberVisibility, use_span: Span) -> bool {
-        self.module_of(use_span) == visibility.module
+        // A private representation member belongs to the nominal type, not to
+        // every declaration that happens to share its module. The module
+        // check keeps a foreign trait impl from acquiring private access just
+        // by targeting the type; the owner check excludes module functions and
+        // impls of neighboring types.
+        if self.module_of(use_span) != visibility.module {
+            return false;
+        }
+        if !visibility.type_private {
+            return true;
+        }
+        let self_owner = self
+            .current_self_ty
+            .borrow()
+            .as_ref()
+            .and_then(|ty| self.ty_head(ty));
+        self_owner.as_deref() == Some(visibility.owner.as_str())
+            || self.current_impl_owner.borrow().as_deref() == Some(visibility.owner.as_str())
     }
 
     fn check_collected_method_args(
@@ -2139,6 +2248,7 @@ impl<'a> Checker<'a> {
         let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
         let concrete_self = self.ast_ty(self_ty(im));
         let saved_self = self.current_self_ty.replace(Some(concrete_self));
+        let saved_impl_owner = self.current_impl_owner.replace(self.type_key(&im.target));
         let backing = self
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());
@@ -2168,6 +2278,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_impl_inner(im);
+        self.current_impl_owner.replace(saved_impl_owner);
         self.current_self_ty.replace(saved_self);
         *self.type_params.borrow_mut() = saved_params;
         self.in_testbench.set(saved_tb);
@@ -6519,6 +6630,12 @@ impl<'a> Checker<'a> {
         value: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
+        // Privacy constrains representation construction, not every value
+        // expression assigned to a struct-typed slot. A call, operator result,
+        // or another variable already denotes a constructed value.
+        if !matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
+            return;
+        }
         let Some(ty) = self.resolve_alias_type(declared) else {
             return;
         };
@@ -7158,6 +7275,14 @@ fn self_ty(im: &ImplDecl) -> &Type {
     }
 }
 
+fn is_self_value(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::Path(path)
+            if path.segments.len() == 1 && path.segments[0].text == "self"
+    )
+}
+
 fn is_blanket_array_impl(im: &ImplDecl) -> bool {
     let Type::Indexed {
         base, index: None, ..
@@ -7450,7 +7575,7 @@ mod tests {
     }
 
     #[test]
-    fn private_struct_members_are_module_scoped_and_pub_crosses_the_boundary() {
+    fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {
         let provider = "module model;\n\
             pub struct Packet { hidden: integer, pub visible: integer }\n\
             impl Packet { fn secret(self) -> integer { return self.hidden; } pub fn get(self) -> integer { return self.hidden; } }\n";
@@ -7467,6 +7592,113 @@ mod tests {
             private, 2,
             "private field and method are rejected, public ones pass"
         );
+    }
+
+    #[test]
+    fn unrelated_code_in_the_defining_module_cannot_use_private_members() {
+        let sink = check_modules(&[(
+            "module model;\n\
+             struct Packet { hidden: integer, pub visible: integer }\n\
+             impl Packet {\n\
+                 fn secret(self) -> integer { return self.hidden; }\n\
+                 fn own_access(self) -> integer { return self.hidden + self.secret(); }\n\
+             }\n\
+             struct Inspector(integer);\n\
+             impl Inspector { fn inspect(self, p: Packet) -> integer { return p.hidden + p.secret(); } }\n\
+             fn inspect(p: Packet) -> integer { return p.hidden + p.secret() + p.visible; }\n",
+            FileId(0),
+        )]);
+        let private: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .collect();
+        assert_eq!(
+            private.len(),
+            4,
+            "the owner's impl may access both members; an unrelated impl and module function may not: {:?}",
+            private
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn private_struct_literals_require_the_owning_implementation() {
+        let sink = check_modules(&[(
+            "module model;\n\
+             struct Packet { hidden: integer, pub visible: integer }\n\
+             impl Packet { fn make() -> Packet { return { .hidden = 1, .visible = 2 }; } }\n\
+             fn make() -> Packet { return { .hidden = 1, .visible = 2 }; }\n",
+            FileId(0),
+        )]);
+        let private = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .count();
+        assert_eq!(
+            private, 1,
+            "only the module function's construction is outside Packet's private domain"
+        );
+    }
+
+    #[test]
+    fn a_split_impl_in_the_types_module_keeps_private_access() {
+        let declaration = "module model;\nstruct Packet { hidden: integer }\n";
+        let implementation =
+            "module model;\nimpl Packet { fn get(self) -> integer { return self.hidden; } }\n";
+        let sink = check_modules(&[(declaration, FileId(0)), (implementation, FileId(1))]);
+        assert!(sink
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != Some(codes::PRIVATE_MEMBER)));
+    }
+
+    #[test]
+    fn entity_instances_expose_ports_but_not_implementation_state() {
+        let sink = check_modules(&[(
+            "module model;\n\
+             entity Device { value: integer out }\n\
+             impl Device { let hidden: integer = 0; value = hidden; }\n\
+             fn hidden(device: Device) -> integer { return device.hidden; }\n\
+             fn misspelled(device: Device) -> integer { return device.missing; }\n\
+             fn port(device: Device) -> integer { return device.value; }\n",
+            FileId(0),
+        )]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::PRIVATE_MEMBER) && diagnostic.message.contains("hidden")
+        }));
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::UNKNOWN_NAME) && diagnostic.message.contains("missing")
+        }));
+        assert!(sink.diagnostics().iter().all(|diagnostic| {
+            diagnostic.code != Some(codes::PRIVATE_MEMBER) || !diagnostic.message.contains("value")
+        }));
+    }
+
+    #[test]
+    fn entity_helpers_are_local_to_self_until_instance_calls_have_semantics() {
+        let sink = check_modules(&[(
+            "module model;\n\
+             entity Device {}\n\
+             impl Device {\n\
+                 fn helper(self) -> integer { return 1; }\n\
+                 fn local(self) -> integer { return self.helper(); }\n\
+                 fn cross(self, other: Device) -> integer { return other.helper(); }\n\
+             }\n",
+            FileId(0),
+        )]);
+        let calls: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(codes::PRIVATE_MEMBER)
+                    && diagnostic.message.contains("called through an instance")
+            })
+            .collect();
+        assert_eq!(calls.len(), 1, "self helper calls remain local");
     }
 
     #[test]
@@ -7656,7 +7888,7 @@ mod tests {
             "module m;\n\
              struct S { a: Bit, b: Bit }\n\
              view V for S { a out, b in }\n\
-             impl S { fn helper(self) -> Bit { return self.a; } }\n\
+             impl S { pub fn helper(self) -> Bit { return self.a; } }\n\
              entity E { bus: S V, q: Bit out, r: Bit out }\n\
              impl E { q = bus.a; r = bus.helper(); }\n",
         );
@@ -8005,7 +8237,7 @@ mod tests {
     fn struct_literal_fields_are_checked_in_every_value_context() {
         let errors = check_src(
             "module m;\n\
-             struct Packet { data: unsigned[8] }\n\
+             struct Packet { pub data: unsigned[8] }\n\
              fn consume(packet: Packet) {}\n\
              fn make_bad(r: real) -> Packet { return { .data = r }; }\n\
              entity E { y: Bit out }\n\
@@ -8027,9 +8259,9 @@ mod tests {
     fn method_calls_check_argument_count_and_types() {
         let errors = check_src(
             "module m;\n\
-             struct Device { value: unsigned[8] }\n\
-             impl Device { fn take(self, value: unsigned[8]) {} }\n\
-             struct DefaultDevice { value: unsigned[8] }\n\
+             struct Device { pub value: unsigned[8] }\n\
+             impl Device { pub fn take(self, value: unsigned[8]) {} }\n\
+             struct DefaultDevice { pub value: unsigned[8] }\n\
              trait Takes {\n\
                fn take(self, value: unsigned[8]) {\n\
                  let copy: unsigned[8] = value;\n\
@@ -8058,16 +8290,16 @@ mod tests {
     fn associated_and_instance_method_call_forms_are_distinct() {
         let errors = check_src(
             "module m;\n\
-             struct Thing { value: Bit }\n\
-             struct Other { value: Bit }\n\
+             struct Thing { pub value: Bit }\n\
+             struct Other { pub value: Bit }\n\
              trait Factory {\n\
                fn make(value: integer) -> integer { return value; }\n\
              }\n\
              impl Factory for Other {}\n\
              impl Thing {\n\
-               fn static_value(value: integer) -> integer { return value; }\n\
-               fn logic_value() -> Logic { return 'X'; }\n\
-               fn instance_value(self) -> integer { return 1; }\n\
+               pub fn static_value(value: integer) -> integer { return value; }\n\
+               pub fn logic_value() -> Logic { return 'X'; }\n\
+               pub fn instance_value(self) -> integer { return 1; }\n\
              }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
@@ -8212,7 +8444,7 @@ mod tests {
         // (Logic isn't Boolean), proving the return type flows into checks.
         let bad = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { fn ready(self) -> Logic { return self.v; } }\n\
+            impl S { pub fn ready(self) -> Logic { return self.v; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
         assert_eq!(
@@ -8224,7 +8456,7 @@ mod tests {
         // A `Bool`-returning method is a valid condition — no error.
         let good = "module m;\n\
             struct S { v: Logic, }\n\
-            impl S { fn ready(self) -> Bool { return true; } }\n\
+            impl S { pub fn ready(self) -> Bool { return true; } }\n\
             entity E { o: Logic out }\n\
             impl E { let s: S; if s.ready() { o = '1'; } }\n";
         assert_eq!(
@@ -8330,7 +8562,7 @@ mod tests {
     #[test]
     fn struct_literal_field_names_are_checked() {
         let has = |src: &str, code: &str| diag_codes(src).iter().any(|c| c.contains(code));
-        let base = "module m;\nstruct S { a: Bit, b: Bit }\nentity E { y: Bit out, }\nimpl E { let s: S = LIT; y = s.a; }\n";
+        let base = "module m;\nstruct S { pub a: Bit, pub b: Bit }\nentity E { y: Bit out, }\nimpl E { let s: S = LIT; y = s.a; }\n";
         // A misspelled name was dropped whole and the literal still checked.
         assert!(has(
             &base.replace("LIT", "{ .a = '1', .zz = '0' }"),
@@ -8347,7 +8579,7 @@ mod tests {
             "W-P016"
         ));
         // A spread supplies the rest, so nothing is left implicit.
-        let with_base = "module m;\nstruct S { a: Bit, b: Bit }\nentity E { y: Bit out, }\nimpl E { let p: S = { .a = '1', .b = '0' }; let s: S = { ..p, .a = '0' }; y = s.a; }\n";
+        let with_base = "module m;\nstruct S { pub a: Bit, pub b: Bit }\nentity E { y: Bit out, }\nimpl E { let p: S = { .a = '1', .b = '0' }; let s: S = { ..p, .a = '0' }; y = s.a; }\n";
         assert!(!has(with_base, "W-P016"));
     }
 
@@ -8547,7 +8779,7 @@ mod tests {
     fn rejects_write_to_plain_input_field_or_index() {
         // A field/index of a *plain* `in` port is read-only too.
         let errors = check_src(
-            "module m;\nstruct P { x: Bit }\nentity E { a: Bit in, p: P in, y: Bit out, }\n\
+            "module m;\nstruct P { pub x: Bit }\nentity E { a: Bit in, p: P in, y: Bit out, }\n\
              impl E {\n  a = '1';\n  p.x = '1';\n  y = a;\n}\n",
         );
         assert_eq!(errors, 2, "bare `a` and field `p.x` are both rejected");
@@ -8731,8 +8963,8 @@ mod tests {
     #[test]
     fn self_in_method_signatures_is_the_impl_target() {
         let methods = "impl Left {\n\
-                         fn choose(self, rhs: Self) -> Self { return rhs; }\n\
-                         fn identity(value: Self) -> Self { return value; }\n\
+                         pub fn choose(self, rhs: Self) -> Self { return rhs; }\n\
+                         pub fn identity(value: Self) -> Self { return value; }\n\
                        }\n";
         let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
         assert_eq!(
@@ -8756,7 +8988,7 @@ mod tests {
     #[test]
     fn self_in_index_contracts_is_the_impl_target() {
         let contracts = "module m;\n\
-             struct Box { value: integer }\n\
+             struct Box { pub value: integer }\n\
              impl Index<Self, Self> for Box {\n\
                fn index(self, index: Self) -> Self { return index; }\n\
              }\n\
@@ -8785,7 +9017,7 @@ mod tests {
                 "{}{}",
                 contracts,
                 "\
-                 struct Other { value: integer }\n\
+                 struct Other { pub value: integer }\n\
                  #[test] entity T {}\n\
                  impl T {\n\
                    let container: Box = Box { .value = 1 };\n\
@@ -8802,7 +9034,7 @@ mod tests {
                 "{}{}",
                 contracts,
                 "\
-                 struct Other { value: integer }\n\
+                 struct Other { pub value: integer }\n\
                  #[test] entity T {}\n\
                  impl T {\n\
                    let container: Box = Box { .value = 1 };\n\
@@ -9107,11 +9339,11 @@ mod tests {
     /// "a named type".
     #[test]
     fn duplicate_literal_field_and_named_type_rendering() {
-        let dup = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { y: Bit out, }\n\
+        let dup = "module m;\nstruct P { pub a: Bit, pub b: Bit }\nentity E { y: Bit out, }\n\
                    impl E { let q: P = { .a = '1', .a = '0' }; y = q.a; }\n";
         assert_eq!(check_src(dup), 1);
 
-        let ok = "module m;\nstruct P { a: Bit, b: Bit }\nentity E { y: Bit out, }\n\
+        let ok = "module m;\nstruct P { pub a: Bit, pub b: Bit }\nentity E { y: Bit out, }\n\
                   impl E { let q: P = { .a = '1', .b = '0' }; y = q.a; }\n";
         assert_eq!(check_src(ok), 0);
 
@@ -9141,7 +9373,7 @@ mod tests {
     fn struct_literal_values_use_their_field_types() {
         let direct = check_src(
             "module m;\n\
-             struct Packet { data: unsigned[8], valid: Bit }\n\
+             struct Packet { pub data: unsigned[8], pub valid: Bit }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
                let logic: Logic = 'X';\n\
@@ -9153,8 +9385,8 @@ mod tests {
 
         let nested = check_src(
             "module m;\n\
-             struct Inner { data: unsigned[8] }\n\
-             struct Outer { inner: Inner, valid: Bit }\n\
+             struct Inner { pub data: unsigned[8] }\n\
+             struct Outer { pub inner: Inner, pub valid: Bit }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
                let logic: Logic = 'X';\n\
@@ -9166,8 +9398,8 @@ mod tests {
 
         let wrong_type = check_src(
             "module m;\n\
-             struct A { a: Bit }\n\
-             struct B { b: Bit }\n\
+             struct A { pub a: Bit }\n\
+             struct B { pub b: Bit }\n\
              entity E { y: Bit out }\n\
              impl E { let value: A = B { .b = '1' }; y = value.a; }\n",
         );
@@ -9178,7 +9410,7 @@ mod tests {
 
         let wrong_spread = check_src(
             "module m;\n\
-             struct Packet { data: unsigned[8], valid: Bit }\n\
+             struct Packet { pub data: unsigned[8], pub valid: Bit }\n\
              entity E { y: Bit out }\n\
              impl E {\n\
                let logic: Logic = 'X';\n\
@@ -9190,7 +9422,7 @@ mod tests {
 
         let extra_positional = check_src(
             "module m;\n\
-             struct Pair { a: Bit, b: Bit }\n\
+             struct Pair { pub a: Bit, pub b: Bit }\n\
              entity E { y: Bit out }\n\
              impl E { let pair: Pair = { '0', '1', '0' }; y = pair.a; }\n",
         );
@@ -9201,7 +9433,7 @@ mod tests {
 
         let unknown_field_once = check_src(
             "module m;\n\
-             struct Packet { data: unsigned[8] }\n\
+             struct Packet { pub data: unsigned[8] }\n\
              entity E { y: Bit out }\n\
              impl E { let packet: Packet = { .missing = 1 }; y = '1'; }\n",
         );
@@ -9217,7 +9449,7 @@ mod tests {
     #[test]
     fn unknown_field_and_method_are_reported() {
         let st =
-            "module m;\nstruct P { a: Bit }\nimpl P { fn get(self) -> Bit { return self.a; } }\n\
+            "module m;\nstruct P { pub a: Bit }\nimpl P { pub fn get(self) -> Bit { return self.a; } }\n\
                   entity E { y: Bit out }\nimpl E { let p: P; y = ";
         assert_eq!(
             check_src(&format!("{st}p.nosuch; }}\n")),
@@ -9238,7 +9470,7 @@ mod tests {
         );
 
         // A newtype's fields are its base's, so they count as present.
-        let derived = "module m;\nstruct A { x: Bit }\nstruct B(A);\n\
+        let derived = "module m;\nstruct A { pub x: Bit }\nstruct B(A);\n\
                        entity E { o: Bit out }\nimpl E { let b: B; o = b.x; }\n";
         assert_eq!(check_src(derived), 0, "newtype field");
     }
@@ -9446,8 +9678,8 @@ mod tests {
         let src = "module m;\n\
                    fn procedure() {}\n\
                    fn consume(value: integer) {}\n\
-                   struct Device { value: Bit }\n\
-                   impl Device { fn procedure(self) {} }\n\
+                   struct Device { pub value: Bit }\n\
+                   impl Device { pub fn procedure(self) {} }\n\
                    entity E { y: Bit out }\n\
                    impl E {\n\
                      let device: Device = { .value = '0' };\n\
@@ -9761,8 +9993,8 @@ mod tests {
         );
         assert_eq!(free_fn, 0, "a free function may return");
         let method = check_src(
-            "module m;\nstruct S { v: unsigned[8] }\n\
-             impl S { fn get(self) -> unsigned[8] { return self.v; } }\n\
+            "module m;\nstruct S { pub v: unsigned[8] }\n\
+             impl S { pub fn get(self) -> unsigned[8] { return self.v; } }\n\
              entity E { y: unsigned[8] out }\nimpl E { let s: S = { .v = 3 }; y = s.get(); }\n",
         );
         assert_eq!(method, 0, "a method may return");

@@ -4,7 +4,7 @@ module struct_spread;
 
 using std::bits::unsigned;
 
-struct Pkt { a: unsigned[8], b: unsigned[8], c: unsigned[8] }
+struct Pkt { pub a: unsigned[8], pub b: unsigned[8], pub c: unsigned[8] }
 
 entity Bump { inp: Pkt in, outp: Pkt out }
 impl Bump {

@@ -5,7 +5,7 @@ module positional_struct;
 
 using std::bits::unsigned;
 
-struct Pkt { a: unsigned[8], b: unsigned[8] }
+struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }
 
 #[test]
 entity PositionalStructTest {}

@@ -97,8 +97,8 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
         &source,
         r#"module native_names;
            using std::text::string;
-           struct Left { c: unsigned[8] }
-           struct Right { b_c: unsigned[8] }
+           struct Left { pub c: unsigned[8] }
+           struct Right { pub b_c: unsigned[8] }
            #[test] entity FlattenedNames {}
            impl FlattenedNames {
                let a_b: Left = { .c = 11 };
@@ -790,18 +790,18 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
              fn half(value: real) -> real {{ return value / 2.0; }}
              fn one() -> real {{ return 1; }}
              enum Symbol {{ 'α', 'β' }}
-             struct CharacterBox {{ value: Char }}
-             struct RealBox {{ value: real }}
-             struct WideBox {{ value: unsigned[128] }}
-             struct NarrowWideBox {{ value: unsigned[80] }}
-             struct WidePair {{ value: unsigned[128], character: Char }}
+             struct CharacterBox {{ pub value: Char }}
+             struct RealBox {{ pub value: real }}
+             struct WideBox {{ pub value: unsigned[128] }}
+             struct NarrowWideBox {{ pub value: unsigned[80] }}
+             struct WidePair {{ pub value: unsigned[128], pub character: Char }}
              struct NestedBox {{
-                 character: CharacterBox,
-                 values: unsigned[8][2],
-                 word: string[3]
+                 pub character: CharacterBox,
+                 pub values: unsigned[8][2],
+                 pub word: string[3]
              }}
              impl RealBox {{
-                 fn half(self) -> real {{ return self.value / 2.0; }}
+                 pub fn half(self) -> real {{ return self.value / 2.0; }}
              }}
              entity SignedSource {{ value: integer<-10..10> out, }}
              impl SignedSource {{ value = -3; }}
@@ -1160,7 +1160,7 @@ fn hardware_block_locals_are_scoped_immediate_values() {
         &source,
         r#"module hardware_block_locals;
          using std::bits::unsigned;
-         struct Pair { first: unsigned[8], second: unsigned[8] }
+         struct Pair { pub first: unsigned[8], pub second: unsigned[8] }
          entity LocalHardware {
              clk: Bit in,
              select: Bit in,
@@ -1315,7 +1315,7 @@ fn nested_generic_type_arguments_build_and_run() {
         &source,
         r#"module nested_generic_types;
          using std::bits::unsigned;
-         struct Box<T> { value: T }
+         struct Box<T> { pub value: T }
          entity Pass<T> { input: T in, output: T out }
          impl<T> Pass<T> { output = input; }
          entity NestedUse {

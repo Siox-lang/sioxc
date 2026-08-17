@@ -270,8 +270,9 @@ pub mod codes {
     /// could not be opened, or its contents do not fit the declared target.
     pub const COMPILE_TIME_IO: &str = "E-P023";
     /// A private struct field or inherent method used outside the owning
-    /// type's implementation domain, or an attempt to publish an entity
-    /// method before cross-hierarchy calls have defined hardware semantics.
+    /// type's implementation domain, private entity state accessed through an
+    /// instance, or an attempt to publish an entity method before
+    /// cross-hierarchy calls have defined hardware semantics.
     pub const PRIVATE_MEMBER: &str = "E-P024";
     /// A public declaration whose signature contains a private nominal type.
     /// Such an API would be exported but impossible to name from its users.
