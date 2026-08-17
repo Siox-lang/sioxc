@@ -12,6 +12,11 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Changed
+- **Type aliases now retain namespace identity through execution.** Separate
+  modules may export equal alias leaves, including equal multi-hop chains, and
+  qualified uses keep the selected width, range, scalar kind, native function
+  semantics, and foreign ABI classification. Declaration-cycle detection now
+  follows resolved declaration identities instead of a crate-wide leaf graph.
 - **Entities now retain namespace identity through roots and output.** Separate
   modules may declare equal entity leaves without a duplicate error. Colliding
   roots use qualified tree/IR/waveform paths, native tests use injective C

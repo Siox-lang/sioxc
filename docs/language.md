@@ -1651,9 +1651,11 @@ z = w[BYTE];
 
 Module constants and `using` aliases participate in widths, lengths, and
 slice bounds (`const N: integer = 4; let a: Bit[N];`). Their identity includes
-the declaring module, so unrelated modules may export constants with the same
-leaf name; a qualified path or imported alias selects the intended declaration,
-including from within a constant-evaluated function.
+the declaring module, so unrelated modules may export constants or exact type
+aliases with the same leaf name; a qualified path or imported name selects the
+intended declaration. That identity is retained through constant-evaluated
+functions, alias chains, signal layout, native execution, and foreign ABI
+classification.
 
 **Range attributes.** A vector or array exposes its declared index range
 through VHDL-style attributes (elaboration-time constants). There is one count

@@ -147,7 +147,7 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
 }
 
 #[test]
-fn native_calls_and_constants_keep_equal_leaves_module_specific() {
+fn native_calls_constants_and_aliases_keep_equal_leaves_module_specific() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -159,16 +159,18 @@ fn native_calls_and_constants_keep_equal_leaves_module_specific() {
     std::fs::create_dir_all(directory.join("b")).unwrap();
     std::fs::write(
         directory.join("a/math.siox"),
-        "module a::math; pub const load_a: integer = 1; \
+        "module a::math; pub using Scalar = integer; pub const load_a: integer = 1; \
          pub const VALUE: integer = 11; \
-         pub fn select() -> integer { return VALUE; }",
+         pub fn select() -> integer { return VALUE; } \
+         pub fn typed(value: Scalar) -> Scalar { return value; }",
     )
     .unwrap();
     std::fs::write(
         directory.join("b/math.siox"),
-        "module b::math; pub const load_b: integer = 2; \
+        "module b::math; pub using Scalar = real; pub const load_b: integer = 2; \
          pub const VALUE: integer = 22; \
-         pub fn select() -> integer { return VALUE; }",
+         pub fn select() -> integer { return VALUE; } \
+         pub fn typed(value: Scalar) -> Scalar { return value; }",
     )
     .unwrap();
     let source = directory.join("identity.siox");
@@ -182,10 +184,13 @@ fn native_calls_and_constants_keep_equal_leaves_module_specific() {
            impl FunctionIdentity {
                let left: integer = a::math::select();
                let right: integer = b::math::select();
+               let signed_value: a::math::Scalar = a::math::typed(-7);
+               let real_value: b::math::Scalar = b::math::typed(3.5);
                assert!(left == 11 and right == 22 and
                        a::math::VALUE == 11 and b::math::VALUE == 22 and
-                       load_a == 1 and load_b == 2,
-                       "qualified calls and constants keep their module identity");
+                       load_a == 1 and load_b == 2 and
+                       signed_value == -7 and real_value > 3.0,
+                       "qualified calls, constants and aliases keep module identity");
            }"#,
     )
     .unwrap();

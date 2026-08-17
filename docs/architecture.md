@@ -335,7 +335,10 @@ width, including inside staged clocked updates.
 Exact `using` aliases are resolved transitively and cycle-safely before IR
 signal flattening. The terminal type therefore supplies storage width, numeric
 range, scalar identity, vector family, struct layout, and array element shape;
-a multi-hop alias cannot degrade into an unknown-width signal.
+a multi-hop alias cannot degrade into an unknown-width signal. Alias tables and
+cycle edges use resolver-selected declaration identity, so equal alias leaves
+in separate modules remain distinct through IR, native execution, and foreign
+ABI classification.
 
 ## Signal widths
 

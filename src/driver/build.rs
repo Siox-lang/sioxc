@@ -101,6 +101,7 @@ pub fn build(
             }
         }
     }
+    let mut fns = FunctionIndex::new(resolved);
     let type_aliases: HashMap<String, ast::Type> = modules
         .iter()
         .flat_map(|module| &module.items)
@@ -108,11 +109,10 @@ pub fn build(
             ast::Item::Using(ast::Using {
                 kind: ast::UsingKind::Alias { name, ty },
                 ..
-            }) => Some((name.text.clone(), ty.clone())),
+            }) => Some((fns.type_alias_decl_key(name), ty.clone())),
             _ => None,
         })
         .collect();
-    let mut fns = FunctionIndex::new(resolved);
     let mut extern_fns = Vec::new();
     let mut trait_decls: HashMap<&str, &ast::TraitDecl> = HashMap::new();
     let mut static_defaults: Vec<(String, &str)> = Vec::new();
@@ -198,12 +198,12 @@ pub fn build(
         let ret = f
             .ret
             .as_ref()
-            .map_or("void", |ty| extern_c_type(Some(ty), &type_aliases));
+            .map_or("void", |ty| extern_c_type(Some(ty), &type_aliases, &fns));
         let params = f
             .params
             .iter()
             .filter(|param| !param.is_self)
-            .map(|param| extern_c_type(param.ty.as_ref(), &type_aliases))
+            .map(|param| extern_c_type(param.ty.as_ref(), &type_aliases, &fns))
             .collect::<Vec<_>>()
             .join(", ");
         prog.push_str(&format!(
@@ -1949,7 +1949,7 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 
 impl Ctx<'_> {
     fn type_is(&self, ty: &ast::Type, expected: &str) -> bool {
-        resolved_type_name(ty, self.type_aliases) == Some(expected)
+        resolved_type_name(ty, self.type_aliases, self.fns).as_deref() == Some(expected)
     }
 
     fn type_name_is(&self, name: &str, expected: &str) -> bool {
@@ -1974,13 +1974,13 @@ impl Ctx<'_> {
             let ast::Type::Path(path) = current else {
                 return false;
             };
-            let [name] = path.segments.as_slice() else {
+            let Some(name) = self.fns.type_alias_path_key(path) else {
                 return false;
             };
-            if !seen.insert(name.text.as_str()) {
+            if !seen.insert(name.clone()) {
                 return false;
             }
-            let Some(alias) = self.type_aliases.get(&name.text) else {
+            let Some(alias) = self.type_aliases.get(&name) else {
                 return false;
             };
             current = alias;
@@ -1999,13 +1999,11 @@ impl Ctx<'_> {
             let ast::Type::Path(path) = current else {
                 return None;
             };
-            let [name] = path.segments.as_slice() else {
-                return None;
-            };
-            if !seen.insert(name.text.as_str()) {
+            let name = self.fns.type_alias_path_key(path)?;
+            if !seen.insert(name.clone()) {
                 return None;
             }
-            current = self.type_aliases.get(&name.text)?;
+            current = self.type_aliases.get(&name)?;
         }
     }
 
@@ -3551,8 +3549,8 @@ impl Ctx<'_> {
                 // supplies both family and width; without it a call never
                 // dispatched an impl and `neg(x) < 0` compared unsigned.
                 let ret = self.call_return_type(e)?;
-                let head = type_head_name(&ret)?;
-                Some((head.to_string(), self.declared_width(&ret)))
+                let head = resolved_type_name(&ret, self.type_aliases, self.fns)?;
+                Some((head, self.declared_width(&ret)))
             }
         }
     }
@@ -3830,10 +3828,11 @@ impl Ctx<'_> {
                                 .borrow_mut()
                                 .insert(l.name.text.clone(), (left, right));
                         }
-                        if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
+                        if let Some(head) = l.ty.as_ref().and_then(|ty| self.fns.type_head_key(ty))
+                        {
                             self.local_types
                                 .borrow_mut()
-                                .insert(l.name.text.clone(), head.to_string());
+                                .insert(l.name.text.clone(), head);
                         }
                         // A string/struct-literal initializer on a connected
                         // name writes each element/field.
@@ -4566,10 +4565,8 @@ impl Ctx<'_> {
                 if let Some(w) = width {
                     self.local_widths.borrow_mut().insert(name.clone(), w);
                 }
-                if let Some(head) = l.ty.as_ref().and_then(type_head_name) {
-                    self.local_types
-                        .borrow_mut()
-                        .insert(name.clone(), head.to_string());
+                if let Some(head) = l.ty.as_ref().and_then(|ty| self.fns.type_head_key(ty)) {
+                    self.local_types.borrow_mut().insert(name.clone(), head);
                 }
                 let init = match &l.value {
                     Some(v) => self.value_for_local(name, v)?,
@@ -5429,14 +5426,12 @@ impl Ctx<'_> {
                 .methods
                 .get(&(receiver, field.text.clone()))
                 .and_then(|f| f.ret.as_ref())
-                .and_then(type_head_name)
-                .map(str::to_string);
+                .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns));
         }
         self.fns
             .get(callee)
             .and_then(|f| f.ret.as_ref())
-            .and_then(type_head_name)
-            .map(str::to_string)
+            .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns))
     }
 
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
@@ -5481,8 +5476,7 @@ impl Ctx<'_> {
                             .methods
                             .get(&(receiver, field.text.clone()))
                             .and_then(|function| function.ret.as_ref())
-                            .and_then(type_head_name)
-                            == Some("real");
+                            .is_some_and(|ty| self.type_is(ty, "real"));
                     }
                 }
                 if matches!(callee.as_ref(), ast::Expr::Path(path)
@@ -5495,8 +5489,7 @@ impl Ctx<'_> {
                         .fns
                         .get(callee)
                         .and_then(|function| function.ret.as_ref())
-                        .and_then(type_head_name)
-                        == Some("real");
+                        .is_some_and(|ty| self.type_is(ty, "real"));
                 }
             }
             _ => {}
@@ -5580,7 +5573,7 @@ impl Ctx<'_> {
         // A call carries no name; its declared return type is what says the
         // result is signed and how wide it is.
         if let Some(ret) = self.call_return_type(e) {
-            if type_head_name(&ret).is_some_and(|h| self.type_name_is(h, "signed")) {
+            if self.type_is(&ret, "signed") {
                 if let Some(w) = self.declared_width(&ret) {
                     if w > 0 && w <= 64 {
                         return Some(w);
@@ -6345,8 +6338,11 @@ impl Ctx<'_> {
         let mut types = HashMap::new();
         for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
             if let Some(n) = &p.name {
-                if let Some(head) = p.ty.as_ref().and_then(type_head_name) {
-                    types.insert(n.text.clone(), head.to_string());
+                if let Some(head) =
+                    p.ty.as_ref()
+                        .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns))
+                {
+                    types.insert(n.text.clone(), head.clone());
                     if head == "real" {
                         env.insert(
                             n.text.clone(),
@@ -7734,14 +7730,14 @@ fn const_tables(
     let real_consts: std::collections::HashSet<String> = const_decls
         .iter()
         .filter(|(_, declaration)| {
-            resolved_type_name(&declaration.ty, type_aliases) == Some("real")
+            resolved_type_name(&declaration.ty, type_aliases, fns).as_deref() == Some("real")
         })
         .map(|(key, _)| key.clone())
         .collect();
     let integer_consts: std::collections::HashSet<String> = const_decls
         .iter()
         .filter(|(_, declaration)| {
-            resolved_type_name(&declaration.ty, type_aliases) == Some("integer")
+            resolved_type_name(&declaration.ty, type_aliases, fns).as_deref() == Some("integer")
         })
         .map(|(key, _)| key.clone())
         .collect();
@@ -8071,29 +8067,40 @@ fn signed_index_bound(expr: &ast::Expr) -> Option<i64> {
 /// Phase-1 C ABI mapping for foreign function declarations. `real` is the
 /// native C `double`, language `integer` is the signed ABI word, and packed
 /// scalar values cross as the corresponding unsigned word.
-fn extern_c_type(ty: Option<&ast::Type>, aliases: &HashMap<String, ast::Type>) -> &'static str {
-    match ty.and_then(|ty| resolved_type_name(ty, aliases)) {
+fn extern_c_type(
+    ty: Option<&ast::Type>,
+    aliases: &HashMap<String, ast::Type>,
+    fns: &FunctionIndex<'_>,
+) -> &'static str {
+    match ty
+        .and_then(|ty| resolved_type_name(ty, aliases, fns))
+        .as_deref()
+    {
         Some("real") => "double",
         Some("integer") => "int64_t",
         _ => "uint64_t",
     }
 }
 
-fn resolved_type_name<'a>(
-    ty: &'a ast::Type,
-    aliases: &'a HashMap<String, ast::Type>,
-) -> Option<&'a str> {
+fn resolved_type_name(
+    ty: &ast::Type,
+    aliases: &HashMap<String, ast::Type>,
+    fns: &FunctionIndex<'_>,
+) -> Option<String> {
     let mut ty = ty;
     let mut seen = std::collections::HashSet::new();
     loop {
-        let name = type_head_name(ty)?;
+        let name = fns.type_head_key(ty)?;
         let ast::Type::Path(path) = ty else {
             return Some(name);
         };
-        if path.segments.len() != 1 || !seen.insert(name) {
+        let Some(key) = fns.type_alias_path_key(path) else {
+            return Some(name);
+        };
+        if !seen.insert(key.clone()) {
             return Some(name);
         }
-        let Some(alias) = aliases.get(name) else {
+        let Some(alias) = aliases.get(&key) else {
             return Some(name);
         };
         ty = alias;

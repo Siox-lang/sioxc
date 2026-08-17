@@ -8459,3 +8459,18 @@ positional/value connection and port-family metadata from leaf keys to `DefId`.
 Gates: 349 all-feature library tests plus every Rust integration/native test
 pass, strict all-target/all-feature Clippy is clean, and all 171 corpus fixtures
 compile, execute, and pass waveform checks.
+
+### 2026-08-17 — Codex — namespaced type aliases
+
+Editing resolver admission plus IR and native alias resolution. Type checking
+already selects aliases by `DefId`, but the later stages still collect them by
+leaf name; this slice will carry the resolver-qualified key through alias
+chains and prove equal alias leaves can describe different native/IR types.
+
+Completed the alias-identity slice. Equal alias leaves and multi-hop chains now
+use resolver-selected keys through cycle detection, signal layout, native
+scalar/function handling, and foreign ABI classification. The regressions keep
+different ranged-integer layouts and integer/real native calls distinct. Gates:
+350 all-feature library tests plus every Rust integration/native test pass,
+strict all-target/all-feature Clippy is clean, and all 171 corpus fixtures
+compile, execute, and pass waveform checks.

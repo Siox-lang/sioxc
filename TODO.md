@@ -93,10 +93,13 @@ Remaining:
   generic specialization, recursive lowering, instance connection lookup, and
   output roots. Equal entity leaves are admitted across modules; colliding roots
   receive qualified tree/IR paths and injective native test symbols, while an
-  ambiguous bare `--top` must be qualified. Structs, enums, views, aliases, and
-  traits/operators still include leaf-keyed tables. Those remaining declaration
-  categories stay crate-unique until their tables and qualified output
-  identities are lifted.
+  ambiguous bare `--top` must be qualified. Type aliases now also retain
+  resolved identity through cycle checking, IR
+  representation, native scalar semantics, and foreign ABI classification;
+  equal alias leaves and chains are admitted across modules. Structs, enums,
+  views, and traits/operators still include leaf-keyed tables. Those remaining
+  declaration categories stay crate-unique until their tables and qualified
+  output identities are lifted.
 
 ## IR
 

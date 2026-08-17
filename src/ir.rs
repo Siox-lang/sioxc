@@ -122,6 +122,44 @@ impl<'a> FunctionIndex<'a> {
             _ => None,
         }
     }
+
+    /// Stable table key for a module type-alias declaration.
+    pub fn type_alias_decl_key(&self, name: &ast::Ident) -> String {
+        self.resolved
+            .declared(name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::TypeAlias))
+            .and_then(|id| self.resolved.qualified_name(id))
+            .unwrap_or_else(|| name.text.clone())
+    }
+
+    /// Resolver-selected key for a type-alias use. Non-alias single-segment
+    /// paths retain their surface spelling so kernel and local types can use
+    /// the same callers without entering the module-alias table.
+    pub fn type_alias_path_key(&self, path: &ast::Path) -> Option<String> {
+        if let Some(id) = self.resolved.resolved(path.span) {
+            if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::TypeAlias) {
+                return self.resolved.qualified_name(id);
+            }
+        }
+        match path.segments.as_slice() {
+            [name] => Some(name.text.clone()),
+            _ => None,
+        }
+    }
+
+    /// Identity-preserving head name for a declared type. Alias heads are
+    /// qualified; other types retain their ordinary leaf spelling.
+    pub fn type_head_key(&self, ty: &ast::Type) -> Option<String> {
+        match ty {
+            ast::Type::Path(path) => self
+                .type_alias_path_key(path)
+                .or_else(|| path.segments.last().map(|name| name.text.clone())),
+            ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
+                self.type_head_key(base)
+            }
+            ast::Type::View { view, .. } => view.segments.last().map(|name| name.text.clone()),
+        }
+    }
 }
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
@@ -1071,7 +1109,8 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Using(u) => {
                         if let ast::UsingKind::Alias { name, ty } = &u.kind {
-                            self.aliases.insert(name.text.clone(), ty.clone());
+                            self.aliases
+                                .insert(self.free_fns.type_alias_decl_key(name), ty.clone());
                         }
                     }
                     ast::Item::Trait(t) => {
@@ -4308,7 +4347,7 @@ impl<'a> Lowering<'a> {
         // an unconstrained array fills its hole (`string[5]` = `Char[5]`).
         let resolved;
         let ty = match ty {
-            ast::Type::Path(p) if p.segments.len() == 1 => {
+            ast::Type::Path(_) => {
                 let terminal = self.resolve_alias(ty);
                 if std::ptr::eq(terminal, ty) {
                     ty
@@ -8322,14 +8361,13 @@ impl<'a> Lowering<'a> {
             let ast::Type::Path(path) = ty else {
                 return ty;
             };
-            if path.segments.len() != 1 {
+            let Some(name) = self.free_fns.type_alias_path_key(path) else {
+                return ty;
+            };
+            if !seen.insert(name.clone()) {
                 return ty;
             }
-            let name = path.segments[0].text.as_str();
-            if !seen.insert(name) {
-                return ty;
-            }
-            let Some(alias) = self.aliases.get(name) else {
+            let Some(alias) = self.aliases.get(&name) else {
                 return ty;
             };
             ty = alias;
@@ -8349,10 +8387,13 @@ impl<'a> Lowering<'a> {
             let ast::Type::Path(path) = ty else {
                 return false;
             };
-            if path.segments.len() != 1 || !seen.insert(name) {
+            let Some(key) = self.free_fns.type_alias_path_key(path) else {
+                return false;
+            };
+            if !seen.insert(key.clone()) {
                 return false;
             }
-            let Some(alias) = self.aliases.get(name) else {
+            let Some(alias) = self.aliases.get(&key) else {
                 return false;
             };
             ty = alias;
@@ -13215,6 +13256,52 @@ mod tests {
         };
         assert!(matches!(driven("Top.left"), Some(Expr::Const(11))));
         assert!(matches!(driven("Top.right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn equal_type_alias_leaves_keep_the_resolved_representation() {
+        let sources = [
+            (
+                "module a; pub using Scalar = integer<-16..15>; pub using Value = Scalar;",
+                FileId(0),
+            ),
+            (
+                "module b; pub using Scalar = integer<-128..127>; pub using Value = Scalar;",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { left: a::Value in, right: b::Value in }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let signal = |suffix: &str| {
+            design
+                .signals
+                .iter()
+                .find(|signal| signal.path.ends_with(suffix))
+                .expect("missing aliased signal")
+        };
+        assert_eq!(signal(".left").width, 5);
+        assert_eq!(signal(".left").range, Some((-16, 15)));
+        assert_eq!(signal(".right").width, 8);
+        assert_eq!(signal(".right").range, Some((-128, 127)));
+        assert!(signal(".left").integer && signal(".right").integer);
     }
 
     #[test]

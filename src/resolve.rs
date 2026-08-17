@@ -174,7 +174,6 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.collect_item(item);
         }
     }
-    r.check_declaration_cycles(modules);
     r.inherit_enum_variants();
     // Resolve direct imports first, then public re-export chains. Collection
     // has already seen every declaration, so source order is irrelevant; the
@@ -203,6 +202,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             r.resolve_item(item);
         }
     }
+    r.check_declaration_cycles(modules);
     r.check_public_interfaces(modules);
     // The std library is not linted (its imports serve the whole library, not
     // this compilation); only warn about unused imports in the user's files.
@@ -224,6 +224,14 @@ fn type_head(t: &Type) -> Option<&str> {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head(base),
         Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
+    }
+}
+
+fn type_head_path(t: &Type) -> Option<&Path> {
+    match t {
+        Type::Path(path) => Some(path),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_path(base),
+        Type::View { view, .. } => Some(view),
     }
 }
 
@@ -742,21 +750,30 @@ impl<'a> Resolver<'a> {
     /// until the stack overflowed — the compiler aborted with a core dump.
     /// Report it once, here, where the declarations are all in hand.
     fn check_declaration_cycles(&mut self, modules: &[Module]) {
-        // name -> (what it points at, where it was declared, what to call it)
-        let mut edges: HashMap<&str, (&str, Span, &'static str)> = HashMap::new();
+        // declaration identity -> (target identity, source site, diagnostic kind)
+        let mut edges: HashMap<DefId, (DefId, Span, &'static str)> = HashMap::new();
         for m in modules {
             for item in &m.items {
                 match item {
                     Item::Using(u) => {
                         if let UsingKind::Alias { name, ty } = &u.kind {
-                            if let Some(head) = type_head(ty) {
-                                edges.insert(name.text.as_str(), (head, name.span, "alias"));
+                            if let (Some(owner), Some(target)) = (
+                                self.out.declared(name.span),
+                                type_head_path(ty).and_then(|path| self.out.resolved(path.span)),
+                            ) {
+                                edges.insert(owner, (target, name.span, "alias"));
                             }
                         }
                     }
                     Item::Struct(st) => {
-                        if let Some(head) = st.base.as_ref().and_then(type_head) {
-                            edges.insert(st.name.text.as_str(), (head, st.name.span, "type"));
+                        if let (Some(owner), Some(target)) = (
+                            self.out.declared(st.name.span),
+                            st.base
+                                .as_ref()
+                                .and_then(type_head_path)
+                                .and_then(|path| self.out.resolved(path.span)),
+                        ) {
+                            edges.insert(owner, (target, st.name.span, "type"));
                         }
                     }
                     // An enum derives its variants from its base the way a
@@ -765,25 +782,36 @@ impl<'a> Resolver<'a> {
                     // `enum A(B); enum B(A);` reported nothing at all while
                     // the struct spelling of it was caught here.
                     Item::Enum(en) => {
-                        if let Some(head) = en.repr.as_ref().and_then(type_head) {
-                            edges.insert(en.name.text.as_str(), (head, en.name.span, "enum"));
+                        if let (Some(owner), Some(target)) = (
+                            self.out.declared(en.name.span),
+                            en.repr
+                                .as_ref()
+                                .and_then(type_head_path)
+                                .and_then(|path| self.out.resolved(path.span)),
+                        ) {
+                            edges.insert(owner, (target, en.name.span, "enum"));
                         }
                     }
                     _ => {}
                 }
             }
         }
-        let mut reported: HashSet<&str> = HashSet::new();
+        let mut reported: HashSet<DefId> = HashSet::new();
         for &start in edges.keys() {
-            let mut seen: HashSet<&str> = HashSet::new();
+            let mut seen: HashSet<DefId> = HashSet::new();
             let mut cur = start;
-            while let Some(&(next, span, what)) = edges.get(cur) {
+            while let Some(&(next, span, what)) = edges.get(&cur) {
                 if !seen.insert(cur) {
                     // Only the first name of each cycle reports it.
                     if reported.insert(cur) {
+                        let name = self
+                            .out
+                            .qualified_name(cur)
+                            .or_else(|| self.out.def(cur).map(|definition| definition.name.clone()))
+                            .unwrap_or_else(|| "<type>".to_string());
                         self.sink.emit(
                             Diagnostic::error(format!(
-                                "{what} `{cur}` is defined in terms of itself"
+                                "{what} `{name}` is defined in terms of itself"
                             ))
                             .with_code(codes::DUPLICATE_ITEM)
                             .at(span)
@@ -842,6 +870,7 @@ impl<'a> Resolver<'a> {
                 (Some(DefKind::Fn), Some(DefKind::Fn))
                     | (Some(DefKind::Const), Some(DefKind::Const))
                     | (Some(DefKind::Entity), Some(DefKind::Entity))
+                    | (Some(DefKind::TypeAlias), Some(DefKind::TypeAlias))
             ) && self
                 .out
                 .def(prev)
