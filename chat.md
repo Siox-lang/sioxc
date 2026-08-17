@@ -8304,3 +8304,18 @@ alias, operator/trait, constant, and free-function lowering tables.
 Gates: full Rust suite, strict Clippy, and the 171-case external corpus all
 pass. The corpus exercised native testbench generation and execution as well
 as check-only fixtures; its emitted warnings are the expected lint fixtures.
+
+### 2026-08-17 — Codex — effective method visibility
+
+Audited the container-relative visibility checks after the entity namespace
+migration. Fixed public-interface validation so a `pub` inherent method on a
+module-private owner remains module-private in effect; its signature no longer
+falsely reports private-type leaks that cannot cross the module boundary.
+Added a resolver regression test and documented the owner visibility cap.
+The audit also found that inherent impl ownership/coherence is not yet defined:
+foreign modules can extend public types and duplicate method names lack an
+explicit rule. Recorded that separately in `TODO.md` rather than silently
+freezing accidental behavior.
+
+Gates: 336 library tests, all Rust integration/native tests, strict Clippy,
+and all 171 external corpus cases pass.

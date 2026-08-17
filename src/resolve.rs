@@ -1670,7 +1670,9 @@ impl<'a> Resolver<'a> {
                             self.check_public_type(ty, "public type alias");
                         }
                     }
-                    Item::Impl(im) if im.trait_.is_none() => {
+                    Item::Impl(im)
+                        if im.trait_.is_none() && self.public_impl_target(&im.target) =>
+                    {
                         for f in im.items.iter().filter_map(|item| match item {
                             ImplItem::Fn(f) if f.is_pub => Some(f),
                             _ => None,
@@ -1682,6 +1684,29 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// An inherent method is externally reachable only when its owning type
+    /// is externally nameable. `pub fn` on a private struct is still useful as
+    /// an API within the module, but it cannot leak a signature outside that
+    /// module because callers cannot name the receiver type there.
+    fn public_impl_target(&self, ty: &Type) -> bool {
+        let path = match ty {
+            Type::Path(path) => path,
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => {
+                return self.public_impl_target(base);
+            }
+            Type::View { view, .. } => view,
+        };
+        self.out.resolved(path.span).is_some_and(|id| {
+            self.out.def(id).is_some_and(|definition| {
+                definition.is_pub
+                    || matches!(
+                        definition.kind,
+                        DefKind::Builtin | DefKind::Param | DefKind::Local
+                    )
+            })
+        })
     }
 
     fn check_public_fn(&mut self, function: &FnDecl, context: &str) {
@@ -2108,6 +2133,27 @@ mod tests {
             .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_INTERFACE))
             .count();
         assert_eq!(leaks, 2, "both parameter and return type are unusable API");
+    }
+
+    #[test]
+    fn a_public_method_on_a_private_type_has_only_module_visibility() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module a;\nstruct Secret(integer);\nstruct Owner(integer);\nimpl Owner { pub fn keep(self, value: Secret) -> Secret { return value; } }\n",
+            &mut sink,
+        );
+        resolve(&[module], &mut sink);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(codes::PRIVATE_INTERFACE)),
+            "a member cannot be more visible than its private owner: {:?}",
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

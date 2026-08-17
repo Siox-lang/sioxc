@@ -326,7 +326,9 @@ synthesis semantics yet; behavior must be exposed through ports.
 
 Trait methods similarly inherit the trait's visibility. An implementation
 therefore writes `fn`, never `pub fn`. Inherent struct and view methods are
-private by default and may be exported with `pub fn`.
+private by default and may be exported with `pub fn`. As with Rust, a member's
+effective visibility cannot exceed its owner: a `pub fn` on a module-private
+type is callable throughout that module but does not create an external API.
 
 An applied view is an explicit structural interface over its backing struct.
 The view may expose private backing fields through a port without making raw
