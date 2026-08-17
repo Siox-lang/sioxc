@@ -69,11 +69,12 @@ Remaining:
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
 - 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
-  `(module, name)`, but type checking, elaboration, and IR still key several
-  nominal tables by the leaf name. The compiler deliberately reports two
-  loaded declarations with the same leaf as a duplicate rather than silently
-  selecting the wrong one. Lift those downstream tables to `DefId` before
-  allowing equal leaf names in distinct modules.
+  `(module, name)`, exposes declaration-site `DefId`s, and type checking now
+  keys nominal declarations and free-function contracts by stable identity.
+  Elaboration and IR still key several nominal tables by the leaf name, so the
+  compiler deliberately reports two loaded declarations with the same leaf as
+  a duplicate rather than silently selecting the wrong one. Lift those final
+  tables before allowing equal leaf names in distinct modules.
 
 ## IR
 

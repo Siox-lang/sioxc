@@ -8265,3 +8265,26 @@ a stable bootstrap identity while `From`, `New`, and `Resolve` are intentional
 prelude traits. Updated std dependencies, language/architecture/std docs, and
 TODO with the remaining leaf-keyed semantic-table limitation. Gates:
 `cargo test`, strict all-target/all-feature Clippy, and corpus 171/171 green.
+
+### 2026-08-17 — Codex — namespaced semantic identities
+
+Starting the remaining namespace correctness migration. Resolution already
+owns declarations by `(module, leaf)`, but type checking, elaboration, IR, and
+native-output registries frequently collapse `DefId` back to the leaf spelling.
+That prevents two modules from safely declaring ordinary names such as
+`Packet`, `State`, or `read`. I am adding an explicit declaration-id lookup and
+migrating each downstream nominal registry before removing the resolver's
+temporary cross-module duplicate rejection.
+
+Completed the type-checker slice. `Resolved` now exposes declaration-site IDs
+and qualified identities; free functions are keyed directly by `DefId`, while
+types, traits, impls, methods, fields, views, enums, aliases, entities,
+operators, indices, and literal affixes use resolution-derived qualified keys.
+Compiler-owned traits retain their bootstrap spelling, and diagnostics still
+show the concise leaf name. The audit also found two compatibility edges:
+qualified suffix result types (notably `Complex`) and the formerly accidental
+global visibility of `sext`; suffix lookup now uses identity and `sext` is an
+intentional prelude export. Elaboration and IR remain behind the temporary
+duplicate-leaf guard. Gates: full Rust suite and strict Clippy green. The full
+corpus ran 170/171; its sole failure exposed the qualified `Range` index
+contract, which was corrected and rerun through the corpus harness at 1/1.

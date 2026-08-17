@@ -98,6 +98,7 @@ struct ImportSite {
 pub struct Resolved {
     defs: Vec<DefInfo>,
     uses: HashMap<Span, DefId>,
+    declarations: HashMap<Span, DefId>,
 }
 
 impl Resolved {
@@ -112,6 +113,25 @@ impl Resolved {
     /// The declaration a use-site (identified by its span) resolved to.
     pub fn resolved(&self, span: Span) -> Option<DefId> {
         self.uses.get(&span).copied()
+    }
+
+    /// The definition declared at an AST declaration span. Unlike
+    /// [`Self::resolved`], this addresses the declaration itself rather than a
+    /// reference to it, so downstream phases never need to rediscover an item
+    /// by its leaf spelling.
+    pub fn declared(&self, span: Span) -> Option<DefId> {
+        self.declarations.get(&span).copied()
+    }
+
+    /// Stable namespaced spelling for a definition. Diagnostics generally use
+    /// the shorter [`DefInfo::name`]; semantic registries use this key until
+    /// they can store [`DefId`] directly.
+    pub fn qualified_name(&self, id: DefId) -> Option<String> {
+        let definition = self.def(id)?;
+        Some(match &definition.module {
+            Some(module) => format!("{module}::{}", definition.name),
+            None => definition.name.clone(),
+        })
     }
 
     pub fn kind_of(&self, id: DefId) -> Option<DefKind> {
@@ -842,6 +862,9 @@ impl<'a> Resolver<'a> {
         parent: Option<DefId>,
     ) -> DefId {
         let id = DefId(self.out.defs.len() as u32);
+        if let Some(span) = span {
+            self.out.declarations.insert(span, id);
+        }
         self.out.defs.push(DefInfo {
             name,
             module: self.current_module.clone(),

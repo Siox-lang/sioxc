@@ -552,9 +552,9 @@ entirely their **operator impls**:
 `unsigned` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
 marker (attribute or trait) — signedness is behaviour, and behaviour lives in
 impls. The one thing that is not an operator — sign-extension when widening —
-is therefore a library function, `std::bits::sext`: `signed[16](sext(x))` widens
-a signed vector, while a bare `signed[16](x)` is a raw resize (zero-extend /
-truncate).
+is therefore a library function, `std::bits::sext` (re-exported by the
+prelude): `signed[16](sext(x))` widens a signed vector, while a bare
+`signed[16](x)` is a raw resize (zero-extend / truncate).
 
 Array behavior is reusable without making nominal vectors interchangeable:
 

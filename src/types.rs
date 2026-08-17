@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
-use crate::resolve::{DefKind, Resolved};
+use crate::resolve::{DefId, DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
@@ -255,21 +255,21 @@ struct Checker<'a> {
     /// target (`impl<T: Tr> Tr for T[]`). A nominal Vector family may forward
     /// one of these only when its element type implements the same key.
     blanket_array_impls: HashMap<String, String>,
-    /// Generic module fns: name -> (type params with bounds, value params).
+    /// Generic module fns: definition -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
-    generic_fns: HashMap<String, GenericFnSignature>,
+    generic_fns: HashMap<DefId, GenericFnSignature>,
     /// Declared free function -> its parameter count, for call-arity checking.
     /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
     /// functions (rand/fs) have no declaration and are not listed.
-    fn_arity: HashMap<String, usize>,
-    /// Free-function name -> its declared parameter types. Arguments were
+    fn_arity: HashMap<DefId, usize>,
+    /// Free-function definition -> its declared parameter types. Arguments were
     /// checked for count but never for type, so a value of the wrong type was
     /// reinterpreted bit-for-bit at the call.
-    fn_param_types: HashMap<String, Vec<Option<Type>>>,
-    /// Free-function name -> its declared return type. A call expression used
+    fn_param_types: HashMap<DefId, Vec<Option<Type>>>,
+    /// Free-function definition -> its declared return type. A call expression used
     /// to type as `Error` even for a known declaration, suppressing checks in
     /// assignments, conditions, arguments, and enclosing expressions.
-    fn_return_types: HashMap<String, Option<Type>>,
+    fn_return_types: HashMap<DefId, Option<Type>>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -358,7 +358,9 @@ impl<'a> Checker<'a> {
             .iter()
             .flat_map(|module| module.items.iter())
             .filter_map(|item| match item {
-                Item::Entity(entity) => Some(entity.name.text.clone()),
+                Item::Entity(entity) => resolved
+                    .declared(entity.name.span)
+                    .and_then(|id| resolved.qualified_name(id)),
                 _ => None,
             })
             .collect();
@@ -366,17 +368,29 @@ impl<'a> Checker<'a> {
             .iter()
             .flat_map(|module| module.items.iter())
             .filter_map(|item| match item {
-                Item::Trait(trait_) => Some((
-                    trait_.name.text.clone(),
-                    (
-                        trait_.is_pub,
-                        file_modules
-                            .get(&trait_.span.file)
-                            .cloned()
-                            .unwrap_or_else(|| format!("<file:{}>", trait_.span.file.0)),
-                        trait_.name.span,
-                    ),
-                )),
+                Item::Trait(trait_) => resolved
+                    .declared(trait_.name.span)
+                    .and_then(|id| {
+                        let definition = resolved.def(id)?;
+                        if is_compiler_trait(&definition.name) {
+                            Some(definition.name.clone())
+                        } else {
+                            resolved.qualified_name(id)
+                        }
+                    })
+                    .map(|key| {
+                        (
+                            key,
+                            (
+                                trait_.is_pub,
+                                file_modules
+                                    .get(&trait_.span.file)
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("<file:{}>", trait_.span.file.0)),
+                                trait_.name.span,
+                            ),
+                        )
+                    }),
                 _ => None,
             })
             .collect();
@@ -484,6 +498,9 @@ impl<'a> Checker<'a> {
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
+                    let Some(entity_key) = self.declaration_key(e.name.span) else {
+                        continue;
+                    };
                     let ports = e
                         .ports
                         .iter()
@@ -491,7 +508,9 @@ impl<'a> Checker<'a> {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
-                            view: view_key(&p.ty, &self.views),
+                            view: self
+                                .type_key(&p.ty)
+                                .filter(|key| self.views.contains_key(key)),
                             range: self.declared_range(&p.ty),
                             index_bounds: self.declared_index_bounds(&p.ty),
                         })
@@ -500,9 +519,9 @@ impl<'a> Checker<'a> {
                         .iter()
                         .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("test"))
                     {
-                        self.test_entities.insert(e.name.text.clone());
+                        self.test_entities.insert(entity_key.clone());
                     }
-                    self.entities.insert(e.name.text.clone(), ports);
+                    self.entities.insert(entity_key, ports);
                 }
             }
         }
@@ -528,7 +547,7 @@ impl<'a> Checker<'a> {
             Item::Impl(im) => {
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
-                if let Some(ty) = type_identity(&im.target) {
+                if let Some(ty) = self.type_key(&im.target) {
                     for it in &im.items {
                         if let ImplItem::Fn(f) = it {
                             let key = (ty.clone(), f.name.text.clone());
@@ -543,11 +562,11 @@ impl<'a> Checker<'a> {
                             );
                             self.method_has_self
                                 .insert(key, f.params.iter().any(|parameter| parameter.is_self));
-                            let trait_contract = im.trait_.as_ref().and_then(|path| {
-                                path.segments
-                                    .last()
-                                    .and_then(|name| self.trait_visibility.get(&name.text).cloned())
-                            });
+                            let trait_contract = im
+                                .trait_
+                                .as_ref()
+                                .and_then(|path| self.trait_key(path))
+                                .and_then(|key| self.trait_visibility.get(&key).cloned());
                             self.method_visibility.insert(
                                 (ty.clone(), f.name.text.clone()),
                                 MemberVisibility {
@@ -570,17 +589,14 @@ impl<'a> Checker<'a> {
                 }
                 // Record `impl Trait for Type` so trait-driven checks (e.g.
                 // conditions) can ask "does T implement Trait?".
-                if let (Some(tr), Some(ty)) = (&im.trait_, type_identity(&im.target)) {
-                    if let Some(name) = tr.segments.last() {
-                        self.trait_impls_by_type
-                            .entry(ty)
-                            .or_default()
-                            .push(name.text.clone());
+                if let (Some(tr), Some(ty)) = (&im.trait_, self.type_key(&im.target)) {
+                    if let Some(key) = self.trait_key(tr) {
+                        self.trait_impls_by_type.entry(ty).or_default().push(key);
                     }
                 }
                 if let Some(tr) = &im.trait_ {
-                    let trait_name = tr.segments.last().map(|s| s.text.clone());
-                    let target = type_identity(&im.target);
+                    let trait_name = self.trait_key(tr);
+                    let target = self.type_key(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
                         if t == "Vector" {
                             self.vector_families.insert(ty.clone());
@@ -682,9 +698,8 @@ impl<'a> Checker<'a> {
                         if operator.is_some() {
                             let arg_name = |index: usize| {
                                 im.trait_args.get(index + 1).and_then(|a| match a {
-                                    GenericArg::Positional(Expr::Path(p)) => {
-                                        p.segments.last().map(|s| s.text.clone())
-                                    }
+                                    GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
+                                    GenericArg::PositionalType(ty) => self.type_key(ty),
                                     _ => None,
                                 })
                             };
@@ -695,15 +710,14 @@ impl<'a> Checker<'a> {
                                         .iter()
                                         .find(|p| !p.is_self)
                                         .and_then(|p| p.ty.as_ref())
-                                        .and_then(type_head_name)
-                                        .map(str::to_string),
+                                        .and_then(|ty| self.type_key(ty)),
                                     _ => None,
                                 })
                             });
                             let output = arg_name(1).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
                                     ImplItem::Fn(f) => {
-                                        f.ret.as_ref().and_then(type_head_name).map(str::to_string)
+                                        f.ret.as_ref().and_then(|ty| self.type_key(ty))
                                     }
                                     _ => None,
                                 })
@@ -716,16 +730,17 @@ impl<'a> Checker<'a> {
                         if matches!(t.as_str(), "Index" | "IndexAssign") {
                             let arg_name = |index: usize| {
                                 im.trait_args.get(index).and_then(|a| match a {
-                                    GenericArg::Positional(Expr::Path(p)) => {
-                                        p.segments.last().map(|s| s.text.clone())
-                                    }
+                                    GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
+                                    GenericArg::PositionalType(ty) => self.type_key(ty),
                                     _ => None,
                                 })
                             };
+                            let index_type = arg_name(0);
+                            let value_type = arg_name(1);
                             self.index_sigs
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
-                                .push((arg_name(0), arg_name(1)));
+                                .push((index_type, value_type));
                         }
                         if is_blanket_array_impl(im) {
                             let requirement = blanket_requirement(im).unwrap_or_else(|| t.clone());
@@ -759,15 +774,22 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Trait(t) => {
+                let Some(trait_key) = self
+                    .resolved
+                    .declared(t.name.span)
+                    .and_then(|id| self.trait_definition_key(id))
+                else {
+                    return;
+                };
                 let required = t
                     .items
                     .iter()
                     .filter(|f| f.body.is_none())
                     .map(|f| f.name.text.clone())
                     .collect();
-                self.trait_required.insert(t.name.text.clone(), required);
+                self.trait_required.insert(trait_key.clone(), required);
                 self.trait_defaults.insert(
-                    t.name.text.clone(),
+                    trait_key,
                     t.items
                         .iter()
                         .filter(|f| f.body.is_some())
@@ -787,38 +809,42 @@ impl<'a> Checker<'a> {
                 );
             }
             Item::Enum(e) => {
+                let Some(enum_key) = self.declaration_key(e.name.span) else {
+                    return;
+                };
                 let vars: Vec<String> = e.variants.iter().map(|v| v.name.text.clone()).collect();
-                self.own_variants.insert(e.name.text.clone(), vars.clone());
-                self.enum_variants.insert(e.name.text.clone(), vars);
+                self.own_variants.insert(enum_key.clone(), vars.clone());
+                self.enum_variants.insert(enum_key.clone(), vars);
                 if let Some(t) = &e.repr {
-                    if let Some(h) = type_head_name(t) {
-                        self.enum_bases.insert(e.name.text.clone(), h.to_string());
+                    if let Some(base) = self.type_key(t) {
+                        self.enum_bases.insert(enum_key, base);
                     }
                 }
             }
             Item::ExternBlock { fns, .. } => {
                 for f in fns {
-                    self.fn_arity.insert(
-                        f.name.text.clone(),
-                        f.params.iter().filter(|p| !p.is_self).count(),
-                    );
+                    let Some(id) = self.resolved.declared(f.name.span) else {
+                        continue;
+                    };
+                    self.fn_arity
+                        .insert(id, f.params.iter().filter(|p| !p.is_self).count());
                     self.fn_param_types.insert(
-                        f.name.text.clone(),
+                        id,
                         f.params
                             .iter()
                             .filter(|p| !p.is_self)
                             .map(|p| p.ty.clone())
                             .collect(),
                     );
-                    self.fn_return_types
-                        .insert(f.name.text.clone(), f.ret.clone());
+                    self.fn_return_types.insert(id, f.ret.clone());
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {
-                self.fn_arity.insert(
-                    f.name.text.clone(),
-                    f.params.iter().filter(|p| !p.is_self).count(),
-                );
+                let Some(id) = self.resolved.declared(f.name.span) else {
+                    return;
+                };
+                self.fn_arity
+                    .insert(id, f.params.iter().filter(|p| !p.is_self).count());
                 let params = f
                     .params
                     .iter()
@@ -826,43 +852,45 @@ impl<'a> Checker<'a> {
                     .map(|p| p.ty.clone())
                     .collect();
                 self.generic_fns
-                    .insert(f.name.text.clone(), (f.generics.params.clone(), params));
+                    .insert(id, (f.generics.params.clone(), params));
                 self.fn_param_types.insert(
-                    f.name.text.clone(),
+                    id,
                     f.params
                         .iter()
                         .filter(|p| !p.is_self)
                         .map(|p| p.ty.clone())
                         .collect(),
                 );
-                self.fn_return_types
-                    .insert(f.name.text.clone(), f.ret.clone());
+                self.fn_return_types.insert(id, f.ret.clone());
             }
             Item::Fn(f) => {
-                self.fn_arity.insert(
-                    f.name.text.clone(),
-                    f.params.iter().filter(|p| !p.is_self).count(),
-                );
+                let Some(id) = self.resolved.declared(f.name.span) else {
+                    return;
+                };
+                self.fn_arity
+                    .insert(id, f.params.iter().filter(|p| !p.is_self).count());
                 // Concrete functions can validate every parameter directly;
                 // the generic arm above records the same shape and defers only
                 // type-parameter substitution to each call site.
                 self.fn_param_types.insert(
-                    f.name.text.clone(),
+                    id,
                     f.params
                         .iter()
                         .filter(|p| !p.is_self)
                         .map(|p| p.ty.clone())
                         .collect(),
                 );
-                self.fn_return_types
-                    .insert(f.name.text.clone(), f.ret.clone());
+                self.fn_return_types.insert(id, f.ret.clone());
             }
             Item::Struct(st) => {
+                let Some(struct_key) = self.declaration_key(st.name.span) else {
+                    return;
+                };
                 let fields = st.fields.iter().map(|f| f.name.text.clone()).collect();
                 self.structs
-                    .insert(st.name.text.clone(), (st.base.clone(), fields));
+                    .insert(struct_key.clone(), (st.base.clone(), fields));
                 self.field_decl_types.insert(
-                    st.name.text.clone(),
+                    struct_key.clone(),
                     st.fields
                         .iter()
                         .map(|f| (f.name.text.clone(), f.ty.clone()))
@@ -871,31 +899,33 @@ impl<'a> Checker<'a> {
                 let module = self.module_of(st.span);
                 for field in &st.fields {
                     self.field_visibility.insert(
-                        (st.name.text.clone(), field.name.text.clone()),
+                        (struct_key.clone(), field.name.text.clone()),
                         MemberVisibility {
                             is_pub: field.is_pub,
-                            owner: st.name.text.clone(),
+                            owner: struct_key.clone(),
                             module: module.clone(),
                             span: field.name.span,
                         },
                     );
                 }
                 self.struct_field_types.insert(
-                    st.name.text.clone(),
+                    struct_key,
                     st.fields
                         .iter()
                         .filter_map(|f| {
-                            Some((
-                                f.name.text.clone(),
-                                type_head_name(&f.ty)?.to_string(),
-                                f.name.span,
-                            ))
+                            Some((f.name.text.clone(), self.type_key(&f.ty)?, f.name.span))
                         })
                         .collect(),
                 );
             }
             Item::View(v) => {
-                let key = declared_view_key(v);
+                let Some(key) = self
+                    .declaration_key(v.name.span)
+                    .zip(self.type_key(&v.target))
+                    .map(|(view, target)| format!("{view}@{target}"))
+                else {
+                    return;
+                };
                 if self.views.insert(key.clone(), v.target.clone()).is_some() {
                     self.error(
                         codes::DUPLICATE_ITEM,
@@ -915,7 +945,9 @@ impl<'a> Checker<'a> {
             }
             Item::Using(u) => {
                 if let UsingKind::Alias { name, ty } = &u.kind {
-                    self.aliases.insert(name.text.clone(), ty.clone());
+                    if let Some(alias_key) = self.declaration_key(name.span) {
+                        self.aliases.insert(alias_key, ty.clone());
+                    }
                 }
             }
             _ => {}
@@ -962,17 +994,18 @@ impl<'a> Checker<'a> {
     /// reported by the parser, which owns that message.
     fn check_enum(&mut self, e: &EnumDecl) {
         let Some(repr) = &e.repr else { return };
-        let Some(head) = type_head_name(repr) else {
+        let Some(head) = self.type_key(repr) else {
             return;
         };
-        if self.own_variants.contains_key(head) {
+        if self.own_variants.contains_key(&head) {
             return;
         }
         let name = &e.name.text;
+        let shown = self.key_leaf(&head);
         self.error_with_help(
             codes::TYPE_MISMATCH,
             e.name.span,
-            format!("`{head}` is not an enum, so `{name}` cannot derive from it"),
+            format!("`{shown}` is not an enum, so `{name}` cannot derive from it"),
             format!(
                 "an enum's width is derived from its variants — write `enum {name} \
                  {{ … }}` and, where a specific width is needed, declare it at the \
@@ -999,8 +1032,7 @@ impl<'a> Checker<'a> {
                     .structs
                     .get(&cur)
                     .and_then(|(b, _)| b.as_ref())
-                    .and_then(type_head_name)
-                    .map(str::to_string)
+                    .and_then(|ty| self.type_key(ty))
                 else {
                     break;
                 };
@@ -1028,8 +1060,8 @@ impl<'a> Checker<'a> {
     }
 
     fn struct_field_count(&self, id: crate::resolve::DefId) -> Option<usize> {
-        let name = &self.resolved.def(id)?.name;
-        self.struct_field_count_at(name, &mut HashSet::new())
+        let key = self.definition_key(id)?;
+        self.struct_field_count_at(&key, &mut HashSet::new())
     }
 
     fn struct_field_count_at(&self, name: &str, seen: &mut HashSet<String>) -> Option<usize> {
@@ -1037,9 +1069,9 @@ impl<'a> Checker<'a> {
             return None;
         }
         let (base, own) = self.structs.get(name)?;
-        let inherited = match base.as_ref().and_then(type_head_name) {
-            Some(base) if self.structs.contains_key(base) => {
-                self.struct_field_count_at(base, seen)?
+        let inherited = match base.as_ref().and_then(|ty| self.type_key(ty)) {
+            Some(base) if self.structs.contains_key(&base) => {
+                self.struct_field_count_at(&base, seen)?
             }
             _ => 0,
         };
@@ -1050,10 +1082,10 @@ impl<'a> Checker<'a> {
     /// Cycle-safe because resolution reports cyclic derivation but checking
     /// continues best-effort.
     fn base_struct_fields_at(&self, ty: &Type, seen: &mut HashSet<String>) -> Vec<String> {
-        let Some(head) = type_head_name(ty) else {
+        let Some(head) = self.type_key(ty) else {
             return Vec::new();
         };
-        self.base_struct_fields_named_at(head, seen)
+        self.base_struct_fields_named_at(&head, seen)
     }
 
     fn base_struct_fields_named_at(&self, head: &str, seen: &mut HashSet<String>) -> Vec<String> {
@@ -1062,8 +1094,8 @@ impl<'a> Checker<'a> {
             return out;
         }
         if let Some((base, own)) = self.structs.get(head) {
-            if let Some(base) = base.as_ref().and_then(type_head_name) {
-                out.extend(self.base_struct_fields_named_at(base, seen));
+            if let Some(base) = base.as_ref().and_then(|ty| self.type_key(ty)) {
+                out.extend(self.base_struct_fields_named_at(&base, seen));
             }
             out.extend(own.iter().cloned());
         }
@@ -1092,7 +1124,7 @@ impl<'a> Checker<'a> {
                 .get(&current)
                 .and_then(|(base, _)| base.clone())
             {
-                Some(base) => current = type_head_name(&base)?.to_string(),
+                Some(base) => current = self.type_key(&base)?,
                 None => return None,
             }
         }
@@ -1123,8 +1155,8 @@ impl<'a> Checker<'a> {
                     continue;
                 }
                 let elem: Option<String> = match base {
-                    Some(Type::Indexed { base, .. }) => type_head_name(base).map(str::to_string),
-                    Some(Type::Path(p)) => p.segments.last().map(|s| s.text.clone()),
+                    Some(Type::Indexed { base, .. }) => self.type_key(base),
+                    Some(Type::Path(p)) => self.path_key(p),
                     _ => None,
                 };
                 let is_vec = elem
@@ -1143,21 +1175,20 @@ impl<'a> Checker<'a> {
 
     fn resolve_vector_elements(&mut self) {
         for family in self.vector_families.clone() {
-            let mut current = family.as_str();
+            let mut current = family.clone();
             let mut seen = HashSet::new();
-            while seen.insert(current.to_string()) {
-                let Some((base, _)) = self.structs.get(current) else {
+            while seen.insert(current.clone()) {
+                let Some((base, _)) = self.structs.get(&current) else {
                     break;
                 };
                 let Some(base) = base else {
                     break;
                 };
-                let Some(head) = type_head_name(base) else {
+                let Some(head) = self.type_key(base) else {
                     break;
                 };
-                if matches!(base, Type::Indexed { .. }) && !self.vector_families.contains(head) {
-                    self.vector_elements
-                        .insert(family.clone(), head.to_string());
+                if matches!(base, Type::Indexed { .. }) && !self.vector_families.contains(&head) {
+                    self.vector_elements.insert(family.clone(), head);
                     break;
                 }
                 current = head;
@@ -1602,16 +1633,17 @@ impl<'a> Checker<'a> {
 
     fn check_view(&mut self, view: &ViewDecl) {
         let target_ty = &view.target;
-        let Some(target) = type_head_name(target_ty) else {
+        let Some(target) = self.type_key(target_ty) else {
             return;
         };
-        if !self.structs.contains_key(target) {
+        let target_name = self.key_leaf(&target).to_string();
+        if !self.structs.contains_key(&target) {
             self.error(
                 codes::TYPE_MISMATCH,
                 type_head_span(target_ty).unwrap_or(view.span),
                 format!(
-                    "view `{}` must target a struct, found `{target}`",
-                    view.name.text
+                    "view `{}` must target a struct, found `{target_name}`",
+                    view.name.text,
                 ),
             );
             return;
@@ -1631,7 +1663,7 @@ impl<'a> Checker<'a> {
                     f.name.span,
                     format!("view field `{}` is declared more than once", f.name.text),
                 );
-            } else if let Some(visibility) = self.field_visibility_for(target, &f.name.text) {
+            } else if let Some(visibility) = self.field_visibility_for(&target, &f.name.text) {
                 // A view is allowed to make private storage part of an
                 // interface only when it is declared by that storage's own
                 // module. Otherwise a foreign module could publish private
@@ -1639,7 +1671,7 @@ impl<'a> Checker<'a> {
                 if !visibility.is_pub && self.module_of(view.span) != visibility.module {
                     self.sink.emit(
                         Diagnostic::error(format!(
-                            "view `{}` cannot expose private field `{target}.{}` from another module",
+                            "view `{}` cannot expose private field `{target_name}.{}` from another module",
                             view.name.text, f.name.text
                         ))
                         .with_code(codes::PRIVATE_MEMBER)
@@ -1671,11 +1703,11 @@ impl<'a> Checker<'a> {
         let Some(view_name) = view.segments.last().map(|i| i.text.as_str()) else {
             return;
         };
-        let Some(target_name) = type_head_name(target) else {
+        let Some(key) = self.type_key(ty) else {
             return;
         };
-        let key = format!("{view_name}@{target_name}");
         if !self.views.contains_key(&key) {
+            let target_name = type_head_name(target).unwrap_or("<error>");
             let msg = format!("view `{view_name}` is not declared for struct `{target_name}`");
             // The two names in the reverse order is the pre-migration spelling
             // (`impl Source Stream`). Naming that outright beats a message that
@@ -1796,19 +1828,20 @@ impl<'a> Checker<'a> {
                 }
                 return;
             }
-            cur = base_ty
-                .as_ref()
-                .and_then(type_head_name)
-                .map(str::to_string);
+            cur = base_ty.as_ref().and_then(|ty| self.type_key(ty));
         }
         let fields = self
             .structs
             .get(&head)
             .map(|(_, f)| f.clone())
             .unwrap_or_default();
-        let mut d = Diagnostic::error(format!("`{head}` has no field `{}`", field.text))
-            .with_code(codes::UNKNOWN_NAME)
-            .at(field.span);
+        let mut d = Diagnostic::error(format!(
+            "`{}` has no field `{}`",
+            self.key_leaf(&head),
+            field.text
+        ))
+        .with_code(codes::UNKNOWN_NAME)
+        .at(field.span);
         if !fields.is_empty() {
             d = d.help(format!("it has: {}", fields.join(", ")));
         }
@@ -1933,9 +1966,14 @@ impl<'a> Checker<'a> {
         if path.segments.len() < 2 {
             return;
         }
-        let owner = &path.segments[path.segments.len() - 2].text;
+        let owner_name = &path.segments[path.segments.len() - 2];
+        let owner = self
+            .resolved
+            .resolved(owner_name.span)
+            .and_then(|id| self.definition_key(id))
+            .unwrap_or_else(|| owner_name.text.clone());
         let name = &path.segments[path.segments.len() - 1].text;
-        if name == "new" && self.is_conversion_name(owner) {
+        if name == "new" && self.is_conversion_name(&owner) {
             if !args.is_empty() {
                 self.error(
                     codes::TYPE_MISMATCH,
@@ -1964,7 +2002,7 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        self.check_collected_method_args(owner, name, expr_span(callee), args, sym);
+        self.check_collected_method_args(&owner, name, expr_span(callee), args, sym);
     }
 
     fn check_method_visibility(&mut self, key: &(String, String), use_span: Span) -> bool {
@@ -2050,12 +2088,20 @@ impl<'a> Checker<'a> {
     /// A partial impl used to pass, leaving the missing method to fail much
     /// later (or silently do nothing).
     fn check_trait_contract(&mut self, im: &ImplDecl) {
-        let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) else {
+        let Some(trait_path) = im.trait_.as_ref() else {
             return;
         };
-        let Some(required) = self.trait_required.get(&tr.text) else {
+        let Some(trait_key) = self.trait_key(trait_path) else {
             return;
         };
+        let Some(required) = self.trait_required.get(&trait_key) else {
+            return;
+        };
+        let trait_name = trait_path
+            .segments
+            .last()
+            .map(|segment| segment.text.as_str())
+            .unwrap_or("<trait>");
         let provided: HashSet<&str> = im
             .items
             .iter()
@@ -2076,7 +2122,7 @@ impl<'a> Checker<'a> {
                 im.span,
                 format!(
                     "`impl {} for {target}` is missing {}",
-                    tr.text,
+                    trait_name,
                     missing.join(", ")
                 ),
             );
@@ -2086,13 +2132,16 @@ impl<'a> Checker<'a> {
     fn check_impl(&mut self, im: &ImplDecl) {
         // Stimulus primitives are meaningful in a testbench; in an entity body
         // lowering dropped them without a word.
-        let saved_tb = self
-            .in_testbench
-            .replace(type_head_name(&im.target).is_some_and(|n| self.test_entities.contains(n)));
+        let saved_tb = self.in_testbench.replace(
+            self.type_key(&im.target)
+                .is_some_and(|key| self.test_entities.contains(&key)),
+        );
         let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
         let concrete_self = self.ast_ty(self_ty(im));
         let saved_self = self.current_self_ty.replace(Some(concrete_self));
-        let backing = type_head_name(self_ty(im)).unwrap_or("<error>").to_string();
+        let backing = self
+            .type_key(self_ty(im))
+            .unwrap_or_else(|| "<error>".to_string());
         for item in &im.items {
             let ImplItem::Fn(function) = item else {
                 continue;
@@ -2110,7 +2159,8 @@ impl<'a> Checker<'a> {
                     codes::PRIVATE_MEMBER,
                     function.name.span,
                     format!(
-                        "entity method `{backing}::{}` cannot be public yet",
+                        "entity method `{}::{}` cannot be public yet",
+                        self.key_leaf(&backing),
                         function.name.text
                     ),
                     "expose behavior through ports; cross-hierarchy method calls do not yet have defined hardware semantics".to_string(),
@@ -2296,7 +2346,10 @@ impl<'a> Checker<'a> {
         // Names are impl-local, so this starts empty for each one.
         self.array_bounds.borrow_mut().clear();
         if im.trait_.is_none() {
-            if let Some(ports) = type_head_name(&im.target).and_then(|n| self.entities.get(n)) {
+            if let Some(ports) = self
+                .type_key(&im.target)
+                .and_then(|key| self.entities.get(&key))
+            {
                 for p in ports {
                     sym.insert(p.name.clone(), p.ty.clone());
                     if let Some(r) = p.range {
@@ -2560,10 +2613,10 @@ impl<'a> Checker<'a> {
         }
         match self.type_of(scrutinee, names) {
             Ty::Named(id) => {
-                let Some(enum_name) = self.resolved.def(id).map(|def| &def.name) else {
+                let Some(enum_name) = self.definition_key(id) else {
                     return false;
                 };
-                let Some(variants) = self.enum_variants.get(enum_name) else {
+                let Some(variants) = self.enum_variants.get(&enum_name) else {
                     return false;
                 };
                 let covered: HashSet<String> = arms
@@ -3015,7 +3068,7 @@ impl<'a> Checker<'a> {
         if width == 0 || width > 127 {
             return None;
         }
-        match family.as_deref() {
+        match family.as_deref().map(|name| self.key_leaf(name)) {
             Some("signed") => {
                 let half = 1i128 << (width - 1);
                 Some((-half, half - 1))
@@ -3119,8 +3172,11 @@ impl<'a> Checker<'a> {
             }
             Pattern::Path(path) if path.segments.len() == 2 => {
                 let qualifier = &path.segments[0];
+                let qualifier_key = self
+                    .ident_key(qualifier)
+                    .unwrap_or_else(|| qualifier.text.clone());
                 match self.enum_operand_name(ty) {
-                    Some(expected) if qualifier.text == expected => {}
+                    Some(expected) if qualifier_key == expected => {}
                     Some(expected) => self.error_with_help(
                         codes::TYPE_MISMATCH,
                         path.span,
@@ -3128,7 +3184,10 @@ impl<'a> Checker<'a> {
                             "pattern `{}` belongs to enum `{}`, but the matched value is `{expected}`",
                             path.segments[1].text, qualifier.text
                         ),
-                        format!("use a `{expected}::…` variant in this match"),
+                        format!(
+                            "use a `{}::…` variant in this match",
+                            self.key_leaf(&expected)
+                        ),
                     ),
                     None => self.error(
                         codes::TYPE_MISMATCH,
@@ -3197,9 +3256,7 @@ impl<'a> Checker<'a> {
     fn check_char_patterns(&mut self, ty: &Ty, arms: &[MatchArm]) {
         let variants = match ty {
             Ty::Named(id) => self
-                .resolved
-                .def(*id)
-                .map(|d| d.name.clone())
+                .definition_key(*id)
                 .and_then(|name| self.enum_variants.get(&name).map(|v| (name, v.clone()))),
             _ => None,
         };
@@ -3249,7 +3306,7 @@ impl<'a> Checker<'a> {
             self.check_numeric_arms_exhaustive(&ty, arms, span);
             return;
         };
-        let Some(enum_name) = self.resolved.def(id).map(|d| d.name.clone()) else {
+        let Some(enum_name) = self.definition_key(id) else {
             return;
         };
         let Some(variants) = self.enum_variants.get(&enum_name).cloned() else {
@@ -3278,7 +3335,8 @@ impl<'a> Checker<'a> {
                 .join(", ");
             self.sink.emit(
                 Diagnostic::warning(format!(
-                    "non-exhaustive match on `{enum_name}`: missing {names}"
+                    "non-exhaustive match on `{}`: missing {names}",
+                    self.key_leaf(&enum_name)
                 ))
                 .with_code(codes::NON_EXHAUSTIVE_MATCH)
                 .at(span)
@@ -3410,7 +3468,7 @@ impl<'a> Checker<'a> {
             Ty::Integer => Some("integer".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
-            Ty::Named(id) => self.resolved.def(*id).map(|d| d.name.clone()),
+            Ty::Named(id) => self.definition_key(*id),
             Ty::Array {
                 family: Some(name), ..
             } => Some(name.clone()),
@@ -3494,7 +3552,7 @@ impl<'a> Checker<'a> {
             index.as_ref(),
             Expr::Range { .. } | Expr::PartialRange { .. }
         ) {
-            Some("Range".to_string())
+            self.type_kind_name(&self.ty_from_head("Range"))
         } else {
             self.type_kind_name(&self.type_of(index, sym))
         };
@@ -3620,7 +3678,7 @@ impl<'a> Checker<'a> {
     /// An entity is a hardware instance, not a compile-time value, so it may be
     /// declared with `let` but never `const` (`const dut: Counter = ..`).
     fn check_const_not_entity(&mut self, c: &ConstDecl) {
-        let Some(head) = type_head_name(&c.ty) else {
+        let Some(head) = self.type_key(&c.ty) else {
             return;
         };
         // Use the resolved definition so a generic parameter that shadows an
@@ -3629,12 +3687,13 @@ impl<'a> Checker<'a> {
             .and_then(|s| self.resolved.resolved(s))
             .and_then(|id| self.resolved.def(id))
             .map(|d| d.kind == DefKind::Entity)
-            .unwrap_or_else(|| self.entities.contains_key(head));
+            .unwrap_or_else(|| self.entities.contains_key(&head));
         if is_entity {
+            let shown = self.key_leaf(&head);
             self.error(
                 codes::CONST_ENTITY_INSTANCE,
                 c.span,
-                format!("`{head}` is an entity instance, not a constant — declare it with `let`"),
+                format!("`{shown}` is an entity instance, not a constant — declare it with `let`"),
             );
         }
     }
@@ -3749,11 +3808,11 @@ impl<'a> Checker<'a> {
     /// `Error` type on either side suppresses the check.
     /// Whether `id` is an enum declaring the character variant `ch`.
     fn enum_has_char_variant(&self, id: crate::resolve::DefId, ch: char) -> bool {
-        let Some(d) = self.resolved.def(id) else {
+        let Some(key) = self.definition_key(id) else {
             return false;
         };
         self.enum_variants
-            .get(&d.name)
+            .get(&key)
             .is_some_and(|vars| vars.iter().any(|v| v.trim_matches('\'') == ch.to_string()))
     }
 
@@ -3768,16 +3827,16 @@ impl<'a> Checker<'a> {
         let Some(name) = p.segments.last() else {
             return;
         };
-        if p.segments.len() >= 2 {
-            let owner = &p.segments[p.segments.len() - 2].text;
-            if self
-                .methods
-                .contains_key(&(owner.clone(), name.text.clone()))
-            {
-                return;
-            }
+        if self
+            .associated_owner_key(p)
+            .is_some_and(|owner| self.methods.contains_key(&(owner, name.text.clone())))
+        {
+            return;
         }
-        let Some((generics, params)) = self.generic_fns.get(&name.text).cloned() else {
+        let Some(function) = self.function_id(p) else {
+            return;
+        };
+        let Some((generics, params)) = self.generic_fns.get(&function).cloned() else {
             return;
         };
         for gp in &generics {
@@ -3831,17 +3890,18 @@ impl<'a> Checker<'a> {
             }
 
             let Some(bound) = &gp.bound else { continue };
-            let Some(trait_name) = type_head_name(bound) else {
+            let Some(trait_name) = self.trait_type_key(bound) else {
                 continue;
             };
             let Some(ty) = inferred else { continue };
-            if !self.satisfies(&ty, trait_name) {
+            if !self.satisfies(&ty, &trait_name) {
                 let name = self.ty_display(&ty);
+                let shown_trait = self.key_leaf(&trait_name);
                 self.error(
                     codes::TYPE_MISMATCH,
                     expr_span(callee),
                     format!(
-                        "`{name}` does not satisfy the bound `{}: {trait_name}`",
+                        "`{name}` does not satisfy the bound `{}: {shown_trait}`",
                         gp.name.text
                     ),
                 );
@@ -3904,14 +3964,10 @@ impl<'a> Checker<'a> {
         let width = match callee {
             Expr::Index { base, index, .. } => {
                 let head = match base.as_ref() {
-                    Expr::Path(p) => p
-                        .segments
-                        .last()
-                        .map(|name| name.text.as_str())
-                        .unwrap_or(""),
+                    Expr::Path(path) => self.path_key(path),
                     _ => return,
                 };
-                if !self.vector_families.contains(head) {
+                if !head.is_some_and(|key| self.vector_families.contains(&key)) {
                     return;
                 }
                 match signed_lit(index) {
@@ -3963,16 +4019,15 @@ impl<'a> Checker<'a> {
                 let Some(name) = path.segments.last().map(|segment| &segment.text) else {
                     return;
                 };
-                let associated = path.segments.len() >= 2
-                    && self.methods.contains_key(&(
-                        path.segments[path.segments.len() - 2].text.clone(),
-                        name.clone(),
-                    ));
-                !associated && !self.fn_arity.contains_key(name) && self.is_conversion_name(name)
+                let associated = self
+                    .associated_owner_key(path)
+                    .is_some_and(|owner| self.methods.contains_key(&(owner, name.clone())));
+                let target = self.path_key(path).unwrap_or_else(|| name.clone());
+                !associated && self.function_id(path).is_none() && self.is_conversion_name(&target)
             }
             Expr::Index { base, .. } => {
-                matches!(base.as_ref(), Expr::Path(path) if path.segments.last()
-                    .is_some_and(|name| self.is_conversion_name(&name.text)))
+                matches!(base.as_ref(), Expr::Path(path) if self.path_key(path)
+                    .is_some_and(|name| self.is_conversion_name(&name)))
             }
             _ => false,
         };
@@ -4031,7 +4086,7 @@ impl<'a> Checker<'a> {
                 elem: _,
                 len,
                 family: Some(name),
-            } => format!("{name}[{len}]"),
+            } => format!("{}[{len}]", self.key_leaf(name)),
             Ty::Array {
                 elem,
                 len,
@@ -4044,8 +4099,16 @@ impl<'a> Checker<'a> {
     /// Resolve a declared free-function return at its call site. Concrete
     /// returns are direct; a bare generic return (`-> T`) takes the type
     /// inferred from the corresponding value parameter.
-    fn free_call_return_type(&self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) -> Ty {
-        let Some(declared) = self.fn_return_types.get(name) else {
+    fn free_call_return_type(&self, path: &Path, args: &[Expr], sym: &HashMap<String, Ty>) -> Ty {
+        let name = path
+            .segments
+            .last()
+            .map(|segment| segment.text.as_str())
+            .unwrap_or("");
+        let Some(function) = self.function_id(path) else {
+            return self.runtime_call_return_type(name);
+        };
+        let Some(declared) = self.fn_return_types.get(&function) else {
             return self.runtime_call_return_type(name);
         };
         let Some(declared) = declared else {
@@ -4054,7 +4117,7 @@ impl<'a> Checker<'a> {
         if let Type::Path(path) = declared {
             if path.segments.len() == 1 {
                 let parameter_name = &path.segments[0].text;
-                if let Some((generics, params)) = self.generic_fns.get(name) {
+                if let Some((generics, params)) = self.generic_fns.get(&function) {
                     let is_generic = generics
                         .iter()
                         .any(|parameter| parameter.name.text == *parameter_name);
@@ -4101,24 +4164,24 @@ impl<'a> Checker<'a> {
         let Some(name) = p.segments.last() else {
             return;
         };
-        if p.segments.len() >= 2 {
-            let owner = &p.segments[p.segments.len() - 2].text;
+        if let Some(owner) = self.associated_owner_key(p) {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(owner))
+                || (name.text == "new" && self.is_conversion_name(&owner))
             {
                 return;
             }
         }
-        let Some(&want) = self.fn_arity.get(&name.text) else {
+        let Some(function) = self.function_id(p) else {
             // No declaration here is normal for a conversion (`unsigned[8](x)`,
             // `Logic(b)`) and for the runtime-provided std functions, and a
             // mistake for anything else — but the two were indistinguishable,
             // so a misspelled or unimported call passed every stage and failed
             // in the backend as "unsupported call `abs` in testbench
             // expression", blaming the emitter for a missing `using`.
-            if !self.callee_is_declared(&name.text) {
+            let callee_key = self.path_key(p).unwrap_or_else(|| name.text.clone());
+            if !self.callee_is_declared(&callee_key) {
                 self.error_with_help(
                     codes::UNKNOWN_NAME,
                     expr_span(callee),
@@ -4128,6 +4191,9 @@ impl<'a> Checker<'a> {
                         .to_string(),
                 );
             }
+            return;
+        };
+        let Some(&want) = self.fn_arity.get(&function) else {
             return;
         };
         if args.len() != want {
@@ -4142,15 +4208,21 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        self.check_call_arg_types(&name.text, args, sym);
+        self.check_call_arg_types(function, &name.text, args, sym);
     }
 
     /// Each argument must be assignable to its parameter, by the same rule an
     /// assignment uses. Only the count was checked, so a `real` handed to an
     /// `integer` parameter passed its f64 bits through as an integer, and a
     /// `signed[8]` passed its raw bit pattern — `abs(-5)` returned 251.
-    fn check_call_arg_types(&mut self, name: &str, args: &[Expr], sym: &HashMap<String, Ty>) {
-        let Some(params) = self.fn_param_types.get(name).cloned() else {
+    fn check_call_arg_types(
+        &mut self,
+        function: DefId,
+        name: &str,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let Some(params) = self.fn_param_types.get(&function).cloned() else {
             return;
         };
         for (arg, pty) in args.iter().zip(params.iter()) {
@@ -4198,12 +4270,11 @@ impl<'a> Checker<'a> {
         let Some(name) = path.segments.last() else {
             return;
         };
-        if path.segments.len() >= 2 {
-            let owner = &path.segments[path.segments.len() - 2].text;
+        if let Some(owner) = self.associated_owner_key(path) {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(owner))
+                || (name.text == "new" && self.is_conversion_name(&owner))
             {
                 return;
             }
@@ -4211,7 +4282,7 @@ impl<'a> Checker<'a> {
         let function = name.text.as_str();
         // A source declaration shadows a runtime primitive with the same
         // leaf name (`fn read<Bus>(bus)` is common in protocol traits).
-        if self.fn_arity.contains_key(function) {
+        if self.function_id(path).is_some() {
             if !type_args.is_empty() {
                 self.error(
                     codes::TYPE_MISMATCH,
@@ -4428,6 +4499,12 @@ impl<'a> Checker<'a> {
         self.methods.keys().any(|(_, m)| m == name)
     }
 
+    fn function_id(&self, path: &Path) -> Option<DefId> {
+        self.resolved
+            .resolved(path.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
+    }
+
     fn is_conversion_name(&self, name: &str) -> bool {
         if matches!(name, "integer" | "real" | "Char" | "string")
             || self.is_vector_family(name)
@@ -4441,8 +4518,8 @@ impl<'a> Checker<'a> {
         };
         self.resolve_alias_type(alias)
             .as_ref()
-            .and_then(type_head_name)
-            .is_some_and(|head| !self.entities.contains_key(head))
+            .and_then(|ty| self.type_key(ty))
+            .is_some_and(|head| !self.entities.contains_key(&head))
     }
 
     /// The write restrictions `self` carries inside an impl on a view: each
@@ -4450,7 +4527,7 @@ impl<'a> Checker<'a> {
     /// be driven. Empty for any other impl target, where `self` is plain data.
     fn self_view_dirs(&self, target: &Type) -> PortDirs {
         let mut dirs = PortDirs::default();
-        let Some(key) = type_identity(target) else {
+        let Some(key) = self.type_key(target) else {
             return dirs;
         };
         let Some(leaves) = self.view_dirs.get(&key) else {
@@ -4487,10 +4564,12 @@ impl<'a> Checker<'a> {
     /// Instantiating from a function would also mean a function could bring a
     /// process into being, which only an entity may do.
     fn check_instance_placement(&mut self, l: &LetDecl) {
-        let Some(head) = l.ty.as_ref().and_then(type_head_name) else {
+        let Some(head) = l.ty.as_ref().and_then(|ty| self.type_key(ty)) else {
             return;
         };
-        if !self.entities.contains_key(head) || self.type_params.borrow().contains(head) {
+        if !self.entities.contains_key(&head)
+            || self.type_params.borrow().contains(self.key_leaf(&head))
+        {
             return;
         }
         let context = if self.in_fn_body.get() {
@@ -4721,7 +4800,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let input = if matches!(index, Expr::Range { .. } | Expr::PartialRange { .. }) {
-            Some("Range".to_string())
+            self.type_kind_name(&self.ty_from_head("Range"))
         } else {
             self.type_kind_name(&self.type_of(index, sym))
         };
@@ -5575,11 +5654,12 @@ impl<'a> Checker<'a> {
                             let accepts = matches!(right, Ty::Error)
                                 || self.operator_accepts_expr(operator, &left, &right, rhs, sym);
                             if !accepts && !comparison_handled {
+                                let shown_name = self.key_leaf(&name);
                                 self.error(
                                     codes::TYPE_MISMATCH,
                                     *span,
                                     format!(
-                                        "no `{op_str}` operator for `{name}` with a right operand of type `{}`",
+                                        "no `{op_str}` operator for `{shown_name}` with a right operand of type `{}`",
                                         self.ty_display(&right)
                                     ),
                                 );
@@ -5833,10 +5913,13 @@ impl<'a> Checker<'a> {
                         .resolved
                         .defs()
                         .iter()
-                        .position(|d| {
-                            d.name == *ty && matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                        .enumerate()
+                        .find(|(index, definition)| {
+                            matches!(definition.kind, DefKind::Struct | DefKind::Enum)
+                                && self.definition_key(DefId(*index as u32)).as_deref()
+                                    == Some(ty.as_str())
                         })
-                        .map(|i| Ty::Named(crate::resolve::DefId(i as u32)))
+                        .map(|(index, _)| Ty::Named(DefId(index as u32)))
                         .unwrap_or(Ty::Error);
                 }
                 if suffix_scale(&suffix.text).is_some() {
@@ -5855,7 +5938,7 @@ impl<'a> Checker<'a> {
                 let bits = crate::syntax::bits_per_digit(*base);
                 Ty::Array {
                     elem: Box::new(self.ty_from_head("Logic")),
-                    family: Some("unsigned".to_string()),
+                    family: Some(self.vector_family_key("unsigned")),
                     len: crate::syntax::radix_digits(digits).count() as u32 * bits,
                 }
             }
@@ -6007,7 +6090,7 @@ impl<'a> Checker<'a> {
             // A concatenation is an anonymous packed Logic array of unknown width.
             Expr::Concat { .. } => Ty::Array {
                 elem: Box::new(self.ty_from_head("Logic")),
-                family: Some("unsigned".to_string()),
+                family: Some(self.vector_family_key("unsigned")),
                 len: 0,
             },
             // An array literal: element type from the first element, length
@@ -6055,7 +6138,7 @@ impl<'a> Checker<'a> {
                             return Ty::Error;
                         };
                         let input = if is_range {
-                            Some("Range".to_string())
+                            self.type_kind_name(&self.ty_from_head("Range"))
                         } else {
                             self.type_kind_name(&self.type_of(index, sym))
                         };
@@ -6089,14 +6172,14 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args, .. } => match callee.as_ref() {
                 Expr::Index { base, index, .. } => {
                     let head = match base.as_ref() {
-                        Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
-                        _ => "",
+                        Expr::Path(path) => self.path_key(path),
+                        _ => None,
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
-                    match self.vector_families.get(head) {
-                        Some(_) => Ty::Array {
+                    match head.filter(|key| self.vector_families.contains(key)) {
+                        Some(head) => Ty::Array {
                             elem: Box::new(self.ty_from_head("Logic")),
-                            family: Some(head.to_string()),
+                            family: Some(head),
                             len: w,
                         },
                         None => Ty::Error,
@@ -6132,18 +6215,21 @@ impl<'a> Checker<'a> {
                             len: w,
                         }
                     }
-                    name => self.free_call_return_type(name, args, sym),
+                    _ => self.free_call_return_type(p, args, sym),
                 },
                 Expr::Path(path) if path.segments.len() >= 2 => {
-                    let owner = &path.segments[path.segments.len() - 2].text;
+                    let owner_segment = &path.segments[path.segments.len() - 2];
+                    let owner = self
+                        .ident_key(owner_segment)
+                        .unwrap_or_else(|| owner_segment.text.clone());
                     let name = &path.segments[path.segments.len() - 1].text;
                     match self.methods.get(&(owner.clone(), name.clone())) {
-                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(owner)),
+                        Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(&owner)),
                         Some(None) => Ty::Void,
-                        None if name == "new" && self.is_conversion_name(owner) => {
-                            self.ty_from_head(owner)
+                        None if name == "new" && self.is_conversion_name(&owner) => {
+                            self.ty_from_head(&owner)
                         }
-                        None => self.free_call_return_type(name, args, sym),
+                        None => self.free_call_return_type(path, args, sym),
                     }
                 }
                 // A method call `recv.method(args)` types as the method's
@@ -6210,8 +6296,7 @@ impl<'a> Checker<'a> {
                 .structs
                 .get(&current)
                 .and_then(|(base, _)| base.as_ref())
-                .and_then(type_head_name)?
-                .to_string();
+                .and_then(|base| self.type_key(base))?;
         }
     }
 
@@ -6220,6 +6305,97 @@ impl<'a> Checker<'a> {
             .get(&span.file)
             .cloned()
             .unwrap_or_else(|| format!("<file:{}>", span.file.0))
+    }
+
+    fn definition_key(&self, id: DefId) -> Option<String> {
+        let definition = self.resolved.def(id)?;
+        if matches!(
+            definition.kind,
+            DefKind::Builtin | DefKind::Param | DefKind::Local
+        ) {
+            Some(definition.name.clone())
+        } else {
+            self.resolved.qualified_name(id)
+        }
+    }
+
+    fn declaration_key(&self, span: Span) -> Option<String> {
+        self.resolved
+            .declared(span)
+            .and_then(|id| self.definition_key(id))
+    }
+
+    fn path_key(&self, path: &Path) -> Option<String> {
+        self.resolved
+            .resolved(path.span)
+            .and_then(|id| self.definition_key(id))
+    }
+
+    fn ident_key(&self, ident: &Ident) -> Option<String> {
+        self.resolved
+            .resolved(ident.span)
+            .and_then(|id| self.definition_key(id))
+    }
+
+    fn associated_owner_key(&self, path: &Path) -> Option<String> {
+        (path.segments.len() >= 2).then(|| {
+            let owner = &path.segments[path.segments.len() - 2];
+            self.ident_key(owner).unwrap_or_else(|| owner.text.clone())
+        })
+    }
+
+    fn type_key(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Path(path) => self.path_key(path),
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => self.type_key(base),
+            Type::View { view, target, .. } => Some(format!(
+                "{}@{}",
+                self.path_key(view)?,
+                self.type_key(target)?
+            )),
+        }
+    }
+
+    fn trait_key(&self, path: &Path) -> Option<String> {
+        if let Some(name) = path.segments.last().map(|segment| segment.text.as_str()) {
+            if is_compiler_trait(name) {
+                return Some(name.to_string());
+            }
+        }
+        let id = self.resolved.resolved(path.span)?;
+        self.trait_definition_key(id)
+    }
+
+    fn trait_type_key(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Path(path) => self.trait_key(path),
+            Type::Generic { base, .. } => self.trait_type_key(base),
+            Type::Indexed { .. } | Type::View { .. } => None,
+        }
+    }
+
+    fn trait_definition_key(&self, id: DefId) -> Option<String> {
+        let definition = self.resolved.def(id)?;
+        if definition.kind == DefKind::Builtin || is_compiler_trait(&definition.name) {
+            Some(definition.name.clone())
+        } else {
+            self.definition_key(id)
+        }
+    }
+
+    fn key_leaf<'k>(&self, key: &'k str) -> &'k str {
+        key.rsplit("::").next().unwrap_or(key)
+    }
+
+    fn vector_family_key(&self, name: &str) -> String {
+        if self.vector_families.contains(name) {
+            return name.to_string();
+        }
+        self.vector_families
+            .iter()
+            .find(|key| self.key_leaf(key) == name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// The element type head of a *plain* array operand (`Logic[3]` ->
@@ -6247,7 +6423,7 @@ impl<'a> Checker<'a> {
 
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
-            Ty::Named(id) => self.resolved.def(*id)?.name.clone(),
+            Ty::Named(id) => self.definition_key(*id)?,
             Ty::Real => "real".to_string(),
             Ty::Integer => "integer".to_string(),
             Ty::Char => "Char".to_string(),
@@ -6272,8 +6448,18 @@ impl<'a> Checker<'a> {
                 .resolved
                 .defs()
                 .iter()
-                .position(|d| d.name == name)
-                .map(|i| Ty::Named(crate::resolve::DefId(i as u32)))
+                .enumerate()
+                .find(|(index, _)| {
+                    self.definition_key(DefId(*index as u32)).as_deref() == Some(name)
+                })
+                .or_else(|| {
+                    self.resolved
+                        .defs()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, definition)| definition.name == name)
+                })
+                .map(|(index, _)| Ty::Named(DefId(index as u32)))
                 .unwrap_or(Ty::Error),
         }
     }
@@ -6285,7 +6471,8 @@ impl<'a> Checker<'a> {
         match self.type_of(e, sym) {
             Ty::Named(id) => {
                 let d = self.resolved.def(id)?;
-                matches!(d.kind, DefKind::Struct | DefKind::Enum).then(|| d.name.clone())
+                matches!(d.kind, DefKind::Struct | DefKind::Enum)
+                    .then(|| self.definition_key(id))?
             }
             Ty::Array {
                 family: Some(name), ..
@@ -6348,13 +6535,12 @@ impl<'a> Checker<'a> {
         let Some(ty) = self.resolve_alias_type(declared) else {
             return;
         };
-        let Some(head) = type_head_name(&ty) else {
+        let Some(head) = self.type_key(&ty) else {
             return;
         };
-        if !self.structs.contains_key(head) {
+        if !self.structs.contains_key(&head) {
             return;
         }
-        let head = head.to_string();
         let expected = self.ast_ty(&ty);
         self.check_struct_literal_for_head(&expected, &head, value, sym);
     }
@@ -6376,11 +6562,7 @@ impl<'a> Checker<'a> {
         let Ty::Named(id) = expected else {
             return false;
         };
-        let Some(head) = self
-            .resolved
-            .def(*id)
-            .map(|definition| definition.name.clone())
-        else {
+        let Some(head) = self.definition_key(*id) else {
             return false;
         };
         if !self.structs.contains_key(&head) {
@@ -6566,7 +6748,7 @@ impl<'a> Checker<'a> {
         // because an unknown expression type suppresses compatibility checks.
         let nested_struct = self
             .resolve_alias_type(&declared)
-            .and_then(|ty| type_head_name(&ty).map(str::to_string))
+            .and_then(|ty| self.type_key(&ty))
             .is_some_and(|head| self.structs.contains_key(&head));
         if nested_struct && matches!(value, Expr::Construct { .. } | Expr::Concat { .. }) {
             self.check_struct_literal_value(&declared, value, sym);
@@ -6766,28 +6948,35 @@ impl<'a> Checker<'a> {
                 // Elaboration-time range constants (`const BYTE: range`);
                 // opaque to value checking.
                 "range" => Ty::Error,
-                name => match self.aliases.get(name) {
-                    // A cyclic alias has no type; `Error` also suppresses the
-                    // follow-on diagnostics the cycle would otherwise cause.
-                    Some(_) if !self.expanding.borrow_mut().insert(name.to_string()) => Ty::Error,
-                    Some(t) => {
-                        let t = t.clone();
-                        let ty = self.ast_ty(&t);
-                        self.expanding.borrow_mut().remove(name);
-                        ty
-                    }
-                    // A bit-vector family (`struct F : Logic[]`): width applies
-                    // via `F[N]` (ast_ty's Indexed).
-                    None if self.is_vector_family(name) => Ty::Array {
-                        elem: Box::new(self.ty_from_head("Logic")),
-                        family: Some(name.to_string()),
-                        len: 0,
-                    },
-                    None => self.named_ty(p.span),
-                },
+                _ => self.named_path_ty(p),
             }
         } else {
-            self.named_ty(p.span)
+            self.named_path_ty(p)
+        }
+    }
+
+    fn named_path_ty(&self, path: &Path) -> Ty {
+        let Some(key) = self.path_key(path) else {
+            return self.named_ty(path.span);
+        };
+        match self.aliases.get(&key) {
+            // A cyclic alias has no type; `Error` also suppresses the
+            // follow-on diagnostics the cycle would otherwise cause.
+            Some(_) if !self.expanding.borrow_mut().insert(key.clone()) => Ty::Error,
+            Some(ty) => {
+                let ty = ty.clone();
+                let result = self.ast_ty(&ty);
+                self.expanding.borrow_mut().remove(&key);
+                result
+            }
+            // A bit-vector family (`struct F : Logic[]`): width applies via
+            // `F[N]` (ast_ty's Indexed).
+            None if self.is_vector_family(&key) => Ty::Array {
+                elem: Box::new(self.ty_from_head("Logic")),
+                family: Some(key),
+                len: 0,
+            },
+            None => self.named_ty(path.span),
         }
     }
 
@@ -6800,14 +6989,11 @@ impl<'a> Checker<'a> {
             let Type::Path(p) = &current else {
                 return Some(current);
             };
-            if p.segments.len() != 1 {
-                return Some(current);
-            }
-            let name = p.segments[0].text.clone();
-            if !seen.insert(name.clone()) {
+            let key = self.path_key(p)?;
+            if !seen.insert(key.clone()) {
                 return None;
             }
-            let Some(alias) = self.aliases.get(&name) else {
+            let Some(alias) = self.aliases.get(&key) else {
                 return Some(current);
             };
             current = alias.clone();
@@ -6841,7 +7027,7 @@ impl<'a> Checker<'a> {
         match t {
             Ty::Named(id) => {
                 let d = self.resolved.def(*id)?;
-                matches!(d.kind, DefKind::Enum).then(|| d.name.clone())
+                matches!(d.kind, DefKind::Enum).then(|| self.definition_key(*id))?
             }
             _ => None,
         }
@@ -6976,40 +7162,12 @@ struct PortDirs {
     consts: HashSet<String>,
 }
 
-/// The view/backing pair of an applied view type, for looking up per-leaf
-/// directions.
-fn view_key(ty: &Type, views: &HashMap<String, Type>) -> Option<String> {
-    let key = match ty {
-        Type::View { view, target, .. } => {
-            format!("{}@{}", view.segments.last()?.text, type_head_name(target)?)
-        }
-        _ => type_head_name(ty)?.to_string(),
-    };
-    views.contains_key(&key).then_some(key)
-}
-
 /// The type `self` has inside an impl: the backing struct for a view-applied
 /// target (`impl Bus BusOut` -> `Bus`), the target itself otherwise.
 fn self_ty(im: &ImplDecl) -> &Type {
     match &im.target {
         Type::View { target, .. } => target,
         other => other,
-    }
-}
-
-fn declared_view_key(view: &ViewDecl) -> String {
-    let target = type_head_name(&view.target).unwrap_or("<error>");
-    format!("{}@{target}", view.name.text)
-}
-
-fn type_identity(ty: &Type) -> Option<String> {
-    match ty {
-        Type::View { view, target, .. } => Some(format!(
-            "{}@{}",
-            view.segments.last()?.text,
-            type_head_name(target)?
-        )),
-        _ => type_head_name(ty).map(str::to_string),
     }
 }
 
@@ -7057,6 +7215,22 @@ fn is_liftable_array_key(key: &str) -> bool {
     matches!(
         key,
         "Resolve" | "and" | "or" | "not" | "xor" | "nand" | "nor" | "xnor"
+    )
+}
+
+fn is_compiler_trait(name: &str) -> bool {
+    matches!(
+        name,
+        "Operator"
+            | "Prefix"
+            | "Suffix"
+            | "Index"
+            | "IndexAssign"
+            | "Boolean"
+            | "Vector"
+            | "Resolve"
+            | "New"
+            | "From"
     )
 }
 
@@ -7946,6 +8120,28 @@ mod tests {
             errors, 4,
             "qualification must not discard arity, generic, argument, or return facts"
         );
+    }
+
+    #[test]
+    fn equal_function_leaves_keep_module_specific_contracts() {
+        let a = "module a;\npub fn convert(value: integer) -> integer { return value; }\n";
+        let b = "module b;\npub fn convert(value: real) -> real { return value; }\n";
+        let user = "module user;\nfn use_both() {\n  let i: integer = a::convert(1);\n  let r: real = b::convert(1.5);\n}\n";
+        let sink = check_modules(&[(a, FileId(0)), (b, FileId(1)), (user, FileId(2))]);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code != Some(codes::TYPE_MISMATCH)),
+            "qualified calls must not borrow the other module's signature: {:?}",
+            sink.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(sink
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == Some(codes::DUPLICATE_ITEM)));
     }
 
     #[test]
