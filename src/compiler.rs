@@ -550,7 +550,14 @@ impl Compiler {
         let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
         let design = result.design.as_ref().expect("lowering completed");
-        match build::build(&result.modules, resolved, hierarchy, design, &output) {
+        match build::build(
+            &result.modules,
+            resolved,
+            hierarchy,
+            design,
+            &result.sources,
+            &output,
+        ) {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
                     kind: FileArtifact::TestExecutable,

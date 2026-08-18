@@ -30,6 +30,15 @@ const LIBFST_FASTLZ_H: &str = include_str!("../../third_party/libfst/fastlz.h");
 const LIBFST_LZ4_C: &str = include_str!("../../third_party/libfst/lz4.c");
 const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/lz4.h");
 
+/// `file:line:col` for a source span, or `None` when the span has no file.
+///
+/// Shared by every runtime failure so they all name their source the same way.
+fn span_location(sources: &siox::diag::SourceMap, span: siox::diag::Span) -> Option<String> {
+    let file = sources.get(span.file)?;
+    let (line, column) = sources.line_col(span.file, span.start);
+    Some(format!("{}:{line}:{column}", file.name))
+}
+
 /// Build a native simulator binary that runs *all* `#[test]` entities, like
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
 /// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
@@ -39,6 +48,7 @@ pub fn build(
     resolved: &Resolved,
     hier: &Hierarchy,
     design: &Design,
+    sources: &siox::diag::SourceMap,
     out: &Path,
 ) -> Result<(), String> {
     let issues = design.validate();
@@ -497,7 +507,11 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
 "#,
     );
     prog.push_str("extern void sx_settle(void);\n");
-    prog.push_str("static const char *g_msg;\nstatic signed g_range_failed;\n");
+    prog.push_str(
+        "static const char *g_msg;\n\
+         static const char *g_loc;\n\
+         static signed g_range_failed;\n",
+    );
     prog.push_str("static signed g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
@@ -595,8 +609,11 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
                 "static char {buffer}[{capacity}]; \
                  snprintf({buffer}, sizeof {buffer}, \
                  \"`{}` left its range {lo}..{hi} (it was %lld)\", (long long)v); \
-                 g_msg = {buffer};",
-                sig.path
+                 g_msg = {buffer};{at}",
+                sig.path,
+                at = span_location(sources, sig.declaration_span)
+                    .map(|at| format!(" g_loc = \"{}\";", c_escape(&at)))
+                    .unwrap_or_default(),
             )
         };
 
@@ -688,6 +705,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             .collect();
         let ctx = Ctx {
             design,
+            sources,
             map: &map,
             enums: &enums,
             families: &families,
@@ -1196,7 +1214,8 @@ fn gen_main(names: &[(String, String)]) -> String {
     for (symbol, display) in names {
         m.push_str(&format!(
             "    if (!filter || strstr(\"{display}\", filter)) {{ \
-             if (test_{symbol}()) {{ printf(\"test {display} ... FAILED\\n    %s\\n\", g_msg); failed++; }} \
+             if (test_{symbol}()) {{ printf(\"test {display} ... FAILED\\n    %s\\n\", g_msg); \
+             if (g_loc) printf(\"  --> %s\\n\", g_loc); failed++; }} \
              else printf(\"test {display} ... ok\\n\"); }}\n"
         ));
     }
@@ -1216,6 +1235,9 @@ fn gen_main(names: &[(String, String)]) -> String {
 /// discriminants.
 struct Ctx<'a> {
     design: &'a Design,
+    /// Source text, so a runtime failure can name the line that caused it
+    /// rather than only what went wrong.
+    sources: &'a siox::diag::SourceMap,
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
     families: &'a std::collections::HashSet<String>,
@@ -3787,7 +3809,7 @@ impl Ctx<'_> {
     fn gen_test_fn(&self, items: &[&ast::ImplItem]) -> Result<String, String> {
         let mut b = String::new();
         b.push_str(&format!(
-            "signed test_{}(void) {{\n    g_range_failed = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_wave_begin_test();\n",
+            "signed test_{}(void) {{\n    g_range_failed = 0;\n    g_loc = 0;\n    sx_io_reset();\n    sx_reset();\n    sx_wave_begin_test();\n",
             self.symbol
         ));
 
@@ -4990,6 +5012,16 @@ impl Ctx<'_> {
         Ok((cfmt, cargs))
     }
 
+    /// `file:line:col` for a source span, as a C string literal assignment.
+    ///
+    /// A failing assertion used to report only its message, so finding the
+    /// statement in a large testbench meant reading it. The span is known at
+    /// emit time; nothing needs to be looked up when the test runs.
+    fn set_location(&self, span: siox::diag::Span) -> Option<String> {
+        let at = span_location(self.sources, span)?;
+        Some(format!("g_loc = \"{}\";", c_escape(&at)))
+    }
+
     /// The C expression that sets `g_msg` for an `assert!`/`warn!` message at
     /// `args[at]`. With no format arguments this is a plain string literal;
     /// with them it formats into a static buffer first.
@@ -5111,9 +5143,14 @@ impl Ctx<'_> {
                 let cond = args.first().ok_or("assert needs a condition")?;
                 let c = self.expr(cond)?;
                 let set = self.c_message(args, 1, "assertion failed")?;
-                // Record the failure message and fail this test; `main` prints
-                // the `test <name> ... FAILED` line and the message.
-                b.push_str(&format!("{ind}if (!({c})) {{ {set} return 1; }}\n"));
+                // Record the failure message and where it was written, then
+                // fail this test; `main` prints the `test <name> ... FAILED`
+                // line, the message, and the location.
+                let at = self
+                    .set_location(ast::expr_span(callee))
+                    .map(|s| format!(" {s}"))
+                    .unwrap_or_default();
+                b.push_str(&format!("{ind}if (!({c})) {{ {set}{at} return 1; }}\n"));
             }
             // warn!(cond, msg): non-fatal — report to stderr, keep running.
             "warn" if bang => {
