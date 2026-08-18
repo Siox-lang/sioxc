@@ -102,10 +102,10 @@ The compiled test executable—not `sioxc`—writes the requested waveform while
 it runs. Use portable text VCD or compressed FST for larger traces:
 
 ```bash
-./counter-tests --vcd counter.vcd
-./counter-tests --fst counter.fst
+./counter-tests -o counter.fst
+./counter-tests -o counter.vcd
 # Both may be written in one run:
-./counter-tests --vcd counter.vcd --fst counter.fst
+./counter-tests -o counter.vcd -o counter.fst
 ```
 
 The files can then be opened in a waveform viewer such as
@@ -120,8 +120,8 @@ timeline.
 | --- | --- |
 | `sioxc file.siox --emit metadata` | type-check and elaborate without code generation |
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
-| `./tests --vcd out.vcd [filter]` | run generated tests and write text VCD |
-| `./tests --fst out.fst [filter]` | run generated tests and write compressed FST |
+| `./tests -o out.vcd [filter]` | run generated tests and write text VCD |
+| `./tests -o out.fst [filter]` | run generated tests and write compressed FST (any non-`.vcd` path) |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it

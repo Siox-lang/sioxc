@@ -117,6 +117,11 @@ pub struct CompileRequest {
     /// Required destination override for file artifacts. Textual artifacts are
     /// returned in memory and ignore this field.
     pub output: Option<PathBuf>,
+    /// Build a test executable a debugger can follow: the generated C is
+    /// attributed back to its `.siox` lines and compiled unoptimized with
+    /// debug info, so `break file.siox:34` and stepping work. Off by default,
+    /// because simulation throughput matters for long runs.
+    pub debug: bool,
 }
 
 impl CompileRequest {
@@ -125,7 +130,14 @@ impl CompileRequest {
             input,
             emit,
             output: None,
+            debug: false,
         }
+    }
+
+    /// Build for a debugger: siox line mapping and no optimization.
+    pub fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
     }
 
     pub fn with_output(mut self, path: impl Into<PathBuf>) -> Self {
@@ -465,7 +477,7 @@ impl Compiler {
                 let output = request
                     .output
                     .unwrap_or_else(|| path.with_extension("test"));
-                self.emit_test_executable(&mut result, output);
+                self.emit_test_executable(&mut result, output, request.debug);
             }
             Emit::Metadata | Emit::Source | Emit::Tokens | Emit::Ast | Emit::Tree | Emit::Ir => {}
         }
@@ -543,7 +555,7 @@ impl Compiler {
     }
 
     #[cfg(feature = "llvm")]
-    fn emit_test_executable(&self, result: &mut Compilation, output: PathBuf) {
+    fn emit_test_executable(&self, result: &mut Compilation, output: PathBuf, debug: bool) {
         if !Self::validate_design(result) {
             return;
         }
@@ -556,6 +568,7 @@ impl Compiler {
             hierarchy,
             design,
             &result.sources,
+            debug,
             &output,
         ) {
             Ok(()) => {
@@ -571,7 +584,7 @@ impl Compiler {
     }
 
     #[cfg(not(feature = "llvm"))]
-    fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf) {
+    fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
         result.failure = Some(backend_unavailable());
     }
 }

@@ -104,8 +104,10 @@ test result: ok. 1 passed; 0 failed
 
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
-- **Waveforms:** `--vcd trace.vcd` writes portable text; `--fst trace.fst`
-  writes compressed FST. `--vcd=<path>` and `--fst=<path>` are equivalent.
+- **Waveforms:** `-o trace.fst` writes compressed FST; `-o trace.vcd` writes
+  portable text. The path's extension picks the format, so FST is the default
+  without naming it. `--output=<path>` and `-o<path>` are equivalent, and
+  passing `-o` twice with one of each extension writes both.
   Either option may precede or follow the test filter, and both may be requested
   together with different paths; using the same path is rejected. They share
   the same 1 fs scheduler samples and place multiple tests consecutively on one

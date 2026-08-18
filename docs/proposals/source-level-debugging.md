@@ -1,6 +1,8 @@
 # Source-level debugging
 
-Status: **proposal**. Waveform output is implemented; nothing else here is.
+Status: **partly implemented**. Waveform output, Tier A's two main failure
+classes, and all of Tier B are in the compiler. What remains is listed under
+each tier.
 
 A `#[test]` build is a native executable compiled through Clang, so a debugger
 already attaches to it. What is missing is the mapping back to `.siox`: a
@@ -12,8 +14,8 @@ which needs no debugger at all.
 
 Verified against a small FIFO and counter.
 
-**Waveforms — implemented.** `--vcd` and `--fst` both work, and the dump
-includes internal state, not only ports:
+**Waveforms — implemented.** `-o <path>` writes a waveform, the format chosen
+by the path's extension, and the dump includes internal state, not only ports:
 
 ```
 $scope module FifoTest $end
@@ -26,33 +28,23 @@ $scope module FifoTest $end
 This is the standard HDL debugging loop and it is available now through
 GTKWave, Surfer, or a vendor waveform viewer.
 
-**Debugger attach — partial.** `gdb ./test.bin` breaks and produces a
-backtrace:
+**Debugger attach — implemented.** Before this work, `gdb ./test.bin` broke and
+backtraced but the binary carried no DWARF at all, so a stop showed
+`sx_settle ()` and nothing about the source. With `-g` it now names `.siox`
+files and lines; see Tier B.
 
-```
-Breakpoint 1, sx_settle ()
-#0  sx_settle ()
-#1  sx_run_settle ()
-#2  test_r1 ()
-```
-
-The binary is not stripped, but it carries **no DWARF** — `readelf -S` reports
-zero debug sections — so there are no source lines and no variable names.
-
-**Runtime failures — no source location.** The two classes differ:
-
-| failure           | reported today                                              |
-| ----------------- | ----------------------------------------------------------- |
-| `assert!`         | the message only                                             |
-| range violation   | signal path, declared range, offending value — not the write |
+**Runtime failures — implemented for assertions and range violations.** Both
+now render a location beside the message:
 
 ```
 test fail::FailTest ... FAILED
     the counter should be 99 here
+  --> fail.siox:18:5
 ```
 
-Nothing names `fail.siox:18`, so a failing assertion in a large testbench has
-to be found by reading.
+An assertion points at its own statement; a range violation points at the
+ranged signal's declaration. The location is per-failure and cleared at the
+start of each test, so a passing run reports none.
 
 ## Goals
 
@@ -76,33 +68,44 @@ test fail::FailTest ... FAILED
    |     ^ the counter should be 99 here
 ```
 
-Cases to cover:
+Cases:
 
-- **Assertions.** Carry the `assert!` span into the generated C and print it on
-  failure.
-- **Range violations.** The signal is already named; add the span of the
-  assignment that wrote the out-of-range value, which is the thing the author
-  needs to look at.
-- **Oscillation / delta cap.** Name the drivers that kept changing.
-- **Runtime file I/O.** Already reports a source-relative path; align its
-  rendering with the above.
+- **Assertions — done.** The `assert!` span reaches the generated C and prints
+  on failure.
+- **Range violations — done, at the declaration.** The signal's
+  `declaration_span` is used. Pointing instead at the *assignment* that wrote
+  the out-of-range value would be better still, and needs per-assignment spans
+  carried into the emitted check.
+- **Oscillation / delta cap — not done.** Should name the drivers that kept
+  changing.
+- **Runtime file I/O — not done.** Already reports a source-relative path;
+  its rendering is not yet aligned with the above.
+- **Caret rendering — not done.** The location is `file:line:col`; showing the
+  source line with a caret underneath needs the line text embedded at emit
+  time.
 
-Most of the spans already exist. `Signal` carries the declaration span of its
-owning port or `let`, and IR diagnostics are anchored. What is missing is
-per-*assignment* spans reaching the generated C, and a small runtime formatter
-shared by every failure path.
+The spans came from work already in place: `Signal` carries the declaration
+span of its owning port or `let`, and IR diagnostics are anchored. One shared
+`span_location` helper renders them, so every failure path names its source the
+same way.
 
-## Tier B — DWARF through `#line`
+## Tier B — DWARF through `#line` — implemented
 
-Emit `#line N "<absolute path>.siox"` into the generated C and pass `-g` to
-Clang. Clang then produces DWARF that points at `.siox` files directly, which
-gives, with no debugger-specific work:
+`sioxc --test -g` attributes every testbench statement to its `.siox` line with
+a `#line` directive and compiles `-g -O0`. Clang produces DWARF naming the
+`.siox` file, so with no debugger-specific work:
 
-- `break fifo.siox:34`
-- stepping through siox source in gdb, lldb, or any DWARF-aware IDE
-- source shown at a crash or breakpoint
+```
+$ gdb -ex "break fifo.siox:92" -ex run ./fifo.bin
+Breakpoint 1, test_r1 () at fifo.siox:92
+92          assert!(level == 3, "three entries are held");
+```
 
-Two things need deciding.
+`list` shows surrounding siox source, `next` steps siox statements, and a
+backtrace names siox files and lines. The default build is unchanged: no debug
+sections, still `-O2`.
+
+Two things were decided.
 
 **Many-to-one mapping.** One C statement can come from several siox lines —
 an inlined function body, an unrolled generate loop, a substituted parameter.
@@ -111,9 +114,11 @@ an inlined function body, an unrolled generate loop, a substituted parameter.
 Inlining means a stepping session may appear to jump between files; that is
 normal for inlined code and preferable to no mapping.
 
-**Optimization.** Stepping degrades under `-O`. This suggests a debug build
-mode — `-g -O0` — selected explicitly, with the optimized path unchanged, since
-simulation throughput matters for long runs.
+**Optimization.** Stepping degrades under `-O`, so a debug build is `-O0`,
+selected explicitly by `-g`/`--debug` and left off by default because
+simulation throughput matters for long runs. The build also passes
+`-grecord-command-line`, which puts the flags in DWARF so a binary can be asked
+how it was built rather than taken on trust.
 
 ## Tier C — values by siox name
 
@@ -145,8 +150,10 @@ helper can read the same table instead of duplicating it.
 
 ## Suggested order
 
-Tier A first: it is self-contained, needs no toolchain flags, and fixes the
-complaint that motivates all of this — a failure that does not say where it
-happened. Tier B is a small emitter change with a large capability gain. Tier C
-is worth doing only after B, and its hardware half is a helper script rather
-than a compiler feature.
+Tier A and Tier B are in. What remains, in the order worth doing it:
+
+1. Tier A's remaining failure classes — oscillation and file I/O — plus caret
+   rendering, and moving the range anchor from the declaration to the
+   assignment.
+2. Tier C, whose hardware half is a helper script rather than a compiler
+   feature.

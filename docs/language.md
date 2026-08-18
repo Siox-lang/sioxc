@@ -2819,7 +2819,7 @@ Export simulation traces for debugging.
 
 The original `siox sim ...` sketch is obsolete: `sioxc` has no `sim` command.
 The generated native test executable owns the waveform options and writes the
-files directly: `./tests --vcd trace.vcd` or `./tests --fst trace.fst`.
+files directly: `./tests -o trace.fst` or `./tests -o trace.vcd`.
 
 ### Endgoal
 

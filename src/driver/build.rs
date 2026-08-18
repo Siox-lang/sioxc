@@ -49,6 +49,9 @@ pub fn build(
     hier: &Hierarchy,
     design: &Design,
     sources: &siox::diag::SourceMap,
+    // Attribute the generated C back to its `.siox` lines and compile it
+    // unoptimized with debug info, so a debugger can follow the source.
+    debug: bool,
     out: &Path,
 ) -> Result<(), String> {
     let issues = design.validate();
@@ -706,6 +709,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         let ctx = Ctx {
             design,
             sources,
+            debug,
             map: &map,
             enums: &enums,
             families: &families,
@@ -767,13 +771,27 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     if std::env::var("SIOX_DEBUG_C").is_ok() {
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);
     }
-    let status = Command::new("clang")
+    // A debug build keeps the `#line` mapping usable: optimization reorders and
+    // merges the code those directives point at, so stepping degrades exactly
+    // where it is most wanted. The default stays optimized, since simulation
+    // throughput matters for long runs.
+    let optimization = if debug { "-O0" } else { "-O2" };
+    let mut clang = Command::new("clang");
+    clang
         .arg(&csrc)
         .arg(&obj)
         .arg(tmp.join("fstapi.c"))
         .arg(tmp.join("fastlz.c"))
         .arg(tmp.join("lz4.c"))
-        .args(["-O2", "-lm", "-lz", "-o"])
+        .args([optimization, "-lm", "-lz"]);
+    if debug {
+        // `-grecord-command-line` puts the flags in DWARF, so a binary can be
+        // asked how it was built rather than taken on trust -- which is also
+        // what lets the unoptimized choice be verified.
+        clang.args(["-g", "-grecord-command-line"]);
+    }
+    let status = clang
+        .arg("-o")
         .arg(out)
         .status()
         .map_err(|e| format!("failed to run clang: {e}"))?;
@@ -1178,27 +1196,39 @@ fn gen_fst_runtime(
 }
 
 /// The libtest-style `main` that runs each `test_<name>` and reports results.
-/// Accepts an optional name-substring filter plus `--vcd <path>` and/or
-/// `--fst <path>` waveform outputs.
+///
+/// Accepts an optional name-substring filter plus `-o`/`--output <path>` for a
+/// waveform. The format follows the path's extension: `.vcd` writes VCD and
+/// anything else writes FST, so FST is the default without having to name it.
+/// Passing `-o` twice with one of each extension writes both.
 fn gen_main(names: &[(String, String)]) -> String {
     let mut m = String::new();
+    // The waveform format is chosen by the path's extension rather than by a
+    // separate flag: `.vcd` writes VCD, anything else writes FST. FST is the
+    // richer format and the better default, and `-o wave.vcd` is a shorter way
+    // to ask for the other one than remembering two flags.
+    m.push_str(
+        "static signed sx_is_vcd(const char *path) {\n\
+         \x20   const char *dot = 0;\n\
+         \x20   for (const char *p = path; *p; p++) if (*p == '.') dot = p;\n\
+         \x20   if (!dot) return 0;\n\
+         \x20   return (dot[1] == 'v' || dot[1] == 'V') && (dot[2] == 'c' || dot[2] == 'C')\n\
+         \x20       && (dot[3] == 'd' || dot[3] == 'D') && !dot[4];\n\
+         }\n",
+    );
     m.push_str("signed main(signed argc, char **argv) {\n");
     m.push_str(
         "    const char *filter = 0, *vcd_path = 0, *fst_path = 0;\n\
          \x20   for (signed i = 1; i < argc; i++) {\n\
-         \x20       if (!strcmp(argv[i], \"--vcd\")) {\n\
-         \x20           if (++i == argc) { fprintf(stderr, \"--vcd requires a path\\n\"); return 2; }\n\
-         \x20           vcd_path = argv[i];\n\
-         \x20       } else if (!strncmp(argv[i], \"--vcd=\", 6)) vcd_path = argv[i] + 6;\n\
-         \x20       else if (!strcmp(argv[i], \"--fst\")) {\n\
-         \x20           if (++i == argc) { fprintf(stderr, \"--fst requires a path\\n\"); return 2; }\n\
-         \x20           fst_path = argv[i];\n\
-         \x20       } else if (!strncmp(argv[i], \"--fst=\", 6)) fst_path = argv[i] + 6;\n\
-         \x20       else if (!filter) filter = argv[i];\n\
+         \x20       const char *path = 0;\n\
+         \x20       if (!strcmp(argv[i], \"-o\") || !strcmp(argv[i], \"--output\")) {\n\
+         \x20           if (++i == argc) { fprintf(stderr, \"%s requires a path\\n\", argv[i - 1]); return 2; }\n\
+         \x20           path = argv[i];\n\
+         \x20       } else if (!strncmp(argv[i], \"--output=\", 9)) path = argv[i] + 9;\n\
+         \x20       else if (!strncmp(argv[i], \"-o\", 2) && argv[i][2]) path = argv[i] + 2;\n\
+         \x20       else if (!filter) { filter = argv[i]; continue; }\n\
          \x20       else { fprintf(stderr, \"unexpected argument: %s\\n\", argv[i]); return 2; }\n\
-         \x20   }\n\
-         \x20   if (vcd_path && fst_path && !strcmp(vcd_path, fst_path)) {\n\
-         \x20       fprintf(stderr, \"VCD and FST outputs must use different paths\\n\"); return 2;\n\
+         \x20       if (sx_is_vcd(path)) vcd_path = path; else fst_path = path;\n\
          \x20   }\n\
          \x20   if (vcd_path && !sx_vcd_open(vcd_path)) return 2;\n\
          \x20   if (fst_path && !sx_fst_open(fst_path)) { sx_vcd_close(); return 2; }\n",
@@ -1238,6 +1268,9 @@ struct Ctx<'a> {
     /// Source text, so a runtime failure can name the line that caused it
     /// rather than only what went wrong.
     sources: &'a siox::diag::SourceMap,
+    /// Emit `#line` directives so a debugger sees `.siox` rather than the
+    /// intermediate C.
+    debug: bool,
     map: &'a HashMap<String, SignalId>,
     enums: &'a HashMap<String, HashMap<String, u64>>,
     families: &'a std::collections::HashSet<String>,
@@ -4456,6 +4489,15 @@ impl Ctx<'_> {
 
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
+        // Attribute what follows to the statement that produced it, so a
+        // debugger stops on `.siox` rather than on the generated C. Everything
+        // emitted until the next directive belongs to this statement, which is
+        // exactly the granularity stepping wants.
+        if self.debug {
+            if let Some(line) = self.line_directive(ast::stmt_span(s)) {
+                b.push_str(&line);
+            }
+        }
         match s {
             ast::Stmt::Assign {
                 target,
@@ -5010,6 +5052,23 @@ impl Ctx<'_> {
             }
         }
         Ok((cfmt, cargs))
+    }
+
+    /// A `#line` directive pointing at a span's source line.
+    ///
+    /// Clang turns these into DWARF that names the `.siox` file, so
+    /// `break counter.siox:34`, stepping, and source display all work without
+    /// the debugger knowing anything about siox. `None` when the span has no
+    /// file, or when the path cannot be written as a C string.
+    fn line_directive(&self, span: siox::diag::Span) -> Option<String> {
+        let file = self.sources.get(span.file)?;
+        let (line, _) = self.sources.line_col(span.file, span.start);
+        // An absolute path lets a debugger find the source from any working
+        // directory, which is how a generated binary is usually run.
+        let path = std::fs::canonicalize(&file.name)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| file.name.clone());
+        Some(format!("#line {line} \"{}\"\n", c_escape(&path)))
     }
 
     /// `file:line:col` for a source span, as a C string literal assignment.

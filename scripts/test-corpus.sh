@@ -44,7 +44,7 @@ for source in "$corpus"/*.siox; do
         command=("${sioxc[@]}" "$source" --std "$root/std" --emit metadata)
     fi
     if "${command[@]}" \
-        && { [[ ! -e "$binary" ]] || "$binary" --vcd "$vcd"; } \
+        && { [[ ! -e "$binary" ]] || "$binary" -o "$vcd"; } \
         && { [[ ! -e "$binary" ]] || python3 "$root/scripts/check-vcd.py" "$vcd" --profile "$name"; } \
         && roundtrip "$source" "$name"
     then

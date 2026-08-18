@@ -655,6 +655,23 @@ pub enum GenericArg {
 /// type-directed `And` contract for both scalar boolean and per-bit `and`;
 /// `==`/`!=` stay built-in (or derive from `Ord`).
 /// The source span of any expression node.
+/// The source span of a statement.
+///
+/// Used to attribute generated code back to the line that produced it, so a
+/// debugger and a runtime failure both name the source rather than the
+/// intermediate the compiler emitted.
+pub fn stmt_span(s: &Stmt) -> Span {
+    match s {
+        Stmt::Let(l) => l.span,
+        Stmt::Assign { span, .. } => *span,
+        Stmt::If(i) => i.span,
+        Stmt::Match(m) => m.span,
+        Stmt::For { span, .. } => *span,
+        Stmt::Expr(e) => expr_span(e),
+        Stmt::Return { span, .. } => *span,
+    }
+}
+
 pub fn expr_span(e: &Expr) -> Span {
     match e {
         Expr::Int { span, .. }

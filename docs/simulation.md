@@ -85,12 +85,15 @@ library does not retain a trace or waveform writer.
 
 ```bash
 sioxc --test counter_test.siox -o counter-tests
-./counter-tests --vcd counter.vcd
-./counter-tests --fst counter.fst
-./counter-tests --vcd counter.vcd --fst counter.fst
+./counter-tests -o counter.fst
+./counter-tests -o counter.vcd
+./counter-tests -o counter.vcd -o counter.fst
 ```
 
-`--vcd=<path>` and `--fst=<path>` are equivalent spellings. A test-name filter
+The path's extension selects the format: `.vcd` (any case) writes portable
+text and anything else writes compressed FST, so FST is the default without
+naming it. `--output=<path>` and `-o<path>` are equivalent spellings. A
+test-name filter
 may appear before or after either option. VCD and FST can be emitted together
 to different paths and receive the exact same scheduler-side change points.
 When several tests run, their traces are placed consecutively on one monotonic

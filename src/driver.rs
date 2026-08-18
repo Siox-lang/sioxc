@@ -27,6 +27,11 @@ struct Cli {
     /// Compile `#[test]` entities into a native test executable.
     #[arg(long)]
     test: bool,
+    /// Build a test executable a debugger can follow: the generated code is
+    /// attributed back to its `.siox` lines and left unoptimized, so
+    /// `break file.siox:34` and stepping work.
+    #[arg(short = 'g', long)]
+    debug: bool,
     /// Compiler artifact to emit.
     #[arg(long, value_enum, default_value_t = CliEmit::Object)]
     emit: CliEmit,
@@ -71,7 +76,8 @@ pub fn run() -> ExitCode {
             CliEmit::LlvmIr => Emit::LlvmIr,
         }
     };
-    let mut request = CompileRequest::new(SourceInput::path(&cli.file), emit.clone());
+    let mut request =
+        CompileRequest::new(SourceInput::path(&cli.file), emit.clone()).with_debug(cli.debug);
     if let Some(output) = cli.out {
         request = request.with_output(output);
     }

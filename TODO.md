@@ -217,7 +217,8 @@ Current baseline:
   bits. Composite right-hand sides are staged before writes; aggregate reads
   fall back to the last declared element at each out-of-range dimension, and
   out-of-range writes are no-ops.
-- ✅ Generated test executables accept `--vcd <path>` and `--fst <path>` and
+- ✅ Generated test executables accept `-o <path>`, choosing the format from
+  the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,
   Logic x/z, real values, and symbolic enums directly from the same native
   scheduler change points. FST uses the embedded, pinned libfst writer and is

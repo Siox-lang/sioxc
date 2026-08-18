@@ -11,7 +11,24 @@ assertions, and VCD export — predates this changelog. See
 
 ## [Unreleased]
 
+### Added
+- **A test executable can be built for a debugger.** `sioxc --test -g`
+  attributes the generated code back to its `.siox` lines and compiles it
+  unoptimized with debug info, so `break counter.siox:34`, stepping, source
+  display, and backtraces all work in gdb, lldb, or any DWARF-aware IDE. The
+  default build is unchanged and still optimized. The debug build also records
+  its compile flags in DWARF, so a binary can be asked how it was built.
+- **A runtime failure names its source.** A failing `assert!` and a range
+  violation now print `--> file:line:col` beside the message: the assertion
+  points at its own statement, the range violation at the ranged signal's
+  declaration. No debugger is needed, which is what a CI log wants.
+
 ### Changed
+- **Waveform output is now `-o <path>` on the generated test executable**,
+  replacing `--vcd`/`--fst`. The format follows the path's extension: `.vcd`
+  (any case) writes VCD and anything else writes FST, so FST is the default
+  without naming it. `--output=<path>` and `-o<path>` are equivalent, and
+  passing `-o` twice with one of each extension still writes both.
 - **Structs now retain namespace identity through execution and privacy checks.**
   Separate modules may declare equal struct leaves without merging their
   fields, widths, layouts, defaults, constructors, constants, inherent

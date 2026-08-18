@@ -448,7 +448,7 @@ fn native_equal_test_entity_leaves_keep_distinct_roots_and_symbols() {
     );
 
     let run = Command::new(&output)
-        .args(["--vcd", vcd.to_str().unwrap()])
+        .args(["-o", vcd.to_str().unwrap()])
         .output()
         .unwrap();
     let report =
@@ -511,9 +511,9 @@ fn test_no_run_builds_a_runnable_binary() {
 
     // The binary runs the testbench and exits 0 on PASS.
     let run = Command::new(&out)
-        .arg("--vcd")
+        .arg("-o")
         .arg(&vcd)
-        .arg("--fst")
+        .arg("-o")
         .arg(&fst)
         .status()
         .unwrap();
@@ -552,32 +552,62 @@ fn test_no_run_builds_a_runnable_binary() {
     let fst_equals = out.with_extension("equals.fst");
     let equals = Command::new(&out)
         .arg("examples::counter_test::CounterTest")
-        .arg(format!("--fst={}", fst_equals.display()))
+        .arg(format!("--output={}", fst_equals.display()))
         .output()
         .unwrap();
     assert!(
         equals.status.success(),
-        "--fst=<path> or filtering failed:\n{}{}",
+        "--output=<path> or filtering failed:\n{}{}",
         String::from_utf8_lossy(&equals.stdout),
         String::from_utf8_lossy(&equals.stderr)
     );
     assert!(decode_fst(&fst_equals).contains("#105000000"));
 
-    let missing = Command::new(&out).arg("--fst").output().unwrap();
+    let missing = Command::new(&out).arg("-o").output().unwrap();
     assert_eq!(missing.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("--fst requires a path"));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("-o requires a path"));
 
-    let same_path = out.with_extension("same.wave");
-    let same = Command::new(&out)
-        .arg("--vcd")
-        .arg(&same_path)
-        .arg("--fst")
-        .arg(&same_path)
+    // One run writes both formats; the path's extension decides which is
+    // which, so there is no flag to get the wrong way round. A `.vcd` suffix
+    // selects VCD and anything else selects FST, which makes FST the default
+    // without naming it.
+    let both_vcd = out.with_extension("both.vcd");
+    let both_fst = out.with_extension("both.fst");
+    let both = Command::new(&out)
+        .arg("-o")
+        .arg(&both_vcd)
+        .arg("-o")
+        .arg(&both_fst)
         .output()
         .unwrap();
-    assert_eq!(same.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&same.stderr)
-        .contains("VCD and FST outputs must use different paths"));
+    assert!(
+        both.status.success(),
+        "writing both waveforms in one run failed:\n{}{}",
+        String::from_utf8_lossy(&both.stdout),
+        String::from_utf8_lossy(&both.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&both_vcd)
+            .expect("a .vcd path did not produce VCD")
+            .starts_with("$version"),
+        "a `.vcd` path must hold VCD text"
+    );
+    assert!(
+        decode_fst(&both_fst).contains("#105000000"),
+        "a non-.vcd path must hold FST"
+    );
+
+    // No extension at all still writes FST rather than failing.
+    let bare = out.with_extension("bare");
+    let plain = Command::new(&out).arg("-o").arg(&bare).output().unwrap();
+    assert!(plain.status.success(), "a bare -o path failed");
+    assert!(
+        decode_fst(&bare).contains("#105000000"),
+        "an extension-less path defaults to FST"
+    );
+    let _ = std::fs::remove_file(&both_vcd);
+    let _ = std::fs::remove_file(&both_fst);
+    let _ = std::fs::remove_file(&bare);
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&vcd);
     let _ = std::fs::remove_file(&fst);
@@ -802,9 +832,9 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         .unwrap();
     assert!(status.success(), "VCD value fixture failed to compile");
     let run = Command::new(&out)
-        .arg("--vcd")
+        .arg("-o")
         .arg(&vcd)
-        .arg("--fst")
+        .arg("-o")
         .arg(&fst)
         .status()
         .unwrap();
@@ -903,9 +933,9 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
         String::from_utf8_lossy(&build.stderr)
     );
     let run = Command::new(&out)
-        .arg("--vcd")
+        .arg("-o")
         .arg(&vcd)
-        .arg("--fst")
+        .arg("-o")
         .arg(&fst)
         .output()
         .unwrap();
@@ -972,7 +1002,7 @@ fn nominal_time_and_real_frequency_run_natively() {
         .unwrap();
     assert!(status.success(), "time/frequency fixture failed to compile");
     let run = Command::new(&out)
-        .args(["--vcd", vcd.to_str().unwrap()])
+        .args(["-o", vcd.to_str().unwrap()])
         .status()
         .unwrap();
     assert!(run.success(), "time/frequency fixture failed to run");
