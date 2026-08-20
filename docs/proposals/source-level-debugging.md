@@ -69,11 +69,31 @@ test m::T ... FAILED
    |         ^
 ```
 
-A driver the lowering synthesized rather than read from source — a port
-connection, a metavalue companion — has no line of its own, latches site 0, and
-keeps the declaration. Both engines number the table by calling the same
-function, so the index the hardware latches and the string the harness prints
-cannot drift apart.
+Anything reaching a ranged signal through no assignment in the design latches
+site 0 and keeps the declaration. In practice that is a value written from
+outside — the testbench pushing a computed value into a port — which is why the
+fallback survives:
+
+```
+test m::T ... FAILED
+    `T.e.a` left its range 0..10 (it was 12)
+  --> extwrite.siox:2:12
+   |
+ 2 | entity E { a: integer<0..10> in, y: integer<0..10> out }
+   |            ^
+```
+
+Drivers the lowering synthesizes (a port connection, a metavalue companion)
+also carry no span, since the passes that create them run after all body
+lowering has returned. Those rarely surface: a connected signal is downstream
+of the one the entity drives itself, which is checked first and does have a
+line.
+
+A generic body lowers once per instance, so one statement produces a driver for
+each; the table folds them to one site, because the line is a source fact and
+the *signal path* is what says which instance went wrong. Both engines number
+the table by calling the same function, so the index the hardware latches and
+the string the harness prints cannot drift apart.
 
 Anchoring the report also surfaced a defect it did not cause. The check ran once
 per driver, including drivers a later unconditional one replaces, so a value the

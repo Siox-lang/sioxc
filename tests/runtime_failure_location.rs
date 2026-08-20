@@ -188,6 +188,82 @@ fn a_combinational_range_violation_names_its_assignment() {
 }
 
 #[test]
+fn one_statement_shared_by_instances_names_the_instance_that_broke_it() {
+    // A generic entity's body lowers once per instance, so the same statement
+    // produces a driver for each. The table folds them to one site -- the line
+    // is a source fact, not a per-instance one -- and it is the *signal path*
+    // that says which instance went wrong. This is the dedup case the unit test
+    // asserts on the table, seen from the outside.
+    //
+    // `K = 1` stays inside 0..100; `K = 3` does not.
+    let src = "module m;\n\
+               using std::logic::{Bit};\n\
+               entity Cell<K: integer> { clk: Bit in, y: integer<0..100> out }\n\
+               impl<K: integer> Cell<K> {\n\
+               \x20   let v: integer<0..100> = 0;\n\
+               \x20   if clk.rising() {\n\
+               \x20       v = v + K * 30;\n\
+               \x20   }\n\
+               \x20   y = v;\n\
+               }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let clk: Bit = '0';\n\
+               \x20   let y0: integer<0..100>;\n\
+               \x20   let y1: integer<0..100>;\n\
+               \x20   let c0: Cell<K = 1> = { .clk = clk, .y = y0 };\n\
+               \x20   let c1: Cell<K = 3> = { .clk = clk, .y = y1 };\n\
+               \x20   clk = not clk after 5ns;\n\
+               \x20   for i in 0..4 { await clk.rising(); }\n\
+               }\n";
+    let out = run("shared", src);
+    assert!(
+        out.contains("`T.c1.v` left its range 0..100"),
+        "the instance that broke it should be named by its path, got:\n{out}"
+    );
+    assert!(
+        out.contains("shared.siox:7:9"),
+        "and the shared statement by its one line, got:\n{out}"
+    );
+}
+
+#[test]
+fn an_external_write_falls_back_to_the_declaration() {
+    // The fallback, end to end. A value pushed in from the testbench reaches
+    // the port through no assignment in the design, so there is no line to
+    // blame and site 0 is latched -- and the declaration, which the anchor
+    // otherwise replaces, is what remains to say. Here that is the port itself,
+    // on line 2 at column 12.
+    //
+    // Reaching this needs a *runtime* value: a constant out of range is
+    // rejected by the frontend long before the design runs.
+    let src = "module m;\n\
+               entity E { a: integer<0..10> in, y: integer<0..10> out }\n\
+               impl E {\n\
+               \x20   y = a;\n\
+               }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let a: integer<0..10> = 0;\n\
+               \x20   let y: integer<0..10>;\n\
+               \x20   let e: E = { .a = a, .y = y };\n\
+               \x20   for i in 0..3 {\n\
+               \x20       a = a + 4;\n\
+               \x20       await 1ns;\n\
+               \x20   }\n\
+               }\n";
+    let out = run("extwrite", src);
+    assert!(
+        out.contains("left its range 0..10 (it was 12)"),
+        "an external write out of range should still be caught, got:\n{out}"
+    );
+    assert!(
+        out.contains("extwrite.siox:2:12"),
+        "with no assignment to blame it should name the declaration, got:\n{out}"
+    );
+}
+
+#[test]
 fn an_overwritten_assignment_is_not_range_checked() {
     // A driver that a later unconditional one replaces never reaches the
     // signal, so its value cannot break the signal's domain. The range check
