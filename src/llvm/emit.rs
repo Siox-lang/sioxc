@@ -122,6 +122,10 @@ struct Codegen<'ctx, 'd> {
     builder: Builder<'ctx>,
     design: &'d Design,
     n: u32,
+    /// Assignment span -> the site index the runtime latches (one-based, so a
+    /// zero in the global still means "no site"). Built once from
+    /// `Design::range_sites`, which the harness walks too.
+    range_sites: HashMap<siox::diag::Span, u32>,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
@@ -230,6 +234,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             builder: ctx.create_builder(),
             design,
             n: design.signals.len() as u32,
+            range_sites: design
+                .range_sites()
+                .into_iter()
+                .enumerate()
+                .map(|(i, span)| (span, i as u32 + 1))
+                .collect(),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -285,6 +295,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i64_type(), None, "range_value");
         range_value.set_initializer(&self.ctx.i64_type().const_zero());
         range_value.set_linkage(Linkage::Internal);
+        // Which assignment stored it, as an index into `Design::range_sites`
+        // plus one. Latched with the id under the same predicate, so the three
+        // always describe one event: the signal, the value, and the line.
+        let range_site = self
+            .module
+            .add_global(self.ctx.i32_type(), None, "range_site");
+        range_site.set_initializer(&self.ctx.i32_type().const_zero());
+        range_site.set_linkage(Linkage::Internal);
         self.state_globals();
         self.accessors();
         self.settle();
@@ -301,6 +319,21 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.module
             .get_global("range_value")
             .expect("range value global")
+            .as_pointer_value()
+    }
+
+    /// The latched site index for an assignment's span, or `0` for drivers the
+    /// lowering synthesized and for spans on signals with no declared range.
+    fn site(&self, span: Option<siox::diag::Span>) -> u32 {
+        span.and_then(|span| self.range_sites.get(&span))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn range_site_ptr(&self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("range_site")
+            .expect("range site global")
             .as_pointer_value()
     }
 
@@ -549,6 +582,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder
             .build_store(self.range_value_ptr(), self.ctx.i64_type().const_zero())
             .unwrap();
+        self.builder
+            .build_store(self.range_site_ptr(), i32.const_zero())
+            .unwrap();
         for id in 0..self.n {
             let signal = &self.design.signals[id as usize];
             let init = self
@@ -588,6 +624,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .into_int_value();
         self.builder.build_return(Some(&kept)).unwrap();
 
+        // i32 sx_range_site(void): zero, or one plus the index in
+        // `Design::range_sites` of the assignment that stored the bad value.
+        let f = self
+            .module
+            .add_function("sx_range_site", i32.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
+        let site = self
+            .builder
+            .build_load(i32, self.range_site_ptr(), "rsite")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&site)).unwrap();
+
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
             "sx_set",
@@ -609,7 +659,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_switch(sig, done, &cases).unwrap();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            self.record_range_value(SignalId(id as u32), val, None);
+            self.record_range_value(SignalId(id as u32), val, None, 0);
             // Mask to the signal's width, exactly like the interpreter's
             // `set` — outside writers (runner, native harness, FFI) may hand
             // in a value wider than the signal.
@@ -710,7 +760,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .builder
                 .build_int_compare(IntPredicate::EQ, word, i32.const_zero(), "word0")
                 .unwrap();
-            self.record_range_value(SignalId(id as u32), val, Some(first_word));
+            self.record_range_value(SignalId(id as u32), val, Some(first_word), 0);
             let cty = self.value_ty(w);
             // shift = word * ABI_WORD_BITS, in the compute type.
             let shift = self
@@ -865,12 +915,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
         for eb in &self.design.event_blocks {
             let fired = self.as_i1(&eb.condition);
-            for u in &eb.updates {
+            for (i, u) in eb.updates.iter().enumerate() {
+                // Same reasoning as `emit_comb`: an update that a later
+                // unconditional one in this block overwrites never reaches the
+                // signal. Both are guarded by this block's `fired`, so wherever
+                // the earlier could store, the later stores over it -- and
+                // range-checking a value the signal never held reported a
+                // failure the design does not have. Only within a block: two
+                // blocks have different conditions, and neither subsumes the
+                // other.
+                let overwritten = eb.updates[i + 1..]
+                    .iter()
+                    .any(|later| later.target == u.target && later.cond.is_none());
+                if overwritten {
+                    continue;
+                }
                 let guard = match &u.cond {
                     Some(c) => self.builder.build_and(fired, self.as_i1(c), "g").unwrap(),
                     None => fired,
                 };
-                let val = self.emit_target_value(u.target, &u.expr, Some(guard));
+                let val = self.emit_target_value(u.target, &u.expr, Some(guard), self.site(u.span));
                 staged.push((u.target, guard, val));
             }
         }
@@ -941,6 +1005,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         target: SignalId,
         expr: &Expr,
         active: Option<IntValue<'ctx>>,
+        site: u32,
     ) -> IntValue<'ctx> {
         let signal = &self.design.signals[target.0 as usize];
         let width = self.signal_width(target);
@@ -953,7 +1018,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         };
         let check_width = self.expr_width(expr).max(width).max(64);
         let value = self.emit_signed_operand_at(expr, check_width);
-        self.record_range_value(target, value, active);
+        self.record_range_value(target, value, active, site);
         self.fit(value, self.value_ty(width))
     }
 
@@ -962,6 +1027,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         target: SignalId,
         value: IntValue<'ctx>,
         active: Option<IntValue<'ctx>>,
+        site: u32,
     ) {
         let Some((lo, hi)) = self.design.signals[target.0 as usize].range else {
             return;
@@ -1003,6 +1069,23 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .into_int_value();
         self.builder
             .build_store(self.range_error_ptr(), next)
+            .unwrap();
+        // The site rides the same `record` predicate as the id above, so a
+        // later violation cannot repoint an already-reported failure at its
+        // own line.
+        let site = i32.const_int(u64::from(site), false);
+        let previous_site = self
+            .builder
+            .build_load(i32, self.range_site_ptr(), "rsprev")
+            .unwrap()
+            .into_int_value();
+        let next_site = self
+            .builder
+            .build_select(record, site, previous_site, "rsnext")
+            .unwrap()
+            .into_int_value();
+        self.builder
+            .build_store(self.range_site_ptr(), next_site)
             .unwrap();
         // Keep the value that actually broke the domain, before `fit` narrows
         // it to the destination width.
@@ -1113,10 +1196,21 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let (target, drivers) = p;
         let prev = self.load("cur", *target);
         let mut val = prev;
-        for &di in drivers {
+        // Everything before the last unconditional driver is selected away by
+        // it (spec 3.14: later drivers override within a context), so the
+        // value is the same whether or not they are emitted -- but emitting
+        // them also ran their range check, and a value that never reached the
+        // signal was reported as having left its domain. `t = a + 5; t = 2;`
+        // failed with "`t` left its range 0..10 (it was 13)" while `t` held 2,
+        // pointing at the line W-P014 had just called dead.
+        let live = drivers
+            .iter()
+            .rposition(|&di| self.design.drivers[di].cond.is_none())
+            .unwrap_or(0);
+        for &di in &drivers[live..] {
             let d = &self.design.drivers[di];
             let cond = d.cond.as_ref().map(|condition| self.as_i1(condition));
-            let e = self.emit_target_value(*target, &d.expr, cond);
+            let e = self.emit_target_value(*target, &d.expr, cond, self.site(d.span));
             val = match cond {
                 Some(cond) => self
                     .builder
@@ -1677,6 +1771,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.y", 8)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(2),
                 cond: None,
@@ -1718,6 +1813,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 512)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(0),
                 cond: None,
@@ -1785,6 +1881,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.y", 192)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(0),
                 cond: None,
@@ -1820,6 +1917,7 @@ mod tests {
             ],
             drivers: vec![
                 Driver {
+                    span: None,
                     ctx: 0,
                     target: SignalId(2),
                     cond: None,
@@ -1830,6 +1928,7 @@ mod tests {
                     },
                 },
                 Driver {
+                    span: None,
                     ctx: 0,
                     target: SignalId(5),
                     cond: None,
@@ -1866,6 +1965,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.value", 16), sig("E.amount", 16), sig("E.y", 16)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(2),
                 cond: None,
@@ -1902,6 +2002,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.r", 64), sig("E.lt", 1)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(1),
                 cond: None,
@@ -1945,18 +2046,21 @@ mod tests {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.c", 8), sig("E.y", 8)],
             drivers: vec![
                 Driver {
+                    span: None,
                     target: SignalId(3),
                     cond: None,
                     expr: Expr::Current(SignalId(2)),
                     ctx: 0,
                 }, // y=c
                 Driver {
+                    span: None,
                     target: SignalId(2),
                     cond: None,
                     expr: Expr::Current(SignalId(1)),
                     ctx: 0,
                 }, // c=b
                 Driver {
+                    span: None,
                     target: SignalId(1),
                     cond: None,
                     expr: Expr::Current(SignalId(0)),

@@ -573,6 +573,12 @@ pub struct Driver {
     /// Within a context later drivers override; a signal driven from several
     /// contexts folds via its type's `Resolve` impl (or errors without one).
     pub ctx: u32,
+    /// The assignment this driver came from, when one statement produced it.
+    /// `None` for drivers the lowering synthesized rather than read (a port
+    /// connection, a metavalue companion), which have no line to point at.
+    /// A dynamic range failure anchors its report here in preference to the
+    /// signal's declaration.
+    pub span: Option<crate::diag::Span>,
 }
 
 /// An event-controlled block: on `condition`, queue `next(target) = expr`
@@ -595,6 +601,8 @@ pub struct NextUpdate {
     pub target: SignalId,
     pub cond: Option<Expr>,
     pub expr: Expr,
+    /// The assignment this update came from — see [`Driver::span`].
+    pub span: Option<crate::diag::Span>,
 }
 
 /// The std type a bare, otherwise-untyped logic literal defaults to. Its
@@ -1034,6 +1042,11 @@ struct Lowering<'a> {
     /// same entity body may be lowered for several instances; diagnostics are
     /// source facts and must not repeat per instance.
     reported_generated_dead_assignments: HashSet<(crate::diag::Span, crate::diag::Span, String)>,
+    /// The assignment statement being lowered, so the drivers and next-state
+    /// updates it produces can carry it without every construction site
+    /// having to be handed one. `None` outside statement lowering — the
+    /// drivers synthesized there answer to no source line.
+    cur_span: Option<crate::diag::Span>,
     /// The active driver context (bumped per impl block / connection).
     cur_ctx: u32,
     /// Driver context -> the source site that created it (a port connection's
@@ -1247,6 +1260,7 @@ impl<'a> Lowering<'a> {
             bad_operators: std::cell::RefCell::new(Vec::new()),
             bad_conversions: std::cell::RefCell::new(Vec::new()),
             instance_arrays: HashSet::new(),
+            cur_span: None,
             reported_oob: HashSet::new(),
             reported_generated_dead_assignments: HashSet::new(),
             local_numeric: HashMap::new(),
@@ -1648,6 +1662,7 @@ impl<'a> Lowering<'a> {
                 let ctx = self.next_ctx();
                 for &i in &ins {
                     self.out.drivers.push(Driver {
+                        span: self.cur_span,
                         target: i,
                         cond: None,
                         expr: Expr::Current(o),
@@ -2447,6 +2462,7 @@ impl<'a> Lowering<'a> {
                         if let Some(target) = self.target_signal(value) {
                             let ctx = self.next_ctx_at(ast::expr_span(value));
                             self.out.drivers.push(Driver {
+                                span: self.cur_span,
                                 target,
                                 cond: None,
                                 expr: Expr::Current(child_id),
@@ -2457,6 +2473,7 @@ impl<'a> Lowering<'a> {
                         let expr = self.lower_expr(value);
                         let ctx = self.next_ctx_at(ast::expr_span(value));
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: child_id,
                             cond: None,
                             expr,
@@ -2485,6 +2502,7 @@ impl<'a> Lowering<'a> {
                             let expr = self.lower_expr(field_value);
                             let ctx = self.next_ctx_at(ast::expr_span(field_value));
                             self.out.drivers.push(Driver {
+                                span: self.cur_span,
                                 target: *child_id,
                                 cond: None,
                                 expr,
@@ -2516,6 +2534,7 @@ impl<'a> Lowering<'a> {
                             let expr = self.lower_expr(elem);
                             let ctx = self.next_ctx_at(ast::expr_span(elem));
                             self.out.drivers.push(Driver {
+                                span: self.cur_span,
                                 target: *child_id,
                                 cond: None,
                                 expr,
@@ -2546,6 +2565,7 @@ impl<'a> Lowering<'a> {
                     let ctx = self.next_ctx_at(ast::expr_span(value));
                     if dir == Some(ast::Direction::Out) {
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: parent_id,
                             cond: None,
                             expr: Expr::Current(child_id),
@@ -2553,6 +2573,7 @@ impl<'a> Lowering<'a> {
                         });
                     } else {
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: child_id,
                             cond: None,
                             expr: Expr::Current(parent_id),
@@ -3576,6 +3597,7 @@ impl<'a> Lowering<'a> {
         for (t, expr, meta) in replaced {
             self.out.drivers.retain(|d| d.target.0 != t);
             self.out.drivers.push(Driver {
+                span: self.cur_span,
                 target: SignalId(t),
                 cond: None,
                 expr,
@@ -3585,6 +3607,7 @@ impl<'a> Lowering<'a> {
                 let cid = self.driven_companion(SignalId(t));
                 self.out.drivers.retain(|d| d.target.0 != cid);
                 self.out.drivers.push(Driver {
+                    span: self.cur_span,
                     target: SignalId(cid),
                     cond: None,
                     expr: meta,
@@ -4478,6 +4501,7 @@ impl<'a> Lowering<'a> {
         for (target, cond, expr, ctx) in driven {
             let cid = self.driven_companion(target);
             self.out.drivers.push(Driver {
+                span: self.cur_span,
                 target: SignalId(cid),
                 cond,
                 expr,
@@ -6037,7 +6061,18 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Lower one statement, with `cur_span` pinned to it for the duration so
+    /// the drivers it pushes carry their source line. It is restored on the
+    /// way out because `if`/`match` recurse through here: without that, a
+    /// driver pushed by the outer statement after an inner one returned would
+    /// be attributed to the inner statement's line.
     fn lower_stmt(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        let outer = self.cur_span.replace(ast::stmt_span(stmt));
+        self.lower_stmt_at(stmt, cond);
+        self.cur_span = outer;
+    }
+
+    fn lower_stmt_at(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
         //
@@ -6157,6 +6192,7 @@ impl<'a> Lowering<'a> {
                             if Self::has_metavalue(&discs) {
                                 let cid = self.driven_companion(tid);
                                 self.out.drivers.push(Driver {
+                                    span: self.cur_span,
                                     target: SignalId(cid),
                                     cond: cond.clone(),
                                     expr: if discs.len() == 1 {
@@ -6224,6 +6260,7 @@ impl<'a> Lowering<'a> {
                                     if let (Some((_, expression)), Some(&target)) = (source, target)
                                     {
                                         self.out.drivers.push(Driver {
+                                            span: self.cur_span,
                                             target,
                                             cond: cond.clone(),
                                             expr: self.coerce_to_target(target, expression.clone()),
@@ -6270,6 +6307,7 @@ impl<'a> Lowering<'a> {
                                             .and_then(|en| self.char_disc(*c, &en))
                                             .unwrap_or(*c as u32 as u64);
                                         self.out.drivers.push(Driver {
+                                            span: self.cur_span,
                                             target: sig,
                                             cond: cond.clone(),
                                             expr: Expr::Const(val),
@@ -6297,6 +6335,7 @@ impl<'a> Lowering<'a> {
                                     if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
                                         let expr = self.coerce_to_target(sig, self.lower_expr(e));
                                         self.out.drivers.push(Driver {
+                                            span: self.cur_span,
                                             target: sig,
                                             cond: cond.clone(),
                                             expr,
@@ -6314,6 +6353,7 @@ impl<'a> Lowering<'a> {
                                             let sv = self.locals.get(&format!("{vpath}[{vi}]"));
                                             if let (Some(&t), Some(&sv)) = (t, sv) {
                                                 self.out.drivers.push(Driver {
+                                                    span: self.cur_span,
                                                     target: t,
                                                     cond: cond.clone(),
                                                     expr: Expr::Current(sv),
@@ -6354,6 +6394,7 @@ impl<'a> Lowering<'a> {
                                 if !lowered.is_empty() {
                                     for (target, expr) in lowered {
                                         self.out.drivers.push(Driver {
+                                            span: self.cur_span,
                                             target,
                                             cond: cond.clone(),
                                             expr,
@@ -6393,6 +6434,7 @@ impl<'a> Lowering<'a> {
                             self.struct_assign_leaves(target, value).unwrap_or_default()
                         {
                             self.out.drivers.push(Driver {
+                                span: self.cur_span,
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
@@ -6405,6 +6447,7 @@ impl<'a> Lowering<'a> {
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
                     self.out.drivers.push(Driver {
+                        span: self.cur_span,
                         target,
                         cond,
                         expr,
@@ -6413,6 +6456,7 @@ impl<'a> Lowering<'a> {
                 } else if let Some(ups) = self.dynamic_write(target, value, &cond, false, &[]) {
                     for u in ups {
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: u.target,
                             cond: u.cond,
                             expr: u.expr,
@@ -6422,6 +6466,7 @@ impl<'a> Lowering<'a> {
                 } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
                     for u in ups {
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: u.target,
                             cond: u.cond,
                             expr: u.expr,
@@ -6450,6 +6495,7 @@ impl<'a> Lowering<'a> {
                             self.out.drivers[i].expr = merged;
                         }
                         _ => self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: sig,
                             cond,
                             expr: merged,
@@ -6481,6 +6527,7 @@ impl<'a> Lowering<'a> {
                             lo: off - w,
                         };
                         self.out.drivers.push(Driver {
+                            span: self.cur_span,
                             target: t,
                             cond: cond.clone(),
                             expr,
@@ -6799,8 +6846,12 @@ impl<'a> Lowering<'a> {
         cond: Option<Expr>,
         out: &mut Vec<NextUpdate>,
     ) {
+        let outer = self.cur_span;
         self.block_scopes.borrow_mut().push(HashMap::new());
         for s in &block.stmts {
+            // Same reason as `lower_stmt`: pin the statement being lowered so
+            // its next-state updates can name their source line.
+            self.cur_span = Some(ast::stmt_span(s));
             // The clocked path unrolls its own `for` (below) rather than going
             // through `lower_stmt`, so the same check has to be made here —
             // under the same unconditioned-only rule, which on this path is
@@ -6834,6 +6885,7 @@ impl<'a> Lowering<'a> {
                         // A registered bus: one next-state update per leaf.
                         for (sig, expr) in leaves {
                             out.push(NextUpdate {
+                                span: self.cur_span,
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
@@ -6843,6 +6895,7 @@ impl<'a> Lowering<'a> {
                         // A registered array: one next-state update per element.
                         for (sig, expr) in leaves {
                             out.push(NextUpdate {
+                                span: self.cur_span,
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
@@ -6851,6 +6904,7 @@ impl<'a> Lowering<'a> {
                     } else if let Some(target) = self.target_signal(target) {
                         let expr = self.lower_expr(value);
                         out.push(NextUpdate {
+                            span: self.cur_span,
                             target,
                             cond: cond.clone(),
                             expr,
@@ -6869,6 +6923,7 @@ impl<'a> Lowering<'a> {
                         let base = self.slice_write_base(sig, true, out);
                         let expr = self.merge_slice(base, hi, lo, v, width);
                         out.push(NextUpdate {
+                            span: self.cur_span,
                             target: sig,
                             cond: cond.clone(),
                             expr,
@@ -6898,6 +6953,7 @@ impl<'a> Lowering<'a> {
                                 lo: off - w,
                             };
                             out.push(NextUpdate {
+                                span: self.cur_span,
                                 target: t,
                                 cond: cond.clone(),
                                 expr,
@@ -7010,6 +7066,7 @@ impl<'a> Lowering<'a> {
             }
         }
         self.block_scopes.borrow_mut().pop();
+        self.cur_span = outer;
     }
 
     fn lower_event_else(
@@ -7138,6 +7195,7 @@ impl<'a> Lowering<'a> {
         for target in targets {
             match target {
                 DynamicWriteTarget::Whole { signal, hit } => updates.push(NextUpdate {
+                    span: self.cur_span,
                     target: signal,
                     cond: write_guard(cond, hit),
                     expr: self.coerce_to_target(signal, expr.clone()),
@@ -7150,6 +7208,7 @@ impl<'a> Lowering<'a> {
                     let width = self.out.signals[signal.0 as usize].width;
                     let base = self.slice_write_base(signal, sequential, pending);
                     updates.push(NextUpdate {
+                        span: self.cur_span,
                         target: signal,
                         cond: write_guard(cond, hit.clone()),
                         expr: self.merge_slice(base, position, position, expr.clone(), width),
@@ -7177,6 +7236,7 @@ impl<'a> Lowering<'a> {
                             els: Box::new(Expr::Const(0)),
                         };
                         updates.push(NextUpdate {
+                            span: self.cur_span,
                             target: companion,
                             cond: Some(and(cond.clone(), hit)),
                             expr: self.merge_slice(
@@ -7244,6 +7304,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 };
                 updates.push(NextUpdate {
+                    span: self.cur_span,
                     target: signal,
                     cond: Some(and(cond.clone(), hit.clone())),
                     expr: self.coerce_to_target(signal, expr.clone()),
@@ -7271,6 +7332,7 @@ impl<'a> Lowering<'a> {
             .and_then(|driver| self.lower_meta_ir(&driver.expr, width))
             .unwrap_or(Expr::Const(0));
         self.out.drivers.push(Driver {
+            span: self.cur_span,
             target: companion,
             cond: None,
             expr: meta,
@@ -11195,6 +11257,42 @@ pub enum ProcessKind {
 }
 
 impl Design {
+    /// The assignment sites a dynamic range failure (spec 3.26) can be blamed
+    /// on: the distinct source spans of the drivers and next-state updates
+    /// that write a ranged signal, in lowering order.
+    ///
+    /// The runtime latches an index into this table plus one, so `0` keeps its
+    /// meaning of "no site" and the report falls back to the signal's
+    /// declaration. Both engines call *this* to build the table rather than
+    /// walking the design themselves: the index is the whole contract between
+    /// the value the hardware latches and the string the harness prints, and
+    /// two walks that disagree by one entry would misattribute every failure
+    /// after the first divergence.
+    pub fn range_sites(&self) -> Vec<crate::diag::Span> {
+        let mut sites = Vec::new();
+        let mut seen = HashSet::new();
+        let mut add = |target: SignalId, span: Option<crate::diag::Span>| {
+            let ranged = self
+                .signals
+                .get(target.0 as usize)
+                .is_some_and(|s| s.range.is_some());
+            if let (true, Some(span)) = (ranged, span) {
+                if seen.insert(span) {
+                    sites.push(span);
+                }
+            }
+        };
+        for driver in &self.drivers {
+            add(driver.target, driver.span);
+        }
+        for block in &self.event_blocks {
+            for update in &block.updates {
+                add(update.target, update.span);
+            }
+        }
+        sites
+    }
+
     /// Semantic width presented to backends for one flattened signal. When a
     /// persisted source layout exists it is the authority; hand-built IR used
     /// by backend tests remains valid without layout metadata.
@@ -14882,6 +14980,83 @@ mod tests {
         assert!(design.validate().is_empty(), "{:#?}", design.validate());
     }
 
+    /// What reaches the site table, and in what order.
+    ///
+    /// The two engines cannot disagree on the numbering -- they call this one
+    /// function -- so reordering or duplicating entries would still line up.
+    /// What is asserted here is the *contents*: a span only earns an index if
+    /// some assignment can be blamed through it, which is what leaves index 0
+    /// free to mean "fall back to the declaration". The order is pinned as the
+    /// documented shape rather than as a defence against drift.
+    #[test]
+    fn range_sites_indexes_only_blamable_assignments() {
+        let span = |start: u32| crate::diag::Span::new(crate::diag::FileId(0), start..start + 1);
+        let signal = |range: Option<(i64, i64)>| Signal {
+            path: "s".into(),
+            declaration_span: span(0),
+            width: 8,
+            real: false,
+            integer: true,
+            char: false,
+            range,
+            init: vec![0],
+            enum_type: None,
+        };
+        let driver = |target: u32, at: Option<crate::diag::Span>| Driver {
+            target: SignalId(target),
+            cond: None,
+            expr: Expr::Const(0),
+            ctx: 0,
+            span: at,
+        };
+        let design = Design {
+            // 0 is ranged, 1 is not.
+            signals: vec![signal(Some((0, 10))), signal(None)],
+            drivers: vec![
+                driver(0, Some(span(100))),
+                // A driver the lowering synthesized -- a port connection has no
+                // line of its own, and must not take an index.
+                driver(0, None),
+                // An unranged target can never fail this way.
+                driver(1, Some(span(200))),
+                // The same statement lowered twice (one body, two instances)
+                // is one site, or the two engines would number differently.
+                driver(0, Some(span(100))),
+                driver(0, Some(span(300))),
+            ],
+            event_blocks: vec![EventBlock {
+                condition: Expr::Const(1),
+                updates: vec![
+                    NextUpdate {
+                        target: SignalId(0),
+                        cond: None,
+                        expr: Expr::Const(0),
+                        span: Some(span(400)),
+                    },
+                    NextUpdate {
+                        target: SignalId(1),
+                        cond: None,
+                        expr: Expr::Const(0),
+                        span: Some(span(500)),
+                    },
+                ],
+                ctx: 0,
+            }],
+            ..Design::default()
+        };
+        let sites = design.range_sites();
+        assert_eq!(
+            sites,
+            vec![span(100), span(300), span(400)],
+            "drivers first in lowering order, then event updates"
+        );
+        // Drivers with no span, and spans on unranged targets, are absent --
+        // which is what leaves site 0 free to mean "fall back to the
+        // declaration".
+        assert!(!sites.contains(&span(200)));
+        assert!(!sites.contains(&span(500)));
+    }
+
     #[test]
     fn validate_accepts_good_and_flags_bad_ir() {
         // A lowered counter is well-formed.
@@ -14902,6 +15077,7 @@ mod tests {
         let bad = Design {
             signals: vec![sig(0)], // width 0 -> flagged
             drivers: vec![Driver {
+                span: None,
                 target: SignalId(9), // out of range
                 cond: Some(Expr::Unknown),
                 expr: Expr::Slice {

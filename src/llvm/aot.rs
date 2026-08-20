@@ -104,6 +104,7 @@ mod tests {
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.y", 8)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(2),
                 cond: None,
@@ -187,6 +188,7 @@ signed main(void) {
         let design = Design {
             signals: vec![sig("E.a", 512), sig("E.b", 512), sig("E.y", 512)],
             drivers: vec![Driver {
+                span: None,
                 ctx: 0,
                 target: SignalId(2),
                 cond: None,

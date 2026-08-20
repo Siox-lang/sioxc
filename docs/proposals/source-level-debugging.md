@@ -46,10 +46,42 @@ test fail::FailTest ... FAILED
    |     ^
 ```
 
-An assertion points at its own statement, a range violation at the ranged
-signal's declaration, and a failing `read<T>` at the `let` that asked for the
+An assertion points at its own statement, a range violation at the assignment
+that left the domain, and a failing `read<T>` at the `let` that asked for the
 file. The location is per-failure and cleared at the start of each test, so a
 passing run reports none.
+
+The range case is the one that needed machinery. The check is a post-settle
+test on the signal's value, so nothing about the value says which of the
+statements writing that signal produced it. `Driver` and `NextUpdate` therefore
+carry the assignment they were lowered from, `Design::range_sites` numbers the
+distinct spans that can be blamed, and the engine latches that index next to
+the error code and the offending value — all three under one predicate, so a
+later violation cannot repoint an already-reported failure at its own line. The
+harness renders the table at compile time and prefers it over the declaration:
+
+```
+test m::T ... FAILED
+    `T.e.level` left its range 0..100 (it was 104)
+  --> ramp.siox:8:9
+   |
+ 8 |         level = step + 30;
+   |         ^
+```
+
+A driver the lowering synthesized rather than read from source — a port
+connection, a metavalue companion — has no line of its own, latches site 0, and
+keeps the declaration. Both engines number the table by calling the same
+function, so the index the hardware latches and the string the harness prints
+cannot drift apart.
+
+Anchoring the report also surfaced a defect it did not cause. The check ran once
+per driver, including drivers a later unconditional one replaces, so a value the
+signal never held could fail a test — `t = a + 5; t = 2;` reported `t` leaving
+its domain while `t` held 2. That was survivable while the message pointed at
+the declaration; pointing at the line `W-P014` had just called dead made it
+plainly wrong. Both engines now skip writes a later unconditional write to the
+same target subsumes, on the combinational path and within a clocked block.
 
 ## Goals
 
@@ -176,13 +208,6 @@ ordinary build instead of printing something misleading.
 
 ## What remains
 
-One refinement, recorded above and not blocking use: anchoring a range
-violation at the *assignment* rather than the signal's declaration.
-
-It is left deliberately. The check is a post-settle test on the signal's value,
-so no single driver is known where it fires; carrying one would mean a span on
-every `Driver` and `NextUpdate` — thirty-five construction sites in `ir` — and
-a site id latched beside the error code. That is a wide change to the core IR
-structs for a message that already names the signal, its domain, the offending
-value, and where the domain was declared. Worth doing when those structs are
-being touched for another reason, not on its own.
+Nothing in this proposal. All three tiers are implemented, including the range
+anchor that was once deferred here as too wide a change to the core IR structs
+to make on its own.

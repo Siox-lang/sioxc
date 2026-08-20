@@ -235,6 +235,7 @@ pub fn build(
     prog.push_str("extern void sx_set_word(uint32_t, uint32_t, uint64_t);\n");
     prog.push_str("extern uint64_t sx_read_word(uint32_t, uint32_t);\n");
     prog.push_str("extern uint32_t sx_range_error(void);\n");
+    prog.push_str("extern uint32_t sx_range_site(void);\n");
     prog.push_str("extern int64_t sx_range_value(void);\n");
     prog.push_str("static signed sx_check_ranges(void);\n");
     let abi_words = design
@@ -591,6 +592,21 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         .filter_map(|(i, s)| s.range.map(|_| (i as u32, s)))
         .collect();
     if !ranged.is_empty() {
+        // Where each assignment that can break a domain lives, indexed the way
+        // the engine latches it. The strings are rendered here, at compile
+        // time: the executable holds no source and must stay right if the tree
+        // moves on.
+        let sites = design.range_sites();
+        if !sites.is_empty() {
+            prog.push_str("static const char *const sx_range_sites[] = {\n");
+            for span in &sites {
+                match span_location(sources, *span) {
+                    Some(at) => prog.push_str(&format!("    \"{}\",\n", c_escape(&at))),
+                    None => prog.push_str("    0,\n"),
+                }
+            }
+            prog.push_str("};\n");
+        }
         prog.push_str(
             "static signed sx_check_ranges(void) {\n    int64_t v;\n    uint32_t e;\n\
              \x20   if (g_range_failed) return 1;\n\
@@ -642,8 +658,20 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         }
         prog.push_str(
             "    default: g_msg = \"a ranged signal left its domain\"; break;\n\
-             \x20   } g_range_failed = 1; return 1; }\n",
+             \x20   }\n",
         );
+        // The declaration is the fallback, not the answer: it says which
+        // domain was left, while the reader wants the line that left it. A
+        // synthesized driver (a port connection) latches site 0 and keeps the
+        // declaration.
+        if !sites.is_empty() {
+            prog.push_str(&format!(
+                "    {{ uint32_t s = sx_range_site();\n\
+                 \x20     if (s && s <= {n}u && sx_range_sites[s - 1]) g_loc = sx_range_sites[s - 1]; }}\n",
+                n = sites.len(),
+            ));
+        }
+        prog.push_str("    g_range_failed = 1; return 1; }\n");
         for (id, sig) in &ranged {
             let (lo, hi) = sig.range.unwrap();
             prog.push_str(&format!(

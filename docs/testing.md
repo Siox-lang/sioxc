@@ -112,7 +112,11 @@ test result: ok. 1 passed; 0 failed
   build is unaffected and stays optimized.
 - **Failures name their source.** A failing `assert!`, a ranged signal leaving
   its domain, and a failing `read<T>` all print `--> file:line:col` beside the
-  message, so a CI log points at the line without a debugger.
+  message, followed by the source line and a caret, so a CI log points at the
+  line without a debugger. An assertion names its own statement; a range
+  violation names the *assignment* that left the domain, not the declaration
+  that set it, falling back to the declaration only for a signal written by a
+  driver the compiler synthesized (a port connection).
 - **Waveforms:** `-o trace.fst` writes compressed FST; `-o trace.vcd` writes
   portable text. The path's extension picks the format, so FST is the default
   without naming it. `--output=<path>` and `-o<path>` are equivalent, and

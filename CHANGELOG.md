@@ -18,6 +18,17 @@ assertions, and VCD export — predates this changelog. See
   display, and backtraces all work in gdb, lldb, or any DWARF-aware IDE. The
   default build is unchanged and still optimized. The debug build also records
   its compile flags in DWARF, so a binary can be asked how it was built.
+- **An overwritten assignment is no longer range-checked.** A driver that a
+  later unconditional one replaces never reaches the signal, but the check ran
+  per driver, so `t = a + 5; t = 2;` failed a test with "`t` left its range
+  0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
+  called that line dead. Both the combinational and clocked paths now skip
+  writes a later unconditional write to the same target subsumes.
+- **A range violation names the assignment that broke the domain.** It used to
+  point at the ranged signal's declaration, which says which domain was left
+  but not what left it. `Driver`/`NextUpdate` now carry the assignment they
+  were lowered from, and the engine latches that site beside the error code, so
+  the report points at the line to change.
 - **Diagnostics show the offending line with a caret.** Both compile
   diagnostics and runtime failures now render the source line and a caret under
   the column, through one shared `SourceMap::snippet` so the two cannot drift.
