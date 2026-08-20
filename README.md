@@ -18,10 +18,15 @@ Build `sioxc` from source. The compiler needs:
   harness is C and its embedded FST writer links zlib.
 
 ```bash
-git clone https://github.com/Siox-lang/sioxc
+git clone --recursive https://github.com/Siox-lang/sioxc
 cd sioxc
 cargo build --release
 ```
+
+The FST waveform writer is vendored by reference as a git submodule, so
+`--recursive` matters. An existing clone catches up with
+`git submodule update --init --recursive`; the build stops with that command
+named if it is missing. See [`third_party/`](third_party/README.md).
 
 That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
 call it by path. siox compiles designs through LLVM, which is the permanent

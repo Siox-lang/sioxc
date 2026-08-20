@@ -30,6 +30,13 @@ assertions, and VCD export — predates this changelog. See
   one.
 
 ### Changed
+- **`third_party/libfst` is a git submodule** rather than a vendored copy, so
+  the pinned upstream revision is recorded by git instead of by a README, and
+  updating it is a pointer change. Clone with `--recursive`, or run
+  `git submodule update --init --recursive`; the build stops with that command
+  named if the submodule is missing. Note that because the sources are embedded
+  at compile time and `cargo package` excludes submodule contents, publishing to
+  a registry would need this reverted or replaced.
 - **Waveform output is now `-o <path>` on the generated test executable**,
   replacing `--vcd`/`--fst`. The format follows the path's extension: `.vcd`
   (any case) writes VCD and anything else writes FST, so FST is the default

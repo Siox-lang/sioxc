@@ -23,12 +23,12 @@ type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, O
 type StructFieldNames = Vec<String>;
 type RawStructFieldNames = HashMap<String, (Option<String>, StructFieldNames)>;
 
-const LIBFST_API_C: &str = include_str!("../../third_party/libfst/fstapi.c");
-const LIBFST_API_H: &str = include_str!("../../third_party/libfst/fstapi.h");
-const LIBFST_FASTLZ_C: &str = include_str!("../../third_party/libfst/fastlz.c");
-const LIBFST_FASTLZ_H: &str = include_str!("../../third_party/libfst/fastlz.h");
-const LIBFST_LZ4_C: &str = include_str!("../../third_party/libfst/lz4.c");
-const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/lz4.h");
+const LIBFST_API_C: &str = include_str!("../../third_party/libfst/src/fstapi.c");
+const LIBFST_API_H: &str = include_str!("../../third_party/libfst/src/fstapi.h");
+const LIBFST_FASTLZ_C: &str = include_str!("../../third_party/libfst/src/fastlz.c");
+const LIBFST_FASTLZ_H: &str = include_str!("../../third_party/libfst/src/fastlz.h");
+const LIBFST_LZ4_C: &str = include_str!("../../third_party/libfst/src/lz4.c");
+const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/src/lz4.h");
 
 /// `file:line:col` for a source span, or `None` when the span has no file.
 ///
