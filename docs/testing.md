@@ -104,6 +104,15 @@ test result: ok. 1 passed; 0 failed
 
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
+- **Debugging:** `sioxc --test -g` builds an executable a debugger follows in
+  siox terms — `break counter.siox:34`, stepping, source display and backtraces
+  all name `.siox` files and lines. Sourcing `scripts/siox-gdb.py` adds
+  `siox print <path>` and `siox list [prefix]`, which read hardware signals by
+  their siox name (a trailing path resolves without the root). The ordinary
+  build is unaffected and stays optimized.
+- **Failures name their source.** A failing `assert!`, a ranged signal leaving
+  its domain, and a failing `read<T>` all print `--> file:line:col` beside the
+  message, so a CI log points at the line without a debugger.
 - **Waveforms:** `-o trace.fst` writes compressed FST; `-o trace.vcd` writes
   portable text. The path's extension picks the format, so FST is the default
   without naming it. `--output=<path>` and `-o<path>` are equivalent, and

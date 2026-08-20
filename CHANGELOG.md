@@ -18,10 +18,16 @@ assertions, and VCD export — predates this changelog. See
   display, and backtraces all work in gdb, lldb, or any DWARF-aware IDE. The
   default build is unchanged and still optimized. The debug build also records
   its compile flags in DWARF, so a binary can be asked how it was built.
-- **A runtime failure names its source.** A failing `assert!` and a range
-  violation now print `--> file:line:col` beside the message: the assertion
-  points at its own statement, the range violation at the ranged signal's
-  declaration. No debugger is needed, which is what a CI log wants.
+- **A runtime failure names its source.** A failing `assert!`, a range
+  violation, and a failing `read<T>` now print `--> file:line:col` beside the
+  message: the assertion points at its own statement, the range violation at
+  the ranged signal's declaration, the read at the `let` that asked for the
+  file. No debugger is needed, which is what a CI log wants.
+- **Hardware signals are readable by siox name in a debugger.** A debug build
+  carries every signal's hierarchical path, and `scripts/siox-gdb.py` adds
+  `siox print <path>` and `siox list [prefix]` to gdb. A signal is not a
+  variable — it lives behind an accessor — so DWARF alone could not describe
+  one.
 
 ### Changed
 - **Waveform output is now `-o <path>` on the generated test executable**,

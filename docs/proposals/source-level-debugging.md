@@ -1,14 +1,14 @@
 # Source-level debugging
 
-Status: **partly implemented**. Waveform output, Tier A's two main failure
-classes, and all of Tier B are in the compiler. What remains is listed under
-each tier.
+Status: **implemented**. All three tiers are in the compiler. Two items in the
+original plan were re-scoped after checking what they actually described; both
+are recorded below rather than quietly dropped.
 
 A `#[test]` build is a native executable compiled through Clang, so a debugger
-already attaches to it. What is missing is the mapping back to `.siox`: a
-failure says *what* went wrong but not *where*, and a debugger sees generated C
-rather than source. This proposes closing that gap in three tiers, the first of
-which needs no debugger at all.
+always attached to it. What was missing was the mapping back to `.siox`: a
+failure said *what* went wrong but not *where*, and a debugger saw generated C
+rather than source. This record describes closing that gap in three tiers, the
+first of which needs no debugger at all.
 
 ## Current state
 
@@ -33,8 +33,8 @@ backtraced but the binary carried no DWARF at all, so a stop showed
 `sx_settle ()` and nothing about the source. With `-g` it now names `.siox`
 files and lines; see Tier B.
 
-**Runtime failures — implemented for assertions and range violations.** Both
-now render a location beside the message:
+**Runtime failures — implemented.** Assertions, range violations and file
+reads all render a location beside the message:
 
 ```
 test fail::FailTest ... FAILED
@@ -42,9 +42,10 @@ test fail::FailTest ... FAILED
   --> fail.siox:18:5
 ```
 
-An assertion points at its own statement; a range violation points at the
-ranged signal's declaration. The location is per-failure and cleared at the
-start of each test, so a passing run reports none.
+An assertion points at its own statement, a range violation at the ranged
+signal's declaration, and a failing `read<T>` at the `let` that asked for the
+file. The location is per-failure and cleared at the start of each test, so a
+passing run reports none.
 
 ## Goals
 
@@ -58,14 +59,13 @@ The highest value per unit of work, and it needs no debugger, no DWARF, and no
 change to how anything is compiled. It also pays off in CI logs, where no
 debugger is present.
 
-Every runtime failure should render like a compile diagnostic:
+Every runtime failure renders the way a compile diagnostic does — the message,
+then the location:
 
 ```
 test fail::FailTest ... FAILED
+    the counter should be 99 here
   --> fail.siox:18:5
-   |
-18 |     assert!(y == 99, "the counter should be 99 here");
-   |     ^ the counter should be 99 here
 ```
 
 Cases:
@@ -73,16 +73,27 @@ Cases:
 - **Assertions — done.** The `assert!` span reaches the generated C and prints
   on failure.
 - **Range violations — done, at the declaration.** The signal's
-  `declaration_span` is used. Pointing instead at the *assignment* that wrote
-  the out-of-range value would be better still, and needs per-assignment spans
-  carried into the emitted check.
-- **Oscillation / delta cap — not done.** Should name the drivers that kept
-  changing.
-- **Runtime file I/O — not done.** Already reports a source-relative path;
-  its rendering is not yet aligned with the above.
-- **Caret rendering — not done.** The location is `file:line:col`; showing the
-  source line with a caret underneath needs the line text embedded at emit
-  time.
+  `declaration_span` is used, so the message names the signal, its domain, the
+  offending value, and where the domain was declared. Pointing at the
+  *assignment* instead would be better, but the check is a post-settle test on
+  the signal's value and no single driver is known at that point; it would need
+  a per-driver site id latched beside the error code. Left as a refinement.
+- **Runtime file I/O — done.** A failing `read<T>` names the `let` that asked
+  for the file.
+- **Oscillation — already covered, re-scoped.** The plan said a runtime
+  oscillation failure should name its drivers. There is no such failure: a
+  non-converging combinational loop is diagnosed at *compile* time as `W-P010`,
+  which already carries a source location, and the delta cap then bounds the
+  loop silently. Nothing to add at runtime. Worth noting separately that such a
+  design still *passes* its test with a meaningless value, because W-P010 is a
+  warning; whether it should be an error is a language question, not a
+  debugging one.
+- **Caret rendering — re-scoped, deliberately not done.** The plan showed a
+  source line with a caret under it. The compiler's own renderer does not do
+  that either — it prints the message and then `--> file:line:col`. Adding
+  carets to runtime failures alone would make them diverge from compile
+  diagnostics. If carets are wanted they should be added to `Compilation::render`
+  first, and the runtime format should follow it.
 
 The spans came from work already in place: `Signal` carries the declaration
 span of its owning port or `let`, and IR diagnostics are anchored. One shared
@@ -120,24 +131,32 @@ simulation throughput matters for long runs. The build also passes
 `-grecord-command-line`, which puts the flags in DWARF so a binary can be asked
 how it was built rather than taken on trust.
 
-## Tier C — values by siox name
+## Tier C — values by siox name — implemented
 
-Two different problems.
+**Testbench locals** come free with Tier B: they are C locals, and DWARF names
+them.
 
-**Testbench locals** are already C locals with injective mangled names, so
-DWARF from Tier B gives them for free once the names are recoverable.
-
-**Hardware signals** are not variables. They live in a flat array indexed by
-`SignalId`, so DWARF has nothing natural to describe. Rather than synthesize
-DWARF for them, the cheaper route is a shipped gdb/lldb helper script offering
+**Hardware signals** are not variables — they live behind the `sx_read`
+accessor, indexed by `SignalId` — so DWARF has nothing natural to describe. A
+debug build therefore carries `sx_signal_names`, every signal's hierarchical
+path in `SignalId` order, and `scripts/siox-gdb.py` turns that into commands:
 
 ```
-siox print FifoTest.f.used
+(gdb) source scripts/siox-gdb.py
+(gdb) siox print f.used
+FifoTest.f.used = 3
+(gdb) siox list f.mem
+FifoTest.f.mem[0] = 11
+FifoTest.f.mem[1] = 22
+FifoTest.f.mem[2] = 33
+FifoTest.f.mem[3] = 0
 ```
 
-which resolves the path to an index and reads the array. The name-to-index
-table already exists in the binary — the VCD/FST writer builds one — so the
-helper can read the same table instead of duplicating it.
+An exact path wins; otherwise a unique trailing match resolves, so the root
+need not be typed. The value comes from calling `sx_read` in the running
+program rather than from decoding memory, so it needs no knowledge of the
+storage layout. The table is debug-only, and the commands say so against an
+ordinary build instead of printing something misleading.
 
 ## Non-goals
 
@@ -148,12 +167,12 @@ helper can read the same table instead of duplicating it.
   FST output today. Importing a siox design for synthesis is the elaborated RTL
   artifact, which is Phase 3.
 
-## Suggested order
+## What remains
 
-Tier A and Tier B are in. What remains, in the order worth doing it:
+Nothing in the three tiers. Two refinements are recorded above and neither
+blocks use:
 
-1. Tier A's remaining failure classes — oscillation and file I/O — plus caret
-   rendering, and moving the range anchor from the declaration to the
-   assignment.
-2. Tier C, whose hardware half is a helper script rather than a compiler
-   feature.
+1. Anchoring a range violation at the assignment rather than the declaration,
+   which needs a per-driver site id latched beside the error code.
+2. Caret rendering, which should be added to the compiler's diagnostic renderer
+   first so runtime and compile output stay identical.

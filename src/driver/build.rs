@@ -757,6 +757,25 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     let obj = tmp.join("design.o");
     let csrc = tmp.join("sim.c");
     siox::llvm::emit_object(design, &obj)?;
+    // A debug build carries the signal-name table, so a debugger can resolve a
+    // siox path to the index `sx_read` takes. Hardware signals are not
+    // variables -- they live behind that accessor -- so there is nothing for
+    // DWARF to describe and a small table is what the gdb helper needs.
+    if debug {
+        let mut table = String::from(
+            "\n/* siox: hierarchical signal names, indexed by SignalId. */\n\
+             const char *const sx_signal_names[] = {\n",
+        );
+        for signal in &design.signals {
+            table.push_str(&format!("    \"{}\",\n", c_escape(&signal.path)));
+        }
+        table.push_str("};\n");
+        table.push_str(&format!(
+            "const unsigned sx_signal_count = {};\n",
+            design.signals.len()
+        ));
+        prog.push_str(&table);
+    }
     std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
     for (name, contents) in [
         ("fstapi.c", LIBFST_API_C),
@@ -2095,6 +2114,14 @@ impl Ctx<'_> {
     /// still folded by IR as ROM images — this path is only generated for a
     /// `#[test]` body.
     fn try_declare_fs_read_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
+        // A runtime file failure names the `let` that asked for the file, the
+        // way an assertion names its own statement. Set once here rather than
+        // at each of the failure paths below, which are all this declaration's.
+        let at = self
+            .set_location(l.span)
+            .map(|s| format!(" {s}"))
+            .unwrap_or_default();
+        let at = at.as_str();
         let Some(value) = &l.value else {
             return Ok(false);
         };
@@ -2118,11 +2145,11 @@ impl Ctx<'_> {
                 self.declare_typed_storage(name, ty, b)?;
                 b.push_str(&format!(
                     "    sx_dyn_array _fst{serial} = sx_read_text(\"{full}\");\n\
-                         if (g_io_failed) {{ g_msg = g_io_message; return 1; }}\n\
+                         if (g_io_failed) {{ g_msg = g_io_message;{at} return 1; }}\n\
                          if (_fst{serial}.length > {}) {{\n\
                              snprintf(g_io_message, sizeof g_io_message, \
                      \"read<string>(\\\"{}\\\"): %zu characters do not fit a {}-element string\", \
-                     _fst{serial}.length); g_msg = g_io_message; return 1;\n\
+                     _fst{serial}.length); g_msg = g_io_message;{at} return 1;\n\
                          }}\n",
                     indices.len(),
                     c_escape(&path),
@@ -2147,7 +2174,7 @@ impl Ctx<'_> {
             self.dynamic_strings.borrow_mut().insert(name.clone());
             b.push_str(&format!(
                 "    sx_dyn_array {} = sx_read_text(\"{full}\");\n\
-                     if (g_io_failed) {{ g_msg = g_io_message; return 1; }}\n",
+                     if (g_io_failed) {{ g_msg = g_io_message;{at} return 1; }}\n",
                 c_local_ident(name)
             ));
             return Ok(true);
@@ -2198,7 +2225,7 @@ impl Ctx<'_> {
         b.push_str(&format!(
             "    sx_value _fsr{serial}[{storage}];\n\
                  if (!sx_read_values(\"{operation}\", \"{full}\", _fsr{serial}, {}, {bytes}, {width})) \
-             {{ g_msg = g_io_message; return 1; }}\n",
+             {{ g_msg = g_io_message;{at} return 1; }}\n",
             targets.len()
         ));
         for (position, key) in targets.into_iter().enumerate() {

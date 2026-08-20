@@ -97,6 +97,29 @@ fn a_range_violation_names_the_declaration() {
 }
 
 #[test]
+fn a_failing_file_read_names_the_declaration() {
+    // A `read<T>` that cannot open its file names the `let` that asked for it,
+    // the way an assertion names its own statement. The declaration is on
+    // line 5 at column 5.
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let text: string = read<string>(\"definitely_absent_fixture.txt\");\n\
+               \x20   await 1ns;\n\
+               }\n";
+    let out = run("ioline", src);
+    assert!(
+        out.contains("No such file") || out.contains("cannot"),
+        "the failure should still say what went wrong, got:\n{out}"
+    );
+    assert!(
+        out.contains("--> ") && out.contains("ioline.siox:5:5"),
+        "a failing read should name its declaration, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_passing_test_reports_no_location() {
     // The location is per-failure, not a banner: a run with nothing wrong must
     // not mention a source position at all.

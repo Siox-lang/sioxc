@@ -145,6 +145,64 @@ fn a_debugger_breaks_on_a_siox_line() {
 }
 
 #[test]
+fn a_debug_build_carries_the_signal_name_table() {
+    // A hardware signal is not a variable -- it lives behind `sx_read`, indexed
+    // by `SignalId` -- so printing one by its siox path needs this mapping.
+    let bin = build("names", true);
+    let bytes = std::fs::read(&bin).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("T.c.n"),
+        "the table should carry hierarchical signal paths"
+    );
+}
+
+#[test]
+fn the_default_build_carries_no_signal_table() {
+    // It is debug-only: an ordinary build should not grow the table.
+    let bin = build("notable", false);
+    let out = Command::new("nm").arg(&bin).output();
+    if let Ok(out) = out {
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("sx_signal_names"),
+            "the ordinary build must not carry the signal table"
+        );
+    }
+}
+
+#[test]
+fn the_gdb_helper_reads_a_signal_by_siox_name() {
+    let Some(gdb) = gdb() else {
+        eprintln!("gdb not installed; skipping");
+        return;
+    };
+    let helper = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/siox-gdb.py");
+    let bin = build("sig", true);
+    let out = Command::new(gdb)
+        .args([
+            "-batch",
+            "-ex",
+            &format!("source {helper}"),
+            "-ex",
+            "break sig.siox:18",
+            "-ex",
+            "run",
+            // A trailing path resolves without naming the root.
+            "-ex",
+            "siox print c.n",
+        ])
+        .arg(&bin)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    // Two edges have run, so the counter holds 2.
+    assert!(
+        text.contains("T.c.n = 2"),
+        "the helper should read the signal by its siox path, got:\n{text}"
+    );
+}
+
+#[test]
 fn a_backtrace_names_the_siox_source() {
     let Some(gdb) = gdb() else {
         eprintln!("gdb not installed; skipping");
