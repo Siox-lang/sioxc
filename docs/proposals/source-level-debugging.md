@@ -1,8 +1,9 @@
 # Source-level debugging
 
-Status: **implemented**. All three tiers are in the compiler. Two items in the
-original plan were re-scoped after checking what they actually described; both
-are recorded below rather than quietly dropped.
+Status: **implemented**. All three tiers are in the compiler. One item in the
+original plan was re-scoped after checking what it actually described, and one
+refinement is deliberately left; both are recorded below rather than quietly
+dropped.
 
 A `#[test]` build is a native executable compiled through Clang, so a debugger
 always attached to it. What was missing was the mapping back to `.siox`: a
@@ -34,12 +35,15 @@ backtraced but the binary carried no DWARF at all, so a stop showed
 files and lines; see Tier B.
 
 **Runtime failures — implemented.** Assertions, range violations and file
-reads all render a location beside the message:
+reads all render a location and a source snippet beside the message:
 
 ```
 test fail::FailTest ... FAILED
     the counter should be 99 here
   --> fail.siox:18:5
+   |
+18 |     assert!(y == 99, "the counter should be 99 here");
+   |     ^
 ```
 
 An assertion points at its own statement, a range violation at the ranged
@@ -60,12 +64,15 @@ change to how anything is compiled. It also pays off in CI logs, where no
 debugger is present.
 
 Every runtime failure renders the way a compile diagnostic does — the message,
-then the location:
+the location, then the line with a caret under the column:
 
 ```
 test fail::FailTest ... FAILED
     the counter should be 99 here
   --> fail.siox:18:5
+   |
+18 |     assert!(y == 99, "the counter should be 99 here");
+   |     ^
 ```
 
 Cases:
@@ -88,12 +95,12 @@ Cases:
   design still *passes* its test with a meaningless value, because W-P010 is a
   warning; whether it should be an error is a language question, not a
   debugging one.
-- **Caret rendering — re-scoped, deliberately not done.** The plan showed a
-  source line with a caret under it. The compiler's own renderer does not do
-  that either — it prints the message and then `--> file:line:col`. Adding
-  carets to runtime failures alone would make them diverge from compile
-  diagnostics. If carets are wanted they should be added to `Compilation::render`
-  first, and the runtime format should follow it.
+- **Caret rendering — done, in the shared renderer.** The compiler's own
+  diagnostics did not draw carets either, so adding them to runtime failures
+  alone would have made the two diverge. `SourceMap::snippet` renders the row
+  now, and both `Compilation::render_diagnostics` and the native emitter use
+  it. The runtime snippet is embedded at compile time, so the executable never
+  reads the source and stays right even if the tree moves on.
 
 The spans came from work already in place: `Signal` carries the declaration
 span of its owning port or `let`, and IR diagnostics are anchored. One shared
@@ -169,10 +176,13 @@ ordinary build instead of printing something misleading.
 
 ## What remains
 
-Nothing in the three tiers. Two refinements are recorded above and neither
-blocks use:
+One refinement, recorded above and not blocking use: anchoring a range
+violation at the *assignment* rather than the signal's declaration.
 
-1. Anchoring a range violation at the assignment rather than the declaration,
-   which needs a per-driver site id latched beside the error code.
-2. Caret rendering, which should be added to the compiler's diagnostic renderer
-   first so runtime and compile output stay identical.
+It is left deliberately. The check is a post-settle test on the signal's value,
+so no single driver is known where it fires; carrying one would mean a span on
+every `Driver` and `NextUpdate` — thirty-five construction sites in `ir` — and
+a site id latched beside the error code. That is a wide change to the core IR
+structs for a message that already names the signal, its domain, the offending
+value, and where the domain was declared. Worth doing when those structs are
+being touched for another reason, not on its own.

@@ -77,6 +77,39 @@ impl SourceMap {
     ///
     /// Columns count bytes within the line (good enough for ASCII source).
     /// Unknown files or out-of-range offsets clamp to `(1, 1)`.
+    /// The rendered source snippet for a span: the line it starts on, with a
+    /// caret under the column.
+    ///
+    /// ```text
+    ///    |
+    /// 18 |     assert!(y == 99, "the counter should be 99 here");
+    ///    |     ^
+    /// ```
+    ///
+    /// `None` when the span names no file. Shared so a runtime failure in a
+    /// generated executable and a compile diagnostic draw the same picture --
+    /// the alternative is two renderers that drift.
+    pub fn snippet(&self, file: FileId, offset: u32) -> Option<String> {
+        let source = self.get(file)?;
+        let (line, column) = self.line_col(file, offset);
+        let text = source.text.lines().nth(line as usize - 1)?;
+        // A tab occupies one column in `line_col` but renders wider, so it is
+        // carried into the caret row to keep the two aligned.
+        let indent: String = text
+            .chars()
+            .take(column as usize - 1)
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        // At least two, so the `|` column lines up with the `   = help:` rows
+        // the renderer already emits for labels and help.
+        let gutter = line.to_string().len().max(2);
+        Some(format!(
+            "{blank:>gutter$} |\n{line:>gutter$} | {text}\n{blank:>gutter$} | {indent}^",
+            blank = "",
+            gutter = gutter,
+        ))
+    }
+
     pub fn line_col(&self, file: FileId, offset: u32) -> (u32, u32) {
         let Some(src) = self.get(file) else {
             return (1, 1);
@@ -309,4 +342,56 @@ pub mod codes {
     /// take their default, which is usually intended — but silently, and a
     /// literal is also where a field is most often forgotten.
     pub const INCOMPLETE_STRUCT_LITERAL: &str = "W-P016";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The caret row must line up with the text row, including the gutter that
+    /// carries the line number. Both the compiler's diagnostics and a runtime
+    /// failure in a generated executable render through this, so a drift here
+    /// misaligns both.
+    #[test]
+    fn a_snippet_puts_the_caret_under_its_column() {
+        let mut sources = SourceMap::new();
+        let text = "module m;\nlet value = 1;\n";
+        let file = sources.add("t.siox", text);
+        // The `=` on line 2 is at column 11.
+        let offset = text.find('=').unwrap() as u32;
+        let snippet = sources.snippet(file, offset).expect("a snippet");
+        let rows: Vec<&str> = snippet.lines().collect();
+        assert_eq!(rows.len(), 3, "blank, text and caret rows: {snippet}");
+        assert!(rows[1].contains("let value = 1;"), "{snippet}");
+        let column = rows[2].find('^').expect("a caret");
+        assert_eq!(
+            rows[1].as_bytes()[column],
+            b'=',
+            "the caret should sit under the column it names:\n{snippet}"
+        );
+    }
+
+    /// A tab is one column to `line_col` but renders wider, so it has to be
+    /// carried into the caret row or every line indented with tabs misaligns.
+    #[test]
+    fn a_tab_indent_is_carried_into_the_caret_row() {
+        let mut sources = SourceMap::new();
+        let text = "\t\tvalue = 1;\n";
+        let file = sources.add("t.siox", text);
+        let offset = text.find('v').unwrap() as u32;
+        let snippet = sources.snippet(file, offset).expect("a snippet");
+        let caret = snippet.lines().nth(2).expect("a caret row");
+        let indent = &caret[caret.find('|').unwrap() + 2..];
+        assert_eq!(
+            indent, "\t\t^",
+            "tabs should be reproduced, not replaced by spaces: {caret:?}"
+        );
+    }
+
+    /// A span whose file is not in the map has nothing to show.
+    #[test]
+    fn an_unknown_file_has_no_snippet() {
+        let sources = SourceMap::new();
+        assert!(sources.snippet(FileId(7), 0).is_none());
+    }
 }

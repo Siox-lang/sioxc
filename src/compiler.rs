@@ -280,6 +280,9 @@ impl Compilation {
                     .map(|source| source.name.as_str())
                     .unwrap_or("<unknown>");
                 let _ = writeln!(out, "  --> {name}:{line}:{column}");
+                if let Some(snippet) = self.sources.snippet(span.file, span.start) {
+                    let _ = writeln!(out, "{snippet}");
+                }
             }
             for label in &diagnostic.labels {
                 let (line, column) = self.sources.line_col(label.span.file, label.span.start);

@@ -120,6 +120,39 @@ fn a_failing_file_read_names_the_declaration() {
 }
 
 #[test]
+fn a_failure_shows_the_source_line_with_a_caret() {
+    // The location is followed by the line itself and a caret under the
+    // column, which is what the compiler's own diagnostics render. The snippet
+    // is embedded at compile time, so the executable never reads the source
+    // and stays right even if the tree moves on.
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let v: unsigned[8] = 1;\n\
+               \x20   await 1ns;\n\
+               \x20   assert!(v == 99, \"v should have been 99\");\n\
+               }\n";
+    let out = run("caret", src);
+    // The line number is right-aligned to the gutter, so the row reads " 7 | ".
+    let text = out
+        .lines()
+        .find(|line| line.trim_start().starts_with("7 | "))
+        .unwrap_or_else(|| panic!("the failing line should be shown, got:\n{out}"));
+    let row = out
+        .lines()
+        .find(|line| line.contains('^'))
+        .unwrap_or_else(|| panic!("a caret row should follow it, got:\n{out}"));
+    // The caret sits under the statement's first column, not at the margin.
+    let column = row.find('^').unwrap();
+    assert_eq!(
+        text.as_bytes().get(column).copied(),
+        Some(b'a'),
+        "the caret should point at `assert`, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_passing_test_reports_no_location() {
     // The location is per-failure, not a banner: a run with nothing wrong must
     // not mention a source position at all.

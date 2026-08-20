@@ -36,7 +36,14 @@ const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/src/lz4.h");
 fn span_location(sources: &siox::diag::SourceMap, span: siox::diag::Span) -> Option<String> {
     let file = sources.get(span.file)?;
     let (line, column) = sources.line_col(span.file, span.start);
-    Some(format!("{}:{line}:{column}", file.name))
+    let head = format!("{}:{line}:{column}", file.name);
+    // The snippet is rendered here, at emit time, and embedded: the running
+    // executable never reads the source, so it stays correct even if the tree
+    // has moved on, and there is no file to find at failure time.
+    match sources.snippet(span.file, span.start) {
+        Some(snippet) => Some(format!("{head}\n{snippet}")),
+        None => Some(head),
+    }
 }
 
 /// Build a native simulator binary that runs *all* `#[test]` entities, like

@@ -18,6 +18,11 @@ assertions, and VCD export — predates this changelog. See
   display, and backtraces all work in gdb, lldb, or any DWARF-aware IDE. The
   default build is unchanged and still optimized. The debug build also records
   its compile flags in DWARF, so a binary can be asked how it was built.
+- **Diagnostics show the offending line with a caret.** Both compile
+  diagnostics and runtime failures now render the source line and a caret under
+  the column, through one shared `SourceMap::snippet` so the two cannot drift.
+  A runtime snippet is embedded at compile time, so a generated executable
+  never reads the source and stays correct if the tree moves on.
 - **A runtime failure names its source.** A failing `assert!`, a range
   violation, and a failing `read<T>` now print `--> file:line:col` beside the
   message: the assertion points at its own statement, the range violation at
