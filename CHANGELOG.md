@@ -24,6 +24,12 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A cocotb value wider than one word is no longer truncated.** The VPI layer
+  served hex and decimal from `sx_read`, which returns a single machine word, so
+  a 128-bit signal reported its low 64 bits; writing one as text saturated
+  through `strtoull`. cocotb requests neither format, so nothing exercised it —
+  found by auditing the path against the same defect in the debugger's signal
+  table.
 - **cocotb can drive a compiled design.** `sioxc --cocotb counter.siox -o
   counter.sim` builds the `#[top]` entity into a simulator that implements the
   sixteen `vpi_*` functions cocotb's GPI calls, so a Python testbench reads and

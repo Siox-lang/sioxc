@@ -82,7 +82,10 @@ static sx_obj *intern_scope(const char *path, size_t len) {
     return s;
 }
 
-static void objects_init(void) {
+/* Not static: building the handle tables is the one piece of setup a caller
+ * other than `main` needs, and the value-layer test drives this file without
+ * running the simulation loop. */
+void sx_vpi_init(void) {
     /* An upper bound: every signal can contribute at most one scope per dot. */
     unsigned max_scopes = sx_vpi_signal_count * 4 + 8;
     scopes = calloc(max_scopes, sizeof *scopes);
@@ -428,6 +431,43 @@ static uint64_t word_of(int index, unsigned w) {
     return sx_read_word((uint32_t)index, w);
 }
 
+/* Decimal for a value past one machine word. `sx_read` returns a single word,
+ * so anything that reaches for it here reports the low 64 bits of a 128-bit
+ * signal as though that were the value -- the same silent truncation the
+ * debugger's signal table had to grow widths to avoid.
+ *
+ * Long division by 10 rather than by 10^19: a 512-bit value takes ~155
+ * iterations, which is free at the rate anyone asks for a formatted value, and
+ * it avoids a second correctness argument about the last limb. `words` is
+ * consumed destructively. */
+static void wide_decimal(uint64_t *words, unsigned n, char *out, size_t cap) {
+    char rev[700];
+    size_t len = 0, i = 0;
+    unsigned k;
+    int any = 0;
+    for (k = 0; k < n; k++)
+        if (words[k]) any = 1;
+    if (!any) {
+        snprintf(out, cap, "0");
+        return;
+    }
+    while (any && len < sizeof rev) {
+        uint64_t rem = 0;
+        int j;
+        for (j = (int)n - 1; j >= 0; j--) {
+            __uint128_t cur = ((__uint128_t)rem << 64) | words[j];
+            words[j] = (uint64_t)(cur / 10);
+            rem = (uint64_t)(cur % 10);
+        }
+        rev[len++] = (char)('0' + rem);
+        any = 0;
+        for (k = 0; k < n; k++)
+            if (words[k]) any = 1;
+    }
+    while (len > 0 && i + 1 < cap) out[i++] = rev[--len];
+    out[i] = 0;
+}
+
 void vpi_get_value(vpiHandle expr, p_vpi_value v) {
     sx_obj *o = (sx_obj *)expr;
     if (o && o->otype == vpiConstant) {
@@ -453,20 +493,45 @@ void vpi_get_value(vpiHandle expr, p_vpi_value v) {
             break;
         }
         case vpiHexStrVal: {
+            unsigned words = (width + 63) / 64, top, pos = 0;
             ensure_buf(width);
-            snprintf(value_buf, value_buf_len, "%llx",
-                     (unsigned long long)sx_read((uint32_t)o->index));
+            top = words;
+            while (top > 1 && word_of(o->index, top - 1) == 0) top--;
+            pos += (unsigned)snprintf(value_buf + pos, value_buf_len - pos,
+                                      "%llx",
+                                      (unsigned long long)word_of(o->index,
+                                                                  top - 1));
+            for (unsigned k = top - 1; k > 0; k--)
+                pos += (unsigned)snprintf(
+                    value_buf + pos, value_buf_len - pos, "%016llx",
+                    (unsigned long long)word_of(o->index, k - 1));
             v->value.str = value_buf;
             break;
         }
         case vpiDecStrVal: {
+            unsigned words = (width + 63) / 64, k;
             ensure_buf(width);
-            snprintf(value_buf, value_buf_len, "%llu",
-                     (unsigned long long)sx_read((uint32_t)o->index));
+            if (words == 1) {
+                snprintf(value_buf, value_buf_len, "%llu",
+                         (unsigned long long)sx_read((uint32_t)o->index));
+            } else {
+                uint64_t *scratch = malloc(words * sizeof *scratch);
+                if (!scratch) {
+                    v->format = vpiSuppressVal;
+                    return;
+                }
+                for (k = 0; k < words; k++) scratch[k] = word_of(o->index, k);
+                wide_decimal(scratch, words, value_buf, value_buf_len);
+                free(scratch);
+            }
             v->value.str = value_buf;
             break;
         }
         default:
+            /* `vpiIntVal` is a 32-bit integer by definition (IEEE 1364), so
+             * narrowing here is the format's own contract, not a loss this
+             * layer is choosing. A caller that wants a wide value asks for a
+             * string form. */
             v->format = vpiIntVal;
             v->value.integer = (PLI_INT32)sx_read((uint32_t)o->index);
             break;
@@ -480,6 +545,30 @@ vpiHandle vpi_put_value(vpiHandle object, p_vpi_value v, p_vpi_time t,
     sx_obj *o = (sx_obj *)object;
     if (!o || o->index < 0) return NULL;
     unsigned width = sx_vpi_signals[o->index].width;
+    if ((v->format == vpiHexStrVal || v->format == vpiDecStrVal) && width > 64) {
+        /* `strtoull` saturates at one word, so a wide value written as text
+         * would clamp to 2^64-1 rather than fail visibly. Only hex is
+         * reconstructible without a bignum parser; decimal is refused rather
+         * than silently wrong. */
+        if (v->format == vpiDecStrVal) return NULL;
+        size_t len = strlen(v->value.str);
+        unsigned words = (width + 63) / 64, w;
+        for (w = 0; w < words; w++) {
+            uint64_t acc = 0;
+            for (unsigned d = 0; d < 16; d++) {
+                size_t digit = w * 16 + d; /* from the least significant end */
+                if (digit >= len) break;
+                char c = v->value.str[len - 1 - digit];
+                uint64_t nib = (c >= '0' && c <= '9')   ? (uint64_t)(c - '0')
+                               : (c >= 'a' && c <= 'f') ? (uint64_t)(c - 'a' + 10)
+                               : (c >= 'A' && c <= 'F') ? (uint64_t)(c - 'A' + 10)
+                                                        : 0;
+                acc |= nib << (d * 4);
+            }
+            sx_set_word((uint32_t)o->index, w, acc);
+        }
+        return NULL;
+    }
     if (v->format == vpiBinStrVal && width > 64) {
         /* Wide value: fill word by word, LSB-first, from the MSB-first text. */
         unsigned words = (width + 63) / 64;
@@ -566,7 +655,7 @@ int main(void) {
     if (!getenv("PYGPI_PYTHON_BIN"))
         setenv("PYGPI_PYTHON_BIN", SX_PYGPI_PYTHON_BIN, 1);
 #endif
-    objects_init();
+    sx_vpi_init();
     sx_reset();
     sx_settle();
 
