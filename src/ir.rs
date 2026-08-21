@@ -368,7 +368,7 @@ pub struct Design {
     /// companion carries which elements are metavalues (`'X'`/`'Z'`/…), the
     /// storage half of X/Z vector propagation. Absent for metavalue-free
     /// vectors, so a design that never touches metavalues is unchanged. See
-    /// `docs/proposals/xz-vector-propagation.md`.
+    /// "X/Z propagation through vectors" in `docs/simulation.md`.
     pub meta_of: HashMap<u32, u32>,
     /// Packed-vector signal -> enum used by each element. This is declaration
     /// metadata (`struct F(E[]); impl Vector for F {}`), not a std type-name
@@ -8714,8 +8714,8 @@ impl<'a> Lowering<'a> {
     /// per-element `std_ulogic` discriminant packed 4 bits each (element *i* at
     /// nibble *i*), so a metavalue's exact value survives. A hex string (`x"…"`)
     /// is pure 2-value. This is the front-end half of X/Z vector support (see
-    /// `docs/proposals/xz-vector-propagation.md`); `discs` is stored in the
-    /// element-container companion.
+    /// "X/Z propagation through vectors" in `docs/simulation.md`); `discs` is
+    /// stored in the element-container companion.
     fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
         let (value, discs) = self.decode_bit_string_words(base, digits);
         (

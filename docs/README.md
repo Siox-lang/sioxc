@@ -17,9 +17,9 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD/FST waveforms. |
 | [testing.md](testing.md) | **Testing** — compiling `#[test]` testbenches with `sioxc --test`, running the resulting executable, assertions, and compiler tests. |
 | [std.md](std.md) | The **standard library reference** — every `std::` module, its VHDL analogue, and what is intrinsic vs. library source. |
-| [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, the `siox-lsp` editor server, and planned cocotb integration. |
+| [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, the `siox-lsp` editor server, and driving a design from cocotb. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
-| [proposals/](proposals/) | Design records and forward-looking proposals. Each document states which parts are implemented and which remain. |
+| [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the

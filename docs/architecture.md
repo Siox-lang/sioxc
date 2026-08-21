@@ -380,9 +380,43 @@ Floats are f64: no mainstream CPU has scalar f128/f256 hardware (AVX widths are
 SIMD lanes, not precision), so wider floats would mean software emulation —
 deferred until something needs precision beyond f64.
 
+### Storage layout
+
+Logical width belongs to each signal and type, never to the whole design.
+
+```mermaid
+flowchart LR
+    TY["source type"] --> BITS["semantic bit width"]
+    BITS --> IR["IR Signal.width"]
+    IR --> DEF["default storage<br/>smallest practical LLVM integer"]
+    IR --> PACK["bitpack storage<br/>shared 64-bit words"]
+    IR --> ABI["external ABI<br/>ceil(width / 64) words"]
+```
+
+- Default LLVM state uses width-sized integer fields (`i8`, `i16`, `i32`,
+  `i64`, then LLVM `iN` for wider values).
+- `bitpack` packs sub-word signals into shared 64-bit words without letting a
+  field straddle a word. Wide values are word-aligned and reserve consecutive
+  words. Event flags become a separate one-bit-per-signal bitset, so their
+  storage is independent of value width.
+- Enums use enough bits for their actual discriminants, including explicit
+  non-dense values.
+- Structs and hardware arrays flatten into leaf signals, so each leaf gets its
+  own minimal representation. `Design::source_layouts` retains the
+  pre-flattening recursive shape: `SourceLayout` distinguishes scalar, packed,
+  array, struct/view and unresolved shapes, preserves view directions, written
+  ranges and spans, and computes aggregate width and leaf count with checked
+  arithmetic. Testbench locals keep layouts without becoming hardware signals.
+
+**Storage is unobservable.** Packing may not change a value, delta ordering,
+event detection, initialization, or waveform output — which is why the default
+and `bitpack` builds run the same semantic tests, including arbitrary-width and
+X/Z cases, rather than a reduced set.
+
 Cargo features name implemented build boundaries only: `cli`/`llvm` select the
 compiler executable and LLVM dependency, `simd` targets the build host's CPU
-features, and `bitpack` selects the alternate packed state layout. Arbitrary-
+features, `bitpack` selects the alternate packed state layout, and `cocotb`
+adds the VPI layer that lets cocotb drive a built design. Arbitrary-
 width integers are part of the normal compiler and need no `wide` flag. Quad
 precision has no `f128` flag until its lowering, ABI, formatting, and fallback
 runtime all exist.

@@ -66,13 +66,51 @@ earliest pending event and advances to it:
   Each yields to the scheduler until its trigger fires, and may appear inside
   `for`/`if`. (`wait`/`tick` were removed — both now error and point at
   `await`.) The wheel lives in the runner and, identically, in the emitted C of
-  the native binary. Design-note for the forward-looking scheduler/cocotb ABI:
-  [proposals/timing-and-await.md](proposals/timing-and-await.md).
+  the native binary. An external scheduler can own time instead — see
+  [cocotb](interoperability.md#cocotb), whose trigger model is the same one.
 
 Native time is an unsigned 64-bit femtosecond count. A literal whose unit
 conversion cannot fit that timeline is a build error. Runtime additions
 saturate at `18446744073709551615fs` instead of wrapping to time zero; the
 event-wheel sentinel and multi-test waveform timestamps use the same rule.
+
+## X/Z propagation through vectors
+
+Scalar and vector logic follow IEEE 1076-2019 `std_logic_1164` and
+`numeric_std`; the tables live in `std/logic.siox` and `std/bits.siox`, not in
+the compiler. `Logic` is the nine-value `std_ulogic` domain (`'U'`, `'X'`,
+`'0'`, `'1'`, `'Z'`, `'W'`, `'L'`, `'H'`, `'-'`).
+
+An array-derived Logic family such as `unsigned[N]` is carried in two planes:
+
+```mermaid
+flowchart LR
+    SRC["Logic vector"] --> VALUE["value plane<br/>1 bit / element"]
+    SRC --> DISC["discriminant companion<br/>4 bits / element"]
+    VALUE --> OP["operators / storage / ports"]
+    DISC --> OP
+    OP --> READ["scalar reconstruction / waveforms"]
+```
+
+The value plane keeps ordinary numeric work efficient; a companion signal
+stores each element's full discriminant and is created **only where metavalues
+occur**, so a design that never uses them pays nothing. Companions are
+arbitrary-width low-word-first values, so they do not stop at one ABI word.
+Indexing an element reconstructs the full scalar `Logic`, and copies, ports,
+muxes and driver literals propagate both planes.
+
+Operator behaviour follows the library: logical operators use the
+`std_logic_1164` truth tables per element (including forcing cases such as
+`0 and X = 0`), arithmetic with any metavalue produces an all-`X` result,
+relational comparisons against a metavalue are false, and parallel drivers fold
+through the resolution table. VCD and FST render binary elements as `0`/`1`,
+high impedance as `z`, and unknown-like metavalues as `x`, from the same
+scheduler samples.
+
+The scalar tables are checked exhaustively against `nvc`, and the corpus covers
+storage, arithmetic poisoning, relational and logical behaviour, connections,
+driver-position literals, wide initialization, and metavalues crossing ABI word
+boundaries.
 
 ## Waveforms
 

@@ -31,6 +31,10 @@ assertions, and VCD export — predates this changelog. See
   values wider than a machine word. cocotb is located by running
   `cocotb-config`, so a virtualenv needs no configuration. Behind the opt-in
   `cocotb` Cargo feature.
+- **Implemented proposals are no longer proposals.** `docs/proposals/` now
+  holds only outstanding designs; the records for storage layout, X/Z vector
+  propagation, timing/`await` and source-level debugging moved into
+  `architecture.md`, `simulation.md`, `interoperability.md` and `testing.md`.
 - **A range violation names the assignment that broke the domain.** It used to
   point at the ranged signal's declaration, which says which domain was left
   but not what left it. `Driver`/`NextUpdate` now carry the assignment they
