@@ -2644,6 +2644,11 @@ and stays usable as a name everywhere else. `after` is testbench-only in
 Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
 the after-form is the one generator.)
 
+Of the two forms above, only the self-toggle runs today: the native harness
+rejects a one-shot `after` write until one-shot writes are represented on its
+event wheel (see [simulation.md](simulation.md#simulation-time-and-the-event-wheel)).
+Until then a reset is released by `await 12ns; rst = '0';`.
+
 #### Generic functions and trait bounds
 
 A function may be generic over a type with an optional trait bound:

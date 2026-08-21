@@ -8624,3 +8624,34 @@ than a misrouted case, and it is loud rather than silent, so it is recorded here
 instead of patched alongside an unrelated fix. The message it gives ("runtime
 indices may traverse declared arrays") describes a problem the source does not
 have, since the index is a literal.
+
+## Sweep with no compiler defect (2026-08-22)
+
+Six areas probed, nothing broken in any of them, recorded so the ground is known
+rather than merely unexamined:
+
+- **The testbench emitter's nested aggregates.** The obvious parallel path after
+  fixing the hardware engine's nested-aggregate read — a struct-typed field read,
+  a whole-element write, and an element-to-element copy all already worked there.
+- **A clocked shift register of structs**, which combines everything touched this
+  session: `w[2] = w[1]; w[1] = w[0]; w[0] = din` in one event block shifts
+  correctly rather than collapsing, so pre-commit staging holds for aggregates.
+- **Match patterns**: enum arms, inclusive integer ranges, `Logic` character
+  literals, and wildcards.
+- **Comparison derivation.** A newtype whose `<=>` is deliberately *inverted*
+  compares correctly under all six operators and on equality, so none of them is
+  reaching past the spaceship to a built-in.
+- **Division**: quotient, remainder, signed truncation toward zero, and division
+  by zero — which yields 0 rather than trapping, at runtime, in *both* engines.
+  C integer division by zero is undefined, so the two agreeing here is the
+  interesting part.
+- **`after` delays**, where the compiler is right and the documentation was not:
+  `rst = '0' after 12ns` is rejected by both engines, and `simulation.md` says
+  why, but `language.md` — the authority a testbench author reads — presented it
+  as working. It now points at the limitation and gives the spelling that does
+  work.
+
+Two probes reported failures that were mine, not the compiler's: `%` is simply
+not declared in std, and a truncated diagnostic listing led me to believe a
+hardware `after` was silently dropped when it in fact errors. `--emit ir` prints
+before diagnostics gate the build, which is what made the second look real.
