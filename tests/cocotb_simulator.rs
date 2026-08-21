@@ -299,6 +299,61 @@ fn building_without_cocotb_explains_itself() {
 }
 
 #[test]
+fn a_parametric_top_says_what_to_fix() {
+    // An unbound parameter reaches the backend as a zero width. `--emit object`
+    // has always named the fix; the cocotb path fell through to the generic
+    // validator and reported "unknown width (0)" per signal instead, which says
+    // what is wrong but not what to do. Both go through one check now.
+    let dir = workdir("param");
+    let src = dir.join("gen.siox");
+    std::fs::write(
+        &src,
+        "module dut;\n\
+         using std::logic::{Bit};\n\
+         using std::bits::{unsigned};\n\
+         #[top]\n\
+         entity Counter<W: integer> { clk: Bit in, count: unsigned[W] out }\n\
+         impl<W: integer> Counter<W> {\n\
+         \x20   let value: unsigned[W] = 0;\n\
+         \x20   if clk.rising() { value = value + 1; }\n\
+         \x20   count = value;\n\
+         }\n",
+    )
+    .unwrap();
+    let mut messages = Vec::new();
+    for extra in [vec!["--cocotb"], vec![]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+            .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+            .args(&extra)
+            .arg(&src)
+            .arg("-o")
+            .arg(dir.join("gen.out"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            text.contains("has an unresolved width")
+                && text.contains("build a concrete top or a wrapper"),
+            "{extra:?} should name the fix, got:\n{text}"
+        );
+        assert!(
+            !text.contains("unknown width (0)"),
+            "{extra:?} should not fall through to the generic validator, got:\n{text}"
+        );
+        messages.push(
+            text.lines()
+                .find(|l| l.contains("unresolved width"))
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        messages[0], messages[1],
+        "both native paths should give the same answer to the same mistake"
+    );
+}
+
+#[test]
 fn cocotb_and_test_are_rejected_together() {
     // They build different things -- with `--cocotb` the Python side *is* the
     // testbench -- so asking for both is a mistake worth naming.

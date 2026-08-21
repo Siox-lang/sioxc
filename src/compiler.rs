@@ -536,17 +536,30 @@ impl Compiler {
         result.failure = Some(backend_unavailable());
     }
 
+    /// An unbound parameter reaches the backend as a zero width. Both native
+    /// paths hit it the same way -- a parametric `#[top]` with nothing fixing
+    /// its parameters -- so both say the same actionable thing, rather than one
+    /// naming the fix and the other reporting "unknown width (0)" per signal
+    /// from the generic validator.
     #[cfg(feature = "llvm")]
-    fn emit_object(&self, result: &mut Compilation, output: PathBuf) {
+    fn reject_unresolved_widths(result: &mut Compilation) -> bool {
         let design = result.design.as_ref().expect("lowering completed");
         if let Some(signal) = design.signals.iter().find(|signal| signal.width == 0) {
+            let path = signal.path.clone();
             result.failure = Some(CompileFailure::new(
                 FailureKind::Validation,
                 format!(
-                    "`{}` has an unresolved width; build a concrete top or a wrapper that fixes its parameters",
-                    signal.path
+                    "`{path}` has an unresolved width; build a concrete top or a wrapper that fixes its parameters"
                 ),
             ));
+            return false;
+        }
+        true
+    }
+
+    #[cfg(feature = "llvm")]
+    fn emit_object(&self, result: &mut Compilation, output: PathBuf) {
+        if !Self::reject_unresolved_widths(result) {
             return;
         }
         if !Self::validate_design(result) {
@@ -606,6 +619,9 @@ impl Compiler {
 
     #[cfg(feature = "cocotb")]
     fn emit_cocotb_simulator(&self, result: &mut Compilation, output: PathBuf) {
+        if !Self::reject_unresolved_widths(result) {
+            return;
+        }
         if !Self::validate_design(result) {
             return;
         }

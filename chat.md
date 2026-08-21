@@ -8527,3 +8527,38 @@ semantics are designed. Verification: 353 all-feature library tests, every
 Rust integration test including 20 native build/run cases, strict all-target /
 all-feature Clippy, and all 171 external corpus compile/run/VCD/round-trip
 fixtures pass.
+
+## Bug hunt: the cocotb layer as a second oracle (2026-08-21)
+
+The cocotb integration landed today, which makes a second, unrelated path into
+a running design available for the first time: Python can read and drive the
+same signals the native harness does. This sweep used it that way.
+
+**Found and fixed — value truncation past one word (latent).** `vpi_get_value`
+served `vpiHexStrVal` and `vpiDecStrVal` from `sx_read`, which returns a single
+machine word, so a 128-bit signal reported its low 64 bits as though that were
+the value. The write side had the mirror defect: a hex or decimal string wider
+than a word went through `strtoull` and saturated. cocotb itself only requests
+`vpiBinStrVal` and `vpiIntVal`, so nothing exercised it — this was found by
+auditing the parallel path after fixing exactly the same truncation in the
+debugger's signal table earlier the same day, not by a failing test.
+(`vpiIntVal` narrowing stays: that format is 32-bit by definition.)
+
+**Found and fixed — two native paths, two answers.** A parametric `#[top]` with
+nothing binding its parameters reaches the backend as zero-width signals.
+`--emit object` named the fix ("build a concrete top or a wrapper that fixes its
+parameters"); `--cocotb` fell through to the generic validator and listed
+"unknown width (0)" per signal. Both go through one check now, and a test
+asserts the two paths produce the *same* line.
+
+**New coverage.** `tests/vpi_values.rs` links the VPI layer against a stub
+design and exercises every value format directly, so the part most likely to be
+quietly wrong is covered where the cocotb integration tests cannot run — CI has
+no cocotb. It runs in the default build.
+
+**Clean sweeps, reported as such.** Arithmetic against an independent Python
+model over 1024 cases (eight operations, boundary values, signed addition);
+wide writes and round trips at the word boundary; `Logic` discriminants;
+tristate drive/release; memory elements and struct fields through the
+reconstructed scope tree; and the whole cocotb path under the `bitpack` storage
+layout. No defect in any of them.
