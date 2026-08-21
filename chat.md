@@ -8583,3 +8583,32 @@ The guard turned out to be dead as well as wrong: instances are claimed by name
 by an earlier arm, it never fired across 172 corpus programs, and a mutation
 deleting it changed nothing. It is gone rather than merely narrowed, so there is
 one owner for instance declarations instead of two that can disagree.
+
+**Found and fixed — a generate block could not declare an instance fed a struct
+array element.** `for i in .. { let s: Bump = { .i = w[i], .o = w[i+1] } }` was
+rejected with "`w[0]` has no hardware form"; the same instances written out by
+hand compiled and ran. A generate loop is *defined* by its unrolling, so the two
+spellings disagreeing is the bug, independent of which one is right.
+
+The instance is lowered structurally, before the behavioural walk sees it. That
+walk skipped the *assignment* spelling of a generated instance (`stage[i] = Sub
+{ .. }`) but had no case for the `let` spelling, so it lowered the declaration a
+second time as data. A scalar connection survives that -- `w[i]` on an
+`unsigned[8][N]` still has a value, merely an unused one -- so only struct arrays
+exposed it. Isolation mattered here: generate + plain struct works, root +
+struct-array element works, and only the combination failed.
+
+The first fix attempt was proved incomplete by its own mutation: skipping *every*
+`let` in a generate block went undetected, because the regression had no
+block-local in the loop. Block-locals there are real and lowered, so the test now
+carries an instance and a block-local side by side, and both mutation directions
+are caught.
+
+**Found, not fixed — copying a whole struct-array element has no hardware form.**
+`w[1] = w[0]` and `last = w[1]`, where `w: Beat[N]`, are rejected at the entity
+root with no generate involved; only scalar fields (`w[0].v`) work, and a plain
+struct local copies fine. It is a capability gap in aggregate handling rather
+than a misrouted case, and it is loud rather than silent, so it is recorded here
+instead of patched alongside an unrelated fix. The message it gives ("runtime
+indices may traverse declared arrays") describes a problem the source does not
+have, since the index is a literal.

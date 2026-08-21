@@ -6087,6 +6087,20 @@ impl<'a> Lowering<'a> {
             self.collect_stmt_bad_indices(stmt, &mut bad);
             self.report_bad_indices(bad);
         }
+        // A sub-instance declared inside a generate block (`for i in .. { let
+        // s: Sub = { .. } }`) is lowered structurally by `gather_generate`, so
+        // this walk must leave it alone. Only the *assignment* spelling was
+        // skipped below, and a connection value with no scalar form -- an
+        // element of a struct array, `w[i]` where `w: Beat[N]` -- was then
+        // lowered as an ordinary expression and reported "`w[0]` has no
+        // hardware form". The same instance written at the entity's root
+        // worked, and so did a scalar connection in a loop, which merely
+        // lowered to a value nobody used.
+        if let ast::Stmt::Let(l) = stmt {
+            if instance_let_parts(l, &self.entities, self.resolved).is_some() {
+                return;
+            }
+        }
         // An instance-array element (`stage[i] = Sub { .. }`, Sub an entity) is
         // lowered structurally by `gather_generate`, not as a behavioral driver
         // — skip it so unrolling a `for` doesn't mistake it for an assignment. A

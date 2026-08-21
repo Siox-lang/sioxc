@@ -24,6 +24,13 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A generate block may declare a sub-instance fed a struct-array element.**
+  `for i in .. { let s: Bump = { .i = w[i] } }` was rejected with "`w[0]` has no
+  hardware form" while the same instances written out by hand compiled — a
+  generate loop is defined by its unrolling, so the two disagreeing was the
+  defect. The behavioural walk skipped the assignment spelling of a generated
+  instance but not the `let` spelling, and lowered the declaration a second time
+  as if it were data.
 - **A connected struct local keeps its initializer.** `let p: Packet = Packet
   { .id = 1 }` powered on at zero as soon as `p` was wired to an instance port:
   the routine that declares struct locals hands a *connected* one to the general
