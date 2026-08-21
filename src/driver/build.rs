@@ -4041,99 +4041,104 @@ impl Ctx<'_> {
                 ast::ImplItem::Let(l) if self.try_declare_string_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_array_local(l, &mut b)? => {}
                 ast::ImplItem::Let(l) if self.try_declare_struct_local(l, &mut b)? => {}
-                ast::ImplItem::Let(l) => match &l.value {
-                    Some(ast::Expr::Construct { ty: Some(_), .. }) => {} // instance
-                    value => {
-                        // Record the vector family for every declared name
-                        // (connected ports too): operators dispatch on it.
-                        if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t))
-                        {
-                            self.local_families
-                                .borrow_mut()
-                                .insert(l.name.text.clone(), fam);
-                        }
-                        if let Some((left, right)) = l.ty.as_ref().and_then(|ty| {
-                            type_index_bounds(ty, self.const_ranges, self.consts, self.fns)
-                        }) {
-                            self.local_ranges
-                                .borrow_mut()
-                                .insert(l.name.text.clone(), (left, right));
-                        }
-                        if let Some(head) = l.ty.as_ref().and_then(|ty| self.fns.type_head_key(ty))
-                        {
-                            self.local_types
-                                .borrow_mut()
-                                .insert(l.name.text.clone(), head);
-                        }
-                        // A string/struct-literal initializer on a connected
-                        // name writes each element/field.
-                        if let Some(v) = value {
-                            if self.write_composite(&l.name.text, v, &mut b, "    ")? {
-                                continue;
-                            }
-                        }
-                        if let Some(&id) = self.map.get(&l.name.text) {
-                            if let Some(v) = value {
-                                let e = self.value_for(id, v)?;
-                                b.push_str(&format!("    sx_set({}, {e});\n", id.0));
-                                // A name connected to several instance ports
-                                // has one entry in `map` and all of them in
-                                // `aliases`. Seeding only the first left every
-                                // other instance reading its default: three
-                                // `Inc`s fed by one local gave 1, 1, 11. The
-                                // assignment path already drives them all.
-                                for a in self
-                                    .aliases
-                                    .get(&l.name.text)
-                                    .map(|v| v.as_slice())
-                                    .unwrap_or(&[])
-                                {
-                                    if *a != id {
-                                        b.push_str(&format!("    sx_set({}, {e});\n", a.0));
-                                    }
-                                }
-                            }
-                        } else {
-                            let e = match value {
-                                // A char literal on an enum-typed local resolves
-                                // by position in that enum (data-driven), like
-                                // the native harness + hardware paths.
-                                Some(v) => self.value_for_local(&l.name.text, v)?,
-                                // Uninitialized: the type's `new()` default
-                                // (`Logic` -> `'U'`), matching native + hardware.
-                                None => {
-                                    l.ty.as_ref()
-                                        .and_then(|ty| self.fns.type_head_key(ty))
-                                        .and_then(|head| self.design.new_defaults.get(&head))
-                                        .map(|v| format!("{v}ULL"))
-                                        .unwrap_or_else(|| "0".to_string())
-                                }
-                            };
-                            // A vector-family local wraps at its declared
-                            // width, like the equivalent hardware signal.
-                            let declared_width = l.ty.as_ref().and_then(|t| self.declared_width(t));
-                            let e = match declared_width {
-                                Some(w) => {
-                                    self.local_widths
-                                        .borrow_mut()
-                                        .insert(l.name.text.clone(), w);
-                                    mask_c(&e, w)
-                                }
-                                None => e,
-                            };
-                            let c_ty = if declared_width.is_some_and(|w| w > 64) {
-                                "sx_value"
-                            } else {
-                                "uint64_t"
-                            };
-                            b.push_str(&format!(
-                                "    {c_ty} {} = {e};\n",
-                                c_local_ident(&l.name.text)
-                            ));
-                            self.locals.borrow_mut().insert(l.name.text.clone());
+                // Instances are claimed by name above, so everything that
+                // reaches here is a value. This arm used to open by skipping
+                // any typed construction as "an instance", which also caught a
+                // struct literal: a *connected* struct local is handed here
+                // deliberately, because its storage is the DUT's port signals,
+                // so both halves believed the other wrote the initializer and
+                // `let p: Packet = Packet { .id = 1 }` powered on at zero the
+                // moment `p` was wired to a port -- silently, since the
+                // testbench and the design both read the same zero.
+                ast::ImplItem::Let(l) => {
+                    let value = &l.value;
+                    // Record the vector family for every declared name
+                    // (connected ports too): operators dispatch on it.
+                    if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t)) {
+                        self.local_families
+                            .borrow_mut()
+                            .insert(l.name.text.clone(), fam);
+                    }
+                    if let Some((left, right)) = l.ty.as_ref().and_then(|ty| {
+                        type_index_bounds(ty, self.const_ranges, self.consts, self.fns)
+                    }) {
+                        self.local_ranges
+                            .borrow_mut()
+                            .insert(l.name.text.clone(), (left, right));
+                    }
+                    if let Some(head) = l.ty.as_ref().and_then(|ty| self.fns.type_head_key(ty)) {
+                        self.local_types
+                            .borrow_mut()
+                            .insert(l.name.text.clone(), head);
+                    }
+                    // A string/struct-literal initializer on a connected
+                    // name writes each element/field.
+                    if let Some(v) = value {
+                        if self.write_composite(&l.name.text, v, &mut b, "    ")? {
+                            continue;
                         }
                     }
-                },
+                    if let Some(&id) = self.map.get(&l.name.text) {
+                        if let Some(v) = value {
+                            let e = self.value_for(id, v)?;
+                            b.push_str(&format!("    sx_set({}, {e});\n", id.0));
+                            // A name connected to several instance ports
+                            // has one entry in `map` and all of them in
+                            // `aliases`. Seeding only the first left every
+                            // other instance reading its default: three
+                            // `Inc`s fed by one local gave 1, 1, 11. The
+                            // assignment path already drives them all.
+                            for a in self
+                                .aliases
+                                .get(&l.name.text)
+                                .map(|v| v.as_slice())
+                                .unwrap_or(&[])
+                            {
+                                if *a != id {
+                                    b.push_str(&format!("    sx_set({}, {e});\n", a.0));
+                                }
+                            }
+                        }
+                    } else {
+                        let e = match value {
+                            // A char literal on an enum-typed local resolves
+                            // by position in that enum (data-driven), like
+                            // the native harness + hardware paths.
+                            Some(v) => self.value_for_local(&l.name.text, v)?,
+                            // Uninitialized: the type's `new()` default
+                            // (`Logic` -> `'U'`), matching native + hardware.
+                            None => {
+                                l.ty.as_ref()
+                                    .and_then(|ty| self.fns.type_head_key(ty))
+                                    .and_then(|head| self.design.new_defaults.get(&head))
+                                    .map(|v| format!("{v}ULL"))
+                                    .unwrap_or_else(|| "0".to_string())
+                            }
+                        };
+                        // A vector-family local wraps at its declared
+                        // width, like the equivalent hardware signal.
+                        let declared_width = l.ty.as_ref().and_then(|t| self.declared_width(t));
+                        let e = match declared_width {
+                            Some(w) => {
+                                self.local_widths
+                                    .borrow_mut()
+                                    .insert(l.name.text.clone(), w);
+                                mask_c(&e, w)
+                            }
+                            None => e,
+                        };
+                        let c_ty = if declared_width.is_some_and(|w| w > 64) {
+                            "sx_value"
+                        } else {
+                            "uint64_t"
+                        };
+                        b.push_str(&format!(
+                            "    {c_ty} {} = {e};\n",
+                            c_local_ident(&l.name.text)
+                        ));
+                        self.locals.borrow_mut().insert(l.name.text.clone());
+                    }
+                }
                 ast::ImplItem::Stmt(st) => {
                     if !started {
                         b.push_str("    sx_settle();\n");

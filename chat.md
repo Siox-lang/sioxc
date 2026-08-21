@@ -8562,3 +8562,24 @@ wide writes and round trips at the word boundary; `Logic` discriminants;
 tristate drive/release; memory elements and struct fields through the
 reconstructed scope tree; and the whole cocotb path under the `bitpack` storage
 layout. No defect in any of them.
+
+**Found and fixed — a connected struct local lost its initializer.** Probing
+feature combinations (generic entities, struct ports, enums, memories) turned up
+`let p: Packet = Packet { .id = 1, .payload = 100 }` powering on at zero, but
+only once `p` was also wired to an instance port. `try_declare_struct_local`
+hands a connected local to the general `let` path on purpose -- its storage is
+the DUT's port signals -- and that path opened by skipping any typed
+construction as "an instance". Both halves believed the other wrote the
+initializer.
+
+The corpus already held `named_struct_literal_test.siox`, which documents the
+*same* misclassification -- "filed as a sub-instance declaration without ever
+checking that the name belongs to an entity" -- fixed then in elaboration. The
+native emitter classified the same way and was not corrected, so the same bug
+lived on in the other engine. Third finding this session from auditing parallel
+paths.
+
+The guard turned out to be dead as well as wrong: instances are claimed by name
+by an earlier arm, it never fired across 172 corpus programs, and a mutation
+deleting it changed nothing. It is gone rather than merely narrowed, so there is
+one owner for instance declarations instead of two that can disagree.

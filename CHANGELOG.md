@@ -24,6 +24,13 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A connected struct local keeps its initializer.** `let p: Packet = Packet
+  { .id = 1 }` powered on at zero as soon as `p` was wired to an instance port:
+  the routine that declares struct locals hands a *connected* one to the general
+  `let` path, and that path skipped any typed construction as "an instance", so
+  both halves believed the other had written it. Nothing failed — the testbench
+  and the design read the same zero — so a testbench written this way silently
+  drove the wrong stimulus.
 - **A cocotb value wider than one word is no longer truncated.** The VPI layer
   served hex and decimal from `sx_read`, which returns a single machine word, so
   a 128-bit signal reported its low 64 bits; writing one as text saturated
