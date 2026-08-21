@@ -44,6 +44,10 @@ built=0
 step "build" "${cargo[@]}" build --locked && built=1
 step "test"                      "${cargo[@]}" test --locked
 step "test (bitpack)"            "${cargo[@]}" test --locked --features bitpack
+# The cocotb tests skip without cocotb installed, but building them is what
+# keeps the opt-in feature from rotting: `--all-features` clippy below type-
+# checks it, and this runs whatever of it can run here.
+step "test (cocotb)"             "${cargo[@]}" test --locked --features cocotb
 step "clippy (all targets)"      "${cargo[@]}" clippy --locked --all-targets --all-features -- -D warnings
 if [ "$built" = 1 ]; then
     step "corpus"                bash "$(dirname "$0")/test-corpus.sh" "$corpus"

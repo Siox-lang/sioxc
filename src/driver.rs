@@ -27,6 +27,10 @@ struct Cli {
     /// Compile `#[test]` entities into a native test executable.
     #[arg(long)]
     test: bool,
+    /// Build the `#[top]` design into a simulator cocotb drives, instead of a
+    /// siox testbench. Needs cocotb installed (`cocotb-config` on `PATH`).
+    #[arg(long)]
+    cocotb: bool,
     /// Build a test executable a debugger can follow: the generated code is
     /// attributed back to its `.siox` lines and left unoptimized, so
     /// `break file.siox:34` and stepping work.
@@ -61,9 +65,19 @@ pub fn run() -> ExitCode {
         eprintln!("error: --test currently requires --emit object");
         return ExitCode::FAILURE;
     }
+    if cli.cocotb && cli.test {
+        eprintln!("error: --cocotb and --test build different things: cocotb is the testbench");
+        return ExitCode::FAILURE;
+    }
+    if cli.cocotb && cli.emit != CliEmit::Object {
+        eprintln!("error: --cocotb currently requires --emit object");
+        return ExitCode::FAILURE;
+    }
 
     let emit = if cli.test {
         Emit::TestExecutable
+    } else if cli.cocotb {
+        Emit::CocotbSimulator { top: cli.top }
     } else {
         match cli.emit {
             CliEmit::Object => Emit::Object { top: cli.top },
@@ -102,7 +116,12 @@ pub fn run() -> ExitCode {
             && compilation.hierarchy.is_none()
             && matches!(
                 emit,
-                Emit::Tree | Emit::Ir | Emit::LlvmIr | Emit::Object { .. } | Emit::TestExecutable
+                Emit::Tree
+                    | Emit::Ir
+                    | Emit::LlvmIr
+                    | Emit::Object { .. }
+                    | Emit::TestExecutable
+                    | Emit::CocotbSimulator { .. }
             )
         {
             eprintln!(
@@ -131,6 +150,10 @@ pub fn run() -> ExitCode {
                 ),
                 FileArtifact::TestExecutable => eprintln!(
                     "built test binary {} (run it to execute the testbench)",
+                    path.display()
+                ),
+                FileArtifact::CocotbSimulator => eprintln!(
+                    "built cocotb simulator {} (run it with COCOTB_TEST_MODULES set)",
                     path.display()
                 ),
             },

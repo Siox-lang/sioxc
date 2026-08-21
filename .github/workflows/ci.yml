@@ -81,6 +81,11 @@ jobs:
       - name: Test bitpack backend
         run: cargo test --locked --features bitpack
 
+      - name: Test (cocotb feature)
+        # cocotb is not installed here, so these tests skip; building them is
+        # what stops the opt-in feature from rotting unnoticed.
+        run: cargo test --locked --features cocotb
+
       - name: Lint all targets and backends
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 

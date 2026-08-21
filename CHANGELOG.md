@@ -24,6 +24,13 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **cocotb can drive a compiled design.** `sioxc --cocotb counter.siox -o
+  counter.sim` builds the `#[top]` entity into a simulator that implements the
+  sixteen `vpi_*` functions cocotb's GPI calls, so a Python testbench reads and
+  drives signals by their siox names, across the instance hierarchy and for
+  values wider than a machine word. cocotb is located by running
+  `cocotb-config`, so a virtualenv needs no configuration. Behind the opt-in
+  `cocotb` Cargo feature.
 - **A range violation names the assignment that broke the domain.** It used to
   point at the ranged signal's declaration, which says which domain was left
   but not what left it. `Driver`/`NextUpdate` now carry the assignment they
