@@ -24,6 +24,11 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A nested aggregate can be read as one value.** `cp = seed.inner` and
+  `a = w[0]`, where the field or element is itself a struct, were rejected with
+  "has no hardware form". Only a bare name reached the aggregate read, so a
+  nested one was lowered as a scalar — which an aggregate has none of. Writing
+  already worked, so a struct array could be filled but never read back.
 - **A generate block may declare a sub-instance fed a struct-array element.**
   `for i in .. { let s: Bump = { .i = w[i] } }` was rejected with "`w[0]` has no
   hardware form" while the same instances written out by hand compiled — a

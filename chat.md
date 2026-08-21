@@ -8604,6 +8604,18 @@ block-local in the loop. Block-locals there are real and lowered, so the test no
 carries an instance and a block-local side by side, and both mutation directions
 are caught.
 
+**Fixed after all — reading a nested aggregate had no hardware form.** Recorded
+below as a deferred gap, then scoped and closed: the leaves already existed
+(`E.w[0].v`), and splitting target from value showed the whole gap was on the
+*read* side -- `w[0] = a` compiled, `a = w[0]` did not. Only a bare name reached
+`aggregate_signal_val`, so a nested aggregate fell to the scalar lowering, which
+an aggregate has none of. It was never only about arrays: `cp = seed.inner`, a
+struct-typed *field*, failed the same way and is the commoner shape. Both the
+field arm and the element path now try the aggregate read first.
+
+The original note follows, kept because the reasoning that deferred it was
+wrong about the size, not about the symptom.
+
 **Found, not fixed — copying a whole struct-array element has no hardware form.**
 `w[1] = w[0]` and `last = w[1]`, where `w: Beat[N]`, are rejected at the entity
 root with no generate involved; only scalar fields (`w[0].v`) work, and a plain

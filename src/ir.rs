@@ -10432,6 +10432,9 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
+                if let Some(value) = self.nested_aggregate_val(e) {
+                    return value;
+                }
                 Val::Scalar(self.lower_expr(e))
             }
             // A struct literal (named or name-less): one value per field.
@@ -10575,7 +10578,9 @@ impl<'a> Lowering<'a> {
             ast::Expr::SuffixLit { .. } => self.inline_suffix(e).unwrap_or_else(|| {
                 Val::Scalar(self.lower_expr(e)) // fixed fs/Hz table fallback
             }),
-            _ => Val::Scalar(self.lower_expr(e)),
+            _ => self
+                .nested_aggregate_val(e)
+                .unwrap_or_else(|| Val::Scalar(self.lower_expr(e))),
         }
     }
 
@@ -10632,6 +10637,17 @@ impl<'a> Lowering<'a> {
     /// A flattened struct or array signal as one aggregate value. Scanning
     /// leaf names also handles nested structs/arrays, where no signal exists
     /// for an intermediate field.
+    /// A *nested* aggregate read whole: `outer.inner`, `w[0]` where `w` is an
+    /// array of structs. Only a bare name reached `aggregate_signal_val`, so
+    /// these were lowered as ordinary scalars -- which an aggregate has none of
+    /// -- and reported "has no hardware form", a message about runtime indices
+    /// on a path whose indices are literal. Writing one already worked, so a
+    /// struct array element could be assigned but not read back.
+    fn nested_aggregate_val(&self, e: &ast::Expr) -> Option<Val> {
+        let path = self.folded_elem_path(e)?;
+        self.aggregate_signal_val(&path)
+    }
+
     fn aggregate_signal_val(&self, name: &str) -> Option<Val> {
         if !self.local_struct_repr.contains_key(name) && !self.local_array.contains_key(name) {
             return None;
