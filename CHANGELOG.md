@@ -35,11 +35,6 @@ assertions, and VCD export — predates this changelog. See
   holds only outstanding designs; the records for storage layout, X/Z vector
   propagation, timing/`await` and source-level debugging moved into
   `architecture.md`, `simulation.md`, `interoperability.md` and `testing.md`.
-- **A range violation names the assignment that broke the domain.** It used to
-  point at the ranged signal's declaration, which says which domain was left
-  but not what left it. `Driver`/`NextUpdate` now carry the assignment they
-  were lowered from, and the engine latches that site beside the error code, so
-  the report points at the line to change.
 - **Diagnostics show the offending line with a caret.** Both compile
   diagnostics and runtime failures now render the source line and a caret under
   the column, through one shared `SourceMap::snippet` so the two cannot drift.
@@ -48,13 +43,17 @@ assertions, and VCD export — predates this changelog. See
 - **A runtime failure names its source.** A failing `assert!`, a range
   violation, and a failing `read<T>` now print `--> file:line:col` beside the
   message: the assertion points at its own statement, the range violation at
-  the ranged signal's declaration, the read at the `let` that asked for the
+  the assignment that left the domain, the read at the `let` that asked for the
   file. No debugger is needed, which is what a CI log wants.
-- **Hardware signals are readable by siox name in a debugger.** A debug build
-  carries every signal's hierarchical path, and `scripts/siox-gdb.py` adds
-  `siox print <path>` and `siox list [prefix]` to gdb. A signal is not a
-  variable — it lives behind an accessor — so DWARF alone could not describe
-  one.
+- **Hardware signals are readable by siox name in a debugger.** A signal is not
+  a variable — it lives behind an accessor — so DWARF alone cannot describe
+  one. A `-g` build therefore carries every signal's hierarchical path *and*
+  the lookup over it, as three ordinary functions in the binary:
+  `call sx_dbg_print("c.n")`, `call sx_dbg_list("f.mem")`, and
+  `print sx_dbg_get("c.n")` for a value an expression can use. Nothing has to
+  be sourced. A value wider than a machine word prints whole, in hex. (An earlier cut of this shipped a `scripts/siox-gdb.py` for gdb;
+  embedding the equivalent script in the binary would have needed the user's
+  `auto-load safe-path` widened, so plain functions won instead.)
 
 ### Changed
 - **`third_party/libfst` is a git submodule** rather than a vendored copy, so

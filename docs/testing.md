@@ -106,10 +106,35 @@ test result: ok. 1 passed; 0 failed
   matching subset. Partial names also work as filters.
 - **Debugging:** `sioxc --test -g` builds an executable a debugger follows in
   siox terms — `break counter.siox:34`, stepping, source display and backtraces
-  all name `.siox` files and lines. Sourcing `scripts/siox-gdb.py` adds
-  `siox print <path>` and `siox list [prefix]`, which read hardware signals by
-  their siox name (a trailing path resolves without the root). The ordinary
-  build is unaffected and stays optimized.
+  all name `.siox` files and lines. The ordinary build is unaffected and stays
+  optimized.
+
+  A hardware signal is not a variable — it lives behind the `sx_read` accessor,
+  indexed by `SignalId` — so DWARF has nothing natural to describe and reading
+  one by its siox path needs a lookup. A `-g` build carries that lookup **in
+  the binary**, as three ordinary functions:
+
+  ```
+  (gdb) call sx_dbg_print("c.n")     one signal, by path or unique tail
+  T.c.n = 2
+  (gdb) call sx_dbg_list("f.mem")    every signal whose path contains it
+  T.f.mem[0] = 11
+  T.f.mem[1] = 22
+  (gdb) print sx_dbg_get("c.n") + 1  the value, usable in an expression
+  $1 = 3
+  ```
+
+  Nothing has to be sourced, and any debugger that can call into the inferior
+  works. An unknown path says so, and an ambiguous one asks for more of the
+  path rather than picking a signal — silence would read as "the value is
+  zero". Leaving the root off matches at a `.`, so `n` finds `T.c.n` and not
+  `T.c.en`.
+
+  A value past 64 bits prints whole, in hex (`T.b.acc = 0x10000000000000007`);
+  `sx_dbg_get` can only hand back one machine word, so on a wider signal it
+  says which word it returned rather than passing off the low bits as the
+  value. Only hardware signals are in the table; a testbench's own locals are
+  ordinary C variables, so `print` them directly.
 - **Failures name their source.** A failing `assert!`, a ranged signal leaving
   its domain, and a failing `read<T>` all print `--> file:line:col` beside the
   message, followed by the source line and a caret, so a CI log points at the

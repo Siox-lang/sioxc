@@ -50,6 +50,91 @@ fn span_location(sources: &siox::diag::SourceMap, span: siox::diag::Span) -> Opt
 /// rustc's test harness. Every test's DUT is in the one lowered `Design` (one
 /// `sx_*` namespace); `sx_reset` zeroes all state, so tests run sequentially
 /// in the same object.
+/// The debug accessors compiled into a `-g` build.
+///
+/// They report through `stderr` because it is unbuffered: the inferior's
+/// `stdout` buffer is not flushed while it sits at a breakpoint, so a `printf`
+/// here produces a call that appears to do nothing.
+///
+/// `sx_dbg_get` exists alongside `sx_dbg_print` so a value can be used, not
+/// just read -- `p sx_dbg_get("count") * 2` and conditional breakpoints both
+/// need a value rather than a side effect.
+const SX_DEBUG_ACCESSORS: &str = concat!(
+    "\n/* siox: read a signal by its source path from a debugger.\n",
+    " *\n",
+    " *   (gdb) call sx_dbg_print(\"c.n\")     one signal, by path or unique tail\n",
+    " *   (gdb) call sx_dbg_list(\"f.mem\")    every signal whose path contains it\n",
+    " *   (gdb) print sx_dbg_get(\"c.n\")      the value, to use in an expression\n",
+    " */\n",
+    "static int sx_dbg_find(const char *path) {\n",
+    "    unsigned i;\n",
+    "    int hit = -1;\n",
+    "    if (!path) return -1;\n",
+    "    for (i = 0; i < sx_signal_count; i++)\n",
+    "        if (strcmp(sx_signal_names[i], path) == 0) return (int)i;\n",
+    // A trailing match lets the root be left off (`c.n` for `T.c.n`), but only
+    // when it is unique -- otherwise the reader is silently shown one of
+    // several signals that share a leaf name.
+    "    for (i = 0; i < sx_signal_count; i++) {\n",
+    "        size_t n = strlen(sx_signal_names[i]), m = strlen(path);\n",
+    "        if (m < n && sx_signal_names[i][n - m - 1] == '.' &&\n",
+    "            strcmp(sx_signal_names[i] + n - m, path) == 0)\n",
+    "            hit = (hit == -1) ? (int)i : -2;\n",
+    "    }\n",
+    "    return hit;\n",
+    "}\n",
+    // A value past one word is shown in hex: assembling the decimal of a
+    // 512-bit number in the inferior would mean bignum division, and hex is
+    // what a reader compares against a waveform anyway.
+    "static void sx_dbg_show(unsigned i) {\n",
+    "    unsigned width = sx_signal_widths[i], words, top, k;\n",
+    "    if (width <= 64) {\n",
+    "        fprintf(stderr, \"%s = %llu\\n\", sx_signal_names[i],\n",
+    "                (unsigned long long)sx_read(i));\n",
+    "        return;\n",
+    "    }\n",
+    "    words = (width + 63) / 64;\n",
+    "    top = words;\n",
+    "    while (top > 1 && sx_read_word(i, top - 1) == 0) top--;\n",
+    "    fprintf(stderr, \"%s = 0x%llx\", sx_signal_names[i],\n",
+    "            (unsigned long long)sx_read_word(i, top - 1));\n",
+    "    for (k = top - 1; k > 0; k--)\n",
+    "        fprintf(stderr, \"%016llx\", (unsigned long long)sx_read_word(i, k - 1));\n",
+    "    fprintf(stderr, \"\\n\");\n",
+    "}\n",
+    // `sx_dbg_get` can only hand back one machine word, so on a wider signal it
+    // says which word that is. Returning the low bits silently is the same
+    // truncation this whole table exists to avoid.
+    "__attribute__((used)) uint64_t sx_dbg_get(const char *path) {\n",
+    "    int i = sx_dbg_find(path);\n",
+    "    if (i < 0) return 0;\n",
+    "    if (sx_signal_widths[i] > 64)\n",
+    "        fprintf(stderr, \"note: `%s` is %u bits; this is its low word — \"\n",
+    "                        \"use sx_dbg_print for the whole value\\n\",\n",
+    "                sx_signal_names[i], sx_signal_widths[i]);\n",
+    "    return sx_read((uint32_t)i);\n",
+    "}\n",
+    "__attribute__((used)) int sx_dbg_print(const char *path) {\n",
+    "    int i = sx_dbg_find(path);\n",
+    "    if (i == -1) { fprintf(stderr, \"no signal matching `%s`\\n\", path); return 0; }\n",
+    "    if (i == -2) { fprintf(stderr, \"`%s` matches more than one signal; \"\n",
+    "                          \"add enough of the path to be unique\\n\", path); return 0; }\n",
+    "    sx_dbg_show((unsigned)i);\n",
+    "    return 1;\n",
+    "}\n",
+    "__attribute__((used)) int sx_dbg_list(const char *prefix) {\n",
+    "    unsigned i;\n",
+    "    int n = 0;\n",
+    "    for (i = 0; i < sx_signal_count; i++)\n",
+    "        if (!prefix || !*prefix || strstr(sx_signal_names[i], prefix)) {\n",
+    "            sx_dbg_show(i);\n",
+    "            n++;\n",
+    "        }\n",
+    "    if (n == 0) fprintf(stderr, \"no signal matching `%s`\\n\", prefix ? prefix : \"\");\n",
+    "    return n;\n",
+    "}\n",
+);
+
 pub fn build(
     modules: &[Module],
     resolved: &Resolved,
@@ -792,10 +877,17 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     let obj = tmp.join("design.o");
     let csrc = tmp.join("sim.c");
     siox::llvm::emit_object(design, &obj)?;
-    // A debug build carries the signal-name table, so a debugger can resolve a
-    // siox path to the index `sx_read` takes. Hardware signals are not
-    // variables -- they live behind that accessor -- so there is nothing for
-    // DWARF to describe and a small table is what the gdb helper needs.
+    // A debug build carries the signal-name table and the three accessors that
+    // read it. Hardware signals are not variables -- they live behind
+    // `sx_read`, indexed by `SignalId` -- so DWARF has nothing natural to
+    // describe, and printing one by its siox path needs a lookup.
+    //
+    // The lookup is compiled *into* the binary rather than shipped as a gdb
+    // Python script. An embedded script is possible (`.debug_gdb_scripts`) but
+    // gdb declines to auto-load one unless the binary's directory is on
+    // `auto-load safe-path`, so it trades an explicit `source` for a security
+    // warning and an edit to the user's gdbinit. Plain functions need none of
+    // that, and work in any debugger that can call into the inferior.
     if debug {
         let mut table = String::from(
             "\n/* siox: hierarchical signal names, indexed by SignalId. */\n\
@@ -805,10 +897,19 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             table.push_str(&format!("    \"{}\",\n", c_escape(&signal.path)));
         }
         table.push_str("};\n");
+        // Widths too: `sx_read` hands back one word, so without them a value
+        // wider than 64 bits prints as its low word and looks like a small
+        // number rather than a truncation.
+        table.push_str("const unsigned sx_signal_widths[] = {\n");
+        for signal in &design.signals {
+            table.push_str(&format!("    {},\n", signal.width));
+        }
+        table.push_str("};\n");
         table.push_str(&format!(
             "const unsigned sx_signal_count = {};\n",
             design.signals.len()
         ));
+        table.push_str(SX_DEBUG_ACCESSORS);
         prog.push_str(&table);
     }
     std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
