@@ -31,9 +31,10 @@ assertions, and VCD export — predates this changelog. See
   the table per element (std spells them arithmetically, so the companion saw a
   subtraction); shifts dropped the metavalue plane entirely; and `'L'`/`'H'`
   counted as unknowns rather than as the weak 0 and 1 they are, so a pull-up's
-  `'H'` poisoned every operation applied to it. Five differences remain, all of
-  one kind: siox reports every unknown as `'X'` where the tables propagate
-  `'U'` as `'U'`.
+  `'H'` poisoned every operation applied to it; and every unknown was reported
+  as `'X'` where the tables let `'U'` dominate, losing the distinction between
+  "never driven" and "driven to conflict". siox now matches `nvc` on all 312
+  comparisons of the widened sweep.
 - **A metavalue survives being copied, and a testbench can see it.** Two
   defects found by differential-testing against `nvc`. Metavalue propagation
   collected its work from the companions that existed *before* it ran, so a

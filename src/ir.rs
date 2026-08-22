@@ -4454,14 +4454,27 @@ impl<'a> Lowering<'a> {
                     }),
                 })
             }
+            // `not` as an IR unary. A vector `not` no longer arrives here --
+            // it lowers to `x xor all-ones` and is handled as an `Xor` above --
+            // so nothing in the corpus or the nvc differential reaches this,
+            // and its `'U'` handling below is consistent by construction rather
+            // than by test. It is kept because the shape is still a valid one
+            // for the IR to hold, and a handler that disagreed with the `Xor`
+            // path would be worse than one that is merely unused.
             Expr::Unary { op: UnOp::Not, rhs } => {
-                // `not` of any metavalue is `'X'` — the operand's metavalue
-                // positions become `X`, clean positions clean.
+                // The operand's metavalue positions become `'U'` or `'X'`,
+                // clean positions clean.
                 let m = self.lower_meta_ir(rhs, width)?;
-                let xd = self.x_disc();
+                let (xd, ud) = (self.x_disc(), self.u_disc());
                 let mut acc = Expr::Const(0);
                 for i in 0..width {
-                    acc = or_expr(acc, x_nibble(meta_bit(&Some(m.clone()), i), i, xd));
+                    let some = Some(m.clone());
+                    let disc = Expr::Select {
+                        cond: Box::new(u_bit(&some, i, ud)),
+                        then: Box::new(Expr::Const(ud)),
+                        els: Box::new(Expr::Const(xd)),
+                    };
+                    acc = or_expr(acc, meta_nibble(meta_bit(&some, i), i, disc));
                 }
                 Some(acc)
             }
@@ -4481,12 +4494,15 @@ impl<'a> Lowering<'a> {
         if ma.is_none() && mb.is_none() {
             return None;
         }
-        let x_disc = self.x_disc();
+        let (x_disc, u_disc) = (self.x_disc(), self.u_disc());
         let mut acc = Expr::Const(0);
         for i in 0..width {
             let (am, bm) = (meta_bit(&ma, i), meta_bit(&mb, i));
             let (av, bv) = (bit(lhs, i), bit(rhs, i));
             let anymeta = or_expr(am.clone(), bm.clone());
+            // `'U'` dominates: an unforced result with a `'U'` operand is
+            // `'U'`, not `'X'`.
+            let unresolved = or_expr(u_bit(&ma, i, u_disc), u_bit(&mb, i, u_disc));
             // A "forcing" operand (whose value alone fixes the result) clears
             // the metavalue: `and`'s forcing value is 0, `or`'s is 1, `xor` has
             // none.
@@ -4496,7 +4512,12 @@ impl<'a> Lowering<'a> {
                 _ => Expr::Const(0), // xor: no forcing
             };
             let meta_i = and_expr(anymeta, not1(forced));
-            acc = or_expr(acc, x_nibble(meta_i, i, x_disc));
+            let disc = Expr::Select {
+                cond: Box::new(unresolved),
+                then: Box::new(Expr::Const(u_disc)),
+                els: Box::new(Expr::Const(x_disc)),
+            };
+            acc = or_expr(acc, meta_nibble(meta_i, i, disc));
         }
         Some(acc)
     }
@@ -8904,6 +8925,10 @@ impl<'a> Lowering<'a> {
         self.char_disc('X', DEFAULT_LOGIC_TYPE).unwrap_or(3)
     }
 
+    fn u_disc(&self) -> u64 {
+        self.char_disc('U', DEFAULT_LOGIC_TYPE).unwrap_or(4)
+    }
+
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
     /// (enum signal, comparison counterpart) did not already resolve — to its
     /// position in std's [`DEFAULT_LOGIC_TYPE`]. After this the backends see
@@ -11345,15 +11370,36 @@ fn any_unknown(m: &Expr, width: u32) -> Expr {
 }
 /// Place `'X'` (disc `x_disc`, from std's logic enum) in nibble `i` when
 /// `meta_i` (0/1) is set, else 0.
-fn x_nibble(meta_i: Expr, i: u32, x_disc: u64) -> Expr {
+/// Place `disc` in nibble `i` when `meta_i` holds, and nothing otherwise.
+/// `disc` is an expression rather than a constant because the discriminant a
+/// logical operator produces depends on its operands: `'U'` dominates `'X'`.
+fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
     Expr::Binary {
         op: BinOp::Shl,
         lhs: Box::new(Expr::Binary {
             op: BinOp::Mul,
             lhs: Box::new(meta_i),
-            rhs: Box::new(Expr::Const(x_disc)),
+            rhs: Box::new(disc),
         }),
         rhs: Box::new(Expr::Const(4 * i as u64)),
+    }
+}
+
+/// Is element `i` of the companion specifically `'U'`? `std_logic_1164` lets
+/// uninitialised dominate: where an operand is `'U'` and nothing forces the
+/// result, the result is `'U'` and not merely unknown. Reporting `'X'` there
+/// loses the distinction between "never driven" and "driven to conflict",
+/// which is the whole reason `'U'` exists.
+fn u_bit(m: &Option<Expr>, i: u32, u_disc: u64) -> Expr {
+    let Some(m) = m else { return Expr::Const(0) };
+    Expr::Binary {
+        op: BinOp::Eq,
+        lhs: Box::new(Expr::Slice {
+            base: Box::new(m.clone()),
+            hi: 4 * i + 3,
+            lo: 4 * i,
+        }),
+        rhs: Box::new(Expr::Const(u_disc)),
     }
 }
 

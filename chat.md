@@ -8767,12 +8767,28 @@ shift, an `xor`, or an `H`/`L` operand.
   `numeric_std`. The arithmetic rule now asks that per element too, since a bare
   `companion != 0` also fires on a perfectly definite `'H'`.
 
-**Still open, and newly visible:** siox reports every unknown as `'X'`, while the
-tables propagate `'U'` as `'U'` -- `U or 0` is `'U'`, not `'X'`. Only `'U'`
-differs; `'Z'`, `'W'` and `'-'` correctly give `'X'`. That is the *kind* of
-unknown rather than whether there is one, and it needs the companion to carry a
-result discriminant instead of a flag, which is a different design point from
-the three above.
+- **`'U'` domination** (5 -> 0). Every unknown was reported as `'X'`, but the
+  tables let uninitialised dominate: `U or 0` is `'U'`, and `not U` is `'U'`.
+  Losing that collapses "never driven" into "driven to conflict", which is the
+  distinction `'U'` exists for. The nibble a logical operator writes is now
+  chosen per element -- `'U'` where a contributing operand is `'U'`, `'X'`
+  otherwise.
+
+  Two limits came straight from the reference rather than from taste: forcing
+  still wins (`U and 0` is `'0'`), and *arithmetic* still poisons to `'X'` even
+  for a `'U'` operand, which is what `nvc` gives. The domination rule belongs to
+  the logical tables alone.
+
+The sweep was then widened to 24 operand patterns -- `'U'` against `'X'`, `'Z'`,
+`'W'`, `'-'`, `'H'`, `'L'`, both operands dirty, all-`'U'`, all-`'H'` -- for 312
+comparisons. **All 312 match `nvc`.**
+
+One branch is knowingly untested: `lower_meta_ir`'s `Expr::Unary { Not }` case.
+A vector `not` lowers to `x xor all-ones` and is handled as an `Xor`, so nothing
+in the corpus or the differential reaches the unary path -- instrumenting it
+gave zero hits across the 24-pattern sweep and all six metavalue corpus tests.
+Its `'U'` handling matches the `Xor` path by construction, and it is kept
+because a handler that *disagreed* would be worse than one that is unused.
 
 A correction worth keeping: the first regression asserted `nand` yields `'X'` on
 the unknown element. It yields `'1'` -- `and`'s forcing value is 0, so `X and 0`
