@@ -8698,3 +8698,47 @@ One mutation stayed inert: reconstructing with `nibble >= 0` instead of
 clean elements too. Adding clean `'1'`s to the fixture did not make it
 detectable. The guard mirrors the IR's form rather than covering a reachable
 case, and is kept for that reason rather than a tested one.
+
+## nvc differential sweep: vector metavalue semantics (2026-08-22)
+
+A generated harness emits a VHDL reference and the siox equivalent from one
+shared operation list, so both sides provably compute the same thing: 13
+operations over 11 operand patterns, 143 comparisons, results read per element
+and compared symbol by symbol.
+
+**80 of 143 diverge, from three root causes** — not eighty defects. All three
+are in the *vector* metavalue lowering; the scalar tables are right, and were
+checked directly: siox and nvc agree exactly on `H and 0='0'`, `H and 1='1'`,
+`H or 0='1'`, `L or 1='1'`, `not H='0'`.
+
+**1. Shifts drop the companion** (36 rows: every `shl`/`shr` against every
+metavalue pattern). `"0000X100" << 2` gives `00110000`; nvc gives `00X10000`,
+the metavalue moving with its element. `Shl`/`Shr` are absent from
+`lower_meta_ir`, so the result gets no companion at all.
+
+**2. Element-wise logical ops other than `and`/`or` poison the whole vector**
+(~30 rows: `xor`, `xnor`, `nor`, `not`, and `nand` in part). `not "0000X100"`
+gives all `'X'` where nvc gives `1111X011`; `xor` and `xnor` likewise. Compare
+`or`, which diverges only twice, and `and`, only once — those two have a
+per-element path. `simulation.md` states the intended rule ("logical operators
+use the `std_logic_1164` truth tables per element"), so this contradicts siox's
+own documentation as much as VHDL.
+
+Not the one-line extension it first appears: `logical_meta` is reached only for
+`BinOp::And | BinOp::Or`, and there are no `Xor`/`Nand`/`Nor`/`Xnor` IR
+operations to add to that guard — they come from std `Operator` impls and reach
+the companion lowering already inlined, as a shape rather than a named
+operation.
+
+**3. `'H'` and `'L'` are treated as metavalues in vectors** (13 rows: the `h_l`
+pattern diverges on *every* operation, including `and`, `or`, `add` and `sub`,
+which are otherwise correct). Per `std_logic_1164` these are weak 1 and weak 0,
+not unknowns: nvc computes `h_l.add` as `00010001`, siox poisons it to all
+`'X'`. The vector path's "is this a metavalue" test appears to include the
+whole discriminant range at or above `Z`, which sweeps in `L` and `H`.
+
+None of the three was introduced by this session's fixes: all are visible on the
+entity-side read, which was always correct, and the four corpus metavalue tests
+pass throughout. They were simply unreachable by any test that existed, because
+every one of those reads elements from inside an entity and none exercises a
+shift, an `xor`, or an `H`/`L` operand.
