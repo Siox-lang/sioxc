@@ -7724,6 +7724,21 @@ impl Ctx<'_> {
             return Err(format!("`{path}` sliced with a negative bound"));
         }
         let width = (hi - lo + 1) as u32;
+        // One element of a Logic-family vector is a `Logic`, not a raw bit:
+        // `'X'` and `'Z'` live in the companion plane, and the value plane only
+        // says 0 or 1. Reading the bit alone compiled `y[7..7] == 'X'` to
+        // `bit == 3`, which one bit can never satisfy, while `== '0'` was true
+        // whenever the bit happened to be 0 -- so a testbench could confirm a
+        // value the design does not hold, on a design the hardware side reports
+        // as poisoned. The reconstruction is the one the IR uses for the same
+        // read inside an entity: a discriminant of 2 or more *is* the value.
+        if width == 1 {
+            if let Some(nibble) = self.companion_nibble(path, lo) {
+                return Ok(format!(
+                    "(({nibble}) >= 2 ? ({nibble}) : ((({v}) >> {lo}) & 1ULL))"
+                ));
+            }
+        }
         if a >= b {
             let mask = if width >= 64 {
                 u64::MAX
@@ -7739,6 +7754,22 @@ impl Ctx<'_> {
             parts.push(format!("(((({v}) >> {from}) & 1ULL) << {to})"));
         }
         Ok(format!("({})", parts.join(" | ")))
+    }
+
+    /// The companion nibble holding element `element`'s full `Logic`
+    /// discriminant, when the finished design gave `path` a metavalue plane.
+    /// `None` for a metavalue-free vector, which has no companion and needs no
+    /// reconstruction. Read a word at a time so a vector past sixteen elements
+    /// -- whose companion is wider than one machine word -- is reached too.
+    fn companion_nibble(&self, path: &str, element: i64) -> Option<String> {
+        let &id = self.map.get(path)?;
+        let &companion = self.design.meta_of.get(&id.0)?;
+        let bit = element * 4;
+        Some(format!(
+            "((sx_read_word({companion}, {}) >> {}) & 0xFULL)",
+            bit / 64,
+            bit % 64
+        ))
     }
 
     fn read_path(&self, path: &str) -> Result<String, String> {

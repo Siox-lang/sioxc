@@ -8655,3 +8655,46 @@ Two probes reported failures that were mine, not the compiler's: `%` is simply
 not declared in std, and a truncated diagnostic listing led me to believe a
 hardware `after` was silently dropped when it in fact errors. `--emit ir` prints
 before diagnostics gate the build, which is what made the second look real.
+
+## nvc as an external oracle (2026-08-22)
+
+The scalar `std_logic_1164` tables were already checked against `nvc`. What was
+not: `numeric_std` on *vectors* with metavalues. A VHDL reference printing
+`to_string` of each result, and the same expressions in siox read per element,
+put four defects on the table.
+
+**Fixed — propagation stopped one hop from a literal.** `propagate_metavalues`
+collected its work using the companions that existed before it ran, then created
+more, so a companion made during the pass was invisible to any driver copying
+that signal. `t = mv; u = t;` left `u` without one, and `u` did not merely lose
+the `'X'` -- it read back as `'1'`, the value plane's bit for it. It now runs to
+a fixed point.
+
+**Fixed — a testbench could not see a metavalue at all.** One element of a
+vector compiled to a value-plane bit compared against a discriminant:
+`y[7..7] == 'X'` became `bit == 3`, which one bit can never satisfy, while
+`== '0'` was true whenever the bit was 0. So a testbench could *confirm* a wrong
+value on hardware the entity-side read correctly reported as poisoned. The read
+now reconstructs the discriminant the way the IR does for the same read inside
+an entity.
+
+**Found, not fixed — `not` over-poisons.** `not "0000X100"` gives all `'X'`;
+`nvc` gives `1111X011`. `not` is a logical operator, so `std_logic_1164` applies
+its table per element -- which is also what `simulation.md` says siox does.
+Only arithmetic is supposed to poison the whole vector.
+
+**Found, not fixed — shifts drop the plane.** `"0000X100" << 2` gives
+`00110000`; `nvc` gives `00X10000`, the metavalue moving with its element.
+`Expr::Shl`/`Shr` are simply absent from the companion lowering, so the result
+has no companion at all.
+
+Both open ones are pre-existing and confirmed on the entity-side read, which was
+always correct -- they were invisible until the testbench read was fixed. The
+four corpus metavalue tests pass throughout, so neither was introduced here;
+they were merely unreachable by any test that existed.
+
+One mutation stayed inert: reconstructing with `nibble >= 0` instead of
+`>= 2` changes nothing, because the companion holds the exact discriminant for
+clean elements too. Adding clean `'1'`s to the fixture did not make it
+detectable. The guard mirrors the IR's form rather than covering a reachable
+case, and is kept for that reason rather than a tested one.

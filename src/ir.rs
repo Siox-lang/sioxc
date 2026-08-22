@@ -4480,33 +4480,47 @@ impl<'a> Lowering<'a> {
     /// companion from [`lower_meta_ir`] of its value. Runs after drivers are
     /// lowered.
     fn propagate_metavalues(&mut self) {
-        let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
-        for d in &self.out.drivers {
-            let n = self.out.signals[d.target.0 as usize].width;
-            if n == 0 {
-                continue;
+        // A companion created here is itself a source for any driver that
+        // copies the signal it belongs to, so this has to reach a fixed point.
+        // One pass carried a metavalue exactly one hop from its literal: with
+        // `t = mv; u = t;` the collecting loop read `meta_of` as it stood
+        // before propagation, saw no companion for `t` yet, and gave `u` none
+        // -- so `u` did not merely lose the `'X'`, it read back as `'1'`, the
+        // value plane's bit for it. Each round drives at least one previously
+        // undriven companion and the guard below then skips it, so the number
+        // of signals bounds the loop.
+        loop {
+            let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
+            for d in &self.out.drivers {
+                let n = self.out.signals[d.target.0 as usize].width;
+                if n == 0 {
+                    continue;
+                }
+                if self.out.meta_of.get(&d.target.0).is_some_and(|companion| {
+                    self.out
+                        .drivers
+                        .iter()
+                        .any(|driver| driver.target.0 == *companion)
+                }) {
+                    continue;
+                }
+                if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
+                    driven.push((d.target, d.cond.clone(), meta_expr, d.ctx));
+                }
             }
-            if self.out.meta_of.get(&d.target.0).is_some_and(|companion| {
-                self.out
-                    .drivers
-                    .iter()
-                    .any(|driver| driver.target.0 == *companion)
-            }) {
-                continue;
+            if driven.is_empty() {
+                return;
             }
-            if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
-                driven.push((d.target, d.cond.clone(), meta_expr, d.ctx));
+            for (target, cond, expr, ctx) in driven {
+                let cid = self.driven_companion(target);
+                self.out.drivers.push(Driver {
+                    span: self.cur_span,
+                    target: SignalId(cid),
+                    cond,
+                    expr,
+                    ctx,
+                });
             }
-        }
-        for (target, cond, expr, ctx) in driven {
-            let cid = self.driven_companion(target);
-            self.out.drivers.push(Driver {
-                span: self.cur_span,
-                target: SignalId(cid),
-                cond,
-                expr,
-                ctx,
-            });
         }
     }
 

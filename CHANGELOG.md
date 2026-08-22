@@ -24,6 +24,14 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A metavalue survives being copied, and a testbench can see it.** Two
+  defects found by differential-testing against `nvc`. Metavalue propagation
+  collected its work from the companions that existed *before* it ran, so a
+  metavalue travelled exactly one hop from its literal: `t = mv; u = t;` left
+  `u` reading back as `'1'` rather than `'X'`. And a testbench element read
+  compiled to a value-plane bit compared against a discriminant, so
+  `y[7..7] == 'X'` could never be true while `== '0'` was true whenever the bit
+  was 0 — a testbench could confirm a value the design does not hold.
 - **A nested aggregate can be read as one value.** `cp = seed.inner` and
   `a = w[0]`, where the field or element is itself a struct, were rejected with
   "has no hardware form". Only a bare name reached the aggregate read, so a
