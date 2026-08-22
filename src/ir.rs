@@ -688,6 +688,12 @@ pub enum BinOp {
     SDiv,
     And,
     Or,
+    /// Bitwise exclusive-or. Native like `And`/`Or` so the metavalue companion
+    /// can apply the `std_logic_1164` table per element: std spells `xor` as
+    /// `(a or b) - (a and b)`, which is right for two-valued arithmetic but
+    /// makes the companion lowering see a subtraction and poison the whole
+    /// vector. `nand`/`nor`/`xnor`/`not` all reduce to this.
+    Xor,
     Shl,
     Shr,
     /// Arithmetic right shift for the signed kernel `integer`.
@@ -4392,11 +4398,7 @@ impl<'a> Lowering<'a> {
                 ]
                 .into_iter()
                 .flatten()
-                .map(|m| Expr::Binary {
-                    op: BinOp::Ne,
-                    lhs: Box::new(m),
-                    rhs: Box::new(Expr::Const(0)),
-                })
+                .map(|m| any_unknown(&m, width))
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
                     lhs: Box::new(a),
@@ -4426,8 +4428,31 @@ impl<'a> Lowering<'a> {
                     els: Box::new(me.unwrap_or(Expr::Const(0))),
                 })
             }
-            Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or) => {
+            Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
                 self.logical_meta(*op, lhs, rhs, width)
+            }
+            // A shift moves elements, so it moves their discriminants with
+            // them: the companion holds four bits per element, so it shifts by
+            // four times as much. Without this the result had no companion at
+            // all and `"0000X100" << 2` came back `00110000` -- the metavalue
+            // silently replaced by the value plane's bit for it -- where VHDL
+            // gives `00X10000`. Elements shifted in are `'0'`, which is a zero
+            // nibble, exactly what shifting in zeroes produces.
+            Expr::Binary {
+                op: op @ (BinOp::Shl | BinOp::Shr),
+                lhs,
+                rhs,
+            } => {
+                let m = self.lower_meta_ir(lhs, width)?;
+                Some(Expr::Binary {
+                    op: *op,
+                    lhs: Box::new(m),
+                    rhs: Box::new(Expr::Binary {
+                        op: BinOp::Mul,
+                        lhs: Box::new(rhs.as_ref().clone()),
+                        rhs: Box::new(Expr::Const(4)),
+                    }),
+                })
             }
             Expr::Unary { op: UnOp::Not, rhs } => {
                 // `not` of any metavalue is `'X'` — the operand's metavalue
@@ -8097,6 +8122,11 @@ impl<'a> Lowering<'a> {
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
                 // built-in discriminant comparison unless `<=>` derives them.
                 let op_str = crate::syntax::pretty::bin_op(op);
+                if let Some(native) =
+                    self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_expr(e))
+                {
+                    return native;
+                }
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =
                         self.inline_op(op_str, lhs, rhs, &HashMap::new())
@@ -8355,6 +8385,63 @@ impl<'a> Lowering<'a> {
     // ponytail: operand types come from the outer locals, so `self + rhs`
     // nested *inside* an impl body doesn't re-inline; loops/match in bodies
     // unsupported until needed.
+    /// Lower a derived logical operator on a *packed* vector natively, as
+    /// `and`/`or` already are, instead of inlining std's body.
+    ///
+    /// std spells these arithmetically -- `xor` is `(a or b) - (a and b)`, and
+    /// the complements subtract from an all-ones mask. That agrees on
+    /// two-valued data, but the metavalue companion then sees a subtraction and
+    /// poisons the whole vector, where `std_logic_1164` applies its table per
+    /// element: `not "0000X100"` came back all `'X'` rather than `1111X011`.
+    ///
+    /// std cannot express the fix itself. A packed vector has no per-element
+    /// signals, so the per-element blanket impls over `T[]` do not lower for
+    /// one, and a complement needs `not` of a compound value -- which is the
+    /// boolean form, not a bitwise one. That is the same reason `and` and `or`
+    /// are core operators rather than library ones.
+    ///
+    /// A `Logic` scalar keeps its impl: `xor` on a nine-value discriminant is a
+    /// table lookup, and `^` of two discriminants would be nonsense.
+    fn native_vector_logical(
+        &self,
+        op: &str,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        lower: &dyn Fn(&ast::Expr) -> Expr,
+    ) -> Option<Expr> {
+        if !matches!(op, "xor" | "nand" | "nor" | "xnor") {
+            return None;
+        }
+        if ![lhs, rhs].iter().all(|e| {
+            self.operand_type_name(e)
+                .is_some_and(|f| self.out.vector_element_of_family.contains_key(&f))
+        }) {
+            return None;
+        }
+        let (a, b) = (lower(lhs), lower(rhs));
+        let bin = |op, lhs, rhs| Expr::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+        let inner = match op {
+            "xor" | "xnor" => bin(BinOp::Xor, a, b),
+            "nand" => bin(BinOp::And, a, b),
+            _ => bin(BinOp::Or, a, b),
+        };
+        if op == "xor" {
+            return Some(inner);
+        }
+        // The complement is `x xor all-ones`, which the companion lowering
+        // reads per element the same way it reads any other `xor`.
+        let width = self.ast_width(lhs);
+        let mut ones = vec![0u64; (width as usize).max(1).div_ceil(64)];
+        for i in 0..width {
+            ones[i as usize / 64] |= 1u64 << (i % 64);
+        }
+        Some(bin(BinOp::Xor, inner, words_const(ones)))
+    }
+
     fn inline_op(
         &self,
         op: &str,
@@ -10347,10 +10434,15 @@ impl<'a> Lowering<'a> {
         let w = self.ast_width(rhs);
         (w > 1 && w <= 64).then(|| {
             let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+            // `x xor all-ones`, not `all-ones - x`. The two agree bit for bit
+            // on two-valued data, but a subtraction makes the metavalue
+            // companion poison the whole vector, so `not "0000X100"` came back
+            // all `'X'` where `std_logic_1164` inverts per element and leaves
+            // `1111X011`.
             Expr::Binary {
-                op: BinOp::Sub,
-                lhs: Box::new(Expr::Const(mask)),
-                rhs: Box::new(lower(rhs)),
+                op: BinOp::Xor,
+                lhs: Box::new(lower(rhs)),
+                rhs: Box::new(Expr::Const(mask)),
             }
         })
     }
@@ -10548,6 +10640,11 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 let op_str = crate::syntax::pretty::bin_op(op);
+                if let Some(native) =
+                    self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_scalar_env(e, env))
+                {
+                    return Val::Scalar(native);
+                }
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
                         return v;
@@ -11207,19 +11304,44 @@ fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
 }
 
 /// Whether element `i` of a metavalue disc-array is a metavalue (disc >= 2).
+/// Is element `i` of the companion an *unknown*?
+///
+/// `'L'` and `'H'` are not: `std_logic_1164` defines them as a weak 0 and a
+/// weak 1, and both its tables and `numeric_std` treat them as such -- `H and 0`
+/// is `'0'`, and `"0000H100" + b` is ordinary arithmetic. Testing the whole
+/// discriminant range at or above `'Z'` swept them in, so a vector holding a
+/// pull-up's `'H'` poisoned every operation applied to it.
+///
+/// The unknowns are `'Z'`, `'X'`, `'U'`, `'W'` and `'-'`, which are contiguous
+/// except for the last -- hence the two-part test rather than one comparison.
 fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
-    match m {
-        Some(m) => Expr::Binary {
-            op: BinOp::Ge,
-            lhs: Box::new(Expr::Slice {
-                base: Box::new(m.clone()),
-                hi: 4 * i + 3,
-                lo: 4 * i,
-            }),
-            rhs: Box::new(Expr::Const(2)),
-        },
-        None => Expr::Const(0),
+    let Some(m) = m else { return Expr::Const(0) };
+    let nibble = Expr::Slice {
+        base: Box::new(m.clone()),
+        hi: 4 * i + 3,
+        lo: 4 * i,
+    };
+    let cmp = |op, rhs| Expr::Binary {
+        op,
+        lhs: Box::new(nibble.clone()),
+        rhs: Box::new(Expr::Const(rhs)),
+    };
+    or_expr(
+        and_expr(cmp(BinOp::Ge, 2), cmp(BinOp::Le, 5)),
+        cmp(BinOp::Eq, 8),
+    )
+}
+
+/// Does any element of `m` hold an unknown? The arithmetic rule is all-or-
+/// nothing per vector, but it must ask the same question per element as the
+/// logical rule -- a bare `companion != 0` also fires on `'L'`/`'H'`, whose
+/// discriminants are non-zero but whose values are perfectly definite.
+fn any_unknown(m: &Expr, width: u32) -> Expr {
+    let mut acc = Expr::Const(0);
+    for i in 0..width {
+        acc = or_expr(acc, meta_bit(&Some(m.clone()), i));
     }
+    acc
 }
 /// Place `'X'` (disc `x_disc`, from std's logic enum) in nibble `i` when
 /// `meta_i` (0/1) is set, else 0.
@@ -11690,6 +11812,7 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::SDiv => "/",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::Xor => "xor",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
         BinOp::AShr => ">>",

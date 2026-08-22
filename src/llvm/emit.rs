@@ -1728,6 +1728,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             // operands this matches the logical reading.
             BinOp::And => self.builder.build_and(a, b, "and").unwrap(),
             BinOp::Or => self.builder.build_or(a, b, "or").unwrap(),
+            BinOp::Xor => self.builder.build_xor(a, b, "xor").unwrap(),
             BinOp::Eq => cmp(IntPredicate::EQ, "eq"),
             BinOp::Ne => cmp(IntPredicate::NE, "ne"),
             BinOp::Lt => cmp(IntPredicate::ULT, "lt"),

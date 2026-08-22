@@ -8742,3 +8742,40 @@ entity-side read, which was always correct, and the four corpus metavalue tests
 pass throughout. They were simply unreachable by any test that existed, because
 every one of those reads elements from inside an entity and none exercises a
 shift, an `xor`, or an `H`/`L` operand.
+
+### All three fixed (2026-08-22)
+
+80 divergences of 143 became 5.
+
+- **Logical operators** (80 -> 50). `xor` is now a native `BinOp::Xor` like
+  `and`/`or`, with `nand`/`nor`/`xnor` derived from it and vector `not` lowered
+  as `x xor all-ones` instead of `all-ones - x`.
+
+  This was tried in std first, three ways, and none of them can work: a packed
+  vector has no per-element signals, so the blanket `T[]` impls do not lower for
+  one; `not` of a compound value is the boolean not; and binding an intermediate
+  in an impl body does not produce a vector reference either. std cannot express
+  a vector complement, which is the same reason `and` and `or` are core
+  operators rather than library ones.
+
+- **Shifts** (50 -> 14). The companion holds four bits per element, so it shifts
+  by four times the element amount. Elements shifted in are `'0'`, which is a
+  zero nibble -- exactly what shifting in zeroes gives.
+
+- **Weak levels** (14 -> 5). The unknown set is `'Z'`, `'X'`, `'U'`, `'W'`,
+  `'-'`; `'L'` and `'H'` are a weak 0 and a weak 1 in both the tables and
+  `numeric_std`. The arithmetic rule now asks that per element too, since a bare
+  `companion != 0` also fires on a perfectly definite `'H'`.
+
+**Still open, and newly visible:** siox reports every unknown as `'X'`, while the
+tables propagate `'U'` as `'U'` -- `U or 0` is `'U'`, not `'X'`. Only `'U'`
+differs; `'Z'`, `'W'` and `'-'` correctly give `'X'`. That is the *kind* of
+unknown rather than whether there is one, and it needs the companion to carry a
+result discriminant instead of a flag, which is a different design point from
+the three above.
+
+A correction worth keeping: the first regression asserted `nand` yields `'X'` on
+the unknown element. It yields `'1'` -- `and`'s forcing value is 0, so `X and 0`
+resolves to `'0'` and the complement is `'1'`. That came from reasoning "unknown
+in, unknown out" instead of reading the reference, and the test now carries the
+explanation.
