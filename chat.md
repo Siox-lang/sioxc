@@ -8795,3 +8795,35 @@ the unknown element. It yields `'1'` -- `and`'s forcing value is 0, so `X and 0`
 resolves to `'0'` and the complement is `'1'`. That came from reasoning "unknown
 in, unknown out" instead of reading the reference, and the test now carries the
 explanation.
+
+## Derived comparisons (2026-08-23)
+
+`"0000X000" < "00001100"` answered *true*: `'X'` still has a bit on the value
+plane, so the comparison read 8 against 12. `numeric_std` answers false, and
+true for `/=`. A testbench checking a poisoned result against an expected number
+therefore passed -- the verification tool agreeing with a value the design does
+not hold.
+
+A guard already existed, over the finished expression, and reached `<` and `>` --
+whose operands are still bare signal reads. `<=`, `>=`, `==` and `/=` reach
+their answer through `<=>` and an `Ordering`, so nothing in the built expression
+looks like a vector comparison. It also asked `companion != 0`, which counts
+`'L'` and `'H'`, so a vector holding a pull-up's `'H'` compared false against
+everything including itself.
+
+**The first attempt was wrong in a way worth recording.** Guarding at lowering
+time drove the comparison differential to 0 of 72 -- and was still broken: a
+*computed* operand has no companion until `propagate_metavalues` runs, so the
+guard silently skipped exactly the operands worth guarding. The differential had
+not caught it because every operand in it was a literal-initialised local. The
+corpus regression did, because it used `a = match sel { .. }`.
+
+Neither end of the pipeline can decide this alone, so the comparison is *marked*
+where it is built (`Expr::MetaCmp`) and resolved in the post-pass that runs after
+propagation. `validate` rejects any marker that survives, since the backends
+have no meaning for one.
+
+With this, the three sweeps stand at **312 + 81 + 72 = 465 comparisons, all
+matching `nvc`**: logical and arithmetic operations over 24 operand patterns,
+the full 81-entry resolution table, and six comparison operators over 12
+patterns.

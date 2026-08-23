@@ -1246,6 +1246,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// operation or assignment.
     fn expr_width(&self, e: &Expr) -> u32 {
         match e {
+            // Resolved away before code generation; `validate` rejects any that
+            // survive. Falling through to the inner comparison keeps this total
+            // rather than panicking on a shape that should not be here.
+            Expr::MetaCmp { inner, .. } => self.expr_width(inner),
             Expr::Const(v) => (64 - v.leading_zeros()).max(1),
             Expr::WideConst(words) => {
                 let high = words.last().copied().unwrap_or(0);
@@ -1316,6 +1320,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
+            Expr::MetaCmp { inner, .. } => self.emit_at(inner, width),
             Expr::Const(v) => self.c_at(*v, width),
             Expr::WideConst(words) => self.value_ty(width).const_int_arbitrary_precision(words),
             Expr::Real(x) => self.c_at(x.to_bits(), 64),

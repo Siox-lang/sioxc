@@ -24,6 +24,14 @@ assertions, and VCD export — predates this changelog. See
   0..10 (it was 13)" while `t` held 2 — the compiler's own `W-P014` had just
   called that line dead. Both the combinational and clocked paths now skip
   writes a later unconditional write to the same target subsumes.
+- **A comparison with an unknown operand is false.** `"0000X000" < "00001100"`
+  answered *true*, comparing 8 against 12 on the value plane, so a testbench
+  checking a poisoned result against an expected number passed. `numeric_std`
+  answers false, and true for `/=`. A guard existed but reached only `<` and
+  `>`; `<=`, `>=`, `==` and `/=` arrive through `<=>` and an `Ordering`, leaving
+  nothing to match on. Comparisons are now marked where they are built and
+  resolved once metavalue companions exist, which is also what makes a
+  *computed* operand work.
 - **Vector metavalue semantics follow `std_logic_1164`.** A generated
   differential against `nvc` — 13 operations over 11 operand patterns, read per
   element — disagreed on 80 of 143 results, from three causes, now all fixed:

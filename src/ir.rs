@@ -619,6 +619,26 @@ pub enum Expr {
     Const(u64),
     /// An integer constant wider than one ABI word, low-word first.
     WideConst(Vec<u64>),
+    /// A vector comparison awaiting its metavalue rule.
+    ///
+    /// `numeric_std` answers false when either operand holds an unknown, and
+    /// true for `/=`. That cannot be decided while lowering: a computed
+    /// operand's companion does not exist until `propagate_metavalues` has run,
+    /// so a guard emitted here would silently skip exactly the operands worth
+    /// guarding. Nor can it be recovered afterwards by matching the finished
+    /// shape -- `<=`, `>=`, `==` and `/=` reach their answer through `<=>` and
+    /// an `Ordering`, leaving nothing that looks like a vector comparison.
+    ///
+    /// So the comparison is marked where it is built and resolved once the
+    /// companions are known. `validate` rejects any that survive, since the
+    /// backends have no meaning for one.
+    MetaCmp {
+        /// `/=` inverts the rule: unknown operands are definitely not equal.
+        ne: bool,
+        /// The compared values, whose companions decide the answer.
+        operands: Vec<Expr>,
+        inner: Box<Expr>,
+    },
     /// A `real` constant; evaluates to its f64 bit pattern.
     Real(f64),
     Logic(char),
@@ -4576,19 +4596,25 @@ impl<'a> Lowering<'a> {
     /// just init ones.
     fn reconstruct_reads(&mut self) {
         let meta_of = self.out.meta_of.clone();
+        // Companion id -> how many elements it describes, so the comparison
+        // guard can ask its per-element question without the signal table.
+        let elems: HashMap<u32, u32> = meta_of
+            .iter()
+            .map(|(&base, &companion)| (companion, self.out.signals[base as usize].width))
+            .collect();
         for d in &mut self.out.drivers {
             if let Some(c) = &mut d.cond {
-                reconstruct_expr(c, &meta_of);
+                reconstruct_expr(c, &meta_of, &elems);
             }
-            reconstruct_expr(&mut d.expr, &meta_of);
+            reconstruct_expr(&mut d.expr, &meta_of, &elems);
         }
         for b in &mut self.out.event_blocks {
-            reconstruct_expr(&mut b.condition, &meta_of);
+            reconstruct_expr(&mut b.condition, &meta_of, &elems);
             for u in &mut b.updates {
                 if let Some(c) = &mut u.cond {
-                    reconstruct_expr(c, &meta_of);
+                    reconstruct_expr(c, &meta_of, &elems);
                 }
-                reconstruct_expr(&mut u.expr, &meta_of);
+                reconstruct_expr(&mut u.expr, &meta_of, &elems);
             }
         }
     }
@@ -8148,15 +8174,18 @@ impl<'a> Lowering<'a> {
                 {
                     return native;
                 }
+                // Every route to a comparison is marked, because they all owe
+                // the same answer: an `Operator` impl, the `<=>` derivation,
+                // and the built-in below.
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =
                         self.inline_op(op_str, lhs, rhs, &HashMap::new())
                     {
-                        return inlined;
+                        return self.mark_vector_compare(op, lhs, rhs, inlined);
                     }
                 }
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, &HashMap::new()) {
-                    return derived;
+                    return self.mark_vector_compare(op, lhs, rhs, derived);
                 }
                 let (mut l, mut r) = (self.lower_expr(lhs), self.lower_expr(rhs));
                 // A character literal's identity comes from its counterpart's
@@ -8171,13 +8200,14 @@ impl<'a> Lowering<'a> {
                         r = v;
                     }
                 }
-                self.make_binary(
+                let built = self.make_binary(
                     op.clone(),
                     l,
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
-                )
+                );
+                self.mark_vector_compare(op, lhs, rhs, built)
             }
             // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
             // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
@@ -9056,6 +9086,35 @@ impl<'a> Lowering<'a> {
     /// Build a binary node, switching `+ - * /` to float arithmetic (and
     /// coercing integer constants) when either operand is real. `==`/`!=`
     /// compare f64 bits exactly, which is right once constants are coerced.
+    /// Mark a comparison whose operands are metavalue-capable vectors, so the
+    /// `numeric_std` rule can be applied once companions exist. Returns the
+    /// value unchanged for anything else -- a scalar, an integer, a comparison
+    /// on a type that has no metavalue plane.
+    fn mark_vector_compare(
+        &self,
+        op: &ast::BinOp,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        built: Expr,
+    ) -> Expr {
+        use ast::BinOp as A;
+        if !matches!(op, A::Eq | A::Ne | A::Lt | A::Le | A::Gt | A::Ge) {
+            return built;
+        }
+        let vector = |e: &ast::Expr| {
+            self.operand_type_name(e)
+                .is_some_and(|f| self.out.vector_element_of_family.contains_key(&f))
+        };
+        if !vector(lhs) && !vector(rhs) {
+            return built;
+        }
+        Expr::MetaCmp {
+            ne: matches!(op, A::Ne),
+            operands: vec![self.lower_expr(lhs), self.lower_expr(rhs)],
+            inner: Box::new(built),
+        }
+    }
+
     fn make_binary(
         &self,
         op: ast::BinOp,
@@ -9130,6 +9189,7 @@ impl<'a> Lowering<'a> {
 
     fn has_non_integer_signal(&self, e: &Expr) -> bool {
         match e {
+            Expr::MetaCmp { inner, .. } => self.has_non_integer_signal(inner),
             Expr::Current(id) | Expr::Old(id) => !self.out.signals[id.0 as usize].integer,
             Expr::Event(_) => true,
             Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
@@ -11070,6 +11130,9 @@ impl<'a> Lowering<'a> {
 /// leaves) into `out`, in first-seen order.
 pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
     match e {
+        // The operands are read through `inner` too; walking both would list
+        // them twice and `dedup` is not applied everywhere this feeds.
+        Expr::MetaCmp { inner, .. } => read_set(inner, out),
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => out.push(*id),
         Expr::CCall { args, .. } => {
             for a in args {
@@ -11095,6 +11158,14 @@ pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
 /// std-supplied variant map of the default logic type. Recurses into children.
 fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
     match e {
+        Expr::MetaCmp {
+            operands, inner, ..
+        } => {
+            for operand in operands {
+                resolve_logic_expr(operand, lut);
+            }
+            resolve_logic_expr(inner, lut);
+        }
         Expr::Logic(c) => {
             *e = Expr::Const(lut.get(&format!("'{c}'")).copied().unwrap_or(0));
         }
@@ -11128,7 +11199,39 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
 /// its 9-value reconstruction: the companion nibble when it is a metavalue
 /// (disc >= 2), else the value bit. Recurses; does not descend into the node it
 /// creates (the companion has no companion).
-fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
+fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u32, u32>) {
+    // A marked comparison: apply the `numeric_std` rule now that every
+    // companion exists. Done before the generic walk so the operands, which are
+    // also present inside `inner`, are not rewritten twice.
+    if let Expr::MetaCmp {
+        ne,
+        operands,
+        inner,
+    } = e
+    {
+        let ne = *ne;
+        let mut resolved = inner.as_ref().clone();
+        reconstruct_expr(&mut resolved, meta_of, elems);
+        let unknown = operands
+            .iter()
+            .filter_map(|operand| match operand {
+                Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
+                _ => None,
+            })
+            .map(|c| {
+                let n = elems.get(&c).copied().unwrap_or(0);
+                any_unknown(&Expr::Current(SignalId(c)), n)
+            })
+            .reduce(or_expr);
+        *e = match unknown {
+            // `/=` is the one that goes the other way: unknown operands are
+            // definitely not equal.
+            Some(unknown) if ne => or_expr(resolved, unknown),
+            Some(unknown) => and_expr(resolved, not1(unknown)),
+            None => resolved,
+        };
+        return;
+    }
     // A whole-vector comparison with a metavalue operand is false (numeric_std).
     if let Expr::Binary { op, lhs, rhs } = e {
         if matches!(
@@ -11148,13 +11251,17 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
                 Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
                 _ => None,
             };
+            // Per element, not `companion != 0`: a nibble is non-zero for
+            // `'L'` and `'H'` too, and those are a weak 0 and a weak 1 that
+            // `numeric_std` compares like any other value. The coarse test made
+            // a vector holding a pull-up's `'H'` compare false against
+            // everything.
             let cond = [comp(lhs), comp(rhs)]
                 .into_iter()
                 .flatten()
-                .map(|c| Expr::Binary {
-                    op: BinOp::Ne,
-                    lhs: Box::new(Expr::Current(SignalId(c))),
-                    rhs: Box::new(Expr::Const(0)),
+                .map(|c| {
+                    let elems = elems.get(&c).copied().unwrap_or(0);
+                    any_unknown(&Expr::Current(SignalId(c)), elems)
                 })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
@@ -11203,20 +11310,20 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>) {
         }
     }
     match e {
-        Expr::Unary { rhs, .. } => reconstruct_expr(rhs, meta_of),
+        Expr::Unary { rhs, .. } => reconstruct_expr(rhs, meta_of, elems),
         Expr::Binary { lhs, rhs, .. } => {
-            reconstruct_expr(lhs, meta_of);
-            reconstruct_expr(rhs, meta_of);
+            reconstruct_expr(lhs, meta_of, elems);
+            reconstruct_expr(rhs, meta_of, elems);
         }
-        Expr::Slice { base, .. } => reconstruct_expr(base, meta_of),
+        Expr::Slice { base, .. } => reconstruct_expr(base, meta_of, elems),
         Expr::Select { cond, then, els } => {
-            reconstruct_expr(cond, meta_of);
-            reconstruct_expr(then, meta_of);
-            reconstruct_expr(els, meta_of);
+            reconstruct_expr(cond, meta_of, elems);
+            reconstruct_expr(then, meta_of, elems);
+            reconstruct_expr(els, meta_of, elems);
         }
         Expr::CCall { args, .. } => {
             for a in args {
-                reconstruct_expr(a, meta_of);
+                reconstruct_expr(a, meta_of, elems);
             }
         }
         _ => {}
@@ -11411,6 +11518,11 @@ fn dedup(v: &mut Vec<SignalId>) {
 /// Validation walk over an expression (see [`Design::validate`]).
 fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
     match e {
+        // Every one is rewritten once companions are known; one surviving means
+        // that pass did not reach it, and the backends have no meaning for it.
+        Expr::MetaCmp { .. } => issues.push(format!(
+            "{ctx}: contains an unresolved metavalue comparison"
+        )),
         Expr::CCall { args, .. } => {
             for a in args {
                 check_expr(a, n, issues, ctx);
@@ -11792,6 +11904,7 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 
 fn render(e: &Expr, d: &Design) -> String {
     match e {
+        Expr::MetaCmp { inner, .. } => format!("metacmp({})", render(inner, d)),
         Expr::CCall { name, args, .. } => {
             let a = args
                 .iter()
