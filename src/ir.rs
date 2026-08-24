@@ -4451,6 +4451,19 @@ impl<'a> Lowering<'a> {
             Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
                 self.logical_meta(*op, lhs, rhs, width)
             }
+            // A slice selects elements, so it selects their discriminants: the
+            // companion holds four bits per element, so the nibble range is
+            // four times the element range. Without this a slice had no
+            // companion and `"0000X100"[3..0]` came back `1100`, the metavalue
+            // replaced by the value plane's bit for it.
+            Expr::Slice { base, hi, lo } => {
+                let m = self.lower_meta_ir(base, width)?;
+                Some(Expr::Slice {
+                    base: Box::new(m),
+                    hi: hi * 4 + 3,
+                    lo: lo * 4,
+                })
+            }
             // A shift moves elements, so it moves their discriminants with
             // them: the companion holds four bits per element, so it shifts by
             // four times as much. Without this the result had no companion at
@@ -4558,6 +4571,20 @@ impl<'a> Lowering<'a> {
         loop {
             let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
             for d in &self.out.drivers {
+                // A companion is already the discriminant plane; it cannot
+                // itself carry metavalues.  In particular, an element-wise
+                // Resolve companion expression can still contain reads of the
+                // original value plane.  Feeding that expression back through
+                // `lower_meta_ir` used to create `$meta$meta`, then
+                // `$meta$meta$meta`, forever.
+                if self
+                    .out
+                    .meta_of
+                    .values()
+                    .any(|&companion| companion == d.target.0)
+                {
+                    continue;
+                }
                 let n = self.out.signals[d.target.0 as usize].width;
                 if n == 0 {
                     continue;
@@ -4574,7 +4601,49 @@ impl<'a> Lowering<'a> {
                     driven.push((d.target, d.cond.clone(), meta_expr, d.ctx));
                 }
             }
-            if driven.is_empty() {
+            // The same for next-state updates. Nothing walked the event blocks
+            // at all, so a register dropped its metavalue plane: `if
+            // clk.rising() { q = a; }` stored `a`'s value bits and left `q`
+            // with no companion, so a pipeline stage holding `'X'` read back as
+            // `'1'`. The companion update rides in the same block, under the
+            // same guard, so it commits with the value it describes.
+            let mut staged: Vec<(usize, SignalId, Option<Expr>, Expr)> = Vec::new();
+            for (index, block) in self.out.event_blocks.iter().enumerate() {
+                for update in &block.updates {
+                    // As above, a next-state update of the discriminant plane
+                    // is the end of propagation, not the start of another
+                    // companion chain.
+                    if self
+                        .out
+                        .meta_of
+                        .values()
+                        .any(|&companion| companion == update.target.0)
+                    {
+                        continue;
+                    }
+                    let n = self.out.signals[update.target.0 as usize].width;
+                    if n == 0 {
+                        continue;
+                    }
+                    if self
+                        .out
+                        .meta_of
+                        .get(&update.target.0)
+                        .is_some_and(|companion| {
+                            self.out
+                                .event_blocks
+                                .iter()
+                                .any(|b| b.updates.iter().any(|u| u.target.0 == *companion))
+                        })
+                    {
+                        continue;
+                    }
+                    if let Some(meta_expr) = self.lower_meta_ir(&update.expr, n) {
+                        staged.push((index, update.target, update.cond.clone(), meta_expr));
+                    }
+                }
+            }
+            if driven.is_empty() && staged.is_empty() {
                 return;
             }
             for (target, cond, expr, ctx) in driven {
@@ -4585,6 +4654,15 @@ impl<'a> Lowering<'a> {
                     cond,
                     expr,
                     ctx,
+                });
+            }
+            for (index, target, cond, expr) in staged {
+                let cid = self.driven_companion(target);
+                self.out.event_blocks[index].updates.push(NextUpdate {
+                    span: self.cur_span,
+                    target: SignalId(cid),
+                    cond,
+                    expr,
                 });
             }
         }
@@ -8209,8 +8287,14 @@ impl<'a> Lowering<'a> {
                 );
                 self.mark_vector_compare(op, lhs, rhs, built)
             }
-            // `{a, b, c}`: fold into `(((0 << w_a) + a) << w_b) + b ...`. Parts
-            // don't overlap, so `+` acts as bitwise-or. First part is the MSBs.
+            // `{a, b, c}`: fold into `(((0 << w_a) or a) << w_b) or b ...`.
+            // First part is the MSBs.
+            //
+            // `or` rather than `+`: the parts do not overlap, so the two agree
+            // bit for bit, but the metavalue companion reads a `+` as
+            // arithmetic and poisons the whole result. Joining two fields is
+            // not arithmetic, and `"X100" & "1101"` should keep its `'X'` in
+            // place rather than turn eight elements unknown.
             ast::Expr::Concat { parts, .. } => {
                 let mut acc = Expr::Const(0);
                 for part in parts {
@@ -8222,7 +8306,7 @@ impl<'a> Lowering<'a> {
                         rhs: Box::new(Expr::Const(w as u64)),
                     };
                     acc = Expr::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Or,
                         lhs: Box::new(shifted),
                         rhs: Box::new(e),
                     };
@@ -15825,6 +15909,50 @@ mod tests {
         assert_eq!(d.signals[cid as usize].width, 16, "4 bits x 4 elements");
         assert!(d.signals[cid as usize].path.ends_with(".v$meta"));
         assert!(!d.meta_of.contains_key(&w), "clean init gets no companion");
+    }
+
+    #[test]
+    fn resolved_metavalue_companion_is_terminal() {
+        // Element-wise resolution builds the discriminant plane from both the
+        // value and metavalue planes.  That expression must not make the
+        // propagation fixed point infer a companion for the companion itself.
+        let d = lower_src(
+            "module m;\n\
+             trait Resolve { fn resolve(self, rhs: Self) -> Self; }\n\
+             impl<T: Resolve> Resolve for T[] {\n\
+                 fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n\
+             impl Resolve for Logic {\n\
+                 fn resolve(self, rhs: Logic) -> Logic {\n\
+                     if self == 'Z' { return rhs; }\n\
+                     return self;\n\
+                 }\n\
+             }\n\
+             entity Driver { y: unsigned[2] out }\n\
+             impl Driver { y = \"X0\"; }\n\
+             impl Driver { y = \"01\"; }\n\
+             #[top] entity T {}\n\
+             impl T { let y: unsigned[2]; let d: Driver = { .y = y }; }",
+        );
+
+        assert!(
+            d.signals
+                .iter()
+                .any(|signal| signal.path.ends_with("$meta")),
+            "the resolved vector still needs one discriminant plane"
+        );
+        assert!(
+            d.signals
+                .iter()
+                .all(|signal| !signal.path.contains("$meta$meta")),
+            "a discriminant plane must never acquire its own companion"
+        );
+        assert!(
+            d.meta_of
+                .values()
+                .all(|companion| !d.meta_of.contains_key(companion)),
+            "the companion relation must have depth one"
+        );
     }
 
     #[test]

@@ -8827,3 +8827,21 @@ With this, the three sweeps stand at **312 + 81 + 72 = 465 comparisons, all
 matching `nvc`**: logical and arithmetic operations over 24 operand patterns,
 the full 81-entry resolution table, and six comparison operators over 12
 patterns.
+
+## Metavalue propagation OOM follow-up (Codex, 2026-08-24)
+
+Working in shared `src/ir.rs` on top of Claude's uncommitted slice,
+next-state, and concatenation changes. The `res.siox` resolution sweep exposed
+an unbounded companion chain: propagation treated a `$meta` discriminant plane
+as ordinary metavalue-capable data and synthesized `$meta$meta` repeatedly.
+The fix makes companion planes terminal and adds a focused multi-driver
+resolution regression. Claude's existing changes are being preserved as one
+intermingled change set; do not edit or commit `src/ir.rs` independently until
+this entry is updated with the test/commit hand-off.
+
+Handoff: the terminal-plane guard fixes the runaway. The exact `res.siox`
+compile succeeds inside a 1 GiB cgroup at a 117.4 MiB peak and its emitted test
+binary passes. `cargo test` is green, and `./scripts/test-corpus.sh
+/home/max/siox-tests` reports 177 passed / 0 failed. The focused unit regression
+asserts both that resolution retains its one required companion and that the
+companion relation can never exceed depth one.
