@@ -57,8 +57,9 @@ Current baseline:
   type-owned struct fields and literals, type-owned inherent methods, private
   entity implementation state, and public-interface privacy.
   Entity ports and trait methods are inherently visible; views explicitly
-  expose backing fields. Public entity methods remain rejected until
-  cross-hierarchy call/scheduling semantics are designed.
+  expose backing fields. Public entity associated functions without `self` are
+  supported; receiver methods remain rejected until their generated-port and
+  cross-hierarchy scheduling semantics are implemented.
 - ✅ Inherent impls are owned by the nominal type's module. Foreign extensions
   use traits; aliases and kernel types cannot gain inherent members; split impl
   blocks share a coherent member namespace, including applied-view identity.
@@ -76,11 +77,13 @@ Remaining:
 - 🔴 **Incremental/query interface.** Phase products are explicit and stable,
   but compilation is pass-oriented. Add demand-driven caching only when the
   LSP or a future project tool needs incremental multi-file recomputation.
-- 🟡 **Public entity methods.** Visibility is parsed and checked, but `pub fn`
-  on an entity remains rejected: `instance.method()` has no defined hierarchy,
-  scheduling, connectivity, or synthesis semantics. Decide whether such a call
-  elaborates into ports/handshake logic or remains unsupported before exposing
-  behavioral entity APIs; ordinary struct/view methods are already complete.
+- 🟡 **Public entity receiver methods.** Tier 1 is complete: `pub fn` without
+  `self` is an instance-free `Entity::function(...)`, with resolved namespace
+  identity in semantic checking, IR, and native testbenches. Tiers 2 and 3
+  remain: elaborate accessors and effectful `instance.method()` calls into
+  stable generated ports, initially with one caller per method/instance, then
+  define arbitration before permitting multiple callers. Ordinary struct/view
+  methods are already complete.
 - ✅ **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
   keys nominal declarations and free-function contracts by stable identity;

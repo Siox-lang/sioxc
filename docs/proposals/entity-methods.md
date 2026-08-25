@@ -1,7 +1,7 @@
 # Public methods on entities
 
-Status: **proposal**. Not implemented; `pub fn` on an entity `impl` is
-currently rejected (`E-P024`).
+Status: **partially implemented**. Tier 1 associated functions are complete;
+tiers 2 and 3 receiver methods remain a proposal and are rejected (`E-P024`).
 
 An entity's interface is its ports. Reaching a child instance therefore means
 declaring a port for every value that crosses the boundary and wiring each one
@@ -105,9 +105,9 @@ Three tiers, separable and worth landing in this order.
 
 **1. Associated functions (no `self`).** `pub fn clamp(v: unsigned[8]) -> unsigned[8]`
 on an entity `impl`. No instance, no ports, no scheduling — a namespaced
-function and nothing more. It already works when private; the current rejection
-is broader than its own justification and this tier is a rule fix rather than a
-feature.
+function and nothing more. This tier is implemented: public visibility works
+across modules, entity owner identity remains resolved and namespaced through
+IR/native evaluation, and the function has no access to entity ports or state.
 
 **2. Pure accessors.** `pub fn is_full(self) -> Bit`, reading instance state
 and returning a value. Materialises one output port. This is sugar over a port
@@ -165,8 +165,10 @@ purely additive.
 
 ## Status of the current rejection
 
-`E-P024` rejects every `pub fn` on an entity `impl`, including the no-`self`
-case that tier 1 covers. If this proposal is accepted, the TODO entry should
-change from "no defined hierarchy, scheduling, connectivity or synthesis
-semantics" to "designed; scoped to a single caller pending an arbitration
-rule", since the semantics above are defined and have a shipped precedent.
+`E-P024` rejects public entity functions only when their signature contains a
+`self` receiver. Calls through an instance remain rejected independently, even
+for private methods. Associated functions without `self` are ordinary
+`Entity::function(...)` calls and require no hierarchy or scheduling rule.
+Landing tiers 2 and 3 still requires generated-port naming, direct-child depth
+rules, generic specialization, and the initial one-caller elaboration check;
+multiple callers additionally require an arbitration rule.

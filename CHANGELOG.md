@@ -12,6 +12,12 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Entities may own public associated functions.** A `pub fn` without `self`
+  in an entity `impl` is callable as `Entity::function(...)` across modules and
+  lowers in both hardware and native testbench expressions. It has no instance
+  scope and cannot capture ports or implementation state. Public receiver
+  methods and calls through instances remain rejected until their generated
+  port and scheduling semantics are implemented.
 - **A test executable can be built for a debugger.** `sioxc --test -g`
   attributes the generated code back to its `.siox` lines and compiles it
   unoptimized with debug info, so `break counter.siox:34`, stepping, source

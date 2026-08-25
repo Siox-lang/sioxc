@@ -38,7 +38,8 @@ type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);
 /// Module-level and foreign functions use the resolver's stable declaration
 /// identity, so equal leaf names in different modules cannot overwrite one
 /// another. Static associated functions do not yet receive their own `DefId`;
-/// they remain in a deliberately separate `Type::name` registry.
+/// they remain in a deliberately separate `Type::name` registry whose owner
+/// is still the resolver-selected nominal type or entity identity.
 pub struct FunctionIndex<'a> {
     resolved: &'a Resolved,
     free: HashMap<DefId, &'a ast::FnDecl>,
@@ -181,6 +182,16 @@ impl<'a> FunctionIndex<'a> {
             .flatten()
     }
 
+    /// Resolver-selected identity of a path that names an entity. Entities
+    /// are not value constructors, but they may own static associated
+    /// functions and therefore need the same stable owner identity as types.
+    pub fn entity_path_key(&self, path: &ast::Path) -> Option<String> {
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Entity))
+            .then(|| self.resolved.qualified_name(id))
+            .flatten()
+    }
+
     /// Stable table key for a view declaration.
     pub fn view_decl_key(&self, name: &ast::Ident) -> String {
         self.resolved
@@ -259,6 +270,7 @@ impl<'a> FunctionIndex<'a> {
             crate::resolve::DefKind::Enum => self.enum_id_key(id),
             crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
             crate::resolve::DefKind::Struct => self.struct_id_key(id),
+            crate::resolve::DefKind::Entity => self.resolved.qualified_name(id),
             _ => None,
         }?;
         Some(format!("{owner}::{}", function.text))
@@ -383,6 +395,7 @@ impl<'a> FunctionIndex<'a> {
     pub fn type_path_key(&self, path: &ast::Path) -> Option<String> {
         self.enum_path_key(path)
             .or_else(|| self.struct_path_key(path))
+            .or_else(|| self.entity_path_key(path))
             .or_else(|| self.type_alias_path_key(path))
             .or_else(|| path.segments.last().map(|name| name.text.clone()))
     }
@@ -14227,6 +14240,75 @@ mod tests {
         };
         assert!(matches!(driven("Top.left"), Some(Expr::Const(11))));
         assert!(matches!(driven("Top.right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn entity_associated_functions_keep_resolved_owner_identity() {
+        let sources = [
+            (
+                "module a; pub entity Device {} \
+                 impl Device { pub fn tag() -> integer { return 11; } }",
+                FileId(0),
+            ),
+            (
+                "module b; pub entity Device {} \
+                 impl Device { pub fn tag() -> integer { return 22; } }",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                 impl Top { left = a::Device::tag(); right = b::Device::tag(); }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let index = FunctionIndex::new(&resolved);
+        let owner_keys: Vec<String> = modules
+            .iter()
+            .flat_map(|module| &module.items)
+            .filter_map(|item| match item {
+                ast::Item::Impl(im) => index.type_head_key(&im.target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(owner_keys, ["a::Device", "b::Device", "user::Top"]);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |path: &str| {
+            let signal = design
+                .signals
+                .iter()
+                .position(|signal| signal.path == path)
+                .expect("missing output signal") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(signal))
+                .map(|driver| driver.expr.clone())
+        };
+        let left = driven("Top.left");
+        let right = driven("Top.right");
+        assert!(
+            matches!(left, Some(Expr::Const(11))),
+            "wrong left driver: {left:?}"
+        );
+        assert!(
+            matches!(right, Some(Expr::Const(22))),
+            "wrong right driver: {right:?}"
+        );
     }
 
     #[test]

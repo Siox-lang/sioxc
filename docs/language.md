@@ -340,10 +340,13 @@ port is rejected as redundant. Its `in`, `out`, or `inout` suffix controls
 direction, not visibility. State, constants, mode fields, and helper functions
 declared in the entity's `impl` remain private. Access such as
 `instance.hidden_state` is rejected even from the entity's module; only ports
-form the structural instance interface. Public entity methods are currently
-rejected because a call across an instance boundary has no defined scheduling,
-connectivity, or synthesis semantics yet; behavior must be exposed through
-ports.
+form the structural instance interface. Public entity functions with a `self`
+receiver are currently rejected because a call across an instance boundary has
+no implemented connectivity or synthesis semantics yet; behavior must be
+exposed through ports. An entity may expose a public **associated function**
+with no `self` parameter, called as `Entity::function(...)`. It has no instance
+scope, cannot access ports or implementation state, and lowers like any other
+namespaced function in hardware and testbench expressions.
 
 Trait methods similarly inherit the trait's visibility. An implementation
 therefore writes `fn`, never `pub fn`; a private trait and its methods remain

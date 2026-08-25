@@ -2281,7 +2281,10 @@ impl<'a> Checker<'a> {
                     "remove `pub` from this method".to_string(),
                 );
             }
-            if function.is_pub && self.entity_names.contains(&backing) {
+            if function.is_pub
+                && self.entity_names.contains(&backing)
+                && function.params.iter().any(|parameter| parameter.is_self)
+            {
                 self.error_with_help(
                     codes::PRIVATE_MEMBER,
                     function.name.span,
@@ -7904,7 +7907,7 @@ mod tests {
     }
 
     #[test]
-    fn public_entity_methods_wait_for_cross_hierarchy_call_semantics() {
+    fn public_entity_instance_methods_wait_for_cross_hierarchy_call_semantics() {
         let sink = check_modules(&[(
             "module m;\npub entity Device { value: integer out }\nimpl Device { pub fn read(self) -> integer { return value; } }\n",
             FileId(0),
@@ -7912,6 +7915,47 @@ mod tests {
         assert!(sink.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == Some(codes::PRIVATE_MEMBER)
                 && diagnostic.message.contains("cannot be public yet")
+        }));
+    }
+
+    #[test]
+    fn public_entity_associated_functions_are_namespaced_functions() {
+        let provider = "module model;\n\
+            pub entity Device {}\n\
+            impl Device {\n\
+                pub fn visible(value: integer) -> integer { return value + 1; }\n\
+                fn hidden(value: integer) -> integer { return value + 2; }\n\
+            }\n";
+        let consumer = "module user;\n\
+            using model::{Device};\n\
+            fn inspect(value: integer) -> integer {\n\
+                return Device::visible(value) + Device::hidden(value);\n\
+            }\n";
+        let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
+        let private: Vec<&Diagnostic> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some(codes::PRIVATE_MEMBER))
+            .collect();
+        assert_eq!(
+            private.len(),
+            1,
+            "only the private associated function fails"
+        );
+        assert_eq!(sink.error_count(), 1);
+        assert!(private[0].message.contains("hidden"));
+    }
+
+    #[test]
+    fn entity_associated_functions_have_no_instance_scope() {
+        let sink = check_modules(&[(
+            "module m;\n\
+             entity Device { input: integer in }\n\
+             impl Device { pub fn read() -> integer { return input; } }\n",
+            FileId(0),
+        )]);
+        assert!(sink.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == Some(codes::UNKNOWN_NAME) && diagnostic.message.contains("input")
         }));
     }
 
