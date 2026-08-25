@@ -178,7 +178,15 @@ protocol libraries commonly reuse names such as `Cell`, `State`, `Source`, and
 ## What does not yet make sense
 
 The entries below are ordered roughly by how important they are to settle
-before declaring the surface stable.
+before declaring the surface stable. Each entry separates three questions:
+
+- what is incoherent or misleading in the current form;
+- the narrower context in which the idea is useful;
+- whether the language should retain, redesign, or remove it.
+
+“Remove” is reserved for behavior whose useful form is better expressed by an
+existing or more explicit construct. A sharp edge is not by itself a reason to
+delete a feature.
 
 ### 1. Operator authority is split ambiguously between the kernel and std
 
@@ -200,6 +208,18 @@ matrix:
 Until that matrix is written down, users cannot tell whether removing an impl,
 shadowing a hook name, or defining a new bit family changes semantics.
 
+**Where it makes sense.** A compiler needs a small bootstrap kernel so it can
+load and type-check std, and lowering primitive integer or real operations
+directly is sensible. The std declarations can still be the public contracts
+that generic code sees while the compiler recognizes their exact nominal
+identities as hooks.
+
+**Verdict — redesign the boundary, retain the capabilities.** Keep intrinsic
+lowering and std operator impls, but remove any second, leaf-name-based or
+silently substituted source of operator semantics. There should be one public
+contract and one explicitly documented lowering for it, not two competing
+ways for an operator to exist.
+
 ### 2. An applied view is written as two adjacent type names
 
 `Stream<T> StreamSource` is compact, but it asks the reader and parser to infer
@@ -217,6 +237,18 @@ it against an explicit form such as `Stream<T> as StreamSource` or a qualified
 type form. If adjacency stays, the formatter and diagnostics must make the
 pair visually unmistakable everywhere.
 
+**Where it makes sense.** Adjacency works when a view is read as a direction or
+role suffix, much like `Bus Master` or `Axi Slave`, and it keeps port lists
+compact. It is particularly defensible in declarations, where a type is
+already expected and both names are nominally resolved.
+
+**Verdict — retain provisionally, then freeze deliberately.** This feature
+does not need removal merely for being unusual. Retain it if the same
+backing-first order is used in ports, aliases, bounds, impl targets, diagnostics,
+and formatter output. If those contexts require exceptions, replace adjacency
+before stabilization with one explicit applied-view form; do not support both
+spellings indefinitely.
+
 ### 3. `..` is inclusive despite the language's Rust-shaped surface
 
 Inclusive ranges are natural for hardware (`7..0` contains both endpoints),
@@ -230,6 +262,16 @@ in every introductory range example and diagnostics should explicitly say
 “inclusive.” Supporting `..=` as a second spelling would make the model worse;
 there should remain exactly one range operator.
 
+**Where it makes sense.** Inclusive, directional ranges match VHDL-style bus
+labels, make `7..0` mean the eight labels the engineer wrote, and preserve
+hardware documentation in the type. Partial ranges such as `..4` also compose
+naturally with an object's declared left bound.
+
+**Verdict — retain.** The HDL meaning is stronger than the borrowed Rust visual
+expectation. Do not add exclusive ranges or `..=` unless a concrete hardware
+use requires them. Instead, teach inclusivity early and make displayed range
+types include their computed length when that helps diagnostics.
+
 ### 4. One `<=>` contract conflates equality with total ordering
 
 Deriving all comparisons from one implementation is excellent for integers,
@@ -242,6 +284,17 @@ equality is conceptually separable. The language should decide whether to add
 an equality-only contract or explicitly restrict custom equality to totally
 ordered types.
 
+**Where it makes sense.** `<=>` is an excellent single customization point for
+integers, fixed-point values, ordered enums, versions, and any type whose six
+relations all arise from one total order. It prevents inconsistent individual
+comparison impls.
+
+**Verdict — split equality from ordering; do not remove `<=>`.** Add a minimal
+equality contract for types that can answer equal/not-equal without ordering.
+Keep `<=>` for total order and derive equality from it only when no explicit
+equality contract is needed. The part to remove is the requirement to invent a
+total order solely to gain `==`.
+
 ### 5. `Vector` looks behavioral but changes physical representation
 
 Traits are documented as compile-time behavioral contracts, yet implementing
@@ -253,6 +306,17 @@ Either document `Vector` as a compiler-known representation marker—not an
 ordinary trait—or replace it eventually with explicit derivation/layout
 metadata. Users need to know that this impl changes more than which methods are
 available.
+
+**Where it makes sense.** A sealed marker is a compact bootstrap mechanism for
+telling the compiler that a nominal type uses packed vector layout while std
+defines its logic and numeric behavior. It is useful in the same narrow family
+as compiler-recognized ABI or representation attributes.
+
+**Verdict — remove its ordinary-trait interpretation.** Either rename and
+document `Vector` as a sealed compiler hook or replace it with explicit layout
+metadata on the type. User-defined behavioral traits should never silently
+change storage. Existing packed-vector capability remains; only the misleading
+claim that this is an ordinary trait should disappear.
 
 ### 6. Standard logic still depends on a discriminant convention
 
@@ -267,6 +331,16 @@ metadata derived from the enum declaration rather than an ordering promise in
 a comment. Otherwise reordering a perfectly ordinary std enum can silently
 change storage semantics.
 
+**Where it makes sense.** A compact encoding with fast zero/one tests and a
+metavalue plane is appropriate for simulation, bit packing, VCD output, and
+native ABI stability. A fixed discriminant map can be entirely legitimate when
+it is declared as part of that ABI.
+
+**Verdict — retain the encoding, remove the implicit convention.** Make the
+logical roles of low, high, unknown, and high-impedance explicit metadata that
+the compiler validates. Reordering without updating metadata should be a clear
+error, not a silent semantic change.
+
 ### 7. Simulation-only operations can appear in hardware expressions
 
 `extern "C"` calls are currently accepted in combinational and clocked design
@@ -278,6 +352,17 @@ Before synthesis output exists, every operation should acquire an explicit
 classification such as synthesizable, elaboration-only, or simulation-only.
 The compiler can then reject a design for the intended target instead of
 letting a future backend reinterpret existing source.
+
+**Where it makes sense.** Foreign calls are valuable in testbenches, reference
+models, DPI/VPI-style integration, and elaboration helpers. File reads in
+hardware can also make sense when they are explicitly elaboration-time ROM
+initialization rather than runtime I/O.
+
+**Verdict — retain by domain, reject cross-domain use.** Do not remove `extern`
+or `read<T>`. Give callable operations a target/effect classification and make
+synthesizable compilation reject simulation-only calls. Prefer distinct APIs
+or explicit context for elaboration-time ROM loading and runtime file reading
+so one spelling does not quietly change meaning.
 
 ### 8. Runtime out-of-range indexing fails soft
 
@@ -291,6 +376,18 @@ would be easier to trust. If zero/no-op remains for synthesis reasons, native
 tests should at least have an opt-in strict mode or a warning that identifies
 the index site.
 
+**Where it makes sense.** Zero-on-read and no-op-on-write can implement a
+deliberately safe sparse table, guarded register bank, or address decoder. In
+those cases the fallback value is part of the component's interface contract,
+not a universal property of indexing.
+
+**Verdict — remove implicit soft failure from ordinary indexing.** Constant
+out-of-range indices should be compile errors. Dynamic violations should fail
+in checked simulation and have an explicit synthesis policy. Code that wants
+zero/no-op behavior should request it through a checked accessor, match, guard,
+or dedicated wrapping/defaulting operation. Silent fallback is too dangerous
+as the default.
+
 ### 9. Default construction and hardware initialization are easy to confuse
 
 `T::new()`, `T()`, and an omitted initializer all produce deterministic
@@ -301,6 +398,18 @@ like a hardware construction guarantee.
 The synthesis-facing model must say whether an initializer requires
 initializable storage, becomes an `initial`/configuration value, or is ignored
 with a diagnostic. This cannot be left entirely to vendor adapters.
+
+**Where it makes sense.** Deterministic construction is useful for local
+values, constants, testbench state, ROM contents, and FPGA targets that support
+power-up initialization. An omitted initializer can also provide a predictable
+simulation baseline while a reset later establishes protocol state.
+
+**Verdict — retain construction, separate it from reset and target promises.**
+Classify each initializer as compile-time value construction, simulation
+initial state, or requested hardware power-up state. A target that cannot
+implement the requested hardware initialization must diagnose it. Do not
+remove `T()` or `T::new()`; remove only the implication that construction alone
+guarantees portable reset hardware.
 
 ### 10. Custom operator precedence is attached to an implementation
 
@@ -314,6 +423,18 @@ separate operator declaration would nevertheless be conceptually cleaner:
 declare the symbol and precedence once, then provide any number of `Operator`
 impls. This becomes more important for package-scale tooling and incremental
 parsing.
+
+**Where it makes sense.** Keeping precedence beside an operator impl is compact
+for small modules and lets std expose the syntax together with its first useful
+implementation. If every impl of one symbol must agree, the repeated attribute
+acts as a locally checkable assertion rather than unconstrained grammar state.
+
+**Verdict — retain for now, with a path to a declaration if tooling suffers.**
+Define precedence as a symbol-wide fact and require all visible impls to agree,
+as the compiler already checks. Remove the impl attribute only if incremental
+parsing or package composition demonstrates that discovery is inherently
+unstable; in that case migrate to one operator declaration rather than adding
+a second simultaneous authority.
 
 ### 11. The type-construction surface is overloaded
 
@@ -331,6 +452,17 @@ The compiler can distinguish them, but readers must learn several meanings of
 the same punctuation. This needs a compact “construction and constraint forms”
 table near the start of the language guide and should not acquire more cases.
 
+**Where it makes sense.** Each form is locally unambiguous once declaration,
+type, and expression position are known, and most mirror familiar record,
+call, array, or generic notation. Compact constraints matter in port-heavy HDL
+source where verbose type constructors would dominate the design.
+
+**Verdict — retain and freeze.** None of these forms is individually harmful
+enough to justify churn. Document them side by side, make diagnostics name the
+interpreted form, and resist assigning further meanings to `()`, `[]`, or
+`<>`. Remove a form only if two interpretations become syntactically ambiguous
+without type information.
+
 ### 12. Entity functions have a sharp associated/receiver cliff
 
 `Entity::helper(...)` works when the function has no `self`, while a public
@@ -343,6 +475,18 @@ for the implemented form and **receiver method** for the proposed generated-port
 form. When receiver methods land, generated ports must remain visible in tree,
 metadata, waveforms, and synthesis output.
 
+**Where it makes sense.** Associated functions are useful for namespaced pure
+helpers, constructors, and calculations tied to an entity's public concept but
+not to an instance. Receiver methods can make sense later as protocol
+transactions when their arguments, results, handshakes, and scheduling
+elaborate into explicit hardware endpoints.
+
+**Verdict — retain associated functions; defer receiver methods.** The current
+rejection is a sound semantic boundary, not a feature defect. Do not add
+software-like instance methods until there is one inspectable generated-port
+model. If a method cannot be represented in hierarchy and timing metadata, it
+should remain absent rather than become simulator-only magic.
+
 ### 13. Clock inference is elegant but under-specified for tooling
 
 Inferring an event-controlled block from `if clk.rising()` avoids another
@@ -353,6 +497,16 @@ CDC analysis, timing constraints, and synthesis diagnostics.
 The language does not necessarily need a clock type, but elaborated metadata
 does need an authoritative set of clock domains and derived-clock
 relationships. A behavioral helper alone is not enough for Phase 3 tools.
+
+**Where it makes sense.** Edge predicates are concise, support user-defined
+clock-like wrappers, and keep clocked behavior visually close to its enabling
+condition. They are a good source-language notation when elaboration records
+the inferred event source.
+
+**Verdict — retain inference, add mandatory metadata.** Do not remove
+`clk.rising()` or force all clocks into one nominal type. Require elaboration
+to identify clock roots, generated clocks, edge polarity, resets, and domain
+crossings, with an explicit annotation available when inference is ambiguous.
 
 ### 14. `using` and future library discovery need one vocabulary
 
@@ -365,6 +519,17 @@ Foreign library selection belongs to the future project tool or a clearly
 distinct source declaration. It should not look like an ordinary symbol import
 unless it participates in exactly the same module graph.
 
+**Where it makes sense.** `using` is appropriate for declarations already in
+the siox module graph. A source-level foreign-library declaration can also make
+sense for a portable black-box dependency when the compiler must preserve that
+dependency in elaborated output independently of a particular build tool.
+
+**Verdict — retain `using`; remove ambiguous `use <library>`.** Put build-time
+library discovery in the future project tool. If a source unit must declare a
+foreign logical library, give that concept a
+distinct declaration and semantics rather than a keyword one letter away from
+ordinary imports.
+
 ### 15. The normative language document contains too much history
 
 [`language.md`](language.md) is both the current specification and a record of
@@ -376,6 +541,16 @@ Move historical stages into a development-history document. Keep the language
 reference organized by user concepts, with one current rule for each concept.
 This is documentation structure, but documentation structure becomes language
 design when it determines which rule implementers follow.
+
+**Where it makes sense.** Stage notes are valuable while the implementation is
+moving quickly: they preserve rationale, completed milestones, and the order in
+which features acquired semantics. They are useful contributor documentation
+and release history.
+
+**Verdict — retain the history, remove it from the normative path.** Move the
+stage narrative to a dedicated history document and leave concise rationale
+links from the specification where needed. No language feature is removed;
+only the ambiguity about which prose is authoritative.
 
 ## Incomplete does not mean incoherent
 
