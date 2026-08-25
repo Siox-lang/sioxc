@@ -70,19 +70,6 @@ assertions, and VCD export — predates this changelog. See
   both halves believed the other had written it. Nothing failed — the testbench
   and the design read the same zero — so a testbench written this way silently
   drove the wrong stimulus.
-- **A cocotb value wider than one word is no longer truncated.** The VPI layer
-  served hex and decimal from `sx_read`, which returns a single machine word, so
-  a 128-bit signal reported its low 64 bits; writing one as text saturated
-  through `strtoull`. cocotb requests neither format, so nothing exercised it —
-  found by auditing the path against the same defect in the debugger's signal
-  table.
-- **cocotb can drive a compiled design.** `sioxc --cocotb counter.siox -o
-  counter.sim` builds the `#[top]` entity into a simulator that implements the
-  sixteen `vpi_*` functions cocotb's GPI calls, so a Python testbench reads and
-  drives signals by their siox names, across the instance hierarchy and for
-  values wider than a machine word. cocotb is located by running
-  `cocotb-config`, so a virtualenv needs no configuration. Behind the opt-in
-  `cocotb` Cargo feature.
 - **Implemented proposals are no longer proposals.** `docs/proposals/` now
   holds only outstanding designs; the records for storage layout, X/Z vector
   propagation, timing/`await` and source-level debugging moved into
