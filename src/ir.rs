@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::diag::DiagnosticSink;
 use crate::elab::Hierarchy;
-use crate::resolve::{DefId, Resolved};
+use crate::resolve::{is_compiler_trait, DefId, Resolved};
 use crate::syntax::ast::{self, BinOp as AstBinOp, UnOp as AstUnOp};
 use crate::syntax::Module;
 
@@ -181,6 +181,48 @@ impl<'a> FunctionIndex<'a> {
             .flatten()
     }
 
+    /// Stable table key for a view declaration.
+    pub fn view_decl_key(&self, name: &ast::Ident) -> String {
+        self.resolved
+            .declared(name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::View))
+            .and_then(|id| self.view_id_key(id))
+            .unwrap_or_else(|| name.text.clone())
+    }
+
+    /// Resolver-selected identity of a path that names a view.
+    pub fn view_path_key(&self, path: &ast::Path) -> Option<String> {
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::View))
+            .then(|| self.view_id_key(id))
+            .flatten()
+    }
+
+    /// Stable table key for a trait declaration. Compiler hook traits retain
+    /// their canonical leaf key; ordinary traits use their qualified identity.
+    pub fn trait_decl_key(&self, name: &ast::Ident) -> String {
+        if is_compiler_trait(&name.text) {
+            return name.text.clone();
+        }
+        self.resolved
+            .declared(name.span)
+            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Trait))
+            .and_then(|id| self.resolved.qualified_name(id))
+            .unwrap_or_else(|| name.text.clone())
+    }
+
+    /// Resolver-selected identity of a path that names a trait.
+    pub fn trait_path_key(&self, path: &ast::Path) -> Option<String> {
+        let leaf = path.segments.last()?.text.as_str();
+        if is_compiler_trait(leaf) {
+            return Some(leaf.to_string());
+        }
+        let id = self.resolved.resolved(path.span)?;
+        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Trait))
+            .then(|| self.resolved.qualified_name(id))
+            .flatten()
+    }
+
     /// Nominal type named directly by a constructor path, or by the owner of
     /// `T::new`. Every declared owner uses its identity-preserving key.
     pub fn type_owner_key(&self, path: &ast::Path) -> Option<String> {
@@ -302,6 +344,22 @@ impl<'a> FunctionIndex<'a> {
         }
     }
 
+    /// View counterpart of [`Self::struct_id_key`]. The common case remains
+    /// readable; equal leaves in separate modules qualify both identities.
+    fn view_id_key(&self, id: DefId) -> Option<String> {
+        let definition = self.resolved.def(id)?;
+        let collides = self.resolved.defs().iter().any(|other| {
+            other.kind == crate::resolve::DefKind::View
+                && other.name == definition.name
+                && other.module != definition.module
+        });
+        if collides {
+            self.resolved.qualified_name(id)
+        } else {
+            Some(definition.name.clone())
+        }
+    }
+
     /// Resolver-selected key for a type-alias use. Non-alias single-segment
     /// paths retain their surface spelling so kernel and local types can use
     /// the same callers without entering the module-alias table.
@@ -317,19 +375,27 @@ impl<'a> FunctionIndex<'a> {
         }
     }
 
-    /// Identity-preserving head name for a declared type. Alias heads are
-    /// qualified; other types retain their ordinary leaf spelling.
+    /// Identity-preserving head name for a path used as a type.
+    pub fn type_path_key(&self, path: &ast::Path) -> Option<String> {
+        self.enum_path_key(path)
+            .or_else(|| self.struct_path_key(path))
+            .or_else(|| self.type_alias_path_key(path))
+            .or_else(|| path.segments.last().map(|name| name.text.clone()))
+    }
+
+    /// Identity-preserving head name for a declared type. Applied views carry
+    /// both the resolved view and backing identities.
     pub fn type_head_key(&self, ty: &ast::Type) -> Option<String> {
         match ty {
-            ast::Type::Path(path) => self
-                .enum_path_key(path)
-                .or_else(|| self.struct_path_key(path))
-                .or_else(|| self.type_alias_path_key(path))
-                .or_else(|| path.segments.last().map(|name| name.text.clone())),
+            ast::Type::Path(path) => self.type_path_key(path),
             ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
                 self.type_head_key(base)
             }
-            ast::Type::View { view, .. } => view.segments.last().map(|name| name.text.clone()),
+            ast::Type::View { view, target, .. } => Some(format!(
+                "{}@{}",
+                self.view_path_key(view)?,
+                self.type_head_key(target)?
+            )),
         }
     }
 }
@@ -896,6 +962,11 @@ struct Lowering<'a> {
     lint_defaulted: std::collections::HashSet<u32>,
     entities: HashMap<DefId, &'a ast::EntityDecl>,
     impls: HashMap<DefId, Vec<&'a ast::ImplDecl>>,
+    /// Inherent implementations keyed by their complete nominal type. Unlike
+    /// `impls`, which groups entity bodies by declaration id for recursive
+    /// hierarchy lowering, this must distinguish applied views that share a
+    /// view declaration leaf but have different backing structs.
+    inherent_impls: HashMap<String, Vec<&'a ast::ImplDecl>>,
     /// Trait name -> its declaration, for the defaulted methods an
     /// implementing type inherits (spec 3.20: a trait body is a contract, and
     /// a method *with* a body is a default the impl may omit — which the type
@@ -1184,37 +1255,6 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
 }
 
 impl<'a> Lowering<'a> {
-    fn nominal_id(&self, name: &str) -> Option<DefId> {
-        let definitions = self.resolved.defs();
-        let qualified = definitions.iter().enumerate().find(|(index, _)| {
-            self.resolved
-                .qualified_name(DefId(*index as u32))
-                .as_deref()
-                == Some(name)
-        });
-        // Compiler-known standard types deliberately keep a short IR key
-        // when a user declares a namesake. Prefer that canonical declaration
-        // for a short lookup; qualified user keys have already matched above.
-        let standard = (!name.contains("::")).then(|| {
-            definitions.iter().enumerate().find(|(_, definition)| {
-                definition.name == name
-                    && definition
-                        .module
-                        .as_deref()
-                        .is_some_and(|module| module == "std" || module.starts_with("std::"))
-            })
-        });
-        qualified
-            .or_else(|| standard.flatten())
-            .or_else(|| {
-                definitions
-                    .iter()
-                    .enumerate()
-                    .find(|(_, definition)| definition.name == name)
-            })
-            .map(|(index, _)| DefId(index as u32))
-    }
-
     fn collect_instance_array_facts(
         &mut self,
         hierarchy: &Hierarchy,
@@ -1245,6 +1285,7 @@ impl<'a> Lowering<'a> {
             lint_defaulted: std::collections::HashSet::new(),
             entities: HashMap::new(),
             impls: HashMap::new(),
+            inherent_impls: HashMap::new(),
             trait_decls: HashMap::new(),
             implemented_traits: HashMap::new(),
             entity_params: HashMap::new(),
@@ -1329,7 +1370,11 @@ impl<'a> Lowering<'a> {
                             .insert(self.free_fns.struct_decl_key(&s.name), s);
                     }
                     ast::Item::View(v) => {
-                        let key = declared_view_key(v, &self.free_fns);
+                        let target = self
+                            .free_fns
+                            .type_head_key(&v.target)
+                            .unwrap_or_else(|| "<error>".to_string());
+                        let key = format!("{}@{target}", self.free_fns.view_decl_key(&v.name));
                         self.views.insert(key.clone(), v);
                         self.view_dirs.insert(
                             key,
@@ -1352,10 +1397,14 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::Item::Trait(t) => {
-                        self.trait_decls.insert(t.name.text.clone(), t);
+                        self.trait_decls
+                            .insert(self.free_fns.trait_decl_key(&t.name), t);
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
+                        if let Some(key) = self.free_fns.type_head_key(&im.target) {
+                            self.inherent_impls.entry(key).or_default().push(im);
+                        }
                         if let Some(id) = type_def_id(&im.target, self.resolved) {
                             self.impls.entry(id).or_default().push(im);
                         }
@@ -1366,17 +1415,22 @@ impl<'a> Lowering<'a> {
                     // argument, its `suffix` method inlined at the use site
                     // (spec 3.24).
                     ast::Item::Impl(im) => {
-                        let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
+                        let trait_path = im.trait_.as_ref();
+                        let trait_key =
+                            trait_path.and_then(|path| self.free_fns.trait_path_key(path));
+                        let trait_leaf = trait_path.and_then(|path| path.segments.last());
                         let target = self.free_fns.type_head_key(&im.target);
-                        if let (Some(tr), Some(ty)) = (tr, target.as_ref()) {
+                        if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
                             self.implemented_traits
                                 .entry(ty.clone())
                                 .or_default()
-                                .push(tr.text.clone());
+                                .push(tr.clone());
                         }
                         self.register_static_fns(im);
-                        if let (Some(tr), Some(ty)) = (tr, target.as_ref()) {
-                            if tr.text == "Suffix" {
+                        if let (Some(tr), Some(trait_leaf), Some(ty)) =
+                            (trait_key.as_ref(), trait_leaf, target.as_ref())
+                        {
+                            if trait_leaf.text == "Suffix" {
                                 let symbol = im.trait_args.first().and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::StrLit {
                                         text, ..
@@ -1397,7 +1451,7 @@ impl<'a> Lowering<'a> {
                                 // argument names the rhs operand type. A
                                 // non-operator trait (Resolve/New/From) keys by
                                 // its own name and reads its first type arg.
-                                let op_symbol = (tr.text == "Operator")
+                                let op_symbol = (trait_leaf.text == "Operator")
                                     .then(|| im.trait_args.first())
                                     .flatten()
                                     .and_then(|a| match a {
@@ -1411,11 +1465,14 @@ impl<'a> Lowering<'a> {
                                 let rhs_arg =
                                     im.trait_args.get(input_index).and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::Path(p)) => {
-                                            p.segments.last().map(|s| s.text.clone())
+                                            self.free_fns.type_path_key(p)
+                                        }
+                                        ast::GenericArg::PositionalType(ty) => {
+                                            self.free_fns.type_head_key(ty)
                                         }
                                         _ => None,
                                     });
-                                let operator = op_symbol.unwrap_or_else(|| tr.text.clone());
+                                let operator = op_symbol.unwrap_or_else(|| tr.clone());
                                 if is_blanket_array_impl(im) {
                                     let requirement =
                                         blanket_requirement(im).unwrap_or_else(|| operator.clone());
@@ -4874,13 +4931,17 @@ impl<'a> Lowering<'a> {
             LayoutKind::Scalar {
                 width,
                 domain,
+                nominal,
                 value_range,
-                ..
             } => {
                 self.add_signal(entity, name, *width, declaration_span);
                 let Some(&id) = self.locals.get(name) else {
                     return;
                 };
+                if let Some(nominal) = nominal {
+                    self.local_numeric.insert(name.to_string(), nominal.clone());
+                    self.sig_type.insert(id.0, nominal.clone());
+                }
                 let signal = &mut self.out.signals[id.0 as usize];
                 signal.range = *value_range;
                 match domain {
@@ -4945,7 +5006,17 @@ impl<'a> Lowering<'a> {
                     self.free_fns
                         .type_head_key(target)
                         .unwrap_or_else(|| "<anonymous>".to_string()),
-                    view.segments.last().map(|name| name.text.clone()),
+                    self.view_of(&ty).or_else(|| {
+                        view.segments.last().map(|name| {
+                            format!(
+                                "{}@{}",
+                                name.text,
+                                self.free_fns
+                                    .type_head_key(target)
+                                    .unwrap_or_else(|| "<anonymous>".to_string())
+                            )
+                        })
+                    }),
                 ),
                 ast::Type::Generic { base, .. } => (
                     self.free_fns
@@ -5398,7 +5469,7 @@ impl<'a> Lowering<'a> {
         if let ast::Type::View { view, target, .. } = ty {
             return Some(format!(
                 "{}@{}",
-                view.segments.last()?.text,
+                self.free_fns.view_path_key(view)?,
                 self.free_fns.type_head_key(target)?
             ));
         }
@@ -8669,8 +8740,7 @@ impl<'a> Lowering<'a> {
                     .iter()
                     .find(|p| !p.is_self)
                     .and_then(|p| p.ty.as_ref())
-                    .and_then(type_head_name)
-                    .map(str::to_string)
+                    .and_then(|ty| self.free_fns.type_head_key(ty))
             })?;
             Some(if d == "Self" { lhs_ty.clone() } else { d })
         };
@@ -9725,8 +9795,7 @@ impl<'a> Lowering<'a> {
                     .iter()
                     .find(|p| !p.is_self)
                     .and_then(|p| p.ty.as_ref())
-                    .and_then(type_head_name)
-                    .map(str::to_string)
+                    .and_then(|ty| self.free_fns.type_head_key(ty))
             })
         };
         let chosen = match &src {
@@ -10055,7 +10124,7 @@ impl<'a> Lowering<'a> {
     /// (`impl Tr for T { fn name(self, ..) }`, held in `op_impls` keyed by
     /// trait+type). Inherent impls win; first match otherwise.
     fn find_method(&self, ty: &str, name: &str, input: Option<&str>) -> Option<&'a ast::FnDecl> {
-        if let Some(impls) = self.nominal_id(ty).and_then(|id| self.impls.get(&id)) {
+        if let Some(impls) = self.inherent_impls.get(ty) {
             for im in impls {
                 for it in &im.items {
                     if let ast::ImplItem::Fn(f) = it {
@@ -13790,13 +13859,6 @@ fn blanket_requirement(im: &ast::ImplDecl) -> Option<String> {
     }
 }
 
-fn declared_view_key(view: &ast::ViewDecl, fns: &FunctionIndex<'_>) -> String {
-    let target = fns
-        .type_head_key(&view.target)
-        .unwrap_or_else(|| "<error>".to_string());
-    format!("{}@{target}", view.name.text)
-}
-
 /// Pack one little-endian file integer into the compiler's ABI-word vector.
 ///
 /// File integers use exactly `ceil(width / 8)` bytes. Missing bytes are zero,
@@ -14352,6 +14414,200 @@ mod tests {
     }
 
     #[test]
+    fn applied_view_methods_dispatch_on_view_and_backing_identity() {
+        let source = "module m; \
+            struct Stream { value: integer } struct Queue { value: integer } \
+            view Port for Stream { value out } view Port for Queue { value out } \
+            impl Stream Port { fn drive(self) { self.value = 11; } } \
+            impl Queue Port { fn drive(self) { self.value = 22; } } \
+            #[top] entity Top { stream: Stream Port, queue: Queue Port } \
+            impl Top { stream.drive(); queue.drive(); }";
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        let modules = [module];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("missing applied-view field") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven(".stream.value"), Some(Expr::Const(11))));
+        assert!(matches!(driven(".queue.value"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
+        let sources = [
+            (
+                "module common; pub struct Bus { pub data: integer, pub ready: integer }",
+                FileId(0),
+            ),
+            (
+                "module a; \
+                 pub trait Measure { fn tag() -> integer { return 11; } } \
+                 pub struct Device(integer); impl Measure for Device {} \
+                 pub view Endpoint for common::Bus { data out, ready in }",
+                FileId(1),
+            ),
+            (
+                "module b; \
+                 pub trait Measure { fn tag() -> integer { return 22; } } \
+                 pub struct Device(integer); impl Measure for Device {} \
+                 pub view Endpoint for common::Bus { data in, ready out }",
+                FileId(2),
+            ),
+            (
+                "module user; #[top] entity Top { \
+                   left_tag: integer out, right_tag: integer out, \
+                   left: common::Bus a::Endpoint, right: common::Bus b::Endpoint, \
+                   left_seen: integer out, right_seen: integer out \
+                 } \
+                 impl Top { \
+                   left_tag = a::Device::tag(); right_tag = b::Device::tag(); \
+                   left.data = 1; left_seen = left.ready; \
+                   right.ready = 1; right_seen = right.data; \
+                 }",
+                FileId(3),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("missing driven signal") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven(".left_tag"), Some(Expr::Const(11))));
+        assert!(matches!(driven(".right_tag"), Some(Expr::Const(22))));
+
+        let view = |path: &str| match &design.source_layouts[path].kind {
+            LayoutKind::Struct {
+                view: Some(view),
+                fields,
+                ..
+            } => (
+                view.as_str(),
+                fields
+                    .iter()
+                    .map(|field| field.direction.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            other => panic!("{path} is not an applied view: {other:#?}"),
+        };
+        assert_eq!(
+            view("Top.left"),
+            (
+                "a::Endpoint@Bus",
+                vec![Some(LayoutDirection::Out), Some(LayoutDirection::In)]
+            )
+        );
+        assert_eq!(
+            view("Top.right"),
+            (
+                "b::Endpoint@Bus",
+                vec![Some(LayoutDirection::In), Some(LayoutDirection::Out)]
+            )
+        );
+    }
+
+    #[test]
+    fn equal_operator_operand_leaves_select_the_resolved_overload() {
+        let sources = [
+            ("module common; pub struct Acc(integer);", FileId(0)),
+            ("module a; pub struct Token(integer);", FileId(1)),
+            ("module b; pub struct Token(integer);", FileId(2)),
+            (
+                "module ops; \
+                 impl Operator<\"+\", a::Token, integer> for common::Acc { \
+                   fn apply(self, rhs: a::Token) -> integer { return 11; } \
+                 } \
+                 impl Operator<\"+\", b::Token, integer> for common::Acc { \
+                   fn apply(self, rhs: b::Token) -> integer { return 22; } \
+                 }",
+                FileId(3),
+            ),
+            (
+                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                 impl Top { \
+                   let acc: common::Acc; let a_token: a::Token; let b_token: b::Token; \
+                   left = acc + a_token; right = acc + b_token; \
+                 }",
+                FileId(4),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("missing driven output") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target))
+                .map(|driver| driver.expr.clone())
+        };
+        let left = driven(".left");
+        let right = driven(".right");
+        assert!(matches!(left, Some(Expr::Const(11))), "left: {left:#?}");
+        assert!(matches!(right, Some(Expr::Const(22))), "right: {right:#?}");
+    }
+
+    #[test]
     fn equal_module_constant_leaves_lower_the_resolved_values() {
         let sources = [
             ("module a; pub const VALUE: integer = 11;", FileId(0)),
@@ -14808,7 +15064,7 @@ mod tests {
                 view: Some(view),
                 fields,
             }) if name == "HandshakeBus"
-                && view == "Handshake"
+                && view == "Handshake@HandshakeBus"
                 && fields.iter().map(|field| field.direction.clone()).collect::<Vec<_>>()
                     == [Some(LayoutDirection::Out), Some(LayoutDirection::In)]
         ));

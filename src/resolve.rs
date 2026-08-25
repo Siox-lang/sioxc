@@ -22,11 +22,9 @@
 //!   "unknown name" — full value/port/field scoping lands with type checking.
 //! - Lookup is module-aware: loaded modules do not leak declarations into one
 //!   another, imports bind the exact named module, and qualified paths select
-//!   that module. Entities, structs, enums, aliases, free functions, and module
-//!   constants retain that identity through their implemented downstream
-//!   phases; declaration categories whose later semantic tables are still
-//!   leaf-keyed remain crate-unique for now. Several source files may belong
-//!   to the same module and therefore share its private declarations.
+//!   that module. Declarations retain that identity through their downstream
+//!   semantic tables. Several source files may belong to the same module and
+//!   therefore share its private declarations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -42,6 +40,25 @@ use crate::syntax::Module;
 /// comparisons. Seeded as a builtin so `impl Operator<..> for T` needs no
 /// import.
 pub const OPERATORS: &[&str] = &["Operator"];
+
+/// Traits whose semantics are compiler hooks even though their declarations
+/// live in `std`. They retain a canonical short key so the frontend and IR do
+/// not make compiler behavior depend on which spelling imported the trait.
+pub(crate) fn is_compiler_trait(name: &str) -> bool {
+    matches!(
+        name,
+        "Operator"
+            | "Prefix"
+            | "Suffix"
+            | "Index"
+            | "IndexAssign"
+            | "Boolean"
+            | "Vector"
+            | "Resolve"
+            | "New"
+            | "From"
+    )
+}
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
 /// raw names.
@@ -869,6 +886,15 @@ impl<'a> Resolver<'a> {
                 .or_insert(id);
         }
         if let Some(prev) = self.globals.get(name).copied() {
+            // A view's full identity includes its backing struct. The resolver
+            // has only the declaration leaf here, so retain the first lookup
+            // binding and let Stage 4 distinguish/reject `(view, backing)`
+            // pairs. This admits `view Source for Stream` and `view Source for
+            // Queue` in one module without admitting duplicate traits/types.
+            let overloaded_view = matches!(
+                (self.out.kind_of(prev), self.out.kind_of(id)),
+                (Some(DefKind::View), Some(DefKind::View))
+            );
             let separate_namespaced_values = matches!(
                 (self.out.kind_of(prev), self.out.kind_of(id)),
                 (Some(DefKind::Fn), Some(DefKind::Fn))
@@ -876,13 +902,17 @@ impl<'a> Resolver<'a> {
                     | (Some(DefKind::Entity), Some(DefKind::Entity))
                     | (Some(DefKind::Enum), Some(DefKind::Enum))
                     | (Some(DefKind::Struct), Some(DefKind::Struct))
+                    | (Some(DefKind::Trait), Some(DefKind::Trait))
                     | (Some(DefKind::TypeAlias), Some(DefKind::TypeAlias))
             ) && self
                 .out
                 .def(prev)
                 .and_then(|definition| definition.module.as_deref())
                 != current_module;
-            if self.out.kind_of(prev) != Some(DefKind::Builtin) && !separate_namespaced_values {
+            if self.out.kind_of(prev) != Some(DefKind::Builtin)
+                && !overloaded_view
+                && !separate_namespaced_values
+            {
                 let mut diag = Diagnostic::error(format!("duplicate item `{name}`"))
                     .with_code(codes::DUPLICATE_ITEM)
                     .at(span)
@@ -2449,11 +2479,16 @@ mod tests {
              impl Stream Source { fn get(self) -> integer { return self.value; } }\n\
              impl Queue Source { fn get(self) -> integer { return self.value; } }\n",
         );
-        assert!(sink.diagnostics().iter().all(|diagnostic| {
-            diagnostic.code != Some(codes::IMPL_COHERENCE)
-                && !(diagnostic.code == Some(codes::DUPLICATE_ITEM)
-                    && diagnostic.message.contains("inherent member `get`"))
-        }));
+        let errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::diag::Severity::Error)
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a view leaf overloads by backing type during resolution: {errors:?}"
+        );
     }
 
     #[test]

@@ -81,7 +81,7 @@ Remaining:
   scheduling, connectivity, or synthesis semantics. Decide whether such a call
   elaborates into ports/handshake logic or remains unsupported before exposing
   behavioral entity APIs; ordinary struct/view methods are already complete.
-- 🟡 **Fully namespaced semantic identities.** Resolution owns declarations by
+- ✅ **Fully namespaced semantic identities.** Resolution owns declarations by
   `(module, name)`, exposes declaration-site `DefId`s, and type checking now
   keys nominal declarations and free-function contracts by stable identity;
   free-function lowering, const evaluation, extern dispatch, and the native
@@ -101,10 +101,14 @@ Remaining:
   waveform symbol metadata; colliding enum names qualify only at the output
   boundary. Structs now retain identity through fields and privacy domains,
   generic ownership, inheritance, layouts, defaults, constructors, constants,
-  inherent methods, flattened paths, and native aggregate storage. Views and
-  traits/operators still include leaf-keyed tables. Those remaining declaration
-  categories stay crate-unique until their tables and qualified output
-  identities are lifted.
+  inherent methods, flattened paths, and native aggregate storage. Applied
+  views now use the resolved view declaration together with the resolved backing
+  type through checking, IR layout metadata, method/trait ownership, and native
+  lowering. Custom traits and operator operand types likewise retain resolved
+  identity through contracts, defaults, dispatch, and native test execution;
+  only compiler hook traits such as `Operator` keep their canonical language
+  key. Equal leaves in separate modules are therefore admitted and cannot share
+  semantic tables accidentally.
 
 ## IR
 

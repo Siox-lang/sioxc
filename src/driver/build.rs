@@ -167,9 +167,13 @@ pub fn build(
     for m in modules {
         for item in &m.items {
             if let ast::Item::Impl(im) = item {
-                let tr = im.trait_.as_ref().and_then(|t| t.segments.last());
-                if let (Some(tr), Some(ty)) = (tr, fns.type_head_key(&im.target)) {
-                    let operator = if tr.text == "Operator" {
+                let trait_path = im.trait_.as_ref();
+                let trait_key = trait_path.and_then(|path| fns.trait_path_key(path));
+                let trait_leaf = trait_path.and_then(|path| path.segments.last());
+                if let (Some(tr), Some(trait_leaf), Some(ty)) =
+                    (trait_key, trait_leaf, fns.type_head_key(&im.target))
+                {
+                    let operator = if trait_leaf.text == "Operator" {
                         im.trait_args.first().and_then(|a| match a {
                             ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
                                 Some(text.clone())
@@ -177,14 +181,13 @@ pub fn build(
                             _ => None,
                         })
                     } else {
-                        Some(tr.text.clone())
+                        Some(tr)
                     };
                     let Some(operator) = operator else { continue };
-                    let input_index = usize::from(tr.text == "Operator");
+                    let input_index = usize::from(trait_leaf.text == "Operator");
                     let input = im.trait_args.get(input_index).and_then(|a| match a {
-                        ast::GenericArg::Positional(ast::Expr::Path(p)) => {
-                            p.segments.last().map(|s| s.text.clone())
-                        }
+                        ast::GenericArg::Positional(ast::Expr::Path(p)) => fns.type_path_key(p),
+                        ast::GenericArg::PositionalType(ty) => fns.type_head_key(ty),
                         _ => None,
                     });
                     for it in &im.items {
@@ -194,8 +197,7 @@ pub fn build(
                                     .iter()
                                     .find(|p| !p.is_self)
                                     .and_then(|p| p.ty.as_ref())
-                                    .and_then(type_head_name)
-                                    .map(str::to_string)
+                                    .and_then(|ty| fns.type_head_key(ty))
                             });
                             op_impls
                                 .entry((operator.clone(), ty.clone()))
@@ -219,8 +221,8 @@ pub fn build(
         })
         .collect();
     let mut extern_fns = Vec::new();
-    let mut trait_decls: HashMap<&str, &ast::TraitDecl> = HashMap::new();
-    let mut static_defaults: Vec<(String, &str)> = Vec::new();
+    let mut trait_decls: HashMap<String, &ast::TraitDecl> = HashMap::new();
+    let mut static_defaults: Vec<(String, String)> = Vec::new();
     for m in modules {
         for item in &m.items {
             match item {
@@ -248,12 +250,12 @@ pub fn build(
                             }
                         }
                     }
-                    if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
-                        static_defaults.push((ty, tr.text.as_str()));
+                    if let Some(tr) = im.trait_.as_ref().and_then(|path| fns.trait_path_key(path)) {
+                        static_defaults.push((ty, tr));
                     }
                 }
                 ast::Item::Trait(t) => {
-                    trait_decls.insert(t.name.text.as_str(), t);
+                    trait_decls.insert(fns.trait_decl_key(&t.name), t);
                 }
                 _ => {}
             }
@@ -264,7 +266,7 @@ pub fn build(
     // since one may be declared after the impl; `or_insert` keeps the impl's
     // own static, so an override wins.
     for (ty, tr) in static_defaults {
-        let Some(t) = trait_decls.get(tr) else {
+        let Some(t) = trait_decls.get(&tr) else {
             continue;
         };
         for f in t
@@ -1805,14 +1807,14 @@ fn collect_methods<'a>(
     fns: &FunctionIndex<'_>,
 ) -> HashMap<(String, String), &'a ast::FnDecl> {
     let mut out = HashMap::new();
-    let mut traits: HashMap<&str, &ast::TraitDecl> = HashMap::new();
+    let mut traits: HashMap<String, &ast::TraitDecl> = HashMap::new();
     // (type head, trait name) for each `impl Trait for Type`.
-    let mut implemented: Vec<(String, &str)> = Vec::new();
+    let mut implemented: Vec<(String, String)> = Vec::new();
     for m in modules {
         for item in &m.items {
             match item {
                 ast::Item::Trait(t) => {
-                    traits.insert(t.name.text.as_str(), t);
+                    traits.insert(fns.trait_decl_key(&t.name), t);
                 }
                 ast::Item::Impl(im) => {
                     if let Some(ty) = fns.type_head_key(&im.target) {
@@ -1821,8 +1823,10 @@ fn collect_methods<'a>(
                                 out.entry((ty.clone(), f.name.text.clone())).or_insert(f);
                             }
                         }
-                        if let Some(tr) = im.trait_.as_ref().and_then(|t| t.segments.last()) {
-                            implemented.push((ty, tr.text.as_str()));
+                        if let Some(tr) =
+                            im.trait_.as_ref().and_then(|path| fns.trait_path_key(path))
+                        {
+                            implemented.push((ty, tr));
                         }
                     }
                 }
@@ -1834,7 +1838,7 @@ fn collect_methods<'a>(
     // so the implementing type inherits it. The impl's own methods went in
     // above, and `or_insert` keeps them, so an override always wins.
     for (ty, tr) in implemented {
-        let Some(t) = traits.get(tr) else { continue };
+        let Some(t) = traits.get(&tr) else { continue };
         for f in t.items.iter().filter(|f| f.body.is_some()) {
             out.entry((ty.clone(), f.name.text.clone())).or_insert(f);
         }
@@ -2939,8 +2943,7 @@ impl Ctx<'_> {
                             .iter()
                             .find(|p| !p.is_self)
                             .and_then(|p| p.ty.as_ref())
-                            .and_then(type_head_name)
-                            .map(str::to_string)
+                            .and_then(|ty| self.fns.type_head_key(ty))
                     })?;
                     Some(if d == "Self" { lhs_ty.clone() } else { d })
                 };
@@ -5620,8 +5623,7 @@ impl Ctx<'_> {
                         .iter()
                         .find(|p| !p.is_self)
                         .and_then(|p| p.ty.as_ref())
-                        .and_then(type_head_name)
-                        .map(str::to_string)
+                        .and_then(|ty| self.fns.type_head_key(ty))
                 })
             };
             if fns

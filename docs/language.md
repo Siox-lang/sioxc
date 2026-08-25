@@ -352,6 +352,12 @@ private to the owning implementation domain by default and may be exported
 with `pub fn`. A member's effective visibility cannot exceed its owner: a
 `pub fn` on a module-private type is callable throughout that module but does
 not create an external API.
+Trait identity includes its declaring module. Two modules may therefore export
+traits with the same leaf name; an import or qualified path selects the exact
+contract, and defaults or implementations from one trait never satisfy the
+other. Compiler hook traits such as `Operator` remain canonical language
+contracts, while nominal types appearing in their template arguments retain
+their resolved module identity.
 All split inherent impl blocks for one type share a member namespace. Repeating
 a method, constant, state declaration, or mode field is an error instead of a
 source-order override.
@@ -1383,10 +1389,14 @@ impl Send<Byte> for Stream Source { /* ... */ }
 impl Send<Byte> for Queue Source  { /* ... */ }
 ```
 
-The nominal identity is the pair `(backing struct, view)`. `Stream Source` and
-`Queue Source` are therefore distinct types even though both views are named
-`Source`. Inherent-member coherence uses that same pair, so both applied views
-may independently define a method with the same name.
+The nominal identity is the pair `(resolved backing struct, resolved view)`.
+`Stream Source` and `Queue Source` are therefore distinct types even though both
+views are named `Source`. The same leaf may also be declared in separate
+modules; an import or qualified view path selects that module's declaration.
+Inherent-member coherence, trait dispatch, direction layouts, and lowering all
+use the complete pair, so applied views cannot exchange behavior merely because
+their leaf spellings match and may independently define a method with the same
+name.
 
 ```siox
 let wire: Stream<unsigned[32]>;

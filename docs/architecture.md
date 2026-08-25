@@ -119,9 +119,14 @@ the selected identity through field/privacy tables, recursive layouts and
 defaults, constructors, methods, constants, flattened paths, and native
 aggregate storage. A standard-library vector struct keeps its canonical short
 IR key when user code declares a namesake; the user declaration receives a
-qualified key. View and trait/operator registries are still being migrated;
-until each category is complete, resolution rejects equal leaves in that
-category instead of allowing a later stage to select the wrong declaration.
+qualified key. Applied views carry the resolved view declaration together with
+the resolved backing type through direction layouts, inherent/trait ownership,
+and native lowering. Views with the same leaf may overload by backing type in
+one module, and equal view leaves in separate modules qualify at the IR/output
+boundary when needed. Custom trait contracts, defaults, implementations, and
+operator operand types use resolver-selected identity as well. Compiler hook
+traits such as `Operator` are the deliberate exception: they keep one canonical
+language key while their user-defined operand types remain identity-preserving.
 
 Package components:
 
@@ -219,7 +224,7 @@ aggregate leaves and synthetic metavalue companions inherit that same anchor,
 so normalized-design lints do not lose their source location. Aggregate roots
 do not have storage signals, so `Design::source_layouts` separately preserves
 their complete concrete shape. Its language-neutral `SourceLayout` tree stores
-struct/view identity and view-field directions, ordered recursively-substituted
+struct/applied-view identity and view-field directions, ordered recursively-substituted
 fields, ordinary versus packed arrays, written range direction, scalar domains,
 value constraints, and source spans. IR signal flattening traverses this
 tree rather than reconstructing shape from AST declarations; checked recursive

@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
-use crate::resolve::{DefId, DefKind, Resolved};
+use crate::resolve::{is_compiler_trait, DefId, DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
@@ -7398,22 +7398,6 @@ fn is_liftable_array_key(key: &str) -> bool {
     matches!(
         key,
         "Resolve" | "and" | "or" | "not" | "xor" | "nand" | "nor" | "xnor"
-    )
-}
-
-fn is_compiler_trait(name: &str) -> bool {
-    matches!(
-        name,
-        "Operator"
-            | "Prefix"
-            | "Suffix"
-            | "Index"
-            | "IndexAssign"
-            | "Boolean"
-            | "Vector"
-            | "Resolve"
-            | "New"
-            | "From"
     )
 }
 
