@@ -8845,3 +8845,4 @@ binary passes. `cargo test` is green, and `./scripts/test-corpus.sh
 /home/max/siox-tests` reports 177 passed / 0 failed. The focused unit regression
 asserts both that resolution retains its one required companion and that the
 companion relation can never exceed depth one.
+2026-08-25 Codex: resolving remaining metavalue propagation gaps in src/ir.rs (clean overwrite clearing, 'old temporal propagation, operand-width correctness), adding regressions, and updating TODO/docs status. Worktree was clean at start.

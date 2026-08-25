@@ -1786,6 +1786,7 @@ mod tests {
                     lhs: Box::new(Expr::Current(SignalId(0))),
                     rhs: Box::new(Expr::Current(SignalId(1))),
                 },
+                meta: None,
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
@@ -1824,6 +1825,7 @@ mod tests {
                 target: SignalId(0),
                 cond: None,
                 expr: Expr::Const(1),
+                meta: None,
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
@@ -1892,6 +1894,7 @@ mod tests {
                 target: SignalId(0),
                 cond: None,
                 expr: Expr::WideConst(vec![1, 2, 3]),
+                meta: None,
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
@@ -1932,6 +1935,7 @@ mod tests {
                         lhs: Box::new(Expr::Current(SignalId(0))),
                         rhs: Box::new(Expr::Current(SignalId(1))),
                     },
+                    meta: None,
                 },
                 Driver {
                     span: None,
@@ -1943,6 +1947,7 @@ mod tests {
                         lhs: Box::new(Expr::Current(SignalId(3))),
                         rhs: Box::new(Expr::Current(SignalId(4))),
                     },
+                    meta: None,
                 },
             ],
             event_blocks: vec![],
@@ -1980,6 +1985,7 @@ mod tests {
                     lhs: Box::new(Expr::Current(SignalId(0))),
                     rhs: Box::new(Expr::Current(SignalId(1))),
                 },
+                meta: None,
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
@@ -2020,6 +2026,7 @@ mod tests {
                     }),
                     rhs: Box::new(Expr::Const(0)),
                 },
+                meta: None,
             }],
             event_blocks: vec![],
             enum_syms: Default::default(),
@@ -2056,6 +2063,7 @@ mod tests {
                     target: SignalId(3),
                     cond: None,
                     expr: Expr::Current(SignalId(2)),
+                    meta: None,
                     ctx: 0,
                 }, // y=c
                 Driver {
@@ -2063,6 +2071,7 @@ mod tests {
                     target: SignalId(2),
                     cond: None,
                     expr: Expr::Current(SignalId(1)),
+                    meta: None,
                     ctx: 0,
                 }, // c=b
                 Driver {
@@ -2070,6 +2079,7 @@ mod tests {
                     target: SignalId(1),
                     cond: None,
                     expr: Expr::Current(SignalId(0)),
+                    meta: None,
                     ctx: 0,
                 }, // b=a
             ],

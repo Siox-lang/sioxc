@@ -569,6 +569,12 @@ pub struct Driver {
     pub target: SignalId,
     pub cond: Option<Expr>,
     pub expr: Expr,
+    /// Explicit discriminant-plane expression retained while lowering a write
+    /// whose value expression alone cannot describe its metavalues (notably a
+    /// bit-string literal and a dynamic packed-element write). The metavalue
+    /// propagation pass consumes this and emits the ordinary companion driver;
+    /// finalized IR always has `None` here.
+    pub meta: Option<Expr>,
     /// Driver context (spec 3.14): one per impl block / per port connection.
     /// Within a context later drivers override; a signal driven from several
     /// contexts folds via its type's `Resolve` impl (or errors without one).
@@ -601,6 +607,9 @@ pub struct NextUpdate {
     pub target: SignalId,
     pub cond: Option<Expr>,
     pub expr: Expr,
+    /// Clocked counterpart of [`Driver::meta`], consumed by metavalue
+    /// propagation before the IR reaches a simulator backend.
+    pub meta: Option<Expr>,
     /// The assignment this update came from — see [`Driver::span`].
     pub span: Option<crate::diag::Span>,
 }
@@ -1692,6 +1701,7 @@ impl<'a> Lowering<'a> {
                         target: i,
                         cond: None,
                         expr: Expr::Current(o),
+                        meta: None,
                         ctx,
                     });
                 }
@@ -2492,6 +2502,7 @@ impl<'a> Lowering<'a> {
                                 target,
                                 cond: None,
                                 expr: Expr::Current(child_id),
+                                meta: None,
                                 ctx,
                             });
                         }
@@ -2503,6 +2514,7 @@ impl<'a> Lowering<'a> {
                             target: child_id,
                             cond: None,
                             expr,
+                            meta: None,
                             ctx,
                         });
                     }
@@ -2532,6 +2544,7 @@ impl<'a> Lowering<'a> {
                                 target: *child_id,
                                 cond: None,
                                 expr,
+                                meta: None,
                                 ctx,
                             });
                         }
@@ -2564,6 +2577,7 @@ impl<'a> Lowering<'a> {
                                 target: *child_id,
                                 cond: None,
                                 expr,
+                                meta: None,
                                 ctx,
                             });
                         }
@@ -2595,6 +2609,7 @@ impl<'a> Lowering<'a> {
                             target: parent_id,
                             cond: None,
                             expr: Expr::Current(child_id),
+                            meta: None,
                             ctx,
                         });
                     } else {
@@ -2603,6 +2618,7 @@ impl<'a> Lowering<'a> {
                             target: child_id,
                             cond: None,
                             expr: Expr::Current(parent_id),
+                            meta: None,
                             ctx,
                         });
                     }
@@ -3564,8 +3580,7 @@ impl<'a> Lowering<'a> {
             // separate value/discriminant planes.
             if let Some(element) = element_resolve {
                 let width = self.out.signals[*t as usize].width;
-                if let Some((value, meta)) = self.resolve_vector_contexts(*t, ctxs, width, &element)
-                {
+                if let Some((value, meta)) = self.resolve_vector_contexts(ctxs, width, &element) {
                     replaced.push((*t, value, Some(meta)));
                 } else {
                     self.sink.emit(
@@ -3627,25 +3642,14 @@ impl<'a> Lowering<'a> {
                 target: SignalId(t),
                 cond: None,
                 expr,
+                meta,
                 ctx: 0,
             });
-            if let Some(meta) = meta {
-                let cid = self.driven_companion(SignalId(t));
-                self.out.drivers.retain(|d| d.target.0 != cid);
-                self.out.drivers.push(Driver {
-                    span: self.cur_span,
-                    target: SignalId(cid),
-                    cond: None,
-                    expr: meta,
-                    ctx: 0,
-                });
-            }
         }
     }
 
     fn resolve_vector_contexts(
         &self,
-        target: u32,
         contexts: &std::collections::BTreeMap<u32, Vec<usize>>,
         width: u32,
         element: &str,
@@ -3653,21 +3657,6 @@ impl<'a> Lowering<'a> {
         let z = self.char_disc('Z', element)?;
         let mut contributions = Vec::new();
         for indices in contexts.values() {
-            let context = indices
-                .first()
-                .map(|index| self.out.drivers[*index].ctx)
-                .unwrap_or(0);
-            let mut companion_drivers: Vec<&Driver> = self
-                .out
-                .meta_of
-                .get(&target)
-                .into_iter()
-                .flat_map(|companion| {
-                    self.out.drivers.iter().filter(move |driver| {
-                        driver.target.0 == *companion && driver.ctx == context
-                    })
-                })
-                .collect();
             let mut value = Expr::Const(z & 1);
             let mut meta = Expr::Const(if z >= 2 { z } else { 0 });
             value = repeat_element_plane(value, width, 1);
@@ -3675,11 +3664,9 @@ impl<'a> Lowering<'a> {
             for &index in indices {
                 let driver = &self.out.drivers[index];
                 let next_value = driver.expr.clone();
-                let matching = companion_drivers
-                    .iter()
-                    .position(|meta| meta.cond.is_some() == driver.cond.is_some());
-                let next_meta = matching
-                    .map(|position| companion_drivers.remove(position).expr.clone())
+                let next_meta = driver
+                    .meta
+                    .clone()
                     .or_else(|| self.lower_meta_ir(&driver.expr, width))
                     .unwrap_or(Expr::Const(0));
                 match &driver.cond {
@@ -4395,30 +4382,36 @@ impl<'a> Lowering<'a> {
     }
 
     /// The metavalue disc-array a driver expression produces, or `None` if it is
-    /// provably clean. `width` is the target element count (for the poison
-    /// pattern). Covers: a signal read (its companion — copies and port
+    /// provably clean. `width` is the expression's result element count (for
+    /// the poison pattern); recursive operands derive their own widths from the
+    /// IR rather than inheriting a narrowed destination width. Covers: a signal
+    /// read (its companion — copies and port
     /// connections carry the metavalue), `numeric_std` arithmetic (any metavalue
     /// operand poisons the whole result to `'X'`), and a mux (per branch).
     /// Logical/relational is a follow-on.
     fn lower_meta_ir(&self, e: &Expr, width: u32) -> Option<Expr> {
         match e {
-            Expr::Current(id) | Expr::Old(id) => self
+            Expr::Current(id) => self
                 .out
                 .meta_of
                 .get(&id.0)
                 .map(|&c| Expr::Current(SignalId(c))),
+            Expr::Old(id) => self.out.meta_of.get(&id.0).map(|&c| Expr::Old(SignalId(c))),
             Expr::Binary {
                 op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
                 lhs,
                 rhs,
             } => {
+                let lhs_width = self.meta_expr_width(lhs, width);
+                let rhs_width = self.meta_expr_width(rhs, width);
                 let cond = [
-                    self.lower_meta_ir(lhs, width),
-                    self.lower_meta_ir(rhs, width),
+                    (self.lower_meta_ir(lhs, lhs_width), lhs_width),
+                    (self.lower_meta_ir(rhs, rhs_width), rhs_width),
                 ]
                 .into_iter()
-                .flatten()
-                .map(|m| any_unknown(&m, width))
+                .filter_map(|(meta, operand_width)| {
+                    meta.map(|meta| any_unknown(&meta, operand_width))
+                })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
                     lhs: Box::new(a),
@@ -4457,7 +4450,8 @@ impl<'a> Lowering<'a> {
             // companion and `"0000X100"[3..0]` came back `1100`, the metavalue
             // replaced by the value plane's bit for it.
             Expr::Slice { base, hi, lo } => {
-                let m = self.lower_meta_ir(base, width)?;
+                let base_width = self.meta_expr_width(base, width.max(hi + 1));
+                let m = self.lower_meta_ir(base, base_width)?;
                 Some(Expr::Slice {
                     base: Box::new(m),
                     hi: hi * 4 + 3,
@@ -4476,7 +4470,8 @@ impl<'a> Lowering<'a> {
                 lhs,
                 rhs,
             } => {
-                let m = self.lower_meta_ir(lhs, width)?;
+                let lhs_width = self.meta_expr_width(lhs, width);
+                let m = self.lower_meta_ir(lhs, lhs_width)?;
                 Some(Expr::Binary {
                     op: *op,
                     lhs: Box::new(m),
@@ -4497,7 +4492,8 @@ impl<'a> Lowering<'a> {
             Expr::Unary { op: UnOp::Not, rhs } => {
                 // The operand's metavalue positions become `'U'` or `'X'`,
                 // clean positions clean.
-                let m = self.lower_meta_ir(rhs, width)?;
+                let rhs_width = self.meta_expr_width(rhs, width);
+                let m = self.lower_meta_ir(rhs, rhs_width)?;
                 let (xd, ud) = (self.x_disc(), self.u_disc());
                 let mut acc = Expr::Const(0);
                 for i in 0..width {
@@ -4515,14 +4511,46 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Best available element width for a lowered value expression. Constants
+    /// inherit their contextual fallback; signal reads and slices are exact.
+    /// Keeping this structural avoids baking type-family widths into the IR and
+    /// is enough to prevent a narrow outer slice from hiding unknown elements
+    /// in a wider computed operand.
+    fn meta_expr_width(&self, expr: &Expr, fallback: u32) -> u32 {
+        match expr {
+            Expr::Current(id) | Expr::Old(id) => self
+                .out
+                .signals
+                .get(id.0 as usize)
+                .map(|signal| signal.width)
+                .unwrap_or(fallback),
+            Expr::Slice { hi, lo, .. } => hi.saturating_sub(*lo) + 1,
+            Expr::Select { then, els, .. } => self
+                .meta_expr_width(then, fallback)
+                .max(self.meta_expr_width(els, fallback)),
+            Expr::Unary { rhs, .. } => self.meta_expr_width(rhs, fallback),
+            Expr::Binary {
+                op: BinOp::Shl | BinOp::Shr | BinOp::AShr,
+                lhs,
+                ..
+            } => self.meta_expr_width(lhs, fallback),
+            Expr::Binary { lhs, rhs, .. } => self
+                .meta_expr_width(lhs, fallback)
+                .max(self.meta_expr_width(rhs, fallback)),
+            _ => fallback,
+        }
+    }
+
     /// The metavalue companion of a per-element logical op (`std_logic_1164`),
     /// unrolled per element: a result element is `'X'` when an operand is
     /// a metavalue *and* no operand forces the output — `0 and X = 0`,
     /// `1 or X = 1`, `X xor _ = X`.
     fn logical_meta(&self, op: BinOp, lhs: &Expr, rhs: &Expr, width: u32) -> Option<Expr> {
+        let lhs_width = self.meta_expr_width(lhs, width);
+        let rhs_width = self.meta_expr_width(rhs, width);
         let (ma, mb) = (
-            self.lower_meta_ir(lhs, width),
-            self.lower_meta_ir(rhs, width),
+            self.lower_meta_ir(lhs, lhs_width),
+            self.lower_meta_ir(rhs, rhs_width),
         );
         if ma.is_none() && mb.is_none() {
             return None;
@@ -4559,112 +4587,121 @@ impl<'a> Lowering<'a> {
     /// companion from [`lower_meta_ir`] of its value. Runs after drivers are
     /// lowered.
     fn propagate_metavalues(&mut self) {
-        // A companion created here is itself a source for any driver that
-        // copies the signal it belongs to, so this has to reach a fixed point.
-        // One pass carried a metavalue exactly one hop from its literal: with
-        // `t = mv; u = t;` the collecting loop read `meta_of` as it stood
-        // before propagation, saw no companion for `t` yet, and gave `u` none
-        // -- so `u` did not merely lose the `'X'`, it read back as `'1'`, the
-        // value plane's bit for it. Each round drives at least one previously
-        // undriven companion and the guard below then skips it, so the number
-        // of signals bounds the loop.
+        // First discover the complete set of signals that need companions.
+        // A newly discovered companion can make a downstream copy discoverable,
+        // so this is a fixed point over the finite set of value signals. No
+        // companion drivers are added during discovery: that keeps companion
+        // expressions terminal and makes the bound explicit.
         loop {
-            let mut driven: Vec<(SignalId, Option<Expr>, Expr, u32)> = Vec::new();
+            let companion_ids: std::collections::HashSet<u32> =
+                self.out.meta_of.values().copied().collect();
+            let mut discovered = Vec::new();
             for d in &self.out.drivers {
-                // A companion is already the discriminant plane; it cannot
-                // itself carry metavalues.  In particular, an element-wise
-                // Resolve companion expression can still contain reads of the
-                // original value plane.  Feeding that expression back through
-                // `lower_meta_ir` used to create `$meta$meta`, then
-                // `$meta$meta$meta`, forever.
-                if self
-                    .out
-                    .meta_of
-                    .values()
-                    .any(|&companion| companion == d.target.0)
+                if companion_ids.contains(&d.target.0) || self.out.meta_of.contains_key(&d.target.0)
                 {
                     continue;
                 }
                 let n = self.out.signals[d.target.0 as usize].width;
-                if n == 0 {
-                    continue;
-                }
-                if self.out.meta_of.get(&d.target.0).is_some_and(|companion| {
-                    self.out
-                        .drivers
-                        .iter()
-                        .any(|driver| driver.target.0 == *companion)
-                }) {
-                    continue;
-                }
-                if let Some(meta_expr) = self.lower_meta_ir(&d.expr, n) {
-                    driven.push((d.target, d.cond.clone(), meta_expr, d.ctx));
+                if n != 0 && (d.meta.is_some() || self.lower_meta_ir(&d.expr, n).is_some()) {
+                    discovered.push(d.target);
                 }
             }
-            // The same for next-state updates. Nothing walked the event blocks
-            // at all, so a register dropped its metavalue plane: `if
-            // clk.rising() { q = a; }` stored `a`'s value bits and left `q`
-            // with no companion, so a pipeline stage holding `'X'` read back as
-            // `'1'`. The companion update rides in the same block, under the
-            // same guard, so it commits with the value it describes.
-            let mut staged: Vec<(usize, SignalId, Option<Expr>, Expr)> = Vec::new();
-            for (index, block) in self.out.event_blocks.iter().enumerate() {
+            for block in &self.out.event_blocks {
                 for update in &block.updates {
-                    // As above, a next-state update of the discriminant plane
-                    // is the end of propagation, not the start of another
-                    // companion chain.
-                    if self
-                        .out
-                        .meta_of
-                        .values()
-                        .any(|&companion| companion == update.target.0)
+                    if companion_ids.contains(&update.target.0)
+                        || self.out.meta_of.contains_key(&update.target.0)
                     {
                         continue;
                     }
                     let n = self.out.signals[update.target.0 as usize].width;
-                    if n == 0 {
-                        continue;
-                    }
-                    if self
-                        .out
-                        .meta_of
-                        .get(&update.target.0)
-                        .is_some_and(|companion| {
-                            self.out
-                                .event_blocks
-                                .iter()
-                                .any(|b| b.updates.iter().any(|u| u.target.0 == *companion))
-                        })
+                    if n != 0
+                        && (update.meta.is_some() || self.lower_meta_ir(&update.expr, n).is_some())
                     {
-                        continue;
-                    }
-                    if let Some(meta_expr) = self.lower_meta_ir(&update.expr, n) {
-                        staged.push((index, update.target, update.cond.clone(), meta_expr));
+                        discovered.push(update.target);
                     }
                 }
             }
-            if driven.is_empty() && staged.is_empty() {
-                return;
+            discovered.sort_by_key(|signal| signal.0);
+            discovered.dedup();
+            if discovered.is_empty() {
+                break;
             }
-            for (target, cond, expr, ctx) in driven {
-                let cid = self.driven_companion(target);
-                self.out.drivers.push(Driver {
-                    span: self.cur_span,
-                    target: SignalId(cid),
+            for target in discovered {
+                self.driven_companion(target);
+            }
+        }
+
+        // Then emit exactly one companion write beside every write of a signal
+        // that has a companion. Clean writes deliberately emit zero: without
+        // that write a later clean override changed the value plane while an
+        // earlier `X`/`Z` remained stale in the discriminant plane.
+        let companion_ids: std::collections::HashSet<u32> =
+            self.out.meta_of.values().copied().collect();
+        let mut drivers = Vec::with_capacity(self.out.drivers.len() * 2);
+        for mut driver in std::mem::take(&mut self.out.drivers) {
+            if companion_ids.contains(&driver.target.0) {
+                driver.meta = None;
+                drivers.push(driver);
+                continue;
+            }
+            let companion = self.out.meta_of.get(&driver.target.0).copied();
+            let meta = companion.map(|_| {
+                let width = self.out.signals[driver.target.0 as usize].width;
+                driver
+                    .meta
+                    .take()
+                    .or_else(|| self.lower_meta_ir(&driver.expr, width))
+                    .unwrap_or(Expr::Const(0))
+            });
+            let cond = driver.cond.clone();
+            let ctx = driver.ctx;
+            let span = driver.span;
+            drivers.push(driver);
+            if let (Some(companion), Some(expr)) = (companion, meta) {
+                drivers.push(Driver {
+                    target: SignalId(companion),
                     cond,
                     expr,
+                    meta: None,
                     ctx,
+                    span,
                 });
             }
-            for (index, target, cond, expr) in staged {
-                let cid = self.driven_companion(target);
-                self.out.event_blocks[index].updates.push(NextUpdate {
-                    span: self.cur_span,
-                    target: SignalId(cid),
-                    cond,
-                    expr,
+        }
+        self.out.drivers = drivers;
+
+        for block_index in 0..self.out.event_blocks.len() {
+            let mut updates =
+                Vec::with_capacity(self.out.event_blocks[block_index].updates.len() * 2);
+            for mut update in std::mem::take(&mut self.out.event_blocks[block_index].updates) {
+                if companion_ids.contains(&update.target.0) {
+                    update.meta = None;
+                    updates.push(update);
+                    continue;
+                }
+                let companion = self.out.meta_of.get(&update.target.0).copied();
+                let meta = companion.map(|_| {
+                    let width = self.out.signals[update.target.0 as usize].width;
+                    update
+                        .meta
+                        .take()
+                        .or_else(|| self.lower_meta_ir(&update.expr, width))
+                        .unwrap_or(Expr::Const(0))
                 });
+                let cond = update.cond.clone();
+                let span = update.span;
+                updates.push(update);
+                if let (Some(companion), Some(expr)) = (companion, meta) {
+                    updates.push(NextUpdate {
+                        target: SignalId(companion),
+                        cond,
+                        expr,
+                        meta: None,
+                        span,
+                    });
+                }
             }
+            self.out.event_blocks[block_index].updates = updates;
         }
     }
 
@@ -6361,27 +6398,6 @@ impl<'a> Lowering<'a> {
                 // `locals` so they fall through untouched.
                 if let Some(tpath) = expr_path(target) {
                     if let Some(&tid) = self.locals.get(&tpath) {
-                        // A metavalue bit-string literal in driver position
-                        // (`out = "1X10"`) — the value driver keeps only the
-                        // bits, so give the target a companion and drive its
-                        // discriminant array (the disc is lost in the IR `Const`).
-                        if let Some((base, digits)) = Self::bit_string_parts(value) {
-                            let (_, discs) = self.decode_bit_string_words(base, digits);
-                            if Self::has_metavalue(&discs) {
-                                let cid = self.driven_companion(tid);
-                                self.out.drivers.push(Driver {
-                                    span: self.cur_span,
-                                    target: SignalId(cid),
-                                    cond: cond.clone(),
-                                    expr: if discs.len() == 1 {
-                                        Expr::Const(discs[0])
-                                    } else {
-                                        Expr::WideConst(discs)
-                                    },
-                                    ctx: self.cur_ctx,
-                                });
-                            }
-                        }
                         let tw = self.out.signals[tid.0 as usize].width;
                         if let Some(sw) = self.ref_width(value) {
                             // Ranged kernel integers are constraints/subtypes
@@ -6442,6 +6458,7 @@ impl<'a> Lowering<'a> {
                                             target,
                                             cond: cond.clone(),
                                             expr: self.coerce_to_target(target, expression.clone()),
+                                            meta: None,
                                             ctx: self.cur_ctx,
                                         });
                                     }
@@ -6489,6 +6506,7 @@ impl<'a> Lowering<'a> {
                                             target: sig,
                                             cond: cond.clone(),
                                             expr: Expr::Const(val),
+                                            meta: None,
                                             ctx: self.cur_ctx,
                                         });
                                     }
@@ -6517,6 +6535,7 @@ impl<'a> Lowering<'a> {
                                             target: sig,
                                             cond: cond.clone(),
                                             expr,
+                                            meta: None,
                                             ctx: self.cur_ctx,
                                         });
                                     }
@@ -6535,6 +6554,7 @@ impl<'a> Lowering<'a> {
                                                     target: t,
                                                     cond: cond.clone(),
                                                     expr: Expr::Current(sv),
+                                                    meta: None,
                                                     ctx: self.cur_ctx,
                                                 });
                                             }
@@ -6576,6 +6596,7 @@ impl<'a> Lowering<'a> {
                                             target,
                                             cond: cond.clone(),
                                             expr,
+                                            meta: None,
                                             ctx: self.cur_ctx,
                                         });
                                     }
@@ -6616,6 +6637,7 @@ impl<'a> Lowering<'a> {
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
+                                meta: None,
                                 ctx: self.cur_ctx,
                             });
                         }
@@ -6629,6 +6651,7 @@ impl<'a> Lowering<'a> {
                         target,
                         cond,
                         expr,
+                        meta: self.bit_string_meta(value),
                         ctx: self.cur_ctx,
                     });
                 } else if let Some(ups) = self.dynamic_write(target, value, &cond, false, &[]) {
@@ -6638,6 +6661,7 @@ impl<'a> Lowering<'a> {
                             target: u.target,
                             cond: u.cond,
                             expr: u.expr,
+                            meta: u.meta,
                             ctx: self.cur_ctx,
                         });
                     }
@@ -6648,6 +6672,7 @@ impl<'a> Lowering<'a> {
                             target: u.target,
                             cond: u.cond,
                             expr: u.expr,
+                            meta: u.meta,
                             ctx: self.cur_ctx,
                         });
                     }
@@ -6677,6 +6702,7 @@ impl<'a> Lowering<'a> {
                             target: sig,
                             cond,
                             expr: merged,
+                            meta: None,
                             ctx: self.cur_ctx,
                         }),
                     }
@@ -6709,6 +6735,7 @@ impl<'a> Lowering<'a> {
                             target: t,
                             cond: cond.clone(),
                             expr,
+                            meta: None,
                             ctx: self.cur_ctx,
                         });
                         off -= w;
@@ -7067,6 +7094,7 @@ impl<'a> Lowering<'a> {
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
+                                meta: None,
                             });
                         }
                     } else if let Some(leaves) = self.array_assign_leaves(target, value) {
@@ -7077,6 +7105,7 @@ impl<'a> Lowering<'a> {
                                 target: sig,
                                 cond: cond.clone(),
                                 expr,
+                                meta: None,
                             });
                         }
                     } else if let Some(target) = self.target_signal(target) {
@@ -7086,6 +7115,7 @@ impl<'a> Lowering<'a> {
                             target,
                             cond: cond.clone(),
                             expr,
+                            meta: self.bit_string_meta(value),
                         });
                     } else if let Some(ups) = self.dynamic_write(target, value, &cond, true, out) {
                         out.extend(ups);
@@ -7105,6 +7135,7 @@ impl<'a> Lowering<'a> {
                             target: sig,
                             cond: cond.clone(),
                             expr,
+                            meta: None,
                         });
                     } else if let ast::Expr::Concat { parts, span: cspan } = target {
                         // `{hi, lo} = w;` in a clocked block: each part takes
@@ -7135,6 +7166,7 @@ impl<'a> Lowering<'a> {
                                 target: t,
                                 cond: cond.clone(),
                                 expr,
+                                meta: None,
                             });
                             off -= w;
                         }
@@ -7377,6 +7409,7 @@ impl<'a> Lowering<'a> {
                     target: signal,
                     cond: write_guard(cond, hit),
                     expr: self.coerce_to_target(signal, expr.clone()),
+                    meta: None,
                 }),
                 DynamicWriteTarget::PackedBit {
                     signal,
@@ -7385,25 +7418,11 @@ impl<'a> Lowering<'a> {
                 } => {
                     let width = self.out.signals[signal.0 as usize].width;
                     let base = self.slice_write_base(signal, sequential, pending);
-                    updates.push(NextUpdate {
-                        span: self.cur_span,
-                        target: signal,
-                        cond: write_guard(cond, hit.clone()),
-                        expr: self.merge_slice(base, position, position, expr.clone(), width),
-                    });
-
-                    // A packed Logic-family vector has a separate nibble per
-                    // element for its full 9-value discriminant. Update that
-                    // plane alongside the value bit so a runtime write of
-                    // `'X'`/`'Z'` reads back exactly, while 0/1 clear the
-                    // companion nibble.
-                    if self.out.vector_element_enums.contains_key(&signal.0) {
+                    let meta = if self.out.vector_element_enums.contains_key(&signal.0) {
                         let companion = SignalId(self.driven_companion(signal));
-                        if !sequential {
-                            self.ensure_combinational_companion_base(signal, companion);
-                        }
                         let meta_width = self.out.signals[companion.0 as usize].width;
-                        let meta_base = self.slice_write_base(companion, sequential, pending);
+                        let meta_base =
+                            self.slice_meta_write_base(signal, companion, sequential, pending);
                         let meta_value = Expr::Select {
                             cond: Box::new(Expr::Binary {
                                 op: BinOp::Ge,
@@ -7413,19 +7432,23 @@ impl<'a> Lowering<'a> {
                             then: Box::new(expr.clone()),
                             els: Box::new(Expr::Const(0)),
                         };
-                        updates.push(NextUpdate {
-                            span: self.cur_span,
-                            target: companion,
-                            cond: Some(and(cond.clone(), hit)),
-                            expr: self.merge_slice(
-                                meta_base,
-                                position * 4 + 3,
-                                position * 4,
-                                meta_value,
-                                meta_width,
-                            ),
-                        });
-                    }
+                        Some(self.merge_slice(
+                            meta_base,
+                            position * 4 + 3,
+                            position * 4,
+                            meta_value,
+                            meta_width,
+                        ))
+                    } else {
+                        None
+                    };
+                    updates.push(NextUpdate {
+                        span: self.cur_span,
+                        target: signal,
+                        cond: write_guard(cond, hit.clone()),
+                        expr: self.merge_slice(base, position, position, expr.clone(), width),
+                        meta,
+                    });
                 }
             }
         }
@@ -7486,36 +7509,79 @@ impl<'a> Lowering<'a> {
                     target: signal,
                     cond: Some(and(cond.clone(), hit.clone())),
                     expr: self.coerce_to_target(signal, expr.clone()),
+                    meta: None,
                 });
             }
         }
         (!updates.is_empty()).then_some(updates)
     }
 
-    fn ensure_combinational_companion_base(&mut self, value: SignalId, companion: SignalId) {
-        if self.out.drivers.iter().any(|driver| {
-            driver.target == companion && driver.ctx == self.cur_ctx && driver.cond.is_none()
-        }) {
-            return;
+    /// The discriminant plane that preceding writes in this context have
+    /// produced. It mirrors [`Self::slice_write_base`] but reads the metadata
+    /// retained on each value write instead of relying on independently ordered
+    /// companion writes.
+    fn slice_meta_write_base(
+        &self,
+        signal: SignalId,
+        companion: SignalId,
+        sequential: bool,
+        pending: &[NextUpdate],
+    ) -> Expr {
+        let write_meta = |expr: &Expr, explicit: &Option<Expr>| {
+            explicit
+                .clone()
+                .or_else(|| self.lower_meta_ir(expr, self.out.signals[signal.0 as usize].width))
+                .unwrap_or(Expr::Const(0))
+        };
+        if sequential {
+            let seed = self
+                .out
+                .event_blocks
+                .iter()
+                .flat_map(|block| {
+                    block
+                        .updates
+                        .iter()
+                        .filter(|update| update.target == signal)
+                        .map(move |update| {
+                            let guard = match &update.cond {
+                                Some(cond) => and_expr(block.condition.clone(), cond.clone()),
+                                None => block.condition.clone(),
+                            };
+                            (guard, write_meta(&update.expr, &update.meta))
+                        })
+                })
+                .fold(Expr::Current(companion), |acc, (guard, expr)| {
+                    Expr::Select {
+                        cond: Box::new(guard),
+                        then: Box::new(expr),
+                        els: Box::new(acc),
+                    }
+                });
+            return pending
+                .iter()
+                .filter(|update| update.target == signal)
+                .fold(seed, |acc, update| match &update.cond {
+                    Some(cond) => Expr::Select {
+                        cond: Box::new(cond.clone()),
+                        then: Box::new(write_meta(&update.expr, &update.meta)),
+                        els: Box::new(acc),
+                    },
+                    None => write_meta(&update.expr, &update.meta),
+                });
         }
-        let width = self.out.signals[value.0 as usize].width;
-        let meta = self
-            .out
+        self.out
             .drivers
             .iter()
-            .rev()
-            .find(|driver| {
-                driver.target == value && driver.ctx == self.cur_ctx && driver.cond.is_none()
+            .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
+            .fold(Expr::Const(0), |acc, driver| match &driver.cond {
+                Some(cond) => Expr::Select {
+                    cond: Box::new(cond.clone()),
+                    then: Box::new(write_meta(&driver.expr, &driver.meta)),
+                    els: Box::new(acc),
+                },
+                None => write_meta(&driver.expr, &driver.meta),
             })
-            .and_then(|driver| self.lower_meta_ir(&driver.expr, width))
-            .unwrap_or(Expr::Const(0));
-        self.out.drivers.push(Driver {
-            span: self.cur_span,
-            target: companion,
-            cond: None,
-            expr: meta,
-            ctx: self.cur_ctx,
-        });
     }
 
     /// What `signal` already holds where this write appears — the base a
@@ -8796,13 +8862,65 @@ impl<'a> Lowering<'a> {
     /// storage positions. Arrays are excluded because their elements are
     /// separate signals rather than bits of one scalar.
     fn storage_slice_bounds(&self, base: &ast::Expr, index: &ast::Expr) -> Option<(u32, u32)> {
-        let (a, b) = self.slice_bounds(base, index)?;
-        let path = expr_path(base)?;
-        let (left, right) = self
-            .block_local_binding(base)
-            .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
-            .or_else(|| self.persisted_range(&path))?;
+        let named = expr_path(base).and_then(|path| {
+            let range = self
+                .block_local_binding(base)
+                .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
+                .or_else(|| self.persisted_range(&path))?;
+            Some((self.slice_bounds(base, index)?, range))
+        });
+        let ((a, b), (left, right)) = if let Some(named) = named {
+            named
+        } else {
+            // A computed packed value has no declaration path from which to
+            // recover labels. Its result uses the vector family's canonical
+            // zero-based storage labels, so an explicit/partial slice can still
+            // select it (`(a + b)[3..0]`) instead of lowering to `Unknown`.
+            if !matches!(
+                self.expr_types.get(&ast::expr_span(base)),
+                Some(crate::types::Ty::Array {
+                    family: Some(_),
+                    ..
+                })
+            ) {
+                return None;
+            }
+            let width = self.ast_width(base);
+            if width == 0 {
+                return None;
+            }
+            let declared = (i64::from(width - 1), 0);
+            let bounds = match index {
+                ast::Expr::Range { lo, hi, .. } => (
+                    self.eval_const(lo, &self.cur_env)?,
+                    self.eval_const(hi, &self.cur_env)?,
+                ),
+                ast::Expr::PartialRange { lo, hi, .. } => (
+                    match lo.as_deref() {
+                        Some(lo) => self.eval_const(lo, &self.cur_env)?,
+                        None => declared.0,
+                    },
+                    match hi.as_deref() {
+                        Some(hi) => self.eval_const(hi, &self.cur_env)?,
+                        None => declared.1,
+                    },
+                ),
+                ast::Expr::Path(_) => {
+                    let value = self.eval_const(index, &self.cur_env)?;
+                    (value, value)
+                }
+                _ => {
+                    let value = self.eval_const(index, &self.cur_env)?;
+                    (value, value)
+                }
+            };
+            (bounds, declared)
+        };
         let low = left.min(right);
+        let high = left.max(right);
+        if a < low || a > high || b < low || b > high {
+            return None;
+        }
         let to_storage = |label: i64| {
             let offset = i128::from(label) - i128::from(low);
             u32::try_from(offset).ok()
@@ -9021,6 +9139,17 @@ impl<'a> Lowering<'a> {
             ast::Expr::StrLit { text, .. } => Some(('b', text)),
             _ => None,
         }
+    }
+
+    /// Preserve the discriminant plane of a metavalue-carrying bit string
+    /// alongside its value driver until [`Self::propagate_metavalues`] creates
+    /// the target's companion. A raw `Const`/`WideConst` retains only the low
+    /// value bit of each element and cannot recover whether that bit was `X`,
+    /// `Z`, or another nine-value symbol.
+    fn bit_string_meta(&self, e: &ast::Expr) -> Option<Expr> {
+        let (base, digits) = Self::bit_string_parts(e)?;
+        let (_, discs) = self.decode_bit_string_words(base, digits);
+        Self::has_metavalue(&discs).then(|| words_const(discs))
     }
 
     /// A nibble of this mask is nonzero exactly when its element's discriminant
@@ -11298,13 +11427,10 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
         reconstruct_expr(&mut resolved, meta_of, elems);
         let unknown = operands
             .iter()
-            .filter_map(|operand| match operand {
-                Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
-                _ => None,
-            })
-            .map(|c| {
-                let n = elems.get(&c).copied().unwrap_or(0);
-                any_unknown(&Expr::Current(SignalId(c)), n)
+            .filter_map(|operand| companion_read(operand, meta_of))
+            .map(|(companion, read)| {
+                let n = elems.get(&companion).copied().unwrap_or(0);
+                any_unknown(&read, n)
             })
             .reduce(or_expr);
         *e = match unknown {
@@ -11331,21 +11457,17 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
                 | BinOp::SGt
                 | BinOp::SGe
         ) {
-            let comp = |x: &Expr| match x {
-                Expr::Current(id) | Expr::Old(id) => meta_of.get(&id.0).copied(),
-                _ => None,
-            };
             // Per element, not `companion != 0`: a nibble is non-zero for
             // `'L'` and `'H'` too, and those are a weak 0 and a weak 1 that
             // `numeric_std` compares like any other value. The coarse test made
             // a vector holding a pull-up's `'H'` compare false against
             // everything.
-            let cond = [comp(lhs), comp(rhs)]
+            let cond = [companion_read(lhs, meta_of), companion_read(rhs, meta_of)]
                 .into_iter()
                 .flatten()
-                .map(|c| {
-                    let elems = elems.get(&c).copied().unwrap_or(0);
-                    any_unknown(&Expr::Current(SignalId(c)), elems)
+                .map(|(companion, read)| {
+                    let elems = elems.get(&companion).copied().unwrap_or(0);
+                    any_unknown(&read, elems)
                 })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
@@ -11365,11 +11487,16 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
     }
     if let Expr::Slice { base, hi, lo } = e {
         if hi == lo {
-            if let Expr::Current(vid) = base.as_ref() {
+            if let Expr::Current(vid) | Expr::Old(vid) = base.as_ref() {
                 if let Some(&cid) = meta_of.get(&vid.0) {
+                    let companion = match base.as_ref() {
+                        Expr::Current(_) => Expr::Current(SignalId(cid)),
+                        Expr::Old(_) => Expr::Old(SignalId(cid)),
+                        _ => unreachable!(),
+                    };
                     let elem = *lo;
                     let nibble = Expr::Slice {
-                        base: Box::new(Expr::Current(SignalId(cid))),
+                        base: Box::new(companion),
                         hi: 4 * elem + 3,
                         lo: 4 * elem,
                     };
@@ -11411,6 +11538,22 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
             }
         }
         _ => {}
+    }
+}
+
+/// Preserve the temporal plane of a value read when looking up its metavalue
+/// companion. `old(v)` must inspect `old(v$meta)`, not the current companion.
+fn companion_read(expr: &Expr, meta_of: &HashMap<u32, u32>) -> Option<(u32, Expr)> {
+    match expr {
+        Expr::Current(id) => meta_of
+            .get(&id.0)
+            .copied()
+            .map(|companion| (companion, Expr::Current(SignalId(companion)))),
+        Expr::Old(id) => meta_of
+            .get(&id.0)
+            .copied()
+            .map(|companion| (companion, Expr::Old(SignalId(companion)))),
+        _ => None,
     }
 }
 
@@ -11802,6 +11945,11 @@ impl Design {
         for d in &self.drivers {
             let ctx = format!("the driver for {}", name(d.target));
             target(d.target, &ctx, &mut issues);
+            if d.meta.is_some() {
+                issues.push(format!(
+                    "{ctx}: still carries unexpanded metavalue metadata"
+                ));
+            }
             if let Some(c) = &d.cond {
                 check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
             }
@@ -11823,6 +11971,11 @@ impl Design {
             for u in &eb.updates {
                 let ctx = format!("{block}, update of {}", name(u.target));
                 target(u.target, &ctx, &mut issues);
+                if u.meta.is_some() {
+                    issues.push(format!(
+                        "{ctx}: still carries unexpanded metavalue metadata"
+                    ));
+                }
                 if let Some(c) = &u.cond {
                     check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
                 }
@@ -15416,6 +15569,7 @@ mod tests {
             target: SignalId(target),
             cond: None,
             expr: Expr::Const(0),
+            meta: None,
             ctx: 0,
             span: at,
         };
@@ -15441,12 +15595,14 @@ mod tests {
                         target: SignalId(0),
                         cond: None,
                         expr: Expr::Const(0),
+                        meta: None,
                         span: Some(span(400)),
                     },
                     NextUpdate {
                         target: SignalId(1),
                         cond: None,
                         expr: Expr::Const(0),
+                        meta: None,
                         span: Some(span(500)),
                     },
                 ],
@@ -15495,6 +15651,7 @@ mod tests {
                     hi: 1,
                     lo: 3,
                 },
+                meta: None,
                 ctx: 0,
             }],
             event_blocks: vec![],
@@ -15985,6 +16142,143 @@ mod tests {
             driver.target == SignalId(cid)
                 && matches!(&driver.expr, Expr::WideConst(words) if words == &[0, 3])
         }));
+    }
+
+    #[test]
+    fn clean_combinational_override_clears_metavalue_companion_in_order() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E { clear: Bit in, y: unsigned[4] out, }\n\
+             impl E {\n\
+                 let dirty: unsigned[4] = \"X000\";\n\
+                 y = dirty;\n\
+                 if clear { y = \"0000\"; }\n\
+             }\n",
+        );
+        let y = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".y"))
+            .expect("y") as u32;
+        let companion = *design
+            .meta_of
+            .get(&y)
+            .unwrap_or_else(|| panic!("y companion missing:\n{}", design.to_ir_string()));
+        let value_drivers: Vec<_> = design
+            .drivers
+            .iter()
+            .filter(|driver| driver.target == SignalId(y))
+            .collect();
+        let meta_drivers: Vec<_> = design
+            .drivers
+            .iter()
+            .filter(|driver| driver.target == SignalId(companion))
+            .collect();
+        assert_eq!(value_drivers.len(), 2);
+        assert_eq!(meta_drivers.len(), 2, "one companion write per value write");
+        assert!(meta_drivers[0].cond.is_none());
+        assert!(meta_drivers[1].cond.is_some());
+        assert!(matches!(meta_drivers[1].expr, Expr::Const(0)));
+    }
+
+    #[test]
+    fn clean_clocked_override_clears_metavalue_companion_in_order() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E { clk: Bit in, clear: Bit in, y: unsigned[4] out, }\n\
+             impl E {\n\
+                 let dirty: unsigned[4] = \"X000\";\n\
+                 if clk.rising() {\n\
+                     y = dirty;\n\
+                     if clear { y = \"0000\"; }\n\
+                 }\n\
+             }\n",
+        );
+        let y = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".y"))
+            .expect("y") as u32;
+        let companion = *design.meta_of.get(&y).expect("y companion");
+        let block = design.event_blocks.first().expect("clocked block");
+        let value_updates: Vec<_> = block
+            .updates
+            .iter()
+            .filter(|update| update.target == SignalId(y))
+            .collect();
+        let meta_updates: Vec<_> = block
+            .updates
+            .iter()
+            .filter(|update| update.target == SignalId(companion))
+            .collect();
+        assert_eq!(value_updates.len(), 2);
+        assert_eq!(
+            meta_updates.len(),
+            2,
+            "one companion update per value update"
+        );
+        assert!(meta_updates[0].cond.is_none());
+        assert!(meta_updates[1].cond.is_some());
+        assert!(matches!(meta_updates[1].expr, Expr::Const(0)));
+    }
+
+    #[test]
+    fn old_vector_read_uses_old_metavalue_companion() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E { y: unsigned[4] out, }\n\
+             impl E {\n\
+                 let v: unsigned[4] = \"X000\";\n\
+                 y = v'old;\n\
+             }\n",
+        );
+        let y = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".y"))
+            .expect("y") as u32;
+        let companion = *design.meta_of.get(&y).expect("y companion");
+        let meta_driver = design
+            .drivers
+            .iter()
+            .find(|driver| driver.target == SignalId(companion))
+            .expect("companion driver");
+        assert!(matches!(meta_driver.expr, Expr::Old(_)));
+    }
+
+    #[test]
+    fn narrowed_arithmetic_scans_full_operand_for_metavalues() {
+        let design = lower_src(
+            "module m;\n\
+             #[top] entity E { y: unsigned[4] out, }\n\
+             impl E {\n\
+                 let dirty: unsigned[8] = \"X0000000\";\n\
+                 let zero: unsigned[8] = 0;\n\
+                 y = (dirty + zero)[3..0];\n\
+             }\n",
+        );
+        let y = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".y"))
+            .expect("y") as u32;
+        let companion = *design
+            .meta_of
+            .get(&y)
+            .unwrap_or_else(|| panic!("y companion missing:\n{}", design.to_ir_string()));
+        let rendered = render(
+            &design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(companion))
+                .expect("companion driver")
+                .expr,
+            &design,
+        );
+        assert!(
+            rendered.contains("[31..28]"),
+            "the poison predicate must inspect element 7 of the 8-element operand: {rendered}"
+        );
     }
 
     /// Constant evaluation is best-effort and must never let host integer

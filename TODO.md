@@ -5,7 +5,7 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-18 against the compiler, standard library, documentation,
+Status audited 2026-08-25 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
@@ -122,7 +122,11 @@ Current baseline:
   undriven outputs/signals, W-P012 unconnected inputs, latch and driver lints
   operate on the normalized design.
 - ✅ Scalar and vector IEEE 1076-2019 Logic behavior is represented, including
-  wide X/Z storage and propagation.
+  wide X/Z storage and propagation. Value and discriminant writes remain in
+  source order, clean overrides explicitly clear stale metadata, clocked
+  bit-string literals retain their discriminants, `'old` reads the old value
+  and old companion together, and narrowed computed arithmetic scans the full
+  operand width before slicing its poisoned result.
 - ✅ Scoped hardware block locals lower to storage-free expressions with
   immediate reassignment, lexical shadowing, conditional selection, aggregate
   fields/elements, packed slices, and event-block next-state separation.
@@ -162,6 +166,11 @@ Remaining:
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
   detection.
+
+- 🟡 **One-shot delayed writes.** The event wheel supports canonical background
+  clocks and `await`, but an arbitrary `x = value after duration` is rejected.
+  Represent the pending target/value write on the event wheel and define its
+  overwrite/cancellation semantics before accepting the general form.
 ## LLVM
 
 Owns native lowering, state layout, optimization, and the word ABI. Code:

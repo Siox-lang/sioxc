@@ -97,7 +97,11 @@ stores each element's full discriminant and is created **only where metavalues
 occur**, so a design that never uses them pays nothing. Companions are
 arbitrary-width low-word-first values, so they do not stop at one ABI word.
 Indexing an element reconstructs the full scalar `Logic`, and copies, ports,
-muxes and driver literals propagate both planes.
+muxes and driver literals propagate both planes. Every write to a value that
+has a companion produces a source-ordered companion write as well; a clean
+override writes zero to that plane instead of leaving an earlier metavalue
+behind. Temporal reads also stay paired (`v'old` reads `v$meta'old`), including
+clocked next-state updates.
 
 Operator behaviour follows the library: logical operators use the
 `std_logic_1164` truth tables per element (including forcing cases such as
@@ -109,8 +113,8 @@ scheduler samples.
 
 The scalar tables are checked exhaustively against `nvc`, and the corpus covers
 storage, arithmetic poisoning, relational and logical behaviour, connections,
-driver-position literals, wide initialization, and metavalues crossing ABI word
-boundaries.
+driver-position literals, clean combinational and clocked overrides, computed
+slices, wide initialization, and metavalues crossing ABI word boundaries.
 
 ## Waveforms
 
