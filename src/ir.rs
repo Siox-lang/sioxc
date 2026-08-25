@@ -201,26 +201,30 @@ impl<'a> FunctionIndex<'a> {
     /// Stable table key for a trait declaration. Compiler hook traits retain
     /// their canonical leaf key; ordinary traits use their qualified identity.
     pub fn trait_decl_key(&self, name: &ast::Ident) -> String {
-        if is_compiler_trait(&name.text) {
+        let Some(id) = self.resolved.declared(name.span) else {
             return name.text.clone();
+        };
+        if is_compiler_trait(self.resolved, id) {
+            name.text.clone()
+        } else {
+            self.resolved
+                .qualified_name(id)
+                .unwrap_or_else(|| name.text.clone())
         }
-        self.resolved
-            .declared(name.span)
-            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Trait))
-            .and_then(|id| self.resolved.qualified_name(id))
-            .unwrap_or_else(|| name.text.clone())
     }
 
     /// Resolver-selected identity of a path that names a trait.
     pub fn trait_path_key(&self, path: &ast::Path) -> Option<String> {
-        let leaf = path.segments.last()?.text.as_str();
-        if is_compiler_trait(leaf) {
-            return Some(leaf.to_string());
-        }
         let id = self.resolved.resolved(path.span)?;
-        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Trait))
-            .then(|| self.resolved.qualified_name(id))
-            .flatten()
+        if is_compiler_trait(self.resolved, id) {
+            self.resolved
+                .def(id)
+                .map(|definition| definition.name.clone())
+        } else {
+            (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Trait))
+                .then(|| self.resolved.qualified_name(id))
+                .flatten()
+        }
     }
 
     /// Nominal type named directly by a constructor path, or by the owner of
@@ -1418,7 +1422,6 @@ impl<'a> Lowering<'a> {
                         let trait_path = im.trait_.as_ref();
                         let trait_key =
                             trait_path.and_then(|path| self.free_fns.trait_path_key(path));
-                        let trait_leaf = trait_path.and_then(|path| path.segments.last());
                         let target = self.free_fns.type_head_key(&im.target);
                         if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
                             self.implemented_traits
@@ -1427,10 +1430,8 @@ impl<'a> Lowering<'a> {
                                 .push(tr.clone());
                         }
                         self.register_static_fns(im);
-                        if let (Some(tr), Some(trait_leaf), Some(ty)) =
-                            (trait_key.as_ref(), trait_leaf, target.as_ref())
-                        {
-                            if trait_leaf.text == "Suffix" {
+                        if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
+                            if tr == "Suffix" {
                                 let symbol = im.trait_args.first().and_then(|a| match a {
                                     ast::GenericArg::Positional(ast::Expr::StrLit {
                                         text, ..
@@ -1451,7 +1452,7 @@ impl<'a> Lowering<'a> {
                                 // argument names the rhs operand type. A
                                 // non-operator trait (Resolve/New/From) keys by
                                 // its own name and reads its first type arg.
-                                let op_symbol = (trait_leaf.text == "Operator")
+                                let op_symbol = (tr == "Operator")
                                     .then(|| im.trait_args.first())
                                     .flatten()
                                     .and_then(|a| match a {
@@ -1474,8 +1475,8 @@ impl<'a> Lowering<'a> {
                                     });
                                 let operator = op_symbol.unwrap_or_else(|| tr.clone());
                                 if is_blanket_array_impl(im) {
-                                    let requirement =
-                                        blanket_requirement(im).unwrap_or_else(|| operator.clone());
+                                    let requirement = blanket_requirement(im, &self.free_fns)
+                                        .unwrap_or_else(|| operator.clone());
                                     self.blanket_array_impls.insert(operator, requirement);
                                     continue;
                                 }
@@ -12768,8 +12769,8 @@ pub fn vector_families(
                 if im
                     .trait_
                     .as_ref()
-                    .and_then(|path| path.segments.last())
-                    .is_some_and(|name| name.text == "Vector") =>
+                    .and_then(|path| fns.trait_path_key(path))
+                    .is_some_and(|name| name == "Vector") =>
             {
                 fns.type_head_key(&im.target)
             }
@@ -13836,7 +13837,7 @@ fn is_blanket_array_impl(im: &ast::ImplDecl) -> bool {
     im.params.params.iter().any(|param| param.name.text == head)
 }
 
-fn blanket_requirement(im: &ast::ImplDecl) -> Option<String> {
+fn blanket_requirement(im: &ast::ImplDecl, fns: &FunctionIndex<'_>) -> Option<String> {
     let ast::Type::Indexed { base, .. } = &im.target else {
         return None;
     };
@@ -13848,14 +13849,22 @@ fn blanket_requirement(im: &ast::ImplDecl) -> Option<String> {
         .find(|candidate| candidate.name.text == parameter)?
         .bound
         .as_ref()?;
+    let trait_key = match bound {
+        ast::Type::Path(path) => fns.trait_path_key(path),
+        ast::Type::Generic { base, .. } => match base.as_ref() {
+            ast::Type::Path(path) => fns.trait_path_key(path),
+            _ => None,
+        },
+        _ => None,
+    }?;
     match bound {
-        ast::Type::Generic { base, args, .. } if type_head_name(base) == Some("Operator") => {
+        ast::Type::Generic { args, .. } if trait_key == "Operator" => {
             args.first().and_then(|argument| match argument {
                 ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
                 _ => None,
             })
         }
-        _ => type_head_name(bound).map(str::to_string),
+        _ => Some(trait_key),
     }
 }
 
@@ -13900,8 +13909,6 @@ mod tests {
         enum Bit { '0', '1' }\n\
         enum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Logic(ULogic);\n\
-        trait Boolean { fn as_bool(self) -> Bool; }\n\
-        trait Vector {}\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
         impl Vector for unsigned {}\n\
@@ -14549,6 +14556,94 @@ mod tests {
     }
 
     #[test]
+    fn custom_traits_named_like_hooks_keep_their_module_identity() {
+        let sources = [
+            (
+                "module std::ops; pub trait From { fn from(value: Self) -> Self; }",
+                FileId(0),
+            ),
+            (
+                "module a; pub trait From { fn tag() -> integer { return 11; } } \
+                 pub struct Item(integer); impl From for Item {}",
+                FileId(1),
+            ),
+            (
+                "module b; pub trait From { fn tag() -> integer { return 22; } } \
+                 pub struct Item(integer); impl From for Item {}",
+                FileId(2),
+            ),
+            (
+                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                 impl Top { left = a::Item::tag(); right = b::Item::tag(); }",
+                FileId(3),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+
+        let driven = |suffix: &str| {
+            let target = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(suffix))
+                .expect("missing trait-default output") as u32;
+            design
+                .drivers
+                .iter()
+                .find(|driver| driver.target == SignalId(target))
+                .map(|driver| driver.expr.clone())
+        };
+        assert!(matches!(driven(".left"), Some(Expr::Const(11))));
+        assert!(matches!(driven(".right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn custom_vector_trait_does_not_select_packed_vector_representation() {
+        let sources = [
+            ("module std::ops; pub trait Vector {}", FileId(0)),
+            (
+                "module custom; pub trait Vector {} pub struct Word(integer); \
+                 impl Vector for Word {}",
+                FileId(1),
+            ),
+            (
+                "module canonical; pub struct Word(integer); \
+                 impl std::ops::Vector for Word {}",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let fns = FunctionIndex::new(&resolved);
+        let families = vector_families(&modules, &fns);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+        assert!(!families.contains("custom::Word"));
+        assert!(families.contains("canonical::Word"));
+    }
+
+    #[test]
     fn equal_operator_operand_leaves_select_the_resolved_overload() {
         let sources = [
             ("module common; pub struct Acc(integer);", FileId(0)),
@@ -14997,7 +15092,6 @@ mod tests {
         let diagnostics = lower_diags(
             "module m;\n\
              enum Wire { '0', '1' }\n\
-             trait Resolve { fn resolve(self, rhs: Wire) -> Wire; }\n\
              impl Resolve for Wire {\n\
                  fn resolve(self, rhs: Wire) -> Wire { return self; }\n\
              }\n\
@@ -16331,7 +16425,6 @@ mod tests {
         // propagation fixed point infer a companion for the companion itself.
         let d = lower_src(
             "module m;\n\
-             trait Resolve { fn resolve(self, rhs: Self) -> Self; }\n\
              impl<T: Resolve> Resolve for T[] {\n\
                  fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
              }\n\

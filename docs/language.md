@@ -355,9 +355,12 @@ not create an external API.
 Trait identity includes its declaring module. Two modules may therefore export
 traits with the same leaf name; an import or qualified path selects the exact
 contract, and defaults or implementations from one trait never satisfy the
-other. Compiler hook traits such as `Operator` remain canonical language
-contracts, while nominal types appearing in their template arguments retain
-their resolved module identity.
+other. The exact builtin and `std::ops` declarations of compiler hook traits
+such as `Operator` remain canonical language contracts, while nominal types
+appearing in their template arguments retain their resolved module identity.
+A user module may declare a same-named trait such as `protocol::From`; it stays
+`protocol::From` and does not become the conversion hook merely because its
+leaf spelling matches.
 All split inherent impl blocks for one type share a member namespace. Repeating
 a method, constant, state declaration, or mode field is an error instead of a
 source-order override.

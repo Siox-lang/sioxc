@@ -41,23 +41,35 @@ use crate::syntax::Module;
 /// import.
 pub const OPERATORS: &[&str] = &["Operator"];
 
+const COMPILER_TRAITS: &[&str] = &[
+    "Operator",
+    "Prefix",
+    "Suffix",
+    "Index",
+    "IndexAssign",
+    "Boolean",
+    "Vector",
+    "Resolve",
+    "New",
+    "From",
+];
+
 /// Traits whose semantics are compiler hooks even though their declarations
 /// live in `std`. They retain a canonical short key so the frontend and IR do
 /// not make compiler behavior depend on which spelling imported the trait.
-pub(crate) fn is_compiler_trait(name: &str) -> bool {
-    matches!(
-        name,
-        "Operator"
-            | "Prefix"
-            | "Suffix"
-            | "Index"
-            | "IndexAssign"
-            | "Boolean"
-            | "Vector"
-            | "Resolve"
-            | "New"
-            | "From"
-    )
+fn is_compiler_trait_name(name: &str) -> bool {
+    COMPILER_TRAITS.contains(&name)
+}
+
+/// Whether one resolved declaration is the language's canonical hook trait.
+/// A matching leaf in a user module is an ordinary namespaced trait, just as
+/// it would be in Rust; spelling alone must not grant compiler semantics.
+pub(crate) fn is_compiler_trait(resolved: &Resolved, id: DefId) -> bool {
+    let Some(definition) = resolved.def(id) else {
+        return false;
+    };
+    is_compiler_trait_name(&definition.name)
+        && (definition.kind == DefKind::Builtin || definition.module.as_deref() == Some("std::ops"))
 }
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
@@ -372,10 +384,11 @@ impl<'a> Resolver<'a> {
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);
         }
-        // Operator traits and the literal suffix/prefix hooks are compiler
-        // mechanisms (spec 3.24/3.25): `impl Add for T` / `impl Suffix for T`
-        // need no trait declaration or import.
-        for name in OPERATORS.iter().copied().chain(["Suffix", "Prefix"]) {
+        // Compiler hooks have builtin fallback identities for self-contained
+        // API/test compilations without std. Normal compiler invocations load
+        // `std::prelude`, whose reexports resolve to the exact `std::ops`
+        // declarations and therefore supply the public contracts.
+        for &name in COMPILER_TRAITS {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);

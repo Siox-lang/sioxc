@@ -169,11 +169,9 @@ pub fn build(
             if let ast::Item::Impl(im) = item {
                 let trait_path = im.trait_.as_ref();
                 let trait_key = trait_path.and_then(|path| fns.trait_path_key(path));
-                let trait_leaf = trait_path.and_then(|path| path.segments.last());
-                if let (Some(tr), Some(trait_leaf), Some(ty)) =
-                    (trait_key, trait_leaf, fns.type_head_key(&im.target))
-                {
-                    let operator = if trait_leaf.text == "Operator" {
+                if let (Some(tr), Some(ty)) = (trait_key, fns.type_head_key(&im.target)) {
+                    let compiler_operator = tr == "Operator";
+                    let operator = if compiler_operator {
                         im.trait_args.first().and_then(|a| match a {
                             ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
                                 Some(text.clone())
@@ -184,7 +182,7 @@ pub fn build(
                         Some(tr)
                     };
                     let Some(operator) = operator else { continue };
-                    let input_index = usize::from(trait_leaf.text == "Operator");
+                    let input_index = usize::from(compiler_operator);
                     let input = im.trait_args.get(input_index).and_then(|a| match a {
                         ast::GenericArg::Positional(ast::Expr::Path(p)) => fns.type_path_key(p),
                         ast::GenericArg::PositionalType(ty) => fns.type_head_key(ty),

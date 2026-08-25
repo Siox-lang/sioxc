@@ -106,9 +106,10 @@ Remaining:
   type through checking, IR layout metadata, method/trait ownership, and native
   lowering. Custom traits and operator operand types likewise retain resolved
   identity through contracts, defaults, dispatch, and native test execution;
-  only compiler hook traits such as `Operator` keep their canonical language
-  key. Equal leaves in separate modules are therefore admitted and cannot share
-  semantic tables accidentally.
+  only the exact builtin/`std::ops` hook declarations such as `Operator` keep
+  their canonical language key. A user trait with the same leaf remains an
+  ordinary module-qualified contract. Equal leaves in separate modules are
+  therefore admitted and cannot share semantic tables accidentally.
 
 ## IR
 

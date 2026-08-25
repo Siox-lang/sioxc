@@ -393,7 +393,7 @@ impl<'a> Checker<'a> {
                     .declared(trait_.name.span)
                     .and_then(|id| {
                         let definition = resolved.def(id)?;
-                        if is_compiler_trait(&definition.name) {
+                        if is_compiler_trait(resolved, id) {
                             Some(definition.name.clone())
                         } else {
                             resolved.qualified_name(id)
@@ -790,7 +790,8 @@ impl<'a> Checker<'a> {
                                 .push((index_type, value_type));
                         }
                         if is_blanket_array_impl(im) {
-                            let requirement = blanket_requirement(im).unwrap_or_else(|| t.clone());
+                            let requirement =
+                                self.blanket_requirement(im).unwrap_or_else(|| t.clone());
                             let supported = is_liftable_array_key(&t);
                             if !supported {
                                 self.error(
@@ -6497,11 +6498,6 @@ impl<'a> Checker<'a> {
     }
 
     fn trait_key(&self, path: &Path) -> Option<String> {
-        if let Some(name) = path.segments.last().map(|segment| segment.text.as_str()) {
-            if is_compiler_trait(name) {
-                return Some(name.to_string());
-            }
-        }
         let id = self.resolved.resolved(path.span)?;
         self.trait_definition_key(id)
     }
@@ -6516,10 +6512,36 @@ impl<'a> Checker<'a> {
 
     fn trait_definition_key(&self, id: DefId) -> Option<String> {
         let definition = self.resolved.def(id)?;
-        if definition.kind == DefKind::Builtin || is_compiler_trait(&definition.name) {
+        if definition.kind == DefKind::Builtin || is_compiler_trait(self.resolved, id) {
             Some(definition.name.clone())
         } else {
             self.definition_key(id)
+        }
+    }
+
+    fn blanket_requirement(&self, im: &ImplDecl) -> Option<String> {
+        let Type::Indexed { base, .. } = &im.target else {
+            return None;
+        };
+        let parameter = type_head_name(base)?;
+        let bound = im
+            .params
+            .params
+            .iter()
+            .find(|candidate| candidate.name.text == parameter)?
+            .bound
+            .as_ref()?;
+        let trait_key = self.trait_type_key(bound)?;
+        if trait_key == "Operator" {
+            let Type::Generic { args, .. } = bound else {
+                return Some(trait_key);
+            };
+            args.first().and_then(|argument| match argument {
+                GenericArg::Positional(Expr::StrLit { text, .. }) => Some(text.clone()),
+                _ => None,
+            })
+        } else {
+            Some(trait_key)
         }
     }
 
@@ -7367,29 +7389,6 @@ fn is_blanket_array_impl(im: &ImplDecl) -> bool {
     im.params.params.iter().any(|param| param.name.text == head)
 }
 
-fn blanket_requirement(im: &ImplDecl) -> Option<String> {
-    let Type::Indexed { base, .. } = &im.target else {
-        return None;
-    };
-    let parameter = type_head_name(base)?;
-    let bound = im
-        .params
-        .params
-        .iter()
-        .find(|candidate| candidate.name.text == parameter)?
-        .bound
-        .as_ref()?;
-    match bound {
-        Type::Generic { base, args, .. } if type_head_name(base) == Some("Operator") => {
-            args.first().and_then(|argument| match argument {
-                GenericArg::Positional(Expr::StrLit { text, .. }) => Some(text.clone()),
-                _ => None,
-            })
-        }
-        _ => type_head_name(bound).map(str::to_string),
-    }
-}
-
 /// Keys whose element-wise array forwarding lowering can perform. std may
 /// declare a blanket `for T[]` impl only for these; the list had `and`/`or`/
 /// `not` and not the rest of the logic family, so `Logic[3] xor Logic[3]` had
@@ -7580,8 +7579,6 @@ mod tests {
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Bool { false, true }\n\
         enum Ordering { Less, Equal, Greater }\n\
-        trait Boolean { fn as_bool(self) -> Bool; }\n\
-        trait Vector {}\n\
         trait ClockLike { fn rising(self) -> Bool; }\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
@@ -7693,6 +7690,66 @@ mod tests {
         assert!(private
             .iter()
             .any(|diagnostic| diagnostic.message.contains("b::record::Pair::open")));
+    }
+
+    #[test]
+    fn compiler_hook_traits_are_selected_by_declaration_not_leaf() {
+        let ops = "module std::ops; pub trait Boolean {}";
+        let custom = "module custom; \
+            pub trait Boolean {} pub struct Flag(integer); impl Boolean for Flag {}";
+        let canonical = "module canonical; \
+            pub struct Flag(integer); impl std::ops::Boolean for Flag {}";
+        let user = "module user; \
+            fn custom_condition(value: custom::Flag) -> integer { \
+                if value { return 1; } return 0; \
+            } \
+            fn canonical_condition(value: canonical::Flag) -> integer { \
+                if value { return 1; } return 0; \
+            }";
+        let sink = check_modules(&[
+            (ops, FileId(0)),
+            (custom, FileId(1)),
+            (canonical, FileId(2)),
+            (user, FileId(3)),
+        ]);
+        let condition_errors: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    && diagnostic.message.contains("condition")
+            })
+            .collect();
+        assert_eq!(
+            condition_errors.len(),
+            1,
+            "only the namespaced custom Boolean is not the compiler hook: {:#?}",
+            sink.diagnostics()
+        );
+    }
+
+    #[test]
+    fn custom_operator_trait_does_not_define_language_operators() {
+        let custom = "module custom; \
+            pub trait Operator<op: string, input, output> { \
+                fn apply(self, rhs: input) -> output; \
+            } \
+            pub struct Token(integer); \
+            impl Operator<\"+\", Token, Token> for Token { \
+                fn apply(self, rhs: Token) -> Token { return self; } \
+            }";
+        let user = "module user; \
+            entity E { a: custom::Token in, b: custom::Token in, y: custom::Token out } \
+            impl E { y = a + b; }";
+        let sink = check_modules(&[(custom, FileId(0)), (user, FileId(1))]);
+        assert!(
+            sink.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code == Some(codes::TYPE_MISMATCH)
+                    && diagnostic.message.contains("no `+` operator")
+            }),
+            "a same-leaf custom trait must not become the Operator hook: {:#?}",
+            sink.diagnostics()
+        );
     }
 
     #[test]
@@ -9406,7 +9463,6 @@ mod tests {
     fn custom_operator_selects_input_and_output_templates() {
         let ok = "module m;\n\
             attr precedence: integer for impl;\n\
-            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
             #[precedence = 45]\n\
             impl Operator<\"merge\", Right, Result> for Left {\n\
@@ -11082,7 +11138,6 @@ mod tests {
     #[test]
     fn reserved_operators_cannot_be_overloaded() {
         let header = "module m;\nattr precedence: integer for impl;\n\
-            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
             enum A { A0 }\n";
         // Grammar symbols (assignment, path, ranges) and the derived
         // comparisons cannot be claimed by an operator impl.
@@ -11127,7 +11182,6 @@ mod tests {
     #[test]
     fn custom_operator_precedence_is_required_and_consistent() {
         let header = "module m;\nattr precedence: integer for impl;\n\
-            trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
             enum A { A0 } enum B { B0 }\n";
         let missing = format!(
             "{header}impl Operator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"

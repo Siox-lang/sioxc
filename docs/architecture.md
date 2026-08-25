@@ -124,9 +124,11 @@ the resolved backing type through direction layouts, inherent/trait ownership,
 and native lowering. Views with the same leaf may overload by backing type in
 one module, and equal view leaves in separate modules qualify at the IR/output
 boundary when needed. Custom trait contracts, defaults, implementations, and
-operator operand types use resolver-selected identity as well. Compiler hook
-traits such as `Operator` are the deliberate exception: they keep one canonical
-language key while their user-defined operand types remain identity-preserving.
+operator operand types use resolver-selected identity as well. The exact
+builtin and `std::ops` hook declarations such as `Operator` are the deliberate
+exception: they keep one canonical language key while their user-defined
+operand types remain identity-preserving. A same-named trait declared in any
+other module is an ordinary qualified contract and never enters hook tables.
 
 Package components:
 
