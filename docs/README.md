@@ -13,6 +13,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | Document | What it is |
 | -------- | ---------- |
 | [language.md](language.md) | The **Phase 1 language specification** — an at-a-glance tour up front, then the authority for syntax and semantics. Kept current as the language evolves. |
+| [language-design-review.md](language-design-review.md) | A candid assessment of which language choices are coherent, which remain confusing, and which decisions should be frozen before synthesis and project tooling. |
 | [architecture.md](architecture.md) | How the compiler is built: the crate pipeline, the data that flows between stages, and the cross-cutting conventions. |
 | [simulation.md](simulation.md) | **Simulation** — the delta-cycle model, native execution, simulation time and `await`, and VCD/FST waveforms. |
 | [testing.md](testing.md) | **Testing** — compiling `#[test]` testbenches with `sioxc --test`, running the resulting executable, assertions, and compiler tests. |
