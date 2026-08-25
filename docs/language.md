@@ -116,7 +116,7 @@ errors carry targeted fix-it help — e.g. a string literal used where a single
 value is wanted (`Logic = "0"`) points at the character literal `'0'`.
 
 Simulating and testing designs is covered in [simulation.md](simulation.md) and
-[testing.md](testing.md); `extern "C"`, editor, and cocotb integration in
+[testing.md](testing.md); `extern "C"`, editor, and compiler embedding in
 [interoperability.md](interoperability.md).
 
 ---
@@ -2741,7 +2741,7 @@ for i in 0..xs'length - 1 { acc = acc + xs[i]; }   // 0,1,...,length-1
 for i in xs'length - 1..0 { acc = acc + xs[i]; }   // same, high index first
 ```
 
-For edge/level-driven stimulus (mirroring cocotb's async model), `await` waits
+For edge/level-driven stimulus in asynchronous external testbenches, `await` waits
 on the scheduler those clocks run on:
 
 ```siox

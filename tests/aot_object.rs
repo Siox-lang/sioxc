@@ -4,7 +4,7 @@
 //! `src/llvm/aot.rs` already links and runs objects, but from a `Design` built
 //! by hand — that covers the LLVM emitter, not the pipeline that produces the
 //! IR it is given. Nothing went source -> object -> link -> run, which is the
-//! path an external harness (and eventually cocotb) actually takes.
+//! path an external simulator harness actually takes.
 
 use std::process::Command;
 

@@ -415,8 +415,7 @@ X/Z cases, rather than a reduced set.
 
 Cargo features name implemented build boundaries only: `cli`/`llvm` select the
 compiler executable and LLVM dependency, `simd` targets the build host's CPU
-features, `bitpack` selects the alternate packed state layout, and `cocotb`
-adds the VPI layer that lets cocotb drive a built design. Arbitrary-
+features, and `bitpack` selects the alternate packed state layout. Arbitrary-
 width integers are part of the normal compiler and need no `wide` flag. Quad
 precision has no `f128` flag until its lowering, ABI, formatting, and fallback
 runtime all exist.

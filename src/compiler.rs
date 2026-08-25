@@ -26,10 +26,6 @@ use crate::types::Typed;
 #[path = "driver/build.rs"]
 mod build;
 
-#[cfg(feature = "cocotb")]
-#[path = "driver/cocotb.rs"]
-mod cocotb;
-
 /// Source presented to the compiler.
 ///
 /// An in-memory input still has a path. Editors should use the document's real
@@ -105,10 +101,6 @@ pub enum Emit {
     Object { top: Option<String> },
     /// Standalone native executable containing all `#[test]` entities.
     TestExecutable,
-    /// The `#[top]` design as an executable cocotb drives over VPI. Unlike
-    /// `TestExecutable` this contains no siox testbench: cocotb is the
-    /// testbench, so the design is built the way `Object` builds it.
-    CocotbSimulator { top: Option<String> },
 }
 
 impl Emit {
@@ -165,7 +157,6 @@ pub enum Artifact {
 pub enum FileArtifact {
     Object,
     TestExecutable,
-    CocotbSimulator,
 }
 
 /// Non-language failure category. Source-language failures are ordinary
@@ -173,7 +164,6 @@ pub enum FileArtifact {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
     Input,
-    Configuration,
     Selection,
     Validation,
     Backend,
@@ -419,7 +409,7 @@ impl Compiler {
                 typed,
                 &mut result.diagnostics,
             ),
-            Emit::Object { top } | Emit::CocotbSimulator { top } => {
+            Emit::Object { top } => {
                 let top = match select_top(&result.modules, resolved, top.as_deref()) {
                     Ok(top) => top,
                     Err(failure) => {
@@ -490,10 +480,6 @@ impl Compiler {
                     .output
                     .unwrap_or_else(|| path.with_extension("test"));
                 self.emit_test_executable(&mut result, output, request.debug);
-            }
-            Emit::CocotbSimulator { .. } => {
-                let output = request.output.unwrap_or_else(|| path.with_extension("sim"));
-                self.emit_cocotb_simulator(&mut result, output);
             }
             Emit::Metadata | Emit::Source | Emit::Tokens | Emit::Ast | Emit::Tree | Emit::Ir => {}
         }
@@ -615,38 +601,6 @@ impl Compiler {
     #[cfg(not(feature = "llvm"))]
     fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
         result.failure = Some(backend_unavailable());
-    }
-
-    #[cfg(feature = "cocotb")]
-    fn emit_cocotb_simulator(&self, result: &mut Compilation, output: PathBuf) {
-        if !Self::reject_unresolved_widths(result) {
-            return;
-        }
-        if !Self::validate_design(result) {
-            return;
-        }
-        let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
-        let design = result.design.as_ref().expect("lowering completed");
-        match cocotb::build(&result.modules, hierarchy, design, &output) {
-            Ok(()) => {
-                result.artifact = Some(Artifact::File {
-                    kind: FileArtifact::CocotbSimulator,
-                    path: output,
-                });
-            }
-            Err(error) => {
-                result.failure = Some(CompileFailure::new(FailureKind::Backend, error));
-            }
-        }
-    }
-
-    #[cfg(not(feature = "cocotb"))]
-    fn emit_cocotb_simulator(&self, result: &mut Compilation, _output: PathBuf) {
-        result.failure = Some(CompileFailure::new(
-            FailureKind::Configuration,
-            "this siox build has no cocotb support; rebuild with \
-             `--features cocotb`",
-        ));
     }
 }
 

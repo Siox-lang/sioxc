@@ -152,11 +152,6 @@ test result: ok. 1 passed; 0 failed
   monotonic timeline.
 - **A directory:** corpus orchestration belongs to the build/test tooling, not
   the compiler. `scripts/test-corpus.sh` compiles and runs each `.siox` file.
-- **From Python:** `sioxc --cocotb <file> -o sim` builds the `#[top]` design
-  into a simulator [cocotb](interoperability.md#cocotb) drives, for reusing an
-  existing Python verification environment. It contains no siox testbench —
-  cocotb is the testbench. Needs a `sioxc` built with the opt-in `cocotb`
-  feature.
 - **Native binary:** `sioxc --test <file> -o <bin>` builds a standalone test
   executable that exits 0 on pass.
 

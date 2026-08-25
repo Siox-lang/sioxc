@@ -8846,3 +8846,4 @@ binary passes. `cargo test` is green, and `./scripts/test-corpus.sh
 asserts both that resolution retains its one required companion and that the
 companion relation can never exceed depth one.
 2026-08-25 Codex: resolving remaining metavalue propagation gaps in src/ir.rs (clean overwrite clearing, 'old temporal propagation, operand-width correctness), adding regressions, and updating TODO/docs status. Worktree was clean at start.
+2026-08-25 Codex: preserved the tested cocotb/VPI implementation on local branch feature/cocotb at c45e76f, then removed its feature, CLI/API surface, VPI sources/tests, and current-support documentation from main; roadmap references remain.

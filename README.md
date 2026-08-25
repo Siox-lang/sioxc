@@ -128,7 +128,6 @@ timeline.
 | `./tests -o out.vcd [filter]` | run generated tests and write text VCD |
 | `./tests -o out.fst [filter]` | run generated tests and write compressed FST (any non-`.vcd` path) |
 | `sioxc file.siox` | compile a `#[top]` design to a native object |
-| `sioxc --cocotb file.siox -o sim` | build a `#[top]` design into a simulator [cocotb](docs/interoperability.md#cocotb) drives from Python (needs `--features cocotb`) |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it
  lives elsewhere. Peeking under the hood? `sioxc file.siox --emit

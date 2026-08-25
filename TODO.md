@@ -285,7 +285,9 @@ Remaining:
   while user compilation still starts from one source entry. Define module
   discovery and crate boundaries in the future project tool, then expose the
   loaded source set through the compiler API.
-- 🔴 **cocotb/VPI-GPI integration.** Build name→handle lookup,
+- 🔴 **cocotb/VPI-GPI integration.** Experimental work is isolated on the
+  `feature/cocotb` branch rather than shipped by the compiler on `main`. Finish
+  and validate name→handle lookup,
   get/put/force/release, timed callbacks, value-change callbacks, and
   read-write/read-only phase callbacks over the native scheduler ABI.
 - 🟡 **General foreign-function ABI.** Define pointer/handle ownership,
