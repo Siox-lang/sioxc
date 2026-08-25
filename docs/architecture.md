@@ -284,8 +284,9 @@ The kernel's base types are **`integer` and `real`** only — and only they have
 built-in operators. `Bit`, `Logic`, `Bool` are canonical `enum`
 declarations in `std/logic.siox`; **`unsigned`/`signed` are ordinary `struct
 unsigned(Logic[])` / `struct signed(Logic[])` declarations in `std/bits.siox`** —
-no longer seeded compiler names. A library type opts into packed numeric
-storage with `impl Vector for F`; derived families inherit that representation.
+no longer seeded compiler names. Their nominal array representation follows
+directly from the `Logic[]` base; derived families inherit that representation
+without a marker trait.
 Signed interpretation is not compiler metadata: it comes from the type's
 operator implementations. Constrained `impl<T: Trait> Trait for T[]`
 declarations are forwarded through a packed family's array representation only
@@ -310,8 +311,8 @@ The resolver additionally bootstraps the `Operator`, `Prefix`, and `Suffix`
 hook names and syntax-level attributes; their canonical contracts and values
 remain declarations in `std::ops` and `std::attrs`.
 Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
-Array-derived numeric newtypes retain their family name for trait dispatch,
-but there is no separate semantic `Vector` type.
+Array-derived newtypes retain their family name for trait dispatch, but there
+is no separate semantic vector type or `Vector` trait.
 
 IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.

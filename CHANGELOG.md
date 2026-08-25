@@ -101,6 +101,12 @@ assertions, and VCD export — predates this changelog. See
   `auto-load safe-path` widened, so plain functions won instead.)
 
 ### Changed
+- **Nominal arrays no longer require a `Vector` marker trait.** A declaration
+  such as `struct Word(Logic[])` now inherits its array representation directly
+  from `Logic[]`; derived nominal families retain that representation and
+  constrained blanket array impls without `impl Vector`. `unsigned` and
+  `signed` remain ordinary std types whose different arithmetic comes from
+  their operator impls.
 - **`third_party/libfst` is a git submodule** rather than a vendored copy, so
   the pinned upstream revision is recorded by git instead of by a README, and
   updating it is a pointer change. Clone with `--recursive`, or run

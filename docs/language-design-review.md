@@ -137,7 +137,19 @@ object's bounds are convenient for generic bus code.
 Treating ranges as values for custom indexing is also coherent: intrinsic
 arrays and overloaded containers use the same surface syntax.
 
-### 10. Sequential and combinational assignment rules are explicit
+### 10. Arrays and nominal array newtypes use one representation model
+
+`T[]` is the language's array representation, whether used directly or as the
+base of a nominal type such as `struct Word(Bit[])`. The newtype preserves its
+own identity for impl and overload selection while its storage and element
+behavior follow the array base. No separate vector type, attribute, or marker
+trait is needed.
+
+This keeps representation structural and behavior explicit: `unsigned` and
+`signed` are both nominal arrays over `Logic[]`, while their operator impls—not
+a compiler flag—give them different arithmetic meanings.
+
+### 11. Sequential and combinational assignment rules are explicit
 
 Next-state updates in edge-controlled blocks, delta-cycle settling, and
 source-order override within one driver context give assignments deterministic
@@ -145,14 +157,14 @@ meaning. Reset being normal conditional logic rather than a separate magic
 construct keeps synchronous and asynchronous reset shapes expressible without
 adding special state semantics.
 
-### 11. Resolved and unresolved logic are distinct types
+### 12. Resolved and unresolved logic are distinct types
 
 `ULogic` rejecting parallel drivers while `Logic` opts into a `Resolve`
 contract captures a valuable hardware distinction. Multiple drivers are not
 silently accepted merely because a value happens to be logic-shaped, and a
 user-defined resolved type can state its own rule.
 
-### 12. `sioxc` is a compiler, not a project manager
+### 13. `sioxc` is a compiler, not a project manager
 
 The rustc-shaped boundary is sensible. One compiler invocation should compile
 one selected design or test artifact. Dependency graphs, repeated test runs,
@@ -160,14 +172,14 @@ foreign library discovery, caching, and vendor flows belong in a future
 Cargo-like tool. That keeps both the command line and embedding API usable by
 other tools.
 
-### 13. Testbenches compile into ordinary executables
+### 14. Testbenches compile into ordinary executables
 
 `#[test]` entities, native filtering, assertions, deterministic randomness,
 timing, and direct VCD/FST output make simulation easy to automate without
 hiding it inside the compiler process. A generated executable is also a good
 debugger and CI boundary.
 
-### 14. Nominal identities include their modules
+### 15. Nominal identities include their modules
 
 Two modules may define the same leaf name without sharing fields, variants,
 methods, views, traits, operators, constants, or output scopes. This is basic
@@ -295,36 +307,14 @@ Keep `<=>` for total order and derive equality from it only when no explicit
 equality contract is needed. The part to remove is the requirement to invent a
 total order solely to gain `==`.
 
-### 5. `Vector` looks behavioral but changes physical representation
-
-Traits are documented as compile-time behavioral contracts, yet implementing
-the canonical `Vector` trait opts a newtype into packed numeric storage and
-backend behavior. That is a representation decision disguised as an empty
-behavioral trait.
-
-Either document `Vector` as a compiler-known representation marker—not an
-ordinary trait—or replace it eventually with explicit derivation/layout
-metadata. Users need to know that this impl changes more than which methods are
-available.
-
-**Where it makes sense.** A sealed marker is a compact bootstrap mechanism for
-telling the compiler that a nominal type uses packed vector layout while std
-defines its logic and numeric behavior. It is useful in the same narrow family
-as compiler-recognized ABI or representation attributes.
-
-**Verdict — remove its ordinary-trait interpretation.** Either rename and
-document `Vector` as a sealed compiler hook or replace it with explicit layout
-metadata on the type. User-defined behavioral traits should never silently
-change storage. Existing packed-vector capability remains; only the misleading
-claim that this is an ordinary trait should disappear.
-
-### 6. Standard logic still depends on a discriminant convention
+### 5. Standard logic still depends on a discriminant convention
 
 The standard library says it owns logic values and truth tables, but the
 metavalue plane currently relies on `'0'` and `'1'` occupying discriminants 0
-and 1 and treats higher discriminants as metavalues. Comments in `std::logic`
-also say its order must match compiler/backend shims. That is the reverse of
-the desired dependency direction.
+and 1, uses `disc & 1` for the value plane, treats values at or above 2 as
+metavalues, and recognizes unknowns through fixed discriminant intervals.
+Comments in `std::logic` also say its order must match compiler/backend shims.
+That is the reverse of the desired dependency direction.
 
 This convention is efficient, but it should become explicit compiler-consumed
 metadata derived from the enum declaration rather than an ordering promise in
@@ -336,12 +326,15 @@ metavalue plane is appropriate for simulation, bit packing, VCD output, and
 native ABI stability. A fixed discriminant map can be entirely legitimate when
 it is declared as part of that ABI.
 
-**Verdict — retain the encoding, remove the implicit convention.** Make the
-logical roles of low, high, unknown, and high-impedance explicit metadata that
-the compiler validates. Reordering without updating metadata should be a clear
-error, not a silent semantic change.
+**Verdict — retain the two-plane encoding, remove every positional
+convention.** Add a source-level std contract that classifies each enum variant
+as low, high, or a metavalue and identifies canonical unknown/uninitialized
+results. Elaboration should turn that contract and the ordinary `Operator`
+impls into explicit `Design` metadata/per-element tables; IR and native
+backends then consume those tables without knowing std discriminants or truth
+tables. A reordered `ULogic` declaration must remain behaviorally identical.
 
-### 7. Simulation-only operations can appear in hardware expressions
+### 6. Simulation-only operations can appear in hardware expressions
 
 `extern "C"` calls are currently accepted in combinational and clocked design
 logic, and `read<T>` means compile-time ROM input in hardware but runtime file
@@ -364,7 +357,7 @@ synthesizable compilation reject simulation-only calls. Prefer distinct APIs
 or explicit context for elaboration-time ROM loading and runtime file reading
 so one spelling does not quietly change meaning.
 
-### 8. Runtime out-of-range indexing fails soft
+### 7. Runtime out-of-range indexing fails soft
 
 An out-of-range packed read returns zero and an out-of-range write is a no-op.
 That is deterministic, but it hides address bugs in a language that otherwise
@@ -388,7 +381,7 @@ zero/no-op behavior should request it through a checked accessor, match, guard,
 or dedicated wrapping/defaulting operation. Silent fallback is too dangerous
 as the default.
 
-### 9. Default construction and hardware initialization are easy to confuse
+### 8. Default construction and hardware initialization are easy to confuse
 
 `T::new()`, `T()`, and an omitted initializer all produce deterministic
 simulation state, while reset remains ordinary explicit logic. The semantic
@@ -411,7 +404,7 @@ implement the requested hardware initialization must diagnose it. Do not
 remove `T()` or `T::new()`; remove only the implication that construction alone
 guarantees portable reset hardware.
 
-### 10. Custom operator precedence is attached to an implementation
+### 9. Custom operator precedence is attached to an implementation
 
 Precedence affects parsing globally, but `#[precedence = N]` lives on a
 type-specific impl. Several impls of the same operator must therefore agree on
@@ -436,7 +429,7 @@ parsing or package composition demonstrates that discovery is inherently
 unstable; in that case migrate to one operator declaration rather than adding
 a second simultaneous authority.
 
-### 11. The type-construction surface is overloaded
+### 10. The type-construction surface is overloaded
 
 These forms are individually defensible but collectively dense:
 
@@ -463,7 +456,7 @@ interpreted form, and resist assigning further meanings to `()`, `[]`, or
 `<>`. Remove a form only if two interpretations become syntactically ambiguous
 without type information.
 
-### 12. Entity functions have a sharp associated/receiver cliff
+### 11. Entity functions have a sharp associated/receiver cliff
 
 `Entity::helper(...)` works when the function has no `self`, while a public
 function with `self` and any `instance.method()` call are rejected. The rule is
@@ -487,7 +480,7 @@ software-like instance methods until there is one inspectable generated-port
 model. If a method cannot be represented in hierarchy and timing metadata, it
 should remain absent rather than become simulator-only magic.
 
-### 13. Clock inference is elegant but under-specified for tooling
+### 12. Clock inference is elegant but under-specified for tooling
 
 Inferring an event-controlled block from `if clk.rising()` avoids another
 process syntax and reads naturally. With no dedicated clock type, however, any
@@ -508,7 +501,7 @@ the inferred event source.
 to identify clock roots, generated clocks, edge polarity, resets, and domain
 crossings, with an explicit annotation available when inference is ambiguous.
 
-### 14. `using` and future library discovery need one vocabulary
+### 13. `using` and future library discovery need one vocabulary
 
 Today `using` imports declarations and creates type aliases. The roadmap also
 proposes language-neutral external-library discovery, previously sketched as
@@ -530,7 +523,7 @@ foreign logical library, give that concept a
 distinct declaration and semantics rather than a keyword one letter away from
 ordinary imports.
 
-### 15. The normative language document contains too much history
+### 14. The normative language document contains too much history
 
 [`language.md`](language.md) is both the current specification and a record of
 twelve historical implementation stages. That makes it hard to know whether a

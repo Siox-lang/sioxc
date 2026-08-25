@@ -4,8 +4,8 @@ using std::logic::{Logic};
 using std::ops::{Ordering};
 
 // `unsigned` and `signed` are ordinary library types, not compiler-magic
-// names. Their `Vector` impl selects packed numeric storage; deriving from
-// `Logic[]` supplies the element representation. The names come from
+// names. Deriving from `Logic[]` supplies their array representation. The
+// names come from
 // ieee.numeric_std, where they are likewise arrays of std_logic declared in
 // library code.
 //
@@ -16,9 +16,6 @@ using std::ops::{Ordering};
 // declares. A type named neither would behave the same as its impls say.
 pub struct unsigned(Logic[]);
 pub struct signed(Logic[]);
-
-impl Vector for unsigned {}
-impl Vector for signed {}
 
 //   unsigned[N]  N bits, wrapping on overflow           (VHDL `unsigned`)
 //   signed[N]    N bits, two's complement               (VHDL `signed`)

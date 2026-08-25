@@ -28,7 +28,7 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/vector types, core traits (`Boolean`, `Vector`, `New`, `From`, `Resolve`, indexing/ranges), `string`, `time`/`frequency` |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/array types, core traits (`Boolean`, `New`, `From`, `Resolve`, indexing/ranges), `string`, `time`/`frequency` |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
@@ -103,7 +103,7 @@ system `Bool` type (`true`/`false`), applied only in condition position.
 `Bit`/`Bool` opt in; `Logic` deliberately does not.
 
 `Resolve` and the core `and`/`or`/`not` operators have constrained blanket
-implementations for `T[]`. Packed `Vector` newtypes forward them when their
+implementations for `T[]`. Nominal array newtypes forward them when their
 element type implements the scalar contract. Consequently `unsigned` and
 `signed` reuse `Logic` resolution and truth tables without duplicate forwarding
 impls; their arithmetic and signed interpretation remain nominal impls in

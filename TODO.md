@@ -170,6 +170,17 @@ Current baseline:
 
 Remaining:
 
+- 🟡 **Std-owned logic encoding metadata.** The current two-plane Logic-array
+  optimization preserves IEEE behavior, but parts of IR/native lowering still
+  assume the std declaration order: low/high are discriminants 0/1, values at
+  or above 2 use the companion plane, and unknown classification uses fixed
+  discriminant intervals. Replace those tests with elaborated metadata from a
+  source-level std contract that classifies each variant as low, high, or a
+  metavalue and identifies the canonical unknown/uninitialized results. Build
+  per-operator element tables from the ordinary std `Operator` impls rather
+  than duplicating their truth tables in Rust. A regression must reorder
+  `ULogic` while preserving behavior, proving backends consume metadata only.
+
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle

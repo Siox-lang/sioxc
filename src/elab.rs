@@ -1972,27 +1972,14 @@ mod tests {
     }
 
     #[test]
-    fn vector_trait_identity_does_not_duplicate_type_semantics_in_elaboration() {
-        let design = |trait_decl: &str| {
-            format!(
-                "module m; {trait_decl} \
-                 struct Word(integer); impl Vector for Word {{}} \
-                 entity Sub {{ a: Word[8] in }} impl Sub {{}} \
-                 #[top] entity Top {{}} \
-                 impl Top {{ let a: Word[4]; let dut: Sub = {{ .a = a }}; }}"
-            )
-        };
-        let (_, custom_errors) = elaborate_src(&design("trait Vector {}"));
-        assert_eq!(
-            custom_errors, 1,
-            "elaboration compares the written array lengths without reclassifying traits"
-        );
-
-        let (_, canonical_errors) = elaborate_src(&design(""));
-        assert_eq!(
-            canonical_errors, 1,
-            "the canonical Vector hook has the same coarse connection shape"
-        );
+    fn nominal_array_connection_width_is_checked_without_a_marker_trait() {
+        let src = "module m; \
+                   struct Word(integer[]); \
+                   entity Sub { a: Word[8] in } impl Sub {} \
+                   #[top] entity Top {} \
+                   impl Top { let a: Word[4]; let dut: Sub = { .a = a }; }";
+        let (_, errors) = elaborate_src(src);
+        assert_eq!(errors, 1, "nominal arrays retain their written length");
     }
 
     #[test]

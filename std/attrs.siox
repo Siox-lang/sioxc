@@ -13,6 +13,3 @@ pub attr library: string for entity;
 pub attr name: string for entity;
 // Binding power for a custom infix operator implementation.
 pub attr precedence: integer for impl;
-
-// Vector storage is selected by the ordinary `Vector` trait; signedness remains
-// entirely in each type's operator implementations.

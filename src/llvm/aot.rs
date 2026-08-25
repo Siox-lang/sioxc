@@ -121,8 +121,8 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
-            vector_element_enums: Default::default(),
-            vector_element_of_family: Default::default(),
+            array_element_enums: Default::default(),
+            array_element_of_family: Default::default(),
             source_layouts: Default::default(),
         };
 
@@ -206,8 +206,8 @@ signed main(void) {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
-            vector_element_enums: Default::default(),
-            vector_element_of_family: Default::default(),
+            array_element_enums: Default::default(),
+            array_element_of_family: Default::default(),
             source_layouts: Default::default(),
         };
 

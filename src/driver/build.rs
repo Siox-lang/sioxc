@@ -162,7 +162,7 @@ pub fn build(
     }
     let mut fns = FunctionIndex::new(resolved);
     let enums = siox::ir::enum_discriminants(modules, &fns);
-    let families = siox::ir::vector_families(modules, &fns);
+    let families = siox::ir::array_families(modules, &fns);
     let mut op_impls: NativeOperatorImpls<'_> = HashMap::new();
     for m in modules {
         for item in &m.items {
@@ -1089,7 +1089,7 @@ fn gen_wave_runtime(design: &Design) -> String {
                 " sx_value _m = sx_read({meta_id}); if (!g_vcd_seen[{id}] || _v != g_vcd_last[{id}] || !g_vcd_seen[{meta_id}] || _m != g_vcd_last[{meta_id}]) {{ {timestamp} "
             ));
             let table = design
-                .vector_element_enums
+                .array_element_enums
                 .get(&(id as u32))
                 .map(String::as_str)
                 .and_then(|name| logic_vcd_symbols_for_type(design, name))
@@ -1268,7 +1268,7 @@ fn gen_fst_runtime(
                 " sx_value _m = sx_read({meta_id}); if (!g_fst_seen[{id}] || _v != g_fst_last[{id}] || !g_fst_seen[{meta_id}] || _m != g_fst_last[{meta_id}]) {{ {timestamp} "
             ));
             let table = design
-                .vector_element_enums
+                .array_element_enums
                 .get(&(id as u32))
                 .map(String::as_str)
                 .and_then(|name| logic_vcd_symbols_for_type(design, name))
@@ -1450,7 +1450,7 @@ struct Ctx<'a> {
     /// element count is not known while C is generated, so they use one
     /// `sx_dyn_array` rather than flattened per-character locals.
     dynamic_strings: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Declared vector family of a testbench name (`let a: signed[8]` -> "signed"),
+    /// Declared nominal array family (`let a: signed[8]` -> "signed"),
     /// connected or local — operators on it inline the family's impls.
     local_families: std::cell::RefCell<HashMap<String, String>>,
     /// Operator-trait impls `(trait, type) -> fn`, mirroring the runner.
@@ -3760,10 +3760,10 @@ impl Ctx<'_> {
                 let element = self
                     .map
                     .get(&base_name)
-                    .and_then(|id| self.design.vector_element_enums.get(&id.0))
+                    .and_then(|id| self.design.array_element_enums.get(&id.0))
                     .or_else(|| {
                         let family = self.local_families.borrow().get(&base_name).cloned()?;
-                        self.design.vector_element_of_family.get(&family)
+                        self.design.array_element_of_family.get(&family)
                     })?;
                 Some((element.clone(), None))
             }
@@ -3919,7 +3919,7 @@ impl Ctx<'_> {
             return Ok(None);
         };
         let width = operand_width.unwrap_or(0);
-        // A packed Vector forwards the blanket `T[]` implementation of core
+        // A packed nominal array forwards the blanket `T[]` implementation of core
         // `not`; the native harness performs that element-wise operation
         // directly at the concrete width.
         if self.families.contains(&family) && width > 0 {
@@ -4053,7 +4053,7 @@ impl Ctx<'_> {
                 // testbench and the design both read the same zero.
                 ast::ImplItem::Let(l) => {
                     let value = &l.value;
-                    // Record the vector family for every declared name
+                    // Record the nominal array family for every declared name
                     // (connected ports too): operators dispatch on it.
                     if let Some((fam, _)) = l.ty.as_ref().and_then(|t| self.declared_family(t)) {
                         self.local_families
@@ -4182,7 +4182,7 @@ impl Ctx<'_> {
         Some((u64::BITS - max.leading_zeros()).max(1))
     }
 
-    /// Give each `<instance>.<port>` the vector family its declared type
+    /// Give each `<instance>.<port>` the nominal array family its declared type
     /// carries. A local records this from its own declaration; a port read
     /// through the instance had no entry, so `d.y` on a `signed[8]` port
     /// compared and printed as unsigned — `d.y == -100` was false while
@@ -4777,7 +4777,7 @@ impl Ctx<'_> {
                 // case is handled, and saying so beats emitting one variable
                 // for something that needs several.
                 let composite = l.ty.as_ref().is_some_and(|t| {
-                    // A vector family is itself a newtype struct (`struct
+                    // A nominal array family is itself a newtype struct (`struct
                     // unsigned(Logic[])`), so "is a struct" is not the
                     // question — "has fields to spread" is.
                     self.fns
@@ -5602,7 +5602,7 @@ impl Ctx<'_> {
                 .borrow()
                 .get(&expr_path(base)?)
                 .cloned()?;
-            return self.design.vector_element_of_family.get(&family).cloned();
+            return self.design.array_element_of_family.get(&family).cloned();
         }
         None
     }
@@ -5857,7 +5857,7 @@ impl Ctx<'_> {
             }
         }
         let path = expr_path(e)?;
-        // `local_families` is the declared vector family; it is recorded for
+        // `local_families` is the declared nominal array family; it is recorded for
         // connected locals and struct leaves too, which `local_types` is not.
         let family = self
             .local_families
@@ -6463,7 +6463,7 @@ impl Ctx<'_> {
     /// the `return`/`if` body into nested conditionals.
     /// The C constant for a zero-argument construction of a named type: the
     /// `impl New` default where one is declared, an enum's first variant, and
-    /// zero for a vector family. Returns `None` when the callee is not a type,
+    /// zero for a nominal array family. Returns `None` when the callee is not a type,
     /// so an ordinary call falls through.
     fn c_default_construction(&self, callee: &ast::Expr) -> Option<String> {
         // `unsigned[8]()` — the width is irrelevant to the value.

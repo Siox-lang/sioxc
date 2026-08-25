@@ -171,10 +171,6 @@ pub trait Boolean {
     fn as_bool(self) -> Bool;
 }
 
-// Opts an unconstrained scalar-array newtype into packed numeric storage.
-// Field-less newtypes derived from a Vector family inherit the capability.
-pub trait Vector {}
-
 impl Boolean for Bit {
     fn as_bool(self) -> Bool {
         if self == '1' {
@@ -199,9 +195,9 @@ pub trait Resolve {
     fn resolve(self, rhs: Self) -> Self;
 }
 
-// Array behavior is lifted from the element contract. Fieldless nominal
-// Vector newtypes forward these implementations from their array base without
-// becoming interchangeable with that base.
+// Array behavior is lifted from the element contract. Nominal newtypes over
+// arrays forward these implementations from their base without becoming
+// interchangeable with that base.
 impl<T: Resolve> Resolve for T[] {
     fn resolve(self, rhs: T[]) -> T[] {
         let result: T[] = self;

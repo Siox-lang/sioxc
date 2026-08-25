@@ -250,12 +250,12 @@ struct Checker<'a> {
     field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// View name -> underlying struct type.
     views: HashMap<String, Type>,
-    /// Structs opting into packed numeric storage through `impl Vector`.
-    vector_families: HashSet<String>,
-    /// Packed family -> scalar element type, following nominal vector bases.
-    vector_elements: HashMap<String, String>,
+    /// Nominal newtypes whose representation is an array (`struct F(T[])`).
+    array_families: HashSet<String>,
+    /// Nominal array family -> element type, following derived array bases.
+    array_elements: HashMap<String, String>,
     /// Trait/operator keys implemented generically for an unconstrained array
-    /// target (`impl<T: Tr> Tr for T[]`). A nominal Vector family may forward
+    /// target (`impl<T: Tr> Tr for T[]`). A nominal array family may forward
     /// one of these only when its element type implements the same key.
     blanket_array_impls: HashMap<String, String>,
     /// Generic module fns: definition -> (type params with bounds, value params).
@@ -443,8 +443,8 @@ impl<'a> Checker<'a> {
             field_decl_types: HashMap::new(),
             array_bounds: std::cell::RefCell::new(HashMap::new()),
             views: HashMap::new(),
-            vector_families: HashSet::new(),
-            vector_elements: HashMap::new(),
+            array_families: HashSet::new(),
+            array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
             fn_arity: HashMap::new(),
@@ -489,7 +489,7 @@ impl<'a> Checker<'a> {
                 self.collect_decl(item);
             }
         }
-        // A field-less struct deriving from another vector family is itself one
+        // A newtype deriving from another nominal array family is itself one
         // (`struct Byte : unsigned[8]`); resolve that transitively before typing
         // ports, so such a type is treated as a numeric vector.
         // A trait's defaulted methods belong to every type that implements it
@@ -518,8 +518,8 @@ impl<'a> Checker<'a> {
             self.method_param_types.entry(key.clone()).or_insert(params);
             self.method_has_self.entry(key).or_insert(has_self);
         }
-        self.resolve_transitive_vector_families();
-        self.resolve_vector_elements();
+        self.resolve_array_families();
+        self.resolve_array_elements();
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
@@ -645,9 +645,6 @@ impl<'a> Checker<'a> {
                     let trait_name = self.trait_key(tr);
                     let target = self.type_key(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
-                        if t == "Vector" {
-                            self.vector_families.insert(ty.clone());
-                        }
                         // `impl Operator<"<sym>", Input, Output> for T`: the
                         // first trait argument is the operator symbol, which
                         // keys the impl. A user operator (a non-standard symbol)
@@ -1184,22 +1181,22 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether `name` opted into packed numeric storage through `Vector`, or
-    /// inherits from a family that did. There is no signedness — that lives in
+    /// Whether `name` is a nominal newtype over an array, directly or through
+    /// another nominal array family. There is no signedness — that lives in
     /// the family's operator impls.
-    fn is_vector_family(&self, name: &str) -> bool {
-        self.vector_families.contains(name)
+    fn is_array_family(&self, name: &str) -> bool {
+        self.array_families.contains(name)
     }
 
-    /// Fixpoint: a field-less struct whose base is an already-known vector
-    /// family is itself a vector family, so
-    /// `struct Byte : unsigned[8]` inherits unsigned's numeric nature.
-    fn resolve_transitive_vector_families(&mut self) {
+    /// Fixpoint: a newtype directly over `T[]`, or over an already-known array
+    /// family, is itself an array family. `struct Byte(unsigned[8])` therefore
+    /// inherits unsigned's representation without a marker trait.
+    fn resolve_array_families(&mut self) {
         loop {
             let mut changed = false;
             let names: Vec<String> = self.structs.keys().cloned().collect();
             for name in names {
-                if self.vector_families.contains(&name) {
+                if self.array_families.contains(&name) {
                     continue;
                 }
                 let Some((base, fields)) = self.structs.get(&name) else {
@@ -1208,16 +1205,18 @@ impl<'a> Checker<'a> {
                 if !fields.is_empty() {
                     continue;
                 }
-                let elem: Option<String> = match base {
-                    Some(Type::Indexed { base, .. }) => self.type_key(base),
-                    Some(Type::Path(p)) => self.path_key(p),
-                    _ => None,
+                let is_array = match base {
+                    // The indexed type is the representation itself. Its
+                    // element may be scalar or aggregate; lowering preserves
+                    // that base shape.
+                    Some(Type::Indexed { .. }) => true,
+                    Some(Type::Path(p)) => self
+                        .path_key(p)
+                        .is_some_and(|head| self.array_families.contains(&head)),
+                    _ => false,
                 };
-                let is_vec = elem
-                    .as_deref()
-                    .is_some_and(|head| self.vector_families.contains(head));
-                if is_vec {
-                    self.vector_families.insert(name);
+                if is_array {
+                    self.array_families.insert(name);
                     changed = true;
                 }
             }
@@ -1227,8 +1226,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn resolve_vector_elements(&mut self) {
-        for family in self.vector_families.clone() {
+    fn resolve_array_elements(&mut self) {
+        for family in self.array_families.clone() {
             let mut current = family.clone();
             let mut seen = HashSet::new();
             while seen.insert(current.clone()) {
@@ -1241,8 +1240,8 @@ impl<'a> Checker<'a> {
                 let Some(head) = self.type_key(base) else {
                     break;
                 };
-                if matches!(base, Type::Indexed { .. }) && !self.vector_families.contains(&head) {
-                    self.vector_elements.insert(family.clone(), head);
+                if matches!(base, Type::Indexed { .. }) && !self.array_families.contains(&head) {
+                    self.array_elements.insert(family.clone(), head);
                     break;
                 }
                 current = head;
@@ -1258,7 +1257,7 @@ impl<'a> Checker<'a> {
         {
             return true;
         }
-        let Some(element) = self.vector_elements.get(owner) else {
+        let Some(element) = self.array_elements.get(owner) else {
             return false;
         };
         self.blanket_array_impls
@@ -4085,7 +4084,7 @@ impl<'a> Checker<'a> {
                     Expr::Path(path) => self.path_key(path),
                     _ => return,
                 };
-                if !head.is_some_and(|key| self.vector_families.contains(&key)) {
+                if !head.is_some_and(|key| self.array_families.contains(&key)) {
                     return;
                 }
                 match signed_lit(index) {
@@ -4625,7 +4624,7 @@ impl<'a> Checker<'a> {
 
     fn is_conversion_name(&self, name: &str) -> bool {
         if matches!(name, "integer" | "real" | "Char" | "string")
-            || self.is_vector_family(name)
+            || self.is_array_family(name)
             || self.structs.contains_key(name)
             || self.enum_variants.contains_key(name)
         {
@@ -5083,12 +5082,12 @@ impl<'a> Checker<'a> {
             })
             .map(|(_, output)| output.clone())
             .or_else(|| {
-                // A field-less Vector newtype inherits a blanket array
+                // A nominal array newtype inherits a blanket array
                 // operator from its element. Keep this fallback separate from
                 // ordinary impl ownership: an unrelated overload for the same
                 // owner must not make every right-hand type match.
                 let same_domain = input == owner || coerces_to_owner;
-                let element = self.vector_elements.get(&owner)?;
+                let element = self.array_elements.get(&owner)?;
                 let requirement = self.blanket_array_impls.get(symbol)?;
                 (same_domain
                     && self
@@ -5760,7 +5759,7 @@ impl<'a> Checker<'a> {
                                     | BinOp::Shl
                                     | BinOp::Shr
                             ))
-                            && self.is_packed_vector_newtype(&name);
+                            && self.is_packed_array_newtype(&name);
                         if !intrinsic_enum_equality && !intrinsic_vector_operator {
                             let operator = if is_comparison(op) { "<=>" } else { op_str };
                             let left = self.type_of(lhs, sym);
@@ -6074,7 +6073,7 @@ impl<'a> Checker<'a> {
                 let bits = crate::syntax::bits_per_digit(*base);
                 Ty::Array {
                     elem: Box::new(self.ty_from_head("Logic")),
-                    family: Some(self.vector_family_key("unsigned")),
+                    family: Some(self.array_family_key("unsigned")),
                     len: crate::syntax::radix_digits(digits).count() as u32 * bits,
                 }
             }
@@ -6234,7 +6233,7 @@ impl<'a> Checker<'a> {
             // A concatenation is an anonymous packed Logic array of unknown width.
             Expr::Concat { .. } => Ty::Array {
                 elem: Box::new(self.ty_from_head("Logic")),
-                family: Some(self.vector_family_key("unsigned")),
+                family: Some(self.array_family_key("unsigned")),
                 len: 0,
             },
             // An array literal: element type from the first element, length
@@ -6320,9 +6319,9 @@ impl<'a> Checker<'a> {
                         _ => None,
                     };
                     let w = signed_lit(index).unwrap_or(0).max(0) as u32;
-                    match head.filter(|key| self.vector_families.contains(key)) {
+                    match head.filter(|key| self.array_families.contains(key)) {
                         Some(head) => Ty::Array {
-                            elem: Box::new(self.ty_from_head("Logic")),
+                            elem: Box::new(self.array_element_ty(&head)),
                             family: Some(head),
                             len: w,
                         },
@@ -6552,11 +6551,11 @@ impl<'a> Checker<'a> {
         key.rsplit("::").next().unwrap_or(key)
     }
 
-    fn vector_family_key(&self, name: &str) -> String {
-        if self.vector_families.contains(name) {
+    fn array_family_key(&self, name: &str) -> String {
+        if self.array_families.contains(name) {
             return name.to_string();
         }
-        self.vector_families
+        self.array_families
             .iter()
             .find(|key| self.key_leaf(key) == name)
             .cloned()
@@ -6564,7 +6563,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The element type head of a *plain* array operand (`Logic[3]` ->
-    /// `Logic`). A nominal vector family has its own head and is handled by
+    /// `Logic`). A nominal array family has its own head and is handled by
     /// the ordinary lookup.
     fn array_operand_element(&self, t: &Ty) -> Option<String> {
         match t {
@@ -6604,8 +6603,8 @@ impl<'a> Checker<'a> {
             "integer" => Ty::Integer,
             "real" => Ty::Real,
             "Char" => Ty::Char,
-            name if self.is_vector_family(name) => Ty::Array {
-                elem: Box::new(self.ty_from_head("Logic")),
+            name if self.is_array_family(name) => Ty::Array {
+                elem: Box::new(self.array_element_ty(name)),
                 family: Some(name.to_string()),
                 len: 0,
             },
@@ -6647,6 +6646,13 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn array_element_ty(&self, family: &str) -> Ty {
+        self.array_elements
+            .get(family)
+            .map(|element| self.ty_from_head(element))
+            .unwrap_or(Ty::Error)
+    }
+
     /// The declared name of an operand's type when it is a user struct/enum
     /// (the types operator-trait impls target). `None` for intrinsics and
     /// unknowns, which keep built-in operator semantics.
@@ -6664,12 +6670,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether a Vector family is represented by one packed word sequence
-    /// rather than flattened aggregate fields. These newtypes retain the
-    /// backend's intrinsic arithmetic fallback; a multi-field struct that
-    /// merely opts into `Vector` does not.
-    fn is_packed_vector_newtype(&self, name: &str) -> bool {
-        self.vector_families.contains(name)
+    /// Whether a nominal array family is represented by one packed word
+    /// sequence rather than flattened aggregate fields. These newtypes retain
+    /// the backend's intrinsic arithmetic fallback.
+    fn is_packed_array_newtype(&self, name: &str) -> bool {
+        self.array_families.contains(name)
             && self
                 .structs
                 .get(name)
@@ -7066,7 +7071,7 @@ impl<'a> Checker<'a> {
                 // Unconstrained (`Char[]`): width 0 = "set at use".
                 let width = index.as_deref().map(width_of).unwrap_or(0);
                 match self.ast_ty(base) {
-                    // The *first* index on a vector family sets its width
+                    // The *first* index on a nominal array family sets its width
                     // (`unsigned[8]`). A *second* index makes an array of those
                     // vectors (`unsigned[8][4]` = 4 elements, each 8 wide).
                     Ty::Array {
@@ -7169,10 +7174,10 @@ impl<'a> Checker<'a> {
                 self.expanding.borrow_mut().remove(&key);
                 result
             }
-            // A bit-vector family (`struct F : Logic[]`): width applies via
-            // `F[N]` (ast_ty's Indexed).
-            None if self.is_vector_family(&key) => Ty::Array {
-                elem: Box::new(self.ty_from_head("Logic")),
+            // A nominal array family (`struct F(Logic[])`): the first index
+            // supplies its unconstrained base length.
+            None if self.is_array_family(&key) => Ty::Array {
+                elem: Box::new(self.array_element_ty(&key)),
                 family: Some(key),
                 len: 0,
             },
@@ -7598,12 +7603,10 @@ mod tests {
         impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
         impl<T: Operator<\"or\", T, T>> Operator<\"or\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
         impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { fn apply(self) -> T[] { return self; } }\n\
-        impl Vector for unsigned {}\n\
         struct unsigned(Logic[]);\n\
         impl Operator<\"+\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Operator<\"/\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Operator<\"<=>\", unsigned, Ordering> for unsigned { fn apply(self, rhs: unsigned) -> Ordering { return Equal; } }\n\
-        impl Vector for signed {}\n\
         struct signed(Logic[]);\n";
 
     fn check_src(src: &str) -> usize {
@@ -8913,7 +8916,7 @@ mod tests {
         assert!(oob(&ranged.replace("IX", "7")));
         assert!(oob(&ranged.replace("IX", "16")));
 
-        // Packed vector families retain the same nonzero labels. Cover both
+        // Packed nominal array families retain the same nonzero labels. Cover both
         // an impl-local declaration and a port, whose metadata is collected
         // on different checker paths.
         let packed_local = "module m; using std::bits::unsigned; using std::logic::Logic; \
@@ -9093,14 +9096,13 @@ mod tests {
     }
 
     #[test]
-    fn vector_newtype_forwards_matching_blanket_array_operator() {
+    fn nominal_array_newtype_forwards_matching_blanket_array_operator() {
         let errors = check_src(
             "module m;\n\
              impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] {\n\
                fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
              }\n\
              struct Flags(Bit[]);\n\
-             impl Vector for Flags {}\n\
              entity E { a: Flags[4] in, b: Flags[4] in, y: Flags[4] out }\n\
              impl E { y = a and b; }\n",
         );
@@ -9108,7 +9110,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_newtype_does_not_forward_unsatisfied_array_operator() {
+    fn nominal_array_newtype_does_not_forward_unsatisfied_array_operator() {
         let errors = check_src(
             "module m;\n\
              enum Cell { Off, On }\n\
@@ -9116,11 +9118,22 @@ mod tests {
                fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
              }\n\
              struct Cells(Cell[]);\n\
-             impl Vector for Cells {}\n\
              entity E { a: Cells[4] in, b: Cells[4] in, y: Cells[4] out }\n\
              impl E { y = a and b; }\n",
         );
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn nominal_array_newtype_preserves_its_declared_element_type() {
+        let errors = check_src(
+            "module m;\n\
+             enum Cell { Off, On }\n\
+             struct Cells(Cell[]);\n\
+             entity E { a: Cells[4] in, y: Cell out }\n\
+             impl E { y = a[0]; }\n",
+        );
+        assert_eq!(errors, 0);
     }
 
     #[test]

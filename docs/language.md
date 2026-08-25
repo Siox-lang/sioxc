@@ -100,8 +100,8 @@ precise reference.
 - **Newtypes** — `enum B(A);` / `struct B(A);` reuse a representation under a
   new identity, with the derivation conversion synthesised automatically.
   Derivation never adds members or generally inherits behaviour; bigger types
-  are built by composition. A packed `Vector` newtype is the narrow exception:
-  it forwards constrained blanket implementations declared for its array base.
+  are built by composition. A nominal newtype over `T[]` forwards constrained
+  blanket implementations declared for its array base.
 - `#[…]` attributes, including type-targeted ones.
 - System attributes for metadata: `x'length`, range bounds `x'high`/`x'low`/`x'left`/`x'right`/`x'ascending`.
 
@@ -591,10 +591,10 @@ means:
 #[top = true]
 ```
 
-**Packed numeric vectors opt in through a trait.** A fieldless array newtype
-such as `struct unsigned(Logic[])` becomes one packed N-bit signal through
-`impl Vector for unsigned {}`. Types derived from that family inherit its
-representation. The compiler tracks **no signedness at all** — `unsigned` and
+**Nominal array families follow their base representation.** An array newtype
+such as `struct unsigned(Logic[])` is an N-element nominal array without any
+marker trait. Types derived from that family inherit its representation. The
+compiler tracks **no signedness at all** — `unsigned` and
 `signed` have the same representation (`Logic[]`), and their difference is
 entirely their **operator impls**:
 `signed` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
@@ -625,11 +625,11 @@ impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
 }
 ```
 
-The generic parameter list precedes the trait, as in Rust. A `Vector` newtype
-forwards such an implementation only when its scalar element satisfies the
-constraint. Thus `unsigned(Logic[])` receives element-wise `Resolve` and
+The generic parameter list precedes the trait, as in Rust. A nominal array
+newtype forwards such an implementation only when its scalar element satisfies
+the constraint. Thus `unsigned(Logic[])` receives element-wise `Resolve` and
 `and` because `Logic` implements both, while `struct Codes(Code[])` receives
-neither unless `Code` opts in. A direct impl on the nominal vector takes
+neither unless `Code` opts in. A direct impl on the nominal array takes
 precedence and is the mechanism used for signed-specific behavior.
 Phase 1 lowers this form for `Resolve` and the core `and`/`or`/`not`
 contracts; other blanket array traits are rejected until their generic bodies

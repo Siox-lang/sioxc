@@ -48,7 +48,6 @@ const COMPILER_TRAITS: &[&str] = &[
     "Index",
     "IndexAssign",
     "Boolean",
-    "Vector",
     "Resolve",
     "New",
     "From",
@@ -3203,6 +3202,12 @@ mod tests {
     fn unknown_type_is_reported() {
         let (_, errors) = resolve_src("module m;\nentity E { y: Bogus out, }\n");
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn obsolete_vector_marker_is_not_a_compiler_trait() {
+        let (_, errors) = resolve_src("module m;\nstruct Word(Bit[]);\nimpl Vector for Word {}\n");
+        assert_eq!(errors, 1, "array representation follows the base type");
     }
 
     #[test]

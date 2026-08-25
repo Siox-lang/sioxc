@@ -436,10 +436,10 @@ pub struct Design {
     /// enum but no way to ask whether the source was related to it, so it
     /// passed *every* `EnumName(x)` straight through.
     pub enum_bases: HashMap<String, String>,
-    /// Vector family -> its element enum (`unsigned` -> `Logic`). A *bit* of a
-    /// packed vector is not a signal of its own, so an operator on one has no
+    /// Nominal array family -> its element enum (`unsigned` -> `Logic`). A bit
+    /// of a packed scalar array is not a signal of its own, so an operator on one has no
     /// type to dispatch by unless the family says what its elements are.
-    pub vector_element_of_family: HashMap<String, String>,
+    pub array_element_of_family: HashMap<String, String>,
     /// Type name -> its `impl New for T` uninitialized default value (`Logic` ->
     /// `'U'`), so testbench-local seeding matches the hardware signal default.
     pub new_defaults: HashMap<String, u64>,
@@ -453,10 +453,10 @@ pub struct Design {
     /// vectors, so a design that never touches metavalues is unchanged. See
     /// "X/Z propagation through vectors" in `docs/simulation.md`.
     pub meta_of: HashMap<u32, u32>,
-    /// Packed-vector signal -> enum used by each element. This is declaration
-    /// metadata (`struct F(E[]); impl Vector for F {}`), not a std type-name
+    /// Packed-array signal -> enum used by each element. This is declaration
+    /// metadata (`struct F(E[])`), not a std type-name
     /// convention. Consumers use it to render metavalue companions.
-    pub vector_element_enums: HashMap<u32, String>,
+    pub array_element_enums: HashMap<u32, String>,
     /// Concrete source value -> its complete recursive type layout. Keys use
     /// the same hierarchical spelling as `Signal::path`; aggregates have an
     /// entry even though storage is flattened into leaf signals. Backends and
@@ -887,14 +887,14 @@ pub fn lower_in(
         })
         .collect();
     l.enum_reprs = enum_reprs(modules, &l.free_fns);
-    l.vector_families = vector_families(modules, &l.free_fns);
+    l.array_families = array_families(modules, &l.free_fns);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a
     // packed vector the same way lowering does.
-    for family in &l.vector_families {
-        if let Some(element) = l.vector_element_enum(family) {
+    for family in &l.array_families {
+        if let Some(element) = l.array_element_enum(family) {
             l.out
-                .vector_element_of_family
+                .array_element_of_family
                 .insert(family.clone(), element);
         }
     }
@@ -1018,7 +1018,7 @@ struct Lowering<'a> {
     /// `Self`). Overloads select by that rhs, or the fn's rhs parameter type.
     op_impls: OperatorImpls<'a>,
     /// Generic implementations whose target is an unconstrained scalar array.
-    /// Nominal Vector families forward these when their element satisfies the
+    /// Nominal array families forward these when their element satisfies the
     /// implementation's constraint.
     blanket_array_impls: HashMap<String, String>,
     /// Literal suffix -> (target type, fn), for suffix inlining.
@@ -1178,10 +1178,9 @@ struct Lowering<'a> {
     ctx_span: HashMap<u32, crate::diag::Span>,
     /// Signal -> declared type name (enum / unsigned / signed), for Resolve lookup.
     sig_type: HashMap<u32, String>,
-    /// Array-derived Logic vector families (`struct F : Logic[]`) -> signed?.
-    /// unsigned/signed are just the first two; the family set is read from the
-    /// declarations, not hardcoded.
-    vector_families: std::collections::HashSet<String>,
+    /// Nominal array families (`struct F(Logic[])`). Unsigned and signed are
+    /// just the first two; the family set is read from declarations.
+    array_families: std::collections::HashSet<String>,
     /// Numeric-vector locals -> the family name, for operator-impl dispatch
     /// (kernel `integer`/`real` keep builtin operators; unsigned/signed live in std).
     local_numeric: HashMap<String, String>,
@@ -1357,7 +1356,7 @@ impl<'a> Lowering<'a> {
             reported_oob: HashSet::new(),
             reported_generated_dead_assignments: HashSet::new(),
             local_numeric: HashMap::new(),
-            vector_families: std::collections::HashSet::new(),
+            array_families: std::collections::HashSet::new(),
             cur_ctx: 0,
             ctx_span: HashMap::new(),
             sig_type: HashMap::new(),
@@ -3602,7 +3601,7 @@ impl<'a> Lowering<'a> {
                 .contains_key(&("Resolve".to_string(), ty.clone()));
             let element_resolve = self
                 .out
-                .vector_element_enums
+                .array_element_enums
                 .get(t)
                 .filter(|element| {
                     self.blanket_array_impls
@@ -4938,7 +4937,7 @@ impl<'a> Lowering<'a> {
                 if let Some(&id) = self.locals.get(name) {
                     self.sig_type.insert(id.0, family.clone());
                     if let Some(element) = element_enum {
-                        self.out.vector_element_enums.insert(id.0, element.clone());
+                        self.out.array_element_enums.insert(id.0, element.clone());
                     }
                 }
             }
@@ -5077,7 +5076,7 @@ impl<'a> Lowering<'a> {
             &ty,
             env,
             &self.const_ranges,
-            &self.vector_families,
+            &self.array_families,
             &self.free_fns,
         ) {
             let range = indices
@@ -5101,7 +5100,7 @@ impl<'a> Lowering<'a> {
                 kind: LayoutKind::Packed {
                     width,
                     range: self.layout_range(&ty, env, &mut HashSet::new()),
-                    element_enum: self.vector_element_enum(&family),
+                    element_enum: self.array_element_enum(&family),
                     family,
                 },
             };
@@ -5210,11 +5209,11 @@ impl<'a> Lowering<'a> {
         match ty {
             ast::Type::Indexed { base, .. } => {
                 let name = self.free_fns.type_head_key(base)?;
-                self.vector_families.contains(&name).then_some(name)
+                self.array_families.contains(&name).then_some(name)
             }
             ast::Type::Path(_) => {
                 let name = self.free_fns.type_head_key(ty)?;
-                (self.vector_families.contains(&name)
+                (self.array_families.contains(&name)
                     && type_width(ty, env, &self.free_fns, &self.structs, &self.const_ranges) != 0)
                     .then_some(name)
             }
@@ -5239,7 +5238,7 @@ impl<'a> Lowering<'a> {
         self.layout_range(base, env, seen)
     }
 
-    fn vector_element_enum(&self, family: &str) -> Option<String> {
+    fn array_element_enum(&self, family: &str) -> Option<String> {
         let mut current = family.to_string();
         let mut seen = HashSet::new();
         while seen.insert(current.clone()) {
@@ -5675,7 +5674,7 @@ impl<'a> Lowering<'a> {
                     &base_type,
                     &self.cur_env,
                     &self.const_ranges,
-                    &self.vector_families,
+                    &self.array_families,
                     &self.free_fns,
                 )
                 .map(|(element, _)| element.clone())
@@ -5796,7 +5795,7 @@ impl<'a> Lowering<'a> {
                     ty,
                     &self.cur_env,
                     &self.const_ranges,
-                    &self.vector_families,
+                    &self.array_families,
                     &self.free_fns,
                 ) {
                     let (&last, earlier) = indices.split_last()?;
@@ -5851,7 +5850,7 @@ impl<'a> Lowering<'a> {
             ty,
             &self.cur_env,
             &self.const_ranges,
-            &self.vector_families,
+            &self.array_families,
             &self.free_fns,
         ) {
             let mut fields = Vec::new();
@@ -5900,7 +5899,7 @@ impl<'a> Lowering<'a> {
             ty,
             &self.cur_env,
             &self.const_ranges,
-            &self.vector_families,
+            &self.array_families,
             &self.free_fns,
         ) {
             if let ast::Expr::Array { elems, .. } = value {
@@ -6083,7 +6082,7 @@ impl<'a> Lowering<'a> {
                                 &previous.ty,
                                 &self.cur_env,
                                 &self.const_ranges,
-                                &self.vector_families,
+                                &self.array_families,
                                 &self.free_fns,
                             ),
                         ) {
@@ -6326,7 +6325,7 @@ impl<'a> Lowering<'a> {
                     ty,
                     &self.cur_env,
                     &self.const_ranges,
-                    &self.vector_families,
+                    &self.array_families,
                     &self.free_fns,
                 )?;
                 let lowered_index = self.lower_expr(index);
@@ -6524,7 +6523,7 @@ impl<'a> Lowering<'a> {
                                     &binding.ty,
                                     &self.cur_env,
                                     &self.const_ranges,
-                                    &self.vector_families,
+                                    &self.array_families,
                                     &self.free_fns,
                                 ),
                             ) {
@@ -7503,7 +7502,7 @@ impl<'a> Lowering<'a> {
                 } => {
                     let width = self.out.signals[signal.0 as usize].width;
                     let base = self.slice_write_base(signal, sequential, pending);
-                    let meta = if self.out.vector_element_enums.contains_key(&signal.0) {
+                    let meta = if self.out.array_element_enums.contains_key(&signal.0) {
                         let companion = SignalId(self.driven_companion(signal));
                         let meta_width = self.out.signals[companion.0 as usize].width;
                         let meta_base =
@@ -8513,7 +8512,7 @@ impl<'a> Lowering<'a> {
             return Some(self.block_local_width(&ty));
         }
         // Indexing is precisely where syntax-only lowering cannot distinguish
-        // a vector family from its scalar element. Literal and match types are
+        // a nominal array family from its scalar element. Literal and match types are
         // intentionally contextual, so their best-effort Stage-4 default
         // (`integer`) must not override the assignment target's width here.
         if matches!(e, ast::Expr::Index { .. }) {
@@ -8610,7 +8609,7 @@ impl<'a> Lowering<'a> {
                 ast::Expr::Index { base, index, .. }
                     if expr_path(base)
                         .as_deref()
-                        .is_some_and(|h| self.vector_families.contains(h)) =>
+                        .is_some_and(|h| self.array_families.contains(h)) =>
                 {
                     self.eval_const(index, &self.cur_env)
                         .map(|w| w as u32)
@@ -8700,7 +8699,7 @@ impl<'a> Lowering<'a> {
         }
         if ![lhs, rhs].iter().all(|e| {
             self.operand_type_name(e)
-                .is_some_and(|f| self.out.vector_element_of_family.contains_key(&f))
+                .is_some_and(|f| self.out.array_element_of_family.contains_key(&f))
         }) {
             return None;
         }
@@ -8778,25 +8777,23 @@ impl<'a> Lowering<'a> {
                 }
             }
         };
-        // No candidate accepted this right operand. For a *vector family* that
+        // No candidate accepted this right operand. For a packed nominal array that
         // is fine — the caller falls back to builtin arithmetic on the packed
         // word. For an aggregate struct there is nothing to fall back to: the
         // expression yields no fields, and the assignment it feeds is dropped
         // without a word, leaving only a downstream "never driven" warning
         // that names the symptom rather than the operator.
-        // An *aggregate* struct is the test, not "not a vector family": a
-        // multi-field struct may opt into `Vector`, and it is still many
-        // signals with no packed-word arithmetic to fall back on, so excluding
-        // vector families here would have left exactly this case silent. A
+        // An *aggregate* struct is the test, not "not an array family": a
+        // multi-field struct is still many signals with no packed-word
+        // arithmetic to fall back on. A
         // field-less newtype (`struct Q(unsigned[8])`) is a word and is
         // correctly left to builtin arithmetic.
         // Only an *aggregate* struct. A field-less newtype is one word with
         // builtin arithmetic behind it, and std's families are exactly that
         // shape (`pub struct unsigned(Logic[])`), so `contains_key` alone
         // would report on ordinary vector expressions. Testing for "not a
-        // vector family" instead would be wrong the other way: an aggregate
-        // may opt into `Vector` and is still many signals with nothing to fall
-        // back on.
+        // nominal-array-family test would be wrong for unrelated aggregate
+        // structs, which still have nothing to fall back on.
         if f.is_none()
             && self
                 .structs
@@ -8957,7 +8954,7 @@ impl<'a> Lowering<'a> {
             named
         } else {
             // A computed packed value has no declaration path from which to
-            // recover labels. Its result uses the vector family's canonical
+            // recover labels. Its result uses the array family's canonical
             // zero-based storage labels, so an explicit/partial slice can still
             // select it (`(a + b)[3..0]`) instead of lowering to `Unknown`.
             if !matches!(
@@ -9400,7 +9397,7 @@ impl<'a> Lowering<'a> {
         }
         let vector = |e: &ast::Expr| {
             self.operand_type_name(e)
-                .is_some_and(|f| self.out.vector_element_of_family.contains_key(&f))
+                .is_some_and(|f| self.out.array_element_of_family.contains_key(&f))
         };
         if !vector(lhs) && !vector(rhs) {
             return built;
@@ -9869,7 +9866,7 @@ impl<'a> Lowering<'a> {
         if let Some(fields) = self.struct_default_leaves(&name, "") {
             return Some(Val::Fields(fields));
         }
-        (self.vector_families.contains(&name)
+        (self.array_families.contains(&name)
             || matches!(name.as_str(), "integer" | "Char" | "real"))
         .then_some(Val::Scalar(Expr::Const(0)))
     }
@@ -10053,7 +10050,7 @@ impl<'a> Lowering<'a> {
                     ty,
                     &self.cur_env,
                     &self.const_ranges,
-                    &self.vector_families,
+                    &self.array_families,
                     &self.free_fns,
                 )
                 .is_some()
@@ -10274,7 +10271,7 @@ impl<'a> Lowering<'a> {
                         ty,
                         &self.cur_env,
                         &self.const_ranges,
-                        &self.vector_families,
+                        &self.array_families,
                         &self.free_fns,
                     )
                     .is_some()
@@ -10498,7 +10495,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Index { base, index, .. }
                 if head(base)
                     .as_deref()
-                    .is_some_and(|h| self.vector_families.contains(h)) =>
+                    .is_some_and(|h| self.array_families.contains(h)) =>
             {
                 let w = match self.lower_scalar_env(index, env) {
                     Expr::Const(c) => c as u32,
@@ -10590,10 +10587,10 @@ impl<'a> Lowering<'a> {
                         .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone())),
                     _ => None,
                 }?;
-                // A conversion reads as its target: a vector family
+                // A conversion reads as its target: a nominal array family
                 // (`signed[32](a)`) or an enum (`ULogic(b)` inside
                 // `Logic(ULogic(b))`).
-                if self.vector_families.contains(&head) || self.enum_variants.contains_key(&head) {
+                if self.array_families.contains(&head) || self.enum_variants.contains_key(&head) {
                     return Some(head);
                 }
                 // Otherwise it is an ordinary call, and its declared return
@@ -10608,7 +10605,7 @@ impl<'a> Lowering<'a> {
                 // A struct return counts too: `twice(v) + v` needs a type for
                 // its left operand before any `Operator` impl can be found,
                 // and without one the whole expression produced nothing.
-                (self.vector_families.contains(&ret)
+                (self.array_families.contains(&ret)
                     || self.enum_variants.contains_key(&ret)
                     || self.structs.contains_key(&ret))
                 .then_some(ret)
@@ -10635,7 +10632,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 let family = self.operand_type_name(base)?;
-                self.vector_element_enum(&family)
+                self.array_element_enum(&family)
             }
             _ => {
                 let p = expr_path(e)?;
@@ -10801,7 +10798,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Path(_) | ast::Expr::Field { .. } | ast::Expr::Index { .. } => {
                 self.block_local_type(rhs)
                     .and_then(|ty| self.free_fns.type_head_key(&ty))
-                    .is_some_and(|family| self.vector_families.contains(&family))
+                    .is_some_and(|family| self.array_families.contains(&family))
                     || expr_path(rhs)
                         .and_then(|p| self.locals.get(&p))
                         .map(|&id| self.out.signals[id.0 as usize].enum_type.is_none())
@@ -11231,7 +11228,7 @@ impl<'a> Lowering<'a> {
                     &ty,
                     &self.cur_env,
                     &self.const_ranges,
-                    &self.vector_families,
+                    &self.array_families,
                     &self.free_fns,
                 ) {
                     return Expr::Const(indices.len() as u64);
@@ -12760,12 +12757,13 @@ pub fn derived_widths(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<St
         .collect()
 }
 
-pub fn vector_families(
+pub fn array_families(
     modules: &[Module],
     fns: &FunctionIndex<'_>,
 ) -> std::collections::HashSet<String> {
-    // `impl Vector for F` opts a family into packed numeric storage. Compute
-    // inheritance to a fixpoint so `struct Byte(unsigned[8])` joins it too.
+    // A nominal newtype directly over `T[]` is an array family. Compute
+    // inheritance to a fixpoint so `struct Byte(unsigned[8])` joins it too,
+    // without a representation marker trait.
     let structs: Vec<&ast::StructDecl> = modules
         .iter()
         .flat_map(|m| &m.items)
@@ -12774,27 +12772,12 @@ pub fn vector_families(
             _ => None,
         })
         .collect();
-    let mut out: std::collections::HashSet<String> = modules
-        .iter()
-        .flat_map(|module| &module.items)
-        .filter_map(|item| match item {
-            ast::Item::Impl(im)
-                if im
-                    .trait_
-                    .as_ref()
-                    .and_then(|path| fns.trait_path_key(path))
-                    .is_some_and(|name| name == "Vector") =>
-            {
-                fns.type_head_key(&im.target)
-            }
-            _ => None,
-        })
-        .collect();
+    let mut out = std::collections::HashSet::new();
     loop {
         let mut changed = false;
         for st in &structs {
             let key = fns.struct_decl_key(&st.name);
-            if !out.contains(&key) && is_bit_vector_struct(st, &out, fns) {
+            if !out.contains(&key) && is_array_family_struct(st, &out, fns) {
                 out.insert(key);
                 changed = true;
             }
@@ -12806,9 +12789,9 @@ pub fn vector_families(
     out
 }
 
-/// A field-less struct deriving from an already-known `Vector` family inherits
-/// packed numeric storage.
-fn is_bit_vector_struct(
+/// A nominal newtype directly over `T[]`, or deriving from an already-known
+/// nominal array family, inherits the base array representation.
+fn is_array_family_struct(
     st: &ast::StructDecl,
     families: &std::collections::HashSet<String>,
     fns: &FunctionIndex<'_>,
@@ -12816,15 +12799,15 @@ fn is_bit_vector_struct(
     if !st.fields.is_empty() {
         return false;
     }
-    let elem = match &st.base {
-        Some(ast::Type::Indexed { base, .. }) => fns.type_head_key(base),
-        // A bare derived base (`struct Byte : unsigned`) reuses the base family.
+    match &st.base {
+        Some(ast::Type::Indexed { .. }) => true,
+        // A bare derived base (`struct Byte(unsigned)`) reuses the base family.
         Some(ast::Type::Path(p)) => fns
             .struct_path_key(p)
-            .or_else(|| p.segments.last().map(|segment| segment.text.clone())),
-        _ => None,
-    };
-    elem.is_some_and(|head| families.contains(&head))
+            .or_else(|| p.segments.last().map(|segment| segment.text.clone()))
+            .is_some_and(|head| families.contains(&head)),
+        _ => false,
+    }
 }
 
 fn enum_index<'a>(
@@ -13718,8 +13701,8 @@ fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessStep<'_>>)> {
     Some((root, steps))
 }
 
-/// The `(element type, length)` if `ty` is an array — an `Indexed` type whose
-/// base is *not* an integer (`Bit[4]`), as opposed to a vector (`unsigned[8]`).
+/// The `(element type, length)` if `ty` is an ordinary indexed array rather
+/// than the first constraint on a nominal array family (`unsigned[8]`).
 /// The element type and **ordered element indices** of an array type.
 /// A width-only index (`Bit[4]`) is ascending `0..=3`; a range keeps its
 /// written direction (`Logic[7..0]` yields 7,6,...,0). A single-segment path
@@ -13739,9 +13722,9 @@ fn array_of<'t>(
     else {
         return None;
     };
-    // A Logic-vector family (unsigned/signed/user) `F[N]` is one N-bit signal, not an
-    // N-element array — but only when the base is DIRECTLY the family (`unsigned`),
-    // not when it is itself indexed (`unsigned[8][4]` is an array of vectors).
+    // A scalar nominal array family (unsigned/signed/user) `F[N]` is one packed
+    // N-element value, but only when the base is directly the family. An
+    // already constrained base (`unsigned[8][4]`) is an array of four words.
     let base_is_family = matches!(base.as_ref(), ast::Type::Path(_))
         && fns
             .type_head_key(base)
@@ -13767,8 +13750,8 @@ fn array_of<'t>(
     Some((base, indices))
 }
 
-/// The kernel `integer` scalar (a bare word). unsigned/signed are NOT here — they
-/// are `#[vector]` families recognized via the family set, not by name.
+/// The kernel `integer` scalar (a bare word). Unsigned and signed are nominal
+/// array families recognized structurally, not by name.
 fn is_int_type(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Path(p)
         if p.segments.last().map(|s| s.text.as_str()) == Some("integer"))
@@ -13924,8 +13907,6 @@ mod tests {
         enum Logic(ULogic);\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
-        impl Vector for unsigned {}\n\
-        impl Vector for signed {}\n\
         impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
         impl Operator<\"or\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
         impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
@@ -14693,19 +14674,10 @@ mod tests {
     }
 
     #[test]
-    fn custom_vector_trait_does_not_select_packed_vector_representation() {
+    fn nominal_array_shape_selects_array_family_not_a_trait_name() {
         let sources = [
-            ("module std::ops; pub trait Vector {}", FileId(0)),
-            (
-                "module custom; pub trait Vector {} pub struct Word(integer); \
-                 impl Vector for Word {}",
-                FileId(1),
-            ),
-            (
-                "module canonical; pub struct Word(integer); \
-                 impl std::ops::Vector for Word {}",
-                FileId(2),
-            ),
+            ("module scalar; pub struct Word(integer);", FileId(0)),
+            ("module arrays; pub struct Word(integer[]);", FileId(1)),
         ];
         let mut sink = DiagnosticSink::new();
         let modules: Vec<Module> = sources
@@ -14714,15 +14686,15 @@ mod tests {
             .collect();
         let resolved = crate::resolve::resolve(&modules, &mut sink);
         let fns = FunctionIndex::new(&resolved);
-        let families = vector_families(&modules, &fns);
+        let families = array_families(&modules, &fns);
         assert_eq!(
             sink.error_count(),
             0,
             "diagnostics: {:#?}",
             sink.diagnostics()
         );
-        assert!(!families.contains("custom::Word"));
-        assert!(families.contains("canonical::Word"));
+        assert!(!families.contains("scalar::Word"));
+        assert!(families.contains("arrays::Word"));
     }
 
     #[test]
@@ -16092,8 +16064,8 @@ mod tests {
             new_defaults: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
-            vector_element_enums: Default::default(),
-            vector_element_of_family: Default::default(),
+            array_element_enums: Default::default(),
+            array_element_of_family: Default::default(),
             source_layouts: Default::default(),
         };
         let issues = bad.validate();

@@ -93,8 +93,8 @@ fn a_self_typed_right_operand_still_dispatches() {
 }
 
 #[test]
-fn a_vector_family_newtype_falls_back_to_builtin_arithmetic() {
-    // `struct Q(unsigned[8])` joins the vector families, so `q * 3` is packed
+fn a_nominal_array_newtype_falls_back_to_builtin_arithmetic() {
+    // `struct Q(unsigned[8])` joins the array families, so `q * 3` is packed
     // arithmetic on the word and needs no impl at all. Reporting here would
     // reject a whole class of working designs — this is why the check is
     // restricted to aggregates.
@@ -118,7 +118,7 @@ fn plain_vector_arithmetic_is_untouched() {
 }
 
 #[test]
-fn a_std_vector_family_is_not_reported() {
+fn a_std_nominal_array_family_is_not_reported() {
     // `pub struct unsigned(Logic[])` is a struct, so testing only "the left
     // operand is a struct" reports on ordinary vector expressions. A field-less
     // newtype is one word with builtin arithmetic behind it; whether `u * l`
@@ -130,21 +130,19 @@ fn a_std_vector_family_is_not_reported() {
     );
     assert!(
         !out.contains("no `*` operator"),
-        "a std vector family must not be reported, got:\n{out}"
+        "a std nominal array family must not be reported, got:\n{out}"
     );
 }
 
 #[test]
-fn an_aggregate_that_opts_into_vector_is_still_reported() {
-    // A multi-field struct may `impl Vector`, and it is still many signals
-    // with no packed-word arithmetic behind it. Excluding vector families from
-    // the check — which looked like the natural guard, since a newtype over a
-    // vector genuinely does fall back — left this case silent again.
+fn an_aggregate_struct_is_still_reported() {
+    // A multi-field struct is many signals with no packed-word arithmetic
+    // behind it. Excluding all structs from this check would leave the failed
+    // operator dispatch silent again.
     let src = "module m;\n\
-               using std::bits::{unsigned, Vector};\n\
+               using std::bits::{unsigned};\n\
                using std::ops::{Operator};\n\
                struct Vec2 { x: unsigned[8], y: unsigned[8] }\n\
-               impl Vector for Vec2 {}\n\
                impl Operator<\"*\", unsigned[8], Vec2> for Vec2 {\n\
                    fn apply(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
                }\n\
@@ -164,6 +162,6 @@ fn an_aggregate_that_opts_into_vector_is_still_reported() {
         String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     assert!(
         text.contains("no `*` operator for `Vec2`"),
-        "an aggregate vector family must still be reported, got:\n{text}"
+        "an aggregate struct must still be reported, got:\n{text}"
     );
 }
