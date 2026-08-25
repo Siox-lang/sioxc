@@ -304,7 +304,6 @@ fn elaborate_roots(
         misplaced: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
-        families: HashSet::new(),
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
@@ -353,8 +352,6 @@ struct Elaborator<'a> {
     entities: HashMap<DefId, &'a EntityDecl>,
     /// Entity identity -> its inherent impls (where instances live).
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
-    /// Bit-vector families (`struct F : Logic[]`), for width-typing vectors.
-    families: HashSet<DefId>,
     out: Hierarchy,
 }
 
@@ -376,18 +373,6 @@ impl<'a> Elaborator<'a> {
                     Item::Impl(im) if im.trait_.is_none() => {
                         if let Some(id) = type_def_id(&im.target, self.resolved) {
                             self.impls.entry(id).or_default().push(im);
-                        }
-                    }
-                    Item::Impl(im)
-                        if im.trait_.as_ref().is_some_and(|trait_| {
-                            trait_
-                                .segments
-                                .last()
-                                .is_some_and(|name| name.text == "Vector")
-                        }) =>
-                    {
-                        if let Some(id) = type_def_id(&im.target, self.resolved) {
-                            self.families.insert(id);
                         }
                     }
                     _ => {}
@@ -1094,7 +1079,7 @@ impl<'a> Elaborator<'a> {
                 }
             }
             let signal = render_signal(e, render_env);
-            let ty = concrete_ty(port_ty, env, &self.families, self.resolved);
+            let ty = concrete_ty(port_ty, env);
             connected.insert(port.clone());
             conns.push(Connection {
                 port,
@@ -1140,14 +1125,10 @@ impl<'a> Elaborator<'a> {
         entity_id: DefId,
         env: &HashMap<String, i64>,
     ) -> HashMap<String, EType> {
-        let families = &self.families;
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.entities.get(&entity_id) {
             for p in &edecl.ports {
-                sigs.insert(
-                    p.name.text.clone(),
-                    concrete_ty(&p.ty, env, families, self.resolved),
-                );
+                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env));
             }
         }
         if let Some(impls) = self.impls.get(&entity_id) {
@@ -1155,10 +1136,7 @@ impl<'a> Elaborator<'a> {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(
-                                l.name.text.clone(),
-                                concrete_ty(t, env, families, self.resolved),
-                            );
+                            sigs.insert(l.name.text.clone(), concrete_ty(t, env));
                         }
                     }
                 }
@@ -1341,12 +1319,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(
-    t: &Type,
-    env: &HashMap<String, i64>,
-    families: &HashSet<DefId>,
-    resolved: &Resolved,
-) -> EType {
+fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
@@ -1357,22 +1330,8 @@ fn concrete_ty(
         },
         Type::Indexed { base, index, .. } => {
             let len = index.as_deref().and_then(|i| index_width(i, env));
-            // `unsigned[8]` — a bit-vector family indexed *directly* — is a packed
-            // array of that many bits, whose element names the family so it
-            // renders as `unsigned[8]`. Everything else (`Bit[8]`, `Point[4]`, or a
-            // nested `unsigned[8][4]`) is an array of its element type.
-            if let Type::Path(p) = base.as_ref() {
-                if let Some(name) = p.segments.last().map(|s| s.text.as_str()) {
-                    if type_def_id(base, resolved).is_some_and(|id| families.contains(&id)) {
-                        return EType::Array {
-                            elem: Box::new(EType::Named(name.to_string())),
-                            len,
-                        };
-                    }
-                }
-            }
             EType::Array {
-                elem: Box::new(concrete_ty(base, env, families, resolved)),
+                elem: Box::new(concrete_ty(base, env)),
                 len,
             }
         }
@@ -2010,6 +1969,30 @@ mod tests {
             }\n";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn vector_trait_identity_does_not_duplicate_type_semantics_in_elaboration() {
+        let design = |trait_decl: &str| {
+            format!(
+                "module m; {trait_decl} \
+                 struct Word(integer); impl Vector for Word {{}} \
+                 entity Sub {{ a: Word[8] in }} impl Sub {{}} \
+                 #[top] entity Top {{}} \
+                 impl Top {{ let a: Word[4]; let dut: Sub = {{ .a = a }}; }}"
+            )
+        };
+        let (_, custom_errors) = elaborate_src(&design("trait Vector {}"));
+        assert_eq!(
+            custom_errors, 1,
+            "elaboration compares the written array lengths without reclassifying traits"
+        );
+
+        let (_, canonical_errors) = elaborate_src(&design(""));
+        assert_eq!(
+            canonical_errors, 1,
+            "the canonical Vector hook has the same coarse connection shape"
+        );
     }
 
     #[test]
