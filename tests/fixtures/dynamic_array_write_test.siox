@@ -19,11 +19,6 @@ impl DynamicArrayWriteFixture {
     assert!(values[3] == 43, "loop label 3");
     assert!(values[4] == 44, "loop label 4");
 
-    index = 9;
-    values[index] = 255;
-    assert!(values[3] == 43, "out-of-range write is a no-op");
-    assert!(values[index] == 42, "out-of-range read uses the last declared element");
-
     let pairs: Pair[5..6] = [
         { .left = 1, .right = 2 },
         { .left = 3, .right = 4 },

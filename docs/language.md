@@ -1599,10 +1599,14 @@ while `w[4..7]` extracts the same bits with the order reversed.
 
 A runtime scalar index is supported for packed vectors in hardware and native
 testbench code. Reads select one element and writes are read-modify-writes that
-preserve every other bit. An out-of-range runtime packed read returns `'0'`;
-an out-of-range write is a no-op. Logic-family writes update the element's full
-metavalue discriminant as well as its value bit, so writing `'X'` or `'Z'` and
-reading it through another runtime index preserves the symbol.
+preserve every other bit. A constant index outside the declared labels is a
+compile-time error. A runtime index outside them is a simulation failure for
+both reads and writes; the report includes the value, the range in its declared
+direction, and the indexed expression's source location. There is no implicit
+zero, clamp, or no-op fallback. Source that wants fallback behavior must guard
+the access and select that behavior explicitly. Logic-family writes update the
+element's full metavalue discriminant as well as its value bit, so writing `'X'`
+or `'Z'` and reading it through another runtime index preserves the symbol.
 
 Explicit nonzero labels occupy compact storage by subtracting the declared
 low bound. For `unsigned[15..8]`, label 8 is storage bit 0 and label 15 is
@@ -1676,9 +1680,12 @@ concatenation, which packs its parts into one wider vector.
 Runtime indices may be chained through nested arrays and struct fields, for
 example `packets[slot].data` or `matrix[row][column]`. Lowering expands a read
 into muxes over the flattened scalar leaves and a write into one gated update
-per possible leaf. An out-of-range runtime read selects the last declared
-element at that dimension, matching the existing single-dimensional rule; an
-out-of-range runtime write matches no element and is therefore a no-op.
+per possible leaf. Each dimension is checked independently at runtime, and an
+active out-of-range read or write fails simulation. An access in an untaken
+`if`/conditional branch is not active and does not fail, which permits an
+explicit bounds guard. Future RTL elaboration must prove an index constrained
+to the declared labels or retain such a guard; it must not invent a simulation
+fallback value in synthesized logic.
 
 **Named ranges.** A `range` constant names a range, preserving direction,
 usable in both type and slice position:

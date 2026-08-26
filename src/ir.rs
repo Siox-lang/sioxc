@@ -806,6 +806,18 @@ pub enum Expr {
         hi: u32,
         lo: u32,
     },
+    /// A runtime index together with its declared-domain predicate. The value
+    /// remains an ordinary expression; simulation backends use `valid` to
+    /// latch a bounds failure only on the control-flow path that evaluates the
+    /// access. `left`/`right` preserve the declaration's written direction for
+    /// the diagnostic rather than reducing it to an anonymous min/max pair.
+    CheckedIndex {
+        index: Box<Expr>,
+        valid: Box<Expr>,
+        left: i64,
+        right: i64,
+        span: crate::diag::Span,
+    },
     /// `cond ? then : els` — produced by inlining operator-trait impl bodies
     /// (`if`/`else` chains of `return`s become nested selects).
     Select {
@@ -5922,6 +5934,39 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Lower a non-constant index while retaining the declared index domain
+    /// for simulation. Domains are represented as equality predicates rather
+    /// than signed min/max comparisons: an `unsigned` index and a negative
+    /// integer label then keep their own source semantics, and ascending and
+    /// descending declarations use the same backend contract.
+    fn checked_runtime_index(&self, index: &ast::Expr, labels: &[i64]) -> Option<Expr> {
+        let &left = labels.first()?;
+        let right = labels.last().copied().unwrap_or(left);
+        self.checked_runtime_index_with_bounds(index, labels, left, right)
+    }
+
+    fn checked_runtime_index_with_bounds(
+        &self,
+        index: &ast::Expr,
+        labels: &[i64],
+        left: i64,
+        right: i64,
+    ) -> Option<Expr> {
+        let (&first, rest) = labels.split_first()?;
+        let lowered = self.lower_expr(index);
+        let valid = rest.iter().copied().fold(
+            eq(lowered.clone(), Expr::Const(first as u64)),
+            |valid, label| or_expr(valid, eq(lowered.clone(), Expr::Const(label as u64))),
+        );
+        Some(Expr::CheckedIndex {
+            index: Box::new(lowered),
+            valid: Box::new(valid),
+            left,
+            right,
+            span: ast::expr_span(index),
+        })
+    }
+
     fn lower_block_packed_read(
         &self,
         ty: &ast::Type,
@@ -5945,7 +5990,9 @@ impl<'a> Lowering<'a> {
                 lo: physical,
             });
         }
-        let lowered_index = self.lower_expr(index);
+        let labels: Vec<i64> = positions.iter().map(|(label, _)| *label).collect();
+        let (left, right) = self.declared_range(ty, &self.cur_env)?;
+        let lowered_index = self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
         let mut result = Expr::Const(0);
         for (logical, physical) in positions.into_iter().rev() {
             result = Expr::Select {
@@ -5998,7 +6045,7 @@ impl<'a> Lowering<'a> {
                     &self.free_fns,
                 ) {
                     let (&last, earlier) = indices.split_last()?;
-                    let lowered_index = self.lower_expr(index);
+                    let lowered_index = self.checked_runtime_index(index, &indices)?;
                     let element = |position: i64| {
                         self.lower_block_dynamic_access_from(
                             element_ty,
@@ -6239,7 +6286,20 @@ impl<'a> Lowering<'a> {
                             ) && self.eval_const(index, &self.cur_env).is_none()
                             {
                                 if let Some(positions) = self.block_packed_positions(&previous.ty) {
-                                    let lowered_index = self.lower_expr(index);
+                                    let labels: Vec<i64> =
+                                        positions.iter().map(|(label, _)| *label).collect();
+                                    let Some((left, right)) =
+                                        self.declared_range(&previous.ty, &self.cur_env)
+                                    else {
+                                        return false;
+                                    };
+                                    let Some(lowered_index) = self
+                                        .checked_runtime_index_with_bounds(
+                                            index, &labels, left, right,
+                                        )
+                                    else {
+                                        return false;
+                                    };
                                     let replacement = self.lower_expr(value);
                                     let width = self.block_local_width(&previous.ty);
                                     let mut next = old.clone();
@@ -6286,7 +6346,10 @@ impl<'a> Lowering<'a> {
                             ),
                         ) {
                             let new_element = self.lower_block_value(value, element_ty);
-                            let lowered_index = self.lower_expr(index);
+                            let Some(lowered_index) = self.checked_runtime_index(index, &indices)
+                            else {
+                                return false;
+                            };
                             for position in indices {
                                 let prefix = format!("[{position}]");
                                 let hit = Expr::Binary {
@@ -6527,7 +6590,7 @@ impl<'a> Lowering<'a> {
                     &self.array_families,
                     &self.free_fns,
                 )?;
-                let lowered_index = self.lower_expr(index);
+                let lowered_index = self.checked_runtime_index(index, &indices)?;
                 let mut target_ty = None;
                 for position in indices {
                     let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
@@ -7583,8 +7646,9 @@ impl<'a> Lowering<'a> {
     /// Lower a scalar leaf reached through one or more runtime array indices.
     /// Arrays and structs are flattened (`m[0][1]`, `pack[0].data`), so each
     /// index expands over the concrete paths registered in `local_array` and
-    /// each field simply extends the path. Like the original one-dimensional
-    /// mux, an out-of-range read selects the last element at that dimension.
+    /// each field simply extends the path. A mux arm remains as backend
+    /// recovery, but its checked index makes an active miss a simulation
+    /// failure rather than a selected language value.
     fn lower_dynamic_access(&self, access: &ast::Expr) -> Option<Expr> {
         let (root, steps) = access_steps(access)?;
         if !steps
@@ -7607,7 +7671,7 @@ impl<'a> Lowering<'a> {
             AccessStep::Index(index) => {
                 if let Some(indices) = self.local_array.get(path) {
                     let (&last, earlier) = indices.split_last()?;
-                    let lowered_index = self.lower_expr(index);
+                    let lowered_index = self.checked_runtime_index(index, indices)?;
                     let element = |position: i64| {
                         self.lower_dynamic_access_from(&format!("{path}[{position}]"), rest)
                     };
@@ -7645,7 +7709,10 @@ impl<'a> Lowering<'a> {
                         lo: physical,
                     });
                 }
-                let lowered_index = self.lower_expr(index);
+                let labels: Vec<i64> = positions.iter().map(|(label, _)| *label).collect();
+                let (left, right) = self.persisted_range(path)?;
+                let lowered_index =
+                    self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
                 let mut result = Expr::Const(0);
                 for (logical, physical) in positions.into_iter().rev() {
                     result = Expr::Select {
@@ -7665,7 +7732,8 @@ impl<'a> Lowering<'a> {
 
     /// A dynamic aggregate write (`mem[addr] = v`, `m[row][col] = v`, or
     /// `pack[slot].data = v`): enumerate every concrete scalar leaf and gate it
-    /// by all runtime index comparisons. An out-of-range write matches no leaf.
+    /// by all runtime index comparisons. An out-of-range write matches no leaf
+    /// after its checked index has latched the simulation failure.
     fn dynamic_write(
         &mut self,
         target: &ast::Expr,
@@ -7778,7 +7846,7 @@ impl<'a> Lowering<'a> {
         let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) else {
             return None;
         };
-        let lowered_index = self.lower_expr(index);
+        let lowered_index = self.checked_runtime_index(index, &indices)?;
         let mut updates = Vec::new();
         for position in indices {
             let hit = eq(lowered_index.clone(), Expr::Const(position as u64));
@@ -7962,7 +8030,7 @@ impl<'a> Lowering<'a> {
             }
             AccessStep::Index(index) => {
                 if let Some(indices) = self.local_array.get(path) {
-                    let lowered_index = self.lower_expr(index);
+                    let lowered_index = self.checked_runtime_index(index, indices)?;
                     for &position in indices {
                         let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
                         self.dynamic_write_targets(
@@ -7995,7 +8063,10 @@ impl<'a> Lowering<'a> {
                     });
                     return Some(());
                 }
-                let lowered_index = self.lower_expr(index);
+                let labels: Vec<i64> = positions.iter().map(|(label, _)| *label).collect();
+                let (left, right) = self.persisted_range(path)?;
+                let lowered_index =
+                    self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
                 for (logical, position) in positions {
                     out.push(DynamicWriteTarget::PackedBit {
                         signal,
@@ -8429,7 +8500,12 @@ impl<'a> Lowering<'a> {
                 }
                 // A runtime index selects between the elements, the same mux
                 // chain `lower_dynamic_read` builds over a signal array.
-                let idx = self.lower_expr(index);
+                let labels: Vec<i64> = (0..values.len())
+                    .filter_map(|index| i64::try_from(index).ok())
+                    .collect();
+                let idx = self
+                    .checked_runtime_index(index, &labels)
+                    .unwrap_or_else(|| self.lower_expr(index));
                 let mut acc = Expr::Const(0);
                 for (i, value) in values.iter().enumerate().rev() {
                     acc = Expr::Select {
@@ -9692,6 +9768,7 @@ impl<'a> Lowering<'a> {
             Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
                 self.has_non_integer_signal(rhs)
             }
+            Expr::CheckedIndex { index, .. } => self.has_non_integer_signal(index),
             Expr::Binary { lhs, rhs, .. } => {
                 self.has_non_integer_signal(lhs) || self.has_non_integer_signal(rhs)
             }
@@ -11641,6 +11718,9 @@ pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
             read_set(rhs, out);
         }
         Expr::Slice { base, .. } => read_set(base, out),
+        // `valid` is synthesized entirely from `index`, so walking both would
+        // duplicate every sensitivity leaf.
+        Expr::CheckedIndex { index, .. } => read_set(index, out),
         Expr::Select { cond, then, els } => {
             read_set(cond, out);
             read_set(then, out);
@@ -11671,6 +11751,10 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
             resolve_logic_expr(rhs, lut);
         }
         Expr::Slice { base, .. } => resolve_logic_expr(base, lut),
+        Expr::CheckedIndex { index, valid, .. } => {
+            resolve_logic_expr(index, lut);
+            resolve_logic_expr(valid, lut);
+        }
         Expr::Select { cond, then, els } => {
             resolve_logic_expr(cond, lut);
             resolve_logic_expr(then, lut);
@@ -12140,6 +12224,10 @@ fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
             }
             check_expr(base, n, issues, ctx);
         }
+        Expr::CheckedIndex { index, valid, .. } => {
+            check_expr(index, n, issues, ctx);
+            check_expr(valid, n, issues, ctx);
+        }
         Expr::Select { cond, then, els } => {
             check_expr(cond, n, issues, ctx);
             check_expr(then, n, issues, ctx);
@@ -12160,6 +12248,17 @@ pub struct Process {
     pub reads: Vec<SignalId>,
     /// Signals the process drives.
     pub writes: Vec<SignalId>,
+}
+
+/// One source-level runtime indexing domain. Backends latch a one-based index
+/// into [`Design::index_sites`] so the generated executable can report the
+/// source location and the range without embedding compiler data in the LLVM
+/// engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IndexSite {
+    pub span: crate::diag::Span,
+    pub left: i64,
+    pub right: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -12207,6 +12306,87 @@ impl Design {
         for block in &self.event_blocks {
             for update in &block.updates {
                 add(update.target, update.span);
+            }
+        }
+        sites
+    }
+
+    /// Runtime index domains referenced by this design, in stable lowering
+    /// order. A checked index is commonly cloned into every arm of a flattened
+    /// array mux/write; deduplication makes all those copies one diagnostic
+    /// site and one runtime id.
+    pub fn index_sites(&self) -> Vec<IndexSite> {
+        fn collect(expr: &Expr, sites: &mut Vec<IndexSite>, seen: &mut HashSet<IndexSite>) {
+            match expr {
+                Expr::CheckedIndex {
+                    index,
+                    valid,
+                    left,
+                    right,
+                    span,
+                } => {
+                    let site = IndexSite {
+                        span: *span,
+                        left: *left,
+                        right: *right,
+                    };
+                    if seen.insert(site) {
+                        sites.push(site);
+                    }
+                    collect(index, sites, seen);
+                    collect(valid, sites, seen);
+                }
+                Expr::MetaCmp {
+                    operands, inner, ..
+                } => {
+                    for operand in operands {
+                        collect(operand, sites, seen);
+                    }
+                    collect(inner, sites, seen);
+                }
+                Expr::CCall { args, .. } => {
+                    for argument in args {
+                        collect(argument, sites, seen);
+                    }
+                }
+                Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
+                    collect(rhs, sites, seen)
+                }
+                Expr::Binary { lhs, rhs, .. } => {
+                    collect(lhs, sites, seen);
+                    collect(rhs, sites, seen);
+                }
+                Expr::Select { cond, then, els } => {
+                    collect(cond, sites, seen);
+                    collect(then, sites, seen);
+                    collect(els, sites, seen);
+                }
+                Expr::Const(_)
+                | Expr::WideConst(_)
+                | Expr::Real(_)
+                | Expr::Logic(_)
+                | Expr::Current(_)
+                | Expr::Old(_)
+                | Expr::Event(_)
+                | Expr::Unknown => {}
+            }
+        }
+
+        let mut sites = Vec::new();
+        let mut seen = HashSet::new();
+        for driver in &self.drivers {
+            if let Some(condition) = &driver.cond {
+                collect(condition, &mut sites, &mut seen);
+            }
+            collect(&driver.expr, &mut sites, &mut seen);
+        }
+        for block in &self.event_blocks {
+            collect(&block.condition, &mut sites, &mut seen);
+            for update in &block.updates {
+                if let Some(condition) = &update.cond {
+                    collect(condition, &mut sites, &mut seen);
+                }
+                collect(&update.expr, &mut sites, &mut seen);
             }
         }
         sites
@@ -12537,6 +12717,9 @@ fn render(e: &Expr, d: &Design) -> String {
             format!("{} {} {}", paren(lhs, d), bin_sym(*op), paren(rhs, d))
         }
         Expr::Slice { base, hi, lo } => format!("{}[{hi}..{lo}]", paren(base, d)),
+        Expr::CheckedIndex {
+            index, left, right, ..
+        } => format!("checked({}, {left}..{right})", render(index, d)),
         Expr::Select { cond, then, els } => {
             format!(
                 "{} ? {} : {}",

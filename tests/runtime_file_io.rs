@@ -66,7 +66,7 @@ fn generated_tests_own_and_read_the_current_runtime_files() {
            assert!(message == alias, \"read type aliases preserve UTF-8 semantics\");\n\
            assert!(message'length == 3, \"Unicode length is code points\");\n\
            assert!(unicode(message[1]) == 233, \"Unicode indexing\");\n\
-           assert!(unicode(message[99]) == 129408, \"dynamic array fallback\");\n\
+           assert!(unicode(message[2]) == 129408, \"dynamic array indexing\");\n\
            assert!(total == 129745, \"dynamic string iteration\");\n\
            assert!(unicode(fixed[0]) == 79 and unicode(fixed[1]) == 75, \"fixed runtime text\");\n\
            assert!(unicode(fixed[2]) == 0 and unicode(fixed[3]) == 0, \"fixed text zero-fills\");\n\
@@ -161,5 +161,46 @@ fn generated_tests_own_and_read_the_current_runtime_files() {
     assert!(
         fixed_oversized_text.contains("8 characters do not fit a 4-element string"),
         "fixed-string capacity failure was not precise:\n{fixed_oversized_text}"
+    );
+}
+
+#[test]
+fn runtime_string_indices_are_checked_against_the_loaded_length() {
+    let dir = std::env::temp_dir().join(format!("siox_runtime_text_index_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("runtime_text_index.siox");
+    let message = dir.join("message.txt");
+    let binary = dir.join("runtime_text_index_test");
+    std::fs::write(
+        &source,
+        "module runtime_text_index;\n\
+         using std::text::{string, unicode};\n\
+         #[test] entity RuntimeTextIndex {}\n\
+         impl RuntimeTextIndex {\n\
+         \x20   let message: string = read<string>(\"message.txt\");\n\
+         \x20   assert!(unicode(message[9]) == 0, \"unreachable fallback\");\n\
+         }\n",
+    )
+    .unwrap();
+    let built = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "build failed:\n{}", text(&built));
+    std::fs::write(&message, "abc").unwrap();
+    let failed = Command::new(&binary).output().unwrap();
+    let output = text(&failed);
+    assert!(
+        !failed.status.success(),
+        "invalid string index passed:\n{output}"
+    );
+    assert!(
+        output.contains("index 9 is outside declared range 0..2")
+            && output.contains("runtime_text_index.siox:6:29"),
+        "runtime string failure was not actionable:\n{output}"
     );
 }

@@ -322,6 +322,8 @@ pub fn build(
     prog.push_str("extern uint32_t sx_range_error(void);\n");
     prog.push_str("extern uint32_t sx_range_site(void);\n");
     prog.push_str("extern int64_t sx_range_value(void);\n");
+    prog.push_str("extern uint32_t sx_index_error(void);\n");
+    prog.push_str("extern int64_t sx_index_value(void);\n");
     prog.push_str("static signed sx_check_ranges(void);\n");
     let abi_words = design
         .signals
@@ -608,6 +610,36 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
          static const char *g_loc;\n\
          static signed g_range_failed;\n",
     );
+    prog.push_str(
+        "static char g_index_message[160];\n\
+         static int64_t sx_checked_index(int64_t value, int64_t left, int64_t right,\n\
+         \x20                               const char *location) {\n\
+         \x20   int64_t low = left < right ? left : right;\n\
+         \x20   int64_t high = left > right ? left : right;\n\
+         \x20   if ((value < low || value > high) && !g_range_failed) {\n\
+         \x20       snprintf(g_index_message, sizeof g_index_message,\n\
+         \x20                \"index %lld is outside declared range %lld..%lld\",\n\
+         \x20                (long long)value, (long long)left, (long long)right);\n\
+         \x20       g_msg = g_index_message; g_loc = location; g_range_failed = 1;\n\
+         \x20   }\n\
+         \x20   return value;\n\
+         }\n\
+         static sx_value sx_dyn_get_checked(const sx_dyn_array *array, sx_value raw_index,\n\
+         \x20                                  const char *location) {\n\
+         \x20   if (!array->length) {\n\
+         \x20       if (!g_range_failed) {\n\
+         \x20           snprintf(g_index_message, sizeof g_index_message,\n\
+         \x20                    \"index %lld is outside an empty runtime array\",\n\
+         \x20                    (long long)(int64_t)raw_index);\n\
+         \x20           g_msg = g_index_message; g_loc = location; g_range_failed = 1;\n\
+         \x20       }\n\
+         \x20   } else {\n\
+         \x20       (void)sx_checked_index((int64_t)raw_index, 0,\n\
+         \x20                              (int64_t)(array->length - 1), location);\n\
+         \x20   }\n\
+         \x20   return sx_dyn_get(array, raw_index);\n\
+         }\n",
+    );
     prog.push_str("static signed g_warnings;\n");
     prog.push_str("static double sx_f64(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }\n");
     prog.push_str(
@@ -668,6 +700,44 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
          \x20   return 1;\n}\n\n",
     );
 
+    // Runtime index failures are latched by the LLVM engine before a fallback
+    // mux value is stored. The generated harness owns the source table and the
+    // human-readable report, just as it does for constrained numerics below.
+    let index_sites = design.index_sites();
+    if !index_sites.is_empty() {
+        prog.push_str("static const int64_t sx_index_left[] = {");
+        for site in &index_sites {
+            prog.push_str(&format!("{}LL,", site.left));
+        }
+        prog.push_str("};\nstatic const int64_t sx_index_right[] = {");
+        for site in &index_sites {
+            prog.push_str(&format!("{}LL,", site.right));
+        }
+        prog.push_str("};\nstatic const char *const sx_index_sites[] = {\n");
+        for site in &index_sites {
+            match span_location(sources, site.span) {
+                Some(at) => prog.push_str(&format!("    \"{}\",\n", c_escape(&at))),
+                None => prog.push_str("    0,\n"),
+            }
+        }
+        prog.push_str("};\nstatic char sx_index_message[160];\n");
+    }
+    let index_check = if index_sites.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "    {{ uint32_t i = sx_index_error(); if (i && i <= {n}u) {{\n\
+             \x20     int64_t v = sx_index_value(); uint32_t s = i - 1;\n\
+             \x20     snprintf(sx_index_message, sizeof sx_index_message,\n\
+             \x20              \"index %lld is outside declared range %lld..%lld\",\n\
+             \x20              (long long)v, (long long)sx_index_left[s],\n\
+             \x20              (long long)sx_index_right[s]);\n\
+             \x20     g_msg = sx_index_message; g_loc = sx_index_sites[s];\n\
+             \x20     g_range_failed = 1; return 1; }} }}\n",
+            n = index_sites.len()
+        )
+    };
+
     // The dynamic range assert (spec 3.26): after settles, ranged numerics
     // must lie in their domain.
     let ranged: Vec<(u32, &siox::ir::Signal)> = design
@@ -695,8 +765,10 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         prog.push_str(
             "static signed sx_check_ranges(void) {\n    int64_t v;\n    uint32_t e;\n\
              \x20   if (g_range_failed) return 1;\n\
-             \x20   e = sx_range_error();\n",
+",
         );
+        prog.push_str(&index_check);
+        prog.push_str("    e = sx_range_error();\n");
         // Read a ranged signal into `v`, sign-extending when its domain goes
         // below zero. Both the engine-flagged path and the post-settle scan
         // need the value, and the message is written once for both: naming the
@@ -767,7 +839,9 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         }
         prog.push_str("    return 0;\n}\n\n");
     } else {
-        prog.push_str("static signed sx_check_ranges(void) { return 0; }\n\n");
+        prog.push_str("static signed sx_check_ranges(void) {\n    if (g_range_failed) return 1;\n");
+        prog.push_str(&index_check);
+        prog.push_str("    return 0;\n}\n\n");
     }
 
     let mut names = Vec::new();
@@ -2160,6 +2234,19 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 }
 
 impl Ctx<'_> {
+    fn checked_index_c(
+        &self,
+        expression: String,
+        index: &ast::Expr,
+        left: i64,
+        right: i64,
+    ) -> String {
+        let location = span_location(self.sources, ast::expr_span(index))
+            .map(|at| format!("\"{}\"", c_escape(&at)))
+            .unwrap_or_else(|| "0".to_string());
+        format!("sx_checked_index((int64_t)({expression}), {left}LL, {right}LL, {location})")
+    }
+
     fn type_is(&self, ty: &ast::Type, expected: &str) -> bool {
         resolved_type_name(ty, self.type_aliases, self.fns).as_deref() == Some(expected)
     }
@@ -4273,7 +4360,8 @@ impl Ctx<'_> {
     }
 
     /// Write one packed bit selected by a constant or runtime declared label.
-    /// The update is guarded, so an out-of-range runtime label is a no-op. A
+    /// The update is guarded and the checked index latches a failure before an
+    /// out-of-range runtime label can reach the recovery path. A
     /// connected Logic-family signal's companion nibble is updated in lockstep
     /// when the finished design has one.
     fn write_packed_bit(
@@ -4310,7 +4398,7 @@ impl Ctx<'_> {
             .copied()
             .unwrap_or((0, i64::from(width).saturating_sub(1)));
         let (low, high) = (left.min(right), left.max(right));
-        let index = self.expr(index)?;
+        let index = self.checked_index_c(self.expr(index)?, index, left, right);
         let value = self.expr(value)?;
         let serial = self.tmp.get();
         self.tmp.set(serial + 1);
@@ -4553,7 +4641,19 @@ impl Ctx<'_> {
                     expanded = true;
                     let serial = cx.tmp.get();
                     cx.tmp.set(serial + 1);
-                    let runtime_index = cx.expr(index)?;
+                    let raw_index = cx.expr(index)?;
+                    let first_path = bases
+                        .iter()
+                        .find_map(|variant| expr_path(&variant.expression));
+                    let bounds = first_path
+                        .as_deref()
+                        .and_then(|path| cx.local_indices.borrow().get(path).cloned())
+                        .and_then(|indices| Some((*indices.first()?, *indices.last()?)))
+                        .ok_or_else(|| {
+                            "the declared bounds of a runtime array assignment are not known here"
+                                .to_string()
+                        })?;
+                    let runtime_index = cx.checked_index_c(raw_index, index, bounds.0, bounds.1);
                     declarations.push_str(&format!(
                         "{ind}int64_t _ai{serial} = (int64_t)({runtime_index});\n"
                     ));
@@ -4606,8 +4706,8 @@ impl Ctx<'_> {
 
     /// Write a target containing one or more runtime array indices. Native
     /// aggregates are flattened, so this is C control flow over concrete
-    /// leaves; an out-of-range index enters no branch and therefore writes
-    /// nothing, matching hardware lowering.
+    /// leaves. A checked index latches a failure first; entering no concrete
+    /// branch afterwards is only internal recovery behavior.
     fn write_dynamic_array_target(
         &self,
         target: &ast::Expr,
@@ -5380,7 +5480,8 @@ impl Ctx<'_> {
             // stop!/finish!: end the test cleanly (passing).
             "stop" | "finish" => {
                 b.push_str(&format!(
-                    "{ind}printf(\"{name} at %llu fs\\n\", (unsigned long long)_now); return 0;\n"
+                    "{ind}if (g_range_failed) return 1; \
+                     printf(\"{name} at %llu fs\\n\", (unsigned long long)_now); return 0;\n"
                 ));
             }
             "assert" if bang => {
@@ -5394,7 +5495,10 @@ impl Ctx<'_> {
                     .set_location(ast::expr_span(callee))
                     .map(|s| format!(" {s}"))
                     .unwrap_or_default();
-                b.push_str(&format!("{ind}if (!({c})) {{ {set}{at} return 1; }}\n"));
+                b.push_str(&format!(
+                    "{ind}{{ signed _ok = !!({c}); if (g_range_failed) return 1; \
+                     if (!_ok) {{ {set}{at} return 1; }} }}\n"
+                ));
             }
             // warn!(cond, msg): non-fatal — report to stderr, keep running.
             "warn" if bang => {
@@ -5402,7 +5506,8 @@ impl Ctx<'_> {
                 let c = self.expr(cond)?;
                 let set = self.c_message(args, 1, "warning")?;
                 b.push_str(&format!(
-                    "{ind}if (!({c})) {{ {set} fprintf(stderr, \"warning: %s\\n\", g_msg); g_warnings++; }}\n"
+                    "{ind}{{ signed _ok = !!({c}); if (g_range_failed) return 1; \
+                     if (!_ok) {{ {set} fprintf(stderr, \"warning: %s\\n\", g_msg); g_warnings++; }} }}\n"
                 ));
             }
             // A method call in statement position (`r.set(7)`): the callee is
@@ -5467,10 +5572,15 @@ impl Ctx<'_> {
             return None;
         }
         let path = self.dynamic_string_path(base)?;
-        Some(
-            self.expr(index)
-                .map(|index| format!("sx_dyn_get(&{}, ({index}))", c_local_ident(&path))),
-        )
+        let location = span_location(self.sources, ast::expr_span(index))
+            .map(|at| format!("\"{}\"", c_escape(&at)))
+            .unwrap_or_else(|| "0".to_string());
+        Some(self.expr(index).map(|index| {
+            format!(
+                "sx_dyn_get_checked(&{}, ({index}), {location})",
+                c_local_ident(&path)
+            )
+        }))
     }
 
     /// Whether an operand reads a `Char` signal (so a `'x'` literal counterpart
@@ -7543,11 +7653,15 @@ impl Ctx<'_> {
                         Ok(index) => index,
                         Err(error) => return Some(Err(error)),
                     };
-                    // Aggregate indexing falls back to the last declared
-                    // element at every dimension (spec 3.13), unlike packed
-                    // vectors whose out-of-range bit is zero. Seed the mux
-                    // with that last element and compare only the earlier
-                    // labels, exactly as hardware lowering does.
+                    let runtime_index = cx.checked_index_c(
+                        runtime_index,
+                        index,
+                        *indices.first()?,
+                        *indices.last()?,
+                    );
+                    // The last arm remains only as an internal recovery value
+                    // after a failure is latched; passing code cannot observe
+                    // it as language behavior.
                     let (last, earlier) = indices.split_last()?;
                     let mut result =
                         match read_from(cx, &format!("{path}[{last}]"), rest, suffix, true)? {
@@ -7657,6 +7771,7 @@ impl Ctx<'_> {
             Ok(index) => index,
             Err(error) => return Some(Err(error)),
         };
+        let runtime_index = self.checked_index_c(runtime_index, index, left, right);
         let meta = self
             .map
             .get(path)

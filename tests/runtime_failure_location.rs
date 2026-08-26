@@ -70,6 +70,128 @@ fn a_failing_assertion_names_its_line() {
 }
 
 #[test]
+fn a_hardware_index_violation_names_the_access_and_declared_direction() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Lookup { index: integer in, value: unsigned[8] out }\n\
+               impl Lookup {\n\
+               \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
+               \x20   value = values[index];\n\
+               }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let index: integer = 9;\n\
+               \x20   let value: unsigned[8];\n\
+               \x20   let lookup: Lookup = { .index = index, .value = value };\n\
+               \x20   await 1ns;\n\
+               }\n";
+    let out = run("index_hardware", src);
+    assert!(
+        out.contains("index 9 is outside declared range 4..2"),
+        "the runtime should retain the declared direction, got:\n{out}"
+    );
+    assert!(
+        out.contains("index_hardware.siox:6:20"),
+        "the indexed expression should be blamed, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_native_index_violation_is_not_a_silent_write() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
+               \x20   let index: integer = 9;\n\
+               \x20   values[index] = 99;\n\
+               }\n";
+    let out = run("index_native", src);
+    assert!(
+        out.contains("index 9 is outside declared range 4..2"),
+        "a native write should fail instead of becoming a no-op, got:\n{out}"
+    );
+    assert!(
+        out.contains("index_native.siox:7:12"),
+        "the runtime write index should be blamed, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_hardware_packed_write_checks_the_declared_labels() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               using std::logic::{Bit};\n\
+               entity Register { clk: Bit in, index: integer in, value: unsigned[8] out }\n\
+               impl Register {\n\
+               \x20   let data: unsigned[15..8] = 0;\n\
+               \x20   if clk.rising() { data[index] = '1'; }\n\
+               \x20   value = data;\n\
+               }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let clk: Bit = '0';\n\
+               \x20   let index: integer = 7;\n\
+               \x20   let value: unsigned[8];\n\
+               \x20   let register: Register = { .clk = clk, .index = index, .value = value };\n\
+               \x20   clk = '1'; await 1ns;\n\
+               }\n";
+    let out = run("index_packed_write", src);
+    assert!(
+        out.contains("index 7 is outside declared range 15..8")
+            && out.contains("index_packed_write.siox:7:28"),
+        "a packed hardware write should fail at its index, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_native_packed_read_is_not_an_implicit_zero() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let data: unsigned[15..8] = 0;\n\
+               \x20   let index: integer = 7;\n\
+               \x20   assert!(data[index] == '0', \"unreachable zero fallback\");\n\
+               }\n";
+    let out = run("index_packed_read", src);
+    assert!(
+        out.contains("index 7 is outside declared range 15..8")
+            && out.contains("index_packed_read.siox:7:18"),
+        "a packed native read should fail before its recovery zero, got:\n{out}"
+    );
+}
+
+#[test]
+fn an_untaken_guard_suppresses_a_dynamic_index_check() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               entity Lookup { index: integer in, value: unsigned[8] out }\n\
+               impl Lookup {\n\
+               \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
+               \x20   value = 0;\n\
+               \x20   if index >= 2 { if index <= 4 { value = values[index]; } }\n\
+               }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let index: integer = 9;\n\
+               \x20   let value: unsigned[8];\n\
+               \x20   let lookup: Lookup = { .index = index, .value = value };\n\
+               \x20   await 1ns;\n\
+               \x20   assert!(value == 0, \"the fallback branch remains selected\");\n\
+               }\n";
+    let out = run("index_guard", src);
+    assert!(
+        out.contains("test m::T ... ok"),
+        "an access in an untaken source branch must not fail, got:\n{out}"
+    );
+    assert!(
+        !out.contains("outside declared range"),
+        "the guard should make the access inactive, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_range_violation_names_the_assignment() {
     // `c` leaves 0..10 on the third edge. The line under test is the
     // assignment on line 6 -- inside the `if`, so at column 23 -- and not the

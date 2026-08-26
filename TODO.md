@@ -18,9 +18,10 @@ to muxes and gated leaf writes, and runtime packed-vector indices preserve
 declared labels and Logic metavalues. Native testbench runtime-indexed writes
 now cover scalar leaves, struct fields and values, nested dimensions, packed
 bits, declared nonzero/descending labels, composite copies/spreads, and
-out-of-range no-op writes. Runtime aggregate reads use the documented
-last-declared-element fallback in both engines; packed-vector reads retain
-their distinct zero fallback. Testbench generate-loop lint parity is resolved
+strict runtime bounds failures. Constant invalid indices are diagnostics;
+active dynamic invalid reads and writes fail simulation with the value, declared
+range, and source span, while untaken guarded accesses remain inactive.
+Testbench generate-loop lint parity is resolved
 without normalization: W-P014 is explicitly scoped to hardware driver
 contexts, because sequential testbench writes settle individually and can be
 observable.
@@ -149,9 +150,9 @@ Current baseline:
   immediate reassignment, lexical shadowing, conditional selection, aggregate
   fields/elements, packed slices, and event-block next-state separation.
 - ✅ Runtime indices traverse nested arrays and intervening struct fields.
-  Reads become nested muxes with last-element fallback at each dimension;
-  writes become one condition per flattened leaf and match no leaf when an
-  index is out of range.
+  Reads become nested muxes and writes become one condition per flattened leaf.
+  Every active dimension carries a checked-index site; invalid runtime reads or
+  writes fail simulation rather than selecting an implicit recovery arm.
 - ✅ Packed-vector positions may be runtime values in hardware, block-local,
   and native testbench code. Nonzero declared labels map onto compact storage;
   writes use arbitrary-width read-modify-write masks, and Logic value and
@@ -249,9 +250,13 @@ Current baseline:
   and output filenames use native OS strings.
 - ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
   declared array labels, nested dimensions, struct fields/values and packed
-  bits. Composite right-hand sides are staged before writes; aggregate reads
-  fall back to the last declared element at each out-of-range dimension, and
-  out-of-range writes are no-ops.
+  bits. Composite right-hand sides are staged before writes. Invalid dynamic
+  reads and writes fail at the source index with its value and declared range;
+  explicit untaken guards suppress the access.
+- 🔴 Replace the generated-C testbench translator with the software IR,
+  LLVM lowering, and Rust runtime described in
+  `docs/proposals/testbench-software-ir.md`. Keep the current harness as the
+  compatibility backend until the replacement reaches feature parity.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

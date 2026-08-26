@@ -10,7 +10,7 @@ use inkwell::targets::TargetMachine;
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
-use siox::ir::{BinOp, Design, Expr, ProcessKind, SignalId, UnOp};
+use siox::ir::{BinOp, Design, Expr, IndexSite, ProcessKind, SignalId, UnOp};
 
 /// LLVM's `IntegerType::MAX_INT_BITS` (from `llvm/IR/DerivedTypes.h`).
 /// This is a backend capability, not a siox language/container limit.
@@ -127,6 +127,8 @@ struct Codegen<'ctx, 'd> {
     /// zero in the global still means "no site"). Built once from
     /// `Design::range_sites`, which the harness walks too.
     range_sites: HashMap<siox::diag::Span, u32>,
+    /// Checked index domain -> one-based runtime diagnostic id.
+    index_sites: HashMap<IndexSite, u32>,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
@@ -241,6 +243,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .enumerate()
                 .map(|(i, span)| (span, i as u32 + 1))
                 .collect(),
+            index_sites: design
+                .index_sites()
+                .into_iter()
+                .enumerate()
+                .map(|(i, site)| (site, i as u32 + 1))
+                .collect(),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -304,6 +312,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i32_type(), None, "range_site");
         range_site.set_initializer(&self.ctx.i32_type().const_zero());
         range_site.set_linkage(Linkage::Internal);
+        let index_error = self
+            .module
+            .add_global(self.ctx.i32_type(), None, "index_error");
+        index_error.set_initializer(&self.ctx.i32_type().const_zero());
+        index_error.set_linkage(Linkage::Internal);
+        let index_value = self
+            .module
+            .add_global(self.ctx.i64_type(), None, "index_value");
+        index_value.set_initializer(&self.ctx.i64_type().const_zero());
+        index_value.set_linkage(Linkage::Internal);
         self.state_globals();
         self.accessors();
         self.settle();
@@ -335,6 +353,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.module
             .get_global("range_site")
             .expect("range site global")
+            .as_pointer_value()
+    }
+
+    fn index_error_ptr(&self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("index_error")
+            .expect("index error global")
+            .as_pointer_value()
+    }
+
+    fn index_value_ptr(&self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("index_value")
+            .expect("index value global")
             .as_pointer_value()
     }
 
@@ -586,6 +618,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder
             .build_store(self.range_site_ptr(), i32.const_zero())
             .unwrap();
+        self.builder
+            .build_store(self.index_error_ptr(), i32.const_zero())
+            .unwrap();
+        self.builder
+            .build_store(self.index_value_ptr(), i64.const_zero())
+            .unwrap();
         for id in 0..self.n {
             let signal = &self.design.signals[id as usize];
             let init = self
@@ -638,6 +676,33 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap()
             .into_int_value();
         self.builder.build_return(Some(&site)).unwrap();
+
+        // i32 sx_index_error(void): zero, or one plus the index in
+        // `Design::index_sites` for the first active invalid access.
+        let f = self
+            .module
+            .add_function("sx_index_error", i32.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
+        let error = self
+            .builder
+            .build_load(i32, self.index_error_ptr(), "index")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&error)).unwrap();
+
+        // i64 sx_index_value(void): the offending runtime index.
+        let f = self
+            .module
+            .add_function("sx_index_value", i64.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(f, "e"));
+        let value = self
+            .builder
+            .build_load(i64, self.index_value_ptr(), "ivalue")
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&value)).unwrap();
 
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
@@ -915,6 +980,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // simultaneous updates don't see each other), then commit.
         let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
         for eb in &self.design.event_blocks {
+            self.record_index_checks(&eb.condition, None);
             let fired = self.as_i1(&eb.condition);
             for (i, u) in eb.updates.iter().enumerate() {
                 // Same reasoning as `emit_comb`: an update that a later
@@ -932,7 +998,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     continue;
                 }
                 let guard = match &u.cond {
-                    Some(c) => self.builder.build_and(fired, self.as_i1(c), "g").unwrap(),
+                    Some(c) => {
+                        self.record_index_checks(c, Some(fired));
+                        self.builder.build_and(fired, self.as_i1(c), "g").unwrap()
+                    }
                     None => fired,
                 };
                 let val = self.emit_target_value(u.target, &u.expr, Some(guard), self.site(u.span));
@@ -1008,6 +1077,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         active: Option<IntValue<'ctx>>,
         site: u32,
     ) -> IntValue<'ctx> {
+        self.record_index_checks(expr, active);
         let signal = &self.design.signals[target.0 as usize];
         let width = self.signal_width(target);
         let Some(_) = signal.range else {
@@ -1021,6 +1091,136 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let value = self.emit_signed_operand_at(expr, check_width);
         self.record_range_value(target, value, active, site);
         self.fit(value, self.value_ty(width))
+    }
+
+    /// Latch checked-index failures along the expression's actual control-flow
+    /// path. LLVM `select` evaluates both value operands eagerly in IR, so the
+    /// active predicate is narrowed for each arm instead of treating every
+    /// syntactically present access as executed.
+    fn record_index_checks(&self, expr: &Expr, active: Option<IntValue<'ctx>>) {
+        let combine = |cx: &Self, outer: Option<IntValue<'ctx>>, inner: IntValue<'ctx>, name| {
+            outer
+                .map(|outer| cx.builder.build_and(outer, inner, name).unwrap())
+                .unwrap_or(inner)
+        };
+        match expr {
+            Expr::CheckedIndex {
+                index,
+                valid,
+                left,
+                right,
+                span,
+            } => {
+                // Nested indexing in the index expression is evaluated first.
+                self.record_index_checks(index, active);
+                let valid = self.as_i1(valid);
+                let invalid = self.builder.build_not(valid, "ibad").unwrap();
+                let invalid = combine(self, active, invalid, "iactive");
+                let site = IndexSite {
+                    span: *span,
+                    left: *left,
+                    right: *right,
+                };
+                let id = self
+                    .index_sites
+                    .get(&site)
+                    .copied()
+                    .expect("checked index site was registered from this design");
+                let i32 = self.ctx.i32_type();
+                let previous = self
+                    .builder
+                    .build_load(i32, self.index_error_ptr(), "iprev")
+                    .unwrap()
+                    .into_int_value();
+                let empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, previous, i32.const_zero(), "iempty")
+                    .unwrap();
+                let record = self.builder.build_and(empty, invalid, "irecord").unwrap();
+                let next = self
+                    .builder
+                    .build_select(
+                        record,
+                        i32.const_int(u64::from(id), false),
+                        previous,
+                        "inext",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_store(self.index_error_ptr(), next)
+                    .unwrap();
+                let raw = self.emit_signed_operand_at(index, 64);
+                let kept = self
+                    .builder
+                    .build_load(self.ctx.i64_type(), self.index_value_ptr(), "ivprev")
+                    .unwrap()
+                    .into_int_value();
+                let stored = self
+                    .builder
+                    .build_select(record, raw, kept, "ivnext")
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_store(self.index_value_ptr(), stored)
+                    .unwrap();
+            }
+            Expr::Select { cond, then, els } => {
+                self.record_index_checks(cond, active);
+                let selected = self.as_i1(cond);
+                let then_active = combine(self, active, selected, "itaken");
+                let not_selected = self.builder.build_not(selected, "inottaken").unwrap();
+                let else_active = combine(self, active, not_selected, "ielse");
+                self.record_index_checks(then, Some(then_active));
+                self.record_index_checks(els, Some(else_active));
+            }
+            Expr::MetaCmp { inner, .. } => self.record_index_checks(inner, active),
+            Expr::CCall { args, .. } => {
+                for argument in args {
+                    self.record_index_checks(argument, active);
+                }
+            }
+            Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
+                self.record_index_checks(rhs, active)
+            }
+            // Lowering combines an enclosing source `if` with a dynamic-write
+            // target predicate using these nodes. Preserve that source branch
+            // boundary for checks even though value emission uses bitwise
+            // operations: the indexed write is not executed when its guard is
+            // false. `or` is the dual used by nested conditions.
+            Expr::Binary {
+                op: BinOp::And,
+                lhs,
+                rhs,
+            } => {
+                self.record_index_checks(lhs, active);
+                let lhs_true = self.as_i1(lhs);
+                let rhs_active = combine(self, active, lhs_true, "iand");
+                self.record_index_checks(rhs, Some(rhs_active));
+            }
+            Expr::Binary {
+                op: BinOp::Or,
+                lhs,
+                rhs,
+            } => {
+                self.record_index_checks(lhs, active);
+                let lhs_false = self.builder.build_not(self.as_i1(lhs), "iornot").unwrap();
+                let rhs_active = combine(self, active, lhs_false, "ior");
+                self.record_index_checks(rhs, Some(rhs_active));
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.record_index_checks(lhs, active);
+                self.record_index_checks(rhs, active);
+            }
+            Expr::Const(_)
+            | Expr::WideConst(_)
+            | Expr::Real(_)
+            | Expr::Logic(_)
+            | Expr::Current(_)
+            | Expr::Old(_)
+            | Expr::Event(_)
+            | Expr::Unknown => {}
+        }
     }
 
     fn record_range_value(
@@ -1210,7 +1410,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap_or(0);
         for &di in &drivers[live..] {
             let d = &self.design.drivers[di];
-            let cond = d.cond.as_ref().map(|condition| self.as_i1(condition));
+            let cond = d.cond.as_ref().map(|condition| {
+                self.record_index_checks(condition, None);
+                self.as_i1(condition)
+            });
             let e = self.emit_target_value(*target, &d.expr, cond, self.site(d.span));
             val = match cond {
                 Some(cond) => self
@@ -1295,6 +1498,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 }
             }
             Expr::Slice { hi, lo, .. } => hi - lo + 1,
+            Expr::CheckedIndex { index, .. } => self.expr_width(index),
             Expr::Select { then, els, .. } => self.expr_width(then).max(self.expr_width(els)),
             Expr::Unknown => 1,
         }
@@ -1389,6 +1593,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let sliced = self.mask(sh, hi - lo + 1);
                 self.mask(sliced, width)
             }
+            // Bounds are recorded by `record_index_checks` with the caller's
+            // active control-flow predicate. Value emission stays pure so an
+            // eagerly emitted, unselected LLVM branch cannot raise an error.
+            Expr::CheckedIndex { index, .. } => self.emit_at(index, width),
             Expr::Select { cond, then, els } => {
                 let c = self.as_i1(cond);
                 let t = self.emit_at(then, width);

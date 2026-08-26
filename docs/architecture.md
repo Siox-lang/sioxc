@@ -347,6 +347,14 @@ from disappearing. The same pre-truncation hook is used by the public
 `sx_set`/`sx_set_word` stimulus ABI, so a wider testbench value cannot wrap
 while entering a constrained input port.
 
+Dynamic packed and aggregate indices carry a `CheckedIndex` IR node containing
+the value, its declared-domain predicate, written range direction, and source
+span. LLVM latches the first active violation before evaluating the mux's
+internal recovery arm. Check activation follows source control flow, so an
+access in an untaken conditional branch is not reported. The native harness
+uses the same failure wording and source contract for testbench locals and
+runtime-sized strings.
+
 Foreign C calls retain ABI kind metadata independently for each parameter and
 the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C
 `double`, and packed values as unsigned words; aliases are resolved before this

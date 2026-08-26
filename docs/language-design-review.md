@@ -379,29 +379,24 @@ inside entity syntax. Infer simulation-only status transitively, expose the
 selected target through std, and diagnose the remaining simulation entity at
 synthesis elaboration rather than at parsing or ordinary semantic checking.
 
-### 7. Runtime out-of-range indexing fails soft
+### 7. Runtime out-of-range indexing is strict
 
-An out-of-range packed read returns zero and an out-of-range write is a no-op.
-That is deterministic, but it hides address bugs in a language that otherwise
-prioritizes strict widths, ranges, and diagnostics. It can turn a broken index
-into plausible hardware behavior.
-
-A bounds failure, assertion, or explicitly selected wrapping/saturating policy
-would be easier to trust. If zero/no-op remains for synthesis reasons, native
-tests should at least have an opt-in strict mode or a warning that identifies
-the index site.
+Constant invalid indices are compile-time errors. An active dynamic invalid
+read or write fails simulation with the offending value, declared range, and
+source site. Bounds guards work because an access in an untaken branch is not
+active. The mux's internal recovery arm is not language behavior: a passing
+simulation cannot observe it.
 
 **Where it makes sense.** Zero-on-read and no-op-on-write can implement a
 deliberately safe sparse table, guarded register bank, or address decoder. In
 those cases the fallback value is part of the component's interface contract,
 not a universal property of indexing.
 
-**Verdict — remove implicit soft failure from ordinary indexing.** Constant
-out-of-range indices should be compile errors. Dynamic violations should fail
-in checked simulation and have an explicit synthesis policy. Code that wants
-zero/no-op behavior should request it through a checked accessor, match, guard,
-or dedicated wrapping/defaulting operation. Silent fallback is too dangerous
-as the default.
+**Verdict — resolved: implicit soft failure is removed from ordinary
+indexing.** Future RTL elaboration must prove the dynamic index constrained or
+retain an explicit source guard. Code that wants zero/no-op behavior must state
+that behavior in the guard/fallback path or a future dedicated accessor; it is
+not a property of `[]`.
 
 ### 8. Default construction and hardware initialization are easy to confuse
 
@@ -593,8 +588,7 @@ Before adding more surface syntax, the highest-value decisions are:
 1. Write the exact operator/intrinsic ownership matrix for compiler versus std.
 2. Freeze or replace the adjacent applied-view spelling.
 3. Decide whether equality can exist without a total `<=>` order.
-4. Choose a strict policy for runtime out-of-range indexing.
-5. Specify clock-domain metadata independently of the convenient
+4. Specify clock-domain metadata independently of the convenient
    `clk.rising()` surface.
 
 ## Bottom line
@@ -607,6 +601,6 @@ purpose-built HDL than “Rust syntax translated into gates.”
 The remaining weak points are mostly boundaries where a convenient Phase 1
 shortcut is starting to look like a permanent semantic rule: compiler/std
 operator fallbacks, overloaded surface forms, equality requiring total order,
-soft bounds behavior, and incomplete clock-domain metadata. Settling those
+and incomplete clock-domain metadata. Settling those
 before synthesis and package tooling will prevent implementation details from
 becoming accidental language design.

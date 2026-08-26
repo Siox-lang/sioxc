@@ -396,10 +396,10 @@ fn an_in_range_folded_slice_is_left_alone() {
 }
 
 #[test]
-fn a_runtime_index_is_not_bounds_checked() {
-    // The negative control that matters most: `regs[addr]` has no constant to
-    // check, and a check that fired here would break every memory in the
-    // corpus.
+fn a_runtime_index_is_deferred_to_simulation() {
+    // `regs[addr]` has no constant for the frontend to reject. It remains a
+    // legal design expression and carries a checked-index site into native
+    // simulation instead.
     let src = "module m;\n\
                using std::bits::{unsigned};\n\
                entity Mem { addr: unsigned[2] in, y: unsigned[16] out }\n\
@@ -413,7 +413,7 @@ fn a_runtime_index_is_not_bounds_checked() {
     let out = diagnostics("runtime", src);
     assert!(
         !out.contains("E-P003"),
-        "a runtime index must stay legal, got:\n{out}"
+        "a runtime index must remain legal at compile time, got:\n{out}"
     );
 }
 
