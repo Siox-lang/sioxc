@@ -348,19 +348,30 @@ making `sioxc` responsible for package configuration. A compile-time
 `read<T>` used to construct a ROM image remains an elaboration input and does
 not by itself make the entity simulation-only.
 
-The target should also be visible through a std-owned compile-time constant,
-provisionally `std::sim::SIMULATION: Bool`. It is true when elaborating a
-native simulation design and false for a future RTL/synthesis target. This is
-a target query, not a statement that elaboration is not occurring—simulation
-designs are elaborated too. Constant folding must happen before simulation-only
-reachability is finalized, so an unreachable target-specific branch does not
-taint the selected hierarchy.
+The target should also be visible through a std-owned compile-time enum value:
+
+```siox
+pub enum Target {
+    simulation,
+    elaboration
+}
+
+pub const target: Target = /* selected by the compiler */;
+```
+
+User code can inspect `std::target` and compare or match it against
+`std::Target::simulation` and `std::Target::elaboration`. `simulation` selects
+the native behavioral simulator; `elaboration` selects the synthesis-facing
+elaborated design. These names describe the requested output, not whether
+hierarchy elaboration occurs—simulation designs are elaborated too. Constant
+folding must happen before simulation-only reachability is finalized, so an
+unreachable target-specific branch does not taint the selected hierarchy.
 
 **Where it makes sense.** Foreign calls and files are appropriate in
 testbenches, reference models, DPI/VPI-style integration, accelerated models,
 and behavioral stand-ins for analogue or proprietary devices. The same source
-can use the target constant to select a simulation implementation while keeping
-an RTL path explicit.
+can use `std::target` to select a simulation implementation while keeping an
+elaboration path explicit.
 
 **Verdict — resolved: retain simulation entities and reject them only from an
 RTL hierarchy.** Do not forbid simulation facilities merely because they occur

@@ -75,11 +75,11 @@ Remaining:
   that status transitively through reachable functions and instances; native
   simulation accepts the resulting hierarchy, while a future RTL/synthesis
   elaboration rejects any simulation entity that remains after model
-  selection and constant folding. Expose the selected target as a std-owned
-  compile-time `std::sim::SIMULATION: Bool` constant so target-specific source
-  branches can be eliminated before reachability is finalized. Compile-time
-  `read<T>` ROM construction remains an elaboration input, not a reason to mark
-  an entity simulation-only.
+  selection and constant folding. Expose the selected target as the std-owned
+  compile-time enum value `std::target: std::Target`, with `simulation` and
+  `elaboration` variants, so target-specific source branches can be eliminated
+  before reachability is finalized. Compile-time `read<T>` ROM construction
+  remains an elaboration input, not a reason to mark an entity simulation-only.
 - 🔴 **Comment-preserving formatting.** The canonical printer intentionally
   declines LSP formatting when comments are present because comment trivia is
   not attached to AST nodes. Preserve trivia and anchor comments before
