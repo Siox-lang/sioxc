@@ -69,6 +69,12 @@ precise reference.
   value/discriminant storage crosses machine-word boundaries. There is no
   dedicated clock type — any `Logic`/`Bit` signal is a clock when edge detection
   (`clk.rising()`/`clk.falling()`) is applied to it.
+- **Logic encoding is a std contract.** `std::logic::LogicEncoding` defines the
+  packed value bit, the two ordinary binary values, high impedance, and
+  VHDL-style X01 normalization as methods over the enum. Elaboration evaluates
+  that impl and the scalar `Operator` bodies into `Design` metadata/tables.
+  Source order, discriminant values, unknown classification, and truth tables
+  are therefore not duplicated in compiler or backend code.
 - **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
   an enum variant like `'a'`) is a single `Bit`/`Logic`/`Char`/enum value; a
   double-quoted `"…"` is a `string` (a `Char` array) and never stands in for one
@@ -358,9 +364,10 @@ not create an external API.
 Trait identity includes its declaring module. Two modules may therefore export
 traits with the same leaf name; an import or qualified path selects the exact
 contract, and defaults or implementations from one trait never satisfy the
-other. The exact builtin and `std::ops` declarations of compiler hook traits
-such as `Operator` remain canonical language contracts, while nominal types
-appearing in their template arguments retain their resolved module identity.
+other. The exact builtin and standard-library declarations of compiler hook
+traits such as `std::ops::Operator` and `std::logic::LogicEncoding` remain
+canonical language contracts, while nominal types appearing in their template
+arguments retain their resolved module identity.
 A user module may declare a same-named trait such as `protocol::From`; it stays
 `protocol::From` and does not become the conversion hook merely because its
 leaf spelling matches.

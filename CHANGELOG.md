@@ -12,6 +12,16 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Packed logic semantics are now owned by std source.**
+  `std::logic::LogicEncoding`, modeled on VHDL `std_logic_1164` conversions,
+  supplies each variant's value bit, binary/metavalue class, high-impedance
+  class, and X01 normalization. Elaboration also folds the ordinary scalar
+  `Operator` bodies into per-element `Design` truth tables. IR, native packed
+  indexing, arithmetic poisoning, and VCD/FST rendering no longer use
+  discriminant intervals, `disc & 1`, symbol matches, or duplicate logic
+  tables. `ULogic` now follows IEEE declaration order while explicit values
+  retain its stable packed ABI; the exhaustive `nvc`-derived logical and
+  resolution regressions pass unchanged after the reorder.
 - **Entities may own public associated functions.** A `pub fn` without `self`
   in an entity `impl` is callable as `Entity::function(...)` across modules and
   lowers in both hardware and native testbench expressions. It has no instance

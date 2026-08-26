@@ -307,32 +307,30 @@ Keep `<=>` for total order and derive equality from it only when no explicit
 equality contract is needed. The part to remove is the requirement to invent a
 total order solely to gain `==`.
 
-### 5. Standard logic still depends on a discriminant convention
+### 5. Standard logic encoding is now source-owned
 
-The standard library says it owns logic values and truth tables, but the
-metavalue plane currently relies on `'0'` and `'1'` occupying discriminants 0
-and 1, uses `disc & 1` for the value plane, treats values at or above 2 as
-metavalues, and recognizes unknowns through fixed discriminant intervals.
-Comments in `std::logic` also say its order must match compiler/backend shims.
-That is the reverse of the desired dependency direction.
+The earlier implementation said std owned logic values while IR/native code
+still used `disc & 1`, `disc >= 2`, and fixed unknown intervals. That reverse
+dependency has been removed. `std::logic::LogicEncoding` now declares
+`to_bool`, `is_binary`, `is_high_impedance`, and VHDL-style `to_x01` behavior;
+elaboration evaluates it and the ordinary scalar `Operator` impls into explicit
+`Design` maps and truth tables.
 
-This convention is efficient, but it should become explicit compiler-consumed
-metadata derived from the enum declaration rather than an ordering promise in
-a comment. Otherwise reordering a perfectly ordinary std enum can silently
-change storage semantics.
+`ULogic` has consequently been reordered to IEEE std_logic_1164 declaration
+order while explicit discriminants retain its packed ABI. Declaration order no
+longer changes storage, arithmetic poisoning, reconstruction, resolution, or
+waveform rendering.
 
 **Where it makes sense.** A compact encoding with fast zero/one tests and a
 metavalue plane is appropriate for simulation, bit packing, VCD output, and
 native ABI stability. A fixed discriminant map can be entirely legitimate when
 it is declared as part of that ABI.
 
-**Verdict — retain the two-plane encoding, remove every positional
-convention.** Add a source-level std contract that classifies each enum variant
-as low, high, or a metavalue and identifies canonical unknown/uninitialized
-results. Elaboration should turn that contract and the ordinary `Operator`
-impls into explicit `Design` metadata/per-element tables; IR and native
-backends then consume those tables without knowing std discriminants or truth
-tables. A reordered `ULogic` declaration must remain behaviorally identical.
+**Verdict — resolved: retain the two-plane encoding, with no positional
+convention.** IR and native backends consume elaborated metadata without
+knowing std symbols, discriminants, or truth tables. The exhaustive logical and
+resolution corpus, checked against `nvc`, passes unchanged with reordered
+`ULogic` source.
 
 ### 6. Simulation-only operations can appear in hardware expressions
 

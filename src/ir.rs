@@ -443,6 +443,11 @@ pub struct Design {
     /// Type name -> its `impl New for T` uninitialized default value (`Logic` ->
     /// `'U'`), so testbench-local seeding matches the hardware signal default.
     pub new_defaults: HashMap<String, u64>,
+    /// Enum type -> its std-owned packed logic interpretation. These tables are
+    /// elaborated from `impl LogicEncoding` and the ordinary `Operator` impls;
+    /// engines consume them without knowing any logic symbols or discriminant
+    /// ordering.
+    pub logic_encodings: HashMap<String, LogicEncoding>,
     /// Directory that relative `read<T>`/`exists` paths resolve
     /// against — the design's source directory. Empty means the current working
     /// directory (the default; a bare `Design` reads CWD-relative).
@@ -464,6 +469,55 @@ pub struct Design {
     /// generic substitutions, array ranges, or packed-vector shape from the
     /// frontend AST.
     pub source_layouts: HashMap<String, SourceLayout>,
+}
+
+/// Elaborated semantics for one multi-valued logic enum.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogicEncoding {
+    /// Full discriminant -> packed value-plane bit.
+    pub value_bits: HashMap<u64, bool>,
+    /// Values whose exact identity is completely represented by the value bit.
+    pub binary: std::collections::HashSet<u64>,
+    /// Values that numeric operations normalize to the contract's canonical
+    /// unknown rather than a definite low/high.
+    pub unknown: std::collections::HashSet<u64>,
+    /// Values rendered as high impedance by waveform backends.
+    pub high_impedance: std::collections::HashSet<u64>,
+    /// Full discriminant -> the std `to_x01` result.
+    pub x01: HashMap<u64, u64>,
+    /// Operator symbol -> `(left discriminant, right discriminant) -> result`.
+    pub binary_ops: HashMap<String, HashMap<(u64, u64), u64>>,
+    /// Operator symbol -> `operand discriminant -> result`.
+    pub unary_ops: HashMap<String, HashMap<u64, u64>>,
+}
+
+impl LogicEncoding {
+    pub fn canonical_unknown(&self) -> Option<u64> {
+        self.unknown
+            .iter()
+            .filter_map(|disc| self.x01.get(disc).copied())
+            .min()
+    }
+
+    pub fn value_bit(&self, disc: u64) -> Option<u64> {
+        self.value_bits.get(&disc).map(|bit| u64::from(*bit))
+    }
+
+    /// The unique ordinary binary value represented by `bit` in the packed
+    /// value plane. Taking the minimum keeps malformed duplicate contracts
+    /// deterministic; a valid contract has exactly one value for each bit.
+    pub fn binary_value(&self, bit: bool) -> Option<u64> {
+        self.binary
+            .iter()
+            .copied()
+            .filter(|disc| self.value_bits.get(disc) == Some(&bit))
+            .min()
+    }
+
+    /// The contract's high-impedance value, when the domain has one.
+    pub fn high_impedance_value(&self) -> Option<u64> {
+        self.high_impedance.iter().copied().min()
+    }
 }
 
 /// An inclusive source range in written order. `left > right` is descending;
@@ -871,6 +925,17 @@ pub fn lower_in(
     l.enum_variants = enum_discriminants(modules, &l.free_fns);
     l.enum_first_disc = enum_first_discriminants(modules, &l.free_fns);
     l.collect(modules);
+    {
+        let enums = enum_index(modules, &l.free_fns);
+        for (name, e) in &enums {
+            if let Some(b) = enum_base_name(e, &enums, &l.free_fns) {
+                l.enum_bases.insert(name.clone(), b);
+            }
+        }
+        l.out.enum_bases = l.enum_bases.clone();
+    }
+    l.logic_encodings = l.compute_logic_encodings();
+    l.out.logic_encodings = l.logic_encodings.clone();
     l.new_defaults = l.enum_first_disc.clone();
     l.new_defaults.extend(l.compute_new_defaults());
     l.out.new_defaults = l.new_defaults.clone();
@@ -898,18 +963,6 @@ pub fn lower_in(
                 .insert(family.clone(), element);
         }
     }
-    {
-        let enums = enum_index(modules, &l.free_fns);
-        for (name, e) in &enums {
-            if let Some(b) = enum_base_name(e, &enums, &l.free_fns) {
-                l.enum_bases.insert(name.clone(), b);
-            }
-        }
-        // Hand the chain to the finished `Design`, so the testbench emitter
-        // can ask whether two enums are related rather than assuming it.
-        l.out.enum_bases = l.enum_bases.clone();
-    }
-
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
     // instance, so `unsigned[W]` lowers with the instance's concrete `W`.
@@ -1003,6 +1056,9 @@ struct Lowering<'a> {
     /// body), the uninitialized value a signal of that type powers on to. Beats
     /// the structural first-variant default. (`New for Logic` -> `'U'`.)
     new_defaults: HashMap<String, u64>,
+    /// Source-owned multi-valued logic semantics, keyed by every enum identity
+    /// in the implementing enum's nominal derivation family.
+    logic_encodings: HashMap<String, LogicEncoding>,
     /// Struct name -> its declaration (for flattening struct signals).
     structs: HashMap<String, &'a ast::StructDecl>,
     /// Named, storage-free directional views.
@@ -1308,6 +1364,7 @@ impl<'a> Lowering<'a> {
             enum_variants: HashMap::new(),
             enum_first_disc: HashMap::new(),
             new_defaults: HashMap::new(),
+            logic_encodings: HashMap::new(),
             structs: HashMap::new(),
             views: HashMap::new(),
             view_dirs: HashMap::new(),
@@ -2467,7 +2524,7 @@ impl<'a> Lowering<'a> {
                             if value_words.len() > 1 {
                                 self.out.signals[id.0 as usize].init = value_words;
                             }
-                            if Self::has_metavalue(&discs) {
+                            if self.has_metavalue(&discs) {
                                 self.ensure_meta_companion(id, discs);
                             }
                         }
@@ -3668,9 +3725,14 @@ impl<'a> Lowering<'a> {
             }
 
             // Each context: fold its drivers (later overrides) over a 'Z' base.
+            let neutral = self
+                .logic_encoding(&ty)
+                .and_then(LogicEncoding::high_impedance_value)
+                .or_else(|| self.new_defaults.get(&ty).copied())
+                .unwrap_or(0);
             let mut contributions = Vec::new();
             for idxs in ctxs.values() {
-                let mut acc = Expr::Logic('Z');
+                let mut acc = Expr::Const(neutral);
                 for &i in idxs {
                     let d = &self.out.drivers[i];
                     acc = match &d.cond {
@@ -3724,11 +3786,12 @@ impl<'a> Lowering<'a> {
         width: u32,
         element: &str,
     ) -> Option<(Expr, Expr)> {
-        let z = self.char_disc('Z', element)?;
+        let encoding = self.logic_encoding(element)?;
+        let z = encoding.high_impedance_value()?;
         let mut contributions = Vec::new();
         for indices in contexts.values() {
-            let mut value = Expr::Const(z & 1);
-            let mut meta = Expr::Const(if z >= 2 { z } else { 0 });
+            let mut value = Expr::Const(encoding.value_bit(z)?);
+            let mut meta = Expr::Const(if encoding.binary.contains(&z) { 0 } else { z });
             value = repeat_element_plane(value, width, 1);
             meta = repeat_element_plane(meta, width, 4);
             for &index in indices {
@@ -3767,14 +3830,10 @@ impl<'a> Lowering<'a> {
             let mut value = Expr::Const(0);
             let mut meta = Expr::Const(0);
             for index in 0..width {
-                let left = logic_element_disc(&accumulated.0, &accumulated.1, index);
-                let right = logic_element_disc(&incoming.0, &incoming.1, index);
+                let left = logic_element_disc(&accumulated.0, &accumulated.1, index, encoding);
+                let right = logic_element_disc(&incoming.0, &incoming.1, index, encoding);
                 let result = self.inline_resolve(element, left, right)?;
-                let value_bit = Expr::Binary {
-                    op: BinOp::And,
-                    lhs: Box::new(result.clone()),
-                    rhs: Box::new(Expr::Const(1)),
-                };
+                let value_bit = logic_value_bit(result.clone(), encoding);
                 value = or_expr(
                     value,
                     Expr::Binary {
@@ -3783,11 +3842,7 @@ impl<'a> Lowering<'a> {
                         rhs: Box::new(Expr::Const(index as u64)),
                     },
                 );
-                let is_meta = Expr::Binary {
-                    op: BinOp::Ge,
-                    lhs: Box::new(result.clone()),
-                    rhs: Box::new(Expr::Const(2)),
-                };
+                let is_meta = not1(logic_disc_in(result.clone(), &encoding.binary));
                 let nibble = Expr::Select {
                     cond: Box::new(is_meta),
                     then: Box::new(result),
@@ -4362,6 +4417,150 @@ impl<'a> Lowering<'a> {
         out
     }
 
+    /// Elaborate the std-owned `LogicEncoding` behaviour and ordinary logic
+    /// operator implementations into data. VHDL's `std_logic_1164` keeps its
+    /// value normalization and truth tables in the package; SIOX follows that
+    /// dependency direction instead of teaching IR passes the enum order.
+    fn compute_logic_encodings(&self) -> HashMap<String, LogicEncoding> {
+        const CONTRACT: &str = "std::logic::LogicEncoding";
+        let mut out = HashMap::new();
+        for ((trait_name, ty), methods) in &self.op_impls {
+            if trait_name != CONTRACT && trait_name != "LogicEncoding" {
+                continue;
+            }
+            let Some(variants) = self.enum_variants.get(ty) else {
+                continue;
+            };
+            let method = |name: &str| {
+                methods
+                    .iter()
+                    .find_map(|(function, _)| (function.name.text == name).then_some(*function))
+            };
+            let (Some(to_bool), Some(is_binary), Some(is_high_impedance), Some(to_x01)) = (
+                method("to_bool"),
+                method("is_binary"),
+                method("is_high_impedance"),
+                method("to_x01"),
+            ) else {
+                continue;
+            };
+            let mut encoding = LogicEncoding::default();
+            for &disc in variants.values() {
+                let env = HashMap::from([("self".to_string(), disc)]);
+                let Some(bit) = eval_logic_function(to_bool, &env, variants) else {
+                    continue;
+                };
+                let Some(binary) = eval_logic_function(is_binary, &env, variants) else {
+                    continue;
+                };
+                let Some(high_impedance) = eval_logic_function(is_high_impedance, &env, variants)
+                else {
+                    continue;
+                };
+                let Some(x01) = eval_logic_function(to_x01, &env, variants) else {
+                    continue;
+                };
+                encoding.value_bits.insert(disc, bit != 0);
+                if binary != 0 {
+                    encoding.binary.insert(disc);
+                }
+                if high_impedance != 0 {
+                    encoding.high_impedance.insert(disc);
+                }
+                encoding.x01.insert(disc, x01);
+            }
+            // A partial table is unsafe: packed lowering must be able to
+            // classify every member of the enum. Do not publish malformed
+            // metadata and let the ordinary unsupported-expression paths
+            // reject uses that require it.
+            if variants
+                .values()
+                .any(|disc| !encoding.value_bits.contains_key(disc))
+                || encoding
+                    .binary
+                    .iter()
+                    .filter(|disc| encoding.value_bits.get(disc) == Some(&false))
+                    .count()
+                    != 1
+                || encoding
+                    .binary
+                    .iter()
+                    .filter(|disc| encoding.value_bits.get(disc) == Some(&true))
+                    .count()
+                    != 1
+            {
+                continue;
+            }
+            encoding
+                .unknown
+                .extend(encoding.x01.iter().filter_map(|(&disc, normalized)| {
+                    (!encoding.binary.contains(normalized)).then_some(disc)
+                }));
+
+            // Logical behaviour remains ordinary `Operator` source. Fold it
+            // for every pair now, once, rather than rediscovering a second
+            // truth table in each backend.
+            for op in ["and", "or", "xor", "nand", "nor", "xnor"] {
+                let Some((function, _)) = self
+                    .op_impls
+                    .get(&(op.to_string(), ty.clone()))
+                    .and_then(|functions| functions.first())
+                else {
+                    continue;
+                };
+                let Some(rhs_name) = function
+                    .params
+                    .iter()
+                    .find(|parameter| !parameter.is_self)
+                    .and_then(|parameter| parameter.name.as_ref())
+                    .map(|name| name.text.clone())
+                else {
+                    continue;
+                };
+                let mut table = HashMap::new();
+                for &left in variants.values() {
+                    for &right in variants.values() {
+                        let env =
+                            HashMap::from([("self".to_string(), left), (rhs_name.clone(), right)]);
+                        if let Some(result) = eval_logic_function(function, &env, variants) {
+                            table.insert((left, right), result);
+                        }
+                    }
+                }
+                encoding.binary_ops.insert(op.to_string(), table);
+            }
+            if let Some((function, _)) = self
+                .op_impls
+                .get(&("not".to_string(), ty.clone()))
+                .and_then(|functions| functions.first())
+            {
+                let mut table = HashMap::new();
+                for &disc in variants.values() {
+                    let env = HashMap::from([("self".to_string(), disc)]);
+                    if let Some(result) = eval_logic_function(function, &env, variants) {
+                        table.insert(disc, result);
+                    }
+                }
+                encoding.unary_ops.insert("not".to_string(), table);
+            }
+
+            // A derived enum has the same representation and variants. Make
+            // the contract available under both `Logic` and its ULogic base so
+            // literals, scalar signals, and packed family elements agree.
+            out.insert(ty.clone(), encoding.clone());
+            let mut current = ty.as_str();
+            let mut seen = std::collections::HashSet::new();
+            while seen.insert(current.to_string()) {
+                let Some(base) = self.enum_bases.get(current) else {
+                    break;
+                };
+                out.insert(base.clone(), encoding.clone());
+                current = base;
+            }
+        }
+        out
+    }
+
     fn next_ctx(&mut self) -> u32 {
         self.cur_ctx += 1;
         self.cur_ctx
@@ -4480,7 +4679,8 @@ impl<'a> Lowering<'a> {
                 ]
                 .into_iter()
                 .filter_map(|(meta, operand_width)| {
-                    meta.map(|meta| any_unknown(&meta, operand_width))
+                    let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE)?;
+                    meta.map(|meta| any_unknown(&meta, operand_width, encoding))
                 })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
@@ -4560,20 +4760,16 @@ impl<'a> Lowering<'a> {
             // for the IR to hold, and a handler that disagreed with the `Xor`
             // path would be worse than one that is merely unused.
             Expr::Unary { op: UnOp::Not, rhs } => {
-                // The operand's metavalue positions become `'U'` or `'X'`,
-                // clean positions clean.
                 let rhs_width = self.meta_expr_width(rhs, width);
                 let m = self.lower_meta_ir(rhs, rhs_width)?;
-                let (xd, ud) = (self.x_disc(), self.u_disc());
+                let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE)?;
+                let table = encoding.unary_ops.get("not")?;
                 let mut acc = Expr::Const(0);
                 for i in 0..width {
-                    let some = Some(m.clone());
-                    let disc = Expr::Select {
-                        cond: Box::new(u_bit(&some, i, ud)),
-                        then: Box::new(Expr::Const(ud)),
-                        els: Box::new(Expr::Const(xd)),
-                    };
-                    acc = or_expr(acc, meta_nibble(meta_bit(&some, i), i, disc));
+                    let input = logic_element_disc(rhs, &m, i, encoding);
+                    let result = logic_unary_table_result(input, table);
+                    let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
+                    acc = or_expr(acc, meta_nibble(meta, i, result));
                 }
                 Some(acc)
             }
@@ -4625,30 +4821,23 @@ impl<'a> Lowering<'a> {
         if ma.is_none() && mb.is_none() {
             return None;
         }
-        let (x_disc, u_disc) = (self.x_disc(), self.u_disc());
+        let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE)?;
+        let symbol = match op {
+            BinOp::And => "and",
+            BinOp::Or => "or",
+            BinOp::Xor => "xor",
+            _ => return None,
+        };
+        let table = encoding.binary_ops.get(symbol)?;
         let mut acc = Expr::Const(0);
         for i in 0..width {
-            let (am, bm) = (meta_bit(&ma, i), meta_bit(&mb, i));
-            let (av, bv) = (bit(lhs, i), bit(rhs, i));
-            let anymeta = or_expr(am.clone(), bm.clone());
-            // `'U'` dominates: an unforced result with a `'U'` operand is
-            // `'U'`, not `'X'`.
-            let unresolved = or_expr(u_bit(&ma, i, u_disc), u_bit(&mb, i, u_disc));
-            // A "forcing" operand (whose value alone fixes the result) clears
-            // the metavalue: `and`'s forcing value is 0, `or`'s is 1, `xor` has
-            // none.
-            let forced = match op {
-                BinOp::And => or_expr(and_expr(not1(am), not1(av)), and_expr(not1(bm), not1(bv))),
-                BinOp::Or => or_expr(and_expr(not1(am), av), and_expr(not1(bm), bv)),
-                _ => Expr::Const(0), // xor: no forcing
-            };
-            let meta_i = and_expr(anymeta, not1(forced));
-            let disc = Expr::Select {
-                cond: Box::new(unresolved),
-                then: Box::new(Expr::Const(u_disc)),
-                els: Box::new(Expr::Const(x_disc)),
-            };
-            acc = or_expr(acc, meta_nibble(meta_i, i, disc));
+            let left_meta = ma.clone().unwrap_or(Expr::Const(0));
+            let right_meta = mb.clone().unwrap_or(Expr::Const(0));
+            let left = logic_element_disc(lhs, &left_meta, i, encoding);
+            let right = logic_element_disc(rhs, &right_meta, i, encoding);
+            let result = logic_binary_table_result(left, right, table);
+            let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
+            acc = or_expr(acc, meta_nibble(meta, i, result));
         }
         Some(acc)
     }
@@ -4787,19 +4976,29 @@ impl<'a> Lowering<'a> {
             .iter()
             .map(|(&base, &companion)| (companion, self.out.signals[base as usize].width))
             .collect();
+        let encodings: HashMap<u32, LogicEncoding> = meta_of
+            .iter()
+            .filter_map(|(&base, &companion)| {
+                let element = self.out.array_element_enums.get(&base)?;
+                self.logic_encodings
+                    .get(element)
+                    .cloned()
+                    .map(|encoding| (companion, encoding))
+            })
+            .collect();
         for d in &mut self.out.drivers {
             if let Some(c) = &mut d.cond {
-                reconstruct_expr(c, &meta_of, &elems);
+                reconstruct_expr(c, &meta_of, &elems, &encodings);
             }
-            reconstruct_expr(&mut d.expr, &meta_of, &elems);
+            reconstruct_expr(&mut d.expr, &meta_of, &elems, &encodings);
         }
         for b in &mut self.out.event_blocks {
-            reconstruct_expr(&mut b.condition, &meta_of, &elems);
+            reconstruct_expr(&mut b.condition, &meta_of, &elems, &encodings);
             for u in &mut b.updates {
                 if let Some(c) = &mut u.cond {
-                    reconstruct_expr(c, &meta_of, &elems);
+                    reconstruct_expr(c, &meta_of, &elems, &encodings);
                 }
-                reconstruct_expr(&mut u.expr, &meta_of, &elems);
+                reconstruct_expr(&mut u.expr, &meta_of, &elems, &encodings);
             }
         }
     }
@@ -9205,7 +9404,11 @@ impl<'a> Lowering<'a> {
         for (i, ch) in digits.chars().enumerate() {
             let pos = n - 1 - i; // MSB-first: first digit is the top bit
             let disc = self.char_disc(ch, DEFAULT_LOGIC_TYPE).unwrap_or(0);
-            value[pos / 64] |= (disc & 1) << (pos % 64);
+            let bit = self
+                .logic_encoding(DEFAULT_LOGIC_TYPE)
+                .and_then(|encoding| encoding.value_bit(disc))
+                .unwrap_or(0);
+            value[pos / 64] |= bit << (pos % 64);
             discs[(4 * pos) / 64] |= (disc & 0xF) << ((4 * pos) % 64);
         }
         (value, discs)
@@ -9230,27 +9433,27 @@ impl<'a> Lowering<'a> {
     fn bit_string_meta(&self, e: &ast::Expr) -> Option<Expr> {
         let (base, digits) = Self::bit_string_parts(e)?;
         let (_, discs) = self.decode_bit_string_words(base, digits);
-        Self::has_metavalue(&discs).then(|| words_const(discs))
+        self.has_metavalue(&discs).then(|| words_const(discs))
     }
 
-    /// A nibble of this mask is nonzero exactly when its element's discriminant
-    /// is `>= 2` — i.e. a metavalue (`'0'`/`'1'` are discs 0/1 in std's
-    /// `Bit`-first `ULogic`, everything above is a metavalue).
-    /// `discs & META_MASK != 0` ⇔ "has a metavalue".
-    const META_MASK: u64 = 0xEEEE_EEEE_EEEE_EEEE;
-
-    fn has_metavalue(discs: &[u64]) -> bool {
-        discs.iter().any(|word| word & Self::META_MASK != 0)
+    fn logic_encoding(&self, ty: &str) -> Option<&LogicEncoding> {
+        self.logic_encodings.get(ty)
     }
 
-    /// `'X'`'s discriminant, from std's logic enum (not a baked-in `3`), so the
-    /// poison value tracks the declaration.
+    fn has_metavalue(&self, discs: &[u64]) -> bool {
+        let Some(encoding) = self.logic_encoding(DEFAULT_LOGIC_TYPE) else {
+            return false;
+        };
+        (0..discs.len() * 16).any(|element| {
+            let disc = (discs[element / 16] >> (4 * (element % 16))) & 0xF;
+            !encoding.binary.contains(&disc)
+        })
+    }
+
     fn x_disc(&self) -> u64 {
-        self.char_disc('X', DEFAULT_LOGIC_TYPE).unwrap_or(3)
-    }
-
-    fn u_disc(&self) -> u64 {
-        self.char_disc('U', DEFAULT_LOGIC_TYPE).unwrap_or(4)
+        self.logic_encoding(DEFAULT_LOGIC_TYPE)
+            .and_then(LogicEncoding::canonical_unknown)
+            .unwrap_or(0)
     }
 
     /// Rewrite every `Expr::Logic(c)` left in the design — those a typed context
@@ -11490,9 +11693,15 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
 
 /// Rewrite `Slice(Current(v), i, i)` — one element of a metavalue vector — into
 /// its 9-value reconstruction: the companion nibble when it is a metavalue
-/// (disc >= 2), else the value bit. Recurses; does not descend into the node it
-/// creates (the companion has no companion).
-fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u32, u32>) {
+/// according to the elaborated encoding, else the source-defined low/high
+/// discriminant selected by the value bit. Recurses; does not descend into the
+/// node it creates (the companion has no companion).
+fn reconstruct_expr(
+    e: &mut Expr,
+    meta_of: &HashMap<u32, u32>,
+    elems: &HashMap<u32, u32>,
+    encodings: &HashMap<u32, LogicEncoding>,
+) {
     // A marked comparison: apply the `numeric_std` rule now that every
     // companion exists. Done before the generic walk so the operands, which are
     // also present inside `inner`, are not rewritten twice.
@@ -11504,13 +11713,16 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
     {
         let ne = *ne;
         let mut resolved = inner.as_ref().clone();
-        reconstruct_expr(&mut resolved, meta_of, elems);
+        reconstruct_expr(&mut resolved, meta_of, elems, encodings);
         let unknown = operands
             .iter()
             .filter_map(|operand| companion_read(operand, meta_of))
             .map(|(companion, read)| {
                 let n = elems.get(&companion).copied().unwrap_or(0);
-                any_unknown(&read, n)
+                encodings
+                    .get(&companion)
+                    .map(|encoding| any_unknown(&read, n, encoding))
+                    .unwrap_or(Expr::Const(0))
             })
             .reduce(or_expr);
         *e = match unknown {
@@ -11547,7 +11759,10 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
                 .flatten()
                 .map(|(companion, read)| {
                     let elems = elems.get(&companion).copied().unwrap_or(0);
-                    any_unknown(&read, elems)
+                    encodings
+                        .get(&companion)
+                        .map(|encoding| any_unknown(&read, elems, encoding))
+                        .unwrap_or(Expr::Const(0))
                 })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
@@ -11569,6 +11784,9 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
         if hi == lo {
             if let Expr::Current(vid) | Expr::Old(vid) = base.as_ref() {
                 if let Some(&cid) = meta_of.get(&vid.0) {
+                    let Some(encoding) = encodings.get(&cid) else {
+                        return;
+                    };
                     let companion = match base.as_ref() {
                         Expr::Current(_) => Expr::Current(SignalId(cid)),
                         Expr::Old(_) => Expr::Old(SignalId(cid)),
@@ -11587,13 +11805,13 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
                         lo: *lo,
                     };
                     *e = Expr::Select {
-                        cond: Box::new(Expr::Binary {
-                            op: BinOp::Ge,
-                            lhs: Box::new(nibble.clone()),
-                            rhs: Box::new(Expr::Const(2)),
-                        }),
+                        cond: Box::new(not1(logic_disc_in(nibble.clone(), &encoding.binary))),
                         then: Box::new(nibble),
-                        els: Box::new(valbit),
+                        els: Box::new(Expr::Select {
+                            cond: Box::new(valbit),
+                            then: Box::new(Expr::Const(encoding.binary_value(true).unwrap_or(0))),
+                            els: Box::new(Expr::Const(encoding.binary_value(false).unwrap_or(0))),
+                        }),
                     };
                     return;
                 }
@@ -11601,20 +11819,20 @@ fn reconstruct_expr(e: &mut Expr, meta_of: &HashMap<u32, u32>, elems: &HashMap<u
         }
     }
     match e {
-        Expr::Unary { rhs, .. } => reconstruct_expr(rhs, meta_of, elems),
+        Expr::Unary { rhs, .. } => reconstruct_expr(rhs, meta_of, elems, encodings),
         Expr::Binary { lhs, rhs, .. } => {
-            reconstruct_expr(lhs, meta_of, elems);
-            reconstruct_expr(rhs, meta_of, elems);
+            reconstruct_expr(lhs, meta_of, elems, encodings);
+            reconstruct_expr(rhs, meta_of, elems, encodings);
         }
-        Expr::Slice { base, .. } => reconstruct_expr(base, meta_of, elems),
+        Expr::Slice { base, .. } => reconstruct_expr(base, meta_of, elems, encodings),
         Expr::Select { cond, then, els } => {
-            reconstruct_expr(cond, meta_of, elems);
-            reconstruct_expr(then, meta_of, elems);
-            reconstruct_expr(els, meta_of, elems);
+            reconstruct_expr(cond, meta_of, elems, encodings);
+            reconstruct_expr(then, meta_of, elems, encodings);
+            reconstruct_expr(els, meta_of, elems, encodings);
         }
         Expr::CCall { args, .. } => {
             for a in args {
-                reconstruct_expr(a, meta_of, elems);
+                reconstruct_expr(a, meta_of, elems, encodings);
             }
         }
         _ => {}
@@ -11710,20 +11928,117 @@ fn bit(e: &Expr, i: u32) -> Expr {
     }
 }
 
-fn logic_element_disc(value: &Expr, meta: &Expr, index: u32) -> Expr {
+fn logic_disc_in(discriminant: Expr, members: &std::collections::HashSet<u64>) -> Expr {
+    members
+        .iter()
+        .copied()
+        .map(|member| Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(discriminant.clone()),
+            rhs: Box::new(Expr::Const(member)),
+        })
+        .reduce(or_expr)
+        .unwrap_or(Expr::Const(0))
+}
+
+fn logic_value_bit(discriminant: Expr, encoding: &LogicEncoding) -> Expr {
+    let mut result = Expr::Const(0);
+    let mut entries = encoding.value_bits.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(disc, _)| **disc);
+    for (&disc, &value) in entries.into_iter().rev() {
+        result = Expr::Select {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(discriminant.clone()),
+                rhs: Box::new(Expr::Const(disc)),
+            }),
+            then: Box::new(Expr::Const(u64::from(value))),
+            els: Box::new(result),
+        };
+    }
+    result
+}
+
+fn logic_binary_table_result(left: Expr, right: Expr, table: &HashMap<(u64, u64), u64>) -> Expr {
+    let side = table
+        .keys()
+        .map(|(left, right)| left.max(right))
+        .copied()
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let cells = side.saturating_mul(side);
+    let mut words = vec![0u64; usize::try_from(cells.saturating_mul(4).div_ceil(64)).unwrap_or(0)];
+    for (&(left, right), &result) in table {
+        let bit = (left.saturating_mul(side).saturating_add(right)).saturating_mul(4);
+        if let Some(word) = words.get_mut(usize::try_from(bit / 64).unwrap_or(usize::MAX)) {
+            *word |= (result & 0xF) << (bit % 64);
+        }
+    }
+    let cell = Expr::Binary {
+        op: BinOp::Add,
+        lhs: Box::new(Expr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(left),
+            rhs: Box::new(Expr::Const(side)),
+        }),
+        rhs: Box::new(right),
+    };
+    Expr::Slice {
+        base: Box::new(Expr::Binary {
+            op: BinOp::Shr,
+            lhs: Box::new(words_const(words)),
+            rhs: Box::new(Expr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(cell),
+                rhs: Box::new(Expr::Const(4)),
+            }),
+        }),
+        hi: 3,
+        lo: 0,
+    }
+}
+
+fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>) -> Expr {
+    let cells = table.keys().copied().max().unwrap_or(0) + 1;
+    let mut words = vec![0u64; usize::try_from(cells.saturating_mul(4).div_ceil(64)).unwrap_or(0)];
+    for (&disc, &result) in table {
+        let bit = disc.saturating_mul(4);
+        if let Some(word) = words.get_mut(usize::try_from(bit / 64).unwrap_or(usize::MAX)) {
+            *word |= (result & 0xF) << (bit % 64);
+        }
+    }
+    Expr::Slice {
+        base: Box::new(Expr::Binary {
+            op: BinOp::Shr,
+            lhs: Box::new(words_const(words)),
+            rhs: Box::new(Expr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(operand),
+                rhs: Box::new(Expr::Const(4)),
+            }),
+        }),
+        hi: 3,
+        lo: 0,
+    }
+}
+
+fn logic_element_disc(value: &Expr, meta: &Expr, index: u32, encoding: &LogicEncoding) -> Expr {
     let nibble = Expr::Slice {
         base: Box::new(meta.clone()),
         hi: 4 * index + 3,
         lo: 4 * index,
     };
+    let low = encoding.binary_value(false).unwrap_or(0);
+    let high = encoding.binary_value(true).unwrap_or(low);
     Expr::Select {
-        cond: Box::new(Expr::Binary {
-            op: BinOp::Ge,
-            lhs: Box::new(nibble.clone()),
-            rhs: Box::new(Expr::Const(2)),
-        }),
+        cond: Box::new(not1(logic_disc_in(nibble.clone(), &encoding.binary))),
         then: Box::new(nibble),
-        els: Box::new(bit(value, index)),
+        els: Box::new(Expr::Select {
+            cond: Box::new(bit(value, index)),
+            then: Box::new(Expr::Const(high)),
+            els: Box::new(Expr::Const(low)),
+        }),
     }
 }
 
@@ -11742,7 +12057,6 @@ fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
     result
 }
 
-/// Whether element `i` of a metavalue disc-array is a metavalue (disc >= 2).
 /// Is element `i` of the companion an *unknown*?
 ///
 /// `'L'` and `'H'` are not: `std_logic_1164` defines them as a weak 0 and a
@@ -11751,34 +12065,26 @@ fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
 /// discriminant range at or above `'Z'` swept them in, so a vector holding a
 /// pull-up's `'H'` poisoned every operation applied to it.
 ///
-/// The unknowns are `'Z'`, `'X'`, `'U'`, `'W'` and `'-'`, which are contiguous
-/// except for the last -- hence the two-part test rather than one comparison.
-fn meta_bit(m: &Option<Expr>, i: u32) -> Expr {
+/// The exact set comes from `LogicEncoding::to_x01`; no discriminant interval
+/// or symbol spelling is known here.
+fn meta_bit(m: &Option<Expr>, i: u32, encoding: &LogicEncoding) -> Expr {
     let Some(m) = m else { return Expr::Const(0) };
     let nibble = Expr::Slice {
         base: Box::new(m.clone()),
         hi: 4 * i + 3,
         lo: 4 * i,
     };
-    let cmp = |op, rhs| Expr::Binary {
-        op,
-        lhs: Box::new(nibble.clone()),
-        rhs: Box::new(Expr::Const(rhs)),
-    };
-    or_expr(
-        and_expr(cmp(BinOp::Ge, 2), cmp(BinOp::Le, 5)),
-        cmp(BinOp::Eq, 8),
-    )
+    logic_disc_in(nibble, &encoding.unknown)
 }
 
 /// Does any element of `m` hold an unknown? The arithmetic rule is all-or-
 /// nothing per vector, but it must ask the same question per element as the
 /// logical rule -- a bare `companion != 0` also fires on `'L'`/`'H'`, whose
 /// discriminants are non-zero but whose values are perfectly definite.
-fn any_unknown(m: &Expr, width: u32) -> Expr {
+fn any_unknown(m: &Expr, width: u32, encoding: &LogicEncoding) -> Expr {
     let mut acc = Expr::Const(0);
     for i in 0..width {
-        acc = or_expr(acc, meta_bit(&Some(m.clone()), i));
+        acc = or_expr(acc, meta_bit(&Some(m.clone()), i, encoding));
     }
     acc
 }
@@ -11796,24 +12102,6 @@ fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
             rhs: Box::new(disc),
         }),
         rhs: Box::new(Expr::Const(4 * i as u64)),
-    }
-}
-
-/// Is element `i` of the companion specifically `'U'`? `std_logic_1164` lets
-/// uninitialised dominate: where an operand is `'U'` and nothing forces the
-/// result, the result is `'U'` and not merely unknown. Reporting `'X'` there
-/// loses the distinction between "never driven" and "driven to conflict",
-/// which is the whole reason `'U'` exists.
-fn u_bit(m: &Option<Expr>, i: u32, u_disc: u64) -> Expr {
-    let Some(m) = m else { return Expr::Const(0) };
-    Expr::Binary {
-        op: BinOp::Eq,
-        lhs: Box::new(Expr::Slice {
-            base: Box::new(m.clone()),
-            hi: 4 * i + 3,
-            lo: 4 * i,
-        }),
-        rhs: Box::new(Expr::Const(u_disc)),
     }
 }
 
@@ -12725,6 +13013,114 @@ pub fn eval_const_stmts(
         }
     }
     None
+}
+
+/// Evaluate the deliberately small pure subset used by `LogicEncoding` and
+/// scalar logic operator tables. Unlike integer const evaluation, character
+/// literals here are resolved against the implementing enum's source-owned
+/// variant map.
+fn eval_logic_function(
+    function: &ast::FnDecl,
+    env: &HashMap<String, u64>,
+    variants: &HashMap<String, u64>,
+) -> Option<u64> {
+    eval_logic_stmts(&function.body.as_ref()?.stmts, env, variants)
+}
+
+fn eval_logic_stmts(
+    statements: &[ast::Stmt],
+    env: &HashMap<String, u64>,
+    variants: &HashMap<String, u64>,
+) -> Option<u64> {
+    for statement in statements {
+        match statement {
+            ast::Stmt::Return {
+                value: Some(value), ..
+            } => {
+                return eval_logic_expr(value, env, variants);
+            }
+            ast::Stmt::If(branch) => {
+                if eval_logic_expr(&branch.cond, env, variants)? != 0 {
+                    if let Some(value) = eval_logic_stmts(&branch.then.stmts, env, variants) {
+                        return Some(value);
+                    }
+                } else if let Some(otherwise) = branch.else_.as_deref() {
+                    let value = match otherwise {
+                        ast::ElseBranch::Block(block) => {
+                            eval_logic_stmts(&block.stmts, env, variants)
+                        }
+                        ast::ElseBranch::If(nested) => eval_logic_stmts(
+                            std::slice::from_ref(&ast::Stmt::If(nested.clone())),
+                            env,
+                            variants,
+                        ),
+                    };
+                    if value.is_some() {
+                        return value;
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn eval_logic_expr(
+    expression: &ast::Expr,
+    env: &HashMap<String, u64>,
+    variants: &HashMap<String, u64>,
+) -> Option<u64> {
+    match expression {
+        ast::Expr::Path(path) => {
+            let name = &path.segments.last()?.text;
+            env.get(name).copied().or_else(|| match name.as_str() {
+                "false" => Some(0),
+                "true" => Some(1),
+                _ => variants.get(name).copied(),
+            })
+        }
+        ast::Expr::CharLit { ch, .. } => variants.get(&format!("'{ch}'")).copied(),
+        ast::Expr::Int { text, .. } => parse_int(text),
+        ast::Expr::Unary { op, rhs, .. } => {
+            let value = eval_logic_expr(rhs, env, variants)?;
+            match op {
+                ast::UnOp::Not => Some(u64::from(value == 0)),
+                ast::UnOp::Neg => value.checked_neg(),
+            }
+        }
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let left = eval_logic_expr(lhs, env, variants)?;
+            let right = eval_logic_expr(rhs, env, variants)?;
+            Some(match op {
+                ast::BinOp::Eq => u64::from(left == right),
+                ast::BinOp::Ne => u64::from(left != right),
+                ast::BinOp::Lt => u64::from(left < right),
+                ast::BinOp::Le => u64::from(left <= right),
+                ast::BinOp::Gt => u64::from(left > right),
+                ast::BinOp::Ge => u64::from(left >= right),
+                ast::BinOp::And => u64::from(left != 0 && right != 0),
+                ast::BinOp::Or => u64::from(left != 0 || right != 0),
+                ast::BinOp::Add => left.checked_add(right)?,
+                ast::BinOp::Sub => left.checked_sub(right)?,
+                ast::BinOp::Mul => left.checked_mul(right)?,
+                ast::BinOp::Div => left.checked_div(right)?,
+                ast::BinOp::Shl => left.checked_shl(u32::try_from(right).ok()?)?,
+                ast::BinOp::Shr => left.checked_shr(u32::try_from(right).ok()?)?,
+                ast::BinOp::Custom { .. } => return None,
+            })
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            if eval_logic_expr(cond, env, variants)? != 0 {
+                eval_logic_expr(then, env, variants)
+            } else {
+                eval_logic_expr(els, env, variants)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
@@ -13903,8 +14299,10 @@ mod tests {
     const CLK_PRELUDE: &str = "\n\
         enum Bool { false, true }\n\
         enum Bit { '0', '1' }\n\
-        enum ULogic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
+        enum ULogic { 'U' = 4, 'X' = 3, '0' = 0, '1' = 1, 'Z' = 2, 'W' = 5, 'L' = 6, 'H' = 7, '-' = 8 }\n\
         enum Logic(ULogic);\n\
+        impl LogicEncoding for Bit { fn to_bool(self) -> Bool { return self == '1'; } fn is_binary(self) -> Bool { return true; } fn is_high_impedance(self) -> Bool { return false; } fn to_x01(self) -> Bit { return self; } }\n\
+        impl LogicEncoding for Logic { fn to_bool(self) -> Bool { return self == '1' or self == 'H'; } fn is_binary(self) -> Bool { return self == '0' or self == '1'; } fn is_high_impedance(self) -> Bool { return self == 'Z'; } fn to_x01(self) -> Logic { if self == '0' or self == 'L' { return '0'; } if self == '1' or self == 'H' { return '1'; } return 'X'; } }\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
         impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
@@ -14671,6 +15069,52 @@ mod tests {
         };
         assert!(matches!(driven(".left"), Some(Expr::Const(11))));
         assert!(matches!(driven(".right"), Some(Expr::Const(22))));
+    }
+
+    #[test]
+    fn custom_logic_encoding_trait_cannot_create_backend_metadata() {
+        let sources = [
+            ("module std::logic; pub trait LogicEncoding {}", FileId(0)),
+            (
+                "module custom; pub trait LogicEncoding { \
+                    fn to_bool(self) -> integer; \
+                    fn is_binary(self) -> integer; \
+                    fn is_high_impedance(self) -> integer; \
+                    fn to_x01(self) -> Self; \
+                 } \
+                 pub enum State { A, B } \
+                 impl LogicEncoding for State { \
+                    fn to_bool(self) -> integer { return 0; } \
+                    fn is_binary(self) -> integer { return 1; } \
+                    fn is_high_impedance(self) -> integer { return 0; } \
+                    fn to_x01(self) -> State { return self; } \
+                 }",
+                FileId(1),
+            ),
+            (
+                "module user; #[top] entity Top { y: integer out } impl Top { y = 1; }",
+                FileId(2),
+            ),
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules: Vec<Module> = sources
+            .iter()
+            .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
+            .collect();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert_eq!(
+            sink.error_count(),
+            0,
+            "diagnostics: {:#?}",
+            sink.diagnostics()
+        );
+        assert!(
+            !design.logic_encodings.contains_key("custom::State"),
+            "a same-leaf user trait must not become the canonical std hook"
+        );
     }
 
     #[test]
@@ -16062,6 +16506,7 @@ mod tests {
             enum_bases: HashMap::new(),
             enum_syms: HashMap::new(),
             new_defaults: Default::default(),
+            logic_encodings: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             array_element_enums: Default::default(),
@@ -16404,9 +16849,10 @@ mod tests {
 
     #[test]
     fn bit_string_decodes_nine_value() {
-        // A plain 2-value string is unchanged; a metavalue digit decodes to its
-        // `std_ulogic` value bit (X = disc 3, low bit 1) instead of collapsing
-        // to 0. `"1X10"` -> value bits 1110 = 14.
+        // A plain 2-value string is unchanged; a metavalue digit takes its
+        // source-defined `LogicEncoding::to_bool` bit rather than a bit of the
+        // enum discriminant. X normalizes to a low placeholder in the value
+        // plane while the companion retains its exact identity.
         let d = lower_src(
             "module m; entity E { y: unsigned[4] out, z: unsigned[4] out, }\n\
              impl E { y = \"1010\"; z = \"1X10\"; }\n\
@@ -16416,7 +16862,7 @@ mod tests {
         let s = d.to_ir_string();
         assert!(s.contains("driver T.dut.y = 10"), "2-value unchanged:\n{s}");
         assert!(
-            s.contains("driver T.dut.z = 14"),
+            s.contains("driver T.dut.z = 10"),
             "metavalue digit decodes:\n{s}"
         );
     }

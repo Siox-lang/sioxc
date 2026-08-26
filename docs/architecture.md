@@ -307,12 +307,21 @@ Before the full Pratt parse, `compiler` lexically follows that exact transitive
 import graph and collects every `#[precedence]` operator declaration. Imported
 operators therefore group expressions correctly in their users, while an
 unrelated `.siox` file cannot alter the active grammar.
-The resolver additionally bootstraps the `Operator`, `Prefix`, and `Suffix`
-hook names and syntax-level attributes; their canonical contracts and values
-remain declarations in `std::ops` and `std::attrs`.
+The resolver additionally bootstraps the `Operator`, `Prefix`, `Suffix`, and
+`LogicEncoding` hook identities plus syntax-level attributes; their canonical
+contracts and values remain declarations in `std::ops`, `std::logic`, and
+`std::attrs`. Hook selection follows the resolved canonical declaration, so a
+same-leaf user trait remains an ordinary namespaced trait.
 Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
 Array-derived newtypes retain their family name for trait dispatch, but there
 is no separate semantic vector type or `Vector` trait.
+
+Multi-valued packed logic is source-directed as well. Elaboration evaluates
+the canonical `std::logic::LogicEncoding` impl over every enum variant and
+evaluates scalar logical `Operator` impls over every operand pair. The resulting
+value-bit, binary/metavalue, high-impedance, X01, and operator tables live in
+`Design::logic_encodings`; IR and native output consume them instead of testing
+enum positions or duplicating `std_logic_1164` tables.
 
 IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.

@@ -103,6 +103,15 @@ override writes zero to that plane instead of leaving an earlier metavalue
 behind. Temporal reads also stay paired (`v'old` reads `v$meta'old`), including
 clocked next-state updates.
 
+The meaning of those planes comes from `std::logic::LogicEncoding`, not enum
+positions. At elaboration, `to_bool` supplies each variant's numeric bit,
+`is_binary` identifies the two values that need no companion entry,
+`is_high_impedance` supplies waveform rendering, and VHDL-style `to_x01`
+classifies definite versus unknown numeric inputs. The resulting maps live in
+`Design::logic_encodings`. `ULogic` consequently follows VHDL declaration
+order (`U, X, 0, 1, Z, W, L, H, -`) while retaining an explicitly declared,
+stable packed ABI; reordering declarations cannot alter simulation.
+
 Operator behaviour follows the library: logical operators use the
 `std_logic_1164` truth tables per element (including forcing cases such as
 `0 and X = 0`), arithmetic with any metavalue produces an all-`X` result,
@@ -110,6 +119,10 @@ relational comparisons against a metavalue are false, and parallel drivers fold
 through the resolution table. VCD and FST render binary elements as `0`/`1`,
 high impedance as `z`, and unknown-like metavalues as `x`, from the same
 scheduler samples.
+
+The per-element logical tables are also elaborated from the ordinary std
+`Operator` bodies and retained in `Design`, so neither IR nor a simulator
+backend carries a second Rust/C copy of the library truth tables.
 
 The scalar tables are checked exhaustively against `nvc`, and the corpus covers
 storage, arithmetic poisoning, relational and logical behaviour, connections,

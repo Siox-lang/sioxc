@@ -8,11 +8,11 @@ transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
-The compiler bootstraps the `Operator`, `Prefix`, and `Suffix` hook names. Their
-public contracts live in `std::ops`; every operator is an
-`Operator<"symbol", Input, Output>` implementation, and a user operator
-(a non-standard symbol) carries an attributed precedence discovered before
-expression parsing.
+The compiler bootstraps the `Operator`, `Prefix`, `Suffix`, and
+`LogicEncoding` hook identities. Operator contracts live in `std::ops`; every
+operator is an `Operator<"symbol", Input, Output>` implementation, and a user
+operator (a non-standard symbol) carries an attributed precedence discovered
+before expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
 three base types — `integer`, `real`, and `Char` (a non-numeric character
@@ -29,7 +29,7 @@ is a documented shim, and the declaration here is canonical.
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/array types, core traits (`Boolean`, `New`, `From`, `Resolve`, indexing/ranges), `string`, `time`/`frequency` |
-| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `Logic`, `Bool` enums; `LOW`/`HIGH`; Logic truth tables |
+| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic`, `Bool`; packed-logic encoding contract; resolution and logic tables |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
@@ -44,7 +44,8 @@ is a documented shim, and the declaration here is canonical.
 
 ```siox
 pub enum Bit   { '0', '1' }
-pub enum Logic { 'U', 'X', '0', '1', 'Z', 'W', 'L', 'H', '-' }  // IEEE std_ulogic
+pub enum ULogic { 'U', 'X', '0', '1', 'Z', 'W', 'L', 'H', '-' }
+pub enum Logic(ULogic);  // resolved nominal type over the same values
 pub enum Bool  { false, true }
 
 pub const LOW: Bit = '0';
@@ -62,6 +63,14 @@ pub const HIGH: Bit = '1';
   condition — compare explicitly (`if rst == '1'`), because unknown truth is
   ambiguous.
 - `Bool` — condition results (VHDL `boolean`), an ordinary enum.
+
+`LogicEncoding` is a visible semantic contract, not an empty representation
+marker. Its `to_bool`, `is_binary`, `is_high_impedance`, and `to_x01` methods
+are the VHDL-directed source of packed value/metavalue classification.
+Elaboration evaluates them for every variant and evaluates the ordinary
+`Operator` bodies into per-element truth tables stored in `Design`. Backends
+therefore know neither ULogic symbols nor their discriminants. The declaration
+uses IEEE order while explicit discriminants keep the packed ABI stable.
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
 detection is applied to it — `clk.rising()` / `clk.falling()` (the

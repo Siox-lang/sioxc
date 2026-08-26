@@ -37,19 +37,20 @@ pub enum Bit {
 //
 // The full set is spelled out rather than derived from `Bit`: derivation makes
 // a newtype, not a subtype (§3.28), so an enum cannot add variants to its base.
-// `'0'`/`'1'` therefore lead, keeping their discriminants shared with `Bit` —
-// the order here must match the `logic_value` shim in the compiler backends,
-// and `From<Bit>` below depends on it too.
+// Declaration order follows IEEE std_logic_1164. Explicit discriminants are
+// the stable packed-simulation ABI; source order is deliberately free to differ
+// from it. Compiler backends learn the semantic classes from `LogicEncoding`
+// below and must never infer them from these numbers.
 pub enum ULogic {
-    '0',
-    '1',
-    'Z',
-    'X',
-    'U',
-    'W',
-    'L',
-    'H',
-    '-'
+    'U' = 4,
+    'X' = 3,
+    '0' = 0,
+    '1' = 1,
+    'Z' = 2,
+    'W' = 5,
+    'L' = 6,
+    'H' = 7,
+    '-' = 8
 }
 
 // `Bit` is a subset of `ULogic`'s value domain, so widening is total — but the
@@ -73,6 +74,57 @@ pub enum Logic(ULogic);
 pub enum Bool {
     false,
     true
+}
+
+// The source-owned interpretation of a packed multi-valued logic element.
+// This is intentionally behaviour rather than a marker: it is the SIOX
+// counterpart of std_logic_1164's To_X01 conversion plus the information an
+// optimized two-plane simulator needs to omit ordinary forcing 0/1 metadata.
+//
+// `to_bool` is the value plane (weak H/L included), `is_binary` identifies the
+// two values whose exact identity needs no companion entry,
+// `is_high_impedance` identifies the waveform/resolution neutral level, and
+// `to_x01` identifies the canonical X/0/1 result used by numeric operations.
+// During elaboration the compiler evaluates these methods for every variant
+// and puts the resulting table in the Design; no backend knows ULogic's
+// symbols or discriminants.
+pub trait LogicEncoding {
+    fn to_bool(self) -> Bool;
+    fn is_binary(self) -> Bool;
+    fn is_high_impedance(self) -> Bool;
+    fn to_x01(self) -> Self;
+}
+
+impl LogicEncoding for Bit {
+    fn to_bool(self) -> Bool {
+        return self == '1';
+    }
+    fn is_binary(self) -> Bool {
+        return true;
+    }
+    fn is_high_impedance(self) -> Bool {
+        return false;
+    }
+    fn to_x01(self) -> Bit {
+        return self;
+    }
+}
+
+impl LogicEncoding for Logic {
+    fn to_bool(self) -> Bool {
+        return self == '1' or self == 'H';
+    }
+    fn is_binary(self) -> Bool {
+        return self == '0' or self == '1';
+    }
+    fn is_high_impedance(self) -> Bool {
+        return self == 'Z';
+    }
+    fn to_x01(self) -> Logic {
+        if self == '0' or self == 'L' { return '0'; }
+        if self == '1' or self == 'H' { return '1'; }
+        return 'X';
+    }
 }
 
 // There is no dedicated clock type: any `Logic` (or `Bit`) signal is a clock

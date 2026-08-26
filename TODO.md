@@ -167,19 +167,16 @@ Current baseline:
   composite choice/copy handling, ranges, scalar families, and widths consume
   those concrete IR layouts. The remaining nominal field-order table contains
   names only and is restricted to source syntax with no concrete value path.
+- ✅ Logic encoding is owned by `std::logic::LogicEncoding`, modeled on
+  VHDL `std_logic_1164` conversion semantics. Elaboration evaluates
+  `to_bool`, `is_binary`, `is_high_impedance`, and `to_x01` for every variant,
+  and folds the ordinary scalar `Operator` impls into `Design` truth tables.
+  IR, native packed access, and VCD/FST rendering consume that metadata rather
+  than discriminant ranges or `disc & 1`. `ULogic` now uses VHDL declaration
+  order with an explicit stable packed ABI, and the exhaustive VHDL comparison
+  corpus remains unchanged.
 
 Remaining:
-
-- 🟡 **Std-owned logic encoding metadata.** The current two-plane Logic-array
-  optimization preserves IEEE behavior, but parts of IR/native lowering still
-  assume the std declaration order: low/high are discriminants 0/1, values at
-  or above 2 use the companion plane, and unknown classification uses fixed
-  discriminant intervals. Replace those tests with elaborated metadata from a
-  source-level std contract that classifies each variant as low, high, or a
-  metavalue and identifies the canonical unknown/uninitialized results. Build
-  per-operator element tables from the ordinary std `Operator` impls rather
-  than duplicating their truth tables in Rust. A regression must reorder
-  `ULogic` while preserving behavior, proving backends consume metadata only.
 
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate

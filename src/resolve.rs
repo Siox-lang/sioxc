@@ -51,6 +51,7 @@ const COMPILER_TRAITS: &[&str] = &[
     "Resolve",
     "New",
     "From",
+    "LogicEncoding",
 ];
 
 /// Traits whose semantics are compiler hooks even though their declarations
@@ -67,8 +68,14 @@ pub(crate) fn is_compiler_trait(resolved: &Resolved, id: DefId) -> bool {
     let Some(definition) = resolved.def(id) else {
         return false;
     };
+    let canonical_module = if definition.name == "LogicEncoding" {
+        "std::logic"
+    } else {
+        "std::ops"
+    };
     is_compiler_trait_name(&definition.name)
-        && (definition.kind == DefKind::Builtin || definition.module.as_deref() == Some("std::ops"))
+        && (definition.kind == DefKind::Builtin
+            || definition.module.as_deref() == Some(canonical_module))
 }
 
 /// Stable id for a resolved declaration. Later stages key off this instead of

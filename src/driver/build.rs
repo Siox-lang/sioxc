@@ -969,23 +969,19 @@ fn logic_vcd_symbols(design: &Design, signal: &siox::ir::Signal) -> Option<HashM
 
 fn logic_vcd_symbols_for_type(design: &Design, type_name: &str) -> Option<HashMap<u64, char>> {
     let symbols = design.enum_syms.get(type_name)?;
+    let encoding = design.logic_encodings.get(type_name)?;
     let mut out = HashMap::new();
-    for (&disc, symbol) in symbols {
-        let ch = symbol
-            .strip_prefix('\'')?
-            .strip_suffix('\'')?
-            .chars()
-            .next()?;
-        out.insert(
-            disc,
-            match ch {
-                '0' | 'L' => '0',
-                '1' | 'H' => '1',
-                'Z' => 'z',
-                'U' | 'X' | 'W' | '-' => 'x',
-                _ => return None,
-            },
-        );
+    for &disc in symbols.keys() {
+        let value = if encoding.high_impedance.contains(&disc) {
+            'z'
+        } else if encoding.unknown.contains(&disc) {
+            'x'
+        } else if encoding.value_bits.get(&disc).copied()? {
+            '1'
+        } else {
+            '0'
+        };
+        out.insert(disc, value);
     }
     Some(out)
 }
@@ -4326,10 +4322,19 @@ impl Ctx<'_> {
         ));
         if self.locals.borrow().contains(&path) {
             let local = c_local_ident(&path);
+            let encoding = self
+                .local_types
+                .borrow()
+                .get(&path)
+                .and_then(|family| self.design.array_element_of_family.get(family))
+                .and_then(|element| self.design.logic_encodings.get(element));
+            let value_bit = encoding
+                .map(|encoding| c_logic_value_bit(&format!("_bv{serial}"), encoding))
+                .unwrap_or_else(|| format!("(_bv{serial} != 0)"));
             b.push_str(&format!(
                 "{ind}    sx_value _bm{serial} = ((sx_value)1) << _bp{serial};\n\
                  {ind}    {local} = ({local} & ~_bm{serial}) | \
-                 ((_bv{serial} & 1) << _bp{serial});\n"
+                 (({value_bit}) << _bp{serial});\n"
             ));
         } else {
             let mut targets = self.aliases.get(&path).cloned().unwrap_or_default();
@@ -4341,17 +4346,28 @@ impl Ctx<'_> {
             targets.sort_by_key(|id| id.0);
             targets.dedup_by_key(|id| id.0);
             for id in targets {
+                let encoding = self
+                    .design
+                    .array_element_enums
+                    .get(&id.0)
+                    .and_then(|element| self.design.logic_encodings.get(element));
+                let value_bit = encoding
+                    .map(|encoding| c_logic_value_bit(&format!("_bv{serial}"), encoding))
+                    .unwrap_or_else(|| format!("(_bv{serial} != 0)"));
                 b.push_str(&format!(
                     "{ind}    {{ sx_value _bm = ((sx_value)1) << _bp{serial}; \
                      sx_value _old = sx_read({}); \
-                     sx_set({}, (_old & ~_bm) | ((_bv{serial} & 1) << _bp{serial})); }}\n",
-                    id.0, id.0
+                     sx_set({}, (_old & ~_bm) | (({value_bit}) << _bp{serial})); }}\n",
+                    id.0, id.0,
                 ));
                 if let Some(&meta) = self.design.meta_of.get(&id.0) {
+                    let is_binary = encoding
+                        .map(|encoding| c_disc_in(&format!("_bv{serial}"), &encoding.binary))
+                        .unwrap_or_else(|| "0".to_string());
                     b.push_str(&format!(
                         "{ind}    {{ uint64_t _ms = _bp{serial} * 4; \
                          sx_value _mm = ((sx_value)15) << _ms; \
-                         sx_value _md = _bv{serial} >= 2 ? _bv{serial} : 0; \
+                         sx_value _md = {is_binary} ? 0 : _bv{serial}; \
                          sx_value _old = sx_read({meta}); \
                          sx_set({meta}, (_old & ~_mm) | ((_md & 15) << _ms)); }}\n"
                     ));
@@ -6968,7 +6984,13 @@ impl Ctx<'_> {
                 let mut words = vec![0u64; chars.len().div_ceil(64).max(1)];
                 for (i, ch) in chars.iter().enumerate() {
                     let pos = chars.len() - 1 - i; // first character is the top bit
-                    let bit = logic_lit_value(*ch, self.enums) & 1;
+                    let disc = logic_lit_value(*ch, self.enums);
+                    let bit = self
+                        .design
+                        .logic_encodings
+                        .get(siox::ir::DEFAULT_LOGIC_TYPE)
+                        .and_then(|encoding| encoding.value_bit(disc))
+                        .unwrap_or(0);
                     words[pos / 64] |= bit << (pos % 64);
                 }
                 c_word_literal(&words)
@@ -7640,6 +7662,11 @@ impl Ctx<'_> {
             .get(path)
             .and_then(|id| self.design.meta_of.get(&id.0))
             .map(|id| format!("sx_read({id})"));
+        let encoding = self
+            .map
+            .get(path)
+            .and_then(|id| self.design.array_element_enums.get(&id.0))
+            .and_then(|element| self.design.logic_encodings.get(element));
         let mut out = String::from("0");
         for logical in (low..=high).rev() {
             let physical = logical - low;
@@ -7648,7 +7675,16 @@ impl Ctx<'_> {
                 Some(meta) => {
                     let shift = physical * 4;
                     let nibble = format!("((({meta}) >> {shift}) & 15)");
-                    format!("(({nibble}) >= 2 ? ({nibble}) : ({bit}))")
+                    let is_binary = encoding
+                        .map(|encoding| c_disc_in(&nibble, &encoding.binary))
+                        .unwrap_or_else(|| "0".to_string());
+                    let low = encoding
+                        .and_then(|encoding| encoding.binary_value(false))
+                        .unwrap_or(0);
+                    let high = encoding
+                        .and_then(|encoding| encoding.binary_value(true))
+                        .unwrap_or(1);
+                    format!("({is_binary} ? (({bit}) ? {high}ULL : {low}ULL) : ({nibble}))")
                 }
                 None => bit,
             };
@@ -7731,11 +7767,26 @@ impl Ctx<'_> {
         // whenever the bit happened to be 0 -- so a testbench could confirm a
         // value the design does not hold, on a design the hardware side reports
         // as poisoned. The reconstruction is the one the IR uses for the same
-        // read inside an entity: a discriminant of 2 or more *is* the value.
+        // read inside an entity: the companion is used exactly when the std
+        // contract says the discriminant is not an ordinary binary value.
         if width == 1 {
             if let Some(nibble) = self.companion_nibble(path, lo) {
+                let encoding = self
+                    .map
+                    .get(path)
+                    .and_then(|id| self.design.array_element_enums.get(&id.0))
+                    .and_then(|element| self.design.logic_encodings.get(element));
+                let is_binary = encoding
+                    .map(|encoding| c_disc_in(&nibble, &encoding.binary))
+                    .unwrap_or_else(|| "0".to_string());
+                let low = encoding
+                    .and_then(|encoding| encoding.binary_value(false))
+                    .unwrap_or(0);
+                let high = encoding
+                    .and_then(|encoding| encoding.binary_value(true))
+                    .unwrap_or(1);
                 return Ok(format!(
-                    "(({nibble}) >= 2 ? ({nibble}) : ((({v}) >> {lo}) & 1ULL))"
+                    "({is_binary} ? (((({v}) >> {lo}) & 1ULL) ? {high}ULL : {low}ULL) : ({nibble}))"
                 ));
             }
         }
@@ -8492,6 +8543,31 @@ fn logic_lit_value(c: char, enums: &HashMap<String, HashMap<String, u64>>) -> u6
         .and_then(|m| m.get(&format!("'{c}'")))
         .copied()
         .unwrap_or(0)
+}
+
+fn c_disc_in(value: &str, members: &std::collections::HashSet<u64>) -> String {
+    let mut members = members.iter().copied().collect::<Vec<_>>();
+    members.sort_unstable();
+    if members.is_empty() {
+        return "0".to_string();
+    }
+    format!(
+        "({})",
+        members
+            .into_iter()
+            .map(|disc| format!("(({value}) == {disc}ULL)"))
+            .collect::<Vec<_>>()
+            .join(" || ")
+    )
+}
+
+fn c_logic_value_bit(value: &str, encoding: &siox::ir::LogicEncoding) -> String {
+    let highs = encoding
+        .value_bits
+        .iter()
+        .filter_map(|(&disc, &high)| high.then_some(disc))
+        .collect();
+    c_disc_in(value, &highs)
 }
 
 #[cfg(test)]
