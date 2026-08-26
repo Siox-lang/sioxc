@@ -70,6 +70,16 @@ Current baseline:
 
 Remaining:
 
+- 🔴 **Simulation entity reachability and target query.** `extern "C"` and
+  runtime file I/O remain legal inside behavioral simulation entities. Infer
+  that status transitively through reachable functions and instances; native
+  simulation accepts the resulting hierarchy, while a future RTL/synthesis
+  elaboration rejects any simulation entity that remains after model
+  selection and constant folding. Expose the selected target as a std-owned
+  compile-time `std::sim::SIMULATION: Bool` constant so target-specific source
+  branches can be eliminated before reachability is finalized. Compile-time
+  `read<T>` ROM construction remains an elaboration input, not a reason to mark
+  an entity simulation-only.
 - 🔴 **Comment-preserving formatting.** The canonical printer intentionally
   declines LSP formatting when comments are present because comment trivia is
   not attached to AST nodes. Preserve trivia and anchor comments before

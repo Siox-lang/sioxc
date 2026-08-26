@@ -332,28 +332,41 @@ knowing std symbols, discriminants, or truth tables. The exhaustive logical and
 resolution corpus, checked against `nvc`, passes unchanged with reordered
 `ULogic` source.
 
-### 6. Simulation-only operations can appear in hardware expressions
+### 6. Simulation entities are legal behavioral replacements
 
-`extern "C"` calls are currently accepted in combinational and clocked design
-logic, and `read<T>` means compile-time ROM input in hardware but runtime file
-I/O in a testbench. These rules are usable in a simulation-first compiler, but
-their synthesis meaning is absent or context-dependent.
+`extern "C"` calls and runtime file I/O are intentionally legal in entity
+logic. They support test fixtures, accelerated behavioral models, and black-box
+simulation of components that are not ordinary digital RTL, such as an ADC.
+An entity that reaches either facility is a **simulation entity**; that status
+propagates through reachable function calls and instantiated entities.
 
-Before synthesis output exists, every operation should acquire an explicit
-classification such as synthesizable, elaboration-only, or simulation-only.
-The compiler can then reject a design for the intended target instead of
-letting a future backend reinterpret existing source.
+A native simulation hierarchy may contain simulation entities normally. A
+future RTL/synthesis elaboration fails only when its selected hierarchy still
+contains one. Model replacement belongs to the project/backend layer: it may
+select a simulation entity in place of a regular implementation without
+making `sioxc` responsible for package configuration. A compile-time
+`read<T>` used to construct a ROM image remains an elaboration input and does
+not by itself make the entity simulation-only.
 
-**Where it makes sense.** Foreign calls are valuable in testbenches, reference
-models, DPI/VPI-style integration, and elaboration helpers. File reads in
-hardware can also make sense when they are explicitly elaboration-time ROM
-initialization rather than runtime I/O.
+The target should also be visible through a std-owned compile-time constant,
+provisionally `std::sim::SIMULATION: Bool`. It is true when elaborating a
+native simulation design and false for a future RTL/synthesis target. This is
+a target query, not a statement that elaboration is not occurring—simulation
+designs are elaborated too. Constant folding must happen before simulation-only
+reachability is finalized, so an unreachable target-specific branch does not
+taint the selected hierarchy.
 
-**Verdict — retain by domain, reject cross-domain use.** Do not remove `extern`
-or `read<T>`. Give callable operations a target/effect classification and make
-synthesizable compilation reject simulation-only calls. Prefer distinct APIs
-or explicit context for elaboration-time ROM loading and runtime file reading
-so one spelling does not quietly change meaning.
+**Where it makes sense.** Foreign calls and files are appropriate in
+testbenches, reference models, DPI/VPI-style integration, accelerated models,
+and behavioral stand-ins for analogue or proprietary devices. The same source
+can use the target constant to select a simulation implementation while keeping
+an RTL path explicit.
+
+**Verdict — resolved: retain simulation entities and reject them only from an
+RTL hierarchy.** Do not forbid simulation facilities merely because they occur
+inside entity syntax. Infer simulation-only status transitively, expose the
+selected target through std, and diagnose the remaining simulation entity at
+synthesis elaboration rather than at parsing or ordinary semantic checking.
 
 ### 7. Runtime out-of-range indexing fails soft
 
@@ -569,12 +582,8 @@ Before adding more surface syntax, the highest-value decisions are:
 1. Write the exact operator/intrinsic ownership matrix for compiler versus std.
 2. Freeze or replace the adjacent applied-view spelling.
 3. Decide whether equality can exist without a total `<=>` order.
-4. Make simulation/elaboration/synthesis availability an explicit semantic
-   property of functions and intrinsics.
-5. Replace the standard-logic discriminant convention with compiler-consumed
-   declaration metadata.
-6. Choose a strict policy for runtime out-of-range indexing.
-7. Specify clock-domain metadata independently of the convenient
+4. Choose a strict policy for runtime out-of-range indexing.
+5. Specify clock-domain metadata independently of the convenient
    `clk.rising()` surface.
 
 ## Bottom line
@@ -584,9 +593,9 @@ types, role-based views, static contracts, visible conversion, deterministic
 event semantics, and a std-owned domain library. It already feels more like a
 purpose-built HDL than “Rust syntax translated into gates.”
 
-The weak points are mostly boundaries where a convenient Phase 1 shortcut is
-starting to look like a permanent semantic rule: compiler/std operator
-fallbacks, representation marker traits, discriminant conventions,
-simulation-only calls in hardware, and soft bounds behavior. Settling those
+The remaining weak points are mostly boundaries where a convenient Phase 1
+shortcut is starting to look like a permanent semantic rule: compiler/std
+operator fallbacks, overloaded surface forms, equality requiring total order,
+soft bounds behavior, and incomplete clock-domain metadata. Settling those
 before synthesis and package tooling will prevent implementation details from
 becoming accidental language design.
