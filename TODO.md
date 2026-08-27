@@ -256,7 +256,13 @@ Current baseline:
 - 🔴 Replace the generated-C testbench translator with the software IR,
   LLVM lowering, and Rust runtime described in
   `docs/proposals/testbench-software-ir.md`. Keep the current harness as the
-  compatibility backend until the replacement reaches feature parity.
+  compatibility backend until the replacement reaches feature parity. Before
+  adding the second lowering path, create one resolved `TestPlan`: only enabled
+  uses of the canonical std `test` attribute enter sioxc's test map, while
+  `top` is removed from std/compiler root handling and preserved solely as
+  ordinary metadata for RTL vendor and Cocotb consumers. Move the existing C
+  harness onto that plan first so discovery, hierarchy selection, and attribute
+  identity are implemented once and reused by direct LLVM lowering.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,
