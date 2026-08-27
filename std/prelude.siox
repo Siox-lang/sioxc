@@ -10,6 +10,6 @@ module std::prelude;
 pub using std::logic::{Bit, Logic, Bool};
 pub using std::bits::{unsigned, signed, sext};
 pub using std::ops::{Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
-pub using std::attrs::{precedence};
+pub using std::attrs::{test, precedence};
 pub using std::text::{string};
 pub using std::sim::{time, frequency};

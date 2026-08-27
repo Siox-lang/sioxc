@@ -224,7 +224,9 @@ pub fn elaborate(
     typed: &Typed,
     sink: &mut DiagnosticSink,
 ) -> Hierarchy {
-    elaborate_roots(modules, resolved, typed, sink, |entity, _| is_root(entity))
+    elaborate_roots(modules, resolved, typed, sink, |entity, _| {
+        is_root(entity, resolved)
+    })
 }
 
 /// Elaborate for `check`: the usual roots, plus every entity that nothing
@@ -244,7 +246,7 @@ pub fn elaborate_for_check(
 ) -> Hierarchy {
     let instantiated = instantiated_entities(modules, resolved);
     elaborate_roots(modules, resolved, typed, sink, |ent, id| {
-        is_root(ent) || !instantiated.contains(&id)
+        is_root(ent, resolved) || !instantiated.contains(&id)
     })
 }
 
@@ -288,6 +290,24 @@ pub fn elaborate_top(
 ) -> Hierarchy {
     elaborate_roots(modules, resolved, typed, sink, |ent, id| {
         ent.name.text == top || resolved.qualified_name(id).as_deref() == Some(top)
+    })
+}
+
+/// Elaborate exactly the entities selected by a frontend consumer.
+///
+/// Native test discovery uses this entry point after resolving the canonical
+/// `std::attrs::test` applications. Keeping selection outside elaboration
+/// prevents this stage, the compatibility C harness, and the future software
+/// IR emitter from each rediscovering roots by attribute spelling.
+pub fn elaborate_entities(
+    modules: &[Module],
+    resolved: &Resolved,
+    typed: &Typed,
+    sink: &mut DiagnosticSink,
+    entities: &HashSet<DefId>,
+) -> Hierarchy {
+    elaborate_roots(modules, resolved, typed, sink, |_, id| {
+        entities.contains(&id)
     })
 }
 
@@ -1196,12 +1216,14 @@ struct InstanceSpec<'a> {
     loop_env: HashMap<String, i64>,
 }
 
-fn is_root(e: &EntityDecl) -> bool {
-    e.attrs.iter().any(|a| {
-        matches!(
-            a.name.segments.last().map(|s| s.text.as_str()),
-            Some("top") | Some("test")
-        )
+fn is_root(e: &EntityDecl, resolved: &Resolved) -> bool {
+    e.attrs.iter().any(|attribute| {
+        attribute
+            .name
+            .segments
+            .last()
+            .is_some_and(|segment| segment.text == "top")
+            || crate::resolve::is_enabled_std_test_attribute(resolved, attribute)
     })
 }
 

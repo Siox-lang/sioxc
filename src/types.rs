@@ -540,10 +540,9 @@ impl<'a> Checker<'a> {
                             index_bounds: self.declared_index_bounds(&p.ty),
                         })
                         .collect();
-                    if e.attrs
-                        .iter()
-                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("test"))
-                    {
+                    if e.attrs.iter().any(|attribute| {
+                        crate::resolve::is_enabled_std_test_attribute(self.resolved, attribute)
+                    }) {
                         self.test_entities.insert(entity_key.clone());
                     }
                     self.entities.insert(entity_key, ports);

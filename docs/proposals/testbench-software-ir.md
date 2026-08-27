@@ -41,19 +41,21 @@ Freeze discovery semantics before introducing another backend. `test` and
   not discover native tests, choose elaboration roots, or change entity
   semantics from the textual name `top`.
 
-The frontend therefore needs one resolved `TestPlan` (qualified test identity,
-enabled value, hierarchy root, entry body, source span, and shared layout
-metadata) that is consumed first by the compatibility C backend and later by
-software IR lowering. Discovery must not be reimplemented inside either
+The frontend therefore provides one resolved `TestPlan` containing each test's
+qualified identity, entity `DefId`, bound hierarchy root, and source span. Test
+bodies and layouts remain in the ordinary module, hierarchy, and `Design`
+products and are reached through those stable IDs rather than copied into the
+plan. The compatibility C backend consumes this plan now; software IR lowering
+will consume the same product. Discovery is not reimplemented inside either
 emitter. Other declared attributes, including `top`, remain attached to their
 declarations for future output backends without entering `TestPlan`.
 
-The current implementation does not yet satisfy this boundary: the resolver
-seeds both names, `std::attrs` declares both, and type checking, elaboration,
-digital IR, and the C harness inspect leaf spelling or mere presence. The
-migration must remove that coupling first. This intentionally avoids building
-new LLVM test lowering on top of a root model that would immediately need to be
-replaced.
+Canonical test identity/value handling, module-qualified attribute ownership,
+exact test-root elaboration, and compatibility-harness consumption are now
+implemented. The remaining boundary cleanup is `top`: the resolver still seeds
+it, `std::attrs` still declares it, and ordinary elaboration still consumes its
+leaf spelling. Remove that coupling before direct LLVM test lowering so the new
+backend never inherits the wrong root model.
 
 ## Proposed pipeline
 
@@ -131,11 +133,12 @@ builds it.
 
 ## Migration plan
 
-1. Normalize attribute ownership and test discovery before changing codegen:
-   remove `top` from `std`, stop seeding or consuming it as a compiler hook,
-   preserve it as ordinary resolved output metadata, resolve `test` to its
-   canonical std declaration, honor its Boolean value, and build one shared
-   `TestPlan`. Migrate the compatibility C harness to consume that plan.
+1. **In progress:** normalize attribute ownership and test discovery before
+   changing codegen. Module-qualified attributes, canonical std test identity
+   and Boolean handling, exact test-root elaboration, the shared resolved
+   `TestPlan`, and compatibility-C consumption are implemented. Still remove
+   `top` from `std` and compiler root handling and preserve it as ordinary
+   output metadata.
 2. Extract and document the existing generated harness/runtime ABI and add
    differential tests for its supported constructs. Include same-name custom
    attributes, disabled tests, qualified duplicate test leaves, and preserved

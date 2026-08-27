@@ -253,16 +253,21 @@ Current baseline:
   bits. Composite right-hand sides are staged before writes. Invalid dynamic
   reads and writes fail at the source index with its value and declared range;
   explicit untaken guards suppress the access.
+- ✅ Native test builds now create one resolved `TestPlan` after type checking,
+  elaborate exactly its enabled canonical `std::attrs::test` roots, retain the
+  plan in `Compilation`, and pass it to the generated-C compatibility harness.
+  Attribute declarations are module-qualified, so same-leaf custom/vendor
+  metadata remains inert. Type checking, elaboration, IR, and planning share
+  one identity/value predicate rather than matching the leaf `test`.
 - 🔴 Replace the generated-C testbench translator with the software IR,
   LLVM lowering, and Rust runtime described in
   `docs/proposals/testbench-software-ir.md`. Keep the current harness as the
-  compatibility backend until the replacement reaches feature parity. Before
-  adding the second lowering path, create one resolved `TestPlan`: only enabled
-  uses of the canonical std `test` attribute enter sioxc's test map, while
-  `top` is removed from std/compiler root handling and preserved solely as
-  ordinary metadata for RTL vendor and Cocotb consumers. Move the existing C
-  harness onto that plan first so discovery, hierarchy selection, and attribute
-  identity are implemented once and reused by direct LLVM lowering.
+  compatibility backend until the replacement reaches feature parity. The
+  shared `TestPlan` prerequisite is complete; before adding direct LLVM test
+  lowering, remove `top` from std/compiler root handling and preserve it solely
+  as ordinary metadata for RTL vendor and Cocotb consumers. Then both native
+  lowering paths can reuse the same discovery, hierarchy, attribute identity,
+  and layout inputs during differential migration.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

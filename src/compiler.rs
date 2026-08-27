@@ -20,6 +20,7 @@ use crate::resolve::Resolved;
 use crate::syntax::ast::{Item, Module};
 use crate::syntax::token::{Token, TokenKind};
 use crate::syntax::{lexer::Lexer, parser, pretty};
+use crate::testbench::TestPlan;
 use crate::types::Typed;
 
 #[cfg(feature = "llvm")]
@@ -215,6 +216,9 @@ pub struct Compilation {
     pub resolved: Option<Resolved>,
     pub typed: Option<Typed>,
     pub hierarchy: Option<Hierarchy>,
+    /// Resolved native tests bound to their elaborated hierarchy roots.
+    /// Present only when compiling a test executable.
+    pub test_plan: Option<TestPlan>,
     pub design: Option<Design>,
     pub diagnostics: DiagnosticSink,
     pub artifact: Option<Artifact>,
@@ -232,6 +236,7 @@ impl Compilation {
             resolved: None,
             typed: None,
             hierarchy: None,
+            test_plan: None,
             design: None,
             diagnostics: DiagnosticSink::new(),
             artifact: None,
@@ -402,12 +407,15 @@ impl Compiler {
 
         let typed = result.typed.as_ref().expect("type checking completed");
         let resolved = result.resolved.as_ref().expect("resolution completed");
-        let hierarchy = match &request.emit {
-            Emit::Metadata => crate::elab::elaborate_for_check(
-                &result.modules,
-                resolved,
-                typed,
-                &mut result.diagnostics,
+        let (hierarchy, test_plan) = match &request.emit {
+            Emit::Metadata => (
+                crate::elab::elaborate_for_check(
+                    &result.modules,
+                    resolved,
+                    typed,
+                    &mut result.diagnostics,
+                ),
+                None,
             ),
             Emit::Object { top } => {
                 let top = match select_top(&result.modules, resolved, top.as_deref()) {
@@ -431,12 +439,35 @@ impl Compiler {
                     ));
                     return result;
                 }
-                hierarchy
+                (hierarchy, None)
             }
-            _ => crate::elab::elaborate(&result.modules, resolved, typed, &mut result.diagnostics),
+            Emit::TestExecutable => {
+                let (hierarchy, plan) = crate::testbench::elaborate(
+                    &result.modules,
+                    resolved,
+                    typed,
+                    &mut result.diagnostics,
+                );
+                (hierarchy, Some(plan))
+            }
+            _ => (
+                crate::elab::elaborate(&result.modules, resolved, typed, &mut result.diagnostics),
+                None,
+            ),
         };
+        if request.emit == Emit::TestExecutable && test_plan.as_ref().is_none_or(TestPlan::is_empty)
+        {
+            result.failure = Some(CompileFailure::new(
+                FailureKind::Selection,
+                "no enabled canonical std `#[test]` entity to build a test binary from",
+            ));
+            result.hierarchy = Some(hierarchy);
+            result.test_plan = test_plan;
+            return result;
+        }
         result.stats.instances = Some(hierarchy.instances.len());
         result.stats.roots = Some(hierarchy.roots.len());
+        result.test_plan = test_plan;
 
         if request.emit == Emit::Tree {
             result.artifact = Some(Artifact::Text(hierarchy.to_tree_string()));
@@ -576,16 +607,18 @@ impl Compiler {
         }
         let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
+        let test_plan = result.test_plan.as_ref().expect("test planning completed");
         let design = result.design.as_ref().expect("lowering completed");
-        match build::build(
-            &result.modules,
+        match build::build(build::BuildRequest {
+            modules: &result.modules,
             resolved,
             hierarchy,
+            test_plan,
             design,
-            &result.sources,
+            sources: &result.sources,
             debug,
-            &output,
-        ) {
+            output: &output,
+        }) {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
                     kind: FileArtifact::TestExecutable,

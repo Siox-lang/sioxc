@@ -78,6 +78,50 @@ pub(crate) fn is_compiler_trait(resolved: &Resolved, id: DefId) -> bool {
             || definition.module.as_deref() == Some(canonical_module))
 }
 
+/// Whether an applied attribute is the enabled canonical native-test marker.
+///
+/// Normal compiler invocations resolve this to `std::attrs::test`. The builtin
+/// fallback exists only for self-contained frontend users/tests that do not
+/// load std; a declaration in any other module is ordinary same-named
+/// metadata. Keeping this check here gives type checking, elaboration, digital
+/// IR, and test planning one identity/value rule.
+pub(crate) fn is_enabled_std_test_attribute(resolved: &Resolved, attr: &Attr) -> bool {
+    let Some(attribute_id) = resolved.resolved(attr.name.span) else {
+        return false;
+    };
+    let Some(definition) = resolved.def(attribute_id) else {
+        return false;
+    };
+    let canonical = definition.name == "test"
+        && (definition.kind == DefKind::Builtin
+            || (definition.kind == DefKind::Attr
+                && definition.module.as_deref() == Some("std::attrs")));
+    if !canonical {
+        return false;
+    }
+
+    match &attr.value {
+        None => true,
+        Some(Expr::Path(path)) => resolved
+            .resolved(path.span)
+            .and_then(|id| resolved.def(id))
+            .is_some_and(|value| {
+                value.name == "true"
+                    && value
+                        .parent
+                        .and_then(|id| resolved.def(id))
+                        .is_some_and(|owner| {
+                            owner.kind == DefKind::Enum
+                                && owner.module.as_deref() == Some("std::logic")
+                                && owner.name == "Bool"
+                        })
+            }),
+        // Type checking reports malformed Bool-valued attributes. Treat a
+        // partial/invalid result as disabled so it cannot acquire semantics.
+        Some(_) => false,
+    }
+}
+
 /// Stable id for a resolved declaration. Later stages key off this instead of
 /// raw names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -313,8 +357,9 @@ struct Resolver<'a> {
     /// Names explicitly imported into each source module. Re-exports retain
     /// their public flag here instead of mutating the target declaration.
     module_imports: HashMap<(String, String), (DefId, bool, Span)>,
-    /// Attribute namespace (kept separate; attrs share no names with types).
-    attrs: HashMap<String, DefId>,
+    /// Compiler-provided attribute fallbacks. Declared attributes themselves
+    /// are module-qualified in `module_attrs`, just like ordinary definitions;
+    /// equal leaves in different modules must not collide.
     builtin_attrs: HashMap<String, DefId>,
     /// Enum `DefId` -> (variant name -> variant `DefId`).
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
@@ -364,7 +409,6 @@ impl<'a> Resolver<'a> {
             module_defs: HashMap::new(),
             module_attrs: HashMap::new(),
             module_imports: HashMap::new(),
-            attrs: HashMap::new(),
             builtin_attrs: HashMap::new(),
             enum_variants: HashMap::new(),
             scopes: Vec::new(),
@@ -402,7 +446,6 @@ impl<'a> Resolver<'a> {
         // std::attrs metadata attributes (spec 3.5).
         for name in ["top", "test", "keep", "library", "name", "precedence"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
-            self.attrs.insert(name.to_string(), id);
             self.builtin_attrs.insert(name.to_string(), id);
         }
     }
@@ -947,8 +990,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn register_attr(&mut self, name: &str, id: DefId, span: Span) {
-        if let Some(previous) = self.attrs.get(name).copied() {
-            if self.out.kind_of(previous) != Some(DefKind::Builtin) {
+        if let Some(module) = &self.current_module {
+            let key = (module.clone(), name.to_string());
+            if let Some(previous) = self.module_attrs.get(&key).copied() {
                 let mut diagnostic = Diagnostic::error(format!("duplicate attribute `{name}`"))
                     .with_code(codes::DUPLICATE_ITEM)
                     .at(span)
@@ -964,11 +1008,7 @@ impl<'a> Resolver<'a> {
                 self.sink.emit(diagnostic);
                 return;
             }
-        }
-        self.attrs.insert(name.to_string(), id);
-        if let Some(module) = &self.current_module {
-            self.module_attrs
-                .insert((module.clone(), name.to_string()), id);
+            self.module_attrs.insert(key, id);
         }
     }
 

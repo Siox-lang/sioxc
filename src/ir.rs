@@ -1646,7 +1646,7 @@ impl<'a> Lowering<'a> {
                 .cloned()
                 .unwrap_or_default(),
         );
-        if has_attr(edecl, "test") {
+        if is_test_entity(edecl, self.resolved) {
             // A testbench: lower only its DUT instances, each per-instance under
             // the testbench path (`CounterTest.dut.*`), so two instances of one
             // entity are distinct. Stimulus statements are interpreted by the
@@ -2383,7 +2383,7 @@ impl<'a> Lowering<'a> {
                     }
                     if l.value.is_none()
                         && !is_instance_array
-                        && !has_attr(edecl, "test")
+                        && !is_test_entity(edecl, self.resolved)
                         && !has_attr(edecl, "top")
                     {
                         let dot = format!("{}.", l.name.text);
@@ -2398,7 +2398,10 @@ impl<'a> Lowering<'a> {
                             .collect();
                         self.undriven_lets.extend(leaves);
                     }
-                    if !is_instance_array && !has_attr(edecl, "test") && !has_attr(edecl, "top") {
+                    if !is_instance_array
+                        && !is_test_entity(edecl, self.resolved)
+                        && !has_attr(edecl, "top")
+                    {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
                         self.unused_lets.extend(
@@ -14379,6 +14382,12 @@ fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
     e.attrs
         .iter()
         .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
+}
+
+fn is_test_entity(e: &ast::EntityDecl, resolved: &Resolved) -> bool {
+    e.attrs
+        .iter()
+        .any(|attribute| crate::resolve::is_enabled_std_test_attribute(resolved, attribute))
 }
 
 fn type_head_name(t: &ast::Type) -> Option<&str> {

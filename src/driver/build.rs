@@ -18,6 +18,7 @@ use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, Source
 use siox::resolve::{DefId, Resolved};
 use siox::syntax::ast;
 use siox::syntax::Module;
+use siox::testbench::TestPlan;
 
 type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
 type StructFieldNames = Vec<String>;
@@ -135,31 +136,34 @@ const SX_DEBUG_ACCESSORS: &str = concat!(
     "}\n",
 );
 
-pub fn build(
-    modules: &[Module],
-    resolved: &Resolved,
-    hier: &Hierarchy,
-    design: &Design,
-    sources: &siox::diag::SourceMap,
-    // Attribute the generated C back to its `.siox` lines and compile it
-    // unoptimized with debug info, so a debugger can follow the source.
-    debug: bool,
-    out: &Path,
-) -> Result<(), String> {
+pub(super) struct BuildRequest<'a> {
+    pub modules: &'a [Module],
+    pub resolved: &'a Resolved,
+    pub hierarchy: &'a Hierarchy,
+    pub test_plan: &'a TestPlan,
+    pub design: &'a Design,
+    pub sources: &'a siox::diag::SourceMap,
+    /// Attribute generated code back to `.siox` and leave it unoptimized.
+    pub debug: bool,
+    pub output: &'a Path,
+}
+
+pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
+    let BuildRequest {
+        modules,
+        resolved,
+        hierarchy: hier,
+        test_plan,
+        design,
+        sources,
+        debug,
+        output: out,
+    } = request;
     let issues = design.validate();
     if !issues.is_empty() {
         return Err(issues.join("; "));
     }
 
-    let tests: Vec<InstanceId> = hier
-        .roots
-        .iter()
-        .copied()
-        .filter(|&root| is_test_entity(modules, resolved, hier.instance(root).entity_id))
-        .collect();
-    if tests.is_empty() {
-        return Err("no #[test] entity to build a test binary from".into());
-    }
     let mut fns = FunctionIndex::new(resolved);
     let enums = siox::ir::enum_discriminants(modules, &fns);
     let families = siox::ir::array_families(modules, &fns);
@@ -845,13 +849,11 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     }
 
     let mut names = Vec::new();
-    for &root in &tests {
+    for test in &test_plan.tests {
+        let root = test.root;
         let instance = hier.instance(root);
         let name = hier.root_path(root);
-        let qualified = hier
-            .qualified_entity_name(instance.entity_id)
-            .unwrap_or(&instance.entity)
-            .to_string();
+        let qualified = test.qualified_name.clone();
         let symbol = format!("r{}", root.0);
         let (map, aliases) = build_map(hier, root, design);
         let items = test_items(modules, resolved, instance.entity_id);
@@ -8090,22 +8092,6 @@ fn duration_fs(args: &[ast::Expr]) -> Result<u64, String> {
         }
         _ => Ok(5_000_000),
     }
-}
-
-fn is_test_entity(modules: &[Module], resolved: &Resolved, entity: crate::resolve::DefId) -> bool {
-    for m in modules {
-        for it in &m.items {
-            if let ast::Item::Entity(e) = it {
-                if resolved.declared(e.name.span) == Some(entity) {
-                    return e
-                        .attrs
-                        .iter()
-                        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some("test"));
-                }
-            }
-        }
-    }
-    false
 }
 
 /// The constant tables the emitter reads, folded from a set of declarations.

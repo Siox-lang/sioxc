@@ -25,18 +25,22 @@ flowchart TB
     subgraph FRONTEND["frontend pipeline"]
         SY["syntax<br/>tokens + AST"] -->|modules| RE["resolve<br/>Resolved"]
         RE -->|definitions + bindings| TY["types<br/>Typed"]
-        TY -->|typed modules| EL["elab<br/>Hierarchy"]
+        TY -->|ordinary output| EL["elab<br/>Hierarchy"]
+        TY -->|test executable requested| TESTPLAN["testbench<br/>TestPlan"]
+        TESTPLAN -->|exact canonical std test roots| EL
         EL -->|concrete hierarchy| IR["ir<br/>Design"]
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
         DIAG -.-> TY
+        DIAG -.-> TESTPLAN
         DIAG -.-> EL
         DIAG -.-> IR
     end
 
     IR -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
     IR -->|test executable requested| HARNESS["generated C harness<br/>scheduler + VCD/FST"]
+    TESTPLAN -->|qualified tests + bound roots| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
     OBJ -->|test executable requested| LINK["Clang + native linker"]
@@ -50,6 +54,7 @@ flowchart TB
     SY -. retained phase product .-> RESULT
     RE -. retained phase product .-> RESULT
     TY -. retained phase product .-> RESULT
+    TESTPLAN -. retained test-build product .-> RESULT
     EL -. retained phase product .-> RESULT
     IR -. retained phase product .-> RESULT
     FRONT_TEXT -->|optional Artifact::Text| RESULT["Compilation<br/>diagnostics + phase products<br/>statistics + optional artifact or failure"]
@@ -71,9 +76,12 @@ tree requests do not continue through IR. Frontend-only requests stop before
 `siox::llvm` and harness generation.
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
-The compiler API discovers `#[test]` entities and generates a C harness
-containing the stimulus, scheduler, assertions, and reporting; it links that
-harness with the native design object when `Emit::TestExecutable` is requested.
+For a test build, `siox::testbench` resolves enabled uses of the canonical
+`std::attrs::test` declaration once, elaborates exactly those roots, and binds
+them into a `TestPlan`. The compiler retains that plan and the current C harness
+consumes it for qualified names and roots instead of scanning attributes again.
+The harness contains the stimulus, scheduler, assertions, and reporting; it
+links with the native design object when `Emit::TestExecutable` is requested.
 The harness contains the VCD writer, and the resulting executable incorporates
 the pinned libfst sources, so this artifact also needs Clang and zlib at
 build/link time but neither GTKWave nor an installed libfst. Therefore the
@@ -98,6 +106,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `resolve` | AST | Definitions, visibility, imports, paths, and use-site → `DefId`. |
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
+| `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
 | `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
@@ -176,7 +185,9 @@ flowchart LR
     TOKENS --> MODULES["Vec&lt;ast::Module&gt;"]
     MODULES --> RESOLVED["Resolved"]
     RESOLVED --> TYPED["Typed"]
-    TYPED --> HIERARCHY["Hierarchy"]
+    TYPED -->|ordinary output| HIERARCHY["Hierarchy"]
+    TYPED -->|test build| TESTPLAN["TestPlan<br/>canonical std tests + bound roots"]
+    TESTPLAN --> HIERARCHY
     HIERARCHY --> DESIGN["ir::Design"]
 
     TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
@@ -187,6 +198,7 @@ flowchart LR
     BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
     BACKEND -->|object or test requested| OBJECT["native object"]
     DESIGN -->|Emit::TestExecutable| HARNESS["generated C harness"]
+    TESTPLAN -->|same discovery product| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK
     LINK --> EXECUTABLE["Artifact::File<br/>test executable"]
@@ -199,6 +211,7 @@ flowchart LR
     MODULES -.-> PRODUCTS
     RESOLVED -.-> PRODUCTS
     TYPED -.-> PRODUCTS
+    TESTPLAN -.-> PRODUCTS
     HIERARCHY -.-> PRODUCTS
     DESIGN -.-> PRODUCTS
     PRODUCTS -. retained .-> COMPILATION["Compilation<br/>products + diagnostics + statistics<br/>optional artifact + failure"]
