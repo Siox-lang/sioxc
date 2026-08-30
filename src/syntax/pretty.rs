@@ -252,6 +252,20 @@ impl Printer {
             ImplItem::ModeField { dir, name, .. } => {
                 self.line(&format!("{} {};", dir_str(*dir), name.text));
             }
+            ImplItem::Process(process) => {
+                let label = process
+                    .name
+                    .as_ref()
+                    .map(|name| format!(" {}", name.text))
+                    .unwrap_or_default();
+                self.line(&format!("process{label} {{"));
+                self.indent += 1;
+                for statement in &process.body.stmts {
+                    self.stmt(statement);
+                }
+                self.indent -= 1;
+                self.line("}");
+            }
             ImplItem::Stmt(s) => self.stmt(s),
         }
     }
@@ -1010,6 +1024,13 @@ mod tests {
              #[precedence = 40] impl Operator<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
              #[precedence = 30] impl Operator<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
+        );
+    }
+
+    #[test]
+    fn explicit_process_roundtrips() {
+        roundtrip(
+            "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  process update {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",
         );
     }
 }

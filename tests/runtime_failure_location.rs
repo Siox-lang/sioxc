@@ -398,8 +398,8 @@ fn an_overwritten_assignment_is_not_range_checked() {
                entity E { a: integer<0..10> in, y: integer<0..10> out }\n\
                impl E {\n\
                \x20   let t: integer<0..10> = 0;\n\
-               \x20   t = a + 5;\n\
-               \x20   t = 2;\n\
+               \x20   process select { t = a + 5;\n\
+               \x20   t = 2; }\n\
                \x20   y = t;\n\
                }\n\
                #[test] entity T {}\n\
@@ -472,8 +472,8 @@ fn a_conditional_assignment_before_a_default_is_still_checked() {
                entity E { a: integer<0..10> in, y: integer<0..10> out }\n\
                impl E {\n\
                \x20   let t: integer<0..10> = 0;\n\
-               \x20   t = 2;\n\
-               \x20   if a > 3 { t = a + 5; }\n\
+               \x20   process select { t = 2;\n\
+               \x20   if a > 3 { t = a + 5; } }\n\
                \x20   y = t;\n\
                }\n\
                #[test] entity T {}\n\

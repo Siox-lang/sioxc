@@ -851,6 +851,17 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 Some(ImplItem::Fn(self.parse_fn_after_name(start, name, is_pub)))
             }
+            TokenKind::Process => {
+                let start = self.span();
+                self.bump();
+                let name = self.at(TokenKind::Ident).then(|| self.parse_ident());
+                let body = self.parse_block();
+                Some(ImplItem::Process(ProcessDecl {
+                    name,
+                    span: start.to(body.span),
+                    body,
+                }))
+            }
             TokenKind::In | TokenKind::Out | TokenKind::Inout => {
                 // Bus-mode leaf direction: `in clk;`.
                 let start = self.span();
@@ -2883,19 +2894,26 @@ mod tests {
     }
 
     #[test]
-    fn impl_with_state_and_sequential_block() {
+    fn impl_with_state_and_explicit_process() {
         let m = parse_ok(
-            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  if clk.rising() {\n    if rst == '1' {\n      value = 0;\n    } else {\n      value = value + 1;\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  process update {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else {
             panic!("expected impl")
         };
         assert_eq!(i.params.params.len(), 1);
-        // const, let, if-block, assignment.
+        // const, let, process, concurrent assignment.
         assert_eq!(i.items.len(), 4);
         assert!(matches!(i.items[0], ImplItem::Const(_)));
         assert!(matches!(i.items[1], ImplItem::Let(_)));
-        assert!(matches!(i.items[2], ImplItem::Stmt(Stmt::If(_))));
+        let ImplItem::Process(process) = &i.items[2] else {
+            panic!("expected process")
+        };
+        assert_eq!(
+            process.name.as_ref().map(|name| name.text.as_str()),
+            Some("update")
+        );
+        assert!(matches!(process.body.stmts[0], Stmt::If(_)));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
     }
 

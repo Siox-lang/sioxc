@@ -14,7 +14,7 @@ fn in_memory_analysis_retains_every_completed_phase() {
 module embedded;
 using std::bits::unsigned;
 
-#[top] entity Pass {
+entity Pass {
     value: unsigned[8] out
 }
 

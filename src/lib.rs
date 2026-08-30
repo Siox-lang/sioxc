@@ -31,5 +31,6 @@ pub mod ir;
 pub mod llvm;
 pub mod resolve;
 pub mod syntax;
+pub mod test_ir;
 pub mod testbench;
 pub mod types;

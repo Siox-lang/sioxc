@@ -96,7 +96,7 @@ fn a_parameter_substituted_index_is_reported() {
                    for k in 0..3 { v[k] = 3; }\n\
                    y = v[N];\n\
                }\n\
-               #[top] entity Top { y: unsigned[16] out }\n\
+               entity Top { y: unsigned[16] out }\n\
                impl Top { let e: E<N = 9> = {}; y = e.y; }\n";
     let out = diagnostics("param", src);
     assert!(
@@ -119,7 +119,7 @@ fn a_descending_range_into_a_negative_index_is_reported() {
                    for i in 0..(N - 1) { v[i] = unsigned[16](i + 1); }\n\
                    y = v[0];\n\
                }\n\
-               #[top] entity Top { y: unsigned[16] out }\n\
+               entity Top { y: unsigned[16] out }\n\
                impl Top { let e: E<N = 0> = {}; y = e.y; }\n";
     let out = diagnostics("negative", src);
     assert!(
@@ -212,7 +212,7 @@ fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
                    }\n\
                    y = stage[1].y;\n\
                }\n\
-               #[top] entity Top { y: unsigned[8] out }\n\
+               entity Top { y: unsigned[8] out }\n\
                impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
     let out = diagnostics("unbuilt_instance_slot", src);
     assert!(
@@ -236,7 +236,7 @@ fn an_unreferenced_unbuilt_instance_array_slot_is_legal() {
                using std::bits::{unsigned};\n\
                entity Inc { y: unsigned[8] out }\n\
                impl Inc { y = 1; }\n\
-               #[top] entity Top { y: unsigned[8] out }\n\
+               entity Top { y: unsigned[8] out }\n\
                impl Top {\n\
                    let stage: Inc[2];\n\
                    for i in 0..1 {\n\
@@ -257,7 +257,7 @@ fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
                using std::bits::{unsigned};\n\
                entity Cell { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl Cell { y = a; }\n\
-               #[top] entity Top { a: unsigned[8] in, y: unsigned[8] out }\n\
+               entity Top { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl Top {\n\
                    let stage: Cell[2];\n\
                    if 1 == 1 { stage[0] = Cell {}; }\n\
@@ -408,7 +408,7 @@ fn a_runtime_index_is_deferred_to_simulation() {
                    for k in 0..3 { regs[k] = unsigned[16](k * 11); }\n\
                    y = regs[addr];\n\
                }\n\
-               #[top] entity Top { a: unsigned[2] in, y: unsigned[16] out }\n\
+               entity Top { a: unsigned[2] in, y: unsigned[16] out }\n\
                impl Top { let m: Mem = { .addr = a, .y = y }; }\n";
     let out = diagnostics("runtime", src);
     assert!(

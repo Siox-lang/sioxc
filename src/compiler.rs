@@ -20,6 +20,7 @@ use crate::resolve::Resolved;
 use crate::syntax::ast::{Item, Module};
 use crate::syntax::token::{Token, TokenKind};
 use crate::syntax::{lexer::Lexer, parser, pretty};
+use crate::test_ir::Program as TestIr;
 use crate::testbench::TestPlan;
 use crate::types::Typed;
 
@@ -92,7 +93,7 @@ pub enum Emit {
     Tokens,
     /// Debug representation of the entry AST.
     Ast,
-    /// Elaborated `#[top]`/`#[test]` instance tree.
+    /// Elaborated structural or explicitly selected instance tree.
     Tree,
     /// Normalized digital IR.
     Ir,
@@ -219,6 +220,9 @@ pub struct Compilation {
     /// Resolved native tests bound to their elaborated hierarchy roots.
     /// Present only when compiling a test executable.
     pub test_plan: Option<TestPlan>,
+    /// Procedural native-test control IR paired with the digital `Design`.
+    /// Present only for test-executable compilations.
+    pub test_ir: Option<TestIr>,
     pub design: Option<Design>,
     pub diagnostics: DiagnosticSink,
     pub artifact: Option<Artifact>,
@@ -237,6 +241,7 @@ impl Compilation {
             typed: None,
             hierarchy: None,
             test_plan: None,
+            test_ir: None,
             design: None,
             diagnostics: DiagnosticSink::new(),
             artifact: None,
@@ -488,6 +493,16 @@ impl Compiler {
         result.stats.event_blocks = Some(design.event_blocks.len());
         result.hierarchy = Some(hierarchy);
         result.design = Some(design);
+        if request.emit == Emit::TestExecutable {
+            result.test_ir = Some(crate::test_ir::lower(
+                &result.modules,
+                resolved,
+                typed,
+                result.hierarchy.as_ref().expect("elaboration completed"),
+                result.test_plan.as_ref().expect("test planning completed"),
+                result.design.as_ref().expect("lowering completed"),
+            ));
+        }
 
         if request.emit == Emit::Ir {
             result.artifact = result
@@ -554,7 +569,7 @@ impl Compiler {
     }
 
     /// An unbound parameter reaches the backend as a zero width. Both native
-    /// paths hit it the same way -- a parametric `#[top]` with nothing fixing
+    /// paths hit it the same way -- a parametric root with nothing fixing
     /// its parameters -- so both say the same actionable thing, rather than one
     /// naming the fix and the other reporting "unknown width (0)" per signal
     /// from the generic validator.
@@ -566,7 +581,7 @@ impl Compiler {
             result.failure = Some(CompileFailure::new(
                 FailureKind::Validation,
                 format!(
-                    "`{path}` has an unresolved width; build a concrete top or a wrapper that fixes its parameters"
+                    "`{path}` has an unresolved width; build a concrete root or a wrapper that fixes its parameters"
                 ),
             ));
             return false;
@@ -607,13 +622,24 @@ impl Compiler {
         }
         let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
-        let test_plan = result.test_plan.as_ref().expect("test planning completed");
+        let test_ir = result.test_ir.as_ref().expect("test IR lowering completed");
+        let test_ir_issues = test_ir.validate();
+        if !test_ir_issues.is_empty() {
+            result.failure = Some(CompileFailure::new(
+                FailureKind::Validation,
+                format!(
+                    "cannot generate native test code:\n  - {}",
+                    test_ir_issues.join("\n  - ")
+                ),
+            ));
+            return;
+        }
         let design = result.design.as_ref().expect("lowering completed");
         match build::build(build::BuildRequest {
             modules: &result.modules,
             resolved,
             hierarchy,
-            test_plan,
+            test_ir,
             design,
             sources: &result.sources,
             debug,
@@ -658,20 +684,21 @@ fn select_top(
                 let qualified = resolved
                     .qualified_name(id)
                     .unwrap_or_else(|| entity.name.text.clone());
-                (entity, qualified)
+                (id, entity, qualified)
             }),
             _ => None,
         })
         .collect();
 
     if let Some(top) = explicit {
-        if let Some((_, qualified)) = entities.iter().find(|(_, qualified)| qualified == top) {
+        if let Some((_, _, qualified)) = entities.iter().find(|(_, _, qualified)| qualified == top)
+        {
             return Ok(qualified.clone());
         }
         let matches: Vec<&str> = entities
             .iter()
-            .filter(|(entity, _)| entity.name.text == top)
-            .map(|(_, qualified)| qualified.as_str())
+            .filter(|(_, entity, _)| entity.name.text == top)
+            .map(|(_, _, qualified)| qualified.as_str())
             .collect();
         return match matches.as_slice() {
             [qualified] => Ok((*qualified).to_string()),
@@ -689,29 +716,22 @@ fn select_top(
         };
     }
 
+    let roots = crate::elab::structural_root_entities(modules, resolved);
     let tops: Vec<&str> = entities
         .iter()
-        .filter(|(entity, _)| {
-            entity.attrs.iter().any(|attribute| {
-                attribute
-                    .name
-                    .segments
-                    .last()
-                    .is_some_and(|name| name.text == "top")
-            })
-        })
-        .map(|(_, qualified)| qualified.as_str())
+        .filter(|(id, _, _)| roots.contains(id))
+        .map(|(_, _, qualified)| qualified.as_str())
         .collect();
     match tops.as_slice() {
         [top] => Ok((*top).to_string()),
         [] => Err(CompileFailure::new(
             FailureKind::Selection,
-            "no #[top] entity; name one explicitly",
+            "no structural root entity; name one explicitly with `--top`",
         )),
         _ => Err(CompileFailure::new(
             FailureKind::Selection,
             format!(
-                "multiple #[top] entities ({}); select one explicitly",
+                "multiple structural root entities ({}); select one explicitly with `--top`",
                 tops.join(", ")
             ),
         )),
@@ -911,6 +931,56 @@ mod tests {
         assert_eq!(
             select_top(&modules, &resolved, Some("b::Root")).unwrap(),
             "b::Root"
+        );
+    }
+
+    #[test]
+    fn default_object_root_is_structural_not_vendor_metadata() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [
+            syntax::parse_module(
+                FileId(0),
+                "module vendor; pub attr top: integer for entity;",
+                &mut sink,
+            ),
+            syntax::parse_module(
+                FileId(1),
+                "module design; #[vendor::top = 1] entity Preferred {} entity Other {}",
+                &mut sink,
+            ),
+        ];
+        let resolved = resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+        let crate::syntax::ast::Item::Entity(preferred) = &modules[1].items[0] else {
+            panic!("expected preferred entity");
+        };
+        let metadata = resolved
+            .resolved(preferred.attrs[0].name.span)
+            .and_then(|id| resolved.def(id))
+            .expect("vendor metadata remains resolved for output consumers");
+        assert_eq!(metadata.module.as_deref(), Some("vendor"));
+
+        let failure = select_top(&modules, &resolved, None).unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Selection);
+        assert!(failure.message.contains("design::Preferred"));
+        assert!(failure.message.contains("design::Other"));
+        assert!(failure.message.contains("--top"));
+    }
+
+    #[test]
+    fn sole_uninstantiated_entity_is_the_default_object_root() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [syntax::parse_module(
+            FileId(0),
+            "module design; entity Child {} impl Child {} \
+             entity Root {} impl Root { let child: Child = {}; }",
+            &mut sink,
+        )];
+        let resolved = resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+        assert_eq!(
+            select_top(&modules, &resolved, None).unwrap(),
+            "design::Root"
         );
     }
 }

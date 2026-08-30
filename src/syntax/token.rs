@@ -37,6 +37,7 @@ pub enum TokenKind {
     Const,
     Let, // signal / state / local binding: `let x: T = e;`
     Fn,  // function / method declaration: `fn name(self) { ... }`
+    Process,
     In,
     Out,
     Inout,
@@ -127,6 +128,7 @@ impl TokenKind {
             TokenKind::Const => "`const`",
             TokenKind::Let => "`let`",
             TokenKind::Fn => "`fn`",
+            TokenKind::Process => "`process`",
             TokenKind::In => "`in`",
             TokenKind::Out => "`out`",
             TokenKind::Inout => "`inout`",

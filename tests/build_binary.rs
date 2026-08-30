@@ -82,6 +82,75 @@ fn native_output_path_does_not_need_to_be_utf8() {
 }
 
 #[test]
+fn process_local_keeps_its_declared_index_range() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_process_local_range_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("process_local_range.siox");
+    let output = directory.join("process-local-range-test");
+    std::fs::write(
+        &source,
+        r#"module process_local_range;
+           using std::logic::Bit;
+           entity Probe { clk: Bit in, observed: Bit out }
+           impl Probe { observed = clk; }
+           #[test] entity ProcessLocalRange {}
+           impl ProcessLocalRange {
+               process stimulus {
+                   let value: unsigned[15..8] = 0;
+                   value[11..8] = "1111";
+                   assert!(value == 15,
+                           "a process local preserves its declared labels");
+               }
+           }
+           #[test] entity ClockAfterStimulus {}
+           impl ClockAfterStimulus {
+               let clk: Bit = '0';
+               let observed: Bit;
+               let probe: Probe = { .clk = clk, .observed = observed };
+               process stimulus {
+                   await 1ns;
+                   assert!(observed == '1',
+                           "a later-declared clock starts concurrently at time zero");
+               }
+               process clock {
+                   clk = not clk after 1ns;
+               }
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "process-local range fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "process-local range fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn native_local_names_are_isolated_from_each_other_and_the_harness() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
@@ -1026,7 +1095,7 @@ fn extreme_layouts_fail_cleanly_instead_of_panicking() {
     std::fs::write(
         &source,
         "module extreme_range;
-         #[top] entity E {
+         entity E {
              y: Logic[-9223372036854775807..9223372036854775807] out,
          }
          impl E {}",
@@ -1045,7 +1114,7 @@ fn extreme_layouts_fail_cleanly_instead_of_panicking() {
     std::fs::write(
         &source,
         "module extreme_width;
-         #[top] entity E { y: unsigned[4294967295] out, }
+         entity E { y: unsigned[4294967295] out, }
          impl E { y = 0; }",
     )
     .unwrap();

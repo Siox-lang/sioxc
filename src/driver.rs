@@ -15,10 +15,10 @@ use siox::syntax::pretty;
 #[derive(Parser)]
 #[command(name = "sioxc", version, about = "The siox compiler (Phase 1)")]
 struct Cli {
-    /// The `.siox` file to compile (builds its `#[top]` design). Bare
-    /// `sioxc foo.siox` compiles the file, like `rustc foo.rs`.
+    /// The `.siox` file to compile. A sole structural root is selected by
+    /// default; bare `sioxc foo.siox` compiles it like `rustc foo.rs`.
     file: PathBuf,
-    /// The top entity to build (default: the single `#[top]` entity).
+    /// The root entity to build (default: the sole uninstantiated entity).
     #[arg(long)]
     top: Option<String>,
     /// Output path for a native object or test executable.

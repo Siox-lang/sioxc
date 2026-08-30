@@ -339,12 +339,11 @@ impl<'a> Checker<'a> {
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
         let mut attr_targets = HashMap::new();
         for (name, targets) in [
-            ("top", &["entity"][..]),
-            ("test", &["entity"]),
-            ("keep", &["let", "port"]),
-            ("library", &["entity"]),
-            ("name", &["entity"]),
-            ("precedence", &["impl"]),
+            ("test", &["entity"][..]),
+            ("keep", &["let", "port"][..]),
+            ("library", &["entity"][..]),
+            ("name", &["entity"][..]),
+            ("precedence", &["impl"][..]),
         ] {
             attr_targets.insert(
                 name.to_string(),
@@ -353,7 +352,6 @@ impl<'a> Checker<'a> {
         }
         let mut attr_value_kinds = HashMap::new();
         for (name, ty) in [
-            ("top", AttrValueTy::Bool),
             ("test", AttrValueTy::Bool),
             ("keep", AttrValueTy::Bool),
             ("library", AttrValueTy::Str),
@@ -1669,7 +1667,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                         ImplItem::Fn(function) => self.check_fn_type_layouts(function),
-                        ImplItem::ModeField { .. } | ImplItem::Stmt(_) => {}
+                        ImplItem::ModeField { .. } | ImplItem::Process(_) | ImplItem::Stmt(_) => {}
                     }
                 }
             }
@@ -2268,6 +2266,18 @@ impl<'a> Checker<'a> {
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());
         for item in &im.items {
+            if let ImplItem::Process(process) = item {
+                if im.trait_.is_some() || !self.entity_names.contains(&backing) {
+                    self.error_with_help(
+                        codes::PROCESS_PLACEMENT,
+                        process.span,
+                        "`process` is only allowed in an inherent entity implementation"
+                            .to_string(),
+                        "use a function body for sequential software/type behavior".to_string(),
+                    );
+                }
+                continue;
+            }
             let ImplItem::Fn(function) = item else {
                 continue;
             };
@@ -2320,6 +2330,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let (dirs, sym, ranged) = self.impl_env(im);
+        let index_bounds = self.array_bounds.borrow().clone();
         for a in &im.attrs {
             self.check_attr_target(a, "impl", type_head_name(&im.target));
             self.check_attr_value(a);
@@ -2442,13 +2453,25 @@ impl<'a> Checker<'a> {
                     }
                 }
                 ImplItem::ModeField { .. } => {}
+                ImplItem::Process(process) => {
+                    self.check_process_block(&process.body, &dirs, &ranged, &sym, &index_bounds)
+                }
                 ImplItem::Stmt(s) => self.check_stmt(s, &dirs, &sym, &ranged, None),
             }
         }
-        self.lint_dead_assignments(im.items.iter().filter_map(|it| match it {
-            ImplItem::Stmt(s) => Some(s),
-            _ => None,
-        }));
+    }
+
+    fn check_process_block(
+        &mut self,
+        block: &Block,
+        view_dirs: &PortDirs,
+        bounds: &HashMap<String, (i64, i64)>,
+        names: &HashMap<String, Ty>,
+        index_bounds: &HashMap<String, (i64, i64)>,
+    ) {
+        let saved_index_bounds = self.array_bounds.replace(index_bounds.clone());
+        self.check_stmt_sequence(&block.stmts, view_dirs, names, bounds, None);
+        self.array_bounds.replace(saved_index_bounds);
     }
 
     /// Build the value environment for an impl body: the `in` ports (for the
@@ -3720,7 +3743,7 @@ impl<'a> Checker<'a> {
             // through elaboration into `--emit tree` as `#[speed]`, so a
             // synthesis or constraint backend reading it found an attribute with
             // no number in it. `Bool` is exempt: a bare flag reads as `true`, the
-            // way the marker attributes (`#[top]`, `#[test]`) do.
+            // way Bool flag attributes such as `#[test]` do.
             match self.attr_value_kinds.get(name).copied() {
                 Some(AttrValueTy::Integer) => self.error_with_help(
                     codes::INVALID_ATTR_VALUE_TYPE,
@@ -9072,7 +9095,9 @@ mod tests {
 
     #[test]
     fn attribute_on_right_target_is_fine() {
-        let errors = check_src("module m;\n#[top]\nentity E { y: Bit out, }\n");
+        let errors = check_src(
+            "module m;\npub attr vendor_top: Bool for entity;\n#[vendor_top]\nentity E { y: Bit out, }\n",
+        );
         assert_eq!(errors, 0);
     }
 
@@ -10254,8 +10279,9 @@ mod tests {
     /// return from. It stays legal inside a function.
     #[test]
     fn return_outside_a_function_is_reported() {
-        let hw =
-            check_src("module m;\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; return; }\n");
+        let hw = check_src(
+            "module m;\nentity E { y: unsigned[8] out, }\nimpl E { process bad { y = 1; return; } }\n",
+        );
         assert_eq!(hw, 1, "hardware statement position");
         let free_fn = check_src(
             "module m;\nfn f(x: unsigned[8]) -> unsigned[8] { return x + 1; }\n\
@@ -10273,6 +10299,27 @@ mod tests {
              entity E { y: unsigned[8] out }\nimpl E { y = f(1); }\n",
         );
         assert_eq!(nested, 0, "including inside a nested block");
+    }
+
+    #[test]
+    fn process_is_only_valid_on_an_inherent_entity_impl() {
+        assert_eq!(
+            check_src(
+                "module m;\nentity E { y: Bit out }\nimpl E { process drive { y = '1'; } }\n"
+            ),
+            0,
+            "an entity process is valid"
+        );
+        assert_eq!(
+            check_src("module m;\nstruct S { pub x: Bit }\nimpl S { process drive {} }\n"),
+            1,
+            "a data type cannot own a process"
+        );
+        assert_eq!(
+            check_src("module m;\ntrait T { fn f(self); }\nentity E {}\nimpl T for E { fn f(self) {} process drive {} }\n"),
+            1,
+            "a trait impl cannot add a process"
+        );
     }
 
     /// A bit-string prefix the compiler cannot evaluate is a type error, and
@@ -10351,7 +10398,7 @@ mod tests {
         assert_eq!(body("#[vendor = \"acme\"]"), 0, "and a string");
         assert_eq!(body("#[flag = Bool::true]"), 0, "and an explicit Bool");
 
-        // A bare Bool flag stays legal: it reads as `true`, like `#[top]`.
+        // A bare Bool flag stays legal: it reads as `true`, like `#[test]`.
         assert_eq!(body("#[flag]"), 0, "a bare Bool flag is still a flag");
 
         // The wrong *type* was already reported, and still is.
@@ -10937,9 +10984,9 @@ mod tests {
         );
         // The implemented ones stay quiet.
         assert_eq!(
-            n("module m;\n#[top]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
+            n("module m;\n#[test]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
             0,
-            "`top` is acted on"
+            "`test` is acted on"
         );
     }
 
@@ -11172,11 +11219,11 @@ mod tests {
     /// later driver overrides within a context, so it silently did nothing.
     #[test]
     fn dead_assignment_warns_but_defaults_do_not() {
-        let dead = "module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  y = 1;\n  y = 2;\n}\n";
+        let dead = "module m;\nentity E { y: unsigned[8] out, }\nimpl E {\n  process { y = 1; y = 2; }\n}\n";
         assert_eq!(warnings(dead, codes::DEAD_ASSIGNMENT), 1);
 
         // A conditional override is the normal `default then override` shape.
-        let guarded = "module m;\nentity E { c: Bit in, y: unsigned[8] out, }\nimpl E {\n  y = 1;\n  if c == '1' {\n    y = 2;\n  }\n}\n";
+        let guarded = "module m;\nentity E { c: Bit in, y: unsigned[8] out, }\nimpl E {\n  process { y = 1; if c == '1' { y = 2; } }\n}\n";
         assert_eq!(warnings(guarded, codes::DEAD_ASSIGNMENT), 0);
 
         // Distinct targets are unrelated.
@@ -11187,7 +11234,7 @@ mod tests {
         // first half of a clock pulse is observable even with no `await`
         // between these statements, so neither it nor an unrolled repetition
         // belongs to the driver-context lint.
-        let stimulus = "module m;\n#[test] entity T {}\nimpl T {\n  let clk: Bit = '0';\n  clk = '1';\n  clk = '0';\n  for i in 0..1 { clk = '1'; clk = '0'; }\n}\n";
+        let stimulus = "module m;\n#[test] entity T {}\nimpl T {\n  let clk: Bit = '0';\n  process { clk = '1'; clk = '0'; for i in 0..1 { clk = '1'; clk = '0'; } }\n}\n";
         assert_eq!(warnings(stimulus, codes::DEAD_ASSIGNMENT), 0);
     }
 

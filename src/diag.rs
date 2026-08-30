@@ -313,6 +313,13 @@ pub mod codes {
     /// An inherent implementation violates the ownership/coherence rules:
     /// only the defining module may add inherent members to a nominal type.
     pub const IMPL_COHERENCE: &str = "E-P026";
+    /// A `process` appears outside an inherent entity implementation. Processes
+    /// describe concurrent entity behavior; functions already provide a
+    /// sequential scope for ordinary types and trait implementations.
+    pub const PROCESS_PLACEMENT: &str = "E-P027";
+    /// A native test declares more independently scheduled foreground
+    /// processes than the Phase-1 test scheduler can execute concurrently.
+    pub const TEST_PROCESS_SCHEDULING: &str = "E-P028";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements

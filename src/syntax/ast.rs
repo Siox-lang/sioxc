@@ -221,8 +221,18 @@ pub enum ImplItem {
         name: Ident,
         span: Span,
     },
+    /// A concurrent hardware process whose body executes sequentially.
+    Process(ProcessDecl),
     /// Bare behavioral statement (combinational or event-controlled block).
     Stmt(Stmt),
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessDecl {
+    /// Optional diagnostic/tooling label: `process receive { ... }`.
+    pub name: Option<Ident>,
+    pub body: Block,
+    pub span: Span,
 }
 
 /// `trait ClockLike { fn rising(self); ... }` (spec 3.20). Compile-time only.

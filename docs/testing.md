@@ -16,21 +16,29 @@ impl CounterTest {
     let clk: Bit = '0';
     let rst: Logic = '1';
     let count: unsigned[8];
-    let dut: Counter = { clk, rst, count };
+    let dut: Counter = { .clk = clk, .rst = rst, .count = count };
 
-    clk = not clk after 5ns;         // free-running clock, 10 ns period
-    await 10ns;                      // hold reset for one edge
-    rst = '0';
-    for i in 0..9 { await clk.rising(); }
-    assert!(count == 10, "counter should reach 10");
+    process clock {
+        clk = not clk after 5ns;     // free-running clock, 10 ns period
+    }
+    process stimulus {
+        await 10ns;                  // hold reset for one edge
+        rst = '0';
+        for i in 0..9 { await clk.rising(); }
+        assert!(count == 10, "counter should reach 10");
+    }
 }
 ```
 
-Testbench bodies are sequential: statements run in order, `await` advances
-simulation time (see [simulation.md](simulation.md)), and a testbench `let` is a
-mutable local with ordinary sequential assignment. Method calls on the DUT or on
-struct-typed locals work in stimulus, so a testbench can drive a design through
-a method result. Strings retain their array semantics here: locals can be
+Testbench processes are concurrent, while statements inside one process run in
+order. `await` advances simulation time (see
+[simulation.md](simulation.md)), and a process-local `let` is a mutable local
+with ordinary sequential assignment. The native compatibility scheduler
+currently accepts one foreground stimulus process plus canonical background
+clock processes; it rejects additional foreground processes instead of
+serializing them. Method calls on the DUT or on struct-typed locals work in
+stimulus, so a testbench can drive a design through a method result. Strings
+retain their array semantics here: locals can be
 initialized or assigned from another same-length string, and equality compares
 their characters (including the zero-character empty-string case).
 Unconnected `Char` locals, string elements, and `Char` fields retain Unicode

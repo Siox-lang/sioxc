@@ -11,8 +11,8 @@
 //! bus modes expand to leaf permissions; external entities are black boxes;
 //! the hierarchy can be printed as a tree (`siox tree`).
 //!
-//! Phase-1 scope of this pass: roots are `#[top]`/`#[test]` entities; instances
-//! are top-level `let x: Entity<args> = { ... }` constructs in an impl body.
+//! Phase-1 scope of this pass: roots are selected structurally or explicitly;
+//! instances are top-level `let x: Entity<args> = { ... }` constructs in an impl body.
 //! Generated instances (loops/arrays), applied-view leaf expansion, and full
 //! direction analysis are noted as follow-ups.
 
@@ -130,8 +130,8 @@ pub struct Instance {
     pub is_extern: bool,
 }
 
-/// A concrete elaborated design: a forest of instance trees rooted at each
-/// `#[top]` / `#[test]` entity.
+/// A concrete elaborated design: a forest of structurally or explicitly
+/// selected instance trees.
 #[derive(Default)]
 pub struct Hierarchy {
     pub roots: Vec<InstanceId>,
@@ -217,20 +217,19 @@ impl Hierarchy {
     }
 }
 
-/// Elaborate starting from every `#[top]` / `#[test]` entity.
+/// Elaborate every structural root: an entity not instantiated by another
+/// entity in this compilation. Attributes do not change root selection.
 pub fn elaborate(
     modules: &[Module],
     resolved: &Resolved,
     typed: &Typed,
     sink: &mut DiagnosticSink,
 ) -> Hierarchy {
-    elaborate_roots(modules, resolved, typed, sink, |entity, _| {
-        is_root(entity, resolved)
-    })
+    let roots = structural_root_entities(modules, resolved);
+    elaborate_entities(modules, resolved, typed, sink, &roots)
 }
 
-/// Elaborate for `check`: the usual roots, plus every entity that nothing
-/// instantiates.
+/// Elaborate for `check`: every entity that nothing instantiates.
 ///
 /// Structural analysis — unknown ports, undriven signals, combinational loops,
 /// unresolved names — only sees what elaboration reaches, so a library entity
@@ -244,32 +243,151 @@ pub fn elaborate_for_check(
     typed: &Typed,
     sink: &mut DiagnosticSink,
 ) -> Hierarchy {
+    elaborate(modules, resolved, typed, sink)
+}
+
+/// Entity declarations that no other entity instantiates.
+///
+/// This is the compiler's attribute-free default root model. Consumers that
+/// need one design can accept the sole structural root or require an explicit
+/// entity selection when several independent roots exist.
+pub fn structural_root_entities(modules: &[Module], resolved: &Resolved) -> HashSet<DefId> {
     let instantiated = instantiated_entities(modules, resolved);
-    elaborate_roots(modules, resolved, typed, sink, |ent, id| {
-        is_root(ent, resolved) || !instantiated.contains(&id)
-    })
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Entity(entity) => resolved.declared(entity.name.span),
+            _ => None,
+        })
+        .filter(|id| !instantiated.contains(id))
+        .collect()
 }
 
 /// Entity names used as the type of an instance `let` anywhere. Such a name is
 /// reached through its parent, so `check` need not root it itself.
 fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<DefId> {
-    let declared: HashSet<DefId> = modules
+    let declared: HashMap<DefId, &EntityDecl> = modules
         .iter()
         .flat_map(|m| &m.items)
         .filter_map(|item| match item {
-            Item::Entity(e) => resolved.declared(e.name.span),
+            Item::Entity(entity) => resolved.declared(entity.name.span).map(|id| (id, entity)),
             _ => None,
         })
         .collect();
     let mut out = HashSet::new();
+
+    fn record_type(
+        ty: &Type,
+        type_params: &HashSet<String>,
+        declared: &HashMap<DefId, &EntityDecl>,
+        resolved: &Resolved,
+        out: &mut HashSet<DefId>,
+    ) {
+        if type_head_name(ty).is_some_and(|name| type_params.contains(name)) {
+            return;
+        }
+        if let Some(id) = type_def_id(ty, resolved).filter(|id| declared.contains_key(id)) {
+            out.insert(id);
+        }
+    }
+
+    fn record_let(
+        declaration: &LetDecl,
+        type_params: &HashSet<String>,
+        declared: &HashMap<DefId, &EntityDecl>,
+        resolved: &Resolved,
+        out: &mut HashSet<DefId>,
+    ) {
+        if let Some(Expr::Construct { ty: Some(ty), .. }) = &declaration.value {
+            record_type(ty, type_params, declared, resolved, out);
+            return;
+        }
+        if let Some(ty) = &declaration.ty {
+            record_type(ty, type_params, declared, resolved, out);
+        }
+    }
+
+    fn record_block(
+        block: &Block,
+        type_params: &HashSet<String>,
+        declared: &HashMap<DefId, &EntityDecl>,
+        resolved: &Resolved,
+        out: &mut HashSet<DefId>,
+    ) {
+        for statement in &block.stmts {
+            record_statement(statement, type_params, declared, resolved, out);
+        }
+    }
+
+    fn record_statement(
+        statement: &Stmt,
+        type_params: &HashSet<String>,
+        declared: &HashMap<DefId, &EntityDecl>,
+        resolved: &Resolved,
+        out: &mut HashSet<DefId>,
+    ) {
+        match statement {
+            Stmt::Let(declaration) => record_let(declaration, type_params, declared, resolved, out),
+            Stmt::Assign {
+                value: Expr::Construct { ty: Some(ty), .. },
+                ..
+            } => record_type(ty, type_params, declared, resolved, out),
+            Stmt::If(statement) => {
+                record_block(&statement.then, type_params, declared, resolved, out);
+                if let Some(branch) = statement.else_.as_deref() {
+                    match branch {
+                        ElseBranch::Block(block) => {
+                            record_block(block, type_params, declared, resolved, out)
+                        }
+                        ElseBranch::If(statement) => record_statement(
+                            &Stmt::If(statement.clone()),
+                            type_params,
+                            declared,
+                            resolved,
+                            out,
+                        ),
+                    }
+                }
+            }
+            Stmt::Match(statement) => {
+                for arm in &statement.arms {
+                    record_block(&arm.body, type_params, declared, resolved, out);
+                }
+            }
+            Stmt::For { body, .. } => record_block(body, type_params, declared, resolved, out),
+            Stmt::Assign { .. } | Stmt::Expr(_) | Stmt::Return { .. } => {}
+        }
+    }
+
     for m in modules {
         for item in &m.items {
             let Item::Impl(im) = item else { continue };
+            let Some(owner) = type_def_id(&im.target, resolved) else {
+                continue;
+            };
+            let Some(entity) = declared.get(&owner) else {
+                continue;
+            };
+            let type_params: HashSet<String> = entity
+                .params
+                .params
+                .iter()
+                .filter(|parameter| parameter.bound.is_none())
+                .map(|parameter| parameter.name.text.clone())
+                .collect();
             for it in &im.items {
-                let ImplItem::Let(l) = it else { continue };
-                let entity = l.ty.as_ref().and_then(|ty| type_def_id(ty, resolved));
-                if let Some(entity) = entity.filter(|id| declared.contains(id)) {
-                    out.insert(entity);
+                match it {
+                    ImplItem::Let(declaration) => {
+                        record_let(declaration, &type_params, &declared, resolved, &mut out)
+                    }
+                    ImplItem::Stmt(statement) => {
+                        record_statement(statement, &type_params, &declared, resolved, &mut out)
+                    }
+                    ImplItem::Const(_)
+                    | ImplItem::Fn(_)
+                    | ImplItem::ModeField { .. }
+                    | ImplItem::Process(_) => {}
                 }
             }
         }
@@ -584,6 +702,7 @@ impl<'a> Elaborator<'a> {
                     match item {
                         ImplItem::Let(l) => self.gather_let(l, env, &tparams, &mut specs),
                         ImplItem::Stmt(s) => self.gather_stmt(s, env, &tparams, &mut specs),
+                        ImplItem::Process(process) => self.note_misplaced(&process.body, &tparams),
                         _ => {}
                     }
                 }
@@ -1216,17 +1335,6 @@ struct InstanceSpec<'a> {
     loop_env: HashMap<String, i64>,
 }
 
-fn is_root(e: &EntityDecl, resolved: &Resolved) -> bool {
-    e.attrs.iter().any(|attribute| {
-        attribute
-            .name
-            .segments
-            .last()
-            .is_some_and(|segment| segment.text == "top")
-            || crate::resolve::is_enabled_std_test_attribute(resolved, attribute)
-    })
-}
-
 /// The `Int`-valued subset of a param list, as a substitution environment.
 fn param_env(params: &[(String, ParamValue)]) -> HashMap<String, i64> {
     params
@@ -1630,7 +1738,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { a: Bit in, b: Bit in } \
+                "module user; entity Top { a: Bit in, b: Bit in } \
                  impl Top { \
                    let left: a::Cell = { .a = a }; \
                    let right: b::Cell = { .b = b }; \
@@ -1677,17 +1785,18 @@ mod tests {
             entity Cell { i: Bit in, o: Bit out }\n\
             impl Cell { o = i; }\n";
 
-        // A process: the condition tests a signal, so it cannot fold.
+        // A process is behavioral regardless of whether an inner condition
+        // could otherwise fold as a generate condition.
         let (_, process) = elaborate_src(&format!(
-            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }}\n"
+            "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; process build {{ if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(process, 1, "reported, not silently dropped");
 
         // Nested inside a process, at depth.
         let (_, nested) = elaborate_src(&format!(
-            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+            "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; process build {{ if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }} }}\n"
         ));
         assert_eq!(
             nested, 1,
@@ -1696,14 +1805,14 @@ mod tests {
 
         // The `else` branch of a process counts too.
         let (_, else_arm) = elaborate_src(&format!(
-            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }}\n"
+            "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
+             impl Top {{ y = clk; process build {{ if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(else_arm, 1, "the else branch of a process");
 
         // A generate `if` folds, so its instance is real and legal.
         let (hier, generate) = elaborate_src(&format!(
-            "{CELL}#[top] entity Top {{ clk: Bit in, y: Bit out }}\n\
+            "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
              impl Top {{ y = clk; if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }}\n"
         ));
         assert_eq!(generate, 0, "a generate `if` may hold an instance");
@@ -1719,8 +1828,8 @@ mod tests {
         let (_, shadowed) = elaborate_src(
             "module m;\nentity T { i: Bit in, o: Bit out }\nimpl T { o = i; }\n\
              entity Buf<T> { clk: Bit in, d: T in, q: T out }\n\
-             impl<T> Buf<T> { q = d; if clk.rising() { let held: T; } }\n\
-             #[top] entity Top { clk: Bit in, y: Bit out }\n\
+             impl<T> Buf<T> { q = d; process hold { if clk.rising() { let held: T; } } }\n\
+             entity Top { clk: Bit in, y: Bit out }\n\
              impl Top { let b: Buf<Bit> = { .clk = clk, .d = clk }; y = b.q; }\n",
         );
         assert_eq!(shadowed, 0, "`T` here is the entity's type parameter");
@@ -1759,9 +1868,9 @@ mod tests {
             entity Lib { a: Bit in, y: Bit out }\n\
             impl Lib { let d: Sub = { .a = a, .z = a }; y = a; }\n";
         assert_eq!(check_src(src), 1, "the misspelled port is reported");
-        // The old root selection reaches neither entity.
+        // Ordinary elaboration uses the same structural roots as check.
         let (_, errors) = elaborate_src(src);
-        assert_eq!(errors, 0, "and was not reported before");
+        assert_eq!(errors, 1, "and is reported through the shared root model");
     }
 
     /// An instantiated entity arrives through its parent, so rooting the
@@ -1800,7 +1909,6 @@ mod tests {
           let value: unsigned[W] = 0;\n\
           count = value;\n\
         }\n\
-        #[top]\n\
         entity Harness {}\n\
         impl Harness {\n\
           let clk: Bit = '0';\n\
@@ -1848,7 +1956,7 @@ mod tests {
               for i in 3..1 { if i > N { stage[i] = Cell {}; } }\n\
               y = stage[3].y;\n\
             }\n\
-            #[top] entity Top { y: Bit out }\n\
+            entity Top { y: Bit out }\n\
             impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
         let (hier, errors) = elaborate_src(src);
         assert_eq!(errors, 0);
@@ -1872,7 +1980,6 @@ mod tests {
         let src = "module m;\n\
             entity Sub { a: Bit in, b: Bit in, y: Bit out }\n\
             impl Sub { y = a and b; }\n\
-            #[top]\n\
             entity T {}\n\
             impl T {\n\
               let a: Bit = '0';\n\
@@ -1915,7 +2022,6 @@ mod tests {
               values[0] = s;\n\
               y = values[0];\n\
             }\n\
-            #[top]\n\
             entity T {}\n\
             impl T {\n\
               let a: unsigned[8]; let y: unsigned[8];\n\
@@ -1966,7 +2072,6 @@ mod tests {
         let src = "module m;\n\
             entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
             impl<W: integer> Sub<W> { b = a; }\n\
-            #[top]\n\
             entity Top {}\n\
             impl Top {\n\
               let a: unsigned[4];\n\
@@ -1982,7 +2087,6 @@ mod tests {
         let src = "module m;\n\
             entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
             impl<W: integer> Sub<W> { b = a; }\n\
-            #[top]\n\
             entity Top {}\n\
             impl Top {\n\
               let a: unsigned[8];\n\
@@ -1998,7 +2102,7 @@ mod tests {
         let src = "module m; \
                    struct Word(integer[]); \
                    entity Sub { a: Word[8] in } impl Sub {} \
-                   #[top] entity Top {} \
+                   entity Top {} \
                    impl Top { let a: Word[4]; let dut: Sub = { .a = a }; }";
         let (_, errors) = elaborate_src(src);
         assert_eq!(errors, 1, "nominal arrays retain their written length");
@@ -2011,7 +2115,6 @@ mod tests {
         let src = "module m;\n\
             entity Counter<W: integer> { clk: Bit in, rst: Logic in, count: unsigned[W] out }\n\
             impl<W: integer> Counter<W> { count = 0; }\n\
-            #[top]\n\
             entity H {}\n\
             impl H {\n\
               let clk: Bit = '0';\n\
@@ -2027,7 +2130,6 @@ mod tests {
         let src = "module m;\n\
             entity Counter { count: unsigned[8] out }\n\
             impl Counter { count = 0; }\n\
-            #[top]\n\
             entity H {}\n\
             impl H {\n\
               let count: unsigned[8];\n\
@@ -2044,7 +2146,7 @@ mod tests {
     #[test]
     fn value_parameters_must_be_bound_at_instantiation() {
         let base = "module m;\nentity S<W: integer> { y: unsigned[W] out, }\nimpl<W: integer> S<W> { y = 0; }\n\
-                    #[top] entity E { y: unsigned[8] out, }\n";
+                    entity E { y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!("{base}impl E {{ let d: S = {{ .y = y }}; }}\n"));
         assert_eq!(errs, 1, "`W` was never given a value");
 
@@ -2055,7 +2157,7 @@ mod tests {
 
         // A *type* parameter has no numeric value and must not be demanded.
         let generic = "module m;\nentity Buf<T> { a: T in, y: T out, }\n\
-                       impl Buf<T> { y = a; }\n#[top] entity H {}\n\
+                       impl Buf<T> { y = a; }\nentity H {}\n\
                        impl H { let a: unsigned[8]; let y: unsigned[8]; \
                        let d: Buf<unsigned[8]> = { .a = a, .y = y }; }\n";
         let (_, errs) = elaborate_src(generic);
@@ -2067,7 +2169,7 @@ mod tests {
     #[test]
     fn unknown_generic_argument_is_reported() {
         let base = "module m;\nentity S<W: integer> { a: unsigned[W] in, y: unsigned[W] out, }\n\
-                    impl<W: integer> S<W> { y = a; }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out, }\n";
+                    impl<W: integer> S<W> { y = a; }\nentity E { a: unsigned[8] in, y: unsigned[8] out, }\n";
         let (_, errs) = elaborate_src(&format!(
             "{base}impl E {{ let d: S<W = 8, Z = 3> = {{ .a = a, .y = y }}; }}\n"
         ));
@@ -2083,7 +2185,6 @@ mod tests {
     fn extern_entity_is_a_black_box() {
         let src = "module m;\n\
             extern entity Ram<W: integer> { addr: unsigned[W] in, data: unsigned[8] out }\n\
-            #[top]\n\
             entity H {}\n\
             impl H {\n\
               let addr: unsigned[4];\n\

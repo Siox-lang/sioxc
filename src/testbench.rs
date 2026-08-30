@@ -7,10 +7,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::diag::{DiagnosticSink, Span};
+use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::elab::{Hierarchy, InstanceId};
 use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::Item;
+use crate::syntax::ast::{self, Expr, ImplItem, Stmt, Type, UnOp};
 use crate::syntax::Module;
 use crate::types::Typed;
 
@@ -59,6 +60,7 @@ pub fn elaborate(
     sink: &mut DiagnosticSink,
 ) -> (Hierarchy, TestPlan) {
     let discovered = discover(modules, resolved);
+    validate_process_scheduling(modules, resolved, &discovered, sink);
     let selected: HashSet<DefId> = discovered.iter().map(|test| test.entity).collect();
     let hierarchy = crate::elab::elaborate_entities(modules, resolved, typed, sink, &selected);
 
@@ -80,6 +82,80 @@ pub fn elaborate(
         .collect();
 
     (hierarchy, TestPlan { tests })
+}
+
+/// The compatibility runtime supports any number of canonical self-toggle
+/// clock processes and one foreground stimulus process. General coroutine
+/// scheduling belongs to the software-IR backend; reject it until that backend
+/// can preserve concurrency instead of serializing source processes.
+fn validate_process_scheduling(
+    modules: &[Module],
+    resolved: &Resolved,
+    tests: &[DiscoveredTest],
+    sink: &mut DiagnosticSink,
+) {
+    for test in tests {
+        let items = implementation_items(modules, resolved, test.entity);
+        let mut foreground: Vec<(Span, String)> = Vec::new();
+        let mut legacy_site = None;
+
+        for item in items {
+            match item {
+                ImplItem::Process(process) if !is_clock_process(&process.body.stmts) => {
+                    let label = process
+                        .name
+                        .as_ref()
+                        .map(|name| format!("process `{}`", name.text))
+                        .unwrap_or_else(|| "anonymous process".to_string());
+                    foreground.push((process.span, label));
+                }
+                ImplItem::Stmt(statement) if !is_clock_statement(statement) => {
+                    legacy_site.get_or_insert(ast::stmt_span(statement));
+                }
+                _ => {}
+            }
+        }
+        if let Some(span) = legacy_site {
+            foreground.push((span, "legacy impl-scope stimulus".to_string()));
+        }
+
+        let Some((first_span, first_label)) = foreground.first().cloned() else {
+            continue;
+        };
+        for (span, label) in foreground.into_iter().skip(1) {
+            sink.emit(
+                Diagnostic::error(format!(
+                    "native test `{}` has more than one foreground process",
+                    test.qualified_name
+                ))
+                .with_code(codes::TEST_PROCESS_SCHEDULING)
+                .at(span)
+                .label(first_span, format!("first foreground {first_label} is here"))
+                .help(format!(
+                    "merge {label} into the first stimulus process; self-toggle clock processes may remain separate"
+                )),
+            );
+        }
+    }
+}
+
+pub(crate) fn is_clock_process(statements: &[Stmt]) -> bool {
+    matches!(statements, [statement] if is_clock_statement(statement))
+}
+
+pub(crate) fn is_clock_statement(statement: &Stmt) -> bool {
+    let Stmt::Assign {
+        target,
+        value: Expr::Unary {
+            op: UnOp::Not, rhs, ..
+        },
+        after: Some(_),
+        ..
+    } = statement
+    else {
+        return false;
+    };
+    crate::syntax::pretty::expr_string(target) == crate::syntax::pretty::expr_string(rhs)
 }
 
 fn discover(modules: &[Module], resolved: &Resolved) -> Vec<DiscoveredTest> {
@@ -107,6 +183,40 @@ fn discover(modules: &[Module], resolved: &Resolved) -> Vec<DiscoveredTest> {
             })
         })
         .collect()
+}
+
+/// Inherent implementation items belonging to one resolved entity.
+///
+/// Both the compatibility backend and software-IR lowering enter a test body
+/// through this identity-based lookup. Keeping it beside [`TestPlan`] avoids a
+/// second owner/name matching rule at each backend boundary.
+pub fn implementation_items<'a>(
+    modules: &'a [Module],
+    resolved: &Resolved,
+    entity: DefId,
+) -> Vec<&'a ImplItem> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && type_def_id(&implementation.target, resolved) == Some(entity) =>
+            {
+                Some(implementation.items.iter())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
+    match ty {
+        Type::Path(path) => resolved.resolved(path.span),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_def_id(base, resolved),
+        Type::View { view, .. } => resolved.resolved(view.span),
+    }
 }
 
 #[cfg(test)]
@@ -148,5 +258,48 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan.tests[0].qualified_name, "tests::Enabled");
         assert_eq!(hierarchy.roots, vec![plan.tests[0].root]);
+    }
+
+    #[test]
+    fn native_tests_reject_multiple_foreground_processes_but_allow_clocks() {
+        let diagnostics = |source: &str| {
+            let (modules, mut sink) = modules(source);
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            let tests = discover(&modules, &resolved);
+            validate_process_scheduling(&modules, &resolved, &tests, &mut sink);
+            sink.diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code == Some(codes::TEST_PROCESS_SCHEDULING))
+                .count()
+        };
+
+        assert_eq!(
+            diagnostics(
+                "module tests;\n#[std::attrs::test] entity T {}\n\
+                 impl T { process first {} process second {} }\n"
+            ),
+            1,
+            "the compatibility backend must not serialize concurrent stimulus"
+        );
+        assert_eq!(
+            diagnostics(
+                "module tests;\n#[std::attrs::test] entity T {}\n\
+                 impl T {\n\
+                   let clk: Bool = false;\n\
+                   process clock { clk = not clk after 1; }\n\
+                   process stimulus {}\n\
+                 }\n"
+            ),
+            0,
+            "a canonical background clock and one foreground process are supported"
+        );
+        assert_eq!(
+            diagnostics(
+                "module tests;\n#[std::attrs::test] entity T {}\n\
+                 impl T { process stimulus {} print!(\"legacy\"); }\n"
+            ),
+            1,
+            "legacy impl-scope stimulus is one foreground sequence too"
+        );
     }
 }

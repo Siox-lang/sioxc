@@ -12,6 +12,8 @@ may use is `diag` — plus the LLVM backend:
   composes the passes, and returns diagnostics, partial phase products, and an
   optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
+- **`siox::testbench` / `siox::test_ir`** — canonical native-test planning and
+  the backend-neutral procedural control product paired with digital IR.
 - **`sioxc`** — the root package's thin command-line adapter.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
@@ -29,6 +31,9 @@ flowchart TB
         TY -->|test executable requested| TESTPLAN["testbench<br/>TestPlan"]
         TESTPLAN -->|exact canonical std test roots| EL
         EL -->|concrete hierarchy| IR["ir<br/>Design"]
+        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>software Program"]
+        TY -->|typed expressions| TESTIR
+        IR -->|shared concrete layouts| TESTIR
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
@@ -36,11 +41,12 @@ flowchart TB
         DIAG -.-> TESTPLAN
         DIAG -.-> EL
         DIAG -.-> IR
+        DIAG -.-> TESTIR
     end
 
     IR -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
-    IR -->|test executable requested| HARNESS["generated C harness<br/>scheduler + VCD/FST"]
-    TESTPLAN -->|qualified tests + bound roots| HARNESS
+    IR -->|test executable requested| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
+    TESTIR -->|validated descriptors; AST compatibility bodies| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
     OBJ -->|test executable requested| LINK["Clang + native linker"]
@@ -55,6 +61,7 @@ flowchart TB
     RE -. retained phase product .-> RESULT
     TY -. retained phase product .-> RESULT
     TESTPLAN -. retained test-build product .-> RESULT
+    TESTIR -. retained test-build product .-> RESULT
     EL -. retained phase product .-> RESULT
     IR -. retained phase product .-> RESULT
     FRONT_TEXT -->|optional Artifact::Text| RESULT["Compilation<br/>diagnostics + phase products<br/>statistics + optional artifact or failure"]
@@ -78,9 +85,12 @@ tree requests do not continue through IR. Frontend-only requests stop before
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
 `std::attrs::test` declaration once, elaborates exactly those roots, and binds
-them into a `TestPlan`. The compiler retains that plan and the current C harness
-consumes it for qualified names and roots instead of scanning attributes again.
-The harness contains the stimulus, scheduler, assertions, and reporting; it
+them into a `TestPlan`. `siox::test_ir` then creates one validated procedural
+`Program` with test descriptors, locals, assignments, runtime operations, and
+source spans while sharing the digital `Design` layouts. The compiler retains
+both products. The current C compatibility harness consumes the software-IR
+descriptors and uses the shared identity-based body lookup; CFG nodes are still
+expanded by later migration slices. The harness contains the stimulus, scheduler, assertions, and reporting; it
 links with the native design object when `Emit::TestExecutable` is requested.
 The harness contains the VCD writer, and the resulting executable incorporates
 the pinned libfst sources, so this artifact also needs Clang and zlib at
@@ -102,12 +112,13 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | Module | Layer | Role |
 | ------ | ----- | ---- |
 | `diag` | shared | `Span`, `SourceMap`, diagnostics, and stable codes. |
-| `syntax` | AST | Lexer, tokens, AST, parser, and canonical printer. |
+| `syntax` | AST | Lexer, tokens, AST, parser, canonical printer, and named/anonymous process blocks. |
 | `resolve` | AST | Definitions, visibility, imports, paths, and use-site → `DefId`. |
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
-| `ir` | IR | Signals, layouts, drivers, event blocks, initializers, and semantic lints. |
+| `ir` | IR | Signals, layouts, named driver contexts, drivers, event blocks, initializers, and semantic lints. |
+| `test_ir` | software IR | Validated native-test descriptors, locals, assignments, runtime operations, source spans, and evolving control flow. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Resolution is the owner of nominal identity. Both declaration sites and use
@@ -119,8 +130,9 @@ signal paths retain concise source names. When separate modules contribute
 equal-named roots to one compilation, `Hierarchy::root_path` qualifies only
 those roots; IR paths, tree output, waveform scopes, and native test lookup all
 share that collision-free spelling. Native C test functions use a separate
-injective symbol, and compiler top selection requires a qualified name when a
-bare entity leaf is ambiguous. Module constants follow the same rule:
+injective symbol, and explicit compiler root selection requires a qualified
+name when a bare entity leaf is ambiguous. A vendor `top` attribute remains
+ordinary metadata and never participates in this selection. Module constants follow the same rule:
 their declared types, folded values, range/array/struct entries, and native
 expressions use a qualified key derived from the resolver, while constants local
 to an `impl` remain lexical leaf bindings. Struct declarations likewise carry
@@ -189,6 +201,9 @@ flowchart LR
     TYPED -->|test build| TESTPLAN["TestPlan<br/>canonical std tests + bound roots"]
     TESTPLAN --> HIERARCHY
     HIERARCHY --> DESIGN["ir::Design"]
+    TESTPLAN --> TESTIR["test_ir::Program"]
+    TYPED --> TESTIR
+    DESIGN -->|shared layouts| TESTIR
 
     TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
     MODULES -->|Emit::Source / Ast| TEXT
@@ -197,8 +212,8 @@ flowchart LR
     DESIGN -->|LLVM output requested| BACKEND["siox::llvm"]
     BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
     BACKEND -->|object or test requested| OBJECT["native object"]
-    DESIGN -->|Emit::TestExecutable| HARNESS["generated C harness"]
-    TESTPLAN -->|same discovery product| HARNESS
+    DESIGN -->|Emit::TestExecutable| HARNESS["generated C compatibility harness"]
+    TESTIR -->|validated descriptors| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK
     LINK --> EXECUTABLE["Artifact::File<br/>test executable"]
@@ -212,6 +227,7 @@ flowchart LR
     RESOLVED -.-> PRODUCTS
     TYPED -.-> PRODUCTS
     TESTPLAN -.-> PRODUCTS
+    TESTIR -.-> PRODUCTS
     HIERARCHY -.-> PRODUCTS
     DESIGN -.-> PRODUCTS
     PRODUCTS -. retained .-> COMPILATION["Compilation<br/>products + diagnostics + statistics<br/>optional artifact + failure"]
@@ -285,7 +301,11 @@ and then use their normal integer representation/conversion.
 - **The IR distinction is central.** Combinational `Driver(target, cond, expr)`
   and sequential `OnEvent(cond): next(target) = expr` are kept separate; e.g.
   `clk.rising()` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
-  Preserve this split when working in `siox::ir`/`siox::llvm`.
+  Statements inside one source `process` share a driver context and preserve
+  source-order priority; separate processes and bare continuous assignments
+  receive separate contexts and resolve in parallel. Optional process labels
+  survive as instance-qualified IR metadata. Preserve this split when working
+  in `siox::ir`/`siox::llvm`.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
   `across`/`through`, `'ddt`, layout attrs) must produce errors

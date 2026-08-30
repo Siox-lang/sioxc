@@ -43,19 +43,22 @@ plus a testbench that drives it:
 module counter;
 
 using std::bits::unsigned;
+using std::logic::{Bit, Logic};
 
 entity Counter {
-    in clk: Bit;
-    in rst: Logic;
-    out count: unsigned[8];
+    clk: Bit in,
+    rst: Logic in,
+    count: unsigned[8] out,
 }
 
 impl Counter {
     let value: unsigned[8] = 0;
 
-    if clk.rising() {                // runs only on a rising clock edge
-        if rst == '1' { value = 0; }
-        else { value = value + 1; }
+    process update {
+        if clk.rising() {            // runs only on a rising clock edge
+            if rst == '1' { value = 0; }
+            else { value = value + 1; }
+        }
     }
 
     count = value;                   // a wire: always equal to `value`
@@ -68,20 +71,24 @@ impl CounterTest {
     let clk: Bit = '0';
     let rst: Logic = '1';
     let count: unsigned[8];
-    let dut: Counter = { clk, rst, count };   // ports wired positionally
+    let dut: Counter = { .clk = clk, .rst = rst, .count = count };
 
-    clk = not clk after 5ns;         // free-running clock, 10 ns period
+    process clock {
+        clk = not clk after 5ns;     // free-running clock, 10 ns period
+    }
 
-    await 10ns;                      // hold reset for one edge
-    rst = '0';
-    for i in 0..9 { await clk.rising(); }   // let ten more edges pass
-    assert!(count == 10, "counter should reach 10");
+    process stimulus {
+        await 10ns;                  // hold reset for one edge
+        rst = '0';
+        for i in 0..9 { await clk.rising(); } // let ten more edges pass
+        assert!(count == 10, "counter should reach 10");
+    }
 }
 ```
 
-Two kinds of logic sit side by side: a **wire** (`count = value;` is always
-equal to `value`) and a **clocked register** (`if clk.rising() { … }` only
-updates on the edge).
+Two kinds of logic sit side by side: a concurrent **wire**
+(`count = value;` is always equal to `value`) and an ordered clocked
+**process** (`process update { if clk.rising() { … } }`).
 
 ## Run it
 
@@ -127,7 +134,7 @@ timeline.
 | `sioxc --test file.siox -o tests` | compile the `#[test]` test executable |
 | `./tests -o out.vcd [filter]` | run generated tests and write text VCD |
 | `./tests -o out.fst [filter]` | run generated tests and write compressed FST (any non-`.vcd` path) |
-| `sioxc file.siox` | compile a `#[top]` design to a native object |
+| `sioxc file.siox` | compile the sole structural root to a native object (`--top` when ambiguous) |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it
  lives elsewhere. Peeking under the hood? `sioxc file.siox --emit

@@ -331,6 +331,10 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Const(constant) => (&constant.name.text, constant.name.span, "constant"),
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
+        ImplItem::Process(process) => {
+            let name = process.name.as_ref()?;
+            (&name.text, name.span, "process")
+        }
         ImplItem::Stmt(_) => return None,
     })
 }
@@ -444,7 +448,7 @@ impl<'a> Resolver<'a> {
             self.builtins.insert(name.to_string(), id);
         }
         // std::attrs metadata attributes (spec 3.5).
-        for name in ["top", "test", "keep", "library", "name", "precedence"] {
+        for name in ["test", "keep", "library", "name", "precedence"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.builtin_attrs.insert(name.to_string(), id);
         }
@@ -1160,6 +1164,7 @@ impl<'a> Resolver<'a> {
                 ImplItem::Const(c) => self.bind_local(&c.name.text),
                 ImplItem::Fn(f) => self.bind_local(&f.name.text),
                 ImplItem::ModeField { name, .. } => self.bind_local(&name.text),
+                ImplItem::Process(_) => {}
                 ImplItem::Stmt(_) => {}
             }
         }
@@ -1367,6 +1372,7 @@ impl<'a> Resolver<'a> {
             }
             ImplItem::Fn(f) => self.resolve_fn(f),
             ImplItem::ModeField { .. } => {}
+            ImplItem::Process(process) => self.resolve_block(&process.body),
             ImplItem::Stmt(s) => self.resolve_stmt(s),
         }
     }
@@ -2515,6 +2521,32 @@ mod tests {
     }
 
     #[test]
+    fn named_processes_share_the_entity_member_namespace() {
+        let sink = diagnostics(
+            "module m;\nentity Device {}\n\
+             impl Device { process drive {} }\n\
+             impl Device { process drive {} }\n",
+        );
+        let duplicates: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(codes::DUPLICATE_ITEM)
+                    && diagnostic.message.contains("inherent member `drive`")
+            })
+            .collect();
+        assert_eq!(
+            duplicates.len(),
+            1,
+            "a process label identifies one process"
+        );
+        assert!(duplicates[0]
+            .labels
+            .iter()
+            .any(|label| label.message.contains("first declared here as process")));
+    }
+
+    #[test]
     fn different_inherent_member_kinds_cannot_shadow_across_blocks() {
         let sink = diagnostics(
             "module m;\nentity Device {}\n\
@@ -3228,7 +3260,6 @@ mod tests {
         let (_, errors) = resolve_src(
             "module m;\n\
              struct unsigned(Logic[]);\n\
-             #[top]\n\
              entity Counter<W: integer> {\n\
                clk: Bit in,\n\
                rst: Logic in,\n\

@@ -7,11 +7,16 @@ simulation consumes, [architecture.md](architecture.md).
 
 ## The model: delta-cycle, event-driven
 
-A design lowers (in `ir`) to two kinds of process, kept strictly apart:
+A source `process name { ... }` is one concurrent driver context; its body is
+ordered, and its optional name is retained for IR/runtime diagnostics. Bare
+continuous assignments outside a process each form a concurrent context. The
+normalized design then lowers (in `ir`) to two scheduler forms, kept strictly
+apart:
 
 - **Combinational `Driver`s** — a continuous assignment (`count = value;`), a
   wire that always equals its expression.
-- **Sequential `EventBlock`s** — `if clk.rising() { … }`, updated only on the
+- **Sequential `EventBlock`s** — an event-controlled statement inside a
+  process (`process update { if clk.rising() { … } }`), updated only on the
   trigger, with next-state semantics.
 
 A **settle** evaluates one delta cycle over the signal state (`cur`, `old`, and
@@ -33,7 +38,8 @@ change what is observed.
 
 The `ir` layer emits the simulation model and the **LLVM backend** (`siox::llvm`)
 compiles it ahead of time to native machine code. `sioxc <file>` emits the
-`#[top]` design as an object. `sioxc --test` generates a native testbench
+sole structural root as an object; `--top` selects one when several independent
+roots exist. `sioxc --test` generates a native testbench
 harness and links it with that object. The compiler stops after producing the
 executable; running and filtering it are separate operations.
 
@@ -50,8 +56,9 @@ The runtime has real **simulation time** (`time_fs`, femtoseconds internally;
 earliest pending event and advances to it:
 
 - **Background clocks.** `clk = not clk after 5ns;` registers a free-running
-  clock with a `5ns` half-period — the canonical clock generator. Multiple
-  clocks interleave on the one wheel with real timestamps.
+  clock with a `5ns` half-period — the canonical clock generator. Every clock
+  process starts at time zero independently of source declaration order, and
+  multiple clocks interleave on the one wheel with real timestamps.
 - **Delayed assignments.** The native Phase 1 harness currently accepts the
   canonical self-toggle above. Other `x = v after d;` forms receive a build
   error until one-shot writes are represented on the event wheel.

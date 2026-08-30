@@ -448,6 +448,7 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "const" => TokenKind::Const,
         "let" => TokenKind::Let,
         "fn" => TokenKind::Fn,
+        "process" => TokenKind::Process,
         "in" => TokenKind::In,
         "out" => TokenKind::Out,
         "inout" => TokenKind::Inout,
@@ -489,7 +490,10 @@ mod tests {
 
     #[test]
     fn keywords_vs_identifiers() {
-        assert_eq!(kinds("entity impl"), vec![Entity, Impl, Eof]);
+        assert_eq!(
+            kinds("entity impl process"),
+            vec![Entity, Impl, Process, Eof]
+        );
         // Analogue keywords are not recognised in Phase 1: plain idents.
         assert_eq!(
             kinds("domain across through"),

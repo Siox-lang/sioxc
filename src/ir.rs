@@ -426,6 +426,14 @@ pub struct Design {
     pub signals: Vec<Signal>,
     pub drivers: Vec<Driver>,
     pub event_blocks: Vec<EventBlock>,
+    /// Driver-context labels retained from `process name { ... }`, qualified
+    /// by instance path for diagnostics and backend tracing.
+    pub process_labels: HashMap<u32, String>,
+    /// Labels from every source context folded into one resolved
+    /// combinational target. Resolution replaces those context drivers with a
+    /// normalized driver, so target ownership must survive independently of
+    /// the replacement driver's synthetic context id.
+    pub resolved_process_labels: HashMap<u32, Vec<String>>,
     /// Enum name -> (discriminant -> variant symbol), over every module
     /// (including `std`). Consumers render a `Signal::enum_type` value as its
     /// symbol (`'X'`, `Idle`) instead of a bare number.
@@ -712,7 +720,8 @@ pub struct Driver {
     /// propagation pass consumes this and emits the ordinary companion driver;
     /// finalized IR always has `None` here.
     pub meta: Option<Expr>,
-    /// Driver context (spec 3.14): one per impl block / per port connection.
+    /// Driver context (spec 3.14): one per source process, bare concurrent
+    /// statement, or port connection.
     /// Within a context later drivers override; a signal driven from several
     /// contexts folds via its type's `Resolve` impl (or errors without one).
     pub ctx: u32,
@@ -730,7 +739,7 @@ pub struct Driver {
 pub struct EventBlock {
     pub condition: Expr,
     pub updates: Vec<NextUpdate>,
-    /// The driver context that lowered this block — one per impl block, the
+    /// The driver context that lowered this block — one per source process, the
     /// same identity `Driver::ctx` carries (spec 3.14: override within a
     /// context, resolution across). Several blocks share it when one impl
     /// writes from more than one event, or when a generate loop unrolls a
@@ -1000,7 +1009,7 @@ pub fn lower_in(
         let path = hier.root_path(root);
         l.collect_instance_array_facts(hier, root, &path);
     }
-    // Lower only the top-level designs — the `#[top]`/`#[test]` roots. Their
+    // Lower only the selected root designs. Their
     // sub-instances (and a testbench's DUTs) are lowered recursively from there,
     // each per-instance, so no entity is lowered standalone by type.
     let mut roots = Vec::new();
@@ -1238,7 +1247,8 @@ struct Lowering<'a> {
     /// having to be handed one. `None` outside statement lowering — the
     /// drivers synthesized there answer to no source line.
     cur_span: Option<crate::diag::Span>,
-    /// The active driver context (bumped per impl block / connection).
+    /// The active driver context (bumped per process/concurrent statement or
+    /// connection).
     cur_ctx: u32,
     /// Driver context -> the source site that created it (a port connection's
     /// value expression). Lets the conflicting-driver error point at each
@@ -1661,7 +1671,14 @@ impl<'a> Lowering<'a> {
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and
         // widths come from its first instance's parameters.
-        self.lower_body(entity_id, root_path, &env, &HashMap::new(), &HashMap::new());
+        self.lower_body(
+            entity_id,
+            root_path,
+            &env,
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
     }
 
     /// Persist concrete layouts for testbench-owned values without creating
@@ -1750,6 +1767,7 @@ impl<'a> Lowering<'a> {
                                 &sub_env,
                                 &sub_tenv,
                                 &HashMap::new(),
+                                false,
                             );
                             for (port, value) in self.norm_conns(&args, sub) {
                                 // The testbench name the port binds to; a
@@ -2011,6 +2029,7 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, i64>,
         type_env: &HashMap<String, ast::Type>,
         aliases: &HashMap<String, SignalId>,
+        is_root: bool,
     ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
         let Some(edecl) = self.entities.get(&entity_id).copied() else {
             return HashMap::new();
@@ -2367,9 +2386,8 @@ impl<'a> Lowering<'a> {
                     }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
-                    // entities are excluded: a `#[test]` testbench's locals are
-                    // driven by the runner, and a `#[top]` harness's wires are
-                    // stimulus fed externally — neither is a forgotten drive.
+                    // Root entities are excluded: their wires are stimulus fed
+                    // externally, so they are not forgotten internal drives.
                     // An instance array (`let stage: Inc[N]`, Inc an entity) is
                     // built element-wise, not driven — never a signal to check.
                     let is_instance_array = l.ty.as_ref().is_some_and(|ty| {
@@ -2381,11 +2399,7 @@ impl<'a> Lowering<'a> {
                     if is_instance_array {
                         self.instance_arrays.insert(l.name.text.clone());
                     }
-                    if l.value.is_none()
-                        && !is_instance_array
-                        && !is_test_entity(edecl, self.resolved)
-                        && !has_attr(edecl, "top")
-                    {
+                    if l.value.is_none() && !is_instance_array && !is_root {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
                         let leaves: Vec<SignalId> = self
@@ -2398,10 +2412,7 @@ impl<'a> Lowering<'a> {
                             .collect();
                         self.undriven_lets.extend(leaves);
                     }
-                    if !is_instance_array
-                        && !is_test_entity(edecl, self.resolved)
-                        && !has_attr(edecl, "top")
-                    {
+                    if !is_instance_array && !is_root {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
                         self.unused_lets.extend(
@@ -2606,7 +2617,8 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            let sub_ports = self.lower_body(sub_id, &sub_path, &sub_env, &sub_type_env, &aliases);
+            let sub_ports =
+                self.lower_body(sub_id, &sub_path, &sub_env, &sub_type_env, &aliases, false);
             // Expose the sub-instance's ports in this scope so `inst.port`
             // (and `stage[i].port`) reads resolve to the child's signal —
             // an output need not be wired to a local to be read.
@@ -2768,17 +2780,30 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Behaviour: each impl block is one driver context (spec 3.14 —
-        // override within, resolution across).
+        // Behaviour: statements in one explicit process share a driver
+        // context (source-order override); processes and bare concurrent
+        // statements receive separate contexts (parallel-driver resolution).
         for im in &impls {
-            self.lint_generated_dead_assignments(im.items.iter().filter_map(|item| match item {
-                ast::ImplItem::Stmt(statement) => Some(statement),
-                _ => None,
-            }));
-            self.cur_ctx += 1;
             for item in &im.items {
-                if let ast::ImplItem::Stmt(stmt) = item {
-                    self.lower_stmt(stmt, None);
+                match item {
+                    ast::ImplItem::Process(process) => {
+                        self.lint_generated_dead_assignments(process.body.stmts.iter());
+                        self.cur_ctx += 1;
+                        if let Some(name) = &process.name {
+                            self.out.process_labels.insert(
+                                self.cur_ctx,
+                                format!("{}::{}", self.cur_instance_path, name.text),
+                            );
+                        }
+                        for statement in &process.body.stmts {
+                            self.lower_stmt(statement, None);
+                        }
+                    }
+                    ast::ImplItem::Stmt(statement) => {
+                        self.cur_ctx += 1;
+                        self.lower_stmt(statement, None);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3010,7 +3035,7 @@ impl<'a> Lowering<'a> {
 
     /// Unused-signal lint (W-P003): an internal component local that no
     /// combinational or sequential process reads contributes no observable
-    /// behavior. Root test/top locals are excluded because the native runner
+    /// behavior. Root locals are excluded because an external harness
     /// reads them outside the hardware IR.
     fn lint_unused_signals(&mut self) {
         let processes = self.out.processes();
@@ -3655,7 +3680,7 @@ impl<'a> Lowering<'a> {
                 .or_default()
                 .push(i);
         }
-        let mut replaced: Vec<(u32, Expr, Option<Expr>)> = Vec::new();
+        let mut replaced: Vec<(u32, Expr, Option<Expr>, Vec<String>)> = Vec::new();
         for (t, ctxs) in &by_target {
             // Metavalue companions are an implementation plane of their parent
             // signal. The parent's element-wise Resolve replaces their drivers
@@ -3687,6 +3712,12 @@ impl<'a> Lowering<'a> {
             let has_resolve = direct_resolve || element_resolve.is_some();
             let path = self.out.signals[*t as usize].path.clone();
             let declaration_span = self.out.signals[*t as usize].declaration_span;
+            let mut labels: Vec<String> = ctxs
+                .keys()
+                .filter_map(|context| self.out.process_labels.get(context).cloned())
+                .collect();
+            labels.sort();
+            labels.dedup();
             if !has_resolve {
                 // Lead with the mistake (several sources driving one signal),
                 // not its symptom (a missing `Resolve` impl) — the usual cause
@@ -3723,7 +3754,7 @@ impl<'a> Lowering<'a> {
             if let Some(element) = element_resolve {
                 let width = self.out.signals[*t as usize].width;
                 if let Some((value, meta)) = self.resolve_vector_contexts(ctxs, width, &element) {
-                    replaced.push((*t, value, Some(meta)));
+                    replaced.push((*t, value, Some(meta), labels));
                 } else {
                     self.sink.emit(
                         crate::diag::Diagnostic::error(format!(
@@ -3761,11 +3792,18 @@ impl<'a> Lowering<'a> {
                 }
                 contributions.push(acc);
             }
-            // Pairwise resolve via the impl's inlined body.
+            // Pairwise resolve through a compact source-derived table for a
+            // logic enum, or through the ordinary inlined impl for any other
+            // user type.
             let mut it = contributions.into_iter();
             let mut folded = it.next().unwrap();
             for c in it {
-                match self.inline_resolve(&ty, folded.clone(), c) {
+                let resolved = self
+                    .logic_encoding(&ty)
+                    .and_then(|encoding| encoding.binary_ops.get("resolve"))
+                    .map(|table| logic_binary_table_result(folded.clone(), c.clone(), table))
+                    .or_else(|| self.inline_resolve(&ty, folded.clone(), c));
+                match resolved {
                     Some(r) => folded = r,
                     None => {
                         self.sink.emit(
@@ -3780,10 +3818,13 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            replaced.push((*t, folded, None));
+            replaced.push((*t, folded, None, labels));
         }
-        for (t, expr, meta) in replaced {
+        for (t, expr, meta, labels) in replaced {
             self.out.drivers.retain(|d| d.target.0 != t);
+            if !labels.is_empty() {
+                self.out.resolved_process_labels.insert(t, labels);
+            }
             self.out.drivers.push(Driver {
                 span: self.cur_span,
                 target: SignalId(t),
@@ -3839,42 +3880,49 @@ impl<'a> Lowering<'a> {
             contributions.push((value, meta));
         }
 
-        let mut contributions = contributions.into_iter();
-        let mut accumulated = contributions.next()?;
-        for incoming in contributions {
-            let mut value = Expr::Const(0);
-            let mut meta = Expr::Const(0);
-            for index in 0..width {
-                let left = logic_element_disc(&accumulated.0, &accumulated.1, index, encoding);
-                let right = logic_element_disc(&incoming.0, &incoming.1, index, encoding);
-                let result = self.inline_resolve(element, left, right)?;
-                let value_bit = logic_value_bit(result.clone(), encoding);
-                value = or_expr(
-                    value,
-                    Expr::Binary {
-                        op: BinOp::Shl,
-                        lhs: Box::new(value_bit),
-                        rhs: Box::new(Expr::Const(index as u64)),
-                    },
-                );
-                let is_meta = not1(logic_disc_in(result.clone(), &encoding.binary));
-                let nibble = Expr::Select {
-                    cond: Box::new(is_meta),
-                    then: Box::new(result),
-                    els: Box::new(Expr::Const(0)),
+        let table = encoding.binary_ops.get("resolve");
+        let mut value = Expr::Const(0);
+        let mut meta = Expr::Const(0);
+        // Resolve one element all the way across the contexts before packing
+        // it back into the two vector planes. Repacking after every pair and
+        // slicing that expression apart for the next context duplicated the
+        // whole accumulated vector once per element and grew exponentially.
+        for index in 0..width {
+            let mut incoming = contributions.iter();
+            let (first_value, first_meta) = incoming.next()?;
+            let mut result = logic_element_disc(first_value, first_meta, index, encoding);
+            for (incoming_value, incoming_meta) in incoming {
+                let right = logic_element_disc(incoming_value, incoming_meta, index, encoding);
+                result = match table {
+                    Some(table) => logic_binary_table_result(result, right, table),
+                    None => self.inline_resolve(element, result, right)?,
                 };
-                meta = or_expr(
-                    meta,
-                    Expr::Binary {
-                        op: BinOp::Shl,
-                        lhs: Box::new(nibble),
-                        rhs: Box::new(Expr::Const((4 * index) as u64)),
-                    },
-                );
             }
-            accumulated = (value, meta);
+            let value_bit = logic_value_bit(result.clone(), encoding);
+            value = or_expr(
+                value,
+                Expr::Binary {
+                    op: BinOp::Shl,
+                    lhs: Box::new(value_bit),
+                    rhs: Box::new(Expr::Const(index as u64)),
+                },
+            );
+            let is_meta = not1(logic_disc_in(result.clone(), &encoding.binary));
+            let nibble = Expr::Select {
+                cond: Box::new(is_meta),
+                then: Box::new(result),
+                els: Box::new(Expr::Const(0)),
+            };
+            meta = or_expr(
+                meta,
+                Expr::Binary {
+                    op: BinOp::Shl,
+                    lhs: Box::new(nibble),
+                    rhs: Box::new(Expr::Const((4 * index) as u64)),
+                },
+            );
         }
-        Some(accumulated)
+        Some((value, meta))
     }
 
     /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
@@ -4543,6 +4591,38 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 encoding.binary_ops.insert(op.to_string(), table);
+            }
+            // Parallel-driver resolution is source-defined by the ordinary
+            // `Resolve` trait too. Keep its complete enum table beside the
+            // logical operator tables so repeated drivers lower to a compact
+            // lookup instead of repeatedly cloning the implementation's
+            // branch tree.
+            if let Some((function, _)) = self
+                .op_impls
+                .get(&("Resolve".to_string(), ty.clone()))
+                .and_then(|functions| functions.first())
+            {
+                if let Some(rhs_name) = function
+                    .params
+                    .iter()
+                    .find(|parameter| !parameter.is_self)
+                    .and_then(|parameter| parameter.name.as_ref())
+                    .map(|name| name.text.clone())
+                {
+                    let mut table = HashMap::new();
+                    for &left in variants.values() {
+                        for &right in variants.values() {
+                            let env = HashMap::from([
+                                ("self".to_string(), left),
+                                (rhs_name.clone(), right),
+                            ]);
+                            if let Some(result) = eval_logic_function(function, &env, variants) {
+                                table.insert((left, right), result);
+                            }
+                        }
+                    }
+                    encoding.binary_ops.insert("resolve".to_string(), table);
+                }
             }
             if let Some((function, _)) = self
                 .op_impls
@@ -7027,11 +7107,28 @@ impl<'a> Lowering<'a> {
                     }
                 } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                     // Partial write: merge over what this context has already
-                    // driven (`y = base; y[3..0] = a;`), else over 0.
+                    // driven (`y = base; y[3..0] = a;`). A resolved signal's
+                    // first write starts from `Z` on the unnamed elements.
                     let v = self.lower_expr(value);
                     let width = self.out.signals[sig.0 as usize].width;
                     let base = self.slice_write_base(sig, false, &[]);
-                    let merged = self.merge_slice(base, hi, lo, v, width);
+                    let merged = self.merge_slice(base, hi, lo, v.clone(), width);
+                    let meta = if self.out.array_element_enums.contains_key(&sig.0) {
+                        let companion = SignalId(self.driven_companion(sig));
+                        let meta_width = self.out.signals[companion.0 as usize].width;
+                        let meta_base = self.slice_meta_write_base(sig, companion, false, &[]);
+                        let slice_width = hi.saturating_sub(lo) + 1;
+                        let meta_value = self.partial_write_meta(value, &v, slice_width);
+                        Some(self.merge_slice(
+                            meta_base,
+                            hi * 4 + 3,
+                            lo * 4,
+                            meta_value,
+                            meta_width,
+                        ))
+                    } else {
+                        None
+                    };
                     // `merged` already folds in every driver this context has
                     // for `sig`, so it may *replace* the last one — but only
                     // when that one is unconditional and this write is too.
@@ -7045,13 +7142,14 @@ impl<'a> Lowering<'a> {
                     match last {
                         Some(i) if cond.is_none() && self.out.drivers[i].cond.is_none() => {
                             self.out.drivers[i].expr = merged;
+                            self.out.drivers[i].meta = meta;
                         }
                         _ => self.out.drivers.push(Driver {
                             span: self.cur_span,
                             target: sig,
                             cond,
                             expr: merged,
-                            meta: None,
+                            meta,
                             ctx: self.cur_ctx,
                         }),
                     }
@@ -7478,13 +7576,29 @@ impl<'a> Lowering<'a> {
                         let v = self.lower_expr(value);
                         let width = self.out.signals[sig.0 as usize].width;
                         let base = self.slice_write_base(sig, true, out);
-                        let expr = self.merge_slice(base, hi, lo, v, width);
+                        let expr = self.merge_slice(base, hi, lo, v.clone(), width);
+                        let meta = if self.out.array_element_enums.contains_key(&sig.0) {
+                            let companion = SignalId(self.driven_companion(sig));
+                            let meta_width = self.out.signals[companion.0 as usize].width;
+                            let meta_base = self.slice_meta_write_base(sig, companion, true, out);
+                            let slice_width = hi.saturating_sub(lo) + 1;
+                            let meta_value = self.partial_write_meta(value, &v, slice_width);
+                            Some(self.merge_slice(
+                                meta_base,
+                                hi * 4 + 3,
+                                lo * 4,
+                                meta_value,
+                                meta_width,
+                            ))
+                        } else {
+                            None
+                        };
                         out.push(NextUpdate {
                             span: self.cur_span,
                             target: sig,
                             cond: cond.clone(),
                             expr,
-                            meta: None,
+                            meta,
                         });
                     } else if let ast::Expr::Concat { parts, span: cspan } = target {
                         // `{hi, lo} = w;` in a clocked block: each part takes
@@ -7924,11 +8038,15 @@ impl<'a> Lowering<'a> {
                     None => write_meta(&update.expr, &update.meta),
                 });
         }
+        let seed = self
+            .resolved_neutral_planes(signal)
+            .map(|(_, meta)| meta)
+            .unwrap_or(Expr::Const(0));
         self.out
             .drivers
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
-            .fold(Expr::Const(0), |acc, driver| match &driver.cond {
+            .fold(seed, |acc, driver| match &driver.cond {
                 Some(cond) => Expr::Select {
                     cond: Box::new(cond.clone()),
                     then: Box::new(write_meta(&driver.expr, &driver.meta)),
@@ -7996,13 +8114,20 @@ impl<'a> Lowering<'a> {
                     None => update.expr.clone(),
                 });
         }
-        // Combinational: undriven bits read as zero, which is the seed the
-        // single-driver form has always used.
+        // A partial driver of a resolved packed signal contributes `Z` on the
+        // elements it does not name. That is what lets independent concurrent
+        // slice assignments compose instead of forcing zero against one
+        // another. Unresolved/two-valued signals retain the historical zero
+        // seed until their own undriven-value model is represented explicitly.
+        let seed = self
+            .resolved_neutral_planes(signal)
+            .map(|(value, _)| value)
+            .unwrap_or(Expr::Const(0));
         self.out
             .drivers
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
-            .fold(Expr::Const(0), |acc, driver| match &driver.cond {
+            .fold(seed, |acc, driver| match &driver.cond {
                 Some(cond) => Expr::Select {
                     cond: Box::new(cond.clone()),
                     then: Box::new(driver.expr.clone()),
@@ -8010,6 +8135,52 @@ impl<'a> Lowering<'a> {
                 },
                 None => driver.expr.clone(),
             })
+    }
+
+    /// Value and discriminant planes for a packed resolved signal's neutral
+    /// driver contribution. The identity comes from the source-owned
+    /// `LogicEncoding`/`Resolve` contracts; no logic symbol or enum position is
+    /// hardcoded in the compiler.
+    fn resolved_neutral_planes(&self, signal: SignalId) -> Option<(Expr, Expr)> {
+        let element = self.out.array_element_enums.get(&signal.0)?;
+        let encoding = self.logic_encoding(element)?;
+        encoding.binary_ops.get("resolve")?;
+        let neutral = encoding.high_impedance_value()?;
+        let width = self.out.signals.get(signal.0 as usize)?.width;
+        let value = repeat_element_plane(Expr::Const(encoding.value_bit(neutral)?), width, 1);
+        let meta_disc = if encoding.binary.contains(&neutral) {
+            0
+        } else {
+            neutral
+        };
+        let meta = repeat_element_plane(Expr::Const(meta_disc), width, 4);
+        Some((value, meta))
+    }
+
+    /// Discriminant plane carried by the value written into a packed slice.
+    /// Bit strings retain every explicit symbol, scalar logic literals use the
+    /// target element's encoding, and computed values defer to ordinary
+    /// metavalue propagation.
+    fn partial_write_meta(&self, source: &ast::Expr, value: &Expr, width: u32) -> Expr {
+        if let Some(meta) = self.bit_string_meta(source) {
+            return meta;
+        }
+        if width == 1 {
+            if let ast::Expr::CharLit { ch, .. } = source {
+                if let Some(disc) = self.char_disc(*ch, DEFAULT_LOGIC_TYPE) {
+                    let meta = if self
+                        .logic_encoding(DEFAULT_LOGIC_TYPE)
+                        .is_some_and(|encoding| !encoding.binary.contains(&disc))
+                    {
+                        disc
+                    } else {
+                        0
+                    };
+                    return Expr::Const(meta);
+                }
+            }
+        }
+        self.lower_meta_ir(value, width).unwrap_or(Expr::Const(0))
     }
 
     fn dynamic_write_targets(
@@ -12247,6 +12418,9 @@ fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
 #[derive(Clone, Debug)]
 pub struct Process {
     pub kind: ProcessKind,
+    /// Source labels of the contexts contributing to this scheduled process.
+    /// A resolved signal may combine more than one named source process.
+    pub labels: Vec<String>,
     /// Signals read by the process's conditions/expressions (sensitivity).
     pub reads: Vec<SignalId>,
     /// Signals the process drives.
@@ -12557,16 +12731,27 @@ impl Design {
         for target in order {
             let drivers = by_target.remove(&target).unwrap();
             let mut reads = Vec::new();
+            let mut labels = self
+                .resolved_process_labels
+                .get(&target.0)
+                .cloned()
+                .unwrap_or_default();
             for &di in &drivers {
                 let d = &self.drivers[di];
+                if let Some(label) = self.process_labels.get(&d.ctx) {
+                    labels.push(label.clone());
+                }
                 if let Some(c) = &d.cond {
                     read_set(c, &mut reads);
                 }
                 read_set(&d.expr, &mut reads);
             }
             dedup(&mut reads);
+            labels.sort();
+            labels.dedup();
             procs.push(Process {
                 kind: ProcessKind::Comb { target, drivers },
+                labels,
                 reads,
                 writes: vec![target],
             });
@@ -12588,6 +12773,12 @@ impl Design {
             dedup(&mut writes);
             procs.push(Process {
                 kind: ProcessKind::Event { block: bi },
+                labels: self
+                    .process_labels
+                    .get(&eb.ctx)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
                 reads,
                 writes,
             });
@@ -12611,14 +12802,37 @@ impl Design {
                 Some(c) => format!("  when {}", render(c, self)),
                 None => String::new(),
             };
+            let labels = self
+                .resolved_process_labels
+                .get(&d.target.0)
+                .cloned()
+                .or_else(|| {
+                    self.process_labels
+                        .get(&d.ctx)
+                        .map(|name| vec![name.clone()])
+                })
+                .unwrap_or_default();
+            let label = if labels.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", labels.join(", "))
+            };
             out.push_str(&format!(
-                "driver {} = {}{cond}\n",
+                "driver{label} {} = {}{cond}\n",
                 self.signals[d.target.0 as usize].path,
                 render(&d.expr, self)
             ));
         }
         for eb in &self.event_blocks {
-            out.push_str(&format!("event ({}):\n", render(&eb.condition, self)));
+            let label = self
+                .process_labels
+                .get(&eb.ctx)
+                .map(|name| format!(" [{name}]"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "event{label} ({}):\n",
+                render(&eb.condition, self)
+            ));
             for u in &eb.updates {
                 let cond = match &u.cond {
                     Some(c) => format!("  when {}", render(c, self)),
@@ -14378,12 +14592,6 @@ fn enum_reprs(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u3
     out
 }
 
-fn has_attr(e: &ast::EntityDecl, name: &str) -> bool {
-    e.attrs
-        .iter()
-        .any(|a| a.name.segments.last().map(|s| s.text.as_str()) == Some(name))
-}
-
 fn is_test_entity(e: &ast::EntityDecl, resolved: &Resolved) -> bool {
     e.attrs
         .iter()
@@ -14522,7 +14730,7 @@ mod tests {
         };
         assert_eq!(
             count(
-                "module m;\n#[top] entity E { y: unsigned[8] out }\n\
+                "module m;\nentity E { y: unsigned[8] out }\n\
                  impl E { let a: unsigned[8] = 200; let i: unsigned[8] = a + 1; y = i; }\n"
             ),
             1,
@@ -14531,7 +14739,7 @@ mod tests {
         // Driving it is the spelling that means "compute this", and is fine.
         assert_eq!(
             count(
-                "module m;\n#[top] entity E { y: unsigned[8] out }\n\
+                "module m;\nentity E { y: unsigned[8] out }\n\
                  impl E { let a: unsigned[8] = 200; let i: unsigned[8]; i = a + 1; y = i; }\n"
             ),
             0,
@@ -14543,7 +14751,7 @@ mod tests {
             count(
                 "module m;\nconst K: unsigned[8] = 5;\n\
                  fn twice(n: unsigned[8]) -> unsigned[8] { return n * 2; }\n\
-                 #[top] entity E { y: unsigned[8] out }\n\
+                 entity E { y: unsigned[8] out }\n\
                  impl E { let a: unsigned[8] = 200; let b: unsigned[8] = K;\n\
                  let c: unsigned[8] = 3 * 7; let d: unsigned[8] = twice(4);\n\
                  y = a + b + c + d; }\n"
@@ -14558,7 +14766,7 @@ mod tests {
         assert_eq!(
             count(
                 "module m;\nstruct P { x: unsigned[8], y: unsigned[8] }\n\
-                 #[top] entity E { src: unsigned[8] in, y: unsigned[8] out }\n\
+                 entity E { src: unsigned[8] in, y: unsigned[8] out }\n\
                  impl E { let p: P = { .x = 7, .y = src + 1 }; y = p.y; }\n"
             ),
             1,
@@ -14566,7 +14774,7 @@ mod tests {
         );
         assert_eq!(
             count(
-                "module m;\n#[top] entity E { src: unsigned[8] in, y: unsigned[8] out }\n\
+                "module m;\nentity E { src: unsigned[8] in, y: unsigned[8] out }\n\
                  impl E { let arr: unsigned[8][2] = [9, src + 2]; y = arr[1]; }\n"
             ),
             1,
@@ -14577,7 +14785,7 @@ mod tests {
             count(
                 "module m;\nconst K: unsigned[8] = 5;\n\
                  struct P { x: unsigned[8], y: unsigned[8] }\n\
-                 #[top] entity E { y: unsigned[8] out }\n\
+                 entity E { y: unsigned[8] out }\n\
                  impl E { let p: P = { .x = K + 2, .y = 3 };\n\
                  let arr: unsigned[8][2] = [1, 3 * 4]; y = p.x + arr[1]; }\n"
             ),
@@ -14599,7 +14807,7 @@ mod tests {
         // Every variant named, every arm assigning `a`.
         assert_eq!(
             latches(&format!(
-                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out }}\n\
+                "{ENUM}entity E {{ s: State in, a: unsigned[8] out }}\n\
                  impl E {{ match s {{ State::Idle => a = 10, State::Run => a = 20, }} }}\n"
             )),
             0,
@@ -14609,7 +14817,7 @@ mod tests {
         // The same over a character-valued enum.
         assert_eq!(
             latches(
-                "module m;\n#[top] entity E { b: Bit in, a: unsigned[8] out }\n\
+                "module m;\nentity E { b: Bit in, a: unsigned[8] out }\n\
                  impl E { match b { '0' => a = 10, '1' => a = 20, } }\n"
             ),
             0,
@@ -14619,7 +14827,7 @@ mod tests {
         // A variant left out is a genuine latch.
         assert_eq!(
             latches(&format!(
-                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out }}\n\
+                "{ENUM}entity E {{ s: State in, a: unsigned[8] out }}\n\
                  impl E {{ match s {{ State::Idle => a = 10, }} }}\n"
             )),
             1,
@@ -14629,7 +14837,7 @@ mod tests {
         // Exhaustive, but one arm does not assign the signal.
         assert_eq!(
             latches(&format!(
-                "{ENUM}#[top] entity E {{ s: State in, a: unsigned[8] out, k: unsigned[8] out }}\n\
+                "{ENUM}entity E {{ s: State in, a: unsigned[8] out, k: unsigned[8] out }}\n\
                  impl E {{ a = 0; match s {{ State::Idle => k = 1, State::Run => a = 2, }} }}\n"
             )),
             1,
@@ -14686,7 +14894,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { a: Bit in, b: Bit in, y: Bit out, z: Bit out } \
+                "module user; entity Top { a: Bit in, b: Bit in, y: Bit out, z: Bit out } \
                  impl Top { \
                    let left: a::Cell = { .a = a, .y = y }; \
                    let right: b::Cell = { .b = b, .z = z }; \
@@ -14721,12 +14929,12 @@ mod tests {
     fn equal_root_entity_leaves_get_distinct_qualified_paths() {
         let sources = [
             (
-                "module a; #[top] pub entity Root { value: integer out } \
+                "module a; pub entity Root { value: integer out } \
                  impl Root { value = 11; }",
                 FileId(0),
             ),
             (
-                "module b; #[top] pub entity Root { value: integer out } \
+                "module b; pub entity Root { value: integer out } \
                  impl Root { value = 22; }",
                 FileId(1),
             ),
@@ -14776,7 +14984,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                "module user; entity Top { left: integer out, right: integer out } \
                  impl Top { left = a::math::select(); right = b::math::select(); }",
                 FileId(2),
             ),
@@ -14827,7 +15035,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                "module user; entity Top { left: integer out, right: integer out } \
                  impl Top { left = a::Device::tag(); right = b::Device::tag(); }",
                 FileId(2),
             ),
@@ -14894,7 +15102,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { left: a::Value in, right: b::Value in }",
+                "module user; entity Top { left: a::Value in, right: b::Value in }",
                 FileId(2),
             ),
         ];
@@ -14940,7 +15148,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { left: a::State out, right: b::State out } \
+                "module user; entity Top { left: a::State out, right: b::State out } \
                  impl Top { left = a::State::Run; right = b::State::High; }",
                 FileId(2),
             ),
@@ -15008,7 +15216,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { a_pair: a::Pair out, b_pair: b::Pair out } \
+                "module user; entity Top { a_pair: a::Pair out, b_pair: b::Pair out } \
                  impl Top { a_pair = { .left = 5 }; b_pair = { .right = 17 }; }",
                 FileId(2),
             ),
@@ -15080,7 +15288,7 @@ mod tests {
             view Port for Stream { value out } view Port for Queue { value out } \
             impl Stream Port { fn drive(self) { self.value = 11; } } \
             impl Queue Port { fn drive(self) { self.value = 22; } } \
-            #[top] entity Top { stream: Stream Port, queue: Queue Port } \
+            entity Top { stream: Stream Port, queue: Queue Port } \
             impl Top { stream.drive(); queue.drive(); }";
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
@@ -15134,7 +15342,7 @@ mod tests {
                 FileId(2),
             ),
             (
-                "module user; #[top] entity Top { \
+                "module user; entity Top { \
                    left_tag: integer out, right_tag: integer out, \
                    left: common::Bus a::Endpoint, right: common::Bus b::Endpoint, \
                    left_seen: integer out, right_seen: integer out \
@@ -15226,7 +15434,7 @@ mod tests {
                 FileId(2),
             ),
             (
-                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                "module user; entity Top { left: integer out, right: integer out } \
                  impl Top { left = a::Item::tag(); right = b::Item::tag(); }",
                 FileId(3),
             ),
@@ -15284,7 +15492,7 @@ mod tests {
                 FileId(1),
             ),
             (
-                "module user; #[top] entity Top { y: integer out } impl Top { y = 1; }",
+                "module user; entity Top { y: integer out } impl Top { y = 1; }",
                 FileId(2),
             ),
         ];
@@ -15350,7 +15558,7 @@ mod tests {
                 FileId(3),
             ),
             (
-                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                "module user; entity Top { left: integer out, right: integer out } \
                  impl Top { \
                    let acc: common::Acc; let a_token: a::Token; let b_token: b::Token; \
                    left = acc + a_token; right = acc + b_token; \
@@ -15398,7 +15606,7 @@ mod tests {
             ("module a; pub const VALUE: integer = 11;", FileId(0)),
             ("module b; pub const VALUE: integer = 22;", FileId(1)),
             (
-                "module user; #[top] entity Top { left: integer out, right: integer out } \
+                "module user; entity Top { left: integer out, right: integer out } \
                  impl Top { left = a::VALUE; right = b::VALUE; }",
                 FileId(2),
             ),
@@ -15439,7 +15647,7 @@ mod tests {
     fn module_range_constant_keeps_its_qualified_width_identity() {
         let design = lower_src(
             "module widths; const SPAN: range = 7..0; \
-             #[top] entity Top { len: integer out } \
+             entity Top { len: integer out } \
              impl Top { let bits: unsigned[SPAN]; len = bits'length; }",
         );
         let bits = design
@@ -15474,7 +15682,7 @@ mod tests {
               if c == '1' { latched = 1; }\n\
               discarded = 2;\n\
             }\n\
-            #[top] entity Top {}\n\
+            entity Top {}\n\
             impl Top {\n\
               let c: Logic = '0';\n\
               let looped: unsigned[8]; let latched: unsigned[8]; let forgotten: unsigned[8];\n\
@@ -15517,17 +15725,17 @@ mod tests {
     fn late_ir_errors_keep_stable_codes_and_source_spans() {
         let cases = [
             (
-                "module m;\n#[top] entity E {}\nimpl E { let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\"); }\n",
+                "module m;\nentity E {}\nimpl E { let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\"); }\n",
                 crate::diag::codes::COMPILE_TIME_IO,
                 "let data:",
             ),
             (
-                "module m;\nfn recurse(v: unsigned[8]) -> unsigned[8] { return recurse(v); }\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = recurse(a); }\n",
+                "module m;\nfn recurse(v: unsigned[8]) -> unsigned[8] { return recurse(v); }\nentity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = recurse(a); }\n",
                 crate::diag::codes::UNBOUNDED_RECURSION,
                 "recurse",
             ),
             (
-                "module m;\n#[top] entity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = a after 1; }\n",
+                "module m;\nentity E { a: unsigned[8] in, y: unsigned[8] out }\nimpl E { y = a after 1; }\n",
                 crate::diag::codes::TYPE_MISMATCH,
                 "y = a after 1",
             ),
@@ -15561,11 +15769,13 @@ mod tests {
                 .count()
         };
         let overlapping = "module m;
-             #[top] entity E { y: unsigned[8] out, }
+             entity E { y: unsigned[8] out, }
              impl E {
                  let values: unsigned[8][4];
-                 for i in 0..2 { values[i] = 11; }
-                 for i in 2..3 { values[i] = 22; }
+                 process {
+                     for i in 0..2 { values[i] = 11; }
+                     for i in 2..3 { values[i] = 22; }
+                 }
                  y = values[2];
              }";
         assert_eq!(
@@ -15578,11 +15788,13 @@ mod tests {
              entity E { y: unsigned[8] out, }
              impl E {
                  let values: unsigned[8][4];
-                 for i in 0..2 { values[i] = 11; }
-                 for i in 2..3 { values[i] = 22; }
+                 process {
+                     for i in 0..2 { values[i] = 11; }
+                     for i in 2..3 { values[i] = 22; }
+                 }
                  y = values[2];
              }
-             #[top] entity H { a: unsigned[8] out, b: unsigned[8] out, }
+             entity H { a: unsigned[8] out, b: unsigned[8] out, }
              impl H {
                  let first: E = { .y = a };
                  let second: E = { .y = b };
@@ -15594,8 +15806,8 @@ mod tests {
         );
 
         let direct = "module m;
-             #[top] entity E { y: unsigned[8] out, }
-             impl E { y = 1; y = 2; }";
+             entity E { y: unsigned[8] out, }
+             impl E { process { y = 1; y = 2; } }";
         assert_eq!(
             warning_count(direct),
             1,
@@ -15603,8 +15815,8 @@ mod tests {
         );
 
         let selected_block = "module m;
-             #[top] entity E { y: unsigned[8] out, }
-             impl E { if true { y = 1; y = 2; } }";
+             entity E { y: unsigned[8] out, }
+             impl E { process { if true { y = 1; y = 2; } } }";
         assert_eq!(
             warning_count(selected_block),
             1,
@@ -15612,11 +15824,13 @@ mod tests {
         );
 
         let disjoint = "module m;
-             #[top] entity E { y: unsigned[8] out, }
+             entity E { y: unsigned[8] out, }
              impl E {
                  let values: unsigned[8][4];
-                 for i in 0..1 { values[i] = 11; }
-                 for i in 2..3 { values[i] = 22; }
+                 process {
+                     for i in 0..1 { values[i] = 11; }
+                     for i in 2..3 { values[i] = 22; }
+                 }
                  y = values[2];
              }";
         assert_eq!(
@@ -15630,7 +15844,7 @@ mod tests {
     fn integer_literals_keep_all_words() {
         let d = lower_src(
             "module m;
-             #[top] entity E { y: unsigned[192] out, }
+             entity E { y: unsigned[192] out, }
              impl E { y = 1020847100762815390427017310442723737601; }",
         );
         assert!(matches!(
@@ -15643,7 +15857,7 @@ mod tests {
     fn signals_retain_kernel_integer_identity() {
         let design = lower_src(
             "module m;
-             #[top] entity E {
+             entity E {
                  plain: integer out,
                  constrained: integer<-10..10> out,
                  bits: unsigned[8] out,
@@ -15669,7 +15883,7 @@ mod tests {
             src.push_str(&format!("struct S{i}(S{});\n", i - 1));
         }
         src.push_str(
-            "#[top] entity E { y: S79 out, }
+            "entity E { y: S79 out, }
              impl E { y = S79(); }",
         );
         let d = lower_src(&src);
@@ -15685,7 +15899,7 @@ mod tests {
             "module m; struct P { a: unsigned[8], b: unsigned[8] }\n\
              entity E { x: unsigned[8] out, y: unsigned[8] out }\n\
              impl E { let p: P = { .a = 11, .b = 22 }; x = p.a; y = p.b; }\n\
-             #[top] entity H { x: unsigned[8] out, y: unsigned[8] out, }\n\
+             entity H { x: unsigned[8] out, y: unsigned[8] out, }\n\
              impl H { let d: E = { .x = x, .y = y }; }",
         );
         let init = |suffix: &str| {
@@ -15710,7 +15924,7 @@ mod tests {
             format!(
                 "module m;\nentity E {{ a: unsigned[8] in, y: unsigned[4] out, z: unsigned[4] out, }}\n\
                  impl E {{ {{y, z}} = {rhs}; }}\n\
-                 #[top] entity H {{ a: unsigned[8] in, y: unsigned[4] out, z: unsigned[4] out, }}\n\
+                 entity H {{ a: unsigned[8] in, y: unsigned[4] out, z: unsigned[4] out, }}\n\
                  impl H {{ let d: E = {{ .a = a, .y = y, .z = z }}; }}\n"
             )
         };
@@ -15739,7 +15953,6 @@ mod tests {
             view Source for Stream { valid out, data out }\n\
             entity Producer { bus: Stream Source, value: unsigned[8] in }\n\
             impl Producer { bus.valid = '1'; bus.data = value; }\n\
-            #[top]\n\
             entity BadLink { a: unsigned[8] in, b: unsigned[8] in }\n\
             impl BadLink {\n\
               let wire: Stream;\n\
@@ -15785,7 +15998,7 @@ mod tests {
              impl Resolve for Wire {\n\
                  fn resolve(self, rhs: Wire) -> Wire { return self; }\n\
              }\n\
-             #[top] entity Net { a: Wire in, b: Wire in, y: Wire out }\n\
+             entity Net { a: Wire in, b: Wire in, y: Wire out }\n\
              impl Net { y = a; }\n\
              impl Net { y = b; }\n",
         );
@@ -15836,7 +16049,7 @@ mod tests {
              struct HandshakeBus { valid: Bit, ready: Bit }\n\
              view Handshake for HandshakeBus { valid out, ready in }\n\
              impl HandshakeBus Handshake { fn assert_valid(self) { self.valid = '1'; } }\n\
-             #[top] entity Producer { bus: HandshakeBus Handshake, observed: Bit out, }\n\
+             entity Producer { bus: HandshakeBus Handshake, observed: Bit out, }\n\
              impl Producer { bus.assert_valid(); observed = bus.ready; }",
         );
         assert!(d.signals.iter().any(|s| s.path.ends_with(".bus.valid")));
@@ -15874,7 +16087,7 @@ mod tests {
                bus: Spi Controller, source: unsigned[8] in, sampled: unsigned[8] out,\n\
              }\n\
              impl Device { write(bus, source); sampled = read(bus); }\n\
-             #[top] entity Link {}\n\
+             entity Link {}\n\
              impl Link {\n\
                let wire: Spi;\n\
                let source: unsigned[8];\n\
@@ -15923,7 +16136,6 @@ mod tests {
             "module m;\n\
              enum Phase { Idle = 2, Run = 3, Done = 4 }\n\
              enum Step  { A, B, C }\n\
-             #[top]\n\
              entity T {}\n\
              impl T { let p: Phase; let s: Step; }\n",
         );
@@ -15947,7 +16159,6 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Phase { Idle = 2, Run = 3, Done = 4 }\n\
-             #[top]\n\
              entity T {}\n\
              impl T { let p: Phase = Phase::Run; }\n",
         );
@@ -15967,7 +16178,6 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              enum Phase { Idle = 2, Run = 3 }\n\
-             #[top]\n\
              entity E { y: Phase out, z: unsigned[8] out }\n\
              impl E { y = Phase(); z = unsigned[8](); }\n",
         );
@@ -16001,7 +16211,6 @@ mod tests {
              enum Phase { Idle = 2, Run = 3 }\n\
              struct Header { flag: Bit, ph: Phase }\n\
              struct Packet { header: Header, data: unsigned[8] }\n\
-             #[top]\n\
              entity E { o: Packet out }\n\
              impl E { o = Packet::new(); }\n",
         );
@@ -16036,7 +16245,6 @@ mod tests {
         // VHDL range attributes; direction is preserved.
         let d = lower_src(
             "module m;\n\
-             #[top]\n\
              entity E {\n\
                dn: unsigned[7..0] in, up: unsigned[8] in,\n\
                a: unsigned[8] out, b: unsigned[8] out, c: unsigned[8] out, e: unsigned[8] out,\n\
@@ -16079,7 +16287,6 @@ mod tests {
             "module m;\n\
              entity E { a: unsigned[8] in, driven: unsigned[8] out, forgotten: unsigned[8] out }\n\
              impl E { driven = a + 1; }\n\
-             #[top]\n\
              entity T {}\n\
              impl T { let a: unsigned[8]; let d: unsigned[8]; let f: unsigned[8];\n\
                let dut: E = { .a = a, .driven = d, .forgotten = f }; }\n",
@@ -16105,7 +16312,6 @@ mod tests {
              entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
              impl E {\n  let used: unsigned[8];\n  let dead: unsigned[8];\n  let konst: unsigned[8] = 5;\n\
                used = a + 1;\n  y = used + konst;\n }\n\
-             #[top]\n\
              entity T {}\n\
              impl T { let a: unsigned[8]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
         );
@@ -16202,7 +16408,7 @@ mod tests {
         // wide. Retained checker types keep it distinct from the vector.
         let one = lower_diags(
             "module m;\n\
-             entity E { b: unsigned[1] in, y: Logic out }\n\
+             entity E { b: unsigned[1] in, y: Bit out }\n\
              impl E { y = b[0]; }\n",
         );
         assert!(!one.iter().any(|d| d.contains("width mismatch")), "{one:?}");
@@ -16216,7 +16422,7 @@ mod tests {
             "module m;\n\
              entity L { a: unsigned[8] in, y: unsigned[8] out }\n\
              impl L { let t: unsigned[8]; t = t + a; y = t; }\n\
-             #[top] entity Top {}\n\
+             entity Top {}\n\
              impl Top { let a: unsigned[8]; let y: unsigned[8]; let d: L = { .a = a, .y = y }; }\n",
         );
         let loops: Vec<&String> = diags.iter().filter(|d| d.contains("W-P010")).collect();
@@ -16227,7 +16433,7 @@ mod tests {
             "module m;\n\
              entity C { x: unsigned[8] in, y: unsigned[8] out }\n\
              impl C { y = x + 1; }\n\
-             #[top] entity Top {}\n\
+             entity Top {}\n\
              impl Top { let x: unsigned[8]; let y: unsigned[8]; let d: C = { .x = x, .y = y }; }\n",
         );
         assert!(
@@ -16244,7 +16450,7 @@ mod tests {
             "module m;\n\
              entity L { c: Logic in, a: unsigned[8] in, y: unsigned[8] out, z: unsigned[8] out }\n\
              impl L { if c == '1' { y = a; } z = a; }\n\
-             #[top] entity Top {}\n\
+             entity Top {}\n\
              impl Top { let c: Logic; let a: unsigned[8]; let y: unsigned[8]; let z: unsigned[8];\n\
                let d: L = { .c = c, .a = a, .y = y, .z = z }; }\n",
         );
@@ -16264,7 +16470,7 @@ mod tests {
              enum State { Idle, Run }\n\
              entity E { a: Logic in, s: State out }\n\
              impl E { s = State::Idle; }\n\
-             #[top] entity Top {}\n\
+             entity Top {}\n\
              impl Top { let a: Logic; let s: State; let e: E = { .a = a, .s = s }; }\n",
         );
         let sig = |p: &str| d.signals.iter().find(|s| s.path == p).unwrap();
@@ -16289,11 +16495,13 @@ mod tests {
         }\n\
         impl<W: integer> Counter<W> {\n\
           let value: unsigned[W] = 0;\n\
-          if clk.rising() {\n\
-            if rst == '1' {\n\
-              value = 0;\n\
-            } else if en {\n\
-              value = value + 1;\n\
+          process update {\n\
+            if clk.rising() {\n\
+              if rst == '1' {\n\
+                value = 0;\n\
+              } else if en {\n\
+                value = value + 1;\n\
+              }\n\
             }\n\
           }\n\
           count = value;\n\
@@ -16396,7 +16604,7 @@ mod tests {
         let not_a_place = lower_diags(
             "module m;
              fn f(x: unsigned[8]) -> unsigned[8] { return x; }
-             #[top] entity E { a: unsigned[8] in, y: unsigned[8] out }
+             entity E { a: unsigned[8] in, y: unsigned[8] out }
              impl E { f(a) = a; y = a; }",
         );
         assert!(
@@ -16412,7 +16620,7 @@ mod tests {
     #[test]
     fn chained_runtime_indices_lower_to_muxes_and_gated_writes() {
         let source = "module m;
-             #[top] entity E {
+             entity E {
                a: unsigned[8] in, row: integer in, col: integer in,
                y: unsigned[8] out
              }
@@ -16465,7 +16673,7 @@ mod tests {
     fn runtime_index_then_struct_field_reaches_the_scalar_leaf() {
         let source = "module m;
              struct Packet { data: unsigned[8], tag: unsigned[4] }
-             #[top] entity E {
+             entity E {
                a: unsigned[8] in, slot: integer in, y: unsigned[8] out
              }
              impl E {
@@ -16487,7 +16695,7 @@ mod tests {
     fn packed_vector_indices_use_declared_labels_and_storage_offsets() {
         let design = lower_src(
             "module m; using std::bits::unsigned; using std::logic::Logic;
-             #[top] entity E {
+             entity E {
                value: unsigned[15..8] in,
                high: Logic out, low: Logic out, whole: unsigned[8] out
              }
@@ -16519,7 +16727,7 @@ mod tests {
     #[test]
     fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
         let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
-             #[top] entity E {
+             entity E {
                clk: Bit in, index: unsigned[5] in, data: Logic in, q: Logic out
              }
              impl E {
@@ -16695,6 +16903,8 @@ mod tests {
                 ctx: 0,
             }],
             event_blocks: vec![],
+            process_labels: Default::default(),
+            resolved_process_labels: Default::default(),
             enum_bases: HashMap::new(),
             enum_syms: HashMap::new(),
             new_defaults: Default::default(),
@@ -16732,7 +16942,7 @@ mod tests {
 
     #[test]
     fn persisted_leaf_layout_is_the_backend_width_authority() {
-        let mut design = lower_src("module m; #[top] entity E { value: unsigned[8] in } impl E {}");
+        let mut design = lower_src("module m; entity E { value: unsigned[8] in } impl E {}");
         let id = SignalId(
             design
                 .signals
@@ -16775,12 +16985,51 @@ mod tests {
             .iter()
             .find(|p| matches!(p.kind, ProcessKind::Event { .. }))
             .unwrap();
+        assert_eq!(event.labels, vec!["H.dut::update"]);
         // Sensitive to clk (edge condition), rst and en (update guards),
         // value (increment). Writes value.
         for s in ["H.dut.clk", "H.dut.rst", "H.dut.en", "H.dut.value"] {
             assert!(event.reads.contains(&sig(s)), "event not sensitive to {s}");
         }
         assert_eq!(event.writes, vec![sig("H.dut.value")]);
+    }
+
+    #[test]
+    fn resolved_process_keeps_every_contributing_label() {
+        let d = lower_src(
+            "module m;\n\
+             impl<T: Resolve> Resolve for T[] {\n\
+               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n\
+             impl Resolve for Logic {\n\
+               fn resolve(self, rhs: Logic) -> Logic {\n\
+                 if self == 'Z' { return rhs; }\n\
+                 return self;\n\
+               }\n\
+             }\n\
+             entity E { q: unsigned[8] out }\n\
+             impl E {\n\
+               process bit_one { q[1] = '1'; }\n\
+               process bit_three { q[3] = '1'; }\n\
+             }\n",
+        );
+        let target = SignalId(
+            d.signals
+                .iter()
+                .position(|signal| signal.path == "E.q")
+                .unwrap() as u32,
+        );
+        let process = d
+            .processes()
+            .into_iter()
+            .find(|process| process.writes == [target])
+            .unwrap();
+        assert_eq!(process.labels, ["E::bit_one", "E::bit_three"]);
+        let rendered = d.to_ir_string();
+        assert!(
+            rendered.contains("[E::bit_one, E::bit_three]"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -16791,7 +17040,7 @@ mod tests {
              struct P { flag: Bit, val: unsigned[8] }\n\
              entity E { p: P in, a: Bit[3] in, s: S out }\n\
              impl E {}\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let p: P; let a: Bit[3]; let s: S; let dut: E = { .p = p, .a = a, .s = s }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
@@ -16808,8 +17057,8 @@ mod tests {
         let d = lower_src(
             "module m;\n\
              entity E { a: unsigned[4] in, y: unsigned[8] out }\n\
-             impl E { y = 0; y[3..0] = a; }\n\
-             #[top] entity H {}\n\
+             impl E { process { y = 0; y[3..0] = a; } }\n\
+             entity H {}\n\
              impl H { let a: unsigned[4]; let y: unsigned[8]; let dut: E = { .a = a, .y = y }; }\n",
         );
         // The y driver should be a read-modify-write (an Or of a masked base
@@ -16826,6 +17075,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn concurrent_resolved_slices_lower_without_expression_explosion() {
+        // Each bare assignment is its own concurrent driver context. Folding
+        // three contexts used to repeatedly inline and clone Logic::resolve:
+        // two produced about 500 KiB of IR and the third exhausted the host.
+        let d = lower_src(
+            "module m;\n\
+             impl<T: Resolve> Resolve for T[] {\n\
+               fn resolve(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n\
+             impl Resolve for Logic {\n\
+               fn resolve(self, rhs: Logic) -> Logic {\n\
+                 if self == 'Z' { return rhs; }\n\
+                 if rhs == 'Z' { return self; }\n\
+                 if self == rhs { return self; }\n\
+                 return 'X';\n\
+               }\n\
+             }\n\
+             entity E { q: unsigned[8] out }\n\
+             impl E { q[1] = '1'; q[3] = '1'; q[5] = '1'; }\n",
+        );
+        assert!(d.validate().is_empty());
+        let rendered = d.to_ir_string();
+        assert!(
+            rendered.len() < 250_000,
+            "three resolved slice contexts expanded to {} bytes",
+            rendered.len()
+        );
+    }
+
     /// A derived enum width has to hold every *value*, not one code per
     /// variant. `Hi = 9` in a two-variant enum needs four bits; counting
     /// variants alone gave one, silently truncating the value to 1. The old
@@ -16837,7 +17116,7 @@ mod tests {
              enum Code { Lo = 1, Hi = 9 }\n\
              entity E { c: Code out }\n\
              impl E { c = Code::Hi; }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let c: Code; let dut: E = { .c = c }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.c").unwrap();
@@ -16854,7 +17133,7 @@ mod tests {
              enum Ext(Base);\n\
              entity E { x: Ext out }\n\
              impl E { x = Ext::A; }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let x: Ext; let dut: E = { .x = x }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
@@ -16874,7 +17153,7 @@ mod tests {
              enum Base { A, B, C }\n\
              entity E { sel: Base in, y: unsigned[8] out }\n\
              impl E { y = match sel { Base::A => 1, Base::B => 2, Base::C => 3 }; }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let sel: Base; let y: unsigned[8]; let e: E = { .sel = sel, .y = y }; }",
         );
         fn has_unknown(e: &Expr) -> bool {
@@ -16919,7 +17198,7 @@ mod tests {
              fn neg(v: signed[8]) -> signed[8] { return 0 - v; }\n\
              entity E { s: signed[8] in, lt: unsigned[8] out }\n\
              impl E { lt = if neg(s) < 0 { 1 } else { 0 }; }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let s: signed[8]; let lt: unsigned[8]; \
              let e: E = { .s = s, .lt = lt }; }",
         );
@@ -16937,7 +17216,7 @@ mod tests {
              fn width_of(v: integer) -> integer { return v'length; }\n\
              entity E { s: signed[8] in, y: unsigned[8] out }\n\
              impl E { y = width_of(s); }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let s: signed[8]; let y: unsigned[8]; let e: E = { .s = s, .y = y }; }",
         );
         let dr = d
@@ -16959,7 +17238,7 @@ mod tests {
                 "module m;\n\
                  entity Inc<W: integer> {{ a: unsigned[W] in, y: unsigned[W] out, }}\n\
                  impl<W: integer> Inc<W> {{ y = a + 1; }}\n\
-                 #[top] entity H {{}}\n\
+                 entity H {{}}\n\
                  impl H {{ let a: unsigned[4]; let y: unsigned[4]; \
                  let i: Inc<{arg}> = {{ .a = a, .y = y }}; }}"
             )
@@ -16989,7 +17268,7 @@ mod tests {
                upd = B { ..base, .z = 7 };\n\
                oy = upd.a.y;\n\
              }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let oy: unsigned[4]; let e: E = { .oy = oy }; }",
         );
         let driven = |suffix: &str| {
@@ -17014,7 +17293,7 @@ mod tests {
              struct Packet { header: Header, data: unsigned[8] }\n\
              entity E { p: Packet out }\n\
              impl E {}\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let p: Packet; let dut: E = { .p = p }; }\n",
         );
         let width = |path: &str| d.signals.iter().find(|x| x.path == path).map(|x| x.width);
@@ -17032,7 +17311,7 @@ mod tests {
              enum Alias(Base);\n\
              entity E { x: Alias out }\n\
              impl E { x = Alias::B; }\n\
-             #[top] entity H {}\n\
+             entity H {}\n\
              impl H { let x: Alias; let dut: E = { .x = x }; }\n",
         );
         let sig = d.signals.iter().find(|s| s.path == "H.dut.x").unwrap();
@@ -17048,7 +17327,7 @@ mod tests {
         let d = lower_src(
             "module m; entity E { y: unsigned[4] out, z: unsigned[4] out, }\n\
              impl E { y = \"1010\"; z = \"1X10\"; }\n\
-             #[top] entity T {}\n\
+             entity T {}\n\
              impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
         );
         let s = d.to_ir_string();
@@ -17066,7 +17345,7 @@ mod tests {
         let d = lower_src(
             "module m; entity E { y: unsigned[4] out, }\n\
              impl E { let v: unsigned[4] = \"1010\"; y = v; }\n\
-             #[top] entity T {}\n\
+             entity T {}\n\
              impl T { let y: unsigned[4]; let dut: E = { .y = y }; }",
         );
         let v = d
@@ -17084,7 +17363,7 @@ mod tests {
         let d = lower_src(
             "module m; entity E { y: unsigned[4] out, z: unsigned[4] out, }\n\
              impl E { let v: unsigned[4] = \"1X10\"; let w: unsigned[4] = \"1010\"; y = v; z = w; }\n\
-             #[top] entity T {}\n\
+             entity T {}\n\
              impl T { let y: unsigned[4]; let z: unsigned[4]; let dut: E = { .y = y, .z = z }; }",
         );
         let v = d
@@ -17129,7 +17408,7 @@ mod tests {
              entity Driver { y: unsigned[2] out }\n\
              impl Driver { y = \"X0\"; }\n\
              impl Driver { y = \"01\"; }\n\
-             #[top] entity T {}\n\
+             entity T {}\n\
              impl T { let y: unsigned[2]; let d: Driver = { .y = y }; }",
         );
 
@@ -17157,7 +17436,7 @@ mod tests {
     fn wide_metavalue_initializers_have_no_element_limit() {
         let d = lower_src(
             "module m;\n\
-             #[top] entity T {}\n\
+             entity T {}\n\
              impl T { let v: unsigned[17] = \"X0000000000000000\"; }\n",
         );
         let v = d
@@ -17175,7 +17454,7 @@ mod tests {
 
         let driven = lower_src(
             "module m;\n\
-             #[top] entity E { v: unsigned[17] out, }\n\
+             entity E { v: unsigned[17] out, }\n\
              impl E { v = \"X0000000000000000\"; }\n",
         );
         let cid = *driven.meta_of.values().next().expect("driven companion");
@@ -17189,7 +17468,7 @@ mod tests {
     fn clean_combinational_override_clears_metavalue_companion_in_order() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E { clear: Bit in, y: unsigned[4] out, }\n\
+             entity E { clear: Bit in, y: unsigned[4] out, }\n\
              impl E {\n\
                  let dirty: unsigned[4] = \"X000\";\n\
                  y = dirty;\n\
@@ -17226,7 +17505,7 @@ mod tests {
     fn clean_clocked_override_clears_metavalue_companion_in_order() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E { clk: Bit in, clear: Bit in, y: unsigned[4] out, }\n\
+             entity E { clk: Bit in, clear: Bit in, y: unsigned[4] out, }\n\
              impl E {\n\
                  let dirty: unsigned[4] = \"X000\";\n\
                  if clk.rising() {\n\
@@ -17267,7 +17546,7 @@ mod tests {
     fn old_vector_read_uses_old_metavalue_companion() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E { y: unsigned[4] out, }\n\
+             entity E { y: unsigned[4] out, }\n\
              impl E {\n\
                  let v: unsigned[4] = \"X000\";\n\
                  y = v'old;\n\
@@ -17291,7 +17570,7 @@ mod tests {
     fn narrowed_arithmetic_scans_full_operand_for_metavalues() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E { y: unsigned[4] out, }\n\
+             entity E { y: unsigned[4] out, }\n\
              impl E {\n\
                  let dirty: unsigned[8] = \"X0000000\";\n\
                  let zero: unsigned[8] = 0;\n\
@@ -17331,7 +17610,7 @@ mod tests {
         let design = lower_src(
             "module m;\n\
              const FAR: integer = 1 << 64;\n\
-             #[top] entity E { y: unsigned[128] out, }\n\
+             entity E { y: unsigned[128] out, }\n\
              impl E { y = FAR; }\n",
         );
         assert_eq!(design.drivers.len(), 1);
@@ -17341,7 +17620,7 @@ mod tests {
     fn kernel_integer_operations_retain_signed_semantics() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  a: integer<-16..15> in,\n\
                  b: integer<-16..15> in,\n\
                  lt: Bit out,\n\
@@ -17392,7 +17671,7 @@ mod tests {
     fn real_to_integer_conversion_is_signed_in_direct_comparisons() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  r: real in,\n\
                  lt: Bit out,\n\
              }\n\
@@ -17428,7 +17707,7 @@ mod tests {
     #[test]
     fn ranged_integer_assignment_can_change_storage_width() {
         let src = "module m;\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  narrow: integer<-16..15> in,\n\
                  wide: integer<-128..127> out,\n\
              }\n\
@@ -17464,7 +17743,7 @@ mod tests {
              using Alias = Small;\n\
              using Chars = Char[];\n\
              using Text = Chars;\n\
-             #[top] entity E { x: Alias in, y: Alias out, }\n\
+             entity E { x: Alias in, y: Alias out, }\n\
              impl E { let text: Text[3] = \"abc\"; y = x; }\n",
         );
         for suffix in [".x", ".y"] {
@@ -17493,7 +17772,7 @@ mod tests {
              using CWord = integer;\n\
              using CInteger = CWord;\n\
              extern \"C\" { pub fn labs(v: CInteger) -> CInteger; }\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  x: integer<-128..127> in,\n\
                  y: integer<-128..127> out,\n\
              }\n\
@@ -17513,7 +17792,7 @@ mod tests {
     fn a_hardware_block_local_does_not_leak_out_of_its_block() {
         let diagnostics = lower_diags(
             "module m;\n\
-             #[top] entity E { select: Bit in, y: unsigned[8] out }\n\
+             entity E { select: Bit in, y: unsigned[8] out }\n\
              impl E {\n\
                  if select == '1' { let temporary: unsigned[8] = 3; y = temporary; }\n\
                  y = temporary;\n\
@@ -17532,7 +17811,7 @@ mod tests {
     fn hardware_block_locals_do_not_allocate_signals_or_leave_unknown_ir() {
         let design = lower_src(
             "module m;\n\
-             #[top] entity E { select: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
+             entity E { select: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
              impl E {\n\
                  if select == '1' {\n\
                      let temporary: unsigned[8] = a;\n\
@@ -17551,7 +17830,7 @@ mod tests {
     #[test]
     fn nested_runtime_access_on_a_block_local_stays_storage_free() {
         let source = "module m;\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  enable: Bit in, row: integer in, col: integer in,\n\
                  a: unsigned[8] in, y: unsigned[8] out\n\
              }\n\
@@ -17581,7 +17860,7 @@ mod tests {
     #[test]
     fn runtime_packed_index_on_a_block_local_stays_storage_free() {
         let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
-             #[top] entity E {
+             entity E {
                enable: Bit in, index: unsigned[5] in, y: Logic out
              }
              impl E {
@@ -17615,7 +17894,7 @@ mod tests {
              struct Pair<T, U> { left: T, right: U }\n\
              entity Pass<T> { input: T in, output: T out }\n\
              impl<T> Pass<T> { output = input; }\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  nested: Box<Box<unsigned[8]>> in,\n\
                  named: Pair<U = Box<unsigned[16]>, T = Box<Box<unsigned[8]>>> in,\n\
                  y: unsigned[8] out,\n\
@@ -17660,7 +17939,7 @@ mod tests {
             "module m;\n\
              struct Header { flag: Bit, code: unsigned[7..0] }\n\
              struct Packet<T> { header: Header, payload: T }\n\
-             #[top] entity E {\n\
+             entity E {\n\
                  packets: Packet<unsigned[16]>[3..1] in,\n\
                  count: integer<-3..4> in,\n\
              }\n\

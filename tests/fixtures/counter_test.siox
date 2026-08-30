@@ -13,11 +13,13 @@ entity Counter<W: integer> {
 impl<W: integer> Counter<W> {
     let value: unsigned[W] = 0;
 
-    if clk.rising() {
-        if rst == '1' {
-            value = 0;
-        } else if en {
-            value = value + 1;
+    process update {
+        if clk.rising() {
+            if rst == '1' {
+                value = 0;
+            } else if en {
+                value = value + 1;
+            }
         }
     }
 
@@ -41,14 +43,18 @@ impl CounterTest {
         .count = count,
     };
 
-    clk = not clk after 5ns;   // background clock, 10ns period
-
-    await 10ns;
-    rst = '0';
-
-    for i in 0..9 {
-        await clk.rising();
+    process clock_generator {
+        clk = not clk after 5ns;   // background clock, 10ns period
     }
 
-    assert!(count == 10, "counter should reach 10 after 10 rising edges");
+    process stimulus {
+        await 10ns;
+        rst = '0';
+
+        for i in 0..9 {
+            await clk.rising();
+        }
+
+        assert!(count == 10, "counter should reach 10 after 10 rising edges");
+    }
 }

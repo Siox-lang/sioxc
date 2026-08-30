@@ -5,7 +5,7 @@ layer that owns each change. The compiler is one regular Rust package:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-25 against the compiler, standard library, documentation,
+Status audited 2026-08-30 against the compiler, standard library, documentation,
 the `siox-tests` corpus, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
@@ -43,6 +43,14 @@ Owns source syntax, tokens, parsing, formatting, names, types, and elaborated
 hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, `src/elab.rs`.
 
 Current baseline:
+
+- ✅ Explicit `process [name] { ... }` blocks define driver-context boundaries:
+  statements within one process retain ordered override/next-state semantics,
+  while separate processes and bare continuous assignments are parallel
+  contexts. The parser/printer retain the lexical block and optional unique
+  label; processes are restricted to inherent entity impls, structural entity
+  instances inside them are rejected, and labels survive as
+  instance-qualified IR metadata.
 
 - ✅ Partial ranges, custom operators/indexing, applied views, nested generic
   type arguments, visibility, persistent expression types, direction checks,
@@ -248,6 +256,11 @@ Current baseline:
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
   reporting. User locals are injectively mangled outside the harness namespace,
   and output filenames use native OS strings.
+- 🟡 Native process scheduling supports one foreground stimulus process plus
+  any number of canonical self-toggle clock processes. Clocks start at time
+  zero regardless of declaration order, and additional foreground processes
+  are rejected with E-P028 instead of being serialized. General independently
+  suspending processes belong to the software-IR scheduler below.
 - ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
   declared array labels, nested dimensions, struct fields/values and packed
   bits. Composite right-hand sides are staged before writes. Invalid dynamic
@@ -259,15 +272,25 @@ Current baseline:
   Attribute declarations are module-qualified, so same-leaf custom/vendor
   metadata remains inert. Type checking, elaboration, IR, and planning share
   one identity/value predicate rather than matching the leaf `test`.
+- ✅ `top` is no longer a std declaration, compiler seed, elaboration marker,
+  or IR lint exemption. Ordinary compilation selects uninstantiated structural
+  roots and native object output accepts the sole root or an explicit `--top`.
+  Integration-declared vendor `top` attributes remain ordinary resolved
+  metadata and cannot change sioxc behavior.
+- 🟡 The first `test_ir::Program` is retained in `Compilation` and structurally
+  validated. It carries test descriptors, concrete local layouts, assignments,
+  assertions/runtime calls, `await`, and source spans; the compatibility C
+  backend consumes its descriptors and shared identity-based impl lookup.
+  Expand deferred `if`/`match`/`for` nodes into CFG blocks, then lower the same
+  product through LLVM and the Rust runtime.
 - 🔴 Replace the generated-C testbench translator with the software IR,
   LLVM lowering, and Rust runtime described in
   `docs/proposals/testbench-software-ir.md`. Keep the current harness as the
   compatibility backend until the replacement reaches feature parity. The
-  shared `TestPlan` prerequisite is complete; before adding direct LLVM test
-  lowering, remove `top` from std/compiler root handling and preserve it solely
-  as ordinary metadata for RTL vendor and Cocotb consumers. Then both native
-  lowering paths can reuse the same discovery, hierarchy, attribute identity,
-  and layout inputs during differential migration.
+  shared `TestPlan`, `top` cleanup, and initial validated software-IR product
+  are complete. Both native lowering paths must reuse this discovery,
+  hierarchy, attribute identity, control, and layout input during differential
+  migration.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

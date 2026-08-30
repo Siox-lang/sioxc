@@ -52,10 +52,10 @@ declarations for future output backends without entering `TestPlan`.
 
 Canonical test identity/value handling, module-qualified attribute ownership,
 exact test-root elaboration, and compatibility-harness consumption are now
-implemented. The remaining boundary cleanup is `top`: the resolver still seeds
-it, `std::attrs` still declares it, and ordinary elaboration still consumes its
-leaf spelling. Remove that coupling before direct LLVM test lowering so the new
-backend never inherits the wrong root model.
+implemented. `top` has also been removed from std, compiler seeds, attribute
+root discovery, and IR semantic exemptions. Ordinary compilation uses
+structural roots or an explicit `--top`, while an integration-declared `top`
+remains ordinary resolved metadata.
 
 ## Proposed pipeline
 
@@ -133,18 +133,20 @@ builds it.
 
 ## Migration plan
 
-1. **In progress:** normalize attribute ownership and test discovery before
+1. **Complete:** normalize attribute ownership and test discovery before
    changing codegen. Module-qualified attributes, canonical std test identity
    and Boolean handling, exact test-root elaboration, the shared resolved
-   `TestPlan`, and compatibility-C consumption are implemented. Still remove
-   `top` from `std` and compiler root handling and preserve it as ordinary
-   output metadata.
+   `TestPlan`, compatibility-C consumption, and attribute-free structural root
+   selection are implemented. Vendor `top` metadata remains ordinary.
 2. Extract and document the existing generated harness/runtime ABI and add
    differential tests for its supported constructs. Include same-name custom
    attributes, disabled tests, qualified duplicate test leaves, and preserved
    vendor `top` metadata so the boundary cannot regress.
-3. Introduce `test_ir` with rendering and validation, initially covering
-   scalar locals, assertions, and settle/await.
+3. **In progress:** `test_ir` now has rendering and structural validation, and
+   retains test descriptors, concrete local layouts, assignments, assertions,
+   runtime calls, `await`, and source spans. The compatibility harness consumes
+   its descriptors. Expand deferred `if`/`match`/`for` nodes into CFG blocks
+   before direct LLVM lowering.
 4. Emit test functions through Inkwell and link the Rust runtime, while keeping
    generated C selectable internally for differential testing.
 5. Add aggregates, checked indexing, strings/file I/O, formatting, foreign

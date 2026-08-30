@@ -82,7 +82,7 @@ with port connections wired as drivers.
 
 The **compiled LLVM backend** (`siox::llvm`, inkwell) is the default execution
 backend: `sioxc --test <file>` compiles a native test executable and `sioxc
-<file>` compiles the `#[top]` design to a native object. Execution and corpus
+<file>` compiles its sole structural root to a native object. Execution and corpus
 orchestration live outside the compiler.
 
 The standard library loads from `std/` as real source ([std.md](std.md)) —
@@ -97,19 +97,20 @@ cargo build                       # library + sioxc (Rust 1.90, LLVM 22)
 cargo test                        # run all tests
 cargo check --no-default-features --lib # frontend/API only; no LLVM
 
-cargo run --bin sioxc -- <file>           # compile the #[top] design
+cargo run --bin sioxc -- <file>           # compile the sole structural root
 cargo run --bin sioxc -- --test <file> -o tests # compile native #[test] executable
 ```
 
-A bare `sioxc <file>` compiles the `#[top]` design to a native object (like
-`rustc foo.rs`). LLVM 22 is the selected native backend. Creating a native
+A bare `sioxc <file>` compiles the sole uninstantiated entity to a native
+object (like `rustc foo.rs`); multiple structural roots require
+`--top <qualified-entity>`. LLVM 22 is the selected native backend. Creating a native
 `#[test]` executable additionally invokes Clang on the generated C harness and
 links zlib for its embedded FST writer. A frontend-only API/LSP build with
 `default-features = false` needs neither LLVM nor these native-output tools.
 
 | Command | Does |
 | ------- | ---- |
-| `sioxc <file>` | compile the `#[top]` design to a native object (`--top` to pick) |
+| `sioxc <file>` | compile the sole structural root to a native object (`--top` selects when ambiguous) |
 | `sioxc <file> --emit metadata` | parse → resolve → typecheck/elaborate, report diagnostics |
 | `sioxc --test <file> [-o bin]` | compile a native `#[test]` executable |
 | `--emit source\|tokens\|ast\|tree\|ir\|llvm-ir` | inspect a compiler artifact |

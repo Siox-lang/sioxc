@@ -37,7 +37,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables (`Unicode`/`Ascii`) planned |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
-| `std::attrs`  | (attributes; VHDL has none)      | `top`, `test`, `keep`, `library`, `name` |
+| `std::attrs`  | (attributes; VHDL has none)      | `test`, `keep`, `library`, `name`, `precedence` |
 | `std::assert` | `assert ... severity` levels     | `Severity` |
 
 ## `std::logic`
@@ -176,16 +176,20 @@ pub using Positive = integer<1..9223372036854775807>;
 
 ## `std::attrs`
 
-The five system metadata attributes (spec 3.5), declared here and mirrored
-by a compiler seed so bare files keep working:
+The standard metadata attributes (spec 3.5). `test` has compiler semantics;
+the others are reserved for later output passes:
 
 ```siox
-pub attr top: Bool for entity;      // elaboration root
 pub attr test: Bool for entity;     // discovered by `sioxc --test`
 pub attr keep: Bool for let, port;  // keep through optimization
 pub attr library: string for entity;
 pub attr name: string for entity;
 ```
+
+`top` intentionally is not standard metadata and is not compiler-seeded. A
+Vivado, Quartus, RTL, or Cocotb integration may declare and apply its own `top`
+attribute. The frontend preserves it as ordinary resolved metadata, while
+sioxc root selection remains structural or explicit through `--top`.
 
 ## `std::assert`
 

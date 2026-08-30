@@ -18,7 +18,7 @@ use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, Source
 use siox::resolve::{DefId, Resolved};
 use siox::syntax::ast;
 use siox::syntax::Module;
-use siox::testbench::TestPlan;
+use siox::test_ir::Program as TestIr;
 
 type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
 type StructFieldNames = Vec<String>;
@@ -140,7 +140,7 @@ pub(super) struct BuildRequest<'a> {
     pub modules: &'a [Module],
     pub resolved: &'a Resolved,
     pub hierarchy: &'a Hierarchy,
-    pub test_plan: &'a TestPlan,
+    pub test_ir: &'a TestIr,
     pub design: &'a Design,
     pub sources: &'a siox::diag::SourceMap,
     /// Attribute generated code back to `.siox` and leave it unoptimized.
@@ -153,7 +153,7 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
         modules,
         resolved,
         hierarchy: hier,
-        test_plan,
+        test_ir,
         design,
         sources,
         debug,
@@ -849,14 +849,14 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     }
 
     let mut names = Vec::new();
-    for test in &test_plan.tests {
+    for test in &test_ir.tests {
         let root = test.root;
         let instance = hier.instance(root);
         let name = hier.root_path(root);
         let qualified = test.qualified_name.clone();
         let symbol = format!("r{}", root.0);
         let (map, aliases) = build_map(hier, root, design);
-        let items = test_items(modules, resolved, instance.entity_id);
+        let items = siox::testbench::implementation_items(modules, resolved, instance.entity_id);
         // A testbench's own constants. Folded per test so two entities that
         // each declare `LIMIT` cannot collide in one table, and through the
         // same routine as the module-level ones so the kinds cannot diverge.
@@ -1857,6 +1857,9 @@ fn max_literal_type_width(
                                 );
                                 widths.extend(f.ret.as_ref().map(|t| width(t, derived, fns)));
                                 widths.extend(f.body.as_ref().map(block_width));
+                            }
+                            ast::ImplItem::Process(process) => {
+                                widths.push(block_width(&process.body))
                             }
                             ast::ImplItem::Stmt(statement) => widths.push(stmt_width(statement)),
                             _ => {}
@@ -4101,11 +4104,16 @@ impl Ctx<'_> {
         let n = self.clocks.len().max(1);
         let cid: Vec<String> = self.clocks.iter().map(|(c, _)| c.to_string()).collect();
         let half: Vec<String> = self.clocks.iter().map(|(_, h)| format!("{h}ULL")).collect();
+        let next = if half.is_empty() {
+            "0".to_string()
+        } else {
+            half.join(", ")
+        };
         b.push_str(&format!(
-            "    uint64_t _now = 0; (void)_now;\n             \x20   uint64_t _next[{n}] = {{{}}}; (void)_next;\n             \x20   static const uint32_t _cid[{n}] = {{{}}};\n             \x20   static const uint64_t _half[{n}] = {{{}}};\n             \x20   signed _nclk = 0; (void)_nclk;\n",
-            vec!["0"; n].join(", "),
+            "    uint64_t _now = 0; (void)_now;\n             \x20   uint64_t _next[{n}] = {{{next}}}; (void)_next;\n             \x20   static const uint32_t _cid[{n}] = {{{}}};\n             \x20   static const uint64_t _half[{n}] = {{{}}};\n             \x20   signed _nclk = {}; (void)_nclk;\n",
             if cid.is_empty() { "0".to_string() } else { cid.join(", ") },
             if half.is_empty() { "0".to_string() } else { half.join(", ") },
+            self.clocks.len(),
         ));
 
         // One pass in source order (sequential `let` semantics, mirroring
@@ -4114,6 +4122,13 @@ impl Ctx<'_> {
         let mut started = false;
         for item in items {
             match item {
+                // Canonical clock processes are concurrent services, not
+                // source-ordered stimulus. Their `_next` entries were seeded
+                // in the prologue so declaration order cannot delay them.
+                ast::ImplItem::Stmt(statement)
+                    if siox::testbench::is_clock_statement(statement) => {}
+                ast::ImplItem::Process(process)
+                    if siox::testbench::is_clock_process(&process.body.stmts) => {}
                 // A DUT instance is wired by elaboration, which binds each
                 // port to the *name* it is connected to. A connection given a
                 // value instead — `{ .n = 7 }` — has no name to bind, so the
@@ -4231,6 +4246,15 @@ impl Ctx<'_> {
                         started = true;
                     }
                     self.stmt(st, &mut b, 1)?;
+                }
+                ast::ImplItem::Process(process) => {
+                    if !started {
+                        b.push_str("    sx_settle();\n");
+                        started = true;
+                    }
+                    for statement in &process.body.stmts {
+                        self.stmt(statement, &mut b, 1)?;
+                    }
                 }
                 _ => {}
             }
@@ -4920,6 +4944,15 @@ impl Ctx<'_> {
                 }
                 if let Some(w) = width {
                     self.local_widths.borrow_mut().insert(name.clone(), w);
+                }
+                if let Some((left, right)) = l
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| type_index_bounds(ty, self.const_ranges, self.consts, self.fns))
+                {
+                    self.local_ranges
+                        .borrow_mut()
+                        .insert(name.clone(), (left, right));
                 }
                 if let Some(head) = l.ty.as_ref().and_then(|ty| self.fns.type_head_key(ty)) {
                     self.local_types.borrow_mut().insert(name.clone(), head);
@@ -8050,13 +8083,13 @@ fn scan_clocks(
             clocks.push((id, half));
         }
     };
-    for item in items {
-        if let ast::ImplItem::Stmt(ast::Stmt::Assign {
+    let mut scan_statement = |statement: &ast::Stmt| -> Result<(), String> {
+        if let ast::Stmt::Assign {
             target,
             value,
             after,
             ..
-        }) = item
+        } = statement
         {
             if let Some((path, half)) = after_toggle(target, value, after)? {
                 // A clock shared by several DUTs toggles every port.
@@ -8064,6 +8097,18 @@ fn scan_clocks(
                     add(id.0, half);
                 }
             }
+        }
+        Ok(())
+    };
+    for item in items {
+        match item {
+            ast::ImplItem::Stmt(statement) => scan_statement(statement)?,
+            ast::ImplItem::Process(process)
+                if siox::testbench::is_clock_process(&process.body.stmts) =>
+            {
+                scan_statement(&process.body.stmts[0])?;
+            }
+            _ => {}
         }
     }
     Ok(clocks)
@@ -8374,25 +8419,6 @@ fn build_map(
         }
     }
     (map, aliases)
-}
-
-fn test_items<'a>(
-    modules: &'a [Module],
-    resolved: &Resolved,
-    entity: crate::resolve::DefId,
-) -> Vec<&'a ast::ImplItem> {
-    let mut items = Vec::new();
-    for m in modules {
-        for it in &m.items {
-            if let ast::Item::Impl(im) = it {
-                if im.trait_.is_none() && resolved_type_def_id(&im.target, resolved) == Some(entity)
-                {
-                    items.extend(im.items.iter());
-                }
-            }
-        }
-    }
-    items
 }
 
 fn resolved_type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<crate::resolve::DefId> {

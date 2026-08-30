@@ -24,7 +24,6 @@ fn rendered(output: &std::process::Output) -> String {
 fn an_ir_lint_renders_at_the_port_declaration() {
     let source = "module m;\n\
         using std::bits::{unsigned};\n\
-        #[top]\n\
         entity E {\n\
           forgotten: unsigned[8] out,\n\
         }\n\
@@ -37,7 +36,7 @@ fn an_ir_lint_renders_at_the_port_declaration() {
     );
     assert!(text.contains("W-P011"), "missing lint code:\n{text}");
     assert!(
-        text.contains(&format!("{}:5:", file.display())),
+        text.contains(&format!("{}:4:", file.display())),
         "lint did not point at the port declaration:\n{text}"
     );
 }
@@ -46,7 +45,7 @@ fn an_ir_lint_renders_at_the_port_declaration() {
 fn a_compile_time_file_error_renders_at_the_let_declaration() {
     let source = "module m;\n\
         using std::bits::{unsigned};\n\
-        #[top] entity E {}\n\
+        entity E {}\n\
         impl E {\n\
           let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\");\n\
         }\n";

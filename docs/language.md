@@ -56,10 +56,11 @@ precise reference.
 
 ### Logic
 
-- **Combinational vs. sequential are kept distinct.** A continuous assignment
-  (`count = value;`) is a wire; an event block (`if clk.rising() { … }`) updates
-  only on the edge. Edge and history queries — `clk.rising()`, `x'event`,
-  `x'old` — are first-class.
+- **Concurrent vs. sequential are explicit.** A continuous assignment outside
+  a `process` (`count = value;`) is its own concurrent driver. A `process { … }`
+  runs concurrently with every other process, while the statements inside it
+  execute in source order. Event control is still inferred from expressions
+  such as `clk.rising()`, `x'event`, and `x'old`.
 - **Nine-value logic.** `Logic` is the full **IEEE 1076-2019** `std_ulogic`
   value set — `'U','X','0','1','Z','W','L','H','-'` — with the `std_logic_1164`
   `and`/`or`/`not`/`xor`/… truth tables and `resolved` parallel-driver
@@ -552,50 +553,50 @@ Metadata attributes must be declared before use.
 Example declarations:
 
 ```siox
-module std::attrs;
-
-pub attr top: Bool for entity;
 pub attr test: Bool for entity;
 pub attr keep: Bool for let, port;
 pub attr library: string for entity;
 pub attr name: string for entity;
+
+// A vendor integration owns its own metadata namespace.
+pub attr vivado_top: Bool for entity;
 ```
 
 Usage:
 
 ```siox
-#[top]
+#[vivado_top]
 entity Top {
     clk: Bit in
 }
 ```
 
-Invalid if `top` was not declared/imported:
+Invalid if `vivado_top` was not declared/imported:
 
 ```siox
-#[top]
+#[vivado_top]
 entity Top { }
 ```
 
 Invalid if type does not match:
 
 ```siox
-#[top = "yes"]
+#[vivado_top = "yes"]
 entity Top { }
 ```
 
-because `top` expects `Bool`.
+because `vivado_top` expects `Bool`.
 
 Boolean shorthand:
 
 ```siox
-#[top]
+#[vivado_top]
 ```
 
 means:
 
 ```siox
-#[top = true]
+#[vivado_top = true]
 ```
 
 **Nominal array families follow their base representation.** An array newtype
@@ -668,15 +669,24 @@ They should not silently change language semantics.
 Examples:
 
 ```siox
-#[top]
+// Ordinary vendor metadata: preserved, but not interpreted by sioxc.
+#[vivado::top]
 entity Top { ... }
 
+// Canonical std metadata consumed only for native test builds.
 #[test]
 entity CounterTest { ... }
 
 #[library = "work", name = "ExternalCounter"]
 extern entity Counter { ... }
 ```
+
+`top` is not a std or compiler attribute. An RTL/vendor/Cocotb integration may
+declare it (or a namespaced equivalent), and the frontend retains the applied
+attribute for that output consumer. It does not select sioxc elaboration roots
+or alter entity semantics. Ordinary elaboration reaches every uninstantiated
+structural root; native object output accepts the sole root by default and
+requires `--top <entity>` when several roots exist.
 
 More than one `#[test]` entity may share a leaf when they belong to different
 modules. Generated executables report and filter them by qualified test name,
@@ -925,25 +935,67 @@ The compiler recognizes that `clk.rising()` depends on `clk'event`, so the block
 
 ---
 
-### 3.11 Event-controlled blocks are inferred
+### 3.11 Processes are concurrent; their bodies are sequential
 
-No VHDL-style explicit sensitivity list is needed.
-
-This:
+An entity implementation uses `process { ... }` to introduce ordered
+behavior. A process may carry a label — `process update { ... }` — so IR and
+diagnostics can identify it. Labels are recommended for
+nontrivial entities and must be unique in the entity implementation namespace.
+This follows the VHDL model without requiring an explicit sensitivity list:
 
 ```siox
-if clk.rising() {
-    q = d;
+impl Register {
+    process update {
+        if clk.rising() {
+            q = d;
+        }
+    }
+
+    changed = q != q'old;  // concurrent assignment, outside the process
+}
+```
+
+The rules are:
+
+- Every `process` is a separate concurrent driver context. Its optional label
+  is descriptive and does not change scheduling. Processes do not run
+  one after another merely because they are written in that order.
+- Statements inside one process execute in source order. Later assignments in
+  that same process can override earlier assignments under their conditions.
+- A bare assignment outside a process is concurrent and forms its own driver
+  context. Several such assignments to one unresolved signal are conflicting
+  drivers; a type implementing `Resolve` folds them.
+- Persistent signal assignments take effect at the end of the process/event
+  step. Process-local `let` bindings update immediately.
+- Entity instances, persistent state declarations, constants, and helper
+  functions are declared at impl scope, outside processes. Generate `for`/`if`
+  constructs that create instances are also structural and stay outside.
+- Entity instantiation inside a process is `E-P020`: runtime control flow cannot
+  create hardware. A process itself is only legal in an inherent entity impl
+  (`E-P027`). Function bodies are already sequential and do not use `process`.
+
+Event control within a process is inferred. No VHDL-style explicit sensitivity
+list is needed.
+
+This process:
+
+```siox
+process {
+    if clk.rising() {
+        q = d;
+    }
 }
 ```
 
 is event-controlled because the condition depends on `clk'event`.
 
-This:
+This process:
 
 ```siox
-if en {
-    y = a;
+process {
+    if en {
+        y = a;
+    }
 }
 ```
 
@@ -1038,9 +1090,11 @@ In an event-controlled block, assignments to persistent state update at the end 
 Example:
 
 ```siox
-if clk.rising() {
-    a = b;
-    b = a;
+process {
+    if clk.rising() {
+        a = b;
+        b = a;
+    }
 }
 ```
 
@@ -1056,26 +1110,31 @@ This swaps `a` and `b`.
 Local variables update immediately:
 
 ```siox
-if clk.rising() {
-    let tmp: unsigned[8] = a;
-    a = b;
-    b = tmp;
+process {
+    if clk.rising() {
+        let tmp: unsigned[8] = a;
+        a = b;
+        b = tmp;
+    }
 }
 ```
 
 ---
 
-### 3.14 Combinational assignments use source-order override in one driver context
+### 3.14 Assignments use source-order override inside one process
 
-Within one combinational driver context, later assignments override earlier assignments under their conditions.
+Within one process, later assignments override earlier assignments under their
+conditions. Source order never gives priority between separate processes or
+between separate concurrent assignments.
 
 Example:
 
 ```siox
-y = b;
-
-if sel {
-    y = a;
+process {
+    y = b;
+    if sel {
+        y = a;
+    }
 }
 ```
 
@@ -1087,9 +1146,11 @@ This allows clean default-then-override coding.
 with `if`/`else`. Two forms exist and lower to the same select:
 
 ```siox
-// statement form: default-then-override drivers (above)
-y = b;
-if sel { y = a; }
+// process statement form: default then override
+process {
+    y = b;
+    if sel { y = a; }
+}
 
 // expression form (Rust-style; `else` is required, branches are single
 // expressions, `else if` chains allowed)
@@ -1118,14 +1179,16 @@ Diagnostics and resolution:
 
 Reset is not a magic built-in concept.
 
-Synchronous reset:
+Synchronous reset (inside a process):
 
 ```siox
-if clk.rising() {
-    if rst == '1' {
-        q = 0;
-    } else {
-        q = d;
+process {
+    if clk.rising() {
+        if rst == '1' {
+            q = 0;
+        } else {
+            q = d;
+        }
     }
 }
 ```
@@ -1133,10 +1196,12 @@ if clk.rising() {
 Asynchronous reset pattern:
 
 ```siox
-if rst == '1' {
-    q = 0;
-} else if clk.rising() {
-    q = d;
+process {
+    if rst == '1' {
+        q = 0;
+    } else if clk.rising() {
+        q = d;
+    }
 }
 ```
 
@@ -2806,18 +2871,29 @@ impl CounterTest {
         .count = count,
     };
 
-    clk = not clk after 5ns;   // background clock, 10ns period
-
-    await 10ns;
-    rst = '0';
-
-    for i in 0..9 {            // inclusive: 0,1,...,9 — ten rising edges
-        await clk.rising();
+    process {
+        clk = not clk after 5ns;   // background clock, 10ns period
     }
 
-    assert!(count == 10, "counter should increment 10 times");
+    process {
+        await 10ns;
+        rst = '0';
+
+        for i in 0..9 {            // inclusive: 0,1,...,9 — ten rising edges
+            await clk.rising();
+        }
+
+        assert!(count == 10, "counter should increment 10 times");
+    }
 }
 ```
+
+Native tests may use one foreground stimulus process plus self-toggle clock
+processes. Clock processes start at simulation time zero regardless of where
+they are declared relative to the stimulus process. General scheduling of
+several independently suspending foreground test processes is reserved for the
+full process scheduler; the compiler must not silently serialize that
+unsupported case.
 
 Exact test-time syntax can be simplified for MVP.
 
@@ -3050,7 +3126,6 @@ assignment (`let x: unsigned[8] = 42;`), plus operations:
 Should contain:
 
 ```siox
-pub attr top: Bool for entity;
 pub attr test: Bool for entity;
 pub attr keep: Bool for let, port;
 pub attr library: string for entity;
