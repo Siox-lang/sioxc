@@ -36,7 +36,8 @@ order. `await` advances simulation time (see
 with ordinary sequential assignment. The native compatibility scheduler
 currently accepts one foreground stimulus process plus canonical background
 clock processes; it rejects additional foreground processes instead of
-serializing them. Test processes already receive stable IDs and validated CFGs
+serializing them. Test processes already receive stable process/block/local and
+value IDs plus validated branch, match, loop, suspension, and termination CFGs
 inside `Design::process_ir`; the remaining migration lowers hardware processes
 there too and makes the compatibility harness consume those CFGs instead of
 translating test AST. There is no second test-only program or runner.

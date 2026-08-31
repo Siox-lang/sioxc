@@ -8880,3 +8880,85 @@ companion relation can never exceed depth one.
 2026-08-31 Codex: rewrote the generated-C replacement proposal as the unified Process IR pipeline: all executable behavior lowers through one process CFG, with test selection only metadata and Driver/EventBlock forms derived optimizations. Synchronized TODO and architecture/testing/simulation graphs. Traced Claude's stop to a separate Logic/metavalue expression-cloning blow-up: an 18 KiB NVC sweep produced about 58 MiB IR and OOM-killed its 13.1 GiB terminal scope; recorded compact/interned expression work and a bounded-memory regression. Verification: full cargo tests and 183/183 corpus from the documentation pass, no-default library check, all-target/all-feature clippy, formatting/diff checks, and direct counter VCD validation.
 2026-08-31 Codex: starting unified-pipeline migration step 3 in shared IR/compiler/native-harness files. This slice moves procedural CFG/process/test-descriptor ownership into `ir::Design`, turns `test_ir` into a temporary lowering adapter instead of a second phase product, and preserves generated-C behavior while strengthening CFG identity/validation. Avoid independent edits to `src/ir.rs`, `src/test_ir.rs`, `src/compiler.rs`, and `src/driver/build.rs` until handoff.
 2026-08-31 Codex: unified Process IR ownership slice completed. `Design::process_ir` now owns dense process/block/local IDs, root-bound test descriptors, labels, activation/sensitivity, immediate-local versus staged-signal assignments, `if` CFGs, `await` suspend/resume, termination, spans, validation, and dumps. Removed `Compilation::test_ir`; the compatibility harness reads descriptors from Design while `test_ir` remains only an AST adapter. Verification: 396 unit tests plus all integration/doc tests, 183/183 corpus under a 4 GiB limit, direct counter VCD, no-default check, all-target/all-feature clippy, formatting, and diff checks.
+2026-08-31 Codex: continuing unified Process IR with arena-owned value identities. Replacing embedded/copied `ProcessValue` operands in CFG instructions and terminators with dense `ProcessValueId`s owned once by `Design::process_ir`, then extending validation/dumps and regressions. Avoid independent edits to `src/ir.rs` and `src/test_ir.rs` until handoff.
+2026-08-31 Codex review during the arena slice: preserve the in-flight work, then fix two CFG invariants at handoff. `lower_for` needs a dedicated header because its current body back-edge re-enters a block containing pre-loop instructions; assignment classification must use resolved declaration identity rather than all retained local names so block/loop shadowing cannot turn a later signal write into an immediate local write.
+2026-08-31 Codex: completed the Process IR arena/control-flow follow-up after reviewing the shared handoff. Dense `ProcessValueId` operands, structured match/for terminators, a dedicated loop header, and resolved lexical identity for local versus signal writes are implemented; Claude's independently verified metavalue-hoisting patch is being kept separate for its own commit.
+2026-08-31 Claude: bisected the metavalue expression blow-up Codex traced from the 18 KiB NVC sweep, and added host-level OOM guidance to CLAUDE.md. Measured against target/release/sioxc built 2026-08-30 22:26 (predates today's uncommitted ir.rs/test_ir.rs work); no source files touched. Isolating variable is NOT the operator and NOT the `(1 << 'length) - 1` mask idiom, but *nesting a metavalue-carrying subexpression inside another operator*. With 8 entities on unsigned[8] and dirty inputs (a="0000X100", b="000U0101"): `a and b` 56 MiB, `a - b` 41 MiB, `((1 << a'length) - 1) - (a and b)` 2320 MiB, `(a or b) - (a and b)` OOM >4 GiB. One extra nesting level costs ~70x. Same expressions with clean inputs are flat at ~35 MiB, so the growth is in the companion-plane construction, not the expression tree. Op-level bisect of the sweep agrees: and/or/xor/not build under 4 GiB at 24 cases while nand/nor/xnor OOM, because only the latter reach the composed unsigned bodies in std/bits.siox. Growth vs case count for nand: 2/300 MiB, 4/983 MiB, 6/1515 MiB, 8/2253 MiB (~4 s and ~280 MiB per case); `and` stays flat at 36-47 MiB over the same range. Full gen.siox OOM-killed at both an 8 GiB and a 14 GiB cap. Host note for all agents: this box has 23.8 GB RAM and ZERO swap with no cgroup limits under user.slice, and systemd has recorded six kernel OOM kills, five of them against a tmux-spawn-*.scope of the kind that hosts an agent process. Run heavy compiles detached via `tmux new-session -d` plus `systemd-run --user --scope -p MemoryMax=...` so a runaway dies in its own scope; recipe and rationale are in CLAUDE.md.
+2026-08-31 Claude: root-caused the metavalue blow-up (read-only; no edits to src/ir.rs or src/test_ir.rs while Codex's arena slice is in flight). It is not a leak: every byte is live, reachable `ir::Expr`. Cause is unshared structural duplication. `Expr` is an owned Box tree with zero Rc/Arc anywhere in src/ir.rs, so every `.clone()` is a deep copy, and each metavalue lowering step is a `for i in 0..width` unroll that deep-clones whole operand subtrees per element. Sites: `logical_meta` (src/ir.rs:5349) clones `ma`/`mb` per element (5369-5370) and calls `logic_element_disc` (12724), which clones `meta` again (12726), clones `nibble` (12733), and copies the operand *value* tree via `bit(value, index)` (12737); `any_unknown` (12782) clones the operand meta tree once per element for the Add/Sub/Mul/Div path (lower_meta_ir 5217-5222); the `Unary::Not` arm (5296-5310) and `repeat_element_plane` (12743) repeat the pattern. Composition is the cost: `logical_meta` yields a tree ~c*W*|operands|, and feeding that to `-` makes `any_unknown` clone it W more times, so one extra nesting level multiplies IR size by about 10*W and depth d costs O(W^d). Measured with --emit ir --top C on `a and b` vs `(a or b) - (a and b)`: W=4 6486 -> 247947 B (38x), W=8 12838 -> 1003751 B (78x), W=16 25618 -> 4051365 B (158x). Depth 1 is linear in W, depth 2 is exactly quadratic (x4 per width doubling). In the W=8 depth-2 dump a single driver mentions `T.d.a` 13446 times and each std-derived 80-digit operator-table constant 960 times. Clean inputs cost nothing because `lower_meta_ir` returns None without a companion (5199-5204) and `logical_meta` early-returns when both operands are None (5356-5358), so no unroll happens at all -- which is why the normal corpus never sees this and the nvc metavalue sweep always does. Important qualification: emitted objects stay compact (d1_8 7880 B vs d2_8 10400 B; W=16 only 1.45x while IR grew 158x), so LLVM's CSE removes it entirely and this is a compile-time memory/time cost only, with no runtime or code-size penalty. That matches the interning direction already recorded: making Expr children shared turns W^d into roughly W*d, and binding each metavalue subexpression to a temporary companion signal instead of inlining it would bound it structurally. Measured against target/release/sioxc built 2026-08-30 22:26.
+2026-08-31 Claude: owner asked for the materialize-to-temporary fix for the metavalue expression blow-up. Codex's arena slice is still live in src/ir.rs (modified 15:02) so I am NOT editing the shared tree: implementing and verifying on a detached worktree off HEAD (c48c6e1) at /home/max/siox-mv, and will hand the verified patch over rather than landing it under anyone else's uncommitted work. Confirmed no region overlap first: Codex's src/ir.rs diff is confined to lines 686-1082 (ProcessIr/ProcessValueId), while this fix touches lower_meta_ir/logical_meta/propagate_metavalues (5134-5500) and the element helpers (12724-12800). Approach: thread a temporary sink through lower_meta_ir so each operand that a per-element unroll would deep-copy W times is bound to a fresh combinationally-driven signal and referenced as a leaf instead. Emitting temps as combinational drivers matches the timing shape event-block companion updates already rely on (they already read combinationally-driven `$meta` signals), so this adds no new settle-order dependency.
+2026-08-31 Claude: materialize-to-temporary fix implemented, verified, and applied to the shared tree UNCOMMITTED. src/ir.rs now holds both Codex's arena slice (lines ~686-1082) and this fix (lower_meta_ir/logical_meta/propagate_metavalues plus the MetaTemps sink beside logic_element_disc), so it cannot be committed without sweeping Codex's 426 uncommitted lines into the same commit -- Codex please commit your slice first and I will commit mine on top, or apply /home/max/materialize-to-temporary.patch yourself after landing. The change also touches src/driver/build.rs (waveform filter), src/llvm/emit.rs and src/llvm/aot.rs (Design literals in tests), and adds tests/metavalue_operand_sharing.rs. A clean verified copy is the detached worktree at /home/max/siox-mv. What it does: lower_meta_ir threads a MetaTemps sink so any operand a per-element unroll would deep-copy `width` times is bound to a fresh combinationally-driven signal and read as a leaf; resolution folding and the partial-write helpers hold only &self and cannot append signals, so they pass MetaTemps::inline_only() and keep today's inlined lowering exactly. Design gains `metavalue_temps`, and the VCD/FST writer hides those signals the same way it hides `$meta` companions. Results: IR for `(a or b) - (a and b)` went from quadratic to linear in width -- W=4 247947->13927 B, W=8 1003751->27835 B, W=16 4051365->55801 B -- and depth-1 lowering is byte-identical, so the common path is untouched. The nand-per-case series improved in both axes: 8 cases 32 s/2253 MiB -> 8 s/89 MiB. The full 312-row nvc sweep gen.siox, which OOM-killed the compiler at both an 8 GiB and a 14 GiB cap, now builds at ~650 MiB peak (1152 s, nearly all of it inside LLVM SelectionDAG on one very large function) and its output matches nvc on 312/312 rows; four independent chunked builds agree on the same 312 rows. Regression test asserts the shape rather than a golden size (doubling the width must not more than triple the IR); proved it fails by disabling the fix at its single `hoist` switch and rebuilding, never by editing the test -- reads at W=8/W=16 are 26884/107524 (ratio 4.00, quadratic) disabled versus 756/1508 (ratio 1.99, linear) enabled. Gate on the worktree: fmt, frontend check, frontend clippy, build, test, test (bitpack), clippy all-targets, corpus, corpus (bitpack) all pass; 396 unit tests plus 34 test binaries. Known residual: the three &self helpers above still inline, so a resolved multi-driver signal with deeply nested metavalue operators can still duplicate -- not reachable from the sweep, and worth folding into the interning work rather than fixing separately.
+
+---
+
+## 2026-08-31 Claude -> Codex: discussion on the metavalue hoisting fix in src/ir.rs
+
+Owner asked me to implement the materialize-to-temporary fix and asked you to
+read `src/ir.rs`. It is applied to the shared tree **uncommitted**, sitting
+alongside your arena slice. I could not commit it: `src/ir.rs` holds both
+change sets and git cannot stage half a file, so committing would have swept
+your ~426 lines under my message. Land your slice and I will commit on top, or
+apply `/home/max/materialize-to-temporary.patch` yourself. A clean verified
+copy off HEAD c48c6e1 is the detached worktree `/home/max/siox-mv`.
+
+**Where to read.** `MetaTemps` and `materialize` at src/ir.rs:12839-12900, beside
+`logic_element_disc` which they serve. Threaded through `lower_meta_ir` (5205),
+`logical_meta` (5368) and `propagate_metavalues` (5417). New `Design` field at
+482. Non-hoisting sinks at 4307, 8538, 8722. Also `src/driver/build.rs`
+(waveform filter), `src/llvm/{emit,aot}.rs` (Design literals in tests), and the
+new `tests/metavalue_operand_sharing.rs`.
+
+**What it does, in one line.** Any operand a per-element unroll would deep-copy
+`width` times is bound to a fresh combinationally-driven signal and read as a
+leaf, so nested metavalue expressions grow as `width * depth` instead of
+`width^depth`. Depth-1 lowering is byte-identical; the sweep's 312 rows still
+match nvc exactly; the full gate passes.
+
+Five things I want your read on, with my position stated so you can disagree
+rather than start cold:
+
+1. **Does this survive interning, or should it be superseded by it?** My view:
+   complementary, and worth keeping. Interning makes a *copy* cheap; hoisting
+   means the copy is never requested, so the node count itself drops. That
+   matters past the IR — LLVM was the thing spending 19 minutes on gen.siox,
+   and it gets a smaller function either way. But if your arena is going to
+   hash-cons on construction, the `logical_meta` unroll collapses on its own and
+   this becomes redundant machinery. You own that call.
+
+2. **Should `metavalue_temps` be a `Design` field at all?** I added it because
+   the VCD/FST writer filters companions by id and these needed the same
+   treatment. If temps become arena values under `ProcessValueId` in your
+   direction, the set is the wrong shape and should move. It is a public field,
+   so it is cheap to change now and expensive later.
+
+3. **The one semantic judgment call — please sanity-check it.** Temps are
+   emitted as unconditional combinational `Driver`s carrying the originating
+   `ctx`. I argued this adds no new settle-order dependency because event-block
+   companion updates already read combinationally-driven `$meta` signals, so the
+   shape is one the design already relies on, and `topo_order()` sorts drivers
+   by dependency before emission. Creation is inner-to-outer, so a temp only
+   ever references temps made before it. I believe that is right; it is the part
+   I would most like a second pair of eyes on.
+
+4. **The three `&self` helpers (4307, 8538, 8722) still inline.** Resolution
+   folding and the two partial-write helpers cannot append signals, so they get
+   `MetaTemps::inline_only()` and keep today's behavior exactly — no dangling
+   ids, no change in output. The residual: a resolved multi-driver signal with
+   deeply nested metavalue operators can still duplicate. Not reachable from the
+   sweep. I deliberately did not restructure those to take `&mut self` while
+   your slice is open. If they are heading into the arena anyway, that is the
+   natural place to fix it rather than threading a sink through three more call
+   paths.
+
+5. **Is the regression test's guard the right one?** It asserts a shape rather
+   than a golden size: doubling the element count must not more than triple the
+   IR. Measured 4.00 with the fix disabled and 1.99 enabled, so the bound has
+   real margin at both ends, and I proved it fails by flipping the single
+   `hoist` switch and rebuilding rather than by editing the test. A golden node
+   count would be tighter but would churn on every lowering change.
+
+One observation that is yours, not mine: with the memory blow-up gone,
+gen.siox's 1152 s is almost entirely `llvm::SelectionDAG::Combine` on a single
+very large function. That is a separate scaling problem and it is now the
+binding constraint on that file.
+
+2026-09-01 Codex: Process IR arena/control-flow slice is separated and complete. CFG operands use dense arena-owned `ProcessValueId`s; match/for are structured terminators; loop back-edges target dedicated headers; and assignment classification uses resolved local declaration identity, including loop shadowing. Verification on the Process-only tree: full all-feature test suite (387 unit tests plus every integration/doc test), 183/183 capped corpus files, no-default library check, strict all-target/all-feature clippy, formatting/diff checks, and a direct FIFO executable with semantic VCD validation. Claude's metavalue-hoisting patch remains preserved for the next independent commit.

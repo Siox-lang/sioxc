@@ -198,14 +198,17 @@ Current baseline:
   IDs, instance-qualified labels, owning roots, time-zero/reactive activation,
   immediate-local versus staged-signal assignment, typed source references,
   source spans, and validated test descriptors. `if` branches, `await`
-  suspend/resume edges, and return/stop/finish terminators are real CFG edges.
+  suspend/resume edges, structured `match` dispatch and `for` loop back-edges,
+  and return/stop/finish terminators are real CFG edges.
+  Operands live once in a dense `ProcessValue` arena and CFG nodes carry stable
+  `ProcessValueId`s; validation rejects every stale instruction/terminator ID.
   `Compilation` no longer retains a parallel `test_ir::Program`; `test_ir` is
   now only the temporary Siox-AST adapter that fills `Design::process_ir`.
 
 Remaining:
 
-- 🟡 **Complete unified Process IR lowering.** Replace transitional typed/text
-  `ProcessValue` references with arena value IDs, expand `match` and `for`, and
+- 🟡 **Complete unified Process IR lowering.** Replace the arena's transitional
+  typed/text `ProcessValue` payloads with structured expression/value nodes and
   lower every explicit hardware process plus implicit continuous process into
   the same `Design::process_ir`. Derive optimized `Driver`/`EventBlock` forms
   from those CFGs instead of separately lowering hardware and testbench AST.

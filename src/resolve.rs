@@ -1114,7 +1114,7 @@ impl<'a> Resolver<'a> {
                 self.enter();
                 self.bind_params(&t.params, true, self.out.declared(t.name.span));
                 // `Self` refers to the implementing type inside a trait body.
-                self.bind_local("Self");
+                self.bind_synthetic_local("Self");
                 for f in &t.items {
                     self.resolve_fn(f);
                 }
@@ -1156,14 +1156,14 @@ impl<'a> Resolver<'a> {
             }
         }
         // `Self` refers to the impl target type inside the body.
-        self.bind_local("Self");
+        self.bind_synthetic_local("Self");
         // Impl-level names are visible to the whole body regardless of order.
         for it in &im.items {
             match it {
-                ImplItem::Let(l) => self.bind_local(&l.name.text),
-                ImplItem::Const(c) => self.bind_local(&c.name.text),
-                ImplItem::Fn(f) => self.bind_local(&f.name.text),
-                ImplItem::ModeField { name, .. } => self.bind_local(&name.text),
+                ImplItem::Let(l) => self.bind_local(&l.name.text, l.name.span),
+                ImplItem::Const(c) => self.bind_local(&c.name.text, c.name.span),
+                ImplItem::Fn(f) => self.bind_local(&f.name.text, f.name.span),
+                ImplItem::ModeField { name, .. } => self.bind_local(&name.text, name.span),
                 ImplItem::Process(_) => {}
                 ImplItem::Stmt(_) => {}
             }
@@ -1389,14 +1389,14 @@ impl<'a> Resolver<'a> {
                 has_self = true;
             }
             if let Some(name) = &p.name {
-                self.bind_local(&name.text);
+                self.bind_local(&name.text, name.span);
             }
             if let Some(t) = &p.ty {
                 self.resolve_type(t);
             }
         }
         if has_self {
-            self.bind_local("self");
+            self.bind_synthetic_local("self");
         }
         if let Some(r) = &f.ret {
             self.resolve_type(r);
@@ -1411,7 +1411,7 @@ impl<'a> Resolver<'a> {
         self.enter();
         for s in &b.stmts {
             if let Stmt::Let(l) = s {
-                self.bind_local(&l.name.text);
+                self.bind_local(&l.name.text, l.name.span);
             }
         }
         for s in &b.stmts {
@@ -1447,7 +1447,7 @@ impl<'a> Resolver<'a> {
             } => {
                 self.resolve_expr(range);
                 self.enter();
-                self.bind_local(&var.text);
+                self.bind_local(&var.text, var.span);
                 self.resolve_block(body);
                 self.exit();
             }
@@ -2232,7 +2232,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn bind_local(&mut self, name: &str) {
+    fn bind_local(&mut self, name: &str, span: Span) {
+        let id = self.add_def(name.to_string(), DefKind::Local, false, Some(span), None);
+        self.bind(name, id);
+    }
+
+    fn bind_synthetic_local(&mut self, name: &str) {
         let id = self.add_def(name.to_string(), DefKind::Local, false, None, None);
         self.bind(name, id);
     }

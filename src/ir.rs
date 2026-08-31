@@ -684,6 +684,9 @@ pub struct ProcessBlockId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessLocalId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessValueId(pub u32);
+
 /// The canonical control-flow product owned by an elaborated [`Design`].
 ///
 /// `test_ir` is temporarily responsible for filling the test processes, but
@@ -694,6 +697,9 @@ pub struct ProcessLocalId(pub u32);
 pub struct ProcessIr {
     pub processes: Vec<ProcessCfg>,
     pub tests: Vec<ProcessTest>,
+    /// Arena-owned process operands. CFG nodes carry only stable IDs, so
+    /// cloning a block or edge never clones frontend type/text payloads.
+    pub values: Vec<ProcessValue>,
 }
 
 /// Runtime test registration metadata. The behavior remains ordinary process
@@ -728,6 +734,7 @@ pub enum ProcessActivation {
     TimeZero,
     /// Runs when a member of the sensitivity set changes. Clock processes are
     /// represented this way rather than entering a separate lowering path.
+    /// Reactive processes also receive their initial activation at time zero.
     Reactive { sensitivity: Vec<SignalId> },
 }
 
@@ -735,6 +742,11 @@ pub enum ProcessActivation {
 pub struct ProcessLocal {
     pub id: ProcessLocalId,
     pub name: String,
+    /// Resolved source declaration used only to preserve lexical identity
+    /// while the temporary AST adapter classifies writes. Equal spellings in
+    /// nested scopes remain different locals. Other frontends may leave it
+    /// absent once they provide structured places directly.
+    pub source: Option<DefId>,
     pub span: crate::diag::Span,
     /// Transitional frontend type retained until expression lowering produces
     /// only concrete IR value/layout IDs.
@@ -753,25 +765,19 @@ pub struct ProcessBlock {
 pub enum ProcessInstruction {
     Declare {
         local: ProcessLocalId,
-        initializer: Option<ProcessValue>,
+        initializer: Option<ProcessValueId>,
         span: crate::diag::Span,
     },
     Assign {
         semantics: ProcessAssignment,
-        target: ProcessValue,
-        value: ProcessValue,
-        delay: Option<ProcessValue>,
+        target: ProcessValueId,
+        value: ProcessValueId,
+        delay: Option<ProcessValueId>,
         span: crate::diag::Span,
     },
     Runtime {
         operation: ProcessRuntimeOp,
-        arguments: Vec<ProcessValue>,
-        span: crate::diag::Span,
-    },
-    /// A typed, source-anchored control node awaiting CFG expansion. Validation
-    /// keeps this visible so a backend cannot silently skip unsupported flow.
-    DeferredControl {
-        kind: DeferredProcessControl,
+        arguments: Vec<ProcessValueId>,
         span: crate::diag::Span,
     },
 }
@@ -793,30 +799,58 @@ pub enum ProcessRuntimeOp {
     Call(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeferredProcessControl {
-    Match,
-    For,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessMatchArm {
+    pub pattern: ProcessPattern,
+    pub block: ProcessBlockId,
+    pub span: crate::diag::Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessPattern {
+    Wildcard,
+    Path(String),
+    BitPattern(String),
+    Or(Vec<ProcessPattern>),
+    Range { left: i64, right: i64 },
+    Char(char),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessTerminator {
     Return {
-        value: Option<ProcessValue>,
+        value: Option<ProcessValueId>,
         span: Option<crate::diag::Span>,
     },
     Goto(ProcessBlockId),
     Branch {
-        condition: ProcessValue,
+        condition: ProcessValueId,
         then_block: ProcessBlockId,
         else_block: ProcessBlockId,
+    },
+    Match {
+        scrutinee: ProcessValueId,
+        arms: Vec<ProcessMatchArm>,
+        /// A non-exhaustive statement match continues through this block when
+        /// no arm matches. Exhaustive matches have no fallback edge.
+        fallback: Option<ProcessBlockId>,
+    },
+    /// Iterate a range/array value. Entry chooses the first element or `exit`;
+    /// a body back-edge to this block advances the iterator before choosing
+    /// `body` again. `local` is assigned immediately on each iteration.
+    For {
+        local: ProcessLocalId,
+        iterable: ProcessValueId,
+        body: ProcessBlockId,
+        exit: ProcessBlockId,
+        span: crate::diag::Span,
     },
     /// Suspend this process and continue at `resume` when the runtime operation
     /// becomes ready. `await` arguments keep their typed source identity until
     /// direct value lowering replaces [`ProcessValue`].
     Suspend {
         operation: ProcessSuspendOp,
-        arguments: Vec<ProcessValue>,
+        arguments: Vec<ProcessValueId>,
         resume: ProcessBlockId,
         span: crate::diag::Span,
     },
@@ -849,6 +883,7 @@ impl ProcessIr {
         let mut issues = Vec::new();
         let mut test_names = HashSet::new();
         let mut test_roots = HashSet::new();
+        let value_count = self.values.len() as u32;
 
         for (index, process) in self.processes.iter().enumerate() {
             if process.id != ProcessId(index as u32) {
@@ -904,6 +939,30 @@ impl ProcessIr {
                             ));
                         }
                     }
+                    for value in process_instruction_values(instruction) {
+                        if value.0 >= value_count {
+                            issues.push(format!(
+                                "process {:?} block {:?} references invalid value {:?}",
+                                process.id, block.id, value
+                            ));
+                        }
+                    }
+                }
+                for value in process_terminator_values(&block.terminator) {
+                    if value.0 >= value_count {
+                        issues.push(format!(
+                            "process {:?} block {:?} terminator references invalid value {:?}",
+                            process.id, block.id, value
+                        ));
+                    }
+                }
+                if let ProcessTerminator::For { local, .. } = &block.terminator {
+                    if process.locals.get(local.0 as usize).map(|value| value.id) != Some(*local) {
+                        issues.push(format!(
+                            "process {:?} block {:?} loop references invalid local {:?}",
+                            process.id, block.id, local
+                        ));
+                    }
                 }
                 for target in process_terminator_targets(&block.terminator) {
                     if process.blocks.get(target.0 as usize).map(|value| value.id) != Some(target) {
@@ -953,6 +1012,14 @@ impl ProcessIr {
 
     pub fn to_ir_string(&self) -> String {
         let mut output = String::new();
+        for (index, value) in self.values.iter().enumerate() {
+            let ty = value
+                .ty
+                .as_ref()
+                .map(|ty| format!(" : {ty:?}"))
+                .unwrap_or_default();
+            output.push_str(&format!("value %v{index}{ty} = {}\n", value.text));
+        }
         for test in &self.tests {
             let processes = test
                 .processes
@@ -1002,7 +1069,42 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
             else_block,
             ..
         } => vec![*then_block, *else_block],
+        ProcessTerminator::Match { arms, fallback, .. } => arms
+            .iter()
+            .map(|arm| arm.block)
+            .chain(fallback.iter().copied())
+            .collect(),
+        ProcessTerminator::For { body, exit, .. } => vec![*body, *exit],
         ProcessTerminator::Suspend { resume, .. } => vec![*resume],
+    }
+}
+
+fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
+    match instruction {
+        ProcessInstruction::Declare { initializer, .. } => initializer.iter().copied().collect(),
+        ProcessInstruction::Assign {
+            target,
+            value,
+            delay,
+            ..
+        } => [Some(*target), Some(*value), *delay]
+            .into_iter()
+            .flatten()
+            .collect(),
+        ProcessInstruction::Runtime { arguments, .. } => arguments.clone(),
+    }
+}
+
+fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
+    match terminator {
+        ProcessTerminator::Return { value, .. } => value.iter().copied().collect(),
+        ProcessTerminator::Branch { condition, .. } => vec![*condition],
+        ProcessTerminator::Match { scrutinee, .. } => vec![*scrutinee],
+        ProcessTerminator::For { iterable, .. } => vec![*iterable],
+        ProcessTerminator::Suspend { arguments, .. } => arguments.clone(),
+        ProcessTerminator::Goto(_)
+        | ProcessTerminator::Stop { .. }
+        | ProcessTerminator::Finish { .. } => Vec::new(),
     }
 }
 

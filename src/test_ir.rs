@@ -7,9 +7,9 @@
 
 use crate::elab::Hierarchy;
 use crate::ir::{
-    DeferredProcessControl, Design, ProcessActivation, ProcessAssignment, ProcessBlock,
-    ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
-    ProcessLocalId, ProcessRuntimeOp, ProcessSuspendOp, ProcessTerminator, ProcessTest,
+    Design, ProcessActivation, ProcessAssignment, ProcessBlock, ProcessBlockId, ProcessCfg,
+    ProcessId, ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId, ProcessMatchArm,
+    ProcessPattern, ProcessRuntimeOp, ProcessSuspendOp, ProcessTerminator, ProcessTest,
     ProcessValue, SourceLayout,
 };
 use crate::resolve::Resolved;
@@ -17,6 +17,12 @@ use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
 use crate::syntax::Module;
 use crate::testbench::TestPlan;
 use crate::types::Typed;
+
+struct LoweringContext<'a> {
+    resolved: &'a Resolved,
+    typed: &'a Typed,
+    process_ir: &'a mut ProcessIr,
+}
 
 /// Fill the canonical process product from the same resolved roots and layouts
 /// used by the compatibility backend.
@@ -49,15 +55,23 @@ pub fn lower(
                         .as_ref()
                         .map(|name| format!("{root_path}::{}", name.text));
                     let activation = process_activation(&process.body.stmts, &root_path, design);
-                    process_ir.processes.push(lower_process(
-                        id,
-                        test.root,
-                        label,
-                        process.span,
-                        activation,
-                        &process.body.stmts,
-                        typed,
-                    ));
+                    let lowered = {
+                        let mut context = LoweringContext {
+                            resolved,
+                            typed,
+                            process_ir: &mut process_ir,
+                        };
+                        lower_process(
+                            id,
+                            test.root,
+                            label,
+                            process.span,
+                            activation,
+                            &process.body.stmts,
+                            &mut context,
+                        )
+                    };
+                    process_ir.processes.push(lowered);
                     test_processes.push(id);
                 }
                 ImplItem::Stmt(statement) => legacy_statements.push(statement.clone()),
@@ -74,15 +88,23 @@ pub fn lower(
                 .first()
                 .map(ast::stmt_span)
                 .unwrap_or(test.span);
-            process_ir.processes.push(lower_process(
-                id,
-                test.root,
-                Some(format!("{root_path}::<legacy>")),
-                span,
-                ProcessActivation::TimeZero,
-                &legacy_statements,
-                typed,
-            ));
+            let lowered = {
+                let mut context = LoweringContext {
+                    resolved,
+                    typed,
+                    process_ir: &mut process_ir,
+                };
+                lower_process(
+                    id,
+                    test.root,
+                    Some(format!("{root_path}::<legacy>")),
+                    span,
+                    ProcessActivation::TimeZero,
+                    &legacy_statements,
+                    &mut context,
+                )
+            };
+            process_ir.processes.push(lowered);
             test_processes.push(id);
         }
 
@@ -125,7 +147,7 @@ fn lower_process(
     span: crate::diag::Span,
     activation: ProcessActivation,
     statements: &[Stmt],
-    typed: &Typed,
+    context: &mut LoweringContext<'_>,
 ) -> ProcessCfg {
     let mut process = ProcessCfg {
         id,
@@ -137,7 +159,14 @@ fn lower_process(
         locals: Vec::new(),
         blocks: vec![empty_block(ProcessBlockId(0))],
     };
-    lower_statements(statements, typed, &mut process, ProcessBlockId(0));
+    lower_statements(
+        statements,
+        context.resolved,
+        context.typed,
+        context.process_ir,
+        &mut process,
+        ProcessBlockId(0),
+    );
     process
 }
 
@@ -162,27 +191,31 @@ fn push_block(process: &mut ProcessCfg) -> ProcessBlockId {
 /// following statements in the source block are unreachable.
 fn lower_statements(
     statements: &[Stmt],
+    resolved: &Resolved,
     typed: &Typed,
+    process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     entry: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     let mut current = Some(entry);
     for statement in statements {
         let Some(block) = current else { break };
-        current = lower_statement(statement, typed, process, block);
+        current = lower_statement(statement, resolved, typed, process_ir, process, block);
     }
     current
 }
 
 fn lower_statement(
     statement: &Stmt,
+    resolved: &Resolved,
     typed: &Typed,
+    process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     match statement {
         Stmt::Let(declaration) => {
-            let local = push_local(process, declaration, None, typed);
+            let local = push_local(process, declaration, None, resolved, typed);
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Declare {
@@ -190,7 +223,7 @@ fn lower_statement(
                     initializer: declaration
                         .value
                         .as_ref()
-                        .map(|value| value_ref(value, typed)),
+                        .map(|value| value_ref(value, typed, process_ir)),
                     span: declaration.span,
                 });
             Some(block)
@@ -201,53 +234,50 @@ fn lower_statement(
             after,
             span,
         } => {
-            let semantics = assignment_semantics(target, process);
+            let semantics = assignment_semantics(target, process, resolved);
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Assign {
                     semantics,
-                    target: value_ref(target, typed),
-                    value: value_ref(value, typed),
-                    delay: after.as_ref().map(|delay| value_ref(delay, typed)),
+                    target: value_ref(target, typed, process_ir),
+                    value: value_ref(value, typed, process_ir),
+                    delay: after
+                        .as_ref()
+                        .map(|delay| value_ref(delay, typed, process_ir)),
                     span: *span,
                 });
             Some(block)
         }
         Stmt::Expr(ast::Expr::Call {
             callee, args, span, ..
-        }) => lower_call(callee, args, *span, typed, process, block),
+        }) => lower_call(callee, args, *span, typed, process_ir, process, block),
         Stmt::Expr(expression) => {
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Runtime {
                     operation: ProcessRuntimeOp::Call("<expression>".to_string()),
-                    arguments: vec![value_ref(expression, typed)],
+                    arguments: vec![value_ref(expression, typed, process_ir)],
                     span: ast::expr_span(expression),
                 });
             Some(block)
         }
-        Stmt::If(statement) => lower_if(statement, typed, process, block),
+        Stmt::If(statement) => lower_if(statement, resolved, typed, process_ir, process, block),
         Stmt::Match(statement) => {
-            process.blocks[block.0 as usize].instructions.push(
-                ProcessInstruction::DeferredControl {
-                    kind: DeferredProcessControl::Match,
-                    span: statement.span,
-                },
-            );
-            Some(block)
+            lower_match(statement, resolved, typed, process_ir, process, block)
         }
-        Stmt::For { span, .. } => {
-            process.blocks[block.0 as usize].instructions.push(
-                ProcessInstruction::DeferredControl {
-                    kind: DeferredProcessControl::For,
-                    span: *span,
-                },
-            );
-            Some(block)
-        }
+        Stmt::For {
+            var,
+            range,
+            body,
+            span,
+        } => lower_for(
+            var, range, body, *span, resolved, typed, process_ir, process, block,
+        ),
         Stmt::Return { value, span } => {
             process.blocks[block.0 as usize].terminator = ProcessTerminator::Return {
-                value: value.as_ref().map(|value| value_ref(value, typed)),
+                value: value
+                    .as_ref()
+                    .map(|value| value_ref(value, typed, process_ir)),
                 span: Some(*span),
             };
             None
@@ -255,13 +285,17 @@ fn lower_statement(
     }
 }
 
-fn assignment_semantics(target: &ast::Expr, process: &ProcessCfg) -> ProcessAssignment {
-    let target = crate::syntax::pretty::expr_string(target);
-    let is_local = process.locals.iter().any(|local| {
-        target == local.name
-            || target
-                .strip_prefix(&local.name)
-                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+fn assignment_semantics(
+    target: &ast::Expr,
+    process: &ProcessCfg,
+    resolved: &Resolved,
+) -> ProcessAssignment {
+    let target = assignment_base(target).and_then(|path| resolved.resolved(path.span));
+    let is_local = target.is_some_and(|target| {
+        process
+            .locals
+            .iter()
+            .any(|local| local.source == Some(target))
     });
     if is_local {
         ProcessAssignment::ImmediateLocal
@@ -270,18 +304,27 @@ fn assignment_semantics(target: &ast::Expr, process: &ProcessCfg) -> ProcessAssi
     }
 }
 
+fn assignment_base(target: &ast::Expr) -> Option<&ast::Path> {
+    match target {
+        ast::Expr::Path(path) => Some(path),
+        ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => assignment_base(base),
+        _ => None,
+    }
+}
+
 fn lower_call(
     callee: &ast::Expr,
     arguments: &[ast::Expr],
     span: crate::diag::Span,
     typed: &Typed,
+    process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     let name = callee_name(callee);
     let arguments = arguments
         .iter()
-        .map(|argument| value_ref(argument, typed))
+        .map(|argument| value_ref(argument, typed, process_ir))
         .collect::<Vec<_>>();
     match name.as_str() {
         "await" => {
@@ -323,24 +366,40 @@ fn lower_call(
 
 fn lower_if(
     statement: &ast::IfStmt,
+    resolved: &Resolved,
     typed: &Typed,
+    process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     let then_block = push_block(process);
     let else_block = push_block(process);
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Branch {
-        condition: value_ref(&statement.cond, typed),
+        condition: value_ref(&statement.cond, typed, process_ir),
         then_block,
         else_block,
     };
 
-    let then_tail = lower_statements(&statement.then.stmts, typed, process, then_block);
+    let then_tail = lower_statements(
+        &statement.then.stmts,
+        resolved,
+        typed,
+        process_ir,
+        process,
+        then_block,
+    );
     let else_tail = match statement.else_.as_deref() {
-        Some(ElseBranch::Block(block)) => {
-            lower_statements(&block.stmts, typed, process, else_block)
+        Some(ElseBranch::Block(block)) => lower_statements(
+            &block.stmts,
+            resolved,
+            typed,
+            process_ir,
+            process,
+            else_block,
+        ),
+        Some(ElseBranch::If(statement)) => {
+            lower_if(statement, resolved, typed, process_ir, process, else_block)
         }
-        Some(ElseBranch::If(statement)) => lower_if(statement, typed, process, else_block),
         None => Some(else_block),
     };
 
@@ -357,16 +416,161 @@ fn lower_if(
     Some(join)
 }
 
+fn lower_match(
+    statement: &ast::MatchStmt,
+    resolved: &Resolved,
+    typed: &Typed,
+    process_ir: &mut ProcessIr,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let mut arms = Vec::with_capacity(statement.arms.len());
+    for arm in &statement.arms {
+        arms.push(ProcessMatchArm {
+            pattern: lower_pattern(&arm.pattern),
+            block: push_block(process),
+            span: arm.span,
+        });
+    }
+    let exhaustive = statement
+        .arms
+        .iter()
+        .any(|arm| pattern_has_wildcard(&arm.pattern));
+    let fallback = (!exhaustive).then(|| push_block(process));
+    let scrutinee = value_ref(&statement.scrutinee, typed, process_ir);
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Match {
+        scrutinee,
+        arms: arms.clone(),
+        fallback,
+    };
+
+    let mut tails = Vec::new();
+    for (source, lowered) in statement.arms.iter().zip(&arms) {
+        if let Some(tail) = lower_statements(
+            &source.body.stmts,
+            resolved,
+            typed,
+            process_ir,
+            process,
+            lowered.block,
+        ) {
+            tails.push(tail);
+        }
+    }
+    if let Some(fallback) = fallback {
+        tails.push(fallback);
+    }
+    if tails.is_empty() {
+        return None;
+    }
+
+    let join = push_block(process);
+    for tail in tails {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(join);
+    }
+    Some(join)
+}
+
+fn lower_pattern(pattern: &ast::Pattern) -> ProcessPattern {
+    match pattern {
+        ast::Pattern::Wildcard => ProcessPattern::Wildcard,
+        ast::Pattern::Path(path) => ProcessPattern::Path(
+            path.segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::"),
+        ),
+        ast::Pattern::BitPattern { text, .. } => ProcessPattern::BitPattern(text.clone()),
+        ast::Pattern::Or { alts, .. } => {
+            ProcessPattern::Or(alts.iter().map(lower_pattern).collect())
+        }
+        ast::Pattern::Range { lo, hi, .. } => ProcessPattern::Range {
+            left: *lo,
+            right: *hi,
+        },
+        ast::Pattern::CharLit { ch, .. } => ProcessPattern::Char(*ch),
+    }
+}
+
+fn pattern_has_wildcard(pattern: &ast::Pattern) -> bool {
+    match pattern {
+        ast::Pattern::Wildcard => true,
+        ast::Pattern::Or { alts, .. } => alts.iter().any(pattern_has_wildcard),
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_for(
+    variable: &ast::Ident,
+    iterable: &ast::Expr,
+    body: &ast::Block,
+    span: crate::diag::Span,
+    resolved: &Resolved,
+    typed: &Typed,
+    process_ir: &mut ProcessIr,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let local = ProcessLocalId(process.locals.len() as u32);
+    let ty = if matches!(iterable, ast::Expr::Range { .. }) {
+        Some(crate::types::Ty::Integer)
+    } else {
+        match typed.expr_type(ast::expr_span(iterable)) {
+            Some(crate::types::Ty::Array { elem, .. }) => Some((**elem).clone()),
+            _ => None,
+        }
+    };
+    process.locals.push(ProcessLocal {
+        id: local,
+        name: variable.text.clone(),
+        source: resolved.declared(variable.span),
+        span: variable.span,
+        ty,
+        layout: None,
+    });
+
+    let iterable = value_ref(iterable, typed, process_ir);
+    // Keep the loop control on a dedicated header. Reusing `block` here makes
+    // the body back-edge replay every instruction that appeared before the
+    // loop in that source block.
+    let header = push_block(process);
+    let body_block = push_block(process);
+    let exit = push_block(process);
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(header);
+    process.blocks[header.0 as usize].terminator = ProcessTerminator::For {
+        local,
+        iterable,
+        body: body_block,
+        exit,
+        span,
+    };
+    if let Some(tail) = lower_statements(
+        &body.stmts,
+        resolved,
+        typed,
+        process_ir,
+        process,
+        body_block,
+    ) {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(header);
+    }
+    Some(exit)
+}
+
 fn push_local(
     process: &mut ProcessCfg,
     declaration: &ast::LetDecl,
     layout: Option<SourceLayout>,
+    resolved: &Resolved,
     typed: &Typed,
 ) -> ProcessLocalId {
     let id = ProcessLocalId(process.locals.len() as u32);
     process.locals.push(ProcessLocal {
         id,
         name: declaration.name.text.clone(),
+        source: resolved.declared(declaration.name.span),
         span: declaration.span,
         ty: declaration
             .value
@@ -378,13 +582,19 @@ fn push_local(
     id
 }
 
-fn value_ref(expression: &ast::Expr, typed: &Typed) -> ProcessValue {
+fn value_ref(
+    expression: &ast::Expr,
+    typed: &Typed,
+    process_ir: &mut ProcessIr,
+) -> crate::ir::ProcessValueId {
     let span = ast::expr_span(expression);
-    ProcessValue {
+    let id = crate::ir::ProcessValueId(process_ir.values.len() as u32);
+    process_ir.values.push(ProcessValue {
         span,
         ty: typed.expr_type(span).cloned(),
         text: crate::syntax::pretty::expr_string(expression),
-    }
+    });
+    id
 }
 
 fn callee_name(callee: &ast::Expr) -> String {
@@ -408,12 +618,22 @@ mod tests {
     fn fills_design_process_cfg_with_branches_and_suspension() {
         let sources = [
             "module tests;\n\
+             enum Mode { Off, On }\n\
              #[std::attrs::test] entity Smoke {}\n\
              impl Smoke {\n\
                let flag: Bool = true;\n\
+               let i: integer = 9;\n\
                process stimulus {\n\
                  let seen: Bool = flag;\n\
+                 let mode: Mode = Mode::On;\n\
                  if seen { print!(\"set\"); } else { warn!(true, \"clear\"); }\n\
+                 match mode {\n\
+                   Mode::Off => { warn!(true, \"off\"); }\n\
+                   Mode::On => { print!(\"on\"); }\n\
+                 }\n\
+                 print!(\"before loop\");\n\
+                 for i in 0..2 { print!(\"loop {}\", i); }\n\
+                 i = 7;\n\
                  seen = false;\n\
                  flag = false;\n\
                  await true;\n\
@@ -449,12 +669,13 @@ mod tests {
             .is_empty());
         assert_eq!(design.process_ir.tests.len(), 1);
         assert_eq!(design.process_ir.processes.len(), 1);
+        assert!(!design.process_ir.values.is_empty());
         let descriptor = &design.process_ir.tests[0];
         assert_eq!(descriptor.qualified_name, "tests::Smoke");
         assert_eq!(descriptor.processes, [ProcessId(0)]);
         let process = &design.process_ir.processes[0];
         assert_eq!(process.label.as_deref(), Some("Smoke::stimulus"));
-        assert_eq!(process.locals.len(), 1);
+        assert_eq!(process.locals.len(), 3);
         assert!(process
             .blocks
             .iter()
@@ -463,6 +684,23 @@ mod tests {
             .blocks
             .iter()
             .any(|block| matches!(block.terminator, ProcessTerminator::Suspend { .. })));
+        assert!(process
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator, ProcessTerminator::Match { .. })));
+        assert!(process
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator, ProcessTerminator::For { .. })));
+        let loop_header = process
+            .blocks
+            .iter()
+            .find(|block| matches!(block.terminator, ProcessTerminator::For { .. }))
+            .expect("missing loop header");
+        assert!(
+            loop_header.instructions.is_empty(),
+            "loop back-edge would replay pre-loop instructions: {loop_header:?}"
+        );
         assert!(process
             .blocks
             .iter()
@@ -478,7 +716,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(assignments.contains(&ProcessAssignment::ImmediateLocal));
         assert!(assignments.contains(&ProcessAssignment::StagedSignal));
+        let post_loop_i = process
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .find_map(|instruction| match instruction {
+                ProcessInstruction::Assign {
+                    semantics, target, ..
+                } if design.process_ir.values[target.0 as usize].text == "i" => Some(*semantics),
+                _ => None,
+            })
+            .expect("missing post-loop write to shadowed entity signal");
+        assert_eq!(post_loop_i, ProcessAssignment::StagedSignal);
         let dump = design.process_ir.to_ir_string();
+        assert!(dump.contains("value %v0"));
         assert!(dump.contains("test @tests::Smoke root 0 processes [%p0]"));
         assert!(dump.contains("process %p0 root 0 [Smoke::stimulus]"));
     }
@@ -496,7 +747,18 @@ mod tests {
                     activation: ProcessActivation::TimeZero,
                     entry: ProcessBlockId(1),
                     locals: Vec::new(),
-                    blocks: vec![empty_block(ProcessBlockId(0))],
+                    blocks: vec![ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![ProcessInstruction::Runtime {
+                            operation: ProcessRuntimeOp::Print,
+                            arguments: vec![crate::ir::ProcessValueId(9)],
+                            span,
+                        }],
+                        terminator: ProcessTerminator::Return {
+                            value: None,
+                            span: None,
+                        },
+                    }],
                 }],
                 tests: vec![ProcessTest {
                     entity: crate::resolve::DefId(0),
@@ -505,6 +767,7 @@ mod tests {
                     span,
                     processes: vec![ProcessId(0)],
                 }],
+                values: Vec::new(),
             },
             ..Design::default()
         };
@@ -519,6 +782,10 @@ mod tests {
             issues
                 .iter()
                 .any(|issue| issue.contains("owned by another root")),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|issue| issue.contains("invalid value")),
             "{issues:?}"
         );
     }

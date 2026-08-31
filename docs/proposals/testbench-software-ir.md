@@ -167,13 +167,15 @@ language-lowering path.
 2. **Complete: move process ownership into the main IR.** `ir::Design` owns
    dense process/block/local IDs, CFGs, test descriptors, activation, labels,
    source spans, immediate-local versus staged-signal writes, branches,
-   suspension/resume, and termination. `Compilation::test_ir` and the separate
-   `test_ir::Program` are gone; `test_ir` is only a temporary AST adapter that
-   fills `Design::process_ir`.
+   structured match/for control, suspension/resume, termination, and
+   arena-owned operands referenced through stable `ProcessValueId`s.
+   `Compilation::test_ir` and the separate `test_ir::Program` are gone;
+   `test_ir` is only a temporary AST adapter that fills `Design::process_ir`.
 3. **Complete the unified value and control representation.** Replace the
-   transitional typed/text `ProcessValue` references with arena value IDs,
-   expand `match`/`for`, and make delayed writes explicit scheduler operations.
-   The CFG and ownership boundary are already in place.
+   arena's transitional typed/text `ProcessValue` payload with structured
+   expression/value nodes and make delayed writes explicit scheduler
+   operations. The CFG, value identity, and ownership boundaries are already
+   in place.
 4. **Lower every source process once.** Explicit processes and implicit
    continuous processes enter the same CFG lowering. Derive current
    `Driver`/`EventBlock` optimizations from that representation and verify

@@ -94,8 +94,10 @@ For a test build, `siox::testbench` resolves enabled uses of the canonical
 them into a `TestPlan`. The temporary `siox::test_ir` adapter fills the
 canonical `Design::process_ir` with validated descriptors and CFGs; the
 compiler no longer retains a second software program. Branch, suspend/resume,
-termination, local/signal assignment semantics, activation, labels, and spans
-already live there. The current C compatibility harness consumes descriptors
+structured match/for control, termination, local/signal assignment semantics,
+activation, labels, and spans already live there. Operands are arena-owned once
+and referenced from CFG nodes by stable `ProcessValueId`. The current C
+compatibility harness consumes descriptors
 from the design but still translates test statements from AST. The harness
 contains the stimulus, scheduler, assertions, and reporting; it
 links with the native design object when `Emit::TestExecutable` is requested.
