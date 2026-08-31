@@ -186,6 +186,14 @@ assertions, and VCD export — predates this changelog. See
   and native testbenches, including values wider than one ABI word.
 
 ### Fixed
+- **Nested metavalue expressions no longer exhaust compiler memory.** Packed
+  logical and arithmetic lowering used to deep-copy an owned operand tree once
+  per element at every nesting level, so dirty-vector IR grew as
+  `width^depth`; the NVC differential sweep exhausted 8-14 GiB compiler
+  scopes. Repeated non-leaf operands are now materialized once as internal
+  combinational signals, making the same growth linear. The full 312-row sweep
+  builds at about 650 MiB and retains 312/312 parity; synthetic operands stay
+  out of VCD/FST waveforms.
 - **A register can now be clocked by a derived clock.** A clock divider or
   ripple counter — `if clk.rising() { h = not h; }` then
   `if h.rising() { c = c + 1; }` — used to leave `c` at 0, because `sx_settle`

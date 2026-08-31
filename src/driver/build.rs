@@ -1089,8 +1089,15 @@ fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &WaveScope, design
 /// directly from the design ABI after each settle; no trace is returned to the
 /// compiler process.
 fn gen_wave_runtime(design: &Design) -> String {
-    let companions: std::collections::HashSet<usize> =
-        design.meta_of.values().map(|id| *id as usize).collect();
+    // Companion planes and the operands metavalue lowering hoisted into their
+    // own signals are both implementation detail, not design state anyone
+    // declared, so neither belongs in a waveform.
+    let companions: std::collections::HashSet<usize> = design
+        .meta_of
+        .values()
+        .chain(design.metavalue_temps.iter())
+        .map(|id| *id as usize)
+        .collect();
     let mut root = WaveScope::default();
     for (id, signal) in design.signals.iter().enumerate() {
         if companions.contains(&id) {

@@ -400,6 +400,13 @@ value-bit, binary/metavalue, high-impedance, X01, and operator tables live in
 `Design::logic_encodings`; IR and native output consume them instead of testing
 enum positions or duplicating `std_logic_1164` tables.
 
+When a per-element metavalue operation would copy a non-leaf operand once per
+element, normalization materializes that operand as an internal combinational
+signal and reuses the leaf read. This bounds nested dirty-vector IR growth and
+also gives LLVM a smaller function; dependency ordering places each synthetic
+producer before its consumers. `Design::metavalue_temps` identifies these
+implementation-only signals so waveform output does not expose them.
+
 IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.
 The `integer` marker lets native consumers sign-extend a constrained value from

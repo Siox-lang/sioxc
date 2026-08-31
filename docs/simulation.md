@@ -133,6 +133,13 @@ The per-element logical tables are also elaborated from the ordinary std
 `Operator` bodies and retained in `Design`, so neither IR nor a simulator
 backend carries a second Rust/C copy of the library truth tables.
 
+Per-element lowering does not inline a complex operand into every table lookup.
+It materializes the operand once as an internal combinational signal and reads
+that leaf for each element. Consequently, nesting dirty-vector operations grows
+linearly with width and expression depth instead of duplicating owned trees as
+`width^depth`. These internal signals participate in normal dependency-ordered
+settling but are hidden from VCD and FST output.
+
 The scalar tables are checked exhaustively against `nvc`, and the corpus covers
 storage, arithmetic poisoning, relational and logical behaviour, connections,
 driver-position literals, clean combinational and clocked overrides, computed

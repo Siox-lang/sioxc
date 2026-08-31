@@ -473,6 +473,13 @@ pub struct Design {
     /// vectors, so a design that never touches metavalues is unchanged. See
     /// "X/Z propagation through vectors" in `docs/simulation.md`.
     pub meta_of: HashMap<u32, u32>,
+    /// Signals metavalue lowering created to hold a shared operand. A
+    /// per-element unroll reads such a signal as a leaf instead of deep-copying
+    /// the operand once per element, which is what stopped nested metavalue
+    /// expressions from growing as `width^depth`. They are an implementation
+    /// plane like `meta_of`'s companions, so consumers that hide companions
+    /// (waveforms) hide these too.
+    pub metavalue_temps: std::collections::HashSet<u32>,
     /// Packed-array signal -> enum used by each element. This is declaration
     /// metadata (`struct F(E[])`), not a std type-name
     /// convention. Consumers use it to render metavalue companions.
@@ -4296,7 +4303,9 @@ impl<'a> Lowering<'a> {
                 let next_meta = driver
                     .meta
                     .clone()
-                    .or_else(|| self.lower_meta_ir(&driver.expr, width))
+                    .or_else(|| {
+                        self.lower_meta_ir(&driver.expr, width, &mut MetaTemps::inline_only())
+                    })
                     .unwrap_or(Expr::Const(0));
                 match &driver.cond {
                     None => {
@@ -5193,7 +5202,7 @@ impl<'a> Lowering<'a> {
     /// connections carry the metavalue), `numeric_std` arithmetic (any metavalue
     /// operand poisons the whole result to `'X'`), and a mux (per branch).
     /// Logical/relational is a follow-on.
-    fn lower_meta_ir(&self, e: &Expr, width: u32) -> Option<Expr> {
+    fn lower_meta_ir(&self, e: &Expr, width: u32, temps: &mut MetaTemps) -> Option<Expr> {
         match e {
             Expr::Current(id) => self
                 .out
@@ -5209,13 +5218,19 @@ impl<'a> Lowering<'a> {
                 let lhs_width = self.meta_expr_width(lhs, width);
                 let rhs_width = self.meta_expr_width(rhs, width);
                 let cond = [
-                    (self.lower_meta_ir(lhs, lhs_width), lhs_width),
-                    (self.lower_meta_ir(rhs, rhs_width), rhs_width),
+                    (self.lower_meta_ir(lhs, lhs_width, temps), lhs_width),
+                    (self.lower_meta_ir(rhs, rhs_width, temps), rhs_width),
                 ]
                 .into_iter()
                 .filter_map(|(meta, operand_width)| {
                     let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE)?;
-                    meta.map(|meta| any_unknown(&meta, operand_width, encoding))
+                    // `any_unknown` reads the operand once per element, so an
+                    // inline operand is deep-copied `operand_width` times.
+                    // Bind it once and let the unroll read a leaf.
+                    meta.map(|meta| {
+                        let meta = materialize(meta, operand_width * 4, temps);
+                        any_unknown(&meta, operand_width, encoding)
+                    })
                 })
                 .reduce(|a, b| Expr::Binary {
                     op: BinOp::Or,
@@ -5234,8 +5249,8 @@ impl<'a> Lowering<'a> {
             }
             Expr::Select { cond, then, els } => {
                 let (mt, me) = (
-                    self.lower_meta_ir(then, width),
-                    self.lower_meta_ir(els, width),
+                    self.lower_meta_ir(then, width, temps),
+                    self.lower_meta_ir(els, width, temps),
                 );
                 if mt.is_none() && me.is_none() {
                     return None;
@@ -5247,7 +5262,7 @@ impl<'a> Lowering<'a> {
                 })
             }
             Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
-                self.logical_meta(*op, lhs, rhs, width)
+                self.logical_meta(*op, lhs, rhs, width, temps)
             }
             // A slice selects elements, so it selects their discriminants: the
             // companion holds four bits per element, so the nibble range is
@@ -5256,7 +5271,7 @@ impl<'a> Lowering<'a> {
             // replaced by the value plane's bit for it.
             Expr::Slice { base, hi, lo } => {
                 let base_width = self.meta_expr_width(base, width.max(hi + 1));
-                let m = self.lower_meta_ir(base, base_width)?;
+                let m = self.lower_meta_ir(base, base_width, temps)?;
                 Some(Expr::Slice {
                     base: Box::new(m),
                     hi: hi * 4 + 3,
@@ -5276,7 +5291,7 @@ impl<'a> Lowering<'a> {
                 rhs,
             } => {
                 let lhs_width = self.meta_expr_width(lhs, width);
-                let m = self.lower_meta_ir(lhs, lhs_width)?;
+                let m = self.lower_meta_ir(lhs, lhs_width, temps)?;
                 Some(Expr::Binary {
                     op: *op,
                     lhs: Box::new(m),
@@ -5296,12 +5311,16 @@ impl<'a> Lowering<'a> {
             // path would be worse than one that is merely unused.
             Expr::Unary { op: UnOp::Not, rhs } => {
                 let rhs_width = self.meta_expr_width(rhs, width);
-                let m = self.lower_meta_ir(rhs, rhs_width)?;
+                let m = self.lower_meta_ir(rhs, rhs_width, temps)?;
                 let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE)?;
                 let table = encoding.unary_ops.get("not")?;
+                // Both planes are read once per element below; bind each once
+                // rather than deep-copying the operand `width` times.
+                let m = materialize(m, rhs_width * 4, temps);
+                let value = materialize(rhs.as_ref().clone(), rhs_width, temps);
                 let mut acc = Expr::Const(0);
                 for i in 0..width {
-                    let input = logic_element_disc(rhs, &m, i, encoding);
+                    let input = logic_element_disc(&value, &m, i, encoding);
                     let result = logic_unary_table_result(input, table);
                     let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
                     acc = or_expr(acc, meta_nibble(meta, i, result));
@@ -5346,12 +5365,19 @@ impl<'a> Lowering<'a> {
     /// unrolled per element: a result element is `'X'` when an operand is
     /// a metavalue *and* no operand forces the output — `0 and X = 0`,
     /// `1 or X = 1`, `X xor _ = X`.
-    fn logical_meta(&self, op: BinOp, lhs: &Expr, rhs: &Expr, width: u32) -> Option<Expr> {
+    fn logical_meta(
+        &self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        width: u32,
+        temps: &mut MetaTemps,
+    ) -> Option<Expr> {
         let lhs_width = self.meta_expr_width(lhs, width);
         let rhs_width = self.meta_expr_width(rhs, width);
         let (ma, mb) = (
-            self.lower_meta_ir(lhs, lhs_width),
-            self.lower_meta_ir(rhs, rhs_width),
+            self.lower_meta_ir(lhs, lhs_width, temps),
+            self.lower_meta_ir(rhs, rhs_width, temps),
         );
         if ma.is_none() && mb.is_none() {
             return None;
@@ -5364,12 +5390,20 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
         let table = encoding.binary_ops.get(symbol)?;
+        // The unroll below reads both planes of both operands once per element.
+        // Binding all four once turns `4 * width` deep copies of whole operand
+        // subtrees into `4 * width` leaf reads -- the difference between
+        // `width^depth` and `width * depth` growth for nested expressions.
+        let ma = ma.map(|m| materialize(m, lhs_width * 4, temps));
+        let mb = mb.map(|m| materialize(m, rhs_width * 4, temps));
+        let lhs = materialize(lhs.clone(), lhs_width, temps);
+        let rhs = materialize(rhs.clone(), rhs_width, temps);
         let mut acc = Expr::Const(0);
         for i in 0..width {
             let left_meta = ma.clone().unwrap_or(Expr::Const(0));
             let right_meta = mb.clone().unwrap_or(Expr::Const(0));
-            let left = logic_element_disc(lhs, &left_meta, i, encoding);
-            let right = logic_element_disc(rhs, &right_meta, i, encoding);
+            let left = logic_element_disc(&lhs, &left_meta, i, encoding);
+            let right = logic_element_disc(&rhs, &right_meta, i, encoding);
             let result = logic_binary_table_result(left, right, table);
             let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
             acc = or_expr(acc, meta_nibble(meta, i, result));
@@ -5396,7 +5430,16 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
                 let n = self.out.signals[d.target.0 as usize].width;
-                if n != 0 && (d.meta.is_some() || self.lower_meta_ir(&d.expr, n).is_some()) {
+                // Discovery only asks whether a companion expression exists, so
+                // anything it materializes is thrown away with this sink.
+                let mut probe = MetaTemps::new(
+                    self.out.signals.len() as u32,
+                    d.ctx,
+                    self.out.signals[d.target.0 as usize].declaration_span,
+                );
+                if n != 0
+                    && (d.meta.is_some() || self.lower_meta_ir(&d.expr, n, &mut probe).is_some())
+                {
                     discovered.push(d.target);
                 }
             }
@@ -5408,8 +5451,14 @@ impl<'a> Lowering<'a> {
                         continue;
                     }
                     let n = self.out.signals[update.target.0 as usize].width;
+                    let mut probe = MetaTemps::new(
+                        self.out.signals.len() as u32,
+                        block.ctx,
+                        self.out.signals[update.target.0 as usize].declaration_span,
+                    );
                     if n != 0
-                        && (update.meta.is_some() || self.lower_meta_ir(&update.expr, n).is_some())
+                        && (update.meta.is_some()
+                            || self.lower_meta_ir(&update.expr, n, &mut probe).is_some())
                     {
                         discovered.push(update.target);
                     }
@@ -5431,6 +5480,18 @@ impl<'a> Lowering<'a> {
         // earlier `X`/`Z` remained stale in the discriminant plane.
         let companion_ids: std::collections::HashSet<u32> =
             self.out.meta_of.values().copied().collect();
+        // Operands hoisted out of the per-element unrolls below. Ids continue
+        // from the current signal count and the signals are appended, in
+        // creation order, once both write kinds are lowered.
+        // Seeded only so the sink is constructible; every lowering below sets
+        // `ctx`/`anchor` from the write it is lowering before using it.
+        let anchor = self
+            .out
+            .signals
+            .first()
+            .map(|signal| signal.declaration_span)
+            .unwrap_or_else(|| crate::diag::Span::new(crate::diag::FileId(0), 0..0));
+        let mut temps = MetaTemps::new(self.out.signals.len() as u32, 0, anchor);
         let mut drivers = Vec::with_capacity(self.out.drivers.len() * 2);
         for mut driver in std::mem::take(&mut self.out.drivers) {
             if companion_ids.contains(&driver.target.0) {
@@ -5439,12 +5500,14 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let companion = self.out.meta_of.get(&driver.target.0).copied();
+            temps.ctx = driver.ctx;
+            temps.anchor = self.out.signals[driver.target.0 as usize].declaration_span;
             let meta = companion.map(|_| {
                 let width = self.out.signals[driver.target.0 as usize].width;
                 driver
                     .meta
                     .take()
-                    .or_else(|| self.lower_meta_ir(&driver.expr, width))
+                    .or_else(|| self.lower_meta_ir(&driver.expr, width, &mut temps))
                     .unwrap_or(Expr::Const(0))
             });
             let cond = driver.cond.clone();
@@ -5465,6 +5528,7 @@ impl<'a> Lowering<'a> {
         self.out.drivers = drivers;
 
         for block_index in 0..self.out.event_blocks.len() {
+            let block_ctx = self.out.event_blocks[block_index].ctx;
             let mut updates =
                 Vec::with_capacity(self.out.event_blocks[block_index].updates.len() * 2);
             for mut update in std::mem::take(&mut self.out.event_blocks[block_index].updates) {
@@ -5474,12 +5538,14 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
                 let companion = self.out.meta_of.get(&update.target.0).copied();
+                temps.ctx = block_ctx;
+                temps.anchor = self.out.signals[update.target.0 as usize].declaration_span;
                 let meta = companion.map(|_| {
                     let width = self.out.signals[update.target.0 as usize].width;
                     update
                         .meta
                         .take()
-                        .or_else(|| self.lower_meta_ir(&update.expr, width))
+                        .or_else(|| self.lower_meta_ir(&update.expr, width, &mut temps))
                         .unwrap_or(Expr::Const(0))
                 });
                 let cond = update.cond.clone();
@@ -5496,6 +5562,33 @@ impl<'a> Lowering<'a> {
                 }
             }
             self.out.event_blocks[block_index].updates = updates;
+        }
+
+        // A hoisted operand is an ordinary combinational signal. They are
+        // created inner-to-outer, and `topo_order` sorts drivers by dependency
+        // before emission, so appending them here is enough.
+        for temp in std::mem::take(&mut temps.made) {
+            debug_assert_eq!(temp.id as usize, self.out.signals.len());
+            self.out.signals.push(Signal {
+                path: format!("$metatmp{}", temp.id),
+                declaration_span: temp.anchor,
+                width: temp.width,
+                real: false,
+                integer: false,
+                char: false,
+                range: None,
+                init: vec![0],
+                enum_type: None,
+            });
+            self.out.metavalue_temps.insert(temp.id);
+            self.out.drivers.push(Driver {
+                target: SignalId(temp.id),
+                cond: None,
+                expr: temp.expr,
+                meta: None,
+                ctx: temp.ctx,
+                span: None,
+            });
         }
     }
 
@@ -8438,7 +8531,13 @@ impl<'a> Lowering<'a> {
         let write_meta = |expr: &Expr, explicit: &Option<Expr>| {
             explicit
                 .clone()
-                .or_else(|| self.lower_meta_ir(expr, self.out.signals[signal.0 as usize].width))
+                .or_else(|| {
+                    self.lower_meta_ir(
+                        expr,
+                        self.out.signals[signal.0 as usize].width,
+                        &mut MetaTemps::inline_only(),
+                    )
+                })
                 .unwrap_or(Expr::Const(0))
         };
         if sequential {
@@ -8620,7 +8719,8 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.lower_meta_ir(value, width).unwrap_or(Expr::Const(0))
+        self.lower_meta_ir(value, width, &mut MetaTemps::inline_only())
+            .unwrap_or(Expr::Const(0))
     }
 
     fn dynamic_write_targets(
@@ -12719,6 +12819,84 @@ fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>) -> Expr {
         hi: 3,
         lo: 0,
     }
+}
+
+/// One operand metavalue lowering wants to hoist into its own signal.
+struct MetaTemp {
+    id: u32,
+    width: u32,
+    expr: Expr,
+    ctx: u32,
+    anchor: crate::diag::Span,
+}
+
+/// Signals metavalue lowering wants to create, collected while it holds only
+/// `&self`. Ids are handed out from `next_id`, which starts at the current
+/// signal count, so a caller that appends `made` in order gets exactly the ids
+/// the returned expressions already reference. `ctx`/`anchor` are the driver
+/// being lowered, so a hoisted operand keeps its originating context and
+/// declaration anchor.
+struct MetaTemps {
+    /// Whether this sink may hoist at all. `false` for a caller that cannot
+    /// append signals to the design; lowering then keeps the fully inlined form
+    /// those paths have always produced.
+    hoist: bool,
+    next_id: u32,
+    ctx: u32,
+    anchor: crate::diag::Span,
+    made: Vec<MetaTemp>,
+}
+
+impl MetaTemps {
+    fn new(next_id: u32, ctx: u32, anchor: crate::diag::Span) -> Self {
+        Self {
+            hoist: true,
+            next_id,
+            ctx,
+            anchor,
+            made: Vec::new(),
+        }
+    }
+
+    /// A sink for a caller that cannot append signals -- resolution folding and
+    /// the partial-write helpers, which build a companion expression while
+    /// holding only `&self`. Nothing is ever recorded, so the placeholder
+    /// anchor is never read.
+    fn inline_only() -> Self {
+        Self {
+            hoist: false,
+            next_id: 0,
+            ctx: 0,
+            anchor: crate::diag::Span::new(crate::diag::FileId(0), 0..0),
+            made: Vec::new(),
+        }
+    }
+}
+
+/// Bind `expr` to a fresh signal and return a read of it, so an enclosing
+/// per-element unroll references a leaf instead of deep-copying the whole
+/// subtree once per element. A leaf comes back unchanged: binding it would add
+/// a signal without removing a copy.
+fn materialize(expr: Expr, width: u32, temps: &mut MetaTemps) -> Expr {
+    if !temps.hoist
+        || width == 0
+        || matches!(
+            expr,
+            Expr::Const(_) | Expr::WideConst(_) | Expr::Current(_) | Expr::Old(_)
+        )
+    {
+        return expr;
+    }
+    let id = temps.next_id;
+    temps.next_id += 1;
+    temps.made.push(MetaTemp {
+        id,
+        width,
+        expr,
+        ctx: temps.ctx,
+        anchor: temps.anchor,
+    });
+    Expr::Current(SignalId(id))
 }
 
 fn logic_element_disc(value: &Expr, meta: &Expr, index: u32, encoding: &LogicEncoding) -> Expr {
@@ -17354,6 +17532,7 @@ mod tests {
             logic_encodings: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
+            metavalue_temps: Default::default(),
             array_element_enums: Default::default(),
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),

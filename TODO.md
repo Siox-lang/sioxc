@@ -212,13 +212,21 @@ Remaining:
   lower every explicit hardware process plus implicit continuous process into
   the same `Design::process_ir`. Derive optimized `Driver`/`EventBlock` forms
   from those CFGs instead of separately lowering hardware and testbench AST.
-- 🔴 **Bounded Logic/metavalue expression growth.** Preserve sharing when
-  lowering vector Logic tables, `match` selection, and repeated instances.
-  The NVC comparison sweep currently turns an 18 KiB, 24-instance source into
-  about 58 MiB of textual IR and exhausted a 13.1 GiB compiler scope during
-  LLVM lowering. Replace cloned recursive table/select trees with an interned
-  expression DAG or compact table-lookup primitive, add IR-size accounting,
-  and keep the sweep compiling under a fixed memory limit as a regression.
+- ✅ **Bound ordinary Logic/metavalue expression growth.** Per-element lowering
+  now materializes a repeated non-leaf operand once as an internal
+  combinational signal. Nested dirty-vector expressions grow linearly with
+  width rather than cloning owned expression trees as `width^depth`; the full
+  312-row NVC comparison sweep builds at about 650 MiB instead of exhausting
+  8-14 GiB scopes and retains 312/312 behavioral parity. A regression checks
+  the width-scaling shape, and VCD/FST hide the materialized operands.
+- 🟡 **Close residual metavalue and LLVM scaling paths.** Resolution folding
+  and two partial-write helpers currently retain the old inline-only path
+  because they cannot append signals while holding `&self`; deeply nested
+  resolved multi-driver expressions can therefore still duplicate. Move
+  expressions to a shared/interned DAG or let those helpers allocate temps.
+  Separately partition or compact very large generated functions: after the
+  memory fix, the 312-row sweep still spends about 19 minutes in LLVM's
+  SelectionDAG combiner on one function.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
