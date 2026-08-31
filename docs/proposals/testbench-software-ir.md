@@ -164,13 +164,16 @@ language-lowering path.
    identity, Boolean enablement, exact test-root elaboration, structural default
    roots, vendor-metadata isolation, explicit `process [name]`, driver-context
    ownership, and instance-qualified labels are implemented.
-2. **Complete as a temporary scaffold:** the existing `test_ir::Program`
-   validates descriptors, layouts, locals, assignments, runtime operations,
-   `await`, and spans. It proves the information needed for direct lowering,
-   but is no longer the target architecture.
-3. **Define the unified process CFG.** Move reusable value/layout/control nodes
-   from `test_ir` under the main IR. Specify signal versus local assignment,
-   suspension terminators, process activation, source spans, and validation.
+2. **Complete: move process ownership into the main IR.** `ir::Design` owns
+   dense process/block/local IDs, CFGs, test descriptors, activation, labels,
+   source spans, immediate-local versus staged-signal writes, branches,
+   suspension/resume, and termination. `Compilation::test_ir` and the separate
+   `test_ir::Program` are gone; `test_ir` is only a temporary AST adapter that
+   fills `Design::process_ir`.
+3. **Complete the unified value and control representation.** Replace the
+   transitional typed/text `ProcessValue` references with arena value IDs,
+   expand `match`/`for`, and make delayed writes explicit scheduler operations.
+   The CFG and ownership boundary are already in place.
 4. **Lower every source process once.** Explicit processes and implicit
    continuous processes enter the same CFG lowering. Derive current
    `Driver`/`EventBlock` optimizations from that representation and verify
@@ -186,7 +189,7 @@ language-lowering path.
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.
 8. **Remove the compatibility path.** Delete the generated-C translator and
-   standalone `test_ir::Program`; keep one `Design`/Process IR to LLVM path.
+   temporary `test_ir` AST adapter; keep one `Design`/Process IR to LLVM path.
    Clang may remain a native linker driver, but is no longer a source-language
    translator.
 9. **Add later output consumers after the common validation boundary.** RTL and

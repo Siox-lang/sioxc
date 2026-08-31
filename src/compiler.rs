@@ -20,7 +20,6 @@ use crate::resolve::Resolved;
 use crate::syntax::ast::{Item, Module};
 use crate::syntax::token::{Token, TokenKind};
 use crate::syntax::{lexer::Lexer, parser, pretty};
-use crate::test_ir::Program as TestIr;
 use crate::testbench::TestPlan;
 use crate::types::Typed;
 
@@ -220,9 +219,6 @@ pub struct Compilation {
     /// Resolved native tests bound to their elaborated hierarchy roots.
     /// Present only when compiling a test executable.
     pub test_plan: Option<TestPlan>,
-    /// Procedural native-test control IR paired with the digital `Design`.
-    /// Present only for test-executable compilations.
-    pub test_ir: Option<TestIr>,
     pub design: Option<Design>,
     pub diagnostics: DiagnosticSink,
     pub artifact: Option<Artifact>,
@@ -241,7 +237,6 @@ impl Compilation {
             typed: None,
             hierarchy: None,
             test_plan: None,
-            test_ir: None,
             design: None,
             diagnostics: DiagnosticSink::new(),
             artifact: None,
@@ -481,28 +476,28 @@ impl Compiler {
         }
 
         let base_dir = path.parent().unwrap_or_else(|| Path::new(""));
-        let design = crate::ir::lower_in(
+        let mut design = crate::ir::lower_in(
             &result.modules,
             resolved,
             &hierarchy,
             &mut result.diagnostics,
             base_dir,
         );
+        if request.emit == Emit::TestExecutable {
+            crate::test_ir::lower(
+                &result.modules,
+                resolved,
+                typed,
+                &hierarchy,
+                result.test_plan.as_ref().expect("test planning completed"),
+                &mut design,
+            );
+        }
         result.stats.signals = Some(design.signals.len());
         result.stats.drivers = Some(design.drivers.len());
         result.stats.event_blocks = Some(design.event_blocks.len());
         result.hierarchy = Some(hierarchy);
         result.design = Some(design);
-        if request.emit == Emit::TestExecutable {
-            result.test_ir = Some(crate::test_ir::lower(
-                &result.modules,
-                resolved,
-                typed,
-                result.hierarchy.as_ref().expect("elaboration completed"),
-                result.test_plan.as_ref().expect("test planning completed"),
-                result.design.as_ref().expect("lowering completed"),
-            ));
-        }
 
         if request.emit == Emit::Ir {
             result.artifact = result
@@ -622,24 +617,11 @@ impl Compiler {
         }
         let resolved = result.resolved.as_ref().expect("resolution completed");
         let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
-        let test_ir = result.test_ir.as_ref().expect("test IR lowering completed");
-        let test_ir_issues = test_ir.validate();
-        if !test_ir_issues.is_empty() {
-            result.failure = Some(CompileFailure::new(
-                FailureKind::Validation,
-                format!(
-                    "cannot generate native test code:\n  - {}",
-                    test_ir_issues.join("\n  - ")
-                ),
-            ));
-            return;
-        }
         let design = result.design.as_ref().expect("lowering completed");
         match build::build(build::BuildRequest {
             modules: &result.modules,
             resolved,
             hierarchy,
-            test_ir,
             design,
             sources: &result.sources,
             debug,

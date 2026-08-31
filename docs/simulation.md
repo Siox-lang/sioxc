@@ -73,10 +73,10 @@ earliest pending event and advances to it:
   Each yields to the scheduler until its trigger fires, and may appear inside
   `for`/`if`. (`wait`/`tick` were removed — both now error and point at
   `await`.) During the compatibility migration the wheel lives in the runner
-  and, identically, in the emitted C of the native binary. The unified Process
-  IR plan moves it into one linked runtime used by directly lowered processes.
-  A future external-simulator adapter may own time through the same scheduler
-  ABI.
+  and, identically, in the emitted C of the native binary. `Design::process_ir`
+  now represents `await` as a suspend terminator with an explicit resume block;
+  direct process lowering will move the wheel behind one linked runtime. A
+  future external-simulator adapter may own time through the same scheduler ABI.
 
 Native time is an unsigned 64-bit femtosecond count. A literal whose unit
 conversion cannot fit that timeline is a build error. Runtime additions

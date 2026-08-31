@@ -15,7 +15,8 @@
 //! | [`resolve`] | 3 | name resolution, `using` imports, visibility, `DefId`s |
 //! | [`types`]   | 4 | type & kind checking; Phase-2 syntax rejection |
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
-//! | [`ir`]      | 6 | lowering to the digital simulation IR |
+//! | [`ir`]      | 6 | canonical process/control, value, layout, and digital simulation IR |
+//! | [`test_ir`] | adapter | temporary test-AST lowering into `ir::Design::process_ir` |
 //!
 //! [`compiler`] is the presentation-neutral embedding boundary that composes
 //! those stages for editors, build tools, and `sioxc`. The native LLVM AOT

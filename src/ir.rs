@@ -1,11 +1,13 @@
-//! Digital simulation IR for siox Phase 1 (spec Stage 6).
+//! Unified execution and digital simulation IR for siox Phase 1 (spec Stage 6).
 //!
-//! Lowers the typed, elaborated design into a simulator-friendly form where
-//! event dependencies and combinational dependencies are explicit, and
-//! sequential next-state updates are separated from immediate local
-//! assignments. `::event` and `::old` become explicit IR operations.
+//! [`Design::process_ir`] owns independently scheduled process CFGs, locals,
+//! suspension, activation, and test descriptors. During the compatibility
+//! migration, ordinary hardware behavior is also normalized into explicit
+//! event dependencies, combinational drivers, and sequential next-state
+//! updates; those `Driver`/`EventBlock` forms will become derived process
+//! optimizations. `::event` and `::old` are explicit IR operations.
 //!
-//! Spec IR distinction:
+//! Current compatibility forms:
 //! ```text
 //! Driver(signal, expression, condition)              // combinational
 //! OnEvent(event_condition): next(signal) = expression // sequential
@@ -426,6 +428,11 @@ pub struct Design {
     pub signals: Vec<Signal>,
     pub drivers: Vec<Driver>,
     pub event_blocks: Vec<EventBlock>,
+    /// Canonical independently scheduled behavior. During migration the Siox
+    /// frontend fills native-test CFGs here after digital lowering; hardware
+    /// drivers/event blocks are still the compatibility lowering products.
+    /// Both move behind this ownership boundary before generated C is retired.
+    pub process_ir: ProcessIr,
     /// Driver-context labels retained from `process name { ... }`, qualified
     /// by instance path for diagnostics and backend tracing.
     pub process_labels: HashMap<u32, String>,
@@ -665,6 +672,337 @@ impl SourceLayout {
             LayoutKind::Packed { range, .. } | LayoutKind::Array { range, .. } => *range,
             _ => None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessBlockId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessLocalId(pub u32);
+
+/// The canonical control-flow product owned by an elaborated [`Design`].
+///
+/// `test_ir` is temporarily responsible for filling the test processes, but
+/// the representation and its invariants live here so no backend needs a
+/// second phase product. Hardware lowering will populate the same vector and
+/// derive [`Driver`] / [`EventBlock`] compatibility forms from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessIr {
+    pub processes: Vec<ProcessCfg>,
+    pub tests: Vec<ProcessTest>,
+}
+
+/// Runtime test registration metadata. The behavior remains ordinary process
+/// CFGs referenced by `processes`; the `test` attribute does not create a
+/// different executable representation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessTest {
+    pub entity: DefId,
+    pub root: crate::elab::InstanceId,
+    pub qualified_name: String,
+    pub span: crate::diag::Span,
+    pub processes: Vec<ProcessId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessCfg {
+    pub id: ProcessId,
+    pub owner: crate::elab::InstanceId,
+    /// Optional instance-qualified source label.
+    pub label: Option<String>,
+    pub span: crate::diag::Span,
+    pub activation: ProcessActivation,
+    pub entry: ProcessBlockId,
+    pub locals: Vec<ProcessLocal>,
+    pub blocks: Vec<ProcessBlock>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessActivation {
+    /// Starts once at time zero and subsequently only through explicit resume
+    /// edges such as [`ProcessTerminator::Suspend`].
+    TimeZero,
+    /// Runs when a member of the sensitivity set changes. Clock processes are
+    /// represented this way rather than entering a separate lowering path.
+    Reactive { sensitivity: Vec<SignalId> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessLocal {
+    pub id: ProcessLocalId,
+    pub name: String,
+    pub span: crate::diag::Span,
+    /// Transitional frontend type retained until expression lowering produces
+    /// only concrete IR value/layout IDs.
+    pub ty: Option<crate::types::Ty>,
+    pub layout: Option<SourceLayout>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessBlock {
+    pub id: ProcessBlockId,
+    pub instructions: Vec<ProcessInstruction>,
+    pub terminator: ProcessTerminator,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessInstruction {
+    Declare {
+        local: ProcessLocalId,
+        initializer: Option<ProcessValue>,
+        span: crate::diag::Span,
+    },
+    Assign {
+        semantics: ProcessAssignment,
+        target: ProcessValue,
+        value: ProcessValue,
+        delay: Option<ProcessValue>,
+        span: crate::diag::Span,
+    },
+    Runtime {
+        operation: ProcessRuntimeOp,
+        arguments: Vec<ProcessValue>,
+        span: crate::diag::Span,
+    },
+    /// A typed, source-anchored control node awaiting CFG expansion. Validation
+    /// keeps this visible so a backend cannot silently skip unsupported flow.
+    DeferredControl {
+        kind: DeferredProcessControl,
+        span: crate::diag::Span,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessAssignment {
+    /// Process-local variables update immediately and are visible to the next
+    /// instruction in the same process step.
+    ImmediateLocal,
+    /// Signals stage a driver write for end-of-step resolution/commit.
+    StagedSignal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessRuntimeOp {
+    Assert,
+    Warn,
+    Print,
+    Call(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferredProcessControl {
+    Match,
+    For,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessTerminator {
+    Return {
+        value: Option<ProcessValue>,
+        span: Option<crate::diag::Span>,
+    },
+    Goto(ProcessBlockId),
+    Branch {
+        condition: ProcessValue,
+        then_block: ProcessBlockId,
+        else_block: ProcessBlockId,
+    },
+    /// Suspend this process and continue at `resume` when the runtime operation
+    /// becomes ready. `await` arguments keep their typed source identity until
+    /// direct value lowering replaces [`ProcessValue`].
+    Suspend {
+        operation: ProcessSuspendOp,
+        arguments: Vec<ProcessValue>,
+        resume: ProcessBlockId,
+        span: crate::diag::Span,
+    },
+    Stop {
+        span: crate::diag::Span,
+    },
+    Finish {
+        span: crate::diag::Span,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessSuspendOp {
+    Await,
+}
+
+/// Transitional typed expression reference. `text` is diagnostic/dump data,
+/// never executable source for a backend. Direct expression lowering will
+/// replace it with arena value IDs without changing the process CFG shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValue {
+    pub span: crate::diag::Span,
+    pub ty: Option<crate::types::Ty>,
+    pub text: String,
+}
+
+impl ProcessIr {
+    /// Structural invariants shared by every process backend.
+    pub fn validate(&self, signal_count: u32) -> Vec<String> {
+        let mut issues = Vec::new();
+        let mut test_names = HashSet::new();
+        let mut test_roots = HashSet::new();
+
+        for (index, process) in self.processes.iter().enumerate() {
+            if process.id != ProcessId(index as u32) {
+                issues.push(format!(
+                    "process at index {index} has non-dense id {:?}",
+                    process.id
+                ));
+            }
+            if process
+                .blocks
+                .get(process.entry.0 as usize)
+                .map(|block| block.id)
+                != Some(process.entry)
+            {
+                issues.push(format!(
+                    "process {:?} has an invalid entry block",
+                    process.id
+                ));
+            }
+            if let ProcessActivation::Reactive { sensitivity } = &process.activation {
+                for signal in sensitivity {
+                    if signal.0 >= signal_count {
+                        issues.push(format!(
+                            "process {:?} has out-of-range sensitivity signal {}",
+                            process.id, signal.0
+                        ));
+                    }
+                }
+            }
+            for (local_index, local) in process.locals.iter().enumerate() {
+                if local.id != ProcessLocalId(local_index as u32) {
+                    issues.push(format!(
+                        "process {:?} has a non-dense local id {:?}",
+                        process.id, local.id
+                    ));
+                }
+            }
+            for (block_index, block) in process.blocks.iter().enumerate() {
+                if block.id != ProcessBlockId(block_index as u32) {
+                    issues.push(format!(
+                        "process {:?} has a non-dense block id {:?}",
+                        process.id, block.id
+                    ));
+                }
+                for instruction in &block.instructions {
+                    if let ProcessInstruction::Declare { local, .. } = instruction {
+                        if process.locals.get(local.0 as usize).map(|value| value.id)
+                            != Some(*local)
+                        {
+                            issues.push(format!(
+                                "process {:?} references invalid local {:?}",
+                                process.id, local
+                            ));
+                        }
+                    }
+                }
+                for target in process_terminator_targets(&block.terminator) {
+                    if process.blocks.get(target.0 as usize).map(|value| value.id) != Some(target) {
+                        issues.push(format!(
+                            "process {:?} branches to invalid block {:?}",
+                            process.id, target
+                        ));
+                    }
+                }
+            }
+        }
+
+        for test in &self.tests {
+            if !test_names.insert(test.qualified_name.clone()) {
+                issues.push(format!(
+                    "duplicate test descriptor `{}`",
+                    test.qualified_name
+                ));
+            }
+            if !test_roots.insert(test.root) {
+                issues.push(format!("test root {:?} is used more than once", test.root));
+            }
+            let mut referenced = HashSet::new();
+            for process_id in &test.processes {
+                if !referenced.insert(*process_id) {
+                    issues.push(format!(
+                        "test `{}` references process {:?} more than once",
+                        test.qualified_name, process_id
+                    ));
+                    continue;
+                }
+                match self.processes.get(process_id.0 as usize) {
+                    Some(process) if process.id == *process_id && process.owner == test.root => {}
+                    Some(_) => issues.push(format!(
+                        "test `{}` references process {:?} owned by another root",
+                        test.qualified_name, process_id
+                    )),
+                    None => issues.push(format!(
+                        "test `{}` references invalid process {:?}",
+                        test.qualified_name, process_id
+                    )),
+                }
+            }
+        }
+        issues
+    }
+
+    pub fn to_ir_string(&self) -> String {
+        let mut output = String::new();
+        for test in &self.tests {
+            let processes = test
+                .processes
+                .iter()
+                .map(|process| format!("%p{}", process.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "test @{} root {} processes [{}]\n",
+                test.qualified_name, test.root.0, processes
+            ));
+        }
+        for process in &self.processes {
+            let label = process
+                .label
+                .as_ref()
+                .map(|label| format!(" [{label}]"))
+                .unwrap_or_default();
+            output.push_str(&format!(
+                "process %p{} root {}{label} {:?} {{\n",
+                process.id.0, process.owner.0, process.activation
+            ));
+            for local in &process.locals {
+                output.push_str(&format!("  local %{} {}\n", local.id.0, local.name));
+            }
+            for block in &process.blocks {
+                output.push_str(&format!("  bb{}:\n", block.id.0));
+                for instruction in &block.instructions {
+                    output.push_str(&format!("    {instruction:?}\n"));
+                }
+                output.push_str(&format!("    {:?}\n", block.terminator));
+            }
+            output.push_str("}\n");
+        }
+        output
+    }
+}
+
+fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBlockId> {
+    match terminator {
+        ProcessTerminator::Return { .. }
+        | ProcessTerminator::Stop { .. }
+        | ProcessTerminator::Finish { .. } => Vec::new(),
+        ProcessTerminator::Goto(target) => vec![*target],
+        ProcessTerminator::Branch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
+        ProcessTerminator::Suspend { resume, .. } => vec![*resume],
     }
 }
 
@@ -12707,6 +13045,7 @@ impl Design {
                 check_expr(&u.expr, n, &mut issues, &ctx);
             }
         }
+        issues.extend(self.process_ir.validate(n));
         issues
     }
 
@@ -12845,6 +13184,7 @@ impl Design {
                 ));
             }
         }
+        out.push_str(&self.process_ir.to_ir_string());
         out
     }
 }
@@ -16903,6 +17243,7 @@ mod tests {
                 ctx: 0,
             }],
             event_blocks: vec![],
+            process_ir: Default::default(),
             process_labels: Default::default(),
             resolved_process_labels: Default::default(),
             enum_bases: HashMap::new(),

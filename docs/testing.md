@@ -36,8 +36,10 @@ order. `await` advances simulation time (see
 with ordinary sequential assignment. The native compatibility scheduler
 currently accepts one foreground stimulus process plus canonical background
 clock processes; it rejects additional foreground processes instead of
-serializing them. The replacement lowers every hardware and test process into
-the same Process IR and scheduler rather than adding another test-only runner.
+serializing them. Test processes already receive stable IDs and validated CFGs
+inside `Design::process_ir`; the remaining migration lowers hardware processes
+there too and makes the compatibility harness consume those CFGs instead of
+translating test AST. There is no second test-only program or runner.
 Method calls on the DUT or on struct-typed locals work in
 stimulus, so a testbench can drive a design through a method result. Strings
 retain their array semantics here: locals can be

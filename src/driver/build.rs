@@ -18,7 +18,6 @@ use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, Source
 use siox::resolve::{DefId, Resolved};
 use siox::syntax::ast;
 use siox::syntax::Module;
-use siox::test_ir::Program as TestIr;
 
 type NativeOperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
 type StructFieldNames = Vec<String>;
@@ -140,7 +139,6 @@ pub(super) struct BuildRequest<'a> {
     pub modules: &'a [Module],
     pub resolved: &'a Resolved,
     pub hierarchy: &'a Hierarchy,
-    pub test_ir: &'a TestIr,
     pub design: &'a Design,
     pub sources: &'a siox::diag::SourceMap,
     /// Attribute generated code back to `.siox` and leave it unoptimized.
@@ -153,7 +151,6 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
         modules,
         resolved,
         hierarchy: hier,
-        test_ir,
         design,
         sources,
         debug,
@@ -849,7 +846,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     }
 
     let mut names = Vec::new();
-    for test in &test_ir.tests {
+    for test in &design.process_ir.tests {
         let root = test.root;
         let instance = hier.instance(root);
         let name = hier.root_path(root);

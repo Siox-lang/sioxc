@@ -13,15 +13,16 @@ may use is `diag` — plus the LLVM backend:
   optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
 - **`siox::testbench`** — canonical native-test selection metadata.
-- **`siox::test_ir`** — a temporary procedural-control scaffold being folded
-  into the unified Process IR; it is not a permanent parallel pipeline.
+- **`siox::test_ir`** — the temporary Siox-AST adapter that fills the canonical
+  `ir::Design::process_ir`; it owns no phase product or backend input.
 - **`sioxc`** — the root package's thin command-line adapter.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
 
-The following diagram describes the current transitional implementation. Its
-`test_ir` and generated-C branch is the remaining split to remove.
+The following diagram describes the current transitional implementation. The
+process product now has one owner; the temporary AST adapter and generated-C
+statement translator are the remaining split to remove.
 
 ```mermaid
 flowchart TB
@@ -34,23 +35,25 @@ flowchart TB
         TY -->|ordinary output| EL["elab<br/>Hierarchy"]
         TY -->|test executable requested| TESTPLAN["testbench<br/>TestPlan"]
         TESTPLAN -->|exact canonical std test roots| EL
-        EL -->|concrete hierarchy| IR["ir<br/>Design"]
-        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>software Program"]
+        EL -->|concrete hierarchy| DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
+        DIGITAL --> DESIGN["ir::Design<br/>owned ProcessIr"]
+        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>temporary AST adapter"]
         TY -->|typed expressions| TESTIR
-        IR -->|shared concrete layouts| TESTIR
+        DIGITAL -->|shared concrete layouts| TESTIR
+        TESTIR -->|fills process CFGs + descriptors| DESIGN
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
         DIAG -.-> TY
         DIAG -.-> TESTPLAN
         DIAG -.-> EL
-        DIAG -.-> IR
+        DIAG -.-> DIGITAL
         DIAG -.-> TESTIR
     end
 
-    IR -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
-    IR -->|test executable requested| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
-    TESTIR -->|validated descriptors; AST compatibility bodies| HARNESS
+    DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
+    DESIGN -->|test descriptors| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
+    SY -->|AST compatibility bodies| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
     OBJ -->|test executable requested| LINK["Clang + native linker"]
@@ -59,17 +62,16 @@ flowchart TB
 
     SY -->|tokens / source / AST requested| FRONT_TEXT["frontend text artifact"]
     EL -->|tree requested| FRONT_TEXT
-    IR -->|IR requested| FRONT_TEXT
+    DESIGN -->|IR requested| FRONT_TEXT
 
     SY -. retained phase product .-> RESULT
     RE -. retained phase product .-> RESULT
     TY -. retained phase product .-> RESULT
     TESTPLAN -. retained test-build product .-> RESULT
-    TESTIR -. retained test-build product .-> RESULT
     EL -. retained phase product .-> RESULT
-    IR -. retained phase product .-> RESULT
+    DESIGN -. retained phase product .-> RESULT
     FRONT_TEXT -->|optional Artifact::Text| RESULT["Compilation<br/>diagnostics + phase products<br/>statistics + optional artifact or failure"]
-    IR -. metadata requested; no artifact .-> RESULT
+    DESIGN -. metadata requested; no artifact .-> RESULT
     DIAG -->|SourceMap + diagnostics| RESULT
     FAILURE["optional input / selection / validation / backend failure"] -->|CompileFailure| RESULT
     LLVM_TEXT -->|Emit::LlvmIr artifact| RESULT
@@ -89,12 +91,13 @@ tree requests do not continue through IR. Frontend-only requests stop before
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
 `std::attrs::test` declaration once, elaborates exactly those roots, and binds
-them into a `TestPlan`. `siox::test_ir` then creates one validated procedural
-`Program` with test descriptors, locals, assignments, runtime operations, and
-source spans while sharing the digital `Design` layouts. The compiler retains
-both products. The current C compatibility harness consumes the software-IR
-descriptors and uses the shared identity-based body lookup; CFG nodes are still
-expanded by later migration slices. The harness contains the stimulus, scheduler, assertions, and reporting; it
+them into a `TestPlan`. The temporary `siox::test_ir` adapter fills the
+canonical `Design::process_ir` with validated descriptors and CFGs; the
+compiler no longer retains a second software program. Branch, suspend/resume,
+termination, local/signal assignment semantics, activation, labels, and spans
+already live there. The current C compatibility harness consumes descriptors
+from the design but still translates test statements from AST. The harness
+contains the stimulus, scheduler, assertions, and reporting; it
 links with the native design object when `Emit::TestExecutable` is requested.
 The harness contains the VCD writer, and the resulting executable incorporates
 the pinned libfst sources, so this artifact also needs Clang and zlib at
@@ -151,8 +154,8 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
-| `ir` | IR | Signals, layouts, named driver contexts, drivers, event blocks, initializers, and semantic lints. |
-| `test_ir` | temporary scaffold | Validated procedural nodes being migrated into the main Process IR, after which this module is removed. |
+| `ir` | IR | Signals, layouts, canonical process CFGs/test descriptors, compatibility drivers/event blocks, initializers, validation, and semantic lints. |
+| `test_ir` | temporary adapter | Lowers test AST into `Design::process_ir`; removed once all source processes share the main IR lowering entry point. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Resolution is the owner of nominal identity. Both declaration sites and use
@@ -226,8 +229,8 @@ as `crate::<module>`; the binary imports the library as `siox::<module>`.
 ## Data that flows between stages today
 
 This diagram records the current values while the unified-process migration is
-in progress; the planned endpoint above removes `test_ir::Program` and the
-AST-to-C harness branch.
+in progress. The standalone `test_ir::Program` is already gone; the planned
+endpoint above removes the temporary AST adapter and AST-to-C harness branch.
 
 ```mermaid
 flowchart LR
@@ -238,10 +241,12 @@ flowchart LR
     TYPED -->|ordinary output| HIERARCHY["Hierarchy"]
     TYPED -->|test build| TESTPLAN["TestPlan<br/>canonical std tests + bound roots"]
     TESTPLAN --> HIERARCHY
-    HIERARCHY --> DESIGN["ir::Design"]
-    TESTPLAN --> TESTIR["test_ir::Program"]
+    HIERARCHY --> DIGITAL["digital IR lowering"]
+    DIGITAL --> DESIGN["ir::Design<br/>signals + ProcessIr"]
+    TESTPLAN --> TESTIR["test_ir AST adapter"]
     TYPED --> TESTIR
-    DESIGN -->|shared layouts| TESTIR
+    DIGITAL -->|shared layouts| TESTIR
+    TESTIR -->|fills owned ProcessIr| DESIGN
 
     TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
     MODULES -->|Emit::Source / Ast| TEXT
@@ -250,8 +255,8 @@ flowchart LR
     DESIGN -->|LLVM output requested| BACKEND["siox::llvm"]
     BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
     BACKEND -->|object or test requested| OBJECT["native object"]
-    DESIGN -->|Emit::TestExecutable| HARNESS["generated C compatibility harness"]
-    TESTIR -->|validated descriptors| HARNESS
+    DESIGN -->|test descriptors| HARNESS["generated C compatibility harness"]
+    MODULES -->|AST compatibility bodies| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK
     LINK --> EXECUTABLE["Artifact::File<br/>test executable"]
@@ -265,7 +270,6 @@ flowchart LR
     RESOLVED -.-> PRODUCTS
     TYPED -.-> PRODUCTS
     TESTPLAN -.-> PRODUCTS
-    TESTIR -.-> PRODUCTS
     HIERARCHY -.-> PRODUCTS
     DESIGN -.-> PRODUCTS
     PRODUCTS -. retained .-> COMPILATION["Compilation<br/>products + diagnostics + statistics<br/>optional artifact + failure"]

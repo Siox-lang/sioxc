@@ -194,16 +194,21 @@ Current baseline:
   than discriminant ranges or `disc & 1`. `ULogic` now uses VHDL declaration
   order with an explicit stable packed ABI, and the exhaustive VHDL comparison
   corpus remains unchanged.
+- ✅ `ir::Design` owns the first canonical `ProcessIr`: dense process/block/local
+  IDs, instance-qualified labels, owning roots, time-zero/reactive activation,
+  immediate-local versus staged-signal assignment, typed source references,
+  source spans, and validated test descriptors. `if` branches, `await`
+  suspend/resume edges, and return/stop/finish terminators are real CFG edges.
+  `Compilation` no longer retains a parallel `test_ir::Program`; `test_ir` is
+  now only the temporary Siox-AST adapter that fills `Design::process_ir`.
 
 Remaining:
 
-- 🔴 **Unified Process IR.** Make one CFG-capable process representation the
-  canonical lowering for explicit processes, implicit continuous processes,
-  clocks, and test stimulus. It must retain process IDs/labels, local versus
-  staged signal assignment, activation/sensitivity, suspension, delayed
-  writes, runtime operations, and source spans. Derive optimized
-  `Driver`/`EventBlock` forms from it instead of separately lowering hardware
-  and testbench AST. Fold the temporary `test_ir::Program` nodes into this IR.
+- 🟡 **Complete unified Process IR lowering.** Replace transitional typed/text
+  `ProcessValue` references with arena value IDs, expand `match` and `for`, and
+  lower every explicit hardware process plus implicit continuous process into
+  the same `Design::process_ir`. Derive optimized `Driver`/`EventBlock` forms
+  from those CFGs instead of separately lowering hardware and testbench AST.
 - 🔴 **Bounded Logic/metavalue expression growth.** Preserve sharing when
   lowering vector Logic tables, `match` selection, and repeated instances.
   The NVC comparison sweep currently turns an 18 KiB, 24-instance source into
@@ -295,10 +300,10 @@ Current baseline:
   roots and native object output accepts the sole root or an explicit `--top`.
   Integration-declared vendor `top` attributes remain ordinary resolved
   metadata and cannot change sioxc behavior.
-- 🟡 `test_ir::Program` is a temporary validated scaffold carrying the control,
-  local-layout, runtime, `await`, and span data needed by direct lowering. It is
-  explicitly not a second permanent IR: move its reusable nodes into the main
-  Process IR, then remove the retained side product.
+- 🟡 `test_ir` is now only a temporary frontend adapter into
+  `Design::process_ir`; the separate `Program`/`Compilation::test_ir` product
+  is gone. Remove the module after hardware and test source processes share one
+  AST-to-value/CFG lowering entry point.
 - 🔴 **Retire generated C.** First make the compatibility harness consume
   unified Process IR instead of translating AST, then add direct LLVM process
   lowering and a linked scheduler/test/waveform runtime. Differentially test
