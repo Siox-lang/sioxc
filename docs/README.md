@@ -21,7 +21,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, and the `siox-lsp` editor server. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
-| [testbench-software-ir.md](proposals/testbench-software-ir.md) | Proposal to replace generated C with a Rustc-shaped software IR, direct LLVM lowering, and a linked Rust test runtime. |
+| [Unified process pipeline](proposals/testbench-software-ir.md) | Accepted migration plan for one Process IR, direct LLVM scheduling, and removal of the generated-C/TestIR split. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
@@ -58,6 +58,14 @@ flowchart LR
     TEST --> RESULT
     RESULT -->|returns Compilation| API
 ```
+
+This diagram is the current implementation. Now that `process` is the common
+sequential/scheduling boundary, the planned endpoint is one semantic track:
+`source → AST → resolve → typecheck → elaborate → Process IR → target
+validation → optimization → output`. `#[test]` only adds root/descriptor
+metadata. The remaining native-harness branch is removed by the
+[unified process pipeline plan](proposals/testbench-software-ir.md); only final
+artifact selection remains variable.
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not

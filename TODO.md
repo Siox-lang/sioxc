@@ -135,9 +135,9 @@ Remaining:
 
 ## IR
 
-Owns the elaborated digital model: signals, processes, drivers, events,
-initializers, type/enum metadata, and semantic lints. Code: `src/ir.rs`;
-consumed by `src/driver/` and `src/llvm/`.
+Owns the elaborated execution model: signals, process control flow, derived
+drivers/events, initializers, type/enum metadata, layouts, and semantic lints.
+Code: `src/ir.rs`; consumed by `src/driver/` and `src/llvm/`.
 
 Current baseline:
 
@@ -197,6 +197,20 @@ Current baseline:
 
 Remaining:
 
+- 🔴 **Unified Process IR.** Make one CFG-capable process representation the
+  canonical lowering for explicit processes, implicit continuous processes,
+  clocks, and test stimulus. It must retain process IDs/labels, local versus
+  staged signal assignment, activation/sensitivity, suspension, delayed
+  writes, runtime operations, and source spans. Derive optimized
+  `Driver`/`EventBlock` forms from it instead of separately lowering hardware
+  and testbench AST. Fold the temporary `test_ir::Program` nodes into this IR.
+- 🔴 **Bounded Logic/metavalue expression growth.** Preserve sharing when
+  lowering vector Logic tables, `match` selection, and repeated instances.
+  The NVC comparison sweep currently turns an 18 KiB, 24-instance source into
+  about 58 MiB of textual IR and exhausted a 13.1 GiB compiler scope during
+  LLVM lowering. Replace cloned recursive table/select trees with an interned
+  expression DAG or compact table-lookup primitive, add IR-size accounting,
+  and keep the sweep compiling under a fixed memory limit as a regression.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
@@ -234,6 +248,10 @@ Current baseline:
 
 Remaining:
 
+- 🔴 **Direct Process IR lowering.** Lower unified process CFGs, suspension
+  states, and scheduler calls into the same LLVM module as signals and Siox
+  functions. Native object and test-executable builds must differ only in
+  linked runtime/entry-point packaging, not language lowering.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
@@ -260,7 +278,7 @@ Current baseline:
   any number of canonical self-toggle clock processes. Clocks start at time
   zero regardless of declaration order, and additional foreground processes
   are rejected with E-P028 instead of being serialized. General independently
-  suspending processes belong to the software-IR scheduler below.
+  suspending processes belong to the unified Process IR scheduler.
 - ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
   declared array labels, nested dimensions, struct fields/values and packed
   bits. Composite right-hand sides are staged before writes. Invalid dynamic
@@ -277,20 +295,15 @@ Current baseline:
   roots and native object output accepts the sole root or an explicit `--top`.
   Integration-declared vendor `top` attributes remain ordinary resolved
   metadata and cannot change sioxc behavior.
-- 🟡 The first `test_ir::Program` is retained in `Compilation` and structurally
-  validated. It carries test descriptors, concrete local layouts, assignments,
-  assertions/runtime calls, `await`, and source spans; the compatibility C
-  backend consumes its descriptors and shared identity-based impl lookup.
-  Expand deferred `if`/`match`/`for` nodes into CFG blocks, then lower the same
-  product through LLVM and the Rust runtime.
-- 🔴 Replace the generated-C testbench translator with the software IR,
-  LLVM lowering, and Rust runtime described in
-  `docs/proposals/testbench-software-ir.md`. Keep the current harness as the
-  compatibility backend until the replacement reaches feature parity. The
-  shared `TestPlan`, `top` cleanup, and initial validated software-IR product
-  are complete. Both native lowering paths must reuse this discovery,
-  hierarchy, attribute identity, control, and layout input during differential
-  migration.
+- 🟡 `test_ir::Program` is a temporary validated scaffold carrying the control,
+  local-layout, runtime, `await`, and span data needed by direct lowering. It is
+  explicitly not a second permanent IR: move its reusable nodes into the main
+  Process IR, then remove the retained side product.
+- 🔴 **Retire generated C.** First make the compatibility harness consume
+  unified Process IR instead of translating AST, then add direct LLVM process
+  lowering and a linked scheduler/test/waveform runtime. Differentially test
+  both outputs before deleting the C translator. The complete straight-pipeline
+  plan is in `docs/proposals/testbench-software-ir.md`.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

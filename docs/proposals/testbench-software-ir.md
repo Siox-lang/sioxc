@@ -1,188 +1,229 @@
-# Native testbenches without generated C
+# Unified process pipeline
 
-Status: **proposal**. The current generated-C harness remains the supported
-backend until this replacement reaches feature parity.
+Status: **accepted direction; migration not yet complete**. The current
+generated-C test harness remains the compatibility backend until direct LLVM
+lowering has feature parity.
 
-## Motivation
+## Decision
 
-Siox currently has two native lowering paths:
+`process [name] { ... }` is the language's scheduling and sequential-execution
+boundary. Processes run concurrently; statements within one process run in
+source order. Functions and methods are sequential subroutines called from a
+process, but do not create an independently scheduled context.
 
-```text
-entity behavior  -> digital IR -> Inkwell/LLVM -> object
-#[test] behavior -> generated C -> Clang       -> object
-```
+That gives the compiler one representation for executable behavior:
 
-The split was useful for bringing up executable testbenches quickly, but it now
-duplicates expression semantics, aggregate layout, bounds checks, conversions,
-foreign calls, and diagnostics. Adding a language rule requires auditing both
-the LLVM emitter and a growing Rust-to-C string generator. The C source is also
-an implementation artifact that users did not write and that Siox must debug.
+- an explicit source process becomes one process;
+- a bare continuous assignment becomes an implicit reactive process;
+- a conditional concurrent statement becomes an implicit reactive process;
+- a clock is an ordinary process that reads a signal and schedules its next
+  value with `after`;
+- a test stimulus is an ordinary suspending process containing `await`,
+  assertions, file operations, and foreign calls.
 
-Rustc does not translate tests to C. It synthesizes a test harness in its own
-compiler representation, lowers that through the normal backend, and links a
-runtime library. Siox should use the same boundary while retaining the
-different execution models of hardware and procedural test code.
+Hardware and testbench code therefore must not enter separate semantic
+pipelines. They differ only in the operations they contain and which output
+target accepts those operations.
 
-## Attribute and tool boundary
-
-Freeze discovery semantics before introducing another backend. `test` and
-`top` serve different owners and must not share root-selection machinery:
-
-- `test` is the canonical standard-library attribute. `sioxc` resolves that
-  declaration by identity, registers each enabled `#[test] entity` in the
-  native test map, and compiles the map into one filterable executable.
-  A same-named user attribute is ordinary metadata and must not register a
-  test. `#[test]` is shorthand for `#[test = true]`; `#[test = false]` is not
-  registered.
-- `top` is neither a standard-library declaration nor a compiler hook. It is
-  ordinary declared metadata that the compiler preserves for an RTL exporter,
-  Vivado/Quartus project integration, or a Cocotb flow. Those consumers may use
-  it to choose a design-under-test or implementation root. `sioxc` itself must
-  not discover native tests, choose elaboration roots, or change entity
-  semantics from the textual name `top`.
-
-The frontend therefore provides one resolved `TestPlan` containing each test's
-qualified identity, entity `DefId`, bound hierarchy root, and source span. Test
-bodies and layouts remain in the ordinary module, hierarchy, and `Design`
-products and are reached through those stable IDs rather than copied into the
-plan. The compatibility C backend consumes this plan now; software IR lowering
-will consume the same product. Discovery is not reimplemented inside either
-emitter. Other declared attributes, including `top`, remain attached to their
-declarations for future output backends without entering `TestPlan`.
-
-Canonical test identity/value handling, module-qualified attribute ownership,
-exact test-root elaboration, and compatibility-harness consumption are now
-implemented. `top` has also been removed from std, compiler seeds, attribute
-root discovery, and IR semantic exemptions. Ordinary compilation uses
-structural roots or an explicit `--top`, while an integration-declared `top`
-remains ordinary resolved metadata.
-
-## Proposed pipeline
+## Target pipeline
 
 ```mermaid
 flowchart LR
-    SOURCE["resolved + typed Siox"]
-    SOURCE --> TESTPLAN["TestPlan<br/>canonical std tests"]
-    SOURCE --> META["preserved metadata<br/>top + vendor attributes"]
-    TESTPLAN --> ELAB["test hierarchies<br/>shared layouts"]
-    ELAB --> DESIGN["digital Design IR<br/>signals + processes"]
-    ELAB --> TESTIR["software Test IR<br/>procedural test functions"]
-    DESIGN --> LLVM["Inkwell module"]
-    TESTIR --> LLVM
-    RUNTIME["Rust test runtime<br/>scheduler · files · reports · waves"] --> LINK["native linker"]
-    LLVM --> OBJECT["native object"] --> LINK
-    LINK --> EXE["test executable"]
-    META -.-> OUTPUT["future RTL/tool output"]
+    SOURCE["source + std"] --> AST["AST"]
+    AST --> RESOLVED["Resolved"]
+    RESOLVED --> TYPED["Typed"]
+    TYPED --> ELAB["Hierarchy<br/>instances + selected roots"]
+    ELAB --> PIR["Unified Process IR<br/>signals + layouts + process CFGs"]
+    PIR --> VALIDATE["Target validation<br/>simulation / elaboration"]
+    VALIDATE --> OPT["Process + value optimization"]
+    OPT --> BACKEND["Output backend"]
+    BACKEND --> ARTIFACT["object / test executable / RTL / dump"]
 ```
 
-This is not one undifferentiated IR. Digital design behavior remains normalized
-around signals, drivers, event blocks, delta cycles, and synthesizable values.
-Testbench behavior needs a small software control-flow IR with locals, mutable
-storage, calls, branches, loops, early returns, and runtime-owned arrays. Both
-IRs share type/layout metadata and the native value ABI, then contribute
-functions and globals to one LLVM module.
+This is one semantic track. A request may stop early to return an AST, tree, or
+IR dump, and the final output backend naturally depends on the requested
+artifact, but no source construct is re-lowered through a separate testbench
+path.
 
-## Software test IR
+`#[test]` does not introduce an IR branch. The canonical std attribute only
+adds a qualified root and descriptor to the elaborated design. `sioxc --test`
+lowers that same design and its processes, then links the native test runtime.
 
-The minimum representation should include:
+## Attribute and tool boundary
 
-- typed scalar, aggregate, and runtime-array values;
+`test` and `top` have different owners:
+
+- `test` is the canonical standard-library attribute. `sioxc` resolves it by
+  declaration identity and registers every enabled `#[test] entity` in the
+  executable's test descriptor table. `#[test]` means `#[test = true]`, while
+  `#[test = false]` is not registered. A user attribute with the same leaf name
+  is ordinary metadata.
+- `top` is not a std or compiler attribute. Vendor, RTL, project, and Cocotb
+  integrations may declare and interpret it. `sioxc` preserves the metadata
+  but does not use its spelling for test discovery or ordinary root selection.
+
+The existing resolved `TestPlan` remains useful during migration, but only as
+selection metadata: qualified test identity, entity `DefId`, hierarchy root,
+and source span. It must not own a copied behavior tree, layouts, or a separate
+executable program. Once those fields live directly on the elaborated design,
+`TestPlan` may become a lightweight view rather than a retained phase product.
+
+## Unified Process IR
+
+The unified IR should be owned by `ir::Design` and contain:
+
+- concrete signals, ports, initial state, enum/Logic encodings, and recursive
+  source layouts;
+- elaborated instance and root identity;
+- test descriptors for roots selected by the canonical `test` attribute;
+- one process record per explicit or implicit process;
+- process-local values and storage;
+- basic blocks with source spans;
+- explicit scheduler and runtime operations.
+
+A process record needs a stable ID, optional instance-qualified label, owning
+instance, entry block, blocks, local layouts, and its source span. Reactive,
+event-controlled, clock, and suspending behavior are derived properties of the
+process CFG, not different compiler pipelines.
+
+Minimum operations include:
+
+- signal reads: current value, old value, and event state;
+- signal writes with end-of-step/next-state semantics;
+- delayed signal writes (`after`);
 - local allocation, load, store, field/index projection, and checked indexing;
-- basic blocks with branch, conditional branch, return, and loop lowering;
-- calls to generated Siox functions, `extern "C"`, and runtime intrinsics;
-- source spans on instructions that can fail;
-- test descriptors containing the qualified name and entry function;
-- explicit scheduler operations for settle, time advance, and `await`.
+- arithmetic, comparisons, conversions, aggregate construction, and calls;
+- assertions, warnings, printing, file services, random services, and
+  `extern "C"` calls;
+- branches, loops, return, stop, and finish;
+- suspension on time, event, or condition for every `await` form.
 
-The IR should reuse `Design::source_layouts` or a shared extracted layout type.
-It must not rediscover field order, widths, ranges, or enum encodings from AST
-spelling. Checked index and constrained-range operations should use one failure
-ABI in both IRs so hardware and testbench reports cannot diverge again.
+The existing normalized `Driver` and `EventBlock` forms remain valuable as
+analysis or optimized lowering products. They must be derived from Process IR,
+not form a second input path. A backend may specialize a proven reactive
+process into a combinational driver or an event block without losing the
+process ID, label, source order, or source spans.
 
-## Rust runtime boundary
+## Execution semantics
 
-A small Rust crate, compiled as an ordinary static library, should own services
-that are not compiler transformations:
+Every elaborated entity instance contributes its processes to one scheduler:
 
+1. Processes made runnable at time zero execute until completion or suspension.
+2. Reads observe the current process step; local writes take effect
+   immediately, while signal writes are staged according to signal assignment
+   semantics.
+3. End-of-step signal writes are resolved across process driver contexts and
+   committed together.
+4. Changed signals wake inferred reactive/event-sensitive processes and begin
+   another delta cycle.
+5. If the design is quiescent, the time wheel advances to the earliest delayed
+   write or time-based suspension.
+6. A resumed process continues at its saved CFG block and local state.
+
+This covers combinational hardware, registered hardware, derived clocks, and
+test stimulus without switching execution models. Driver resolution remains
+between processes; source-order override remains within one process.
+
+## Target validation
+
+One IR does not mean every operation is legal for every output:
+
+- **Simulation** accepts suspending test processes, assertions, runtime file
+  I/O, random services, and `extern "C"` simulation models.
+- **RTL elaboration/synthesis** accepts the synthesizable subset after constant
+  folding and model selection. It rejects any reachable suspension, runtime
+  file operation, foreign simulation call, dynamic allocation, or other
+  simulation-only operation that remains.
+
+The future compile-time `std::target: std::Target` value (`simulation` or
+`elaboration`) is folded before reachability and target validation. It selects
+code within the same pipeline; it does not select another frontend or IR.
+
+## Runtime and backend boundary
+
+A small linked runtime should own services rather than compiler
+transformations:
+
+- the process ready queue, delta cycles, and time wheel;
 - test filtering, result accounting, and stable output;
-- assertion/warning formatting and source-location reports;
-- file existence and `read<T>` buffers, including UTF-8 decoding;
-- deterministic random state;
-- VCD/FST writers and test-to-test waveform lifetime;
-- scheduler entry points used by `await` and generated clock processes;
+- assertion/warning and source-location reporting;
+- file buffers, UTF-8 decoding, and deterministic random state;
+- VCD/FST writers and waveform lifetime;
 - the first-failure record for bounds, constrained values, I/O, and assertions.
 
-The compiler declares a versioned C-compatible ABI for these runtime calls.
-`extern "C"` remains user interoperability and does not become the internal
-representation of Siox expressions.
-
-## Harness synthesis
-
-For every enabled entity in the resolved `TestPlan`, the compiler emits a
-zero-argument test function and a static descriptor. It then synthesizes one
-entry function that:
-
-1. parses the name filter and waveform paths;
-2. initializes the shared runtime and design state;
-3. invokes each selected descriptor;
-4. prints results and returns a process status.
-
-This mirrors rustc/libtest structurally. A future Cargo-like Siox tool may run
-the executable and choose filters, but `sioxc` remains a compiler that only
-builds it.
+The compiler lowers every process CFG through Inkwell into the same LLVM
+module as signal storage and generated Siox functions. Suspension points become
+explicit process states/resume blocks. The test descriptor table refers to
+ordinary generated process entry points. Linking the runtime and choosing an
+executable entry symbol are packaging steps after code generation, not another
+language-lowering path.
 
 ## Migration plan
 
-1. **Complete:** normalize attribute ownership and test discovery before
-   changing codegen. Module-qualified attributes, canonical std test identity
-   and Boolean handling, exact test-root elaboration, the shared resolved
-   `TestPlan`, compatibility-C consumption, and attribute-free structural root
-   selection are implemented. Vendor `top` metadata remains ordinary.
-2. Extract and document the existing generated harness/runtime ABI and add
-   differential tests for its supported constructs. Include same-name custom
-   attributes, disabled tests, qualified duplicate test leaves, and preserved
-   vendor `top` metadata so the boundary cannot regress.
-3. **In progress:** `test_ir` now has rendering and structural validation, and
-   retains test descriptors, concrete local layouts, assignments, assertions,
-   runtime calls, `await`, and source spans. The compatibility harness consumes
-   its descriptors. Expand deferred `if`/`match`/`for` nodes into CFG blocks
-   before direct LLVM lowering.
-4. Emit test functions through Inkwell and link the Rust runtime, while keeping
-   generated C selectable internally for differential testing.
-5. Add aggregates, checked indexing, strings/file I/O, formatting, foreign
-   calls, clocks, wide values, and waveform output one capability at a time.
-6. Run every corpus test through both backends and require identical pass/fail,
-   messages, time progression, and waveform values.
-7. Make software IR the only backend, remove Clang-as-harness-compiler and the
-   Rust-to-C translator, then update the architecture documents.
+1. **Complete: freeze discovery and process boundaries.** Canonical std test
+   identity, Boolean enablement, exact test-root elaboration, structural default
+   roots, vendor-metadata isolation, explicit `process [name]`, driver-context
+   ownership, and instance-qualified labels are implemented.
+2. **Complete as a temporary scaffold:** the existing `test_ir::Program`
+   validates descriptors, layouts, locals, assignments, runtime operations,
+   `await`, and spans. It proves the information needed for direct lowering,
+   but is no longer the target architecture.
+3. **Define the unified process CFG.** Move reusable value/layout/control nodes
+   from `test_ir` under the main IR. Specify signal versus local assignment,
+   suspension terminators, process activation, source spans, and validation.
+4. **Lower every source process once.** Explicit processes and implicit
+   continuous processes enter the same CFG lowering. Derive current
+   `Driver`/`EventBlock` optimizations from that representation and verify
+   identical delta-cycle behavior.
+5. **Make the compatibility harness consume Process IR.** Remove its direct AST
+   statement/expression translation first. This creates one semantic lowering
+   even while generated C remains available for differential testing.
+6. **Add direct LLVM process lowering and the linked runtime.** Start with
+   straight-line reactive/event processes, then branches/loops, suspension and
+   delayed writes, aggregates and checked indices, strings/file I/O, formatting,
+   foreign calls, clocks, wide values, and waveforms.
+7. **Run both native backends differentially.** Require identical test results,
+   diagnostics, time progression, resolved values, and VCD/FST samples across
+   the full default and bit-packed corpus.
+8. **Remove the compatibility path.** Delete the generated-C translator and
+   standalone `test_ir::Program`; keep one `Design`/Process IR to LLVM path.
+   Clang may remain a native linker driver, but is no longer a source-language
+   translator.
+9. **Add later output consumers after the common validation boundary.** RTL and
+   vendor artifacts consume the same elaborated Process IR after synthesis
+   validation and target-specific normalization.
 
-The compatibility backend should not receive unrelated refactors during this
-migration. Bug fixes needed for current correctness still land there and gain a
-differential test that the replacement must inherit.
-
-## Non-goals
-
-- Merging procedural test code into synthesizable digital IR.
-- Making `sioxc` execute tests or manage projects.
-- Replacing LLVM or the digital scheduler.
-- Removing user `extern "C"` support.
-- Interpreting vendor/tool attributes such as `top` inside native test
-  discovery or software IR lowering.
-- Designing DAP/debugger integration; stable spans and LLVM debug locations are
-  prerequisites, but debugger transport is separate.
+Each migration slice must leave the current compiler usable. Correctness fixes
+to the compatibility backend receive a regression that the unified path must
+inherit; new language semantics are implemented in Process IR rather than
+copied into both backends.
 
 ## Acceptance criteria
 
-Generated C can be removed only when:
+The pipeline is unified only when:
 
-- the full default and bit-packed corpus pass through software IR;
-- native file I/O, UTF-8 strings, arbitrary-width values, extern calls,
-  assertions, filtering, multiple clocks, and VCD/FST have focused coverage;
-- hardware and testbench bounds/range failures share messages and source spans;
-- native discovery recognizes only enabled uses of the canonical std `test`
-  declaration, while same-named custom attributes remain inert;
-- `top` and other vendor metadata survive through the output boundary without
-  affecting sioxc test discovery, elaboration roots, or entity semantics;
-- `cargo check --no-default-features --lib` remains LLVM/runtime independent;
-- `sioxc --test` still produces an executable without running it;
-- no C compiler is needed solely to translate the harness.
+- every explicit and implicit source process has one canonical IR process ID;
+- hardware and testbench expressions, locals, control flow, conversions,
+  bounds checks, and calls are lowered once;
+- the scheduler runs multiple independently suspending processes and clocks;
+- signal resolution and source-order override retain current semantics;
+- the full default and bit-packed corpus pass through Process IR;
+- file I/O, UTF-8 strings, arbitrary-width values, foreign calls, assertions,
+  filtering, multiple clocks, and VCD/FST have focused coverage;
+- hardware and testbench failures share messages and source spans;
+- `test` only contributes descriptors and same-named custom attributes remain
+  inert;
+- vendor attributes remain preserved without changing compiler semantics;
+- frontend-only builds remain LLVM/runtime independent;
+- `sioxc --test` builds but never runs the executable;
+- no generated C is required for any supported native output.
+
+## Non-goals
+
+- Making `sioxc` a project manager or test runner.
+- Treating simulation-only operations as synthesizable.
+- Giving `top` compiler semantics.
+- Removing user `extern "C"` support.
+- Replacing LLVM.
+- Designing DAP transport; stable process IDs, spans, and LLVM debug locations
+  are prerequisites, while debugger protocol support remains a separate tool.

@@ -12,12 +12,16 @@ may use is `diag` — plus the LLVM backend:
   composes the passes, and returns diagnostics, partial phase products, and an
   optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
-- **`siox::testbench` / `siox::test_ir`** — canonical native-test planning and
-  the backend-neutral procedural control product paired with digital IR.
+- **`siox::testbench`** — canonical native-test selection metadata.
+- **`siox::test_ir`** — a temporary procedural-control scaffold being folded
+  into the unified Process IR; it is not a permanent parallel pipeline.
 - **`sioxc`** — the root package's thin command-line adapter.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
+
+The following diagram describes the current transitional implementation. Its
+`test_ir` and generated-C branch is the remaining split to remove.
 
 ```mermaid
 flowchart TB
@@ -99,6 +103,36 @@ build/link time but neither GTKWave nor an installed libfst. Therefore the
 `default-features = false` editor build does not need the native backend or
 harness toolchain.
 
+## Planned unified process pipeline
+
+`process [name] { ... }` supplies the common scheduling boundary that the
+earlier architecture lacked. Explicit hardware processes, implicit reactive
+processes created for concurrent statements, clocks, and test stimulus can all
+lower once into one CFG-capable Process IR. `#[test]` contributes root and
+descriptor metadata; it does not select another IR.
+
+```mermaid
+flowchart LR
+    SOURCE["source + std"] --> AST["syntax<br/>AST"]
+    AST --> RESOLVED["resolve<br/>Resolved"]
+    RESOLVED --> TYPED["types<br/>Typed"]
+    TYPED --> HIERARCHY["elab<br/>Hierarchy + selected roots"]
+    HIERARCHY --> PROCESSIR["ir<br/>Design + process CFGs"]
+    PROCESSIR --> VALIDATE["target validation<br/>simulation / elaboration"]
+    VALIDATE --> OPTIMIZE["process + value optimization"]
+    OPTIMIZE --> OUTPUT["output backend"]
+    OUTPUT --> ARTIFACT["object / test executable / RTL / dump"]
+```
+
+This is one semantic track even though frontend-only requests may stop early
+and the final output format is selectable. Functions and methods are sequential
+subroutines within a caller; only a process creates an independently scheduled
+context. The current `Driver` and `EventBlock` forms become derived
+optimizations of Process IR rather than a separate hardware input path.
+
+The staged migration and acceptance criteria live in
+[the unified process pipeline plan](proposals/testbench-software-ir.md).
+
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do
 not introduce upward or sideways `use`s.
@@ -118,7 +152,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
 | `ir` | IR | Signals, layouts, named driver contexts, drivers, event blocks, initializers, and semantic lints. |
-| `test_ir` | software IR | Validated native-test descriptors, locals, assignments, runtime operations, source spans, and evolving control flow. |
+| `test_ir` | temporary scaffold | Validated procedural nodes being migrated into the main Process IR, after which this module is removed. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Resolution is the owner of nominal identity. Both declaration sites and use
@@ -189,7 +223,11 @@ doc-comment summarising its responsibility and spec acceptance criteria — read
 it first when entering a module. Within the `siox` crate, refer to other modules
 as `crate::<module>`; the binary imports the library as `siox::<module>`.
 
-## Data that flows between stages
+## Data that flows between stages today
+
+This diagram records the current values while the unified-process migration is
+in progress; the planned endpoint above removes `test_ir::Program` and the
+AST-to-C harness branch.
 
 ```mermaid
 flowchart LR
@@ -298,14 +336,14 @@ and then use their normal integer representation/conversion.
   before elaboration), it stays silent rather than emitting a wrong error. The
   strict checks are the ones that are correct today.
 
-- **The IR distinction is central.** Combinational `Driver(target, cond, expr)`
-  and sequential `OnEvent(cond): next(target) = expr` are kept separate; e.g.
-  `clk.rising()` lowers to `Event(clk) && Old(clk)=='0' && Current(clk)=='1'`.
-  Statements inside one source `process` share a driver context and preserve
-  source-order priority; separate processes and bare continuous assignments
-  receive separate contexts and resolve in parallel. Optional process labels
-  survive as instance-qualified IR metadata. Preserve this split when working
-  in `siox::ir`/`siox::llvm`.
+- **Process is the canonical execution boundary.** Statements inside one source
+  `process` preserve source-order priority; separate processes and implicit
+  processes created for concurrent statements resolve and run in parallel.
+  Process IDs, optional instance-qualified labels, activation conditions,
+  locals, staged signal writes, suspension points, and source spans must
+  survive lowering. Today combinational `Driver` and sequential `EventBlock`
+  forms are lowered directly; the unified pipeline derives those optimized
+  forms from Process IR instead of treating them as another semantic path.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
   `across`/`through`, `'ddt`, layout attrs) must produce errors
