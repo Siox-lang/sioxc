@@ -20,21 +20,26 @@ pub(crate) const LLVM_MAX_INT_BITS: u32 = 1 << 23;
 /// Bound each LLVM combinational helper so instruction selection never has to
 /// hold an entire large design in one function. Calls happen only at process
 /// group boundaries, keeping the scheduler overhead small.
-const COMB_PROCESSES_PER_HELPER: usize = 8;
+const COMB_PROCESSES_PER_HELPER: usize = 4;
 
-/// Run LLVM's default `-O2` pipeline over the module before codegen. The
-/// word-based IR is emitted naively — every value is an `i64`, so each `real`
-/// op bitcasts to `f64` and back, comparisons of constants stay unfolded, and
-/// each settle reloads signal globals. `-O2` folds the constants, eliminates
-/// the `i64`↔`f64` bitcast churn, GVNs redundant loads, and DCEs dead work,
-/// leaving the FPU/vector codegen to instruction selection.
+/// Run LLVM's `-O1` pipeline plus one final GVN before codegen. The word-based
+/// IR is emitted naively — each `real` op bitcasts to `f64` and back,
+/// comparisons of constants stay unfolded, and each settle reloads signal
+/// globals. `-O1` performs the needed folding, simplification, and dead-code
+/// removal; the final GVN catches redundant loads exposed by those passes.
+/// The broader `-O2` pipeline added about 28% compile time to the large NVC
+/// sweep without improving its measured settle throughput.
 pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String> {
     // Give the optimizer the target's data layout and triple so it sizes
     // pointers, aligns, and vectorizes for the real machine.
     module.set_triple(&tm.get_triple());
     module.set_data_layout(&tm.get_target_data().get_data_layout());
     module
-        .run_passes("default<O2>", tm, PassBuilderOptions::create())
+        .run_passes(
+            "default<O1>,function(gvn)",
+            tm,
+            PassBuilderOptions::create(),
+        )
         .map_err(|e| format!("LLVM optimization failed: {e}"))
 }
 

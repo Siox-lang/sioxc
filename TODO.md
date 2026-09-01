@@ -225,11 +225,13 @@ Remaining:
   resolved multi-driver expressions can therefore still duplicate. Move
   expressions to a shared/interned DAG or let those helpers allocate temps.
 - ✅ **Bound LLVM backend function size.** Codegen builds the combinational
-  schedule once, partitions it into internal noinline helpers of eight
-  processes, and reuses those helpers at both settle sites. The 312-row NVC
-  sweep's native test build dropped from about 19 minutes / 650 MiB to about
-  61 seconds / 572 MiB, with byte-identical output; smaller functions bound
-  SelectionDAG's per-function working set without adding a language limit.
+  schedule once, partitions it into internal noinline helpers of four
+  processes, and reuses those helpers at both settle sites. A measured
+  `O1`-plus-GVN pipeline retains `O2` settle throughput without its unnecessary
+  generic passes. The 312-row NVC sweep's native test build dropped from about
+  19 minutes / 650 MiB to about 27 seconds / 560 MiB, with byte-identical
+  output; smaller functions bound SelectionDAG's per-function working set
+  without adding a language limit.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
