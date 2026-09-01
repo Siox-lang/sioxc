@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::TargetMachine;
-use inkwell::values::{IntValue, PointerValue};
+use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{BinOp, Design, Expr, IndexSite, ProcessKind, SignalId, UnOp};
@@ -15,6 +16,11 @@ use siox::ir::{BinOp, Design, Expr, IndexSite, ProcessKind, SignalId, UnOp};
 /// LLVM's `IntegerType::MAX_INT_BITS` (from `llvm/IR/DerivedTypes.h`).
 /// This is a backend capability, not a siox language/container limit.
 pub(crate) const LLVM_MAX_INT_BITS: u32 = 1 << 23;
+
+/// Bound each LLVM combinational helper so instruction selection never has to
+/// hold an entire large design in one function. Calls happen only at process
+/// group boundaries, keeping the scheduler overhead small.
+const COMB_PROCESSES_PER_HELPER: usize = 8;
 
 /// Run LLVM's default `-O2` pipeline over the module before codegen. The
 /// word-based IR is emitted naively — every value is an `i64`, so each `real`
@@ -336,7 +342,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         index_value.set_linkage(Linkage::Internal);
         self.state_globals();
         self.accessors();
-        self.settle();
+        let comb_helpers = self.comb_helpers();
+        self.settle(&comb_helpers);
     }
 
     fn range_error_ptr(&self) -> PointerValue<'ctx> {
@@ -950,7 +957,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// so this delta's changes appear as edges in the *next* delta — and only
     /// then, so each edge fires exactly once. A delta cap bounds the loop
     /// against a zero-delay oscillation.
-    fn settle(&self) {
+    fn settle(&self, comb_helpers: &[FunctionValue<'ctx>]) {
         let void = self.ctx.void_type();
         let i64 = self.i64t();
         let i1 = self.ctx.bool_type();
@@ -973,7 +980,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // 1. combinational settle first, so a comb-driven clock (a port
         // connection, `C.clk <- T.clk`) has its new value in `cur` *before* we
         // detect its edge below.
-        self.emit_comb_pass();
+        self.emit_comb_pass(comb_helpers);
         // 2. event[i] = (cur != old): changes since the previous delta. `snap`
         // captures this delta's (post-comb) values for the `old` advance below.
         let mut any = i1.const_zero();
@@ -1033,7 +1040,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
         // 5. re-settle combinational after commits.
         if committed {
-            self.emit_comb_pass();
+            self.emit_comb_pass(comb_helpers);
         }
         // 6. advance old <- snap, so changes made *in* this delta appear as
         // edges in the next one — and only then, so each edge fires once.
@@ -1071,12 +1078,44 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_return(None).unwrap();
     }
 
-    /// One combinational settle pass over the processes in dependency order.
-    fn emit_comb_pass(&self) {
-        let comb = self.comb();
-        for pi in self.topo_order() {
-            self.emit_comb(&comb[pi]);
+    /// Call one combinational settle pass. The process bodies live in helpers
+    /// rather than being duplicated at both call sites in `sx_settle`.
+    fn emit_comb_pass(&self, helpers: &[FunctionValue<'ctx>]) {
+        for &helper in helpers {
+            self.builder.build_call(helper, &[], "").unwrap();
         }
+    }
+
+    /// Emit the topologically ordered combinational schedule once, split into
+    /// bounded functions. `noinline` is intentional: recreating one giant
+    /// `sx_settle` at O2 would restore both the duplicated body and LLVM's
+    /// SelectionDAG memory spike.
+    fn comb_helpers(&self) -> Vec<FunctionValue<'ctx>> {
+        let schedule = self.comb_schedule();
+        let noinline_kind = Attribute::get_named_enum_kind_id("noinline");
+        debug_assert_ne!(noinline_kind, 0, "LLVM provides the noinline attribute");
+        let noinline = self.ctx.create_enum_attribute(noinline_kind, 0);
+        let void = self.ctx.void_type();
+
+        schedule
+            .chunks(COMB_PROCESSES_PER_HELPER)
+            .enumerate()
+            .map(|(chunk_index, processes)| {
+                let helper = self.module.add_function(
+                    &format!("sx_comb_{chunk_index}"),
+                    void.fn_type(&[], false),
+                    Some(Linkage::Internal),
+                );
+                helper.add_attribute(AttributeLoc::Function, noinline);
+                let entry = self.ctx.append_basic_block(helper, "entry");
+                self.builder.position_at_end(entry);
+                for process in processes {
+                    self.emit_comb(process);
+                }
+                self.builder.build_return(None).unwrap();
+                helper
+            })
+            .collect()
     }
 
     /// Emit one assignment value before destination truncation and latch a
@@ -1334,46 +1373,32 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.store("event", target, ev);
     }
 
-    /// Combinational processes (target + source-ordered driver indices).
-    fn comb(&self) -> Vec<(SignalId, Vec<usize>)> {
-        self.design
+    /// Build the combinational schedule once. Each entry is a target plus its
+    /// source-ordered driver indices; the result itself is in dependency order.
+    fn comb_schedule(&self) -> Vec<(SignalId, Vec<usize>)> {
+        let comb: Vec<_> = self
+            .design
             .processes()
             .into_iter()
-            .filter_map(|p| match p.kind {
-                ProcessKind::Comb { target, drivers } => Some((target, drivers)),
+            .filter_map(|process| match process.kind {
+                ProcessKind::Comb { target, drivers } => Some((target, drivers, process.reads)),
                 ProcessKind::Event { .. } => None,
             })
-            .collect()
-    }
-
-    /// Topologically order combinational processes so each runs after the
-    /// processes producing the signals it reads (single-pass settle for
-    /// acyclic logic). A cyclic remainder is appended in index order.
-    fn topo_order(&self) -> Vec<usize> {
-        let procs = self.design.processes();
-        let comb: Vec<_> = procs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| matches!(p.kind, ProcessKind::Comb { .. }))
             .collect();
         // map: signal -> the comb process (local index) that writes it.
         let mut writer: HashMap<SignalId, usize> = HashMap::new();
-        let mut local: Vec<usize> = Vec::new(); // local index -> comb() index
-        for (li, (_, p)) in comb.iter().enumerate() {
-            if let ProcessKind::Comb { target, .. } = &p.kind {
-                writer.insert(*target, li);
-            }
-            local.push(li);
+        for (index, (target, _, _)) in comb.iter().enumerate() {
+            writer.insert(*target, index);
         }
         let m = comb.len();
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); m];
         let mut indeg = vec![0usize; m];
-        for (li, (_, p)) in comb.iter().enumerate() {
-            for r in &p.reads {
+        for (index, (_, _, reads)) in comb.iter().enumerate() {
+            for r in reads {
                 if let Some(&w) = writer.get(r) {
-                    if w != li {
-                        deps[w].push(li);
-                        indeg[li] += 1;
+                    if w != index {
+                        deps[w].push(index);
+                        indeg[index] += 1;
                     }
                 }
             }
@@ -1400,7 +1425,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 order.push(i);
             }
         }
+        let mut processes: Vec<_> = comb
+            .into_iter()
+            .map(|(target, drivers, _)| Some((target, drivers)))
+            .collect();
         order
+            .into_iter()
+            .map(|index| processes[index].take().expect("schedule index is unique"))
+            .collect()
     }
 
     /// Resolve a combinational target: fold its drivers in source order
@@ -1976,7 +2008,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 #[cfg(all(test, not(feature = "bitpack")))]
 mod tests {
     use super::*;
-    use siox::ir::{Design, Driver, Signal};
+    use siox::ir::{Design, Driver, EventBlock, NextUpdate, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
         Signal {
@@ -2037,6 +2069,9 @@ mod tests {
             "state GEPs repeated the anonymous layout:\n{ll}"
         );
         assert!(ll.contains("define void @sx_settle()"), "{ll}");
+        assert!(ll.contains("define internal void @sx_comb_0()"), "{ll}");
+        assert!(ll.contains("call void @sx_comb_0()"), "{ll}");
+        assert!(ll.contains("noinline"), "{ll}");
         assert!(ll.contains("define void @sx_set(i32"), "{ll}");
         assert!(ll.contains("define i64 @sx_read(i32"), "{ll}");
         assert!(ll.contains("add i64"), "{ll}");
@@ -2044,6 +2079,65 @@ mod tests {
             ll.contains("and i64") && ll.contains("255"),
             "mask to width 8:\n{ll}"
         );
+    }
+
+    #[test]
+    fn bounds_and_reuses_combinational_helpers() {
+        let process_count = COMB_PROCESSES_PER_HELPER + 1;
+        let mut signals = vec![sig("E.input", 8)];
+        let mut drivers = Vec::new();
+        for index in 0..process_count {
+            let target = SignalId((index + 1) as u32);
+            signals.push(sig(&format!("E.y{index}"), 8));
+            drivers.push(Driver {
+                span: None,
+                ctx: 0,
+                target,
+                cond: None,
+                expr: Expr::Current(SignalId(0)),
+                meta: None,
+            });
+        }
+        // Any event update makes settle emit its post-commit combinational
+        // pass, so both sites must call the same helpers rather than owning
+        // duplicate process bodies.
+        let event_blocks = vec![EventBlock {
+            condition: Expr::Const(1),
+            updates: vec![NextUpdate {
+                target: SignalId(0),
+                cond: None,
+                expr: Expr::Current(SignalId(0)),
+                meta: None,
+                span: None,
+            }],
+            ctx: 1,
+        }];
+        let design = Design {
+            signals,
+            drivers,
+            event_blocks,
+            ..Default::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        assert_eq!(
+            ll.matches("define internal void @sx_comb_").count(),
+            2,
+            "{process_count} processes should form helpers of \
+             {COMB_PROCESSES_PER_HELPER} and 1:\n{ll}"
+        );
+        assert!(
+            ll.contains("noinline"),
+            "helpers may not be re-inlined:\n{ll}"
+        );
+        let settle = ll.split("@sx_settle()").nth(1).expect("settle body");
+        for helper in ["sx_comb_0", "sx_comb_1"] {
+            assert_eq!(
+                settle.matches(&format!("call void @{helper}()")).count(),
+                2,
+                "both settle sites should reuse {helper}:\n{settle}"
+            );
+        }
     }
 
     #[test]
@@ -2366,7 +2460,7 @@ mod tests {
         };
         let ll = emit_module_ir(&design).unwrap();
         // In the settle body, the store to b's slot precedes the store to y's.
-        let body = ll.split("@sx_settle()").nth(1).unwrap();
+        let body = ll.split("@sx_comb_0()").nth(1).unwrap();
         // Struct-GEP field indices: `i32 0, i32 <id>`.
         let store_b = body.find("i32 0, i32 1").expect("b store"); // field 1 = b
         let store_y = body.find("i32 0, i32 3").expect("y store"); // field 3 = y

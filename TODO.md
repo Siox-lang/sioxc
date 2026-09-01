@@ -219,14 +219,17 @@ Remaining:
   312-row NVC comparison sweep builds at about 650 MiB instead of exhausting
   8-14 GiB scopes and retains 312/312 behavioral parity. A regression checks
   the width-scaling shape, and VCD/FST hide the materialized operands.
-- 🟡 **Close residual metavalue and LLVM scaling paths.** Resolution folding
+- 🟡 **Close the residual metavalue scaling paths.** Resolution folding
   and two partial-write helpers currently retain the old inline-only path
   because they cannot append signals while holding `&self`; deeply nested
   resolved multi-driver expressions can therefore still duplicate. Move
   expressions to a shared/interned DAG or let those helpers allocate temps.
-  Separately partition or compact very large generated functions: after the
-  memory fix, the 312-row sweep still spends about 19 minutes in LLVM's
-  SelectionDAG combiner on one function.
+- ✅ **Bound LLVM backend function size.** Codegen builds the combinational
+  schedule once, partitions it into internal noinline helpers of eight
+  processes, and reuses those helpers at both settle sites. The 312-row NVC
+  sweep's native test build dropped from about 19 minutes / 650 MiB to about
+  61 seconds / 572 MiB, with byte-identical output; smaller functions bound
+  SelectionDAG's per-function working set without adding a language limit.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
