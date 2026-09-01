@@ -231,7 +231,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .into()
                 })
                 .collect();
-            ctx.struct_type(&fields, true)
+            // A literal struct is printed in full at every GEP. Large designs
+            // consequently repeated the complete signal layout hundreds of
+            // thousands of times in textual LLVM IR, making an 18 KiB source
+            // produce more than 500 MiB of IR and temporarily consume over a
+            // GiB while LLVM formatted it. A named type has identical layout
+            // and code generation, but each use is only `%sx.state`.
+            let state = ctx.opaque_struct_type("sx.state");
+            assert!(state.set_body(&fields, true), "fresh state type is opaque");
+            state
         };
         #[cfg(feature = "bitpack")]
         let (slots, words) = pack_layout(design);
@@ -2019,9 +2027,14 @@ mod tests {
         let ll = emit_module_ir(&design).unwrap();
         // State layout, accessors, settle, and the add+mask are present. The
         // state is a width-packed struct: three 8-bit signals -> three `i8`s.
+        assert!(ll.contains("%sx.state = type <{ i8, i8, i8 }>"), "{ll}");
         assert!(
-            ll.contains("@cur = internal global <{ i8, i8, i8 }>"),
+            ll.contains("@cur = internal global %sx.state zeroinitializer"),
             "{ll}"
+        );
+        assert!(
+            !ll.contains("getelementptr inbounds <{"),
+            "state GEPs repeated the anonymous layout:\n{ll}"
         );
         assert!(ll.contains("define void @sx_settle()"), "{ll}");
         assert!(ll.contains("define void @sx_set(i32"), "{ll}");
@@ -2087,7 +2100,7 @@ mod tests {
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
-            ll.contains("@cur = internal global <{ i65 }>"),
+            ll.contains("%sx.state = type <{ i65 }>"),
             "65-bit storage was rounded to an unrelated width:\n{ll}"
         );
     }
