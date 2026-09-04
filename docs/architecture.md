@@ -398,7 +398,10 @@ the canonical `std::logic::LogicEncoding` impl over every enum variant and
 evaluates scalar logical `Operator` impls over every operand pair. The resulting
 value-bit, binary/metavalue, high-impedance, X01, and operator tables live in
 `Design::logic_encodings`; IR and native output consume them instead of testing
-enum positions or duplicating `std_logic_1164` tables.
+enum positions or duplicating `std_logic_1164` tables. Final IR normalization
+interns expanded operator tables in `Design::lookup_tables`; expressions refer
+to them by stable id, and LLVM emits one compact constant array rather than
+reconstructing a wide packed-integer shift for every lookup.
 
 When a per-element metavalue operation would copy a non-leaf operand once per
 element, normalization materializes that operand as an internal combinational

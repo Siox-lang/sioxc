@@ -463,6 +463,11 @@ pub struct Design {
     /// engines consume them without knowing any logic symbols or discriminant
     /// ordering.
     pub logic_encodings: HashMap<String, LogicEncoding>,
+    /// Compact constant lookup tables referenced by [`Expr::TableLookup`].
+    /// Lowering interns these after all std-defined logic operations have been
+    /// expanded, so a table is stored once even when thousands of expressions
+    /// use it. Backends may choose their native constant-storage representation.
+    pub lookup_tables: Vec<LookupTable>,
     /// Directory that relative `read<T>`/`exists` paths resolve
     /// against — the design's source directory. Empty means the current working
     /// directory (the default; a bare `Design` reads CWD-relative).
@@ -1214,6 +1219,21 @@ pub struct NextUpdate {
 /// counterpart) overrides this via `enum_variants`.
 pub const DEFAULT_LOGIC_TYPE: &str = "ULogic";
 
+/// Stable index into [`Design::lookup_tables`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LookupTableId(pub usize);
+
+/// One constant expression lookup table.
+///
+/// Values remain logical integers rather than backend storage bytes. This
+/// keeps the IR independent of an ABI and lets a backend select the smallest
+/// convenient integer storage type for `element_width`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LookupTable {
+    pub element_width: u32,
+    pub values: Vec<u64>,
+}
+
 /// IR expression. `::event`/`::old` are first-class so the scheduler can read
 /// them directly; `clk.rising()` lowers into `Event`/`Old`/`Current`.
 #[derive(Clone, Debug)]
@@ -1261,6 +1281,13 @@ pub enum Expr {
         base: Box<Expr>,
         hi: u32,
         lo: u32,
+    },
+    /// Constant table lookup. An index outside `values` evaluates to zero,
+    /// matching the overshift semantics of the packed expression this
+    /// replaces. Tables are std-derived data owned by the finished design.
+    TableLookup {
+        table: LookupTableId,
+        index: Box<Expr>,
     },
     /// A runtime index together with its declared-domain predicate. The value
     /// remains an ordinary expression; simulation backends use `valid` to
@@ -1486,6 +1513,7 @@ pub fn lower_in(
     // in std's default logic type, so the IR the backends consume carries only
     // `Const`s — no raw chars, no compiler-side value table.
     l.normalize_logic_literals();
+    compact_lookup_tables(&mut l.out);
     l.out
 }
 
@@ -10482,6 +10510,7 @@ impl<'a> Lowering<'a> {
             Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
                 self.has_non_integer_signal(rhs)
             }
+            Expr::TableLookup { index, .. } => self.has_non_integer_signal(index),
             Expr::CheckedIndex { index, .. } => self.has_non_integer_signal(index),
             Expr::Binary { lhs, rhs, .. } => {
                 self.has_non_integer_signal(lhs) || self.has_non_integer_signal(rhs)
@@ -12432,6 +12461,7 @@ pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
             read_set(rhs, out);
         }
         Expr::Slice { base, .. } => read_set(base, out),
+        Expr::TableLookup { index, .. } => read_set(index, out),
         // `valid` is synthesized entirely from `index`, so walking both would
         // duplicate every sensitivity leaf.
         Expr::CheckedIndex { index, .. } => read_set(index, out),
@@ -12465,6 +12495,7 @@ fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
             resolve_logic_expr(rhs, lut);
         }
         Expr::Slice { base, .. } => resolve_logic_expr(base, lut),
+        Expr::TableLookup { index, .. } => resolve_logic_expr(index, lut),
         Expr::CheckedIndex { index, valid, .. } => {
             resolve_logic_expr(index, lut);
             resolve_logic_expr(valid, lut);
@@ -12623,6 +12654,7 @@ fn reconstruct_expr(
             reconstruct_expr(rhs, meta_of, elems, encodings);
         }
         Expr::Slice { base, .. } => reconstruct_expr(base, meta_of, elems, encodings),
+        Expr::TableLookup { index, .. } => reconstruct_expr(index, meta_of, elems, encodings),
         Expr::Select { cond, then, els } => {
             reconstruct_expr(cond, meta_of, elems, encodings);
             reconstruct_expr(then, meta_of, elems, encodings);
@@ -12821,6 +12853,216 @@ fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>) -> Expr {
     }
 }
 
+/// Replace packed-constant dynamic shifts with shared constant lookup tables.
+///
+/// Std operator bodies deliberately lower through ordinary expressions. That
+/// keeps their semantics visible to the frontend, but a logic truth table used
+/// to become a 300+-bit integer shifted at runtime at every call site. LLVM can
+/// eventually rediscover that this is a lookup, but only after constructing
+/// and optimizing a very large amount of wide-integer IR. This final lowering
+/// pass recognizes the representation-independent expression shape and gives
+/// every backend the compact operation directly.
+fn compact_lookup_tables(design: &mut Design) {
+    let mut tables = std::mem::take(&mut design.lookup_tables);
+    let mut intern: HashMap<LookupTable, LookupTableId> = tables
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(id, table)| (table, LookupTableId(id)))
+        .collect();
+
+    {
+        let mut compact = |expr: &mut Expr| {
+            let owned = std::mem::replace(expr, Expr::Unknown);
+            *expr = compact_lookup_expr(owned, &mut tables, &mut intern);
+        };
+        for driver in &mut design.drivers {
+            if let Some(cond) = &mut driver.cond {
+                compact(cond);
+            }
+            compact(&mut driver.expr);
+            if let Some(meta) = &mut driver.meta {
+                compact(meta);
+            }
+        }
+        for block in &mut design.event_blocks {
+            compact(&mut block.condition);
+            for update in &mut block.updates {
+                if let Some(cond) = &mut update.cond {
+                    compact(cond);
+                }
+                compact(&mut update.expr);
+                if let Some(meta) = &mut update.meta {
+                    compact(meta);
+                }
+            }
+        }
+    }
+    design.lookup_tables = tables;
+}
+
+fn compact_lookup_expr(
+    expr: Expr,
+    tables: &mut Vec<LookupTable>,
+    intern: &mut HashMap<LookupTable, LookupTableId>,
+) -> Expr {
+    let recurse = |expr, tables: &mut Vec<_>, intern: &mut HashMap<_, _>| {
+        Box::new(compact_lookup_expr(expr, tables, intern))
+    };
+    let expr = match expr {
+        Expr::MetaCmp {
+            ne,
+            operands,
+            inner,
+        } => Expr::MetaCmp {
+            ne,
+            operands: operands
+                .into_iter()
+                .map(|operand| compact_lookup_expr(operand, tables, intern))
+                .collect(),
+            inner: recurse(*inner, tables, intern),
+        },
+        Expr::Unary { op, rhs } => Expr::Unary {
+            op,
+            rhs: recurse(*rhs, tables, intern),
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op,
+            lhs: recurse(*lhs, tables, intern),
+            rhs: recurse(*rhs, tables, intern),
+        },
+        Expr::Slice { base, hi, lo } => Expr::Slice {
+            base: recurse(*base, tables, intern),
+            hi,
+            lo,
+        },
+        Expr::TableLookup { table, index } => Expr::TableLookup {
+            table,
+            index: recurse(*index, tables, intern),
+        },
+        Expr::CheckedIndex {
+            index,
+            valid,
+            left,
+            right,
+            span,
+        } => Expr::CheckedIndex {
+            index: recurse(*index, tables, intern),
+            valid: recurse(*valid, tables, intern),
+            left,
+            right,
+            span,
+        },
+        Expr::Select { cond, then, els } => Expr::Select {
+            cond: recurse(*cond, tables, intern),
+            then: recurse(*then, tables, intern),
+            els: recurse(*els, tables, intern),
+        },
+        Expr::CCall {
+            name,
+            args,
+            f64_args,
+            integer_args,
+            f64_ret,
+            integer_ret,
+        } => Expr::CCall {
+            name,
+            args: args
+                .into_iter()
+                .map(|argument| compact_lookup_expr(argument, tables, intern))
+                .collect(),
+            f64_args,
+            integer_args,
+            f64_ret,
+            integer_ret,
+        },
+        leaf => leaf,
+    };
+
+    let Some((table, index)) = packed_lookup(&expr) else {
+        return expr;
+    };
+    let id = match intern.get(&table).copied() {
+        Some(id) => id,
+        None => {
+            let id = LookupTableId(tables.len());
+            tables.push(table.clone());
+            intern.insert(table, id);
+            id
+        }
+    };
+    Expr::TableLookup {
+        table: id,
+        index: Box::new(index.clone()),
+    }
+}
+
+/// Recognize `(packed >> (index * element_width))[element_width-1..0]`.
+fn packed_lookup(expr: &Expr) -> Option<(LookupTable, &Expr)> {
+    let Expr::Slice { base, hi, lo: 0 } = expr else {
+        return None;
+    };
+    let element_width = hi.checked_add(1)?;
+    if element_width > 64 {
+        return None;
+    }
+    let Expr::Binary {
+        op: BinOp::Shr,
+        lhs: packed,
+        rhs,
+    } = base.as_ref()
+    else {
+        return None;
+    };
+    let Expr::Binary {
+        op: BinOp::Mul,
+        lhs: index,
+        rhs: stride,
+    } = rhs.as_ref()
+    else {
+        return None;
+    };
+    if !matches!(stride.as_ref(), Expr::Const(width) if *width == u64::from(element_width)) {
+        return None;
+    }
+    let words: &[u64] = match packed.as_ref() {
+        Expr::Const(word) => std::slice::from_ref(word),
+        Expr::WideConst(words) => words,
+        _ => return None,
+    };
+    let cells = words
+        .len()
+        .saturating_mul(64)
+        .div_ceil(element_width as usize);
+    let mask = if element_width == 64 {
+        u64::MAX
+    } else {
+        (1u64 << element_width) - 1
+    };
+    let mut values = (0..cells)
+        .map(|cell| {
+            let bit = cell * element_width as usize;
+            let word = bit / 64;
+            let offset = bit % 64;
+            let mut value = words[word] >> offset;
+            if offset + element_width as usize > 64 {
+                value |= words.get(word + 1).copied().unwrap_or(0) << (64 - offset);
+            }
+            value & mask
+        })
+        .collect::<Vec<_>>();
+    while values.len() > 1 && values.last() == Some(&0) {
+        values.pop();
+    }
+    Some((
+        LookupTable {
+            element_width,
+            values,
+        },
+        index,
+    ))
+}
+
 /// One operand metavalue lowering wants to hoist into its own signal.
 struct MetaTemp {
     id: u32,
@@ -12987,7 +13229,7 @@ fn dedup(v: &mut Vec<SignalId>) {
 }
 
 /// Validation walk over an expression (see [`Design::validate`]).
-fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
+fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>, ctx: &str) {
     match e {
         // Every one is rewritten once companions are known; one surviving means
         // that pass did not reach it, and the backends have no meaning for it.
@@ -12996,7 +13238,7 @@ fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
         )),
         Expr::CCall { args, .. } => {
             for a in args {
-                check_expr(a, n, issues, ctx);
+                check_expr(a, n, tables, issues, ctx);
             }
         }
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => {
@@ -13005,25 +13247,35 @@ fn check_expr(e: &Expr, n: u32, issues: &mut Vec<String>, ctx: &str) {
             }
         }
         Expr::Unknown => issues.push(format!("{ctx}: contains an Unknown (unlowered) expression")),
-        Expr::Unary { rhs, .. } => check_expr(rhs, n, issues, ctx),
+        Expr::Unary { rhs, .. } => check_expr(rhs, n, tables, issues, ctx),
         Expr::Binary { lhs, rhs, .. } => {
-            check_expr(lhs, n, issues, ctx);
-            check_expr(rhs, n, issues, ctx);
+            check_expr(lhs, n, tables, issues, ctx);
+            check_expr(rhs, n, tables, issues, ctx);
         }
         Expr::Slice { base, hi, lo } => {
             if lo > hi {
                 issues.push(format!("{ctx}: slice bounds lo {lo} > hi {hi}"));
             }
-            check_expr(base, n, issues, ctx);
+            check_expr(base, n, tables, issues, ctx);
+        }
+        Expr::TableLookup { table, index } => {
+            if table.0 >= tables.len() {
+                issues.push(format!(
+                    "{ctx}: lookup table id {} out of range (n={})",
+                    table.0,
+                    tables.len()
+                ));
+            }
+            check_expr(index, n, tables, issues, ctx);
         }
         Expr::CheckedIndex { index, valid, .. } => {
-            check_expr(index, n, issues, ctx);
-            check_expr(valid, n, issues, ctx);
+            check_expr(index, n, tables, issues, ctx);
+            check_expr(valid, n, tables, issues, ctx);
         }
         Expr::Select { cond, then, els } => {
-            check_expr(cond, n, issues, ctx);
-            check_expr(then, n, issues, ctx);
-            check_expr(els, n, issues, ctx);
+            check_expr(cond, n, tables, issues, ctx);
+            check_expr(then, n, tables, issues, ctx);
+            check_expr(els, n, tables, issues, ctx);
         }
         Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) => {}
     }
@@ -13147,6 +13399,7 @@ impl Design {
                 Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
                     collect(rhs, sites, seen)
                 }
+                Expr::TableLookup { index, .. } => collect(index, sites, seen),
                 Expr::Binary { lhs, rhs, .. } => {
                     collect(lhs, sites, seen);
                     collect(rhs, sites, seen);
@@ -13208,6 +13461,30 @@ impl Design {
     pub fn validate(&self) -> Vec<String> {
         let n = self.signals.len() as u32;
         let mut issues = Vec::new();
+
+        for (id, table) in self.lookup_tables.iter().enumerate() {
+            if table.values.is_empty() {
+                issues.push(format!("lookup table {id} is empty"));
+            }
+            if !(1..=64).contains(&table.element_width) {
+                issues.push(format!(
+                    "lookup table {id} has invalid element width {}",
+                    table.element_width
+                ));
+            } else {
+                let mask = if table.element_width == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << table.element_width) - 1
+                };
+                if table.values.iter().any(|value| value & !mask != 0) {
+                    issues.push(format!(
+                        "lookup table {id} contains a value wider than {} bits",
+                        table.element_width
+                    ));
+                }
+            }
+        }
 
         // Signals codegen actually touches (driven or read). An unreferenced
         // width-0 signal — e.g. an instance-binding `let` placeholder — is
@@ -13294,9 +13571,15 @@ impl Design {
                 ));
             }
             if let Some(c) = &d.cond {
-                check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
+                check_expr(
+                    c,
+                    n,
+                    &self.lookup_tables,
+                    &mut issues,
+                    &format!("{ctx} (condition)"),
+                );
             }
-            check_expr(&d.expr, n, &mut issues, &ctx);
+            check_expr(&d.expr, n, &self.lookup_tables, &mut issues, &ctx);
         }
         for (bi, eb) in self.event_blocks.iter().enumerate() {
             // An event block has no single target, so name it by what it
@@ -13308,6 +13591,7 @@ impl Design {
             check_expr(
                 &eb.condition,
                 n,
+                &self.lookup_tables,
                 &mut issues,
                 &format!("{block} (condition)"),
             );
@@ -13320,9 +13604,15 @@ impl Design {
                     ));
                 }
                 if let Some(c) = &u.cond {
-                    check_expr(c, n, &mut issues, &format!("{ctx} (condition)"));
+                    check_expr(
+                        c,
+                        n,
+                        &self.lookup_tables,
+                        &mut issues,
+                        &format!("{ctx} (condition)"),
+                    );
                 }
-                check_expr(&u.expr, n, &mut issues, &ctx);
+                check_expr(&u.expr, n, &self.lookup_tables, &mut issues, &ctx);
             }
         }
         issues.extend(self.process_ir.validate(n));
@@ -13408,6 +13698,18 @@ impl Design {
     /// Render normalized IR (backs `siox ir`).
     pub fn to_ir_string(&self) -> String {
         let mut out = String::new();
+        for (id, table) in self.lookup_tables.iter().enumerate() {
+            let values = table
+                .values
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "lookup#{id} : {} = [{values}]\n",
+                table.element_width
+            ));
+        }
         for s in &self.signals {
             let w = if s.width == 0 {
                 "?".to_string()
@@ -13554,6 +13856,9 @@ fn render(e: &Expr, d: &Design) -> String {
             format!("{} {} {}", paren(lhs, d), bin_sym(*op), paren(rhs, d))
         }
         Expr::Slice { base, hi, lo } => format!("{}[{hi}..{lo}]", paren(base, d)),
+        Expr::TableLookup { table, index } => {
+            format!("lookup#{}[{}]", table.0, render(index, d))
+        }
         Expr::CheckedIndex {
             index, left, right, ..
         } => format!("checked({}, {left}..{right})", render(index, d)),
@@ -17530,6 +17835,7 @@ mod tests {
             enum_syms: HashMap::new(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -17560,6 +17866,50 @@ mod tests {
                 .all(|i| i.contains("`s`") || i.contains("signal id")),
             "every issue names a signal: {issues:?}"
         );
+    }
+
+    #[test]
+    fn packed_logic_tables_are_interned_as_compact_lookups() {
+        let table = HashMap::from([((0, 0), 1), ((0, 1), 0), ((1, 0), 2), ((1, 1), 3)]);
+        let lookup = |left, right| {
+            logic_binary_table_result(Expr::Current(left), Expr::Current(right), &table)
+        };
+        let mut design = Design {
+            drivers: vec![
+                Driver {
+                    target: SignalId(2),
+                    cond: None,
+                    expr: lookup(SignalId(0), SignalId(1)),
+                    meta: None,
+                    ctx: 0,
+                    span: None,
+                },
+                Driver {
+                    target: SignalId(3),
+                    cond: None,
+                    expr: lookup(SignalId(1), SignalId(0)),
+                    meta: None,
+                    ctx: 0,
+                    span: None,
+                },
+            ],
+            ..Design::default()
+        };
+
+        compact_lookup_tables(&mut design);
+
+        assert_eq!(design.lookup_tables.len(), 1);
+        assert_eq!(design.lookup_tables[0].element_width, 4);
+        assert_eq!(design.lookup_tables[0].values, vec![1, 0, 2, 3]);
+        for driver in &design.drivers {
+            assert!(matches!(
+                driver.expr,
+                Expr::TableLookup {
+                    table: LookupTableId(0),
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

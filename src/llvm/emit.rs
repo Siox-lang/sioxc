@@ -72,6 +72,7 @@ mod bitpack_tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -117,6 +118,18 @@ pub(crate) fn build_module<'ctx>(
             "signal `{}` (id {id}) is {width} bits wide, but this LLVM backend supports integer \
              values up to {LLVM_MAX_INT_BITS} bits",
             signal.path
+        ));
+    }
+    if let Some((id, table)) = design
+        .lookup_tables
+        .iter()
+        .enumerate()
+        .find(|(_, table)| table.values.len() > u32::MAX as usize)
+    {
+        return Err(format!(
+            "lookup table {id} has {} elements, but this LLVM backend supports at most {}",
+            table.values.len(),
+            u32::MAX
         ));
     }
     let cg = Codegen::new(ctx, design);
@@ -345,6 +358,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i64_type(), None, "index_value");
         index_value.set_initializer(&self.ctx.i64_type().const_zero());
         index_value.set_linkage(Linkage::Internal);
+        self.lookup_globals();
         self.state_globals();
         self.accessors();
         let comb_helpers = self.comb_helpers();
@@ -392,6 +406,31 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .get_global("index_value")
             .expect("index value global")
             .as_pointer_value()
+    }
+
+    fn lookup_storage_width(element_width: u32) -> u32 {
+        element_width.next_power_of_two().max(8)
+    }
+
+    /// Materialize each design-owned constant table once. Logic tables use
+    /// byte storage; the same IR node remains valid for wider future tables by
+    /// selecting the next native integer width up to the IR's 64-bit value.
+    fn lookup_globals(&self) {
+        for (id, table) in self.design.lookup_tables.iter().enumerate() {
+            let element = self.value_ty(Self::lookup_storage_width(table.element_width));
+            let values = table
+                .values
+                .iter()
+                .map(|value| element.const_int(*value, false))
+                .collect::<Vec<_>>();
+            let array = element.const_array(&values);
+            let global = self
+                .module
+                .add_global(array.get_type(), None, &format!("sx.lookup.{id}"));
+            global.set_initializer(&array);
+            global.set_constant(true);
+            global.set_linkage(Linkage::Internal);
+        }
     }
 
     // --- state ------------------------------------------------------------
@@ -1239,6 +1278,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => {
                 self.record_index_checks(rhs, active)
             }
+            Expr::TableLookup { index, .. } => self.record_index_checks(index, active),
             // Lowering combines an enclosing source `if` with a dynamic-write
             // target predicate using these nodes. Preserve that source branch
             // boundary for checks even though value emission uses bitwise
@@ -1547,6 +1587,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 }
             }
             Expr::Slice { hi, lo, .. } => hi - lo + 1,
+            Expr::TableLookup { table, .. } => self.design.lookup_tables[table.0].element_width,
             Expr::CheckedIndex { index, .. } => self.expr_width(index),
             Expr::Select { then, els, .. } => self.expr_width(then).max(self.expr_width(els)),
             Expr::Unknown => 1,
@@ -1641,6 +1682,60 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .unwrap();
                 let sliced = self.mask(sh, hi - lo + 1);
                 self.mask(sliced, width)
+            }
+            Expr::TableLookup { table, index } => {
+                let metadata = &self.design.lookup_tables[table.0];
+                let count = metadata.values.len() as u64;
+                let count_width = (64 - count.leading_zeros()).max(1);
+                let index_width = self.expr_width(index).max(count_width);
+                let index = self.emit_at(index, index_width);
+                let in_range = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::ULT,
+                        index,
+                        self.c_at(count, index_width),
+                        "lut.in_range",
+                    )
+                    .unwrap();
+                // Select a known-valid address before the GEP. Truncating an
+                // arbitrary-width index first could wrap an out-of-range value
+                // back into the table; indexing with it directly would make an
+                // inbounds GEP poison even when the result is later discarded.
+                let safe_index = self
+                    .builder
+                    .build_select(in_range, index, index.get_type().const_zero(), "lut.safe")
+                    .unwrap()
+                    .into_int_value();
+                let safe_index = self.fit(safe_index, self.ctx.i64_type());
+                let storage_width = Self::lookup_storage_width(metadata.element_width);
+                let storage = self.value_ty(storage_width);
+                let array = storage.array_type(metadata.values.len() as u32);
+                let global = self
+                    .module
+                    .get_global(&format!("sx.lookup.{}", table.0))
+                    .expect("lookup global was emitted");
+                let pointer = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(
+                            array,
+                            global.as_pointer_value(),
+                            &[self.ctx.i64_type().const_zero(), safe_index],
+                            "lut.ptr",
+                        )
+                        .unwrap()
+                };
+                let loaded = self
+                    .builder
+                    .build_load(storage, pointer, "lut.value")
+                    .unwrap()
+                    .into_int_value();
+                let value = self
+                    .builder
+                    .build_select(in_range, loaded, storage.const_zero(), "lut.result")
+                    .unwrap()
+                    .into_int_value();
+                self.mask(value, width)
             }
             // Bounds are recorded by `record_index_checks` with the caller's
             // active control-flow predicate. Value emission stays pure so an
@@ -2013,7 +2108,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 #[cfg(all(test, not(feature = "bitpack")))]
 mod tests {
     use super::*;
-    use siox::ir::{Design, Driver, EventBlock, NextUpdate, Signal};
+    use siox::ir::{Design, Driver, EventBlock, LookupTable, LookupTableId, NextUpdate, Signal};
 
     fn sig(path: &str, width: u32) -> Signal {
         Signal {
@@ -2054,6 +2149,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2083,6 +2179,42 @@ mod tests {
         assert!(
             ll.contains("and i64") && ll.contains("255"),
             "mask to width 8:\n{ll}"
+        );
+    }
+
+    #[test]
+    fn emits_compact_constant_lookup_table() {
+        let design = Design {
+            signals: vec![sig("E.index", 8), sig("E.value", 4)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::TableLookup {
+                    table: LookupTableId(0),
+                    index: Box::new(Expr::Current(SignalId(0))),
+                },
+                meta: None,
+            }],
+            lookup_tables: vec![LookupTable {
+                element_width: 4,
+                values: vec![3, 5, 7],
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        assert!(
+            ll.contains("@sx.lookup.0 = internal constant [3 x i8]"),
+            "{ll}"
+        );
+        assert!(ll.contains("getelementptr inbounds [3 x i8]"), "{ll}");
+        assert!(ll.contains("load i8"), "{ll}");
+        assert!(ll.contains("icmp ult i8"), "bounds check missing:\n{ll}");
+        assert!(
+            !ll.contains("lshr i322"),
+            "lookup became the old packed wide shift:\n{ll}"
         );
     }
 
@@ -2165,6 +2297,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2190,6 +2323,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2217,6 +2351,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2249,6 +2384,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2308,6 +2444,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2350,6 +2487,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2396,6 +2534,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -2456,6 +2595,7 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
+            lookup_tables: Default::default(),
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),

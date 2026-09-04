@@ -131,7 +131,11 @@ scheduler samples.
 
 The per-element logical tables are also elaborated from the ordinary std
 `Operator` bodies and retained in `Design`, so neither IR nor a simulator
-backend carries a second Rust/C copy of the library truth tables.
+backend carries a second Rust/C copy of the library truth tables. Final IR
+normalization interns identical tables in `Design::lookup_tables` and replaces
+the expanded packed-constant shift with `Expr::TableLookup`. LLVM consequently
+emits one compact constant byte array per distinct logic table rather than a
+dynamic hundreds-of-bits shift at every use.
 
 Per-element lowering does not inline a complex operand into every table lookup.
 It materializes the operand once as an internal combinational signal and reads

@@ -232,6 +232,14 @@ Remaining:
   19 minutes / 650 MiB to about 27 seconds / 560 MiB, with byte-identical
   output; smaller functions bound SelectionDAG's per-function working set
   without adding a language limit.
+- ✅ **Compact std-derived logic lookups before LLVM.** Final IR normalization
+  recognizes the ordinary packed lookup expression produced from std operator
+  bodies, interns each distinct table in `Design`, and replaces every use with
+  a stable `TableLookup` node. LLVM emits compact constant arrays with checked
+  indexing instead of thousands of dynamic `i322` shifts. On the 312-row NVC
+  sweep, raw object generation dropped from about 20.0 seconds to 7.7 seconds,
+  the full native test build from 26.9 seconds to 14.4 seconds, and 10k settle
+  calls from roughly 0.29 seconds to 0.06 seconds, with byte-identical output.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
@@ -253,8 +261,9 @@ Current baseline:
 - ✅ Default storage is width-sized. The optional `bitpack` layout packs small
   values, reserves consecutive words for wide values, and stores event flags in
   a dedicated one-bit-per-signal bitset.
-- ✅ Native target optimization uses LLVM’s `default<O2>` pipeline and optional
-  host SIMD features.
+- ✅ Native target optimization uses LLVM’s `default<O1>` pipeline plus a final
+  GVN pass and optional host SIMD features; this measured configuration retains
+  the broader `O2` pipeline's simulation throughput at lower compile cost.
 - ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
   events, and the unbounded low-word-first ABI are covered.
 - ✅ LLVM obtains each flattened signal width through its persisted

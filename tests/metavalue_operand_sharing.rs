@@ -74,3 +74,23 @@ fn nested_metavalue_operands_are_hoisted_not_duplicated() {
          a nested metavalue operand is being copied per element again"
     );
 }
+
+#[test]
+fn std_logic_tables_finish_as_interned_lookups() {
+    let design = lower_nested(8);
+    assert!(
+        !design.lookup_tables.is_empty(),
+        "std-derived logic tables were not interned in the finished design"
+    );
+
+    let ir = design.to_ir_string();
+    assert!(
+        ir.lines().any(|line| line.starts_with("lookup#")),
+        "the normalized IR did not define its shared lookup tables:\n{ir}"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.starts_with("driver ") && line.contains("lookup#")),
+        "the normalized driver expressions did not reference a shared lookup:\n{ir}"
+    );
+}
