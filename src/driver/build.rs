@@ -29,6 +29,9 @@ const LIBFST_FASTLZ_C: &str = include_str!("../../third_party/libfst/src/fastlz.
 const LIBFST_FASTLZ_H: &str = include_str!("../../third_party/libfst/src/fastlz.h");
 const LIBFST_LZ4_C: &str = include_str!("../../third_party/libfst/src/lz4.c");
 const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/src/lz4.h");
+const LIBFST_API_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fstapi.o"));
+const LIBFST_FASTLZ_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fastlz.o"));
+const LIBFST_LZ4_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lz4.o"));
 
 /// `file:line:col` for a source span, or `None` when the span has no file.
 ///
@@ -987,14 +990,32 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     }
     std::fs::write(&csrc, &prog).map_err(|e| e.to_string())?;
     for (name, contents) in [
-        ("fstapi.c", LIBFST_API_C),
         ("fstapi.h", LIBFST_API_H),
-        ("fastlz.c", LIBFST_FASTLZ_C),
         ("fastlz.h", LIBFST_FASTLZ_H),
-        ("lz4.c", LIBFST_LZ4_C),
         ("lz4.h", LIBFST_LZ4_H),
     ] {
         std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
+    }
+    let runtime_objects = [
+        ("fstapi.o", LIBFST_API_O),
+        ("fastlz.o", LIBFST_FASTLZ_O),
+        ("lz4.o", LIBFST_LZ4_O),
+    ];
+    let precompiled_runtime = runtime_objects
+        .iter()
+        .all(|(_, contents)| !contents.is_empty());
+    if precompiled_runtime {
+        for (name, contents) in runtime_objects {
+            std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
+        }
+    } else {
+        for (name, contents) in [
+            ("fstapi.c", LIBFST_API_C),
+            ("fastlz.c", LIBFST_FASTLZ_C),
+            ("lz4.c", LIBFST_LZ4_C),
+        ] {
+            std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
+        }
     }
     if std::env::var("SIOX_DEBUG_C").is_ok() {
         let _ = std::fs::write("/tmp/siox_debug.c", &prog);
@@ -1005,13 +1026,19 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
     // throughput matters for long runs.
     let optimization = if debug { "-O0" } else { "-O2" };
     let mut clang = Command::new("clang");
-    clang
-        .arg(&csrc)
-        .arg(&obj)
-        .arg(tmp.join("fstapi.c"))
-        .arg(tmp.join("fastlz.c"))
-        .arg(tmp.join("lz4.c"))
-        .args([optimization, "-lm", "-lz"]);
+    clang.arg(&csrc).arg(&obj);
+    if precompiled_runtime {
+        clang
+            .arg(tmp.join("fstapi.o"))
+            .arg(tmp.join("fastlz.o"))
+            .arg(tmp.join("lz4.o"));
+    } else {
+        clang
+            .arg(tmp.join("fstapi.c"))
+            .arg(tmp.join("fastlz.c"))
+            .arg(tmp.join("lz4.c"));
+    }
+    clang.args([optimization, "-lm", "-lz"]);
     if debug {
         // `-grecord-command-line` puts the flags in DWARF, so a binary can be
         // asked how it was built rather than taken on trust -- which is also

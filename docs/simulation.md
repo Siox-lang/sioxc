@@ -46,8 +46,10 @@ executable; running and filtering it are separate operations.
 Signal values cross the harness ABI in low-word-first 64-bit words, so values
 such as `unsigned[128]` retain their per-type width. LLVM is the permanent
 backend, so building `sioxc` needs LLVM 22. Emitting a native test executable
-also needs Clang and zlib to compile its generated harness and embedded FST
-writer.
+also needs Clang and zlib: Clang compiles its generated harness and links the
+FST runtime objects that were precompiled and embedded with `sioxc`. If those
+host objects could not be prepared when the compiler was built, native test
+generation falls back to compiling the pinned runtime sources at that point.
 
 ## Simulation time and the event wheel
 
@@ -202,6 +204,7 @@ workhorse and provides the reference FST implementation.
 
 **Notes:** the timescale is `1fs`, so a `10ns` period shows as `#10000000`
 between edges; only signals that actually change are re-emitted, keeping traces
-compact. FST is written through the pinned MIT-licensed libfst sources embedded
-in `sioxc`; the resulting test executable needs ordinary zlib but does not need
-GTKWave, `vcd2fst`, or a separately installed libfst.
+compact. FST is written through the pinned MIT-licensed libfst runtime embedded
+in `sioxc` as precompiled host objects (with a source fallback); the resulting
+test executable needs ordinary zlib but does not need GTKWave, `vcd2fst`, or a
+separately installed libfst.

@@ -53,6 +53,7 @@ flowchart TB
 
     DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
+    RUNTIME["embedded precompiled libfst runtime<br/>source fallback"] --> LINK
     SY -->|AST compatibility bodies| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
@@ -102,8 +103,11 @@ from the design but still translates test statements from AST. The harness
 contains the stimulus, scheduler, assertions, and reporting; it
 links with the native design object when `Emit::TestExecutable` is requested.
 The harness contains the VCD writer, and the resulting executable incorporates
-the pinned libfst sources, so this artifact also needs Clang and zlib at
-build/link time but neither GTKWave nor an installed libfst. Therefore the
+the pinned libfst runtime. Its design-independent C sources are compiled once
+with `sioxc` and embedded as host objects; a test build compiles only its
+design-specific harness before linking those objects and zlib. A source fallback
+is retained when host precompilation is unavailable. This artifact therefore
+needs Clang and zlib but neither GTKWave nor an installed libfst. Therefore the
 `sioxc` feature set needs an LLVM toolchain; a
 `default-features = false` editor build does not need the native backend or
 harness toolchain.
@@ -258,6 +262,7 @@ flowchart LR
     BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
     BACKEND -->|object or test requested| OBJECT["native object"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness"]
+    RUNTIME["embedded precompiled libfst runtime"] --> LINK
     MODULES -->|AST compatibility bodies| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK

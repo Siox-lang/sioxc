@@ -315,6 +315,12 @@ Current baseline:
   clocks, arbitrary-width stimulus, symbolic values, and deterministic
   reporting. User locals are injectively mangled outside the harness namespace,
   and output filenames use native OS strings.
+- ✅ Design-independent libfst, LZ4, and FastLZ sources are compiled once with
+  the compiler and embedded as native objects; each test build only compiles
+  its design-specific harness and links those objects. If host precompilation
+  is unavailable, the compiler retains the source path as a fallback. On the
+  312-row NVC sweep this reduced the complete test build from 8.86 seconds /
+  179 MB to 4.84 seconds / 147 MB with byte-identical output.
 - 🟡 Native process scheduling supports one foreground stimulus process plus
   any number of canonical self-toggle clock processes. Clocks start at time
   zero regardless of declaration order, and additional foreground processes

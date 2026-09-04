@@ -113,8 +113,9 @@ A bare `sioxc <file>` compiles the sole uninstantiated entity to a native
 object (like `rustc foo.rs`); multiple structural roots require
 `--top <qualified-entity>`. LLVM 22 is the selected native backend. Creating a native
 `#[test]` executable additionally invokes Clang on the generated C harness and
-links zlib for its embedded FST writer. A frontend-only API/LSP build with
-`default-features = false` needs neither LLVM nor these native-output tools.
+links the compiler's prebuilt FST runtime plus zlib. A frontend-only API/LSP
+build with `default-features = false` needs neither LLVM nor these native-output
+tools.
 
 | Command | Does |
 | ------- | ---- |
