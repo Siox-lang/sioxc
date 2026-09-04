@@ -226,8 +226,8 @@ Remaining:
   expressions to a shared/interned DAG or let those helpers allocate temps.
 - ✅ **Bound LLVM backend function size.** Codegen builds the combinational
   schedule once, partitions it into internal noinline helpers of four
-  processes, and reuses those helpers at both settle sites. A measured
-  `O1`-plus-GVN pipeline retains `O2` settle throughput without its unnecessary
+  processes, and reuses those helpers at both settle sites. LLVM's measured
+  `default<O1>` pipeline retains `O2` settle throughput without its unnecessary
   generic passes. The 312-row NVC sweep's native test build dropped from about
   19 minutes / 650 MiB to about 27 seconds / 560 MiB, with byte-identical
   output; smaller functions bound SelectionDAG's per-function working set
@@ -240,6 +240,16 @@ Remaining:
   sweep, raw object generation dropped from about 20.0 seconds to 7.7 seconds,
   the full native test build from 26.9 seconds to 14.4 seconds, and 10k settle
   calls from roughly 0.29 seconds to 0.06 seconds, with byte-identical output.
+- ✅ **Eliminate redundant straight-line LLVM values before optimization.**
+  Each single-block combinational helper now reuses dominating state loads,
+  direct slices, comparisons, integer operations, selects, and casts. Writes
+  invalidate the affected signal and foreign calls invalidate observable
+  state. Index-diagnostic lowering first rejects expressions with no checked
+  access, avoiding dead branch-activity trees in std-generated select chains.
+  On the same 312-row sweep, raw LLVM fell from 110.5 MB to 4.0 MB and its
+  emitter peak from 809 MB to 79 MB; the full test build fell from 14.4 s /
+  589 MB to 8.3 s / 146 MB, while 10k settles improved from 58.6 ms to
+  51.8 ms and output remained byte-identical.
 - 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
   leaves today. Any future aggregate IR value must calculate
   `count × element_layout` recursively, with checked arithmetic and cycle
@@ -261,9 +271,10 @@ Current baseline:
 - ✅ Default storage is width-sized. The optional `bitpack` layout packs small
   values, reserves consecutive words for wide values, and stores event flags in
   a dedicated one-bit-per-signal bitset.
-- ✅ Native target optimization uses LLVM’s `default<O1>` pipeline plus a final
-  GVN pass and optional host SIMD features; this measured configuration retains
-  the broader `O2` pipeline's simulation throughput at lower compile cost.
+- ✅ Native target optimization uses LLVM’s `default<O1>` pipeline and optional
+  host SIMD features. Dominance-safe emitter-local value reuse makes a final
+  GVN pass redundant; the measured configuration retains the broader `O2`
+  pipeline's simulation throughput at lower compile cost.
 - ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
   events, and the unbounded low-word-first ABI are covered.
 - ✅ LLVM obtains each flattened signal width through its persisted

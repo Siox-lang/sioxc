@@ -1,5 +1,6 @@
 //! The inkwell emitter.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use inkwell::attributes::{Attribute, AttributeLoc};
@@ -8,7 +9,7 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::TargetMachine;
-use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::values::{AsValueRef, FunctionValue, IntValue, PointerValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{BinOp, Design, Expr, IndexSite, ProcessKind, SignalId, UnOp};
@@ -22,11 +23,104 @@ pub(crate) const LLVM_MAX_INT_BITS: u32 = 1 << 23;
 /// group boundaries, keeping the scheduler overhead small.
 const COMB_PROCESSES_PER_HELPER: usize = 4;
 
-/// Run LLVM's `-O1` pipeline plus one final GVN before codegen. The word-based
-/// IR is emitted naively — each `real` op bitcasts to `f64` and back,
-/// comparisons of constants stay unfolded, and each settle reloads signal
-/// globals. `-O1` performs the needed folding, simplification, and dead-code
-/// removal; the final GVN catches redundant loads exposed by those passes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CachedIntOp {
+    Add,
+    Sub,
+    Mul,
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CachedCast {
+    ZeroExtend,
+    SignExtend,
+    Truncate,
+}
+
+impl CachedIntOp {
+    /// Whether the operation's operands may be swapped, so a cached result can
+    /// be reused for either argument order.
+    fn commutative(self) -> bool {
+        !matches!(self, Self::Sub)
+    }
+}
+
+fn has_checked_index(expr: &Expr) -> bool {
+    match expr {
+        Expr::CheckedIndex { .. } => true,
+        Expr::MetaCmp {
+            operands, inner, ..
+        } => operands.iter().any(has_checked_index) || has_checked_index(inner),
+        Expr::Unary { rhs, .. } | Expr::Slice { base: rhs, .. } => has_checked_index(rhs),
+        Expr::Binary { lhs, rhs, .. } => has_checked_index(lhs) || has_checked_index(rhs),
+        Expr::TableLookup { index, .. } => has_checked_index(index),
+        Expr::Select { cond, then, els } => {
+            has_checked_index(cond) || has_checked_index(then) || has_checked_index(els)
+        }
+        Expr::CCall { args, .. } => args.iter().any(has_checked_index),
+        Expr::Const(_)
+        | Expr::WideConst(_)
+        | Expr::Real(_)
+        | Expr::Logic(_)
+        | Expr::Current(_)
+        | Expr::Old(_)
+        | Expr::Event(_)
+        | Expr::Unknown => false,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct StateSliceKey {
+    array: u8,
+    signal: SignalId,
+    hi: u32,
+    lo: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ComparisonKey {
+    predicate: u8,
+    lhs: usize,
+    rhs: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct OperationKey {
+    opcode: CachedIntOp,
+    lhs: usize,
+    rhs: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct SelectKey {
+    condition: usize,
+    then_value: usize,
+    else_value: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct CastKey {
+    opcode: CachedCast,
+    value: usize,
+    width: u32,
+}
+
+#[derive(Default)]
+struct CombValueCache<'ctx> {
+    loads: HashMap<(u8, SignalId), IntValue<'ctx>>,
+    slices: HashMap<StateSliceKey, IntValue<'ctx>>,
+    comparisons: HashMap<ComparisonKey, IntValue<'ctx>>,
+    operations: HashMap<OperationKey, IntValue<'ctx>>,
+    selects: HashMap<SelectKey, IntValue<'ctx>>,
+    casts: HashMap<CastKey, IntValue<'ctx>>,
+}
+
+/// Run LLVM's `-O1` pipeline before codegen. The emitter shares dominating
+/// combinational values directly; `-O1` handles the remaining folding,
+/// simplification, and dead-code removal without a redundant final GVN pass.
 /// The broader `-O2` pipeline added about 28% compile time to the large NVC
 /// sweep without improving its measured settle throughput.
 pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String> {
@@ -35,11 +129,7 @@ pub fn optimize_module(module: &Module, tm: &TargetMachine) -> Result<(), String
     module.set_triple(&tm.get_triple());
     module.set_data_layout(&tm.get_target_data().get_data_layout());
     module
-        .run_passes(
-            "default<O1>,function(gvn)",
-            tm,
-            PassBuilderOptions::create(),
-        )
+        .run_passes("default<O1>", tm, PassBuilderOptions::create())
         .map_err(|e| format!("LLVM optimization failed: {e}"))
 }
 
@@ -157,6 +247,15 @@ struct Codegen<'ctx, 'd> {
     range_sites: HashMap<siox::diag::Span, u32>,
     /// Checked index domain -> one-based runtime diagnostic id.
     index_sites: HashMap<IndexSite, u32>,
+    /// Values computed in the current straight-line combinational helper.
+    ///
+    /// A helper has one basic block, so remembered state loads, direct slices,
+    /// comparisons, and pure integer operations dominate every later use.
+    /// Stores invalidate their semantic signal and a foreign call clears the
+    /// cache. It stays disabled everywhere else: accessors and `sx_settle`
+    /// contain control flow where blindly reusing an SSA value would either
+    /// cross a non-dominating block or observe stale simulation state.
+    comb_values: RefCell<Option<CombValueCache<'ctx>>>,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
@@ -182,7 +281,7 @@ fn storage_int(ctx: &Context, width: u32) -> inkwell::types::IntType<'_> {
         0..=8 => ctx.i8_type(),
         9..=16 => ctx.i16_type(),
         17..=32 => ctx.i32_type(),
-        0..=64 => ctx.i64_type(),
+        33..=64 => ctx.i64_type(),
         // Past one machine word LLVM still has a native integer: it legalizes
         // `iN` into word-sized pieces with the right carries and shifts, so a
         // multi-word signal needs no hand-written word juggling here. Keep the
@@ -285,6 +384,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .enumerate()
                 .map(|(i, site)| (site, i as u32 + 1))
                 .collect(),
+            comb_values: RefCell::new(None),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -452,6 +552,208 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.module.get_global(name).unwrap().as_pointer_value()
     }
 
+    /// A compact key for a state array, used in the load and slice caches.
+    fn state_array_key(arr: &str) -> u8 {
+        match arr {
+            "cur" => 0,
+            "old" => 1,
+            "event" => 2,
+            "snap" => 3,
+            _ => unreachable!("unknown state array `{arr}`"),
+        }
+    }
+
+    /// A previously loaded value for this signal, if one is still valid.
+    fn cached_load(&self, arr: &str, id: SignalId) -> Option<IntValue<'ctx>> {
+        self.comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.loads.get(&(Self::state_array_key(arr), id)).copied())
+    }
+
+    /// Record a loaded value so a later read in the same straight-line region
+    /// can reuse it.
+    fn remember_load(&self, arr: &str, id: SignalId, value: IntValue<'ctx>) {
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.loads.insert((Self::state_array_key(arr), id), value);
+        }
+    }
+
+    /// Drop the cached load for a signal, because it has just been written.
+    fn invalidate_load(&self, arr: &str, id: SignalId) {
+        let array = Self::state_array_key(arr);
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.loads.remove(&(array, id));
+            cache
+                .slices
+                .retain(|key, _| key.array != array || key.signal != id);
+        }
+    }
+
+    /// Drop every cached value after a foreign call that may mutate state.
+    fn clear_comb_cache(&self) {
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.loads.clear();
+            cache.slices.clear();
+            cache.comparisons.clear();
+            cache.operations.clear();
+            cache.selects.clear();
+            cache.casts.clear();
+        }
+    }
+
+    /// A previously computed state slice, if one is still valid.
+    fn cached_slice(&self, key: StateSliceKey) -> Option<IntValue<'ctx>> {
+        self.comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.slices.get(&key).copied())
+    }
+
+    /// Record a computed state slice for reuse.
+    fn remember_slice(&self, key: StateSliceKey, value: IntValue<'ctx>) {
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.slices.insert(key, value);
+        }
+    }
+
+    /// Emit an integer comparison, reusing an identical earlier one.
+    fn int_compare(
+        &self,
+        predicate: IntPredicate,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        let key = ComparisonKey {
+            predicate: predicate as u8,
+            lhs: lhs.as_value_ref() as usize,
+            rhs: rhs.as_value_ref() as usize,
+        };
+        if let Some(value) = self
+            .comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.comparisons.get(&key).copied())
+        {
+            return value;
+        }
+        let value = self
+            .builder
+            .build_int_compare(predicate, lhs, rhs, name)
+            .unwrap();
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.comparisons.insert(key, value);
+        }
+        value
+    }
+
+    /// Emit a pure integer operation, reusing an identical earlier one.
+    /// Commutative operands are normalized so either order hits the same entry.
+    fn int_binary(
+        &self,
+        opcode: CachedIntOp,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        let mut operands = (lhs.as_value_ref() as usize, rhs.as_value_ref() as usize);
+        if opcode.commutative() && operands.0 > operands.1 {
+            operands = (operands.1, operands.0);
+        }
+        let key = OperationKey {
+            opcode,
+            lhs: operands.0,
+            rhs: operands.1,
+        };
+        if let Some(value) = self
+            .comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.operations.get(&key).copied())
+        {
+            return value;
+        }
+        let value = match opcode {
+            CachedIntOp::Add => self.builder.build_int_add(lhs, rhs, name),
+            CachedIntOp::Sub => self.builder.build_int_sub(lhs, rhs, name),
+            CachedIntOp::Mul => self.builder.build_int_mul(lhs, rhs, name),
+            CachedIntOp::And => self.builder.build_and(lhs, rhs, name),
+            CachedIntOp::Or => self.builder.build_or(lhs, rhs, name),
+            CachedIntOp::Xor => self.builder.build_xor(lhs, rhs, name),
+        }
+        .unwrap();
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.operations.insert(key, value);
+        }
+        value
+    }
+
+    /// Emit a select, reusing an identical earlier one.
+    fn int_select(
+        &self,
+        condition: IntValue<'ctx>,
+        then_value: IntValue<'ctx>,
+        else_value: IntValue<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        let key = SelectKey {
+            condition: condition.as_value_ref() as usize,
+            then_value: then_value.as_value_ref() as usize,
+            else_value: else_value.as_value_ref() as usize,
+        };
+        if let Some(value) = self
+            .comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.selects.get(&key).copied())
+        {
+            return value;
+        }
+        let value = self
+            .builder
+            .build_select(condition, then_value, else_value, name)
+            .unwrap()
+            .into_int_value();
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.selects.insert(key, value);
+        }
+        value
+    }
+
+    /// Emit an integer cast, reusing an identical earlier one.
+    fn int_cast(
+        &self,
+        opcode: CachedCast,
+        value: IntValue<'ctx>,
+        ty: inkwell::types::IntType<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        let key = CastKey {
+            opcode,
+            value: value.as_value_ref() as usize,
+            width: ty.get_bit_width(),
+        };
+        if let Some(value) = self
+            .comb_values
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.casts.get(&key).copied())
+        {
+            return value;
+        }
+        let cast = match opcode {
+            CachedCast::ZeroExtend => self.builder.build_int_z_extend(value, ty, name),
+            CachedCast::SignExtend => self.builder.build_int_s_extend(value, ty, name),
+            CachedCast::Truncate => self.builder.build_int_truncate(value, ty, name),
+        }
+        .unwrap();
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.casts.insert(key, cast);
+        }
+        cast
+    }
+
     /// Pointer to signal `id`'s field in `@<arr>`.
     #[cfg(not(feature = "bitpack"))]
     fn slot_ptr(&self, arr: &str, id: SignalId) -> PointerValue<'ctx> {
@@ -464,13 +766,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// paths use.
     #[cfg(not(feature = "bitpack"))]
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
+        if let Some(value) = self.cached_load(arr, id) {
+            return value;
+        }
         let ty = self.slot_ty(id);
         let v = self
             .builder
             .build_load(ty, self.slot_ptr(arr, id), "v")
             .unwrap()
             .into_int_value();
-        self.fit(v, self.value_ty(self.signal_width(id)))
+        let value = self.fit(v, self.value_ty(self.signal_width(id)));
+        self.remember_load(arr, id, value);
+        value
     }
 
     /// Zero-extend or truncate `v` to `ty`. Storage, compute and ABI widths all
@@ -479,8 +786,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn fit(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
         let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
         match from.cmp(&to) {
-            std::cmp::Ordering::Less => self.builder.build_int_z_extend(v, ty, "zx").unwrap(),
-            std::cmp::Ordering::Greater => self.builder.build_int_truncate(v, ty, "tr").unwrap(),
+            std::cmp::Ordering::Less => self.int_cast(CachedCast::ZeroExtend, v, ty, "zx"),
+            std::cmp::Ordering::Greater => self.int_cast(CachedCast::Truncate, v, ty, "tr"),
             std::cmp::Ordering::Equal => v,
         }
     }
@@ -491,8 +798,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     fn fit_signed(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
         let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
         match from.cmp(&to) {
-            std::cmp::Ordering::Less => self.builder.build_int_s_extend(v, ty, "sx").unwrap(),
-            std::cmp::Ordering::Greater => self.builder.build_int_truncate(v, ty, "tr").unwrap(),
+            std::cmp::Ordering::Less => self.int_cast(CachedCast::SignExtend, v, ty, "sx"),
+            std::cmp::Ordering::Greater => self.int_cast(CachedCast::Truncate, v, ty, "tr"),
             std::cmp::Ordering::Equal => v,
         }
     }
@@ -501,6 +808,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// `@<arr>` (truncating; writers already mask to the signal width).
     #[cfg(not(feature = "bitpack"))]
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
+        self.invalidate_load(arr, id);
         let ty = self.slot_ty(id);
         let v = self.fit(v, ty);
         self.builder.build_store(self.slot_ptr(arr, id), v).unwrap();
@@ -549,6 +857,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Load signal `id`: read its word, shift its field down, mask to width.
     #[cfg(feature = "bitpack")]
     fn load(&self, arr: &str, id: SignalId) -> IntValue<'ctx> {
+        if let Some(value) = self.cached_load(arr, id) {
+            return value;
+        }
         let (word, shift, w) = if arr == "event" {
             (id.0 / 64, id.0 % 64, 1)
         } else {
@@ -575,6 +886,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 };
                 value = self.builder.build_or(value, part, "join").unwrap();
             }
+            self.remember_load(arr, id, value);
             return value;
         }
         let word_val = self
@@ -593,13 +905,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .builder
             .build_and(shifted, i64.const_int(width_mask(w), false), "fld")
             .unwrap();
-        self.fit(field, self.value_ty(w))
+        let value = self.fit(field, self.value_ty(w));
+        self.remember_load(arr, id, value);
+        value
     }
 
     /// Store signal `id`: read-modify-write its word — clear the field bits,
     /// OR in the masked, shifted value.
     #[cfg(feature = "bitpack")]
     fn store(&self, arr: &str, id: SignalId, v: IntValue<'ctx>) {
+        self.invalidate_load(arr, id);
         let (word, shift, w) = if arr == "event" {
             (id.0 / 64, id.0 % 64, 1)
         } else {
@@ -1153,9 +1468,13 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 helper.add_attribute(AttributeLoc::Function, noinline);
                 let entry = self.ctx.append_basic_block(helper, "entry");
                 self.builder.position_at_end(entry);
+                let previous = self.comb_values.replace(Some(CombValueCache::default()));
+                debug_assert!(previous.is_none());
                 for process in processes {
                     self.emit_comb(process);
                 }
+                let emitted = self.comb_values.replace(None);
+                debug_assert!(emitted.is_some());
                 self.builder.build_return(None).unwrap();
                 helper
             })
@@ -1193,6 +1512,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// active predicate is narrowed for each arm instead of treating every
     /// syntactically present access as executed.
     fn record_index_checks(&self, expr: &Expr, active: Option<IntValue<'ctx>>) {
+        // Std-defined conversions and logic operators contain deeply nested
+        // `select`s but normally no dynamic index. Walking those expressions
+        // used to emit a complete, dead branch-activity tree for a diagnostic
+        // that could never fire. The cheap IR scan avoids creating any LLVM
+        // values for such subtrees; checked-index expressions are uncommon and
+        // small enough that recursive calls can repeat the predicate safely.
+        if !has_checked_index(expr) {
+            return;
+        }
         let combine = |cx: &Self, outer: Option<IntValue<'ctx>>, inner: IntValue<'ctx>, name| {
             outer
                 .map(|outer| cx.builder.build_and(outer, inner, name).unwrap())
@@ -1597,9 +1925,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Evaluate a condition to an `i1` (nonzero).
     fn as_i1(&self, e: &Expr) -> IntValue<'ctx> {
         let v = self.emit(e);
-        self.builder
-            .build_int_compare(IntPredicate::NE, v, v.get_type().const_zero(), "nz")
-            .unwrap()
+        if v.get_type().get_bit_width() == 1 {
+            return v;
+        }
+        self.int_compare(IntPredicate::NE, v, v.get_type().const_zero(), "nz")
     }
 
     /// zext an `i1` back to the i64 word domain.
@@ -1629,15 +1958,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let a = self.emit_at(rhs, width);
                 match op {
                     UnOp::Not => {
-                        let z = self
-                            .builder
-                            .build_int_compare(
-                                IntPredicate::EQ,
-                                a,
-                                a.get_type().const_zero(),
-                                "not",
-                            )
-                            .unwrap();
+                        let z =
+                            self.int_compare(IntPredicate::EQ, a, a.get_type().const_zero(), "not");
                         self.fit(z, self.value_ty(width))
                     }
                     UnOp::Neg => self.builder.build_int_neg(a, "neg").unwrap(),
@@ -1674,13 +1996,44 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.mask(value, width)
             }
             Expr::Slice { base, hi, lo } => {
+                let direct = match base.as_ref() {
+                    Expr::Current(id) => Some(StateSliceKey {
+                        array: Self::state_array_key("cur"),
+                        signal: *id,
+                        hi: *hi,
+                        lo: *lo,
+                    }),
+                    Expr::Old(id) => Some(StateSliceKey {
+                        array: Self::state_array_key("old"),
+                        signal: *id,
+                        hi: *hi,
+                        lo: *lo,
+                    }),
+                    Expr::Event(id) => Some(StateSliceKey {
+                        array: Self::state_array_key("event"),
+                        signal: *id,
+                        hi: *hi,
+                        lo: *lo,
+                    }),
+                    _ => None,
+                };
+                if let Some(value) = direct.and_then(|key| self.cached_slice(key)) {
+                    return self.mask(value, width);
+                }
                 let base_width = self.expr_width(base).max(*hi + 1);
                 let b = self.emit_at(base, base_width);
-                let sh = self
-                    .builder
-                    .build_right_shift(b, self.c_at(*lo as u64, base_width), false, "sh")
-                    .unwrap();
-                let sliced = self.mask(sh, hi - lo + 1);
+                let sh = if *lo == 0 {
+                    b
+                } else {
+                    self.builder
+                        .build_right_shift(b, self.c_at(*lo as u64, base_width), false, "sh")
+                        .unwrap()
+                };
+                let slice_width = hi - lo + 1;
+                let sliced = self.mask(sh, slice_width);
+                if let Some(key) = direct {
+                    self.remember_slice(key, sliced);
+                }
                 self.mask(sliced, width)
             }
             Expr::TableLookup { table, index } => {
@@ -1689,24 +2042,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let count_width = (64 - count.leading_zeros()).max(1);
                 let index_width = self.expr_width(index).max(count_width);
                 let index = self.emit_at(index, index_width);
-                let in_range = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::ULT,
-                        index,
-                        self.c_at(count, index_width),
-                        "lut.in_range",
-                    )
-                    .unwrap();
+                let in_range = self.int_compare(
+                    IntPredicate::ULT,
+                    index,
+                    self.c_at(count, index_width),
+                    "lut.in_range",
+                );
                 // Select a known-valid address before the GEP. Truncating an
                 // arbitrary-width index first could wrap an out-of-range value
                 // back into the table; indexing with it directly would make an
                 // inbounds GEP poison even when the result is later discarded.
-                let safe_index = self
-                    .builder
-                    .build_select(in_range, index, index.get_type().const_zero(), "lut.safe")
-                    .unwrap()
-                    .into_int_value();
+                let safe_index =
+                    self.int_select(in_range, index, index.get_type().const_zero(), "lut.safe");
                 let safe_index = self.fit(safe_index, self.ctx.i64_type());
                 let storage_width = Self::lookup_storage_width(metadata.element_width);
                 let storage = self.value_ty(storage_width);
@@ -1730,11 +2077,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .build_load(storage, pointer, "lut.value")
                     .unwrap()
                     .into_int_value();
-                let value = self
-                    .builder
-                    .build_select(in_range, loaded, storage.const_zero(), "lut.result")
-                    .unwrap()
-                    .into_int_value();
+                let value = self.int_select(in_range, loaded, storage.const_zero(), "lut.result");
                 self.mask(value, width)
             }
             // Bounds are recorded by `record_index_checks` with the caller's
@@ -1745,10 +2088,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let c = self.as_i1(cond);
                 let t = self.emit_at(then, width);
                 let e = self.emit_at(els, width);
-                self.builder
-                    .build_select(c, t, e, "sel")
-                    .unwrap()
-                    .into_int_value()
+                self.int_select(c, t, e, "sel")
             }
             Expr::CCall {
                 name,
@@ -1803,6 +2143,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     inkwell::values::ValueKind::Basic(v) => v,
                     _ => panic!("extern fn returns a value"),
                 };
+                // Foreign code may call the public state accessors. Preserve
+                // expression evaluation order, but force every later state
+                // read in this helper to observe any such mutation.
+                self.clear_comb_cache();
                 let raw = if *f64_ret {
                     self.builder
                         .build_bit_cast(r.into_float_value(), self.i64t(), "fbits")
@@ -1849,10 +2193,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let cond = self.as_i1(cond);
                 let then = self.emit_signed_operand_at(then, width);
                 let els = self.emit_signed_operand_at(els, width);
-                self.builder
-                    .build_select(cond, then, els, "ssel")
-                    .unwrap()
-                    .into_int_value()
+                self.int_select(cond, then, els, "ssel")
             }
             _ => self.emit_at(e, width),
         }
@@ -2006,16 +2347,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.emit_at(rhs, operand_width)
         };
         let cmp = |p: IntPredicate, s: &str| {
-            let c = self.builder.build_int_compare(p, a, b, s).unwrap();
+            let c = self.int_compare(p, a, b, s);
             self.fit(c, self.value_ty(result_width))
         };
         match op {
-            BinOp::Add => self.builder.build_int_add(a, b, "add").unwrap(),
-            BinOp::Sub => self.builder.build_int_sub(a, b, "sub").unwrap(),
-            BinOp::Mul => self.builder.build_int_mul(a, b, "mul").unwrap(),
-            BinOp::SAdd => self.builder.build_int_add(a, b, "sadd").unwrap(),
-            BinOp::SSub => self.builder.build_int_sub(a, b, "ssub").unwrap(),
-            BinOp::SMul => self.builder.build_int_mul(a, b, "smul").unwrap(),
+            BinOp::Add => self.int_binary(CachedIntOp::Add, a, b, "add"),
+            BinOp::Sub => self.int_binary(CachedIntOp::Sub, a, b, "sub"),
+            BinOp::Mul => self.int_binary(CachedIntOp::Mul, a, b, "mul"),
+            BinOp::SAdd => self.int_binary(CachedIntOp::Add, a, b, "sadd"),
+            BinOp::SSub => self.int_binary(CachedIntOp::Sub, a, b, "ssub"),
+            BinOp::SMul => self.int_binary(CachedIntOp::Mul, a, b, "smul"),
             BinOp::Div => {
                 // Match the interpreter: divide-by-zero yields 0 (B0 formalizes).
                 let zero = self.c_at(0, operand_width);
@@ -2084,9 +2425,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             // Core logical operators; for boolean 0/1 operands these match
             // their scalar reading, and vectors apply them per bit.
             // operands this matches the logical reading.
-            BinOp::And => self.builder.build_and(a, b, "and").unwrap(),
-            BinOp::Or => self.builder.build_or(a, b, "or").unwrap(),
-            BinOp::Xor => self.builder.build_xor(a, b, "xor").unwrap(),
+            BinOp::And => self.int_binary(CachedIntOp::And, a, b, "and"),
+            BinOp::Or => self.int_binary(CachedIntOp::Or, a, b, "or"),
+            BinOp::Xor => self.int_binary(CachedIntOp::Xor, a, b, "xor"),
             BinOp::Eq => cmp(IntPredicate::EQ, "eq"),
             BinOp::Ne => cmp(IntPredicate::NE, "ne"),
             BinOp::Lt => cmp(IntPredicate::ULT, "lt"),
@@ -2219,6 +2560,292 @@ mod tests {
     }
 
     #[test]
+    /// A helper reuses a state load and invalidates it after a write.
+    fn combinational_helpers_reuse_and_invalidate_state_loads() {
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 8)],
+            drivers: vec![
+                Driver {
+                    span: None,
+                    ctx: 0,
+                    target: SignalId(0),
+                    cond: None,
+                    expr: Expr::Const(7),
+                    meta: None,
+                },
+                Driver {
+                    span: None,
+                    ctx: 0,
+                    target: SignalId(1),
+                    cond: None,
+                    expr: Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Current(SignalId(0))),
+                        rhs: Box::new(Expr::Current(SignalId(0))),
+                    },
+                    meta: None,
+                },
+            ],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("load i8, ptr @cur").count(),
+            2,
+            "the first load is `a`'s old value; its store must invalidate that load, and the two later reads must share one fresh value:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// Identity conditions and full-width slices emit nothing, rather than a
+    /// no-op instruction.
+    fn codegen_skips_identity_condition_and_slice_operations() {
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 8)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: Some(Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Current(SignalId(0))),
+                    rhs: Box::new(Expr::Const(1)),
+                }),
+                expr: Expr::Slice {
+                    base: Box::new(Expr::Current(SignalId(0))),
+                    hi: 7,
+                    lo: 0,
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert!(
+            !helper.contains("icmp ne i1"),
+            "an i1 condition was redundantly compared with zero:\n{helper}"
+        );
+        assert!(
+            !helper.contains("lshr i8"),
+            "a full-width slice emitted a right shift by zero:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// A helper reuses an identical direct state slice.
+    fn combinational_helpers_reuse_direct_state_slices() {
+        let nibble = || Expr::Slice {
+            base: Box::new(Expr::Current(SignalId(0))),
+            hi: 7,
+            lo: 4,
+        };
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 4)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(nibble()),
+                    rhs: Box::new(nibble()),
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("lshr i8").count(),
+            1,
+            "the same direct signal slice was extracted more than once:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// A helper reuses an identical integer comparison.
+    fn combinational_helpers_reuse_integer_comparisons() {
+        let equals_zero = || Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(Expr::Slice {
+                base: Box::new(Expr::Current(SignalId(0))),
+                hi: 7,
+                lo: 4,
+            }),
+            rhs: Box::new(Expr::Const(0)),
+        };
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 1)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(equals_zero()),
+                    rhs: Box::new(equals_zero()),
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("icmp eq i4").count(),
+            1,
+            "the same comparison was emitted more than once:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// A helper reuses an identical pure integer operation, in either operand
+    /// order for a commutative one.
+    fn combinational_helpers_reuse_pure_integer_operations() {
+        let increment = || Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Current(SignalId(0))),
+            rhs: Box::new(Expr::Const(1)),
+        };
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 8)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Mul,
+                    lhs: Box::new(increment()),
+                    rhs: Box::new(increment()),
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("add i8").count(),
+            1,
+            "the same pure integer operation was emitted more than once:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// A helper reuses an identical select.
+    fn combinational_helpers_reuse_selects() {
+        let choose = || Expr::Select {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Current(SignalId(0))),
+                rhs: Box::new(Expr::Const(0)),
+            }),
+            then: Box::new(Expr::Const(3)),
+            els: Box::new(Expr::Const(5)),
+        };
+        let design = Design {
+            signals: vec![sig("E.a", 8), sig("E.y", 8)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(choose()),
+                    rhs: Box::new(choose()),
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("select i1").count(),
+            1,
+            "the same select was emitted more than once:\n{helper}"
+        );
+        assert!(
+            !helper.contains("itaken")
+                && !helper.contains("inottaken")
+                && !helper.contains("ielse"),
+            "index-diagnostic guards were emitted for an expression without a checked index:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// A helper reuses an identical integer cast.
+    fn combinational_helpers_reuse_integer_casts() {
+        let design = Design {
+            signals: vec![sig("E.a", 4), sig("E.y", 8)],
+            drivers: vec![Driver {
+                span: None,
+                ctx: 0,
+                target: SignalId(1),
+                cond: None,
+                expr: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Current(SignalId(0))),
+                    rhs: Box::new(Expr::Current(SignalId(0))),
+                },
+                meta: None,
+            }],
+            ..Design::default()
+        };
+
+        let ll = emit_module_ir(&design).unwrap();
+        let helper = ll
+            .split("define internal void @sx_comb_0")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("one combinational helper");
+        assert_eq!(
+            helper.matches("zext i4").count(),
+            1,
+            "the same integer cast was emitted more than once:\n{helper}"
+        );
+    }
+
+    #[test]
+    /// Combinational codegen is split into bounded `noinline` helpers and each
+    /// is emitted once, so SelectionDAG never sees one very large function.
     fn bounds_and_reuses_combinational_helpers() {
         let process_count = COMB_PROCESSES_PER_HELPER + 1;
         let mut signals = vec![sig("E.input", 8)];

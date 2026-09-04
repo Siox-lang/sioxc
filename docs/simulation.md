@@ -137,6 +137,15 @@ the expanded packed-constant shift with `Expr::TableLookup`. LLVM consequently
 emits one compact constant byte array per distinct logic table rather than a
 dynamic hundreds-of-bits shift at every use.
 
+Native lowering emits dependency-ordered combinational work in bounded,
+straight-line helpers. Values already computed in a helper—state reads, direct
+slices, comparisons, ordinary integer operations, selects, and casts—are
+reused while they still dominate the new use. Stores invalidate the affected
+signal and an external call clears observable state reads. Runtime index
+diagnostics are only lowered for expressions that actually contain a checked
+access, avoiding otherwise dead path-tracking logic around std-generated
+selection trees.
+
 Per-element lowering does not inline a complex operand into every table lookup.
 It materializes the operand once as an internal combinational signal and reads
 that leaf for each element. Consequently, nesting dirty-vector operations grows

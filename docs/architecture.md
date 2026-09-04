@@ -410,6 +410,17 @@ also gives LLVM a smaller function; dependency ordering places each synthetic
 producer before its consumers. `Design::metavalue_temps` identifies these
 implementation-only signals so waveform output does not expose them.
 
+LLVM partitions dependency-ordered combinational work into small, single-block
+helpers. Within one such helper, code generation reuses dominating state loads,
+direct slices, comparisons, integer operations, selects, and casts instead of
+emitting duplicates for a later generic pass to rediscover. A signal write
+invalidates cached values derived directly from that signal; an external C call
+clears observable state loads because foreign code may invoke the public state
+accessors. The cache is disabled in control-flow-bearing functions, keeping the
+dominance rule explicit. Bounds-diagnostic lowering also scans for
+`CheckedIndex` before constructing path predicates, so an expression without a
+dynamic access creates no diagnostic-only LLVM values.
+
 IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.
 The `integer` marker lets native consumers sign-extend a constrained value from
