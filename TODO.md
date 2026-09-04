@@ -321,6 +321,11 @@ Current baseline:
   is unavailable, the compiler retains the source path as a fallback. On the
   312-row NVC sweep this reduced the complete test build from 8.86 seconds /
   179 MB to 4.84 seconds / 147 MB with byte-identical output.
+- ✅ Native Logic-element reconstruction evaluates the value bit and companion
+  discriminant once through a std-derived helper instead of repeating external
+  state reads in each generated C expression. On that sweep, harness source
+  fell 7.6%, its object text fell 5.9%, and its machine-instruction count fell
+  from 39,956 to 37,758 without changing output or measured throughput.
 - 🟡 Native process scheduling supports one foreground stimulus process plus
   any number of canonical self-toggle clock processes. Clocks start at time
   zero regardless of declaration order, and additional foreground processes

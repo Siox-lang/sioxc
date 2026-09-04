@@ -363,6 +363,10 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
          \x20       v |= (sx_value)sx_read_word(s, i) << (i * 64);\n\
          \x20   return v;\n\
          }}\n\
+         static sx_value sx_logic_element(sx_value bit, sx_value disc,\n\
+                                           sx_value low, sx_value high) {{\n\
+         \x20   return disc == low || disc == high ? (bit ? high : low) : disc;\n\
+         }}\n\
          static sx_value sx_udiv(sx_value lhs, sx_value rhs) {{\n\
          \x20   return rhs == 0 ? 0 : lhs / rhs;\n\
          }}\n\
@@ -7856,16 +7860,7 @@ impl Ctx<'_> {
                 Some(meta) => {
                     let shift = physical * 4;
                     let nibble = format!("((({meta}) >> {shift}) & 15)");
-                    let is_binary = encoding
-                        .map(|encoding| c_disc_in(&nibble, &encoding.binary))
-                        .unwrap_or_else(|| "0".to_string());
-                    let low = encoding
-                        .and_then(|encoding| encoding.binary_value(false))
-                        .unwrap_or(0);
-                    let high = encoding
-                        .and_then(|encoding| encoding.binary_value(true))
-                        .unwrap_or(1);
-                    format!("({is_binary} ? (({bit}) ? {high}ULL : {low}ULL) : ({nibble}))")
+                    c_logic_element(&bit, &nibble, encoding)
                 }
                 None => bit,
             };
@@ -7957,18 +7952,8 @@ impl Ctx<'_> {
                     .get(path)
                     .and_then(|id| self.design.array_element_enums.get(&id.0))
                     .and_then(|element| self.design.logic_encodings.get(element));
-                let is_binary = encoding
-                    .map(|encoding| c_disc_in(&nibble, &encoding.binary))
-                    .unwrap_or_else(|| "0".to_string());
-                let low = encoding
-                    .and_then(|encoding| encoding.binary_value(false))
-                    .unwrap_or(0);
-                let high = encoding
-                    .and_then(|encoding| encoding.binary_value(true))
-                    .unwrap_or(1);
-                return Ok(format!(
-                    "({is_binary} ? (((({v}) >> {lo}) & 1ULL) ? {high}ULL : {low}ULL) : ({nibble}))"
-                ));
+                let bit = format!("((({v}) >> {lo}) & 1ULL)");
+                return Ok(c_logic_element(&bit, &nibble, encoding));
             }
         }
         if a >= b {
@@ -8728,13 +8713,46 @@ fn c_logic_value_bit(value: &str, encoding: &siox::ir::LogicEncoding) -> String 
     c_disc_in(value, &highs)
 }
 
+/// Reconstruct one packed logic element from its value bit and companion
+/// discriminant without repeating either expression in generated C.
+fn c_logic_element(
+    bit: &str,
+    discriminant: &str,
+    encoding: Option<&siox::ir::LogicEncoding>,
+) -> String {
+    let Some(encoding) = encoding else {
+        return format!("({discriminant})");
+    };
+    let (Some(low), Some(high)) = (encoding.binary_value(false), encoding.binary_value(true))
+    else {
+        return format!("({discriminant})");
+    };
+    format!("sx_logic_element(({bit}), ({discriminant}), {low}ULL, {high}ULL)")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::c_condition;
+    use super::{c_condition, c_logic_element};
 
     #[test]
     fn c_conditions_are_parenthesized_once() {
         assert_eq!(c_condition("ready"), "(ready)");
         assert_eq!(c_condition("((value) == 0ULL)"), "((value) == 0ULL)");
+    }
+
+    #[test]
+    /// Logic reconstruction evaluates each generated operand once and gets its
+    /// representation values from the elaborated std contract.
+    fn logic_elements_use_one_std_derived_helper_call() {
+        let encoding = siox::ir::LogicEncoding {
+            value_bits: std::collections::HashMap::from([(4, false), (9, true)]),
+            binary: std::collections::HashSet::from([4, 9]),
+            ..Default::default()
+        };
+        assert_eq!(
+            c_logic_element("value & 1", "disc", Some(&encoding)),
+            "sx_logic_element((value & 1), (disc), 4ULL, 9ULL)"
+        );
+        assert_eq!(c_logic_element("value", "disc", None), "(disc)");
     }
 }
