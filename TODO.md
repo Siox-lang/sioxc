@@ -207,11 +207,25 @@ Current baseline:
 
 Remaining:
 
-- 🟡 **Complete unified Process IR lowering.** Replace the arena's transitional
-  typed/text `ProcessValue` payloads with structured expression/value nodes and
-  lower every explicit hardware process plus implicit continuous process into
-  the same `Design::process_ir`. Derive optimized `Driver`/`EventBlock` forms
-  from those CFGs instead of separately lowering hardware and testbench AST.
+- 🟡 **Complete unified Process IR lowering.** The value representation is
+  done: operands are structured `ProcessValueKind` nodes rather than rendered
+  source text, and an entity-level `let` of a test entity is now persistent
+  `ProcessStorage` rather than falling through to `Definition`. That was forced
+  rather than chosen -- `ir::lower` branches on `is_test_entity` and creates no
+  signal for such a declaration, so the storage arena is the only place it can
+  live, and "has a persisted layout under the root path" is exactly the set.
+  Validation covers the arena and its references, and `to_ir_string` shows it.
+  Storage initialization, DUT binding, write timing, and activation are also
+  explicit now: initializers use the ordinary value arena before processes
+  start; each flattened binding records its DUT-side `in`/`out`/`inout`
+  direction (including mixed-direction applied views and fan-out); storage
+  writes are immediate within the stimulus process while connected DUT-input
+  writes wait for the commit boundary; and self-toggle clocks react to their
+  storage object rather than to a nonexistent testbench signal.
+  Remaining: lower every explicit hardware process plus implicit continuous
+  process into the same `Design::process_ir`, and derive optimized
+  `Driver`/`EventBlock` forms from those CFGs instead of separately lowering
+  hardware and testbench AST.
 - ✅ **Bound ordinary Logic/metavalue expression growth.** Per-element lowering
   now materializes a repeated non-leaf operand once as an internal
   combinational signal. Nested dirty-vector expressions grow linearly with

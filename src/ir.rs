@@ -49,6 +49,7 @@ pub struct FunctionIndex<'a> {
 }
 
 impl<'a> FunctionIndex<'a> {
+    /// Build the index over one resolution's definitions.
     pub fn new(resolved: &'a Resolved) -> Self {
         Self {
             resolved,
@@ -423,10 +424,24 @@ impl<'a> FunctionIndex<'a> {
 /// `(operator, left type, right type, span)` for an unmatched operator.
 type BadOperator = (String, String, Option<String>, crate::diag::Span);
 
+/// A lowered design, ready to simulate.
+///
+/// Hardware behavior appears in two deliberately separate forms: combinational
+/// [`Driver`]s that settle to a fixed point within a delta cycle, and
+/// [`EventBlock`]s that compute next state from pre-commit values and commit
+/// together. Preserving that split is what keeps `clk.rising()` meaning the
+/// same thing in both backends.
+///
+/// A `Logic` vector additionally carries a discriminant companion plane, keyed
+/// by [`Design::meta_of`], so `'X'` and `'Z'` survive operations that a single
+/// value bit could not represent.
 #[derive(Default)]
 pub struct Design {
+    /// Every scalar storage leaf, indexed by [`SignalId`].
     pub signals: Vec<Signal>,
+    /// Combinational writes. These settle to a fixed point each delta cycle.
     pub drivers: Vec<Driver>,
+    /// Event-controlled next-state writes, applied together after settling.
     pub event_blocks: Vec<EventBlock>,
     /// Canonical independently scheduled behavior. During migration the Siox
     /// frontend fills native-test CFGs here after digital lowering; hardware
@@ -519,6 +534,8 @@ pub struct LogicEncoding {
 }
 
 impl LogicEncoding {
+    /// The discriminant used when an operation must produce "unknown" — the
+    /// lowest unknown in std's declaration order, normally `'X'`.
     pub fn canonical_unknown(&self) -> Option<u64> {
         self.unknown
             .iter()
@@ -526,6 +543,8 @@ impl LogicEncoding {
             .min()
     }
 
+    /// The 0/1 value plane bit for a discriminant, or `None` if std's
+    /// encoding gives it none.
     pub fn value_bit(&self, disc: u64) -> Option<u64> {
         self.value_bits.get(&disc).map(|bit| u64::from(*bit))
     }
@@ -552,7 +571,10 @@ impl LogicEncoding {
 /// the language's range attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutRange {
+    /// The written left bound, which may exceed `right` for a descending
+    /// range such as `31..0`.
     pub left: i64,
+    /// The written right bound.
     pub right: i64,
 }
 
@@ -565,10 +587,13 @@ impl LayoutRange {
             .checked_add(1)
     }
 
+    /// Whether the range covers no elements. A written range always covers at
+    /// least one, so this is always false; it exists so consumers can ask.
     pub fn is_empty(self) -> bool {
         false
     }
 
+    /// Whether the range counts upward (`0..7`) rather than downward (`7..0`).
     pub fn ascending(self) -> bool {
         self.left <= self.right
     }
@@ -579,26 +604,38 @@ impl LayoutRange {
 /// its bits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScalarDomain {
+    /// A plain bit vector with no arithmetic interpretation of its own.
     Bits,
+    /// The signed kernel `integer`.
     Integer,
+    /// A `real`; the slot holds an f64 bit pattern.
     Real,
+    /// A `Char`; the slot holds a Unicode code point.
     Character,
+    /// An enum, named so consumers can render a discriminant as its variant.
     Enum(String),
 }
 
+/// A port direction carried by an applied view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LayoutDirection {
+    /// Driven by the instantiator.
     In,
+    /// Driven by the entity.
     Out,
+    /// Driven from either side and resolved.
     InOut,
 }
 
+/// One field within a [`LayoutKind::Struct`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayoutField {
+    /// The field's name as written in the source type.
     pub name: String,
     /// Direction supplied by an applied view. Ordinary struct fields have no
     /// direction; permissions belong to the connection using the layout.
     pub direction: Option<LayoutDirection>,
+    /// The field's own recursive layout.
     pub layout: SourceLayout,
 }
 
@@ -608,42 +645,64 @@ pub struct LayoutField {
 /// element), which a bit count alone cannot recover.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceLayout {
+    /// The declaration this layout was derived from.
     pub span: crate::diag::Span,
+    /// The shape itself.
     pub kind: LayoutKind,
 }
 
+/// The shape of a source value, retained after flattening so consumers can
+/// rebuild what the user declared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LayoutKind {
+    /// A single storage leaf.
     Scalar {
+        /// Bit width.
         width: u32,
+        /// How the bits are interpreted.
         domain: ScalarDomain,
+        /// The declared type's name, when it has a nominal identity.
         nominal: Option<String>,
         /// Dynamic value constraint for ranged numerics, not an index range.
         value_range: Option<(i64, i64)>,
     },
     /// A source array represented by one packed signal.
     Packed {
+        /// Total bit width of the packed signal.
         width: u32,
+        /// The nominal vector family, such as `unsigned`.
         family: String,
+        /// The declared index range, when it is known.
         range: Option<LayoutRange>,
+        /// The element enum, when elements render as variants.
         element_enum: Option<String>,
     },
     /// A source array represented recursively (and currently flattened into
     /// one signal per scalar leaf).
     Array {
+        /// The declared index range, when it is known.
         range: Option<LayoutRange>,
+        /// The element's own layout, applied at every index.
         element: Box<SourceLayout>,
     },
+    /// A source struct, flattened into one signal per scalar leaf.
     Struct {
+        /// The struct type's name.
         name: String,
         /// Applied directional view, when this value was declared through one.
         view: Option<String>,
+        /// The fields, in declaration order.
         fields: Vec<LayoutField>,
     },
     /// A best-effort placeholder for an unresolved/parametric source type.
     /// Keeping it in the tree is more useful to diagnostics and tools than
     /// silently dropping that branch.
-    Opaque { name: String, width: Option<u32> },
+    Opaque {
+        /// The rendered type name, so diagnostics can still say what it was.
+        name: String,
+        /// The width, when even that much is known.
+        width: Option<u32>,
+    },
 }
 
 impl SourceLayout {
@@ -679,6 +738,8 @@ impl SourceLayout {
         }
     }
 
+    /// The declared index range for an indexable layout, or `None` for a
+    /// scalar or an unranged one.
     pub fn index_range(&self) -> Option<LayoutRange> {
         match &self.kind {
             LayoutKind::Packed { range, .. } | LayoutKind::Array { range, .. } => *range,
@@ -687,15 +748,24 @@ impl SourceLayout {
     }
 }
 
+/// Index of a [`ProcessCfg`] in [`ProcessIr::processes`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(pub u32);
 
+/// Index of a [`ProcessBlock`] within its owning [`ProcessCfg`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessBlockId(pub u32);
 
+/// Index of a [`ProcessLocal`] within its owning [`ProcessCfg`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessLocalId(pub u32);
 
+/// Index of persistent testbench-owned storage in [`ProcessIr::storages`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessStorageId(pub u32);
+
+/// Index of a [`ProcessValue`] in [`ProcessIr`]'s operand arena. CFG nodes
+/// carry these rather than embedding operands, so an operand is stored once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessValueId(pub u32);
 
@@ -707,11 +777,52 @@ pub struct ProcessValueId(pub u32);
 /// derive [`Driver`] / [`EventBlock`] compatibility forms from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
+    /// Every process control-flow graph, indexed by [`ProcessId`].
     pub processes: Vec<ProcessCfg>,
+    /// Discovered `#[test]` entities and the processes each one runs.
     pub tests: Vec<ProcessTest>,
+    /// Persistent values owned by test entities. These are distinct from
+    /// hardware signals and from lexical process locals.
+    pub storages: Vec<ProcessStorage>,
     /// Arena-owned process operands. CFG nodes carry only stable IDs, so
     /// cloning a block or edge never clones frontend type/text payloads.
     pub values: Vec<ProcessValue>,
+}
+
+/// Persistent state declared in a test entity implementation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessStorage {
+    /// This storage object's arena id.
+    pub id: ProcessStorageId,
+    /// Test root owning the value.
+    pub owner: crate::elab::InstanceId,
+    /// Source name within that root.
+    pub name: String,
+    /// Resolved declaration identity, when resolution succeeded.
+    pub source: Option<DefId>,
+    /// Declaration extent.
+    pub span: crate::diag::Span,
+    /// Checked value type, when one was inferred.
+    pub ty: Option<crate::types::Ty>,
+    /// Concrete recursive storage shape retained by digital lowering.
+    pub layout: Option<SourceLayout>,
+    /// Initial value evaluated before processes start.
+    pub initializer: Option<ProcessValueId>,
+    /// DUT signal leaves connected to this storage object.
+    pub bindings: Vec<ProcessStorageBinding>,
+}
+
+/// One flattened DUT signal connected to persistent testbench storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessStorageBinding {
+    /// Field/index suffix relative to [`ProcessStorage::name`], empty for a
+    /// scalar or packed value.
+    pub projection: String,
+    /// Connected DUT signal leaf.
+    pub signal: SignalId,
+    /// Direction at the DUT port endpoint. `In` means storage drives the
+    /// signal; `Out` means the signal is observed through storage.
+    pub direction: LayoutDirection,
 }
 
 /// Runtime test registration metadata. The behavior remains ordinary process
@@ -719,26 +830,52 @@ pub struct ProcessIr {
 /// different executable representation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessTest {
+    /// The `#[test]` entity declaration.
     pub entity: DefId,
+    /// The elaborated root instance this test runs.
     pub root: crate::elab::InstanceId,
+    /// Module-qualified name, used to select and report the test.
     pub qualified_name: String,
+    /// The entity declaration site, for selection diagnostics.
     pub span: crate::diag::Span,
+    /// The processes the test runs.
     pub processes: Vec<ProcessId>,
 }
 
+/// One process as a control-flow graph.
+///
+/// ```mermaid
+/// flowchart TD
+///     entry["entry block"] --> i["instructions:<br/>Declare / Assign / Runtime"]
+///     i --> t{"terminator"}
+///     t -->|Goto| b2["another block"]
+///     t -->|Branch| b3["then / else"]
+///     t -->|Match| b4["one block per arm"]
+///     t -->|For| b5["body, then exit"]
+///     t -->|Suspend| b6["resume block,<br/>once await is ready"]
+///     t -->|Return / Stop / Finish| done["process ends"]
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessCfg {
+    /// This process's own id.
     pub id: ProcessId,
+    /// The instance whose body declared it.
     pub owner: crate::elab::InstanceId,
     /// Optional instance-qualified source label.
     pub label: Option<String>,
+    /// The `process` block's source extent.
     pub span: crate::diag::Span,
+    /// When the process runs.
     pub activation: ProcessActivation,
+    /// The block execution starts in.
     pub entry: ProcessBlockId,
+    /// Locals owned by this process, indexed by [`ProcessLocalId`].
     pub locals: Vec<ProcessLocal>,
+    /// The control-flow graph's blocks, indexed by [`ProcessBlockId`].
     pub blocks: Vec<ProcessBlock>,
 }
 
+/// When a process runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessActivation {
     /// Starts once at time zero and subsequently only through explicit resume
@@ -747,101 +884,200 @@ pub enum ProcessActivation {
     /// Runs when a member of the sensitivity set changes. Clock processes are
     /// represented this way rather than entering a separate lowering path.
     /// Reactive processes also receive their initial activation at time zero.
-    Reactive { sensitivity: Vec<SignalId> },
+    Reactive {
+        /// Storage objects or signals whose change wakes the process.
+        sensitivity: Vec<ProcessSensitivity>,
+    },
 }
 
+/// One value whose committed change activates a reactive process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProcessSensitivity {
+    /// A hardware signal.
+    Signal(SignalId),
+    /// Persistent testbench storage, including clock-generator state.
+    Storage(ProcessStorageId),
+}
+
+/// A binding owned by one process. Locals are not signals: they are private
+/// to the process and update immediately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocal {
+    /// This local's own id within the owning process.
     pub id: ProcessLocalId,
+    /// The name as written. Equal spellings in nested scopes stay distinct
+    /// locals; see `source`.
     pub name: String,
     /// Resolved source declaration used only to preserve lexical identity
     /// while the temporary AST adapter classifies writes. Equal spellings in
     /// nested scopes remain different locals. Other frontends may leave it
     /// absent once they provide structured places directly.
     pub source: Option<DefId>,
+    /// The declaration site.
     pub span: crate::diag::Span,
     /// Transitional frontend type retained until expression lowering produces
     /// only concrete IR value/layout IDs.
     pub ty: Option<crate::types::Ty>,
+    /// The local's source layout, when one was derived.
     pub layout: Option<SourceLayout>,
 }
 
+/// One basic block: a straight-line instruction run ending in exactly one
+/// terminator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessBlock {
+    /// This block's own id within the owning process.
     pub id: ProcessBlockId,
+    /// Instructions executed in order.
     pub instructions: Vec<ProcessInstruction>,
+    /// How control leaves the block.
     pub terminator: ProcessTerminator,
 }
 
+/// A non-branching action inside a [`ProcessBlock`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessInstruction {
+    /// Bring a local into scope, optionally initializing it.
     Declare {
+        /// The local being declared.
         local: ProcessLocalId,
+        /// Its initial value, if written.
         initializer: Option<ProcessValueId>,
+        /// The `let` statement's extent.
         span: crate::diag::Span,
     },
+    /// Write a value to a place.
     Assign {
+        /// Whether the write is immediate or staged to the next delta.
         semantics: ProcessAssignment,
+        /// The place written.
         target: ProcessValueId,
+        /// The value written.
         value: ProcessValueId,
-        delay: Option<ProcessValueId>,
+        /// The assignment's extent.
         span: crate::diag::Span,
     },
+    /// Queue a signal write for a later simulation time. Delayed writes are a
+    /// scheduler operation rather than a flavour of immediate assignment, so
+    /// native backends never have to infer scheduling from an optional field.
+    Schedule {
+        /// The signal place written when the delay expires.
+        target: ProcessValueId,
+        /// The value captured for the future write.
+        value: ProcessValueId,
+        /// Simulation delay from the current time.
+        delay: ProcessValueId,
+        /// The assignment's extent.
+        span: crate::diag::Span,
+    },
+    /// Call into the simulation runtime.
     Runtime {
+        /// Which runtime operation.
         operation: ProcessRuntimeOp,
+        /// Its arguments.
         arguments: Vec<ProcessValueId>,
+        /// The call site.
         span: crate::diag::Span,
     },
 }
 
+/// Whether a write lands immediately or is staged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessAssignment {
     /// Process-local variables update immediately and are visible to the next
     /// instruction in the same process step.
     ImmediateLocal,
+    /// Persistent testbench storage updates immediately for following source
+    /// statements. Writes to connected DUT inputs are staged for the process
+    /// step's commit boundary.
+    ImmediateStorage,
     /// Signals stage a driver write for end-of-step resolution/commit.
     StagedSignal,
+    /// A concatenation whose destination leaves have different storage
+    /// classes. Each leaf keeps its own local/storage/signal timing while the
+    /// right-hand value is evaluated once before any write is applied.
+    PerPlace,
 }
 
+/// A call into the simulation runtime rather than into the design.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessRuntimeOp {
+    /// `assert!` — fail the test and stop when the condition does not hold.
     Assert,
+    /// Report a warning without failing.
     Warn,
+    /// `print!` — write to the test binary's output.
     Print,
+    /// Call a named function that lowering did not inline.
     Call(String),
 }
 
+/// One arm of a [`ProcessTerminator::Match`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessMatchArm {
+    /// The pattern selecting this arm.
     pub pattern: ProcessPattern,
+    /// The block entered when it matches.
     pub block: ProcessBlockId,
+    /// The arm's extent.
     pub span: crate::diag::Span,
 }
 
+/// A match pattern, lowered to the shapes the CFG needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessPattern {
+    /// `_` — matches anything.
     Wildcard,
-    Path(String),
+    /// An enum variant or constant path. Valid programs carry its stable
+    /// declaration identity; segments remain for diagnostics and intrinsic
+    /// patterns that have no declaration.
+    Path {
+        /// Resolved declaration, when one exists.
+        definition: Option<DefId>,
+        /// Namespace segments as written.
+        segments: Vec<String>,
+    },
+    /// A bit pattern, with don't-care positions preserved.
     BitPattern(String),
+    /// Alternatives, matching if any does.
     Or(Vec<ProcessPattern>),
-    Range { left: i64, right: i64 },
+    /// An inclusive numeric range.
+    Range {
+        /// Inclusive left bound.
+        left: i64,
+        /// Inclusive right bound.
+        right: i64,
+    },
+    /// A character literal naming a variant of a char-valued enum.
     Char(char),
 }
 
+/// How control leaves a [`ProcessBlock`]. Every block ends in exactly one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessTerminator {
+    /// Leave the process, optionally with a value.
     Return {
+        /// The returned value, for a function-shaped body.
         value: Option<ProcessValueId>,
+        /// The `return` statement's extent, when one was written.
         span: Option<crate::diag::Span>,
     },
+    /// Continue unconditionally at another block.
     Goto(ProcessBlockId),
+    /// Two-way branch.
     Branch {
+        /// The tested condition.
         condition: ProcessValueId,
+        /// Entered when the condition holds.
         then_block: ProcessBlockId,
+        /// Entered otherwise.
         else_block: ProcessBlockId,
     },
+    /// Multi-way branch on a pattern match.
     Match {
+        /// The value being matched.
         scrutinee: ProcessValueId,
+        /// The arms, tested in order.
         arms: Vec<ProcessMatchArm>,
         /// A non-exhaustive statement match continues through this block when
         /// no arm matches. Exhaustive matches have no fallback edge.
@@ -851,42 +1087,277 @@ pub enum ProcessTerminator {
     /// a body back-edge to this block advances the iterator before choosing
     /// `body` again. `local` is assigned immediately on each iteration.
     For {
+        /// The loop variable, assigned immediately each iteration.
         local: ProcessLocalId,
+        /// The range being iterated.
         iterable: ProcessValueId,
+        /// The loop body's entry block.
         body: ProcessBlockId,
+        /// The block entered once iteration finishes.
         exit: ProcessBlockId,
+        /// The `for` statement's extent.
         span: crate::diag::Span,
     },
     /// Suspend this process and continue at `resume` when the runtime operation
     /// becomes ready. `await` arguments keep their typed source identity until
     /// direct value lowering replaces [`ProcessValue`].
     Suspend {
+        /// Which suspending operation.
         operation: ProcessSuspendOp,
+        /// Its arguments, such as the delay for `await`.
         arguments: Vec<ProcessValueId>,
+        /// The block to continue at once ready.
         resume: ProcessBlockId,
+        /// The suspending statement's extent.
         span: crate::diag::Span,
     },
+    /// End this process, leaving the rest of the simulation running.
     Stop {
+        /// The statement's extent.
         span: crate::diag::Span,
     },
+    /// End the whole simulation.
     Finish {
+        /// The statement's extent.
         span: crate::diag::Span,
     },
 }
 
+/// Which operation suspended a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessSuspendOp {
+    /// `await` — resume once the given time or condition is reached.
     Await,
 }
 
-/// Transitional typed expression reference. `text` is diagnostic/dump data,
-/// never executable source for a backend. Direct expression lowering will
-/// replace it with arena value IDs without changing the process CFG shape.
+/// A typed process operand. Composite expressions refer to earlier arena
+/// values by id, making the value graph backend-independent and cheap to walk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessValue {
+    /// The expression's source extent.
     pub span: crate::diag::Span,
+    /// Its frontend type, where one was inferred.
     pub ty: Option<crate::types::Ty>,
-    pub text: String,
+    /// Executable meaning of the value.
+    pub kind: ProcessValueKind,
+}
+
+/// Which version of signal storage a process expression reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessSignalState {
+    /// The current settled value.
+    Current,
+    /// The value from before the most recent commit.
+    Old,
+    /// Whether the value changed at the most recent commit.
+    Event,
+}
+
+/// A numeric literal's source-independent magnitude.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessNumber {
+    /// An arbitrary-width unsigned magnitude, least-significant word first.
+    Integer(Vec<u64>),
+    /// An IEEE-754 `real`, stored as bits so the IR remains equality-comparable.
+    Real(u64),
+}
+
+/// A unary operation after parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessUnaryOp {
+    /// Arithmetic negation.
+    Neg,
+    /// Logical or per-element complement.
+    Not,
+}
+
+/// A binary operation after precedence has already shaped the expression tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessBinaryOp {
+    /// Addition.
+    Add,
+    /// Subtraction.
+    Sub,
+    /// Multiplication.
+    Mul,
+    /// Division.
+    Div,
+    /// Type-directed conjunction.
+    And,
+    /// Type-directed disjunction.
+    Or,
+    /// A user/library-defined operator. Precedence is absent because it has
+    /// already done its only job during parsing.
+    Custom(String),
+    /// Left shift.
+    Shl,
+    /// Right shift.
+    Shr,
+    /// Equality.
+    Eq,
+    /// Inequality.
+    Ne,
+    /// Less-than comparison.
+    Lt,
+    /// Less-than-or-equal comparison.
+    Le,
+    /// Greater-than comparison.
+    Gt,
+    /// Greater-than-or-equal comparison.
+    Ge,
+}
+
+/// A value-producing match arm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValueMatchArm {
+    /// Pattern selecting this value.
+    pub pattern: ProcessPattern,
+    /// Value produced by the arm.
+    pub value: ProcessValueId,
+    /// Source extent of the arm.
+    pub span: crate::diag::Span,
+}
+
+/// One field or positional element of a constructed aggregate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessAggregateField {
+    /// Explicit field name, or `None` for a positional connection.
+    pub name: Option<String>,
+    /// Connected value. `None` exists only for parser error recovery.
+    pub value: Option<ProcessValueId>,
+    /// Source extent of this field.
+    pub span: crate::diag::Span,
+}
+
+/// Executable value forms used by process CFGs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessValueKind {
+    /// A numeric literal without a language width ceiling.
+    Number(ProcessNumber),
+    /// A number interpreted through a std-defined suffix such as `ns` or
+    /// `MHz`. `suffix` is the semantic dispatch symbol, not source text.
+    Suffixed {
+        /// Literal magnitude before the suffix conversion.
+        number: ProcessNumber,
+        /// Suffix symbol.
+        suffix: String,
+    },
+    /// A radix bit-string literal, already decoded into words.
+    BitString {
+        /// Number of meaningful bits.
+        width: u32,
+        /// Literal bits, least-significant word first.
+        words: Vec<u64>,
+    },
+    /// A context-typed character or enum literal.
+    Char(char),
+    /// A UTF-8 string literal.
+    String(String),
+    /// A process-local variable.
+    Local {
+        /// Process owning the local.
+        process: ProcessId,
+        /// Local within that process.
+        local: ProcessLocalId,
+    },
+    /// Persistent state owned by a test entity.
+    Storage(ProcessStorageId),
+    /// One or more flattened signals making up a source value.
+    Signal {
+        /// Scalar leaves, in source-layout order.
+        signals: Vec<SignalId>,
+        /// Which signal state is observed.
+        state: ProcessSignalState,
+    },
+    /// A resolved declaration such as a constant or enum variant.
+    Definition(DefId),
+    /// A compiler/runtime name that intentionally has no source declaration.
+    Intrinsic(String),
+    /// A field or method member selected from a value.
+    Field {
+        /// Aggregate or receiver value.
+        base: ProcessValueId,
+        /// Selected member.
+        field: String,
+    },
+    /// A system attribute that is not represented directly as a signal state.
+    Attribute {
+        /// Value being queried.
+        base: ProcessValueId,
+        /// Canonical attribute name.
+        attribute: String,
+    },
+    /// Checked element indexing or slicing.
+    Index {
+        /// Indexed value.
+        base: ProcessValueId,
+        /// Index or range operand.
+        index: ProcessValueId,
+    },
+    /// An inclusive range; absent bounds are supplied by the indexing value.
+    Range {
+        /// Written left bound.
+        left: Option<ProcessValueId>,
+        /// Written right bound.
+        right: Option<ProcessValueId>,
+    },
+    /// A unary operation.
+    Unary {
+        /// Operation performed.
+        operation: ProcessUnaryOp,
+        /// Operand.
+        operand: ProcessValueId,
+    },
+    /// A binary operation.
+    Binary {
+        /// Operation performed.
+        operation: ProcessBinaryOp,
+        /// Left operand.
+        left: ProcessValueId,
+        /// Right operand.
+        right: ProcessValueId,
+    },
+    /// A value-level conditional.
+    Select {
+        /// Condition.
+        condition: ProcessValueId,
+        /// Value when true.
+        then_value: ProcessValueId,
+        /// Value when false.
+        else_value: ProcessValueId,
+    },
+    /// A value-level pattern match.
+    Match {
+        /// Matched value.
+        scrutinee: ProcessValueId,
+        /// Arms in first-match order.
+        arms: Vec<ProcessValueMatchArm>,
+    },
+    /// A function, method, intrinsic, or conversion call.
+    Call {
+        /// Callable value or method field.
+        callee: ProcessValueId,
+        /// Explicit concrete type arguments. Phase 1 permits these only on
+        /// `read<T>`, whose checked result type is the requested `T`.
+        type_arguments: Vec<crate::types::Ty>,
+        /// Value arguments.
+        arguments: Vec<ProcessValueId>,
+        /// Whether macro-shaped lazy syntax was used.
+        bang: bool,
+    },
+    /// A struct/entity aggregate literal.
+    Construct {
+        /// Concrete result type, when type checking supplied one.
+        ty: Option<crate::types::Ty>,
+        /// Explicit and positional fields in source order.
+        fields: Vec<ProcessAggregateField>,
+        /// Struct-update base.
+        spread: Option<ProcessValueId>,
+    },
+    /// Packed concatenation, most-significant part first.
+    Concat(Vec<ProcessValueId>),
+    /// Ordinary array literal in ascending source order.
+    Array(Vec<ProcessValueId>),
 }
 
 impl ProcessIr {
@@ -916,12 +1387,23 @@ impl ProcessIr {
                 ));
             }
             if let ProcessActivation::Reactive { sensitivity } = &process.activation {
-                for signal in sensitivity {
-                    if signal.0 >= signal_count {
-                        issues.push(format!(
-                            "process {:?} has out-of-range sensitivity signal {}",
-                            process.id, signal.0
-                        ));
+                for item in sensitivity {
+                    match item {
+                        ProcessSensitivity::Signal(signal) if signal.0 >= signal_count => {
+                            issues.push(format!(
+                                "process {:?} has out-of-range sensitivity signal {}",
+                                process.id, signal.0
+                            ));
+                        }
+                        ProcessSensitivity::Storage(storage)
+                            if storage.0 >= self.storages.len() as u32 =>
+                        {
+                            issues.push(format!(
+                                "process {:?} has out-of-range sensitivity storage {}",
+                                process.id, storage.0
+                            ));
+                        }
+                        ProcessSensitivity::Signal(_) | ProcessSensitivity::Storage(_) => {}
                     }
                 }
             }
@@ -941,15 +1423,63 @@ impl ProcessIr {
                     ));
                 }
                 for instruction in &block.instructions {
-                    if let ProcessInstruction::Declare { local, .. } = instruction {
-                        if process.locals.get(local.0 as usize).map(|value| value.id)
-                            != Some(*local)
-                        {
-                            issues.push(format!(
-                                "process {:?} references invalid local {:?}",
-                                process.id, local
-                            ));
+                    match instruction {
+                        ProcessInstruction::Declare { local, .. } => {
+                            if process.locals.get(local.0 as usize).map(|value| value.id)
+                                != Some(*local)
+                            {
+                                issues.push(format!(
+                                    "process {:?} references invalid local {:?}",
+                                    process.id, local
+                                ));
+                            }
                         }
+                        ProcessInstruction::Assign {
+                            semantics, target, ..
+                        } => {
+                            let expected = match semantics {
+                                ProcessAssignment::ImmediateLocal => Some(ProcessPlaceClass::Local),
+                                ProcessAssignment::ImmediateStorage => {
+                                    Some(ProcessPlaceClass::Storage)
+                                }
+                                ProcessAssignment::StagedSignal => Some(ProcessPlaceClass::Signal),
+                                ProcessAssignment::PerPlace => None,
+                            };
+                            let valid = match expected {
+                                Some(expected) => {
+                                    process_place_class(self, *target) == Some(expected)
+                                }
+                                None => {
+                                    matches!(
+                                        self.values.get(target.0 as usize).map(|value| &value.kind),
+                                        Some(ProcessValueKind::Concat(_))
+                                    ) && process_place_classes(self, *target)
+                                        .is_some_and(|classes| classes.len() > 1)
+                                }
+                            };
+                            if !valid {
+                                issues.push(format!(
+                                    "process {:?} block {:?} has {:?} assignment to incompatible place {:?}",
+                                    process.id, block.id, semantics, target
+                                ));
+                            }
+                        }
+                        ProcessInstruction::Schedule { target, .. } => {
+                            if !process_place_classes(self, *target).is_some_and(|classes| {
+                                classes.iter().all(|class| {
+                                    matches!(
+                                        class,
+                                        ProcessPlaceClass::Storage | ProcessPlaceClass::Signal
+                                    )
+                                })
+                            }) {
+                                issues.push(format!(
+                                    "process {:?} block {:?} schedules non-storage/signal place {:?}",
+                                    process.id, block.id, target
+                                ));
+                            }
+                        }
+                        ProcessInstruction::Runtime { .. } => {}
                     }
                     for value in process_instruction_values(instruction) {
                         if value.0 >= value_count {
@@ -984,6 +1514,106 @@ impl ProcessIr {
                         ));
                     }
                 }
+            }
+        }
+
+        let storage_count = self.storages.len() as u32;
+        let mut storage_names = HashSet::new();
+        for (index, storage) in self.storages.iter().enumerate() {
+            let id = ProcessStorageId(index as u32);
+            if storage.id != id {
+                issues.push(format!(
+                    "storage {:?} is stored at index {} under {:?}",
+                    storage.id, index, id
+                ));
+            }
+            if !storage_names.insert((storage.owner, storage.name.clone())) {
+                issues.push(format!(
+                    "storage `{}` is declared more than once in {:?}",
+                    storage.name, storage.owner
+                ));
+            }
+            if let Some(initializer) = storage.initializer {
+                if initializer.0 >= value_count {
+                    issues.push(format!(
+                        "storage {:?} initializer references invalid value {:?}",
+                        id, initializer
+                    ));
+                }
+            }
+            let mut bindings = HashSet::new();
+            for binding in &storage.bindings {
+                if binding.signal.0 >= signal_count {
+                    issues.push(format!(
+                        "storage {:?} binds `{}` to invalid signal {:?}",
+                        id, binding.projection, binding.signal
+                    ));
+                }
+                if !bindings.insert((binding.projection.clone(), binding.signal)) {
+                    issues.push(format!(
+                        "storage {:?} binds `{}` to {:?} more than once",
+                        id, binding.projection, binding.signal
+                    ));
+                }
+            }
+        }
+
+        for (index, value) in self.values.iter().enumerate() {
+            let id = ProcessValueId(index as u32);
+            for dependency in process_value_dependencies(&value.kind) {
+                if dependency.0 >= value_count {
+                    issues.push(format!(
+                        "process value {:?} references invalid value {:?}",
+                        id, dependency
+                    ));
+                } else if dependency.0 >= id.0 {
+                    issues.push(format!(
+                        "process value {:?} has non-dominating dependency {:?}",
+                        id, dependency
+                    ));
+                }
+            }
+            match &value.kind {
+                ProcessValueKind::Signal { signals, .. } => {
+                    if signals.is_empty() {
+                        issues.push(format!("process value {:?} has no signal leaves", id));
+                    }
+                    let mut seen = HashSet::new();
+                    for signal in signals {
+                        if signal.0 >= signal_count {
+                            issues.push(format!(
+                                "process value {:?} references invalid signal {:?}",
+                                id, signal
+                            ));
+                        } else if !seen.insert(*signal) {
+                            issues.push(format!(
+                                "process value {:?} repeats signal {:?}",
+                                id, signal
+                            ));
+                        }
+                    }
+                }
+                ProcessValueKind::Storage(storage) => {
+                    if storage.0 >= storage_count {
+                        issues.push(format!(
+                            "process value {:?} references invalid storage {:?}",
+                            id, storage
+                        ));
+                    }
+                }
+                ProcessValueKind::Local { process, local } => {
+                    match self.processes.get(process.0 as usize) {
+                        Some(owner)
+                            if owner.id == *process
+                                && owner.locals.get(local.0 as usize).map(|item| item.id)
+                                    == Some(*local) => {}
+                        _ => issues.push(format!(
+                            "process value {:?} references invalid local {:?} in {:?}",
+                            id, local, process
+                        )),
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1022,6 +1652,8 @@ impl ProcessIr {
         issues
     }
 
+    /// Render the process IR as text, for `--emit ir` and for debugging a
+    /// lowering change.
     pub fn to_ir_string(&self) -> String {
         let mut output = String::new();
         for (index, value) in self.values.iter().enumerate() {
@@ -1030,7 +1662,38 @@ impl ProcessIr {
                 .as_ref()
                 .map(|ty| format!(" : {ty:?}"))
                 .unwrap_or_default();
-            output.push_str(&format!("value %v{index}{ty} = {}\n", value.text));
+            output.push_str(&format!("value %v{index}{ty} = {:?}\n", value.kind));
+        }
+        for storage in &self.storages {
+            let ty = storage
+                .ty
+                .as_ref()
+                .map(|ty| format!(" : {ty:?}"))
+                .unwrap_or_default();
+            let initializer = storage
+                .initializer
+                .map(|value| format!(" = %v{}", value.0))
+                .unwrap_or_default();
+            let bindings = storage
+                .bindings
+                .iter()
+                .map(|binding| {
+                    format!(
+                        "{}-{:?}->s{}",
+                        binding.projection, binding.direction, binding.signal.0
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let bindings = if bindings.is_empty() {
+                String::new()
+            } else {
+                format!(" bound [{bindings}]")
+            };
+            output.push_str(&format!(
+                "storage %g{} root {} {}{ty}{initializer}{bindings}\n",
+                storage.id.0, storage.owner.0, storage.name
+            ));
         }
         for test in &self.tests {
             let processes = test
@@ -1070,6 +1733,8 @@ impl ProcessIr {
     }
 }
 
+/// The blocks a terminator can transfer control to, for CFG validation and
+/// reachability.
 fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBlockId> {
     match terminator {
         ProcessTerminator::Return { .. }
@@ -1091,22 +1756,22 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
     }
 }
 
+/// The operand ids an instruction reads.
 fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
     match instruction {
         ProcessInstruction::Declare { initializer, .. } => initializer.iter().copied().collect(),
-        ProcessInstruction::Assign {
+        ProcessInstruction::Assign { target, value, .. } => vec![*target, *value],
+        ProcessInstruction::Schedule {
             target,
             value,
             delay,
             ..
-        } => [Some(*target), Some(*value), *delay]
-            .into_iter()
-            .flatten()
-            .collect(),
+        } => vec![*target, *value, *delay],
         ProcessInstruction::Runtime { arguments, .. } => arguments.clone(),
     }
 }
 
+/// The operand ids a terminator reads.
 fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
     match terminator {
         ProcessTerminator::Return { value, .. } => value.iter().copied().collect(),
@@ -1120,9 +1785,91 @@ fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValue
     }
 }
 
+/// Operand ids embedded by one value node.
+pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<ProcessValueId> {
+    match value {
+        ProcessValueKind::Field { base, .. }
+        | ProcessValueKind::Attribute { base, .. }
+        | ProcessValueKind::Unary { operand: base, .. } => vec![*base],
+        ProcessValueKind::Index { base, index } => vec![*base, *index],
+        ProcessValueKind::Range { left, right } => left.iter().chain(right).copied().collect(),
+        ProcessValueKind::Binary { left, right, .. } => vec![*left, *right],
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => vec![*condition, *then_value, *else_value],
+        ProcessValueKind::Match { scrutinee, arms } => std::iter::once(*scrutinee)
+            .chain(arms.iter().map(|arm| arm.value))
+            .collect(),
+        ProcessValueKind::Call {
+            callee, arguments, ..
+        } => std::iter::once(*callee)
+            .chain(arguments.iter().copied())
+            .collect(),
+        ProcessValueKind::Construct { fields, spread, .. } => fields
+            .iter()
+            .filter_map(|field| field.value)
+            .chain(spread.iter().copied())
+            .collect(),
+        ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => values.clone(),
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::Suffixed { .. }
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_)
+        | ProcessValueKind::String(_)
+        | ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::Signal { .. }
+        | ProcessValueKind::Definition(_)
+        | ProcessValueKind::Intrinsic(_) => Vec::new(),
+    }
+}
+
+/// Root storage class of an assignable process value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ProcessPlaceClass {
+    Local,
+    Storage,
+    Signal,
+}
+
+/// Follow projections to the storage object an assignment ultimately writes.
+fn process_place_class(ir: &ProcessIr, value: ProcessValueId) -> Option<ProcessPlaceClass> {
+    let classes = process_place_classes(ir, value)?;
+    let first = *classes.first()?;
+    classes.iter().all(|class| *class == first).then_some(first)
+}
+
+/// Every root storage class written by an assignable process value.
+fn process_place_classes(ir: &ProcessIr, value: ProcessValueId) -> Option<Vec<ProcessPlaceClass>> {
+    match &ir.values.get(value.0 as usize)?.kind {
+        ProcessValueKind::Local { .. } => Some(vec![ProcessPlaceClass::Local]),
+        ProcessValueKind::Storage(_) => Some(vec![ProcessPlaceClass::Storage]),
+        ProcessValueKind::Signal {
+            state: ProcessSignalState::Current,
+            ..
+        } => Some(vec![ProcessPlaceClass::Signal]),
+        ProcessValueKind::Field { base, .. } | ProcessValueKind::Index { base, .. } => {
+            process_place_classes(ir, *base)
+        }
+        ProcessValueKind::Concat(values) => {
+            let mut classes = Vec::new();
+            for value in values {
+                classes.extend(process_place_classes(ir, *value)?);
+            }
+            (!classes.is_empty()).then_some(classes)
+        }
+        _ => None,
+    }
+}
+
+/// Index of a [`Signal`] in [`Design::signals`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SignalId(pub u32);
 
+/// One scalar storage leaf. Aggregates are flattened, so a struct or array in
+/// the source becomes several of these.
 #[derive(Clone, Debug)]
 pub struct Signal {
     /// Hierarchical path, e.g. `Counter.count`.
@@ -1163,8 +1910,11 @@ pub struct Signal {
 /// override is resolved during lowering into a priority chain).
 #[derive(Clone, Debug)]
 pub struct Driver {
+    /// The signal this driver writes.
     pub target: SignalId,
+    /// Guard for a conditional write. `None` drives unconditionally.
     pub cond: Option<Expr>,
+    /// The value driven onto `target`.
     pub expr: Expr,
     /// Explicit discriminant-plane expression retained while lowering a write
     /// whose value expression alone cannot describe its metavalues (notably a
@@ -1187,9 +1937,28 @@ pub struct Driver {
 
 /// An event-controlled block: on `condition`, queue `next(target) = expr`
 /// (spec 3.13 next-state semantics).
+///
+/// Keeping this separate from [`Driver`] is the central distinction in the IR.
+/// Combinational writes settle to a fixed point within a delta cycle, while
+/// these compute from pre-commit state and are applied together, so
+/// simultaneous updates never observe each other.
+///
+/// ```mermaid
+/// flowchart LR
+///     src["clk.rising()"] --> ev["Event(clk)"]
+///     src --> old["Old(clk) == '0'"]
+///     src --> cur["Current(clk) == '1'"]
+///     ev --> cond["EventBlock::condition"]
+///     old --> cond
+///     cur --> cond
+///     cond --> upd["NextUpdate:<br/>next(target) = expr"]
+/// ```
 #[derive(Clone, Debug)]
 pub struct EventBlock {
+    /// When to fire. An edge lowers to `Event(clk) && Old(clk)=='0' &&
+    /// Current(clk)=='1'` rather than to a dedicated edge node.
     pub condition: Expr,
+    /// The next-state writes queued when `condition` holds.
     pub updates: Vec<NextUpdate>,
     /// The driver context that lowered this block — one per source process, the
     /// same identity `Driver::ctx` carries (spec 3.14: override within a
@@ -1200,10 +1969,14 @@ pub struct EventBlock {
     pub ctx: u32,
 }
 
+/// One queued next-state write inside an [`EventBlock`].
 #[derive(Clone, Debug)]
 pub struct NextUpdate {
+    /// The signal to update when the block fires.
     pub target: SignalId,
+    /// Guard for a conditional update within the firing block.
     pub cond: Option<Expr>,
+    /// The next-state value, computed from pre-commit state.
     pub expr: Expr,
     /// Clocked counterpart of [`Driver::meta`], consumed by metavalue
     /// propagation before the IR reaches a simulator backend.
@@ -1230,7 +2003,9 @@ pub struct LookupTableId(pub usize);
 /// convenient integer storage type for `element_width`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LookupTable {
+    /// Bits per element. A backend may widen this to convenient storage.
     pub element_width: u32,
+    /// The table contents, indexed from zero.
     pub values: Vec<u64>,
 }
 
@@ -1238,6 +2013,7 @@ pub struct LookupTable {
 /// them directly; `clk.rising()` lowers into `Event`/`Old`/`Current`.
 #[derive(Clone, Debug)]
 pub enum Expr {
+    /// An integer constant that fits one ABI word.
     Const(u64),
     /// An integer constant wider than one ABI word, low-word first.
     WideConst(Vec<u64>),
@@ -1259,34 +2035,53 @@ pub enum Expr {
         ne: bool,
         /// The compared values, whose companions decide the answer.
         operands: Vec<Expr>,
+        /// The comparison as lowered, used once the rule is resolved.
         inner: Box<Expr>,
     },
     /// A `real` constant; evaluates to its f64 bit pattern.
     Real(f64),
+    /// A logic literal such as `'0'` or `'X'`, kept symbolic until the
+    /// std-derived encoding gives it a discriminant.
     Logic(char),
+    /// The signal's value in this delta cycle.
     Current(SignalId),
+    /// The signal's value in the previous delta cycle, the `'old` attribute.
     Old(SignalId),
+    /// Whether the signal changed since the previous delta cycle, the `'event`
+    /// attribute. First-class so the scheduler reads it directly.
     Event(SignalId),
+    /// A prefix operation.
     Unary {
+        /// Which operation.
         op: UnOp,
+        /// The operand.
         rhs: Box<Expr>,
     },
+    /// An infix operation.
     Binary {
+        /// Which operation, including its signed and float variants.
         op: BinOp,
+        /// Left operand.
         lhs: Box<Expr>,
+        /// Right operand.
         rhs: Box<Expr>,
     },
     /// Bit slice `base[hi..lo]` (inclusive), value `(base >> lo) & mask(hi-lo+1)`.
     Slice {
+        /// The value being sliced.
         base: Box<Expr>,
+        /// Inclusive high bit index.
         hi: u32,
+        /// Inclusive low bit index.
         lo: u32,
     },
     /// Constant table lookup. An index outside `values` evaluates to zero,
     /// matching the overshift semantics of the packed expression this
     /// replaces. Tables are std-derived data owned by the finished design.
     TableLookup {
+        /// Which table in [`Design::lookup_tables`] to read.
         table: LookupTableId,
+        /// The element to read; out-of-range yields zero.
         index: Box<Expr>,
     },
     /// A runtime index together with its declared-domain predicate. The value
@@ -1295,37 +2090,55 @@ pub enum Expr {
     /// access. `left`/`right` preserve the declaration's written direction for
     /// the diagnostic rather than reducing it to an anonymous min/max pair.
     CheckedIndex {
+        /// The index value itself.
         index: Box<Expr>,
+        /// Predicate that is true when `index` is inside the declared domain.
         valid: Box<Expr>,
+        /// The declaration's written left bound.
         left: i64,
+        /// The declaration's written right bound.
         right: i64,
+        /// The access site, for the runtime failure report.
         span: crate::diag::Span,
     },
     /// `cond ? then : els` — produced by inlining operator-trait impl bodies
     /// (`if`/`else` chains of `return`s become nested selects).
     Select {
+        /// The tested condition.
         cond: Box<Expr>,
+        /// Value when `cond` holds.
         then: Box<Expr>,
+        /// Value otherwise.
         els: Box<Expr>,
     },
     /// A foreign C call (`extern "C"` declarations, spec 3.27): `real`
     /// parameters/results are f64 (bit-pattern operands), everything else a
     /// 64-bit word. Native linking resolves the named symbol.
     CCall {
+        /// The C symbol to call; native linking resolves it.
         name: String,
+        /// The call arguments, in order.
         args: Vec<Expr>,
+        /// Per argument, whether it is passed as an f64 rather than a word.
         f64_args: Vec<bool>,
+        /// Per argument, whether it is a signed kernel `integer`.
         integer_args: Vec<bool>,
+        /// Whether the result is an f64.
         f64_ret: bool,
+        /// Whether the result is a signed kernel `integer`.
         integer_ret: bool,
     },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
 }
 
+/// A prefix operation in the digital IR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
+    /// Bitwise complement. A vector `not` lowers to [`BinOp::Xor`] against
+    /// all-ones instead of reaching this.
     Not,
+    /// Arithmetic negation.
     Neg,
     /// `integer(x)` on a `real`: the f64 *value* truncated toward zero, not
     /// its bit pattern. Every other conversion is a raw resize, and a real
@@ -1334,20 +2147,34 @@ pub enum UnOp {
     RealToInt,
 }
 
+/// An infix operation in the digital IR.
+///
+/// Unsigned, signed and float forms are separate variants rather than one
+/// operation plus a type tag, so a backend never has to consult operand types
+/// to know which machine instruction to emit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
+    /// Wrapping unsigned addition.
     Add,
+    /// Wrapping unsigned subtraction.
     Sub,
+    /// Wrapping unsigned multiplication.
     Mul,
+    /// Unsigned division.
     Div,
     /// Signed kernel-`integer` arithmetic. Add/subtract/multiply use the same
     /// bit operation as their unsigned counterparts, but retain signedness so
     /// a wider enclosing expression sign-extends their operands/results.
     SAdd,
+    /// Signed counterpart of [`BinOp::Sub`].
     SSub,
+    /// Signed counterpart of [`BinOp::Mul`].
     SMul,
+    /// Signed division.
     SDiv,
+    /// Bitwise conjunction.
     And,
+    /// Bitwise disjunction.
     Or,
     /// Bitwise exclusive-or. Native like `And`/`Or` so the metavalue companion
     /// can apply the `std_logic_1164` table per element: std spells `xor` as
@@ -1355,34 +2182,53 @@ pub enum BinOp {
     /// makes the companion lowering see a subtraction and poison the whole
     /// vector. `nand`/`nor`/`xnor`/`not` all reduce to this.
     Xor,
+    /// Left shift, shifting in zeroes.
     Shl,
+    /// Logical right shift, shifting in zeroes.
     Shr,
     /// Arithmetic right shift for the signed kernel `integer`.
     AShr,
+    /// Equality; yields 0 or 1.
     Eq,
+    /// Inequality; yields 0 or 1.
     Ne,
+    /// Unsigned less-than.
     Lt,
+    /// Unsigned less-than-or-equal.
     Le,
+    /// Unsigned greater-than.
     Gt,
+    /// Unsigned greater-than-or-equal.
     Ge,
     /// Signed kernel-`integer` ordering comparisons.
     SLt,
+    /// Signed less-than-or-equal.
     SLe,
+    /// Signed greater-than.
     SGt,
+    /// Signed greater-than-or-equal.
     SGe,
     /// Float arithmetic on f64-bit values (`real` operands).
     FAdd,
+    /// Float subtraction.
     FSub,
+    /// Float multiplication.
     FMul,
+    /// Float division.
     FDiv,
     /// Float comparison on f64-bit values (`real` operands); the result is a
     /// `Bool` (0/1), computed with ordered IEEE-754 semantics — integer compare
     /// on the raw bits would misorder negatives and `±0.0`.
     FEq,
+    /// Ordered float inequality.
     FNe,
+    /// Ordered float less-than.
     FLt,
+    /// Ordered float less-than-or-equal.
     FLe,
+    /// Ordered float greater-than.
     FGt,
+    /// Ordered float greater-than-or-equal.
     FGe,
 }
 
@@ -1795,6 +2641,8 @@ struct UnelaboratedInstanceUse {
 }
 
 impl UnelaboratedInstanceUse {
+    /// The storage root this slot belongs to, i.e. the path prefix its leaves
+    /// share.
     fn slot_root(&self) -> &str {
         self.slot
             .split_once('[')
@@ -1834,6 +2682,9 @@ fn select_val(cond: Expr, then: Val, els: Val) -> Val {
 }
 
 impl<'a> Lowering<'a> {
+    /// Record which slots of each instance array were declared and which
+    /// survived generate elaboration, so an intentionally absent element is
+    /// distinguishable from an unresolved path.
     fn collect_instance_array_facts(
         &mut self,
         hierarchy: &Hierarchy,
@@ -1855,6 +2706,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// A lowering pass reporting into `sink`, over the given resolution.
     fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved) -> Self {
         Lowering {
             sink,
@@ -1928,6 +2780,9 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Index every declaration the lowering needs -- entities, structs, enums,
+    /// functions and impls -- so later lookups are by definition rather than by
+    /// name.
     fn collect(&mut self, modules: &'a [Module]) {
         let mut constant_decls = Vec::new();
         for m in modules {
@@ -2127,6 +2982,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Lower one entity instance: its ports, state and behavior, under
+    /// `root_path`.
     fn lower_entity(&mut self, entity_id: DefId, root_path: &str) {
         let Some(edecl) = self.entities.get(&entity_id).copied() else {
             return;
@@ -2195,6 +3052,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Record the source layout for a value and, recursively, its fields, so
+    /// consumers can rebuild the declared shape after flattening.
     fn persist_layout_tree(&mut self, entity: &str, name: &str, layout: &SourceLayout) {
         self.out
             .source_layouts
@@ -2504,10 +3363,13 @@ impl<'a> Lowering<'a> {
         false
     }
 
+    /// Fold a constant expression in `env`, or `None` when it is not constant.
     fn eval_const(&self, expression: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
         eval_const_fns(expression, env, &self.free_fns, 0)
     }
 
+    /// Lower an entity's impl body: declarations, processes and concurrent
+    /// statements.
     fn lower_body(
         &mut self,
         entity_id: DefId,
@@ -4030,6 +4892,8 @@ impl<'a> Lowering<'a> {
     }
 
     #[allow(clippy::type_complexity)]
+    /// Collect constant indices outside their declared bounds from an `if`
+    /// chain, so each is reported once.
     fn collect_if_bad_indices(
         &self,
         iff: &ast::IfStmt,
@@ -4328,6 +5192,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Fold the drivers contributing to one signal through its type's `Resolve`
+    /// impl, per element, rather than as one whole-vector expression.
     fn resolve_vector_contexts(
         &self,
         contexts: &std::collections::BTreeMap<u32, Vec<usize>>,
@@ -4594,6 +5460,8 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// Seed a struct-typed signal's leaves from a literal, so unnamed fields
+    /// take their declared defaults.
     fn seed_struct_literal(
         &mut self,
         prefix: &str,
@@ -4889,6 +5757,9 @@ impl<'a> Lowering<'a> {
         Some(out)
     }
 
+    /// Report a `let` initializer that is not constant (E-P021). An initializer
+    /// is a power-on value folded at elaboration, so one reading another signal
+    /// cannot be honoured.
     fn report_non_constant_init(&mut self, name: &str, span: crate::diag::Span) {
         self.sink.emit(
             crate::diag::Diagnostic::error(format!(
@@ -5169,6 +6040,8 @@ impl<'a> Lowering<'a> {
         out
     }
 
+    /// Allocate the next driver context. Writes within one context override;
+    /// writes across contexts resolve.
     fn next_ctx(&mut self) -> u32 {
         self.cur_ctx += 1;
         self.cur_ctx
@@ -5182,6 +6055,8 @@ impl<'a> Lowering<'a> {
         ctx
     }
 
+    /// Create a signal and return its id, recording its width, domain and
+    /// declaration anchor.
     fn add_signal(
         &mut self,
         entity: &str,
@@ -5476,7 +6351,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Propagate metavalues through operators: drive each vector target's
-    /// companion from [`lower_meta_ir`] of its value. Runs after drivers are
+    /// companion from [`Self::lower_meta_ir`] of its value. Runs after drivers are
     /// lowered.
     fn propagate_metavalues(&mut self) {
         // First discover the complete set of signals that need companions.
@@ -5905,6 +6780,8 @@ impl<'a> Lowering<'a> {
         self.source_layout_at(ty, env, &mut HashSet::new())
     }
 
+    /// The source layout for a type in `env`, recursing through fields and
+    /// elements.
     fn source_layout_at(
         &self,
         ty: &ast::Type,
@@ -6117,6 +6994,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The vector family a type packs into, or `None` when it is not packed.
     fn packed_family(&self, ty: &ast::Type, env: &HashMap<String, i64>) -> Option<String> {
         match ty {
             ast::Type::Indexed { base, .. } => {
@@ -6133,6 +7011,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The declared index range of a type, guarding against an alias cycle.
     fn layout_range(
         &self,
         ty: &ast::Type,
@@ -6150,6 +7029,7 @@ impl<'a> Lowering<'a> {
         self.layout_range(base, env, seen)
     }
 
+    /// The element enum of an array family, so companions can render variants.
     fn array_element_enum(&self, family: &str) -> Option<String> {
         let mut current = family.to_string();
         let mut seen = HashSet::new();
@@ -6288,6 +7168,7 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// The declared fields of a struct type, or `None` when it is not one.
     fn struct_fields(&self, ty: &ast::Type) -> Option<Vec<(String, ast::Type)>> {
         match ty {
             // A generic application: substitute the type parameters into the
@@ -6346,6 +7227,7 @@ impl<'a> Lowering<'a> {
         self.struct_leaf_names_at(name, &mut HashSet::new())
     }
 
+    /// The flattened leaf names of a struct, guarding against a recursive type.
     fn struct_leaf_names_at(&self, name: &str, seen: &mut HashSet<String>) -> Vec<String> {
         if !seen.insert(name.to_string()) {
             return Vec::new();
@@ -6370,6 +7252,7 @@ impl<'a> Lowering<'a> {
         out
     }
 
+    /// The struct's own declared fields, before derivation bases are merged in.
     fn raw_struct_fields(&self, name: &str) -> Option<Vec<(String, ast::Type)>> {
         let s = self.structs.get(name)?;
         // Derived struct: inherited base fields come first (spec: derivation).
@@ -6390,6 +7273,7 @@ impl<'a> Lowering<'a> {
         Some(fields)
     }
 
+    /// The view applied to a type, if any.
     fn view_of(&self, ty: &ast::Type) -> Option<String> {
         if let ast::Type::View { view, target, .. } = ty {
             return Some(format!(
@@ -6418,6 +7302,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Report a generated statement that can have no effect (E-P019), so a
+    /// misspelled name does not compile clean.
     fn lint_generated_dead_statement(
         &mut self,
         statement: &ast::Stmt,
@@ -6549,11 +7435,14 @@ impl<'a> Lowering<'a> {
         None
     }
 
+    /// The block-local binding an expression names, if it is one.
     fn block_local_binding(&self, expression: &ast::Expr) -> Option<BlockLocal> {
         let (scope, name, _) = self.block_local_path(expression)?;
         self.block_scopes.borrow().get(scope)?.get(&name).cloned()
     }
 
+    /// Find a block local by name, returning its scope depth so inner scopes
+    /// shadow outer ones.
     fn block_local_named(&self, name: &str) -> Option<(usize, BlockLocal)> {
         self.block_scopes
             .borrow()
@@ -6595,6 +7484,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The current value of a block local named by an expression.
     fn block_local_value(&self, expression: &ast::Expr) -> Option<Val> {
         let (scope, name, suffix) = self.block_local_path(expression)?;
         let binding = self.block_scopes.borrow().get(scope)?.get(&name)?.clone();
@@ -6646,6 +7536,8 @@ impl<'a> Lowering<'a> {
         self.checked_runtime_index_with_bounds(index, labels, left, right)
     }
 
+    /// Wrap a runtime index in its declared-domain predicate, so an
+    /// out-of-range access fails with the offending value and range.
     fn checked_runtime_index_with_bounds(
         &self,
         index: &ast::Expr,
@@ -6668,6 +7560,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Read one element out of a packed block local.
     fn lower_block_packed_read(
         &self,
         ty: &ast::Type,
@@ -6709,6 +7602,7 @@ impl<'a> Lowering<'a> {
         Some(result)
     }
 
+    /// Read through a walked access path into a block local.
     fn lower_block_dynamic_access_from(
         &self,
         ty: &ast::Type,
@@ -6777,6 +7671,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The bit width of a block local's type.
     fn block_local_width(&self, ty: &ast::Type) -> u32 {
         self.enum_representation(ty)
             .map(|(width, _)| width)
@@ -6792,6 +7687,8 @@ impl<'a> Lowering<'a> {
             })
     }
 
+    /// The structural default of a block local's type -- always initialized,
+    /// even when undriven.
     fn block_local_default(&self, ty: &ast::Type) -> Val {
         if let Some((element, indices)) = array_of(
             ty,
@@ -6825,6 +7722,7 @@ impl<'a> Lowering<'a> {
         Val::Scalar(Expr::Const(value))
     }
 
+    /// Prefix a value's leaf names with `prefix` and append them to `out`.
     fn prefix_block_value(prefix: &str, value: Val, out: &mut Vec<(String, Expr)>) {
         match value {
             Val::Scalar(value) => out.push((prefix.to_string(), value)),
@@ -6909,6 +7807,7 @@ impl<'a> Lowering<'a> {
         Val::Scalar(expression)
     }
 
+    /// Bring a block local into scope with its declared type and default.
     fn declare_block_local(&self, declaration: &ast::LetDecl) {
         let Some(ty) = declaration.ty.clone() else {
             return;
@@ -7255,6 +8154,8 @@ impl<'a> Lowering<'a> {
         true
     }
 
+    /// The leaves a dynamic write through `steps` may touch, with the guard that
+    /// selects each.
     fn block_dynamic_targets(
         &self,
         ty: &ast::Type,
@@ -7320,6 +8221,8 @@ impl<'a> Lowering<'a> {
         self.cur_span = outer;
     }
 
+    /// Lower one statement under an optional guard, which accumulates as
+    /// branches nest.
     fn lower_stmt_at(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
         // Every index in this statement is as constant as it will ever be: a
         // generate `for` substitutes its variable before re-dispatching here.
@@ -8012,6 +8915,8 @@ impl<'a> Lowering<'a> {
         result.unwrap_or(Val::Scalar(Expr::Unknown))
     }
 
+    /// The condition selecting one match arm, built from its pattern and the
+    /// scrutinee.
     fn arm_match_cond(
         &self,
         pattern: &ast::Pattern,
@@ -8107,6 +9012,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Lower the `else` side of a combinational `if`.
     fn lower_combinational_else(&mut self, eb: &ast::ElseBranch, cond: Option<Expr>) {
         match eb {
             ast::ElseBranch::Block(b) => self.lower_combinational_block(b, cond),
@@ -8373,6 +9279,7 @@ impl<'a> Lowering<'a> {
         self.cur_span = outer;
     }
 
+    /// Lower the `else` side of an event-controlled `if`.
     fn lower_event_else(
         &mut self,
         eb: &ast::ElseBranch,
@@ -8408,6 +9315,7 @@ impl<'a> Lowering<'a> {
         self.lower_dynamic_access_from(&root, &steps)
     }
 
+    /// Read through a walked access path into a signal.
     fn lower_dynamic_access_from(&self, path: &str, steps: &[AccessStep<'_>]) -> Option<Expr> {
         let Some((step, rest)) = steps.split_first() else {
             return self.locals.get(path).copied().map(Expr::Current);
@@ -9065,6 +9973,8 @@ impl<'a> Lowering<'a> {
         Some(out)
     }
 
+    /// The signal an assignment target names, or `None` when it is not a simple
+    /// place.
     fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
         // Prefer a constant-folded element path (`w[i+1]` with `i` bound in a
         // generate loop -> `w[3]`), so an unrolled constant index resolves to a
@@ -9161,6 +10071,7 @@ impl<'a> Lowering<'a> {
         out
     }
 
+    /// Lower an expression into IR.
     fn lower_expr(&self, e: &ast::Expr) -> Expr {
         match e {
             ast::Expr::Call { callee, args, .. } => {
@@ -9598,6 +10509,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The width of the value an expression refers to, when it names storage.
     fn ref_width(&self, e: &ast::Expr) -> Option<u32> {
         if let Some(ty) = self.block_local_type(e) {
             return Some(self.block_local_width(&ty));
@@ -9665,6 +10577,7 @@ impl<'a> Lowering<'a> {
         self.ast_width(e)
     }
 
+    /// The width an expression produces, from its operands and context.
     fn ast_width(&self, e: &ast::Expr) -> u32 {
         if let Some(ty) = self.block_local_type(e) {
             return self.block_local_width(&ty);
@@ -9818,6 +10731,8 @@ impl<'a> Lowering<'a> {
         Some(bin(BinOp::Xor, inner, words_const(ones)))
     }
 
+    /// Inline an operator impl's body at the call site, since hardware has no
+    /// calls: the body becomes nested selects.
     fn inline_op(
         &self,
         op: &str,
@@ -10012,6 +10927,7 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
+    /// The `(index, offset)` positions of a packed type's elements.
     fn block_packed_positions(&self, ty: &ast::Type) -> Option<Vec<(i64, u32)>> {
         let (left, right) = self.declared_range(ty, &self.cur_env)?;
         let low = left.min(right);
@@ -10100,6 +11016,8 @@ impl<'a> Lowering<'a> {
         Some((to_storage(a)?, to_storage(b)?))
     }
 
+    /// Lower indexing through a type's own index contract rather than the
+    /// built-in array form.
     fn lower_custom_index(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Expr> {
         let arg = self.index_argument(index)?;
         let span = ast::expr_span(index);
@@ -10117,6 +11035,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The argument a custom index passes to its contract.
     fn index_argument(&self, index: &ast::Expr) -> Option<ast::Expr> {
         let ast::Expr::Range { lo, hi, span } = index else {
             return (!matches!(index, ast::Expr::PartialRange { .. })).then(|| index.clone());
@@ -10169,6 +11088,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether a type resolves to `expected` after alias expansion.
     fn type_resolves_to(&self, ty: &ast::Type, expected: &str) -> bool {
         let mut ty = ty;
         let mut seen = std::collections::HashSet::new();
@@ -10244,6 +11164,7 @@ impl<'a> Lowering<'a> {
             .copied()
     }
 
+    /// The discriminant an `Enum::Variant` path names.
     fn enum_variant_path(&self, path: &ast::Path) -> Option<u64> {
         let (enumeration, variant) = self.free_fns.enum_variant_key(path)?;
         self.enum_variant(&enumeration, &variant)
@@ -10328,10 +11249,14 @@ impl<'a> Lowering<'a> {
         self.has_metavalue(&discs).then(|| words_const(discs))
     }
 
+    /// The std-derived encoding for a logic type, which owns the value table
+    /// rather than the backend.
     fn logic_encoding(&self, ty: &str) -> Option<&LogicEncoding> {
         self.logic_encodings.get(ty)
     }
 
+    /// Whether any discriminant in the set is a metavalue, so a companion plane
+    /// is needed.
     fn has_metavalue(&self, discs: &[u64]) -> bool {
         let Some(encoding) = self.logic_encoding(DEFAULT_LOGIC_TYPE) else {
             return false;
@@ -10342,6 +11267,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// The discriminant of `'X'`, from std's encoding rather than a constant.
     fn x_disc(&self) -> u64 {
         self.logic_encoding(DEFAULT_LOGIC_TYPE)
             .and_then(LogicEncoding::canonical_unknown)
@@ -10504,6 +11430,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Build a binary IR node, selecting the unsigned, signed or float form from
+    /// the operand kinds.
     fn make_binary(
         &self,
         op: ast::BinOp,
@@ -10576,6 +11504,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether an expression reads a signal that is not a kernel `integer`,
+    /// which decides whether signed operators apply.
     fn has_non_integer_signal(&self, e: &Expr) -> bool {
         match e {
             Expr::MetaCmp { inner, .. } => self.has_non_integer_signal(inner),
@@ -10656,6 +11586,8 @@ impl<'a> Lowering<'a> {
             == Some("integer")
     }
 
+    /// Whether a binary operation uses kernel-`integer` semantics, from both
+    /// operands.
     fn binary_uses_kernel_integer(&self, lhs_ast: &ast::Expr, rhs_ast: &ast::Expr) -> bool {
         // An explicit kernel-integer declaration is authoritative. In
         // particular, the type table may describe `integer(real_value)` with
@@ -10884,6 +11816,7 @@ impl<'a> Lowering<'a> {
         found
     }
 
+    /// Inline a `From` conversion's body for the target type.
     fn lower_from_inner(
         &self,
         target: &str,
@@ -11922,6 +12855,8 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower an expression to a value in `env`, which may be an aggregate of
+    /// leaves rather than a single expression.
     fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
         match e {
             // `self::length` inside an operator-impl body: the bound operand's
@@ -12195,6 +13130,7 @@ impl<'a> Lowering<'a> {
         self.inline_block(&body.stmts, &env)
     }
 
+    /// Lower an expression to a single scalar in `env`.
     fn lower_scalar_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Expr {
         match self.lower_val_env(e, env) {
             Val::Scalar(e) => e,
@@ -12234,6 +13170,7 @@ impl<'a> Lowering<'a> {
         self.aggregate_signal_val(&path)
     }
 
+    /// The aggregate value of a struct- or array-typed signal, as its leaves.
     fn aggregate_signal_val(&self, name: &str) -> Option<Val> {
         if !self.local_struct_repr.contains_key(name) && !self.local_array.contains_key(name) {
             return None;
@@ -12309,12 +13246,14 @@ impl<'a> Lowering<'a> {
             .get(&format!("{}.{}", self.cur_instance_path, local_path))
     }
 
+    /// The declared value range retained for a local, when lowering kept one.
     fn persisted_range(&self, local_path: &str) -> Option<(i64, i64)> {
         self.persisted_layout(local_path)
             .and_then(SourceLayout::index_range)
             .map(|range| (range.left, range.right))
     }
 
+    /// Lower a system attribute (`'event`, `'old`, `'length`) into its IR form.
     fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
         // `::length` is elaboration-time metadata: an array's element count,
         // else a signal's bit width (they coincide for a flat vector, so one
@@ -12498,6 +13437,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The signal at the base of an access expression.
     fn base_signal(&self, base: &ast::Expr) -> Option<SignalId> {
         if let ast::Expr::Path(p) = base {
             if p.segments.len() == 1 {
@@ -12832,6 +13772,8 @@ fn bit(e: &Expr, i: u32) -> Expr {
     }
 }
 
+/// A test for membership in a discriminant set, emitted as a comparison
+/// chain rather than a table read.
 fn logic_disc_in(discriminant: Expr, members: &std::collections::HashSet<u64>) -> Expr {
     members
         .iter()
@@ -12845,6 +13787,7 @@ fn logic_disc_in(discriminant: Expr, members: &std::collections::HashSet<u64>) -
         .unwrap_or(Expr::Const(0))
 }
 
+/// The value-plane bit for a discriminant, from std's encoding.
 fn logic_value_bit(discriminant: Expr, encoding: &LogicEncoding) -> Expr {
     let mut result = Expr::Const(0);
     let mut entries = encoding.value_bits.iter().collect::<Vec<_>>();
@@ -12863,6 +13806,7 @@ fn logic_value_bit(discriminant: Expr, encoding: &LogicEncoding) -> Expr {
     result
 }
 
+/// The result of a binary logic table lookup, unrolled from std's table.
 fn logic_binary_table_result(left: Expr, right: Expr, table: &HashMap<(u64, u64), u64>) -> Expr {
     let side = table
         .keys()
@@ -12903,6 +13847,7 @@ fn logic_binary_table_result(left: Expr, right: Expr, table: &HashMap<(u64, u64)
     }
 }
 
+/// The result of a unary logic table lookup, unrolled from std's table.
 fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>) -> Expr {
     let cells = table.keys().copied().max().unwrap_or(0) + 1;
     let mut words = vec![0u64; usize::try_from(cells.saturating_mul(4).div_ceil(64)).unwrap_or(0)];
@@ -12975,6 +13920,8 @@ fn compact_lookup_tables(design: &mut Design) {
     design.lookup_tables = tables;
 }
 
+/// Replace an unrolled table expression with a shared [`LookupTable`],
+/// interning identical tables so one is emitted per distinct table.
 fn compact_lookup_expr(
     expr: Expr,
     tables: &mut Vec<LookupTable>,
@@ -13239,6 +14186,7 @@ fn logic_element_disc(value: &Expr, meta: &Expr, index: u32, encoding: &LogicEnc
     }
 }
 
+/// Replicate one element across `count` positions at `stride` bits each.
 fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
     let mut result = Expr::Const(0);
     for index in 0..count {
@@ -13302,6 +14250,7 @@ fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
     }
 }
 
+/// Sort and deduplicate a signal list in place.
 fn dedup(v: &mut Vec<SignalId>) {
     let mut seen = std::collections::HashSet::new();
     v.retain(|id| seen.insert(*id));
@@ -13366,6 +14315,7 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
 /// on (spec Stage 6 / the compiled-backend plan, B1).
 #[derive(Clone, Debug)]
 pub struct Process {
+    /// What kind of scheduled process this is.
     pub kind: ProcessKind,
     /// Source labels of the contexts contributing to this scheduled process.
     /// A resolved signal may combine more than one named source process.
@@ -13382,22 +14332,31 @@ pub struct Process {
 /// engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IndexSite {
+    /// The access site, for the runtime failure report.
     pub span: crate::diag::Span,
+    /// The declaration's written left bound.
     pub left: i64,
+    /// The declaration's written right bound.
     pub right: i64,
 }
 
+/// How a scheduled process is driven.
 #[derive(Clone, Debug)]
 pub enum ProcessKind {
     /// A combinational target, resolved from the drivers that target it, in
     /// source order (spec 3.14 last-writer-wins). `drivers` indexes
     /// `Design::drivers`.
     Comb {
+        /// The signal this process settles.
         target: SignalId,
+        /// Indices into [`Design::drivers`], in source order.
         drivers: Vec<usize>,
     },
     /// A clocked event block. `block` indexes `Design::event_blocks`.
-    Event { block: usize },
+    Event {
+        /// Index into [`Design::event_blocks`].
+        block: usize,
+    },
 }
 
 impl Design {
@@ -13442,6 +14401,8 @@ impl Design {
     /// array mux/write; deduplication makes all those copies one diagnostic
     /// site and one runtime id.
     pub fn index_sites(&self) -> Vec<IndexSite> {
+        /// Collect the distinct runtime index sites in an expression, so each
+        /// reports once.
         fn collect(expr: &Expr, sites: &mut Vec<IndexSite>, seen: &mut HashSet<IndexSite>) {
             match expr {
                 Expr::CheckedIndex {
@@ -13852,6 +14813,7 @@ impl Design {
 
 // --- expression builders ----------------------------------------------------
 
+/// Logical negation of a 0/1 expression.
 fn not(e: Expr) -> Expr {
     Expr::Unary {
         op: UnOp::Not,
@@ -13869,6 +14831,7 @@ fn pattern_has_wildcard(p: &ast::Pattern) -> bool {
     }
 }
 
+/// Equality between two expressions, yielding 0 or 1.
 fn eq(lhs: Expr, rhs: Expr) -> Expr {
     Expr::Binary {
         op: BinOp::Eq,
@@ -13905,6 +14868,7 @@ fn and(acc: Option<Expr>, c: Expr) -> Expr {
 
 // --- rendering --------------------------------------------------------------
 
+/// Render an expression for the IR dump.
 fn render(e: &Expr, d: &Design) -> String {
     match e {
         Expr::MetaCmp { inner, .. } => format!("metacmp({})", render(inner, d)),
@@ -13953,6 +14917,7 @@ fn render(e: &Expr, d: &Design) -> String {
     }
 }
 
+/// Render an expression parenthesized, for use as an operand.
 fn paren(e: &Expr, d: &Design) -> String {
     match e {
         Expr::Binary { .. } | Expr::Unary { .. } => format!("({})", render(e, d)),
@@ -13960,6 +14925,7 @@ fn paren(e: &Expr, d: &Design) -> String {
     }
 }
 
+/// The dump symbol for a prefix operator.
 fn un_sym(op: UnOp) -> &'static str {
     match op {
         UnOp::Not => "not ",
@@ -13968,6 +14934,7 @@ fn un_sym(op: UnOp) -> &'static str {
     }
 }
 
+/// The dump symbol for an infix operator.
 fn bin_sym(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "+",
@@ -14033,6 +15000,7 @@ fn expr_is_event(e: &ast::Expr) -> bool {
     }
 }
 
+/// Convert an AST prefix operator into its IR form.
 fn lower_unop(op: AstUnOp) -> UnOp {
     match op {
         AstUnOp::Not => UnOp::Not,
@@ -14040,6 +15008,8 @@ fn lower_unop(op: AstUnOp) -> UnOp {
     }
 }
 
+/// Convert an AST infix operator into its IR form, or `None` when it is
+/// library-defined and must be inlined instead.
 fn lower_binop(op: AstBinOp) -> Option<BinOp> {
     Some(match op {
         AstBinOp::Add => BinOp::Add,
@@ -14060,6 +15030,7 @@ fn lower_binop(op: AstBinOp) -> Option<BinOp> {
     })
 }
 
+/// Parse an integer literal that fits one word, honouring radix prefixes.
 fn parse_int(text: &str) -> Option<u64> {
     let normalized = text.trim().replace('_', "");
     let t = normalized.as_str();
@@ -14072,6 +15043,8 @@ fn parse_int(text: &str) -> Option<u64> {
     }
 }
 
+/// An integer literal as a constant expression, widening to a multi-word
+/// constant when it does not fit one word.
 fn integer_const(text: &str) -> Option<Expr> {
     let text = text.trim().replace('_', "");
     let (radix, digits) =
@@ -14101,6 +15074,8 @@ fn integer_const(text: &str) -> Option<Expr> {
     Some(words_const(words))
 }
 
+/// A constant from low-word-first words, narrowing to [`Expr::Const`] when
+/// one word suffices.
 fn words_const(mut words: Vec<u64>) -> Expr {
     while words.last() == Some(&0) && words.len() > 1 {
         words.pop();
@@ -14112,6 +15087,7 @@ fn words_const(mut words: Vec<u64>) -> Expr {
     }
 }
 
+/// Fold a constant expression using the already-folded constants in scope.
 fn lower_const_value(
     expression: &ast::Expr,
     exact: &HashMap<String, Expr>,
@@ -14167,6 +15143,7 @@ fn source_type_span(ty: &ast::Type) -> crate::diag::Span {
     }
 }
 
+/// The bit width of a declared type in `env`.
 fn type_width(
     t: &ast::Type,
     env: &HashMap<String, i64>,
@@ -14295,7 +15272,7 @@ fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Option<i64> {
     eval_const_fns(e, env, &fns, 0)
 }
 
-/// [`eval_const`] with module functions in scope: a call whose arguments
+/// `eval_const` with module functions in scope: a call whose arguments
 /// const-evaluate runs the function body statically (recursion allowed to a
 /// bounded depth) — `clog2(DEPTH)` works in width positions.
 pub fn eval_const_fns(
@@ -14431,6 +15408,8 @@ fn eval_logic_function(
     eval_logic_stmts(&function.body.as_ref()?.stmts, env, variants)
 }
 
+/// Evaluate a std function body over logic values, so the value tables come
+/// from std source rather than being duplicated in the backend.
 fn eval_logic_stmts(
     statements: &[ast::Stmt],
     env: &HashMap<String, u64>,
@@ -14470,6 +15449,7 @@ fn eval_logic_stmts(
     None
 }
 
+/// Evaluate one std expression over logic values.
 fn eval_logic_expr(
     expression: &ast::Expr,
     env: &HashMap<String, u64>,
@@ -14557,6 +15537,9 @@ pub fn derived_widths(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<St
         .collect()
 }
 
+/// The vector families declared across the loaded modules, used to recognize
+/// a library newtype over an array (`unsigned`, `signed`, or a user
+/// equivalent) as a vector rather than a plain aggregate.
 pub fn array_families(
     modules: &[Module],
     fns: &FunctionIndex<'_>,
@@ -14610,6 +15593,7 @@ fn is_array_family_struct(
     }
 }
 
+/// Index every enum's variants and discriminants across the modules.
 fn enum_index<'a>(
     modules: &'a [Module],
     fns: &FunctionIndex<'_>,
@@ -15023,6 +16007,7 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
     }
 }
 
+/// Substitute path references throughout a block, for inlining.
 fn subst_block_paths(b: &ast::Block, map: &HashMap<String, ast::Expr>) -> ast::Block {
     ast::Block {
         stmts: b.stmts.iter().map(|s| subst_stmt_paths(s, map)).collect(),
@@ -15030,6 +16015,7 @@ fn subst_block_paths(b: &ast::Block, map: &HashMap<String, ast::Expr>) -> ast::B
     }
 }
 
+/// Substitute path references throughout an `if` chain.
 fn subst_if_paths(iff: &ast::IfStmt, map: &HashMap<String, ast::Expr>) -> ast::IfStmt {
     ast::IfStmt {
         cond: subst_expr_paths(&iff.cond, map),
@@ -15145,6 +16131,8 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
     }
 }
 
+/// Substitute a loop variable's value throughout a statement, for generate
+/// unrolling.
 fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
     match s {
         ast::Stmt::Let(l) => {
@@ -15200,6 +16188,7 @@ fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt {
     }
 }
 
+/// Substitute a loop variable's value throughout an `if` chain.
 fn subst_if(iff: &ast::IfStmt, var: &str, val: i64) -> ast::IfStmt {
     let mut n = iff.clone();
     n.cond = subst_expr(&iff.cond, var, val);
@@ -15372,6 +16361,8 @@ fn int_literal(val: i64, span: crate::diag::Span) -> ast::Expr {
     }
 }
 
+/// Fold constant arithmetic in an expression, so unrolled generate bodies
+/// carry concrete indices.
 fn fold_const(e: ast::Expr, span: crate::diag::Span) -> ast::Expr {
     match eval_const(&e, &HashMap::new()) {
         Some(v) => int_literal(v, span),
@@ -15477,6 +16468,7 @@ fn expr_path(e: &ast::Expr) -> Option<String> {
 /// index suffixes. Unlike `expr_path`, indices remain as expressions so a
 /// runtime access can be expanded over the concrete leaf paths.
 fn access_steps(e: &ast::Expr) -> Option<(String, Vec<AccessStep<'_>>)> {
+    /// Walk a nested access into its ordered steps, returning the base path.
     fn walk<'e>(e: &'e ast::Expr, steps: &mut Vec<AccessStep<'e>>) -> Option<String> {
         match e {
             ast::Expr::Path(path) if path.segments.len() == 1 => {
@@ -15596,12 +16588,14 @@ fn enum_reprs(modules: &[Module], fns: &FunctionIndex<'_>) -> HashMap<String, u3
     out
 }
 
+/// Whether an entity carries the canonical `std::attrs::test` attribute.
 fn is_test_entity(e: &ast::EntityDecl, resolved: &Resolved) -> bool {
     e.attrs
         .iter()
         .any(|attribute| crate::resolve::is_enabled_std_test_attribute(resolved, attribute))
 }
 
+/// The leading name of a type expression.
 fn type_head_name(t: &ast::Type) -> Option<&str> {
     match t {
         ast::Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
@@ -15610,6 +16604,7 @@ fn type_head_name(t: &ast::Type) -> Option<&str> {
     }
 }
 
+/// The definition a type expression names.
 fn type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<DefId> {
     match ty {
         ast::Type::Path(path) => resolved.resolved(path.span),
@@ -15620,6 +16615,7 @@ fn type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<DefId> {
     }
 }
 
+/// Whether an impl is a blanket one over any array.
 fn is_blanket_array_impl(im: &ast::ImplDecl) -> bool {
     let ast::Type::Indexed {
         base, index: None, ..
@@ -15633,6 +16629,7 @@ fn is_blanket_array_impl(im: &ast::ImplDecl) -> bool {
     im.params.params.iter().any(|param| param.name.text == head)
 }
 
+/// The trait a blanket array impl requires of its element type.
 fn blanket_requirement(im: &ast::ImplDecl, fns: &FunctionIndex<'_>) -> Option<String> {
     let ast::Type::Indexed { base, .. } = &im.target else {
         return None;
@@ -15799,6 +16796,8 @@ mod tests {
     }
 
     #[test]
+    /// An exhaustive match assigns on every path, so it must not be reported as
+    /// an inferred latch.
     fn an_exhaustive_match_is_not_an_inferred_latch() {
         let latches = |src: &str| {
             lower_diags(src)
@@ -15849,6 +16848,7 @@ mod tests {
         );
     }
 
+    /// Lower `src` with the minimal library types the tests need.
     fn lower_src(src: &str) -> Design {
         // unsigned/signed are library types (attribute-marked vectors), not seeded.
         let src =
@@ -15864,6 +16864,7 @@ mod tests {
         lower(modules, &resolved, &hier, &mut sink)
     }
 
+    /// Lower `src` and return the diagnostics it produced.
     fn lower_diagnostics(src: &str) -> Vec<crate::diag::Diagnostic> {
         let src =
             format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
@@ -15877,6 +16878,7 @@ mod tests {
         sink.diagnostics().to_vec()
     }
 
+    /// Lower `src` and return its diagnostic messages as strings.
     fn lower_diags(src: &str) -> Vec<String> {
         lower_diagnostics(src)
             .iter()
@@ -15885,6 +16887,8 @@ mod tests {
     }
 
     #[test]
+    /// Entities with the same leaf name in different modules lower their own
+    /// resolved bodies rather than one shadowing the other.
     fn equal_entity_leaves_lower_the_resolved_bodies() {
         let sources = [
             (
@@ -15930,6 +16934,7 @@ mod tests {
     }
 
     #[test]
+    /// Equal root entity leaves get distinct qualified signal paths.
     fn equal_root_entity_leaves_get_distinct_qualified_paths() {
         let sources = [
             (
@@ -15977,6 +16982,7 @@ mod tests {
     }
 
     #[test]
+    /// Free functions with the same leaf name likewise lower their own bodies.
     fn equal_free_function_leaves_lower_the_resolved_bodies() {
         let sources = [
             (
@@ -16026,6 +17032,8 @@ mod tests {
     }
 
     #[test]
+    /// An entity associated function keeps its resolved owner, so two entities
+    /// with the same leaf name do not share one.
     fn entity_associated_functions_keep_resolved_owner_identity() {
         let sources = [
             (
@@ -16095,6 +17103,7 @@ mod tests {
     }
 
     #[test]
+    /// Type aliases with the same leaf name keep their own representations.
     fn equal_type_alias_leaves_keep_the_resolved_representation() {
         let sources = [
             (
@@ -16141,6 +17150,7 @@ mod tests {
     }
 
     #[test]
+    /// Enums with the same leaf name keep distinct variants, widths and symbols.
     fn equal_enum_leaves_keep_variants_widths_and_symbols_distinct() {
         let sources = [
             (
@@ -16209,6 +17219,8 @@ mod tests {
     }
 
     #[test]
+    /// Structs with the same leaf name keep distinct fields, layouts and
+    /// drivers.
     fn equal_struct_leaves_keep_fields_layouts_and_drivers_distinct() {
         let sources = [
             (
@@ -16286,6 +17298,7 @@ mod tests {
     }
 
     #[test]
+    /// View method dispatch uses both the view and the backing type's identity.
     fn applied_view_methods_dispatch_on_view_and_backing_identity() {
         let source = "module m; \
             struct Stream { value: integer } struct Queue { value: integer } \
@@ -16325,6 +17338,7 @@ mod tests {
     }
 
     #[test]
+    /// Views and traits with the same leaf name keep module-specific semantics.
     fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
         let sources = [
             (
@@ -16421,6 +17435,8 @@ mod tests {
     }
 
     #[test]
+    /// A user trait named like a compiler hook keeps its own module identity and
+    /// does not become the hook.
     fn custom_traits_named_like_hooks_keep_their_module_identity() {
         let sources = [
             (
@@ -16476,6 +17492,8 @@ mod tests {
     }
 
     #[test]
+    /// A user trait named like the logic encoding cannot manufacture backend
+    /// metadata; the encoding comes from std's declaration.
     fn custom_logic_encoding_trait_cannot_create_backend_metadata() {
         let sources = [
             ("module std::logic; pub trait LogicEncoding {}", FileId(0)),
@@ -16522,6 +17540,8 @@ mod tests {
     }
 
     #[test]
+    /// Array-family recognition is structural: it follows the nominal shape, not
+    /// a trait name.
     fn nominal_array_shape_selects_array_family_not_a_trait_name() {
         let sources = [
             ("module scalar; pub struct Word(integer);", FileId(0)),
@@ -16546,6 +17566,7 @@ mod tests {
     }
 
     #[test]
+    /// An operator with same-leaf operand types selects the resolved overload.
     fn equal_operator_operand_leaves_select_the_resolved_overload() {
         let sources = [
             ("module common; pub struct Acc(integer);", FileId(0)),
@@ -16605,6 +17626,7 @@ mod tests {
     }
 
     #[test]
+    /// Module constants with the same leaf name lower their own values.
     fn equal_module_constant_leaves_lower_the_resolved_values() {
         let sources = [
             ("module a; pub const VALUE: integer = 11;", FileId(0)),
@@ -16648,6 +17670,7 @@ mod tests {
     }
 
     #[test]
+    /// A ranged module constant keeps its qualified width identity.
     fn module_range_constant_keeps_its_qualified_width_identity() {
         let design = lower_src(
             "module widths; const SPAN: range = 7..0; \
@@ -16677,6 +17700,8 @@ mod tests {
     }
 
     #[test]
+    /// Late IR lints point at the signal's declaration, which is the only source
+    /// location a synthesized driver has.
     fn late_ir_lints_point_at_the_signal_declaration() {
         let source = "module m;\n\
             entity L { c: Logic in, looped: unsigned[8] out, latched: unsigned[8] out, forgotten: unsigned[8] out }\n\
@@ -16726,6 +17751,8 @@ mod tests {
     }
 
     #[test]
+    /// Late IR errors keep their stable codes and real source spans rather than
+    /// reporting against generated shapes.
     fn late_ir_errors_keep_stable_codes_and_source_spans() {
         let cases = [
             (
@@ -16845,6 +17872,8 @@ mod tests {
     }
 
     #[test]
+    /// A multi-word integer literal keeps every word; there is no one-word
+    /// ceiling.
     fn integer_literals_keep_all_words() {
         let d = lower_src(
             "module m;
@@ -16858,6 +17887,8 @@ mod tests {
     }
 
     #[test]
+    /// Signals retain their kernel-`integer` identity, so signed operators and
+    /// formatting apply.
     fn signals_retain_kernel_integer_identity() {
         let design = lower_src(
             "module m;
@@ -16881,6 +17912,7 @@ mod tests {
     }
 
     #[test]
+    /// A deep but acyclic derivation chain has no arbitrary depth limit.
     fn deep_acyclic_type_derivation_has_no_magic_depth_limit() {
         let mut src = String::from("module m;\nstruct S0(Bit);\n");
         for i in 1..80 {
@@ -16995,6 +18027,8 @@ mod tests {
     }
 
     #[test]
+    /// Parallel drivers on a type with a `Resolve` impl are legal and must not
+    /// warn.
     fn resolved_parallel_drivers_are_legal_without_a_warning() {
         let diagnostics = lower_diags(
             "module m;\n\
@@ -17015,6 +18049,7 @@ mod tests {
     }
 
     #[test]
+    /// Bit patterns lower to the mask and match pair they imply.
     fn bit_pattern_masks() {
         // Bare strings are per-bit with `-` as the don't-care.
         assert_eq!(
@@ -17047,6 +18082,7 @@ mod tests {
     }
 
     #[test]
+    /// An applied view flattens the backing struct's fields.
     fn applied_view_flattens_its_backing_struct_fields() {
         let d = lower_src(
             "module m;\n\
@@ -17072,6 +18108,7 @@ mod tests {
     }
 
     #[test]
+    /// A generic trait function reaches an applied view's backing fields.
     fn generic_trait_functions_access_applied_view_backing_fields() {
         let d = lower_src(
             "module m;\n\
@@ -17132,6 +18169,8 @@ mod tests {
     }
 
     #[test]
+    /// An enum signal with no initializer takes its first variant, so it is
+    /// always initialized.
     fn enum_signal_inits_to_first_variant() {
         // Derived `new()` default: an uninitialized enum signal powers on
         // holding its *first* variant. With a non-zero-based first
@@ -17158,6 +18197,7 @@ mod tests {
     }
 
     #[test]
+    /// An explicit initializer overrides the first-variant default.
     fn explicit_enum_init_overrides_first_variant() {
         // An explicit `let p = Run` beats the first-variant default.
         let d = lower_src(
@@ -17175,6 +18215,7 @@ mod tests {
     }
 
     #[test]
+    /// `T()` lowers to the type's structural default rather than a call.
     fn nullary_constructor_lowers_to_default() {
         // `T()` in expression position is the type's derived default: an enum →
         // its first variant, a numeric/vector → 0. Same rule as the implicit
@@ -17206,6 +18247,7 @@ mod tests {
     }
 
     #[test]
+    /// `T()` on a struct fills every field with its default.
     fn nullary_constructor_defaults_struct_fields() {
         // `S()` on a struct defaults each field structurally: an enum field to
         // its first variant, a numeric field to 0 — through a composed struct
@@ -17244,6 +18286,7 @@ mod tests {
     }
 
     #[test]
+    /// The range attributes read the declared bounds, in the declared direction.
     fn range_attributes_read_declared_bounds() {
         // A descending `[7..0]` and an ascending width-only `[8]` expose the
         // VHDL range attributes; direction is preserved.
@@ -17285,6 +18328,7 @@ mod tests {
     }
 
     #[test]
+    /// An output port nothing drives warns (W-P011).
     fn undriven_output_port_warns() {
         // `forgotten` is never assigned; `driven` is. Only the former warns.
         let diags = lower_diags(
@@ -17308,6 +18352,7 @@ mod tests {
     }
 
     #[test]
+    /// An internal signal nothing drives warns.
     fn undriven_internal_signal_warns() {
         // `dead` (value-less, never assigned) warns; `used` is driven and
         // `konst` has an initializer, so neither does.
@@ -17328,6 +18373,8 @@ mod tests {
     }
 
     #[test]
+    /// An unused internal signal warns, without the test runner's own signals
+    /// producing false positives.
     fn unused_internal_signal_warns_without_runner_false_positives() {
         let diags = lower_diags(
             "module m;\n\
@@ -17343,6 +18390,7 @@ mod tests {
     }
 
     #[test]
+    /// An `if`/`else` mux assigns on both paths, so it is not a latch.
     fn if_else_mux_is_not_a_latch() {
         // A signal assigned in both the `if` and the `else` is fully covered —
         // no possible-latch warning — but one assigned only in the `if` is.
@@ -17378,6 +18426,8 @@ mod tests {
     }
 
     #[test]
+    /// Assignment widths are strict: a mismatch is reported rather than
+    /// silently resized.
     fn strict_assignment_width_mismatch() {
         // A parameterized width (`unsigned[W]`) the type checker can't see resolves
         // at elaboration; assigning a 16-bit signal to an 8-bit target is then a
@@ -17419,6 +18469,7 @@ mod tests {
     }
 
     #[test]
+    /// A combinational cycle with no register warns (W-P010).
     fn combinational_loop_lint() {
         // `t = t + a;` is a zero-delay self-cycle -> flagged; a plain chain
         // (`y = x + 1`) is not.
@@ -17447,6 +18498,7 @@ mod tests {
     }
 
     #[test]
+    /// A branch that does not assign on every path warns as a possible latch.
     fn possible_latch_lint() {
         // `y` is only assigned under a condition (inferred latch); `z` has an
         // unconditional default and must not be flagged.
@@ -17464,6 +18516,8 @@ mod tests {
     }
 
     #[test]
+    /// Enum signals carry their variant symbols, so waveforms show names rather
+    /// than numbers.
     fn enum_signals_carry_symbols() {
         // A Logic-typed signal records its enum type, and the design exports the
         // discriminant -> symbol map (with std's char-variant names) so
@@ -17521,6 +18575,7 @@ mod tests {
         }\n";
 
     #[test]
+    /// The basic lowering produces the expected signals, driver and event block.
     fn lowers_signals_driver_and_event_block() {
         let d = lower_src(COUNTER);
         // Counter signals: clk, rst, en, count, value. The instance's `W = 8`
@@ -17536,6 +18591,7 @@ mod tests {
     }
 
     #[test]
+    /// Nested instances lower with their port connections resolved.
     fn lowers_nested_instances_with_connections() {
         // Add2 instantiates two Add1s wired through `mid`. Each instance must
         // get its own signals, and every port connection must become a driver.
@@ -17579,6 +18635,7 @@ mod tests {
     }
 
     #[test]
+    /// An `if` expression lowers to a select rather than a branch.
     fn if_expression_lowers_to_select() {
         let d = lower_src(
             "module m;\n\
@@ -17674,6 +18731,7 @@ mod tests {
     }
 
     #[test]
+    /// A runtime index followed by a struct field reaches the right scalar leaf.
     fn runtime_index_then_struct_field_reaches_the_scalar_leaf() {
         let source = "module m;
              struct Packet { data: unsigned[8], tag: unsigned[4] }
@@ -17696,6 +18754,8 @@ mod tests {
     }
 
     #[test]
+    /// Packed vector indices use the declared labels and the corresponding
+    /// storage offsets, which differ for a descending range.
     fn packed_vector_indices_use_declared_labels_and_storage_offsets() {
         let design = lower_src(
             "module m; using std::bits::unsigned; using std::logic::Logic;
@@ -17729,6 +18789,8 @@ mod tests {
     }
 
     #[test]
+    /// A runtime packed bit read and write updates both the value plane and the
+    /// metavalue companion.
     fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
         let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
              entity E {
@@ -17876,6 +18938,100 @@ mod tests {
     }
 
     #[test]
+    /// The storage arena carries the same identity discipline as the process
+    /// and value arenas: dense self-consistent ids, one declaration per name
+    /// per root, in-range initializers and bindings, and no repeated binding
+    /// edge. A `ProcessValueKind::Storage` must name one that exists. Several
+    /// signals may intentionally share a projection when a testbench value
+    /// fans out to several DUT ports.
+    ///
+    /// Worth checking because storage is the one arena reachable without going
+    /// through a process, so a stale id here would otherwise surface only in a
+    /// backend.
+    fn process_storage_identity_is_validated() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let storage = |id: u32, name: &str| ProcessStorage {
+            id: ProcessStorageId(id),
+            owner: crate::elab::InstanceId(0),
+            name: name.to_string(),
+            source: None,
+            span,
+            ty: None,
+            layout: None,
+            initializer: None,
+            bindings: Vec::new(),
+        };
+
+        let mut ir = ProcessIr {
+            storages: vec![storage(0, "a")],
+            ..ProcessIr::default()
+        };
+        assert!(ir.validate(1).is_empty(), "a well-formed arena is accepted");
+
+        // An id that disagrees with its slot.
+        ir.storages = vec![storage(3, "a")];
+        assert!(ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("is stored at index 0")));
+
+        // One name declared twice in the same root.
+        ir.storages = vec![storage(0, "a"), storage(1, "a")];
+        assert!(ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("declared more than once")));
+
+        // An initializer naming a value that does not exist.
+        let mut bad = storage(0, "a");
+        bad.initializer = Some(ProcessValueId(7));
+        ir.storages = vec![bad];
+        assert!(ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("initializer references invalid value")));
+
+        // A binding to a signal outside the design, and a repeated edge.
+        let mut bound = storage(0, "a");
+        bound.bindings = vec![
+            ProcessStorageBinding {
+                projection: String::new(),
+                signal: SignalId(9),
+                direction: LayoutDirection::In,
+            },
+            ProcessStorageBinding {
+                projection: String::new(),
+                signal: SignalId(0),
+                direction: LayoutDirection::In,
+            },
+            ProcessStorageBinding {
+                projection: String::new(),
+                signal: SignalId(0),
+                direction: LayoutDirection::In,
+            },
+        ];
+        ir.storages = vec![bound];
+        let issues = ir.validate(1);
+        assert!(issues.iter().any(|issue| issue.contains("invalid signal")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("to SignalId(0) more than once")));
+
+        // A value referencing storage that was never declared.
+        ir.storages = Vec::new();
+        ir.values = vec![ProcessValue {
+            span,
+            ty: None,
+            kind: ProcessValueKind::Storage(ProcessStorageId(0)),
+        }];
+        assert!(ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("references invalid storage")));
+    }
+
+    #[test]
+    /// Validation accepts well-formed IR and flags each malformed shape.
     fn validate_accepts_good_and_flags_bad_ir() {
         // A lowered counter is well-formed.
         assert!(lower_src(COUNTER).validate().is_empty());
@@ -17948,6 +19104,8 @@ mod tests {
     }
 
     #[test]
+    /// Packed logic tables are interned into compact lookups, with identical
+    /// tables shared.
     fn packed_logic_tables_are_interned_as_compact_lookups() {
         let table = HashMap::from([((0, 0), 1), ((0, 1), 0), ((1, 0), 2), ((1, 1), 3)]);
         let lookup = |left, right| {
@@ -17992,6 +19150,8 @@ mod tests {
     }
 
     #[test]
+    /// The persisted leaf layout, not the source type, is what the backend
+    /// treats as authoritative for width.
     fn persisted_leaf_layout_is_the_backend_width_authority() {
         let mut design = lower_src("module m; entity E { value: unsigned[8] in } impl E {}");
         let id = SignalId(
@@ -18019,6 +19179,7 @@ mod tests {
     }
 
     #[test]
+    /// Scheduled processes carry their sensitivity and write sets.
     fn processes_carry_sensitivity_and_write_sets() {
         let d = lower_src(COUNTER);
         let sig =
@@ -18046,6 +19207,8 @@ mod tests {
     }
 
     #[test]
+    /// A resolved process keeps every contributing driver's label, so a
+    /// diagnostic can name all of them.
     fn resolved_process_keeps_every_contributing_label() {
         let d = lower_src(
             "module m;\n\
@@ -18084,6 +19247,7 @@ mod tests {
     }
 
     #[test]
+    /// Composite and enum signals flatten into leaves with correct widths.
     fn composite_and_enum_signals_flatten_with_widths() {
         let d = lower_src(
             "module m;\n\
@@ -18103,6 +19267,7 @@ mod tests {
     }
 
     #[test]
+    /// A partial bit-slice write updates only the addressed bits.
     fn partial_bit_slice_write() {
         // `y = 0; y[3..0] = a` merges: low nibble = a, high bits held from 0.
         let d = lower_src(
@@ -18127,6 +19292,8 @@ mod tests {
     }
 
     #[test]
+    /// Concurrent resolved slices lower without the expression growth that
+    /// resolution folding used to produce.
     fn concurrent_resolved_slices_lower_without_expression_explosion() {
         // Each bare assignment is its own concurrent driver context. Folding
         // three contexts used to repeatedly inline and clone Logic::resolve:
@@ -18175,6 +19342,7 @@ mod tests {
     }
 
     #[test]
+    /// A newtype enum takes its base's width.
     fn newtype_enum_takes_its_base_width() {
         // A derived enum is a newtype (§3.28) — same variants, so the same
         // width. Four variants in the base, two bits in the derived type.
@@ -18207,6 +19375,7 @@ mod tests {
              entity H {}\n\
              impl H { let sel: Base; let y: unsigned[8]; let e: E = { .sel = sel, .y = y }; }",
         );
+        /// Whether an expression contains an `Unknown`, which validation rejects.
         fn has_unknown(e: &Expr) -> bool {
             match e {
                 Expr::Unknown => true,
@@ -18261,6 +19430,8 @@ mod tests {
     }
 
     #[test]
+    /// An inlined parameter keeps its argument's width rather than the
+    /// parameter's declared one.
     fn an_inlined_parameter_keeps_its_argument_width() {
         let d = lower_src(
             "module m;\n\
@@ -18283,6 +19454,7 @@ mod tests {
     }
 
     #[test]
+    /// A positional generic argument binds a value parameter.
     fn positional_generic_argument_binds_a_value_parameter() {
         let src = |arg: &str| {
             format!(
@@ -18306,6 +19478,7 @@ mod tests {
     }
 
     #[test]
+    /// A struct spread copies nested leaves, not just top-level fields.
     fn spread_copies_nested_leaves() {
         let d = lower_src(
             "module m;\n\
@@ -18335,6 +19508,7 @@ mod tests {
     }
 
     #[test]
+    /// A composed struct flattens its nested fields.
     fn composed_struct_flattens_nested_fields() {
         // Composition replaced extension (§3.28): a struct field holding
         // another struct flattens to dotted leaf signals.
@@ -18354,6 +19528,8 @@ mod tests {
     }
 
     #[test]
+    /// A derivation that adds no variants is representation-identical to its
+    /// base.
     fn same_variant_enum_derivation_is_representation_identical() {
         // A bodyless derivation keeps the base's width and discriminants.
         let d = lower_src(
@@ -18370,6 +19546,7 @@ mod tests {
     }
 
     #[test]
+    /// A bit string decodes across the full nine-value set.
     fn bit_string_decodes_nine_value() {
         // A plain 2-value string is unchanged; a metavalue digit takes its
         // source-defined `LogicEncoding::to_bool` bit rather than a bit of the
@@ -18390,6 +19567,7 @@ mod tests {
     }
 
     #[test]
+    /// A bit-string initializer sets the signal's init pattern.
     fn bit_string_initializer_sets_init() {
         // `let v: unsigned[4] = "1010"` seeds the signal init to 10 (was 0 — no
         // string-init arm in const_init_value).
@@ -18408,6 +19586,7 @@ mod tests {
     }
 
     #[test]
+    /// A bit string containing a metavalue creates the companion plane.
     fn metavalue_bit_string_creates_companion() {
         // A metavalue init spawns a `$meta` companion recording the X element;
         // a plain 2-value init does not.
@@ -18441,6 +19620,8 @@ mod tests {
     }
 
     #[test]
+    /// A resolved metavalue companion is terminal: companions never gain
+    /// companions of their own, which is what bounded the `$meta$meta` chain.
     fn resolved_metavalue_companion_is_terminal() {
         // Element-wise resolution builds the discriminant plane from both the
         // value and metavalue planes.  That expression must not make the
@@ -18484,6 +19665,7 @@ mod tests {
     }
 
     #[test]
+    /// Wide metavalue initializers have no element ceiling.
     fn wide_metavalue_initializers_have_no_element_limit() {
         let d = lower_src(
             "module m;\n\
@@ -18516,6 +19698,8 @@ mod tests {
     }
 
     #[test]
+    /// A later clean combinational write clears the companion in order, so a
+    /// stale `X` does not survive in the discriminant plane.
     fn clean_combinational_override_clears_metavalue_companion_in_order() {
         let design = lower_src(
             "module m;\n\
@@ -18553,6 +19737,7 @@ mod tests {
     }
 
     #[test]
+    /// The same ordering holds for a clocked override.
     fn clean_clocked_override_clears_metavalue_companion_in_order() {
         let design = lower_src(
             "module m;\n\
@@ -18594,6 +19779,8 @@ mod tests {
     }
 
     #[test]
+    /// An `'old` vector read uses the companion's `'old` value, not its current
+    /// one.
     fn old_vector_read_uses_old_metavalue_companion() {
         let design = lower_src(
             "module m;\n\
@@ -18618,6 +19805,8 @@ mod tests {
     }
 
     #[test]
+    /// Narrowed arithmetic still scans the full operand for metavalues, so an
+    /// unknown outside the narrowed range still poisons the result.
     fn narrowed_arithmetic_scans_full_operand_for_metavalues() {
         let design = lower_src(
             "module m;\n\
@@ -18668,6 +19857,7 @@ mod tests {
     }
 
     #[test]
+    /// Kernel-`integer` operations retain signed semantics through lowering.
     fn kernel_integer_operations_retain_signed_semantics() {
         let design = lower_src(
             "module m;\n\
@@ -18719,6 +19909,7 @@ mod tests {
     }
 
     #[test]
+    /// A real-to-integer conversion is signed in direct comparisons.
     fn real_to_integer_conversion_is_signed_in_direct_comparisons() {
         let design = lower_src(
             "module m;\n\
@@ -18756,6 +19947,7 @@ mod tests {
     }
 
     #[test]
+    /// Assigning to a ranged integer may change the storage width.
     fn ranged_integer_assignment_can_change_storage_width() {
         let src = "module m;\n\
              entity E {\n\
@@ -18787,6 +19979,7 @@ mod tests {
     }
 
     #[test]
+    /// A chain of aliases retains the terminal signal representation.
     fn chained_aliases_retain_terminal_signal_representation() {
         let design = lower_src(
             "module m;\n\
@@ -18817,6 +20010,7 @@ mod tests {
     }
 
     #[test]
+    /// Foreign integer calls retain their signed ABI types.
     fn foreign_integer_calls_retain_signed_abi_types() {
         let design = lower_src(
             "module m;\n\
@@ -18840,6 +20034,7 @@ mod tests {
     }
 
     #[test]
+    /// A hardware block local does not leak out of its block.
     fn a_hardware_block_local_does_not_leak_out_of_its_block() {
         let diagnostics = lower_diags(
             "module m;\n\
@@ -18859,6 +20054,8 @@ mod tests {
     }
 
     #[test]
+    /// Hardware block locals allocate no signals and leave no `Unknown` in the
+    /// IR.
     fn hardware_block_locals_do_not_allocate_signals_or_leave_unknown_ir() {
         let design = lower_src(
             "module m;\n\
@@ -18879,6 +20076,7 @@ mod tests {
     }
 
     #[test]
+    /// Nested runtime access on a block local stays storage-free.
     fn nested_runtime_access_on_a_block_local_stays_storage_free() {
         let source = "module m;\n\
              entity E {\n\
@@ -18909,6 +20107,7 @@ mod tests {
     }
 
     #[test]
+    /// A runtime packed index on a block local stays storage-free.
     fn runtime_packed_index_on_a_block_local_stays_storage_free() {
         let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
              entity E {
@@ -18938,6 +20137,7 @@ mod tests {
     }
 
     #[test]
+    /// Nested generic type arguments preserve the recursive layout.
     fn nested_generic_type_arguments_preserve_recursive_layout() {
         let design = lower_src(
             "module m;\n\
@@ -18985,6 +20185,7 @@ mod tests {
     }
 
     #[test]
+    /// The design persists recursive concrete source layouts for its values.
     fn design_persists_recursive_concrete_source_layouts() {
         let design = lower_src(
             "module m;\n\
@@ -19059,6 +20260,7 @@ mod tests {
     }
 
     #[test]
+    /// Testbench locals persist layouts without becoming hardware signals.
     fn testbench_locals_persist_layouts_without_becoming_hardware_signals() {
         let design = lower_src(
             "module m;\n\
@@ -19099,6 +20301,8 @@ mod tests {
     }
 
     #[test]
+    /// `clk.rising()` lowers to `Event`/`Old`/`Current` rather than a dedicated
+    /// edge node.
     fn rising_lowers_to_event_old_current() {
         let d = lower_src(COUNTER);
         let rendered = d.to_ir_string();
@@ -19114,6 +20318,8 @@ mod tests {
     }
 
     #[test]
+    /// Priority conditions accumulate down a chain, so a later driver's guard
+    /// includes the negation of the earlier ones.
     fn priority_conditions_accumulate() {
         let d = lower_src(COUNTER);
         let u = &d.event_blocks[0].updates;
