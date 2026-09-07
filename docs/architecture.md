@@ -18,6 +18,12 @@ may use is `diag` — plus the LLVM backend:
   no phase product or backend input.
 - **`sioxc`** — the root package's thin command-line adapter.
 
+The IR module is directory-backed: `src/ir/mod.rs` retains the lowering and
+analysis facade, while `src/ir/process.rs` owns the canonical process CFG,
+value arena, descriptors, validation, and textual dump. Public paths remain
+`siox::ir::*`; the file split is an internal ownership boundary, not another
+pipeline stage.
+
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
 

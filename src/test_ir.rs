@@ -1896,7 +1896,7 @@ mod tests {
         )));
         for (index, value) in design.process_ir.values.iter().enumerate() {
             assert!(
-                crate::ir::process_value_dependencies(&value.kind)
+                crate::ir::process::process_value_dependencies(&value.kind)
                     .into_iter()
                     .all(|dependency| dependency.0 < index as u32),
                 "value %{index} is not in dependency order: {value:?}"
