@@ -8,17 +8,28 @@
 
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::values::PointerValue;
+use inkwell::values::{FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
-use siox::ir::{Design, ProcessActivation, ProcessSensitivity};
+use siox::ir::{Design, ProcessActivation, ProcessCfg, ProcessSensitivity, ProcessTerminator};
 
 /// Version of the native process metadata ABI emitted into every object.
 ///
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 1;
+const PROCESS_ABI_VERSION: u32 = 2;
+
+/// A process returned normally and has no pending resume.
+const PROCESS_COMPLETED: u8 = 0;
+/// The process stopped itself while leaving the simulation alive.
+const PROCESS_STOPPED: u8 = 2;
+/// The process requested termination of the complete simulation.
+const PROCESS_FINISHED: u8 = 3;
+/// This migration build encountered an instruction/terminator whose direct
+/// lowering is not implemented yet. The runtime must report this, never treat
+/// it as successful completion.
+const PROCESS_UNSUPPORTED: u8 = u8::MAX;
 
 /// Emit one externally visible, immutable `u32` value.
 fn u32_global<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str, value: u32) {
@@ -112,6 +123,119 @@ fn test_name_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: 
     global.set_constant(true);
 }
 
+/// Emit a process entry that resumes at any CFG block by its stable block ID.
+///
+/// The initial implementation deliberately covers only control-only CFGs.
+/// Unsupported executable nodes return [`PROCESS_UNSUPPORTED`], making this a
+/// safe ABI foothold rather than a second partial semantic engine. Instruction
+/// and value lowering can now be added behind this exact entry shape without
+/// changing the scheduler contract.
+fn process_entry<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    process: &ProcessCfg,
+) -> FunctionValue<'ctx> {
+    let i8 = context.i8_type();
+    let i32 = context.i32_type();
+    let function = module.add_function(
+        &format!("sx.process.{}", process.id.0),
+        i8.fn_type(&[i32.into()], false),
+        Some(Linkage::Internal),
+    );
+    let builder = context.create_builder();
+    let dispatch = context.append_basic_block(function, "dispatch");
+    let invalid = context.append_basic_block(function, "invalid");
+    let blocks = process
+        .blocks
+        .iter()
+        .map(|block| context.append_basic_block(function, &format!("bb{}", block.id.0)))
+        .collect::<Vec<_>>();
+
+    builder.position_at_end(dispatch);
+    let resume = function
+        .get_first_param()
+        .expect("process entry has a resume block")
+        .into_int_value();
+    let cases = process
+        .blocks
+        .iter()
+        .zip(&blocks)
+        .map(|(block, llvm)| (i32.const_int(u64::from(block.id.0), false), *llvm))
+        .collect::<Vec<_>>();
+    builder.build_switch(resume, invalid, &cases).unwrap();
+
+    builder.position_at_end(invalid);
+    builder
+        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+        .unwrap();
+
+    for (block, llvm) in process.blocks.iter().zip(&blocks) {
+        builder.position_at_end(*llvm);
+        if !block.instructions.is_empty() {
+            builder
+                .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                .unwrap();
+            continue;
+        }
+        match &block.terminator {
+            ProcessTerminator::Return { value: None, .. } => {
+                builder
+                    .build_return(Some(&i8.const_int(u64::from(PROCESS_COMPLETED), false)))
+                    .unwrap();
+            }
+            ProcessTerminator::Goto(target) => {
+                builder
+                    .build_unconditional_branch(blocks[target.0 as usize])
+                    .unwrap();
+            }
+            ProcessTerminator::Stop { .. } => {
+                builder
+                    .build_return(Some(&i8.const_int(u64::from(PROCESS_STOPPED), false)))
+                    .unwrap();
+            }
+            ProcessTerminator::Finish { .. } => {
+                builder
+                    .build_return(Some(&i8.const_int(u64::from(PROCESS_FINISHED), false)))
+                    .unwrap();
+            }
+            ProcessTerminator::Return { value: Some(_), .. }
+            | ProcessTerminator::Branch { .. }
+            | ProcessTerminator::Match { .. }
+            | ProcessTerminator::For { .. }
+            | ProcessTerminator::Suspend { .. } => {
+                builder
+                    .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                    .unwrap();
+            }
+        }
+    }
+    function
+}
+
+/// Emit the opaque function-pointer table consumed by the native scheduler.
+fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
+    let pointer = context.ptr_type(AddressSpace::default());
+    let values = design
+        .process_ir
+        .processes
+        .iter()
+        .map(|process| {
+            process_entry(context, module, process)
+                .as_global_value()
+                .as_pointer_value()
+        })
+        .collect::<Vec<_>>();
+    let fallback = [pointer.const_null()];
+    let initializer = pointer.const_array(if values.is_empty() {
+        &fallback
+    } else {
+        &values
+    });
+    let global = module.add_global(initializer.get_type(), None, "sx_process_entries");
+    global.set_initializer(&initializer);
+    global.set_constant(true);
+}
+
 /// Materialize the runtime-facing test/process descriptor tables.
 ///
 /// All lists use offset + flattened-value tables, avoiding generated symbols
@@ -140,6 +264,7 @@ pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
         process_ir.processes.len() as u32,
     );
     test_name_table(context, module, design);
+    process_entry_table(context, module, design);
 
     let test_roots = process_ir
         .tests
@@ -172,7 +297,7 @@ pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
         .iter()
         .map(|process| process.owner.0)
         .collect::<Vec<_>>();
-    let entries = process_ir
+    let initial_blocks = process_ir
         .processes
         .iter()
         .map(|process| process.entry.0)
@@ -209,7 +334,12 @@ pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
 
     u32_table(context, module, "sx_process_roots", &roots);
     u32_table(context, module, "sx_process_owners", &owners);
-    u32_table(context, module, "sx_process_entries", &entries);
+    u32_table(
+        context,
+        module,
+        "sx_process_initial_blocks",
+        &initial_blocks,
+    );
     u8_table(context, module, "sx_process_activations", &activations);
     u32_table(
         context,
@@ -318,7 +448,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 1"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 2"));
         assert!(llvm.contains("@sx_test_count = constant i32 1"));
         assert!(llvm.contains("@sx_process_count = constant i32 2"));
         assert!(
@@ -326,11 +456,17 @@ mod tests {
         );
         assert!(llvm.contains("@sx_test_process_offsets = constant [2 x i32] [i32 0, i32 2]"));
         assert!(llvm.contains("@sx_test_process_ids = constant [2 x i32] [i32 0, i32 1]"));
+        assert!(llvm.contains(
+            "@sx_process_entries = constant [2 x ptr] [ptr @sx.process.0, ptr @sx.process.1]"
+        ));
+        assert!(llvm.contains("@sx_process_initial_blocks = constant [2 x i32] zeroinitializer"));
         assert!(llvm.contains("@sx_process_activations = constant [2 x i8] c\"\\00\\01\""));
         assert!(llvm.contains(
             "@sx_process_sensitivity_offsets = constant [3 x i32] [i32 0, i32 0, i32 1]"
         ));
         assert!(llvm.contains("@sx_process_sensitivity_ids = constant [1 x i32] zeroinitializer"));
+        assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
+        assert!(llvm.contains("define internal i8 @sx.process.1(i32"));
     }
 
     /// Empty logical descriptor tables still have legal storage for the C ABI,
@@ -341,6 +477,72 @@ mod tests {
         assert!(llvm.contains("@sx_test_count = constant i32 0"));
         assert!(llvm.contains("@sx_process_count = constant i32 0"));
         assert!(llvm.contains("@sx_test_names = constant [1 x ptr] zeroinitializer"));
+        assert!(llvm.contains("@sx_process_entries = constant [1 x ptr] zeroinitializer"));
         assert!(llvm.contains("@sx_process_activations = constant [1 x i8] zeroinitializer"));
+    }
+
+    /// Resume dispatch preserves CFG block identity and emits the stable
+    /// control-only status values before executable instruction coverage.
+    #[test]
+    fn process_entries_dispatch_control_only_cfgs() {
+        let process_ir = ProcessIr {
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("control".into()),
+                span: span(),
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![],
+                blocks: vec![
+                    ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Goto(ProcessBlockId(1)),
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(1),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span: span() },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(2),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Finish { span: span() },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(3),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Return {
+                            value: Some(siox::ir::ProcessValueId(0)),
+                            span: Some(span()),
+                        },
+                    },
+                ],
+            }],
+            values: vec![siox::ir::ProcessValue {
+                span: span(),
+                ty: Some(siox::types::Ty::Integer),
+                kind: siox::ir::ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(vec![1])),
+            }],
+            ..ProcessIr::default()
+        };
+        let llvm = crate::llvm::emit_module_ir(&Design {
+            process_ir,
+            ..Design::default()
+        })
+        .unwrap();
+        assert!(llvm.contains("i32 0, label %bb0"), "{llvm}");
+        assert!(llvm.contains("i32 3, label %bb3"), "{llvm}");
+        let body = |label: &str| {
+            llvm.split_once(label)
+                .map(|(_, rest)| rest.split_once("\n\n").map_or(rest, |(block, _)| block))
+                .expect("emitted process block")
+        };
+        assert!(body("bb0:").contains("br label %bb1"), "{llvm}");
+        assert!(body("bb1:").contains("ret i8 2"), "{llvm}");
+        assert!(body("bb2:").contains("ret i8 3"), "{llvm}");
+        assert!(body("bb3:").contains("ret i8 -1"), "{llvm}");
     }
 }

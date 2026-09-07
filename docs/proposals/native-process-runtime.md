@@ -1,9 +1,9 @@
 # The native process runtime
 
-Status: **migration ABI**. Runtime services and process entry points remain to
-be implemented, while the LLVM object already exports source-independent test,
-process, activation, and sensitivity descriptor tables. It specifies the fixed
-ABI that direct LLVM process lowering will call, so step 6 of the
+Status: **migration ABI**. Runtime services and executable instruction/value
+coverage remain to be implemented. The LLVM object exports source-independent
+test/process descriptors and one callable resume entry per process. It
+specifies the fixed ABI that direct LLVM process lowering will call, so step 6 of the
 [unified process pipeline](testbench-software-ir.md) has a target to build
 against rather than discovering one while porting.
 
@@ -46,7 +46,9 @@ extern const uint32_t sx_test_process_ids[];
 extern const uint32_t sx_process_count;
 extern const uint32_t sx_process_roots[];
 extern const uint32_t sx_process_owners[];
-extern const uint32_t sx_process_entries[];
+typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const uint32_t sx_process_initial_blocks[];
 extern const uint8_t  sx_process_activations[];
 extern const uint32_t sx_process_sensitivity_offsets[];
 extern const uint8_t  sx_process_sensitivity_kinds[];
@@ -58,6 +60,15 @@ Offsets use the usual half-open flattened-table representation. Activation is
 storage`. Counts make the one ABI-safe sentinel in each logically empty table
 unobservable. Changing any table or encoding increments
 `sx_process_abi_version`.
+
+The runtime starts a process by calling `sx_process_entries[id]` with
+`sx_process_initial_blocks[id]`. A suspended process is called again with the
+resume block recorded by the suspension service. Entry status is `0 =
+completed`, `1 = suspended` (reserved until suspension lowering lands), `2 =
+stopped`, `3 = finish simulation`, and `255 = unsupported migration node`.
+The last status is a temporary fail-closed guard: current entries execute
+control-only CFGs and must not pretend that an instruction omitted by the
+incremental emitter completed successfully.
 
 **Provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -107,10 +118,11 @@ That inversion is the substantive change. Everything else is relocation.
 Flagged rather than guessed, because Codex owns these and the answers determine
 signatures:
 
-1. **Process entry and resume.** How a suspended process is re-entered —
-   one entry point taking a resume block id, or one function per resume point.
-   Depends on how `ProcessTerminator::Suspend` and `ProcessBlockId` are meant to
-   survive lowering.
+1. **Process entry and resume — decided and emitted.** Each process has one
+   entry pointer taking a `ProcessBlockId`. Initial and resumed activation use
+   the same function; the initial block lives in its own descriptor table.
+   This bounds symbol/function growth while preserving explicit CFG resume
+   identity. Instruction/value and suspension-service lowering remains.
 2. **Storage allocation.** Whether `ProcessStorage` is runtime-allocated and
    addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
    recursive layouts, flattened DUT bindings, and endpoint directions are now

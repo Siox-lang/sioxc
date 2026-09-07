@@ -323,7 +323,10 @@ Remaining:
   linked runtime/entry-point packaging, not language lowering. The LLVM object
   now exports versioned immutable test/process/activation/sensitivity tables,
   and the compatibility executable uses their test counts/names for filtering
-  and reporting. Process entry points and full runtime consumption remain.
+  and reporting. It also exports one callable resume-block entry per process;
+  control-only CFGs return stable completed/stopped/finished statuses and every
+  not-yet-lowered executable node fails closed as unsupported. Instruction/value
+  coverage, suspension services, and full runtime consumption remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
