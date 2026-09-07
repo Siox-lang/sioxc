@@ -310,6 +310,7 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
                         process_ir,
                         &mut process,
                         tail,
+                        design,
                         ImportedAssignment {
                             signal: driver.target,
                             expression: &driver.expr,
@@ -326,7 +327,7 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
                 };
                 let body = push_block(&mut process);
                 let exit = push_block(&mut process);
-                let condition = process_ir.push_digital_expr(&event.condition, span);
+                let condition = push_normalized_value(process_ir, &event.condition, span, design);
                 process.blocks[0].terminator = ProcessTerminator::Branch {
                     condition,
                     then_block: body,
@@ -338,6 +339,7 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
                         process_ir,
                         &mut process,
                         tail,
+                        design,
                         ImportedAssignment {
                             signal: update.target,
                             expression: &update.expr,
@@ -376,6 +378,7 @@ fn append_digital_assignment(
     process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     tail: ProcessBlockId,
+    design: &Design,
     assignment: ImportedAssignment<'_>,
 ) -> ProcessBlockId {
     let ImportedAssignment {
@@ -388,7 +391,7 @@ fn append_digital_assignment(
     let (assignment, next) = if let Some(condition) = condition {
         let assignment = push_block(process);
         let next = push_block(process);
-        let condition = process_ir.push_digital_expr(condition, span);
+        let condition = push_normalized_value(process_ir, condition, span, design);
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Branch {
             condition,
             then_block: assignment,
@@ -402,12 +405,13 @@ fn append_digital_assignment(
     process_ir.values.push(ProcessValue {
         span,
         ty: None,
+        bit_width: design.signal_width(signal),
         kind: ProcessValueKind::Signal {
             signals: vec![signal],
             state: ProcessSignalState::Current,
         },
     });
-    let value = process_ir.push_digital_expr(expression, span);
+    let value = push_normalized_value(process_ir, expression, span, design);
     process.blocks[assignment.0 as usize]
         .instructions
         .push(ProcessInstruction::Assign {
@@ -423,6 +427,137 @@ fn append_digital_assignment(
     } else {
         assignment
     }
+}
+
+/// Append one already-normalized digital expression and annotate every new
+/// arena node with its natural packed width. Normalized expressions have no
+/// frontend `Ty`, so retaining this here lets direct backends operate per
+/// value rather than falling back to a design-wide machine width.
+fn push_normalized_value(
+    process_ir: &mut ProcessIr,
+    expression: &crate::ir::Expr,
+    span: crate::diag::Span,
+    design: &Design,
+) -> ProcessValueId {
+    let first = process_ir.values.len();
+    let value = process_ir.push_digital_expr(expression, span);
+    for index in first..process_ir.values.len() {
+        let width = normalized_value_width(process_ir, ProcessValueId(index as u32), design);
+        process_ir.values[index].bit_width = width;
+    }
+    value
+}
+
+/// Natural width of one dependency-ordered normalized value.
+fn normalized_value_width(
+    process_ir: &ProcessIr,
+    id: ProcessValueId,
+    design: &Design,
+) -> Option<u32> {
+    let value = process_ir.values.get(id.0 as usize)?;
+    let width = |id: &ProcessValueId| process_ir.values.get(id.0 as usize)?.bit_width;
+    let signal_width = |signals: &[SignalId]| {
+        signals.iter().try_fold(0u32, |total, signal| {
+            total.checked_add(design.signal_width(*signal)?)
+        })
+    };
+    let width = match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
+        ProcessValueKind::Number(ProcessNumber::Real(_)) | ProcessValueKind::ForeignCall { .. } => {
+            Some(64)
+        }
+        ProcessValueKind::BitString { width, .. } => Some(*width),
+        ProcessValueKind::Char(_) => Some(1),
+        ProcessValueKind::Signal { signals, .. } => signal_width(signals),
+        ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
+        ProcessValueKind::CheckedIndex { index, .. } => width(index),
+        ProcessValueKind::TableLookup { table, .. } => design
+            .lookup_tables
+            .get(table.0)
+            .map(|table| table.element_width),
+        ProcessValueKind::Unary { operation, operand } => match operation {
+            ProcessUnaryOp::RealToInteger => Some(64),
+            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
+        },
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => match operation {
+            ProcessBinaryOp::Eq
+            | ProcessBinaryOp::Ne
+            | ProcessBinaryOp::Lt
+            | ProcessBinaryOp::Le
+            | ProcessBinaryOp::Gt
+            | ProcessBinaryOp::Ge
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+            | ProcessBinaryOp::FloatEq
+            | ProcessBinaryOp::FloatNe
+            | ProcessBinaryOp::FloatLt
+            | ProcessBinaryOp::FloatLe
+            | ProcessBinaryOp::FloatGt
+            | ProcessBinaryOp::FloatGe => Some(1),
+            ProcessBinaryOp::FloatAdd
+            | ProcessBinaryOp::FloatSub
+            | ProcessBinaryOp::FloatMul
+            | ProcessBinaryOp::FloatDiv => Some(64),
+            ProcessBinaryOp::Shl => shifted_arena_width(width(left)?, *right, &process_ir.values),
+            _ => Some(width(left)?.max(width(right)?)),
+        },
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => Some(width(then_value)?.max(width(else_value)?)),
+        ProcessValueKind::MetaCompare { .. } => Some(1),
+        ProcessValueKind::Concat(values) => values
+            .iter()
+            .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
+        ProcessValueKind::Suffixed { .. }
+        | ProcessValueKind::String(_)
+        | ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::Definition(_)
+        | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Field { .. }
+        | ProcessValueKind::Attribute { .. }
+        | ProcessValueKind::Index { .. }
+        | ProcessValueKind::Range { .. }
+        | ProcessValueKind::Match { .. }
+        | ProcessValueKind::Call { .. }
+        | ProcessValueKind::Construct { .. }
+        | ProcessValueKind::Array(_)
+        | ProcessValueKind::Invalid => None,
+    };
+    width.filter(|width| *width != 0)
+}
+
+/// Width of an arbitrary-precision little-endian integer literal.
+fn integer_words_width(words: &[u64]) -> Option<u32> {
+    let high = words.last().copied().unwrap_or(0);
+    let high_width = (64 - high.leading_zeros()).max(1);
+    let lower = u32::try_from(words.len().saturating_sub(1))
+        .ok()?
+        .checked_mul(64)?;
+    lower.checked_add(high_width)
+}
+
+/// Natural width after a possibly constant left shift in an arena value graph.
+fn shifted_arena_width(left: u32, right: ProcessValueId, values: &[ProcessValue]) -> Option<u32> {
+    let Some(ProcessValue {
+        kind: ProcessValueKind::Number(ProcessNumber::Integer(words)),
+        ..
+    }) = values.get(right.0 as usize)
+    else {
+        return Some(left);
+    };
+    let [shift] = words.as_slice() else {
+        return Some(left);
+    };
+    left.checked_add((*shift).try_into().ok()?)
 }
 
 /// Flatten hierarchy ownership into stable instance paths.
@@ -1394,22 +1529,145 @@ fn value_ref(
         ),
     };
 
-    push_value(span, ty, kind, context)
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    push_value(span, ty, width, kind, context)
 }
 
 /// Insert one already-lowered value node.
 fn push_value(
     span: crate::diag::Span,
     ty: Option<crate::types::Ty>,
+    width: Option<u32>,
     kind: ProcessValueKind,
     context: &mut LoweringContext<'_>,
 ) -> crate::ir::ProcessValueId {
     let id = crate::ir::ProcessValueId(context.process_ir.values.len() as u32);
-    context
-        .process_ir
-        .values
-        .push(ProcessValue { span, ty, kind });
+    context.process_ir.values.push(ProcessValue {
+        span,
+        ty,
+        bit_width: width,
+        kind,
+    });
     id
+}
+
+/// Packed width known at the temporary typed-AST adapter boundary. Composite
+/// runtime values retain their recursive layout elsewhere; this records only
+/// the scalar width a direct LLVM operation may rely on.
+fn source_value_width(
+    kind: &ProcessValueKind,
+    ty: Option<&crate::types::Ty>,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<u32> {
+    if let Some(width) = ty
+        .and_then(crate::types::Ty::bit_width)
+        .filter(|width| *width != 0)
+    {
+        return Some(width);
+    }
+    let width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
+    let width = match kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
+        ProcessValueKind::Number(ProcessNumber::Real(_)) | ProcessValueKind::ForeignCall { .. } => {
+            Some(64)
+        }
+        ProcessValueKind::Suffixed { number, .. } => match number {
+            ProcessNumber::Integer(_) | ProcessNumber::Real(_) => Some(64),
+        },
+        ProcessValueKind::BitString { width, .. } => Some(*width),
+        ProcessValueKind::Char(_) => Some(32),
+        ProcessValueKind::String(value) => {
+            u32::try_from(value.chars().count()).ok()?.checked_mul(32)
+        }
+        ProcessValueKind::Local { local, .. } => process
+            .locals
+            .get(local.0 as usize)?
+            .layout
+            .as_ref()?
+            .bit_width()?
+            .try_into()
+            .ok(),
+        ProcessValueKind::Storage(storage) => context
+            .process_ir
+            .storages
+            .get(storage.0 as usize)?
+            .layout
+            .as_ref()?
+            .bit_width()?
+            .try_into()
+            .ok(),
+        ProcessValueKind::Signal { signals, .. } => {
+            signals.iter().try_fold(0u32, |total, signal| {
+                total.checked_add(context.design.signal_width(*signal)?)
+            })
+        }
+        ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
+        ProcessValueKind::CheckedIndex { index, .. } => width(index),
+        ProcessValueKind::TableLookup { table, .. } => context
+            .design
+            .lookup_tables
+            .get(table.0)
+            .map(|table| table.element_width),
+        ProcessValueKind::Unary { operation, operand } => match operation {
+            ProcessUnaryOp::RealToInteger => Some(64),
+            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
+        },
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => match operation {
+            ProcessBinaryOp::Eq
+            | ProcessBinaryOp::Ne
+            | ProcessBinaryOp::Lt
+            | ProcessBinaryOp::Le
+            | ProcessBinaryOp::Gt
+            | ProcessBinaryOp::Ge
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+            | ProcessBinaryOp::FloatEq
+            | ProcessBinaryOp::FloatNe
+            | ProcessBinaryOp::FloatLt
+            | ProcessBinaryOp::FloatLe
+            | ProcessBinaryOp::FloatGt
+            | ProcessBinaryOp::FloatGe => Some(1),
+            ProcessBinaryOp::FloatAdd
+            | ProcessBinaryOp::FloatSub
+            | ProcessBinaryOp::FloatMul
+            | ProcessBinaryOp::FloatDiv => Some(64),
+            ProcessBinaryOp::Shl => shifted_width(width(left)?, *right, context),
+            _ => Some(width(left)?.max(width(right)?)),
+        },
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => Some(width(then_value)?.max(width(else_value)?)),
+        ProcessValueKind::MetaCompare { .. } => Some(1),
+        ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => values
+            .iter()
+            .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
+        ProcessValueKind::Definition(_)
+        | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Field { .. }
+        | ProcessValueKind::Attribute { .. }
+        | ProcessValueKind::Index { .. }
+        | ProcessValueKind::Range { .. }
+        | ProcessValueKind::Match { .. }
+        | ProcessValueKind::Call { .. }
+        | ProcessValueKind::Construct { .. }
+        | ProcessValueKind::Invalid => None,
+    };
+    width.filter(|width| *width != 0)
+}
+
+/// Add a constant shift to a value's natural width; dynamic shifts retain the
+/// left operand's width, matching normalized digital expression inference.
+fn shifted_width(left: u32, right: ProcessValueId, context: &LoweringContext<'_>) -> Option<u32> {
+    shifted_arena_width(left, right, &context.process_ir.values)
 }
 
 /// Error-recovery value for a malformed value-level match arm. Correct source
@@ -1420,6 +1678,7 @@ fn missing_value(
 ) -> crate::ir::ProcessValueId {
     push_value(
         span,
+        None,
         None,
         ProcessValueKind::Intrinsic("<missing-match-value>".to_string()),
         context,
@@ -2009,6 +2268,15 @@ mod tests {
             ProcessActivation::Reactive { ref sensitivity }
                 if matches!(sensitivity.as_slice(), [ProcessSensitivity::Signal(_)])
         ));
+        assert!(
+            design
+                .process_ir
+                .values
+                .iter()
+                .all(|value| value.bit_width.is_some()),
+            "normalized hardware values must carry backend-ready widths: {:#?}",
+            design.process_ir.values
+        );
         assert!(design
             .process_ir
             .validate(design.signals.len() as u32)

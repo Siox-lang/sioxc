@@ -199,9 +199,12 @@ language-lowering path.
 6. **Add direct LLVM process lowering and the linked runtime.** Start with
    straight-line reactive/event processes, then branches/loops, suspension and
    delayed writes, aggregates and checked indices, strings/file I/O, formatting,
-   foreign calls, clocks, wide values, and waveforms. The object now emits one
-   callable function-pointer entry per process, with a stable resume-block/status
-   ABI and an explicit unsupported status while instruction coverage is added.
+   foreign calls, clocks, wide values, and waveforms. Scalar arena values carry
+   an individual packed bit width; the backend derives the required ABI word
+   count from that width rather than imposing a global value width. The object
+   now emits one callable function-pointer entry per process, with a stable
+   resume-block/status ABI and an explicit unsupported status while instruction
+   coverage is added.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

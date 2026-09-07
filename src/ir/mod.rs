@@ -17921,12 +17921,20 @@ mod tests {
         ir.values = vec![ProcessValue {
             span,
             ty: None,
+            bit_width: None,
             kind: ProcessValueKind::Storage(ProcessStorageId(0)),
         }];
         assert!(ir
             .validate(1)
             .iter()
             .any(|issue| issue.contains("references invalid storage")));
+
+        // A scalar width must always be usable as an LLVM integer width.
+        ir.values[0].bit_width = Some(0);
+        assert!(ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("zero packed width")));
     }
 
     #[test]

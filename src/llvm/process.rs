@@ -524,6 +524,7 @@ mod tests {
             values: vec![siox::ir::ProcessValue {
                 span: span(),
                 ty: Some(siox::types::Ty::Integer),
+                bit_width: Some(64),
                 kind: siox::ir::ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(vec![1])),
             }],
             ..ProcessIr::default()

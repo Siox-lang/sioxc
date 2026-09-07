@@ -408,6 +408,10 @@ pub struct ProcessValue {
     pub span: crate::diag::Span,
     /// Its frontend type, where one was inferred.
     pub ty: Option<crate::types::Ty>,
+    /// Concrete packed width when this value has one scalar machine
+    /// representation. Aggregate/range/runtime-handle values may leave this
+    /// absent until their dedicated lowering represents their shape.
+    pub bit_width: Option<u32>,
     /// Executable meaning of the value.
     pub kind: ProcessValueKind,
 }
@@ -836,6 +840,7 @@ impl ProcessIr {
         self.values.push(ProcessValue {
             span: fallback_span,
             ty: None,
+            bit_width: None,
             kind,
         });
         id
@@ -1040,6 +1045,9 @@ impl ProcessIr {
 
         for (index, value) in self.values.iter().enumerate() {
             let id = ProcessValueId(index as u32);
+            if value.bit_width == Some(0) {
+                issues.push(format!("process value {:?} has zero packed width", id));
+            }
             for dependency in process_value_dependencies(&value.kind) {
                 if dependency.0 >= value_count {
                     issues.push(format!(
@@ -1159,12 +1167,16 @@ impl ProcessIr {
     pub fn to_ir_string(&self) -> String {
         let mut output = String::new();
         for (index, value) in self.values.iter().enumerate() {
+            let width = value
+                .bit_width
+                .map(|width| format!(" i{width}"))
+                .unwrap_or_default();
             let ty = value
                 .ty
                 .as_ref()
                 .map(|ty| format!(" : {ty:?}"))
                 .unwrap_or_default();
-            output.push_str(&format!("value %v{index}{ty} = {:?}\n", value.kind));
+            output.push_str(&format!("value %v{index}{width}{ty} = {:?}\n", value.kind));
         }
         for storage in &self.storages {
             let ty = storage

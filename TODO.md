@@ -325,8 +325,11 @@ Remaining:
   and the compatibility executable uses their test counts/names for filtering
   and reporting. It also exports one callable resume-block entry per process;
   control-only CFGs return stable completed/stopped/finished statuses and every
-  not-yet-lowered executable node fails closed as unsupported. Instruction/value
-  coverage, suspension services, and full runtime consumption remain.
+  not-yet-lowered executable node fails closed as unsupported. Scalar process
+  values now retain their own packed bit width in the arena, so direct LLVM
+  lowering can choose each value's exact integer type and ABI word count
+  instead of consulting a design-wide width. Instruction/value coverage,
+  suspension services, and full runtime consumption remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

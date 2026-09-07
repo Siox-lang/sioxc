@@ -122,7 +122,10 @@ signatures:
    entry pointer taking a `ProcessBlockId`. Initial and resumed activation use
    the same function; the initial block lives in its own descriptor table.
    This bounds symbol/function growth while preserving explicit CFG resume
-   identity. Instruction/value and suspension-service lowering remains.
+   identity. Every scalar `ProcessValue` carries its own packed bit width, so
+   emitted operations use exact-width LLVM integers and cross the ABI as
+   `ceil(bit_width / 64)` low-word-first words. Instruction/value and
+   suspension-service lowering remains.
 2. **Storage allocation.** Whether `ProcessStorage` is runtime-allocated and
    addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
    recursive layouts, flattened DUT bindings, and endpoint directions are now
