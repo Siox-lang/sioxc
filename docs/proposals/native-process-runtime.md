@@ -82,16 +82,20 @@ signatures:
    Depends on how `ProcessTerminator::Suspend` and `ProcessBlockId` are meant to
    survive lowering.
 2. **Storage allocation.** Whether `ProcessStorage` is runtime-allocated and
-   addressed by `ProcessStorageId`, or emitted as LLVM globals. Blocked on
-   storage initializers and bindings, which are unimplemented.
+   addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
+   recursive layouts, flattened DUT bindings, and endpoint directions are now
+   complete, so this is an ABI/allocation choice rather than an IR blocker.
 3. **Staged writes.** Whether the runtime commits end-of-step signal writes or
-   LLVM-emitted code does. Depends on `ProcessAssignment` semantics, and note
-   that a storage write currently reports `StagedSignal` only because it is not
-   a process local.
-4. **Activation.** How `ProcessActivation::Reactive`'s sensitivity list reaches
-   the ready queue — a static table, or registration at reset.
+   LLVM-emitted code does. Timing is now explicit: locals and test storage are
+   immediate, hardware signals are staged, and an immediate storage write
+   stages propagation to its bound DUT inputs. Ownership of that commit loop is
+   still the open ABI choice.
+4. **Activation.** How the exact `ProcessActivation::Reactive` signal/storage
+   sensitivity list reaches the ready queue — a static table, or registration
+   at reset. Reactive processes receive an initial time-zero activation.
 5. **Test descriptors.** Whether `ProcessTest` becomes a static table the
-   runtime walks, or generated registration calls.
+   runtime walks, or generated registration calls. Each descriptor now lists
+   stimulus, clocks, and all nested DUT hardware processes under its root.
 
 ## Non-goals
 

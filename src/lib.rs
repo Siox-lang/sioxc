@@ -16,7 +16,7 @@
 //! | [`types`]   | 4 | type & kind checking; Phase-2 syntax rejection |
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
 //! | [`ir`]      | 6 | canonical process/control, value, layout, and digital simulation IR |
-//! | [`test_ir`] | adapter | temporary test-AST lowering into `ir::Design::process_ir` |
+//! | [`test_ir`] | adapter | temporary normalized-hardware/test-AST lowering into `ir::Design::process_ir` |
 //!
 //! [`compiler`] is the presentation-neutral embedding boundary that composes
 //! those stages for editors, build tools, and `sioxc`. The native LLVM AOT
@@ -31,7 +31,7 @@
 //!     elab["elab<br/>instances, parameters"] --> ir
 //!     ir["ir<br/>digital simulation IR"] --> tb
 //!     ir --> emit
-//!     tb["testbench + test_ir<br/>#[test] discovery"] --> build
+//!     tb["testbench + test_ir<br/>process descriptors"] --> build
 //!     emit["llvm::emit<br/>design to LLVM IR"] --> aot
 //!     aot["llvm::aot"] --> obj["native object"]
 //!     build["driver::build<br/>generated C + libfst"] --> exe["test executable<br/>VCD / FST"]

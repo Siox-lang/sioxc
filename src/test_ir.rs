@@ -1,9 +1,11 @@
-//! Transitional Siox-AST lowering into the canonical process IR.
+//! Transitional lowering into the canonical process IR.
 //!
 //! Process/CFG types, validation, test descriptors, and ownership live in
-//! [`crate::ir::Design`]. This module remains only while native test statements
-//! are translated separately from hardware behavior. The generated-C backend
-//! consumes `Design::process_ir` metadata and never owns another program.
+//! [`crate::ir::Design`]. Test stimulus still enters from typed Siox AST;
+//! hardware enters through the elaborated, normalized digital scheduler graph
+//! so generic/generate/std semantics are not repeated. This module disappears
+//! once Process IR becomes the lowering authority for both and the optimized
+//! digital forms are derived from it.
 
 use crate::elab::Hierarchy;
 use crate::ir::{
@@ -12,7 +14,7 @@ use crate::ir::{
     ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId, ProcessMatchArm, ProcessNumber,
     ProcessPattern, ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorage,
     ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
-    ProcessUnaryOp, ProcessValue, ProcessValueKind, ProcessValueMatchArm, SignalId,
+    ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -28,23 +30,24 @@ struct LoweringContext<'a> {
     process_ir: &'a mut ProcessIr,
 }
 
-/// Fill the canonical process product from the same resolved roots and layouts
-/// used by the compatibility backend.
+/// Fill the canonical process product from normalized hardware plus an
+/// optional native-test plan.
 ///
-/// One explicit source process becomes one CFG. Legacy impl-scope test
-/// statements remain one implicit foreground process so their existing
-/// sequential/`await` behavior is preserved until the syntax is retired.
+/// One explicit test process becomes one CFG. Legacy impl-scope test statements
+/// remain one implicit foreground process so their existing sequential/`await`
+/// behavior is preserved until the syntax is retired. Hardware scheduler units
+/// become CFGs after elaboration, including for non-test compiler outputs.
 pub fn lower(
     modules: &[Module],
     resolved: &Resolved,
     typed: &Typed,
     hierarchy: &Hierarchy,
-    plan: &TestPlan,
+    plan: Option<&TestPlan>,
     design: &mut Design,
 ) {
     let mut process_ir = ProcessIr::default();
 
-    for test in &plan.tests {
+    for test in plan.into_iter().flat_map(|plan| &plan.tests) {
         let root_path = hierarchy.root_path(test.root);
         let items = crate::testbench::implementation_items(modules, resolved, test.entity);
         let mut test_processes = Vec::new();
@@ -67,6 +70,7 @@ pub fn lower(
         // declarations resolve normally, while process locals cannot appear.
         let initializer_process = ProcessCfg {
             id: ProcessId(u32::MAX),
+            root: test.root,
             owner: test.root,
             label: Some(format!("{root_path}::<initializers>")),
             span: test.span,
@@ -192,7 +196,251 @@ pub fn lower(
         });
     }
 
+    import_hardware_processes(hierarchy, design, &mut process_ir);
+
     design.process_ir = process_ir;
+}
+
+/// One elaborated instance together with the root and path that own its
+/// flattened signals.
+struct InstanceLocation {
+    id: crate::elab::InstanceId,
+    root: crate::elab::InstanceId,
+    path: String,
+}
+
+/// Convert the normalized hardware scheduler decomposition into ordinary
+/// Process IR CFGs. This bridge consumes elaborated digital expressions, not
+/// hardware AST, so generic substitution, generate unrolling, std operator
+/// evaluation, resolution, and metavalue lowering cannot diverge from the
+/// compatibility backend during migration.
+fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir: &mut ProcessIr) {
+    let locations = hierarchy_locations(hierarchy);
+    for scheduled in design.processes() {
+        let primary = match &scheduled.kind {
+            crate::ir::ProcessKind::Comb { target, .. } => Some(*target),
+            crate::ir::ProcessKind::Event { block } => design
+                .event_blocks
+                .get(*block)
+                .and_then(|event| event.updates.first())
+                .map(|update| update.target)
+                .or_else(|| scheduled.reads.first().copied()),
+        };
+        let Some(primary) = primary else {
+            continue;
+        };
+        let Some(location) = signal_location(primary, design, &locations) else {
+            continue;
+        };
+        let id = ProcessId(process_ir.processes.len() as u32);
+        let span = hardware_process_span(&scheduled.kind, primary, design);
+        let label = if scheduled.labels.is_empty() {
+            Some(format!(
+                "{}::<hardware:{}>",
+                location.path, design.signals[primary.0 as usize].path
+            ))
+        } else {
+            Some(scheduled.labels.join(" + "))
+        };
+        let activation = ProcessActivation::Reactive {
+            sensitivity: scheduled
+                .reads
+                .iter()
+                .copied()
+                .map(ProcessSensitivity::Signal)
+                .collect(),
+        };
+        let mut process = ProcessCfg {
+            id,
+            root: location.root,
+            owner: location.id,
+            label,
+            span,
+            activation,
+            entry: ProcessBlockId(0),
+            locals: Vec::new(),
+            blocks: vec![empty_block(ProcessBlockId(0))],
+        };
+        match scheduled.kind {
+            crate::ir::ProcessKind::Comb { drivers, .. } => {
+                let mut tail = ProcessBlockId(0);
+                for driver in drivers {
+                    let Some(driver) = design.drivers.get(driver) else {
+                        continue;
+                    };
+                    let assignment_span = driver.span.unwrap_or(span);
+                    tail = append_digital_assignment(
+                        process_ir,
+                        &mut process,
+                        tail,
+                        driver.target,
+                        &driver.expr,
+                        driver.cond.as_ref(),
+                        assignment_span,
+                    );
+                }
+            }
+            crate::ir::ProcessKind::Event { block } => {
+                let Some(event) = design.event_blocks.get(block) else {
+                    continue;
+                };
+                let body = push_block(&mut process);
+                let exit = push_block(&mut process);
+                let condition = process_ir.push_digital_expr(&event.condition, span);
+                process.blocks[0].terminator = ProcessTerminator::Branch {
+                    condition,
+                    then_block: body,
+                    else_block: exit,
+                };
+                let mut tail = body;
+                for update in &event.updates {
+                    tail = append_digital_assignment(
+                        process_ir,
+                        &mut process,
+                        tail,
+                        update.target,
+                        &update.expr,
+                        update.cond.as_ref(),
+                        update.span.unwrap_or(span),
+                    );
+                }
+                process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(exit);
+            }
+        }
+        process_ir.processes.push(process);
+        if let Some(test) = process_ir
+            .tests
+            .iter_mut()
+            .find(|test| test.root == location.root)
+        {
+            test.processes.push(id);
+        }
+    }
+}
+
+/// Append one normalized signal assignment, spelling a guard as an explicit
+/// branch so the resulting CFG needs no special conditional-write operation.
+fn append_digital_assignment(
+    process_ir: &mut ProcessIr,
+    process: &mut ProcessCfg,
+    tail: ProcessBlockId,
+    signal: SignalId,
+    expression: &crate::ir::Expr,
+    condition: Option<&crate::ir::Expr>,
+    span: crate::diag::Span,
+) -> ProcessBlockId {
+    let (assignment, next) = if let Some(condition) = condition {
+        let assignment = push_block(process);
+        let next = push_block(process);
+        let condition = process_ir.push_digital_expr(condition, span);
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Branch {
+            condition,
+            then_block: assignment,
+            else_block: next,
+        };
+        (assignment, Some(next))
+    } else {
+        (tail, None)
+    };
+    let target = ProcessValueId(process_ir.values.len() as u32);
+    process_ir.values.push(ProcessValue {
+        span,
+        ty: None,
+        kind: ProcessValueKind::Signal {
+            signals: vec![signal],
+            state: ProcessSignalState::Current,
+        },
+    });
+    let value = process_ir.push_digital_expr(expression, span);
+    process.blocks[assignment.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Assign {
+            semantics: ProcessAssignment::StagedSignal,
+            target,
+            value,
+            span,
+        });
+    if let Some(next) = next {
+        process.blocks[assignment.0 as usize].terminator = ProcessTerminator::Goto(next);
+        next
+    } else {
+        assignment
+    }
+}
+
+/// Flatten hierarchy ownership into stable instance paths.
+fn hierarchy_locations(hierarchy: &Hierarchy) -> Vec<InstanceLocation> {
+    fn visit(
+        hierarchy: &Hierarchy,
+        id: crate::elab::InstanceId,
+        root: crate::elab::InstanceId,
+        path: String,
+        output: &mut Vec<InstanceLocation>,
+    ) {
+        output.push(InstanceLocation {
+            id,
+            root,
+            path: path.clone(),
+        });
+        for &child in &hierarchy.instance(id).children {
+            visit(
+                hierarchy,
+                child,
+                root,
+                format!("{path}.{}", hierarchy.instance(child).name),
+                output,
+            );
+        }
+    }
+
+    let mut output = Vec::new();
+    for &root in &hierarchy.roots {
+        visit(
+            hierarchy,
+            root,
+            root,
+            hierarchy.root_path(root),
+            &mut output,
+        );
+    }
+    output
+}
+
+/// Find the deepest instance path containing one flattened signal.
+fn signal_location<'a>(
+    signal: SignalId,
+    design: &Design,
+    locations: &'a [InstanceLocation],
+) -> Option<&'a InstanceLocation> {
+    let path = &design.signals.get(signal.0 as usize)?.path;
+    locations
+        .iter()
+        .filter(|location| {
+            path == &location.path
+                || path
+                    .strip_prefix(&location.path)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+        .max_by_key(|location| location.path.len())
+}
+
+/// Best source extent for a normalized hardware process.
+fn hardware_process_span(
+    kind: &crate::ir::ProcessKind,
+    primary: SignalId,
+    design: &Design,
+) -> crate::diag::Span {
+    match kind {
+        crate::ir::ProcessKind::Comb { drivers, .. } => drivers
+            .iter()
+            .filter_map(|index| design.drivers.get(*index)?.span)
+            .next(),
+        crate::ir::ProcessKind::Event { block } => design
+            .event_blocks
+            .get(*block)
+            .and_then(|event| event.updates.iter().find_map(|update| update.span)),
+    }
+    .unwrap_or(design.signals[primary.0 as usize].declaration_span)
 }
 
 /// Register persistent state declared by one test root and connect each
@@ -440,6 +688,7 @@ fn lower_process(
 ) -> ProcessCfg {
     let mut process = ProcessCfg {
         id,
+        root: owner,
         owner,
         label,
         span,
@@ -1351,17 +1600,27 @@ mod tests {
         let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
-        lower(&modules, &resolved, &typed, &hierarchy, &plan, &mut design);
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            Some(&plan),
+            &mut design,
+        );
         assert!(design
             .process_ir
             .validate(design.signals.len() as u32)
             .is_empty());
         assert_eq!(design.process_ir.tests.len(), 1);
-        assert_eq!(design.process_ir.processes.len(), 2);
+        assert_eq!(design.process_ir.processes.len(), 3);
         assert!(!design.process_ir.values.is_empty());
         let descriptor = &design.process_ir.tests[0];
         assert_eq!(descriptor.qualified_name, "tests::Smoke");
-        assert_eq!(descriptor.processes, [ProcessId(0), ProcessId(1)]);
+        assert_eq!(
+            descriptor.processes,
+            [ProcessId(0), ProcessId(1), ProcessId(2)]
+        );
         let flag_storage = design
             .process_ir
             .storages
@@ -1393,6 +1652,47 @@ mod tests {
             .blocks
             .iter()
             .any(|block| matches!(block.terminator, ProcessTerminator::Suspend { .. })));
+        let hardware = &design.process_ir.processes[2];
+        let input = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".dut.input"))
+            .map(|index| SignalId(index as u32))
+            .expect("DUT input signal");
+        let output = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(".dut.output"))
+            .map(|index| SignalId(index as u32))
+            .expect("DUT output signal");
+        assert_eq!(hardware.root, descriptor.root);
+        assert_ne!(hardware.owner, descriptor.root);
+        assert_eq!(
+            hardware.activation,
+            ProcessActivation::Reactive {
+                sensitivity: vec![ProcessSensitivity::Signal(input)]
+            }
+        );
+        assert!(hardware
+            .blocks
+            .iter()
+            .any(
+                |block| block.instructions.iter().any(|instruction| matches!(
+                    instruction,
+                    ProcessInstruction::Assign {
+                        semantics: ProcessAssignment::StagedSignal,
+                        target,
+                        value,
+                        ..
+                    } if matches!(
+                        &design.process_ir.values[target.0 as usize].kind,
+                        ProcessValueKind::Signal { signals, .. } if signals == &[output]
+                    ) && matches!(
+                        &design.process_ir.values[value.0 as usize].kind,
+                        ProcessValueKind::Signal { signals, .. } if signals == &[input]
+                    )
+                ))
+            ));
         assert!(process
             .blocks
             .iter()
@@ -1495,7 +1795,7 @@ mod tests {
         let dump = design.process_ir.to_ir_string();
         assert!(dump.contains("value %v0"));
         assert!(dump.contains(&format!(
-            "test @tests::Smoke root {} processes [%p0, %p1]",
+            "test @tests::Smoke root {} processes [%p0, %p1, %p2]",
             descriptor.root.0
         )));
         // The storage arena is part of the product, so `--emit ir` style dumps
@@ -1505,8 +1805,8 @@ mod tests {
             "the dump should name the entity-level `i` storage:\n{dump}"
         );
         assert!(dump.contains(&format!(
-            "process %p1 root {} [Smoke::stimulus]",
-            descriptor.root.0
+            "process %p1 root {} owner {} [Smoke::stimulus]",
+            descriptor.root.0, descriptor.root.0
         )));
         assert!(design.process_ir.values.iter().any(|value| matches!(
             value.kind,
@@ -1563,7 +1863,14 @@ mod tests {
         let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
-        lower(&modules, &resolved, &typed, &hierarchy, &plan, &mut design);
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            Some(&plan),
+            &mut design,
+        );
         let link = design
             .process_ir
             .storages
@@ -1588,6 +1895,48 @@ mod tests {
     }
 
     #[test]
+    /// Hardware CFG construction is not conditional on native-test discovery:
+    /// ordinary IR/object compilations carry the same canonical process graph.
+    fn hardware_processes_lower_without_a_test_plan() {
+        let sources = [
+            "module gates; entity Gate { input: Bool in, output: Bool out } \
+             impl Gate { output = input; }",
+            "module std::logic; pub enum Bool { false, true }",
+            "module std::ops; using std::logic::{Bool}; pub trait Boolean { fn as_bool(self) -> Bool; } \
+             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::prelude; pub using std::logic::{Bool}; pub using std::ops::{Boolean};",
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect::<Vec<_>>();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        lower(&modules, &resolved, &typed, &hierarchy, None, &mut design);
+        assert!(design.process_ir.tests.is_empty());
+        assert_eq!(design.process_ir.processes.len(), 1);
+        let process = &design.process_ir.processes[0];
+        assert_eq!(process.root, process.owner);
+        assert!(matches!(
+            process.activation,
+            ProcessActivation::Reactive { ref sensitivity }
+                if matches!(sensitivity.as_slice(), [ProcessSensitivity::Signal(_)])
+        ));
+        assert!(design
+            .process_ir
+            .validate(design.signals.len() as u32)
+            .is_empty());
+    }
+
+    #[test]
     /// Validation must reject a process whose owner or entry block does not
     /// exist, since neither backend could execute one.
     fn design_validator_rejects_invalid_process_ownership_and_entry() {
@@ -1597,6 +1946,7 @@ mod tests {
                 storages: Vec::new(),
                 processes: vec![ProcessCfg {
                     id: ProcessId(0),
+                    root: crate::elab::InstanceId(1),
                     owner: crate::elab::InstanceId(1),
                     label: None,
                     span,
@@ -1637,7 +1987,7 @@ mod tests {
         assert!(
             issues
                 .iter()
-                .any(|issue| issue.contains("owned by another root")),
+                .any(|issue| issue.contains("assigned to another root")),
             "{issues:?}"
         );
         assert!(

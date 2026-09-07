@@ -443,10 +443,10 @@ pub struct Design {
     pub drivers: Vec<Driver>,
     /// Event-controlled next-state writes, applied together after settling.
     pub event_blocks: Vec<EventBlock>,
-    /// Canonical independently scheduled behavior. During migration the Siox
-    /// frontend fills native-test CFGs here after digital lowering; hardware
-    /// drivers/event blocks are still the compatibility lowering products.
-    /// Both move behind this ownership boundary before generated C is retired.
+    /// Canonical independently scheduled behavior. During migration test CFGs
+    /// enter from typed AST and hardware CFGs are imported from normalized
+    /// drivers/event blocks. The remaining inversion makes this product the
+    /// lowering authority and derives those compatibility forms from it.
     pub process_ir: ProcessIr,
     /// Driver-context labels retained from `process name { ... }`, qualified
     /// by instance path for diagnostics and backend tracing.
@@ -771,10 +771,11 @@ pub struct ProcessValueId(pub u32);
 
 /// The canonical control-flow product owned by an elaborated [`Design`].
 ///
-/// `test_ir` is temporarily responsible for filling the test processes, but
-/// the representation and its invariants live here so no backend needs a
-/// second phase product. Hardware lowering will populate the same vector and
-/// derive [`Driver`] / [`EventBlock`] compatibility forms from it.
+/// The temporary `test_ir` adapter fills test CFGs from typed AST and hardware
+/// CFGs from the normalized scheduler decomposition. The representation and
+/// its invariants live here so no backend needs a second process product. The
+/// remaining migration inversion makes this arena authoritative and derives
+/// [`Driver`] / [`EventBlock`] compatibility forms from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
     /// Every process control-flow graph, indexed by [`ProcessId`].
@@ -838,7 +839,7 @@ pub struct ProcessTest {
     pub qualified_name: String,
     /// The entity declaration site, for selection diagnostics.
     pub span: crate::diag::Span,
-    /// The processes the test runs.
+    /// Stimulus, clocks, and nested DUT hardware processes the test runs.
     pub processes: Vec<ProcessId>,
 }
 
@@ -859,6 +860,9 @@ pub struct ProcessTest {
 pub struct ProcessCfg {
     /// This process's own id.
     pub id: ProcessId,
+    /// Elaboration-tree root this process participates in. A test descriptor
+    /// uses this to select both stimulus and nested DUT processes.
+    pub root: crate::elab::InstanceId,
     /// The instance whose body declared it.
     pub owner: crate::elab::InstanceId,
     /// Optional instance-qualified source label.
@@ -1169,6 +1173,8 @@ pub enum ProcessUnaryOp {
     Neg,
     /// Logical or per-element complement.
     Not,
+    /// Convert an IEEE-754 real to the signed kernel integer.
+    RealToInteger,
 }
 
 /// A binary operation after precedence has already shaped the expression tree.
@@ -1182,10 +1188,20 @@ pub enum ProcessBinaryOp {
     Mul,
     /// Division.
     Div,
+    /// Signed kernel-integer addition.
+    SignedAdd,
+    /// Signed kernel-integer subtraction.
+    SignedSub,
+    /// Signed kernel-integer multiplication.
+    SignedMul,
+    /// Signed kernel-integer division.
+    SignedDiv,
     /// Type-directed conjunction.
     And,
     /// Type-directed disjunction.
     Or,
+    /// Bitwise exclusive-or after std operator lowering.
+    Xor,
     /// A user/library-defined operator. Precedence is absent because it has
     /// already done its only job during parsing.
     Custom(String),
@@ -1193,6 +1209,8 @@ pub enum ProcessBinaryOp {
     Shl,
     /// Right shift.
     Shr,
+    /// Arithmetic right shift.
+    ArithmeticShr,
     /// Equality.
     Eq,
     /// Inequality.
@@ -1205,6 +1223,34 @@ pub enum ProcessBinaryOp {
     Gt,
     /// Greater-than-or-equal comparison.
     Ge,
+    /// Signed less-than comparison.
+    SignedLt,
+    /// Signed less-than-or-equal comparison.
+    SignedLe,
+    /// Signed greater-than comparison.
+    SignedGt,
+    /// Signed greater-than-or-equal comparison.
+    SignedGe,
+    /// IEEE-754 addition.
+    FloatAdd,
+    /// IEEE-754 subtraction.
+    FloatSub,
+    /// IEEE-754 multiplication.
+    FloatMul,
+    /// IEEE-754 division.
+    FloatDiv,
+    /// Ordered IEEE-754 equality.
+    FloatEq,
+    /// Ordered IEEE-754 inequality.
+    FloatNe,
+    /// Ordered IEEE-754 less-than comparison.
+    FloatLt,
+    /// Ordered IEEE-754 less-than-or-equal comparison.
+    FloatLe,
+    /// Ordered IEEE-754 greater-than comparison.
+    FloatGt,
+    /// Ordered IEEE-754 greater-than-or-equal comparison.
+    FloatGe,
 }
 
 /// A value-producing match arm.
@@ -1294,6 +1340,37 @@ pub enum ProcessValueKind {
         /// Index or range operand.
         index: ProcessValueId,
     },
+    /// A fixed inclusive bit slice produced after range/index elaboration.
+    BitSlice {
+        /// Packed value being sliced.
+        base: ProcessValueId,
+        /// Inclusive high storage bit.
+        high: u32,
+        /// Inclusive low storage bit.
+        low: u32,
+    },
+    /// A checked runtime index. Evaluation latches a bounds failure when the
+    /// validity predicate is false on the active control-flow path.
+    CheckedIndex {
+        /// Runtime index value.
+        index: ProcessValueId,
+        /// In-domain predicate.
+        valid: ProcessValueId,
+        /// Written left endpoint of the declared range.
+        left: i64,
+        /// Written right endpoint of the declared range.
+        right: i64,
+        /// Original access site used by diagnostics.
+        span: crate::diag::Span,
+    },
+    /// Read one elaboration-owned constant lookup table. An out-of-range index
+    /// yields zero, matching the normalized digital expression.
+    TableLookup {
+        /// Table in [`Design::lookup_tables`].
+        table: LookupTableId,
+        /// Runtime table index.
+        index: ProcessValueId,
+    },
     /// An inclusive range; absent bounds are supplied by the indexing value.
     Range {
         /// Written left bound.
@@ -1326,6 +1403,16 @@ pub enum ProcessValueKind {
         /// Value when false.
         else_value: ProcessValueId,
     },
+    /// A vector comparison whose unknown-value rule is resolved after
+    /// metavalue companions are known.
+    MetaCompare {
+        /// Inequality reverses the unknown result.
+        not_equal: bool,
+        /// Compared values whose companion planes decide unknownness.
+        operands: Vec<ProcessValueId>,
+        /// Ordinary comparison result used when all operands are binary.
+        inner: ProcessValueId,
+    },
     /// A value-level pattern match.
     Match {
         /// Matched value.
@@ -1345,6 +1432,21 @@ pub enum ProcessValueKind {
         /// Whether macro-shaped lazy syntax was used.
         bang: bool,
     },
+    /// A normalized foreign C call with its scalar ABI made explicit.
+    ForeignCall {
+        /// Linker-visible C symbol.
+        name: String,
+        /// Arguments in source order.
+        arguments: Vec<ProcessValueId>,
+        /// Whether each argument is passed as f64.
+        float_arguments: Vec<bool>,
+        /// Whether each non-float argument is a signed kernel integer.
+        integer_arguments: Vec<bool>,
+        /// Whether the result is returned as f64.
+        float_result: bool,
+        /// Whether the non-float result is a signed kernel integer.
+        integer_result: bool,
+    },
     /// A struct/entity aggregate literal.
     Construct {
         /// Concrete result type, when type checking supplied one.
@@ -1358,9 +1460,121 @@ pub enum ProcessValueKind {
     Concat(Vec<ProcessValueId>),
     /// Ordinary array literal in ascending source order.
     Array(Vec<ProcessValueId>),
+    /// Error-recovery value copied from an invalid normalized digital
+    /// expression. Validation rejects it before any backend runs.
+    Invalid,
 }
 
 impl ProcessIr {
+    /// Append one already elaborated digital expression to the shared value
+    /// arena. Children are emitted first, preserving the arena's dominance
+    /// invariant. This is the migration bridge from the normalized hardware
+    /// representation; it deliberately carries no frontend-only type text.
+    pub(crate) fn push_digital_expr(
+        &mut self,
+        expression: &Expr,
+        fallback_span: crate::diag::Span,
+    ) -> ProcessValueId {
+        let kind = match expression {
+            Expr::Const(value) => ProcessValueKind::Number(ProcessNumber::Integer(vec![*value])),
+            Expr::WideConst(words) => {
+                ProcessValueKind::Number(ProcessNumber::Integer(words.clone()))
+            }
+            Expr::Real(value) => ProcessValueKind::Number(ProcessNumber::Real(value.to_bits())),
+            Expr::Logic(character) => ProcessValueKind::Char(*character),
+            Expr::Current(signal) => ProcessValueKind::Signal {
+                signals: vec![*signal],
+                state: ProcessSignalState::Current,
+            },
+            Expr::Old(signal) => ProcessValueKind::Signal {
+                signals: vec![*signal],
+                state: ProcessSignalState::Old,
+            },
+            Expr::Event(signal) => ProcessValueKind::Signal {
+                signals: vec![*signal],
+                state: ProcessSignalState::Event,
+            },
+            Expr::Unary { op, rhs } => ProcessValueKind::Unary {
+                operation: match op {
+                    UnOp::Neg => ProcessUnaryOp::Neg,
+                    UnOp::Not => ProcessUnaryOp::Not,
+                    UnOp::RealToInt => ProcessUnaryOp::RealToInteger,
+                },
+                operand: self.push_digital_expr(rhs, fallback_span),
+            },
+            Expr::Binary { op, lhs, rhs } => ProcessValueKind::Binary {
+                operation: process_binary_from_digital(*op),
+                left: self.push_digital_expr(lhs, fallback_span),
+                right: self.push_digital_expr(rhs, fallback_span),
+            },
+            Expr::Slice { base, hi, lo } => ProcessValueKind::BitSlice {
+                base: self.push_digital_expr(base, fallback_span),
+                high: *hi,
+                low: *lo,
+            },
+            Expr::TableLookup { table, index } => ProcessValueKind::TableLookup {
+                table: *table,
+                index: self.push_digital_expr(index, fallback_span),
+            },
+            Expr::CheckedIndex {
+                index,
+                valid,
+                left,
+                right,
+                span,
+            } => ProcessValueKind::CheckedIndex {
+                index: self.push_digital_expr(index, *span),
+                valid: self.push_digital_expr(valid, *span),
+                left: *left,
+                right: *right,
+                span: *span,
+            },
+            Expr::Select { cond, then, els } => ProcessValueKind::Select {
+                condition: self.push_digital_expr(cond, fallback_span),
+                then_value: self.push_digital_expr(then, fallback_span),
+                else_value: self.push_digital_expr(els, fallback_span),
+            },
+            Expr::MetaCmp {
+                ne,
+                operands,
+                inner,
+            } => ProcessValueKind::MetaCompare {
+                not_equal: *ne,
+                operands: operands
+                    .iter()
+                    .map(|operand| self.push_digital_expr(operand, fallback_span))
+                    .collect(),
+                inner: self.push_digital_expr(inner, fallback_span),
+            },
+            Expr::CCall {
+                name,
+                args,
+                f64_args,
+                integer_args,
+                f64_ret,
+                integer_ret,
+            } => ProcessValueKind::ForeignCall {
+                name: name.clone(),
+                arguments: args
+                    .iter()
+                    .map(|argument| self.push_digital_expr(argument, fallback_span))
+                    .collect(),
+                float_arguments: f64_args.clone(),
+                integer_arguments: integer_args.clone(),
+                float_result: *f64_ret,
+                integer_result: *integer_ret,
+            },
+            Expr::Unknown => ProcessValueKind::Invalid,
+        };
+        let id = ProcessValueId(self.values.len() as u32);
+        self.values.push(ProcessValue {
+            span: fallback_span,
+            ty: None,
+            kind,
+        });
+        id
+    }
+
     /// Structural invariants shared by every process backend.
     pub fn validate(&self, signal_count: u32) -> Vec<String> {
         let mut issues = Vec::new();
@@ -1613,6 +1827,28 @@ impl ProcessIr {
                         )),
                     }
                 }
+                ProcessValueKind::BitSlice { high, low, .. } if low > high => {
+                    issues.push(format!(
+                        "process value {:?} has slice bounds low {} above high {}",
+                        id, low, high
+                    ));
+                }
+                ProcessValueKind::ForeignCall {
+                    arguments,
+                    float_arguments,
+                    integer_arguments,
+                    ..
+                } if arguments.len() != float_arguments.len()
+                    || arguments.len() != integer_arguments.len() =>
+                {
+                    issues.push(format!(
+                        "process value {:?} has inconsistent foreign-call ABI vectors",
+                        id
+                    ));
+                }
+                ProcessValueKind::Invalid => {
+                    issues.push(format!("process value {:?} is invalid", id));
+                }
                 _ => {}
             }
         }
@@ -1637,9 +1873,9 @@ impl ProcessIr {
                     continue;
                 }
                 match self.processes.get(process_id.0 as usize) {
-                    Some(process) if process.id == *process_id && process.owner == test.root => {}
+                    Some(process) if process.id == *process_id && process.root == test.root => {}
                     Some(_) => issues.push(format!(
-                        "test `{}` references process {:?} owned by another root",
+                        "test `{}` references process {:?} assigned to another root",
                         test.qualified_name, process_id
                     )),
                     None => issues.push(format!(
@@ -1714,8 +1950,8 @@ impl ProcessIr {
                 .map(|label| format!(" [{label}]"))
                 .unwrap_or_default();
             output.push_str(&format!(
-                "process %p{} root {}{label} {:?} {{\n",
-                process.id.0, process.owner.0, process.activation
+                "process %p{} root {} owner {}{label} {:?} {{\n",
+                process.id.0, process.root.0, process.owner.0, process.activation
             ));
             for local in &process.locals {
                 output.push_str(&format!("  local %{} {}\n", local.id.0, local.name));
@@ -1790,8 +2026,11 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
     match value {
         ProcessValueKind::Field { base, .. }
         | ProcessValueKind::Attribute { base, .. }
+        | ProcessValueKind::BitSlice { base, .. }
+        | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. } => vec![*base],
         ProcessValueKind::Index { base, index } => vec![*base, *index],
+        ProcessValueKind::CheckedIndex { index, valid, .. } => vec![*index, *valid],
         ProcessValueKind::Range { left, right } => left.iter().chain(right).copied().collect(),
         ProcessValueKind::Binary { left, right, .. } => vec![*left, *right],
         ProcessValueKind::Select {
@@ -1799,6 +2038,13 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
             then_value,
             else_value,
         } => vec![*condition, *then_value, *else_value],
+        ProcessValueKind::MetaCompare {
+            operands, inner, ..
+        } => operands
+            .iter()
+            .copied()
+            .chain(std::iter::once(*inner))
+            .collect(),
         ProcessValueKind::Match { scrutinee, arms } => std::iter::once(*scrutinee)
             .chain(arms.iter().map(|arm| arm.value))
             .collect(),
@@ -1807,6 +2053,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         } => std::iter::once(*callee)
             .chain(arguments.iter().copied())
             .collect(),
+        ProcessValueKind::ForeignCall { arguments, .. } => arguments.clone(),
         ProcessValueKind::Construct { fields, spread, .. } => fields
             .iter()
             .filter_map(|field| field.value)
@@ -1822,7 +2069,8 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::Storage(_)
         | ProcessValueKind::Signal { .. }
         | ProcessValueKind::Definition(_)
-        | ProcessValueKind::Intrinsic(_) => Vec::new(),
+        | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Invalid => Vec::new(),
     }
 }
 
@@ -1861,6 +2109,48 @@ fn process_place_classes(ir: &ProcessIr, value: ProcessValueId) -> Option<Vec<Pr
             (!classes.is_empty()).then_some(classes)
         }
         _ => None,
+    }
+}
+
+/// Preserve the fully selected arithmetic domain of a normalized digital
+/// operation. Unlike source operators, these variants require no type lookup
+/// or std dispatch in a backend.
+fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
+    match operation {
+        BinOp::Add => ProcessBinaryOp::Add,
+        BinOp::Sub => ProcessBinaryOp::Sub,
+        BinOp::Mul => ProcessBinaryOp::Mul,
+        BinOp::Div => ProcessBinaryOp::Div,
+        BinOp::SAdd => ProcessBinaryOp::SignedAdd,
+        BinOp::SSub => ProcessBinaryOp::SignedSub,
+        BinOp::SMul => ProcessBinaryOp::SignedMul,
+        BinOp::SDiv => ProcessBinaryOp::SignedDiv,
+        BinOp::And => ProcessBinaryOp::And,
+        BinOp::Or => ProcessBinaryOp::Or,
+        BinOp::Xor => ProcessBinaryOp::Xor,
+        BinOp::Shl => ProcessBinaryOp::Shl,
+        BinOp::Shr => ProcessBinaryOp::Shr,
+        BinOp::AShr => ProcessBinaryOp::ArithmeticShr,
+        BinOp::Eq => ProcessBinaryOp::Eq,
+        BinOp::Ne => ProcessBinaryOp::Ne,
+        BinOp::Lt => ProcessBinaryOp::Lt,
+        BinOp::Le => ProcessBinaryOp::Le,
+        BinOp::Gt => ProcessBinaryOp::Gt,
+        BinOp::Ge => ProcessBinaryOp::Ge,
+        BinOp::SLt => ProcessBinaryOp::SignedLt,
+        BinOp::SLe => ProcessBinaryOp::SignedLe,
+        BinOp::SGt => ProcessBinaryOp::SignedGt,
+        BinOp::SGe => ProcessBinaryOp::SignedGe,
+        BinOp::FAdd => ProcessBinaryOp::FloatAdd,
+        BinOp::FSub => ProcessBinaryOp::FloatSub,
+        BinOp::FMul => ProcessBinaryOp::FloatMul,
+        BinOp::FDiv => ProcessBinaryOp::FloatDiv,
+        BinOp::FEq => ProcessBinaryOp::FloatEq,
+        BinOp::FNe => ProcessBinaryOp::FloatNe,
+        BinOp::FLt => ProcessBinaryOp::FloatLt,
+        BinOp::FLe => ProcessBinaryOp::FloatLe,
+        BinOp::FGt => ProcessBinaryOp::FloatGt,
+        BinOp::FGe => ProcessBinaryOp::FloatGe,
     }
 }
 
@@ -14656,6 +14946,17 @@ impl Design {
             }
         }
         issues.extend(self.process_ir.validate(n));
+        for (index, value) in self.process_ir.values.iter().enumerate() {
+            if let ProcessValueKind::TableLookup { table, .. } = value.kind {
+                if table.0 >= self.lookup_tables.len() {
+                    issues.push(format!(
+                        "process value {:?} references invalid lookup table {}",
+                        ProcessValueId(index as u32),
+                        table.0
+                    ));
+                }
+            }
+        }
         issues
     }
 

@@ -176,10 +176,16 @@ language-lowering path.
    expression/value nodes and make delayed writes explicit scheduler
    operations. The CFG, value identity, and ownership boundaries are already
    in place.
-4. **Lower every source process once.** Explicit processes and implicit
-   continuous processes enter the same CFG lowering. Derive current
-   `Driver`/`EventBlock` optimizations from that representation and verify
-   identical delta-cycle behavior.
+4. **In progress: lower every source process once.** As a migration bridge,
+   every compiler output now imports the finalized hardware scheduler units
+   and normalized digital expressions into the same CFG/value arena as test
+   processes. This already preserves elaboration roots, nested instance
+   ownership, sensitivities, labels, guarded assignments, signed/float
+   operations, checked indices, std-derived tables, and foreign-call ABI; test
+   descriptors include all nested DUT processes. The remaining inversion is
+   for explicit processes and implicit continuous processes to enter Process
+   IR first, then derive the current `Driver`/`EventBlock` optimizations from
+   that representation and verify identical delta-cycle behavior.
 5. **Make the compatibility harness consume Process IR.** Remove its direct AST
    statement/expression translation first. This creates one semantic lowering
    even while generated C remains available for differential testing.

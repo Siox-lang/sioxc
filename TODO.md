@@ -203,7 +203,7 @@ Current baseline:
   Operands live once in a dense `ProcessValue` arena and CFG nodes carry stable
   `ProcessValueId`s; validation rejects every stale instruction/terminator ID.
   `Compilation` no longer retains a parallel `test_ir::Program`; `test_ir` is
-  now only the temporary Siox-AST adapter that fills `Design::process_ir`.
+  now only the temporary adapter that fills `Design::process_ir`.
 
 Remaining:
 
@@ -222,10 +222,17 @@ Remaining:
   writes are immediate within the stimulus process while connected DUT-input
   writes wait for the commit boundary; and self-toggle clocks react to their
   storage object rather than to a nonexistent testbench signal.
-  Remaining: lower every explicit hardware process plus implicit continuous
-  process into the same `Design::process_ir`, and derive optimized
-  `Driver`/`EventBlock` forms from those CFGs instead of separately lowering
-  hardware and testbench AST.
+  Hardware is now present for every compiler output too: the migration bridge
+  converts the finalized scheduler decomposition and normalized digital
+  expressions into dependency-ordered Process values and explicit guarded
+  CFG assignments. Each CFG retains its elaboration root, deepest owning
+  instance, signal sensitivity, labels, and concrete signed/float/table/index/
+  foreign-call semantics; test descriptors include their nested DUT processes.
+  Using the normalized product here is deliberate -- it preserves generic and
+  generate specialization instead of re-elaborating hardware AST in the
+  temporary adapter. Remaining: invert this bridge so explicit hardware and
+  implicit continuous source processes enter Process IR first, then derive the
+  optimized `Driver`/`EventBlock` scheduler forms from those CFGs.
 - ✅ **Bound ordinary Logic/metavalue expression growth.** Per-element lowering
   now materializes a repeated non-leaf operand once as an internal
   combinational signal. Nested dirty-vector expressions grow linearly with

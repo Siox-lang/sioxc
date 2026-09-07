@@ -13,8 +13,9 @@ may use is `diag` — plus the LLVM backend:
   optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
 - **`siox::testbench`** — canonical native-test selection metadata.
-- **`siox::test_ir`** — the temporary Siox-AST adapter that fills the canonical
-  `ir::Design::process_ir`; it owns no phase product or backend input.
+- **`siox::test_ir`** — the temporary adapter that fills the canonical
+  `ir::Design::process_ir` from normalized hardware and typed test AST; it owns
+  no phase product or backend input.
 - **`sioxc`** — the root package's thin command-line adapter.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
@@ -37,10 +38,10 @@ flowchart TB
         TESTPLAN -->|exact canonical std test roots| EL
         EL -->|concrete hierarchy| DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
         DIGITAL --> DESIGN["ir::Design<br/>owned ProcessIr"]
-        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>temporary AST adapter"]
+        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>temporary process adapter"]
         TY -->|typed expressions| TESTIR
-        DIGITAL -->|shared concrete layouts| TESTIR
-        TESTIR -->|fills process CFGs + descriptors| DESIGN
+        DIGITAL -->|normalized hardware + concrete layouts| TESTIR
+        TESTIR -->|fills hardware/test CFGs + descriptors| DESIGN
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
@@ -94,10 +95,13 @@ For a test build, `siox::testbench` resolves enabled uses of the canonical
 `std::attrs::test` declaration once, elaborates exactly those roots, and binds
 them into a `TestPlan`. The temporary `siox::test_ir` adapter fills the
 canonical `Design::process_ir` with validated descriptors and CFGs; the
-compiler no longer retains a second software program. Branch, suspend/resume,
-structured match/for control, termination, local/signal assignment semantics,
-activation, labels, and spans already live there. Operands are arena-owned once
-and referenced from CFG nodes by stable `ProcessValueId`. The current C
+compiler no longer retains a second software program. It runs for every
+lowered compiler output: normalized hardware scheduler units become reactive
+CFGs with root/instance ownership, while a test plan additionally contributes
+storage, clocks, and stimulus. Branch, suspend/resume, structured match/for
+control, termination, assignment semantics, activation, labels, and spans
+already live there. Operands are arena-owned once and referenced from CFG nodes
+by stable `ProcessValueId`. The current C
 compatibility harness consumes descriptors
 from the design but still translates test statements from AST. The harness
 contains the stimulus, scheduler, assertions, and reporting; it
@@ -161,7 +165,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
 | `ir` | IR | Signals, layouts, canonical process CFGs/test descriptors, compatibility drivers/event blocks, initializers, validation, and semantic lints. |
-| `test_ir` | temporary adapter | Lowers test AST into `Design::process_ir`; removed once all source processes share the main IR lowering entry point. |
+| `test_ir` | temporary adapter | Imports normalized hardware and lowers test AST into `Design::process_ir`; removed once all source processes share the main IR lowering entry point. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Resolution is the owner of nominal identity. Both declaration sites and use

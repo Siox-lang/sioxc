@@ -559,16 +559,14 @@ impl Compiler {
             &mut result.diagnostics,
             base_dir,
         );
-        if request.emit == Emit::TestExecutable {
-            crate::test_ir::lower(
-                &result.modules,
-                resolved,
-                typed,
-                &hierarchy,
-                result.test_plan.as_ref().expect("test planning completed"),
-                &mut design,
-            );
-        }
+        crate::test_ir::lower(
+            &result.modules,
+            resolved,
+            typed,
+            &hierarchy,
+            result.test_plan.as_ref(),
+            &mut design,
+        );
         result.stats.signals = Some(design.signals.len());
         result.stats.drivers = Some(design.drivers.len());
         result.stats.event_blocks = Some(design.event_blocks.len());
