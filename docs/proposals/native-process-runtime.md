@@ -125,7 +125,9 @@ signatures:
    identity. Every scalar `ProcessValue` carries its own packed bit width, so
    emitted operations use exact-width LLVM integers and cross the ABI as
    `ceil(bit_width / 64)` low-word-first words. Instruction/value and
-   suspension-service lowering remains.
+   suspension-service lowering remains. Branch terminators already lower for
+   the side-effect-free scalar subset (literals, current signals, and fixed bit
+   slices), including reconstruction of values wider than one ABI word.
 2. **Storage allocation.** Whether `ProcessStorage` is runtime-allocated and
    addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
    recursive layouts, flattened DUT bindings, and endpoint directions are now

@@ -329,7 +329,10 @@ Remaining:
   values now retain their own packed bit width in the arena, so direct LLVM
   lowering can choose each value's exact integer type and ABI word count
   instead of consulting a design-wide width. Instruction/value coverage,
-  suspension services, and full runtime consumption remain.
+  suspension services, and full runtime consumption remain. Direct branch
+  terminators already evaluate exact-width integer/bit-string/character
+  literals, current scalar signals, and fixed bit slices; unsupported value
+  forms or signal states still return the explicit unsupported status.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

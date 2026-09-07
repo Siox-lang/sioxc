@@ -212,6 +212,19 @@ pub(crate) fn build_module<'ctx>(
             signal.path
         ));
     }
+    if let Some((id, width)) = design
+        .process_ir
+        .values
+        .iter()
+        .enumerate()
+        .filter_map(|(id, value)| value.bit_width.map(|width| (id, width)))
+        .find(|(_, width)| *width > LLVM_MAX_INT_BITS)
+    {
+        return Err(format!(
+            "process value {id} is {width} bits wide, but this LLVM backend supports integer \
+             values up to {LLVM_MAX_INT_BITS} bits"
+        ));
+    }
     if let Some((id, table)) = design
         .lookup_tables
         .iter()

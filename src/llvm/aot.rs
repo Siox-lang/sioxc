@@ -74,7 +74,13 @@ pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use siox::ir::{BinOp, Driver, Expr, Signal, SignalId};
+    use siox::diag::{FileId, Span};
+    use siox::elab::InstanceId;
+    use siox::ir::{
+        BinOp, Driver, Expr, ProcessActivation, ProcessBlock, ProcessBlockId, ProcessCfg,
+        ProcessId, ProcessIr, ProcessSignalState, ProcessTerminator, ProcessValue, ProcessValueId,
+        ProcessValueKind, Signal, SignalId,
+    };
     use std::process::Command;
 
     /// A minimal test signal: a plain bit vector of `width` at `path`, with no
@@ -103,6 +109,62 @@ mod tests {
             return;
         }
 
+        let span = Span::new(FileId(0), 0..0);
+        let process_ir = ProcessIr {
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("a-high-bit".into()),
+                span,
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![],
+                blocks: vec![
+                    ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Branch {
+                            condition: ProcessValueId(1),
+                            then_block: ProcessBlockId(1),
+                            else_block: ProcessBlockId(2),
+                        },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(1),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(2),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Finish { span },
+                    },
+                ],
+            }],
+            values: vec![
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(8),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Current,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::BitSlice {
+                        base: ProcessValueId(0),
+                        high: 7,
+                        low: 7,
+                    },
+                },
+            ],
+            ..ProcessIr::default()
+        };
         let design = Design {
             signals: vec![sig("E.a", 8), sig("E.b", 8), sig("E.y", 8)],
             drivers: vec![Driver {
@@ -118,7 +180,7 @@ mod tests {
                 meta: None,
             }],
             event_blocks: vec![],
-            process_ir: Default::default(),
+            process_ir,
             process_labels: Default::default(),
             resolved_process_labels: Default::default(),
             enum_syms: Default::default(),
@@ -153,12 +215,17 @@ extern void sx_reset(void);
 extern void sx_set(unsigned, unsigned long long);
 extern unsigned long long sx_read(unsigned);
 extern void sx_settle(void);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
 signed main(void) {
     sx_reset();
     sx_set(0, 30); sx_set(1, 12); sx_settle();
     if (sx_read(2) != 42) return 1;
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 3) return 3;
     sx_set(0, 200); sx_set(1, 100); sx_settle();   /* wraps at 8 bits */
     if (sx_read(2) != (300 % 256)) return 2;
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 2) return 4;
     return 0;
 }
 "#,

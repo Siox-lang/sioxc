@@ -6,12 +6,19 @@
 //! compiler. Execution entry points are added beside these tables as the
 //! Process IR emitter gains instruction coverage.
 
+use std::collections::HashMap;
+
+use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::values::{FunctionValue, PointerValue};
+use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
+use inkwell::IntPredicate;
 
-use siox::ir::{Design, ProcessActivation, ProcessCfg, ProcessSensitivity, ProcessTerminator};
+use siox::ir::{
+    Design, ProcessActivation, ProcessCfg, ProcessNumber, ProcessSensitivity, ProcessSignalState,
+    ProcessTerminator, ProcessValueId, ProcessValueKind,
+};
 
 /// Version of the native process metadata ABI emitted into every object.
 ///
@@ -30,6 +37,140 @@ const PROCESS_FINISHED: u8 = 3;
 /// lowering is not implemented yet. The runtime must report this, never treat
 /// it as successful completion.
 const PROCESS_UNSUPPORTED: u8 = u8::MAX;
+
+/// Convert an integer to another exact LLVM width without changing its
+/// unsigned bit pattern.
+fn fit<'ctx>(builder: &Builder<'ctx>, value: IntValue<'ctx>, width: u32) -> Option<IntValue<'ctx>> {
+    let ty = value
+        .get_type()
+        .get_context()
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    match value.get_type().get_bit_width().cmp(&width) {
+        std::cmp::Ordering::Less => builder.build_int_z_extend(value, ty, "pv.zx").ok(),
+        std::cmp::Ordering::Greater => builder.build_int_truncate(value, ty, "pv.tr").ok(),
+        std::cmp::Ordering::Equal => Some(value),
+    }
+}
+
+/// Read one scalar current-signal value through the stable word ABI and
+/// reconstruct its exact LLVM integer. Composite signal lists and old/event
+/// planes intentionally remain unsupported until their state accessors are
+/// part of the direct process lowering boundary.
+fn current_signal<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    signals: &[siox::ir::SignalId],
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let [signal] = signals else {
+        return None;
+    };
+    let signal_width = design.signal_width(*signal)?;
+    let value_type = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let read = module.get_function("sx_read_word")?;
+    let mut value = value_type.const_zero();
+    // Never request or shift a word whose first bit lies outside the result.
+    // A malformed hand-built IR can disagree with the signal width; treating
+    // the result width as the cap keeps that mismatch from producing LLVM
+    // shift poison before validation grows a stronger shape check.
+    for word in 0..super::words_for(signal_width.min(width)) {
+        let call = builder
+            .build_call(
+                read,
+                &[
+                    context
+                        .i32_type()
+                        .const_int(u64::from(signal.0), false)
+                        .into(),
+                    context.i32_type().const_int(u64::from(word), false).into(),
+                ],
+                "pv.word",
+            )
+            .ok()?
+            .try_as_basic_value();
+        let raw = match call {
+            inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+            _ => return None,
+        };
+        let placed = fit(builder, raw, width)?;
+        let offset = word.checked_mul(super::ABI_WORD_BITS)?;
+        let placed = if offset == 0 {
+            placed
+        } else {
+            builder
+                .build_left_shift(
+                    placed,
+                    value_type.const_int(u64::from(offset), false),
+                    "pv.place",
+                )
+                .ok()?
+        };
+        value = builder.build_or(value, placed, "pv.join").ok()?;
+    }
+    Some(value)
+}
+
+/// Emit the side-effect-free scalar subset needed by direct CFG control.
+/// Values are dependency ordered, but the per-block cache also prevents a
+/// shared arena node from being emitted more than once in one LLVM block.
+fn process_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    if let Some(value) = cache.get(&id).copied() {
+        return Some(value);
+    }
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    let width = value.bit_width?;
+    if width > super::emit::LLVM_MAX_INT_BITS {
+        return None;
+    }
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let emitted = match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words))
+        | ProcessValueKind::BitString { words, .. } => ty.const_int_arbitrary_precision(words),
+        ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),
+        ProcessValueKind::Char(character) => ty.const_int(u64::from(u32::from(*character)), false),
+        ProcessValueKind::Signal {
+            signals,
+            state: ProcessSignalState::Current,
+        } => current_signal(context, module, builder, design, signals, width)?,
+        ProcessValueKind::BitSlice { base, high, low } => {
+            let base = process_value(context, module, builder, design, *base, cache)?;
+            let base_width = base.get_type().get_bit_width();
+            if high < low || *high >= base_width {
+                return None;
+            }
+            let shifted = if *low == 0 {
+                base
+            } else {
+                builder
+                    .build_right_shift(
+                        base,
+                        base.get_type().const_int(u64::from(*low), false),
+                        false,
+                        "pv.slice",
+                    )
+                    .ok()?
+            };
+            fit(builder, shifted, width)?
+        }
+        _ => return None,
+    };
+    cache.insert(id, emitted);
+    Some(emitted)
+}
 
 /// Emit one externally visible, immutable `u32` value.
 fn u32_global<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str, value: u32) {
@@ -133,6 +274,7 @@ fn test_name_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: 
 fn process_entry<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
+    design: &Design,
     process: &ProcessCfg,
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
@@ -198,8 +340,41 @@ fn process_entry<'ctx>(
                     .build_return(Some(&i8.const_int(u64::from(PROCESS_FINISHED), false)))
                     .unwrap();
             }
+            ProcessTerminator::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                let mut cache = HashMap::new();
+                let Some(condition) =
+                    process_value(context, module, &builder, design, *condition, &mut cache)
+                else {
+                    builder
+                        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                        .unwrap();
+                    continue;
+                };
+                let condition = if condition.get_type().get_bit_width() == 1 {
+                    condition
+                } else {
+                    builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            condition,
+                            condition.get_type().const_zero(),
+                            "pv.condition",
+                        )
+                        .unwrap()
+                };
+                builder
+                    .build_conditional_branch(
+                        condition,
+                        blocks[then_block.0 as usize],
+                        blocks[else_block.0 as usize],
+                    )
+                    .unwrap();
+            }
             ProcessTerminator::Return { value: Some(_), .. }
-            | ProcessTerminator::Branch { .. }
             | ProcessTerminator::Match { .. }
             | ProcessTerminator::For { .. }
             | ProcessTerminator::Suspend { .. } => {
@@ -220,7 +395,7 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
         .processes
         .iter()
         .map(|process| {
-            process_entry(context, module, process)
+            process_entry(context, module, design, process)
                 .as_global_value()
                 .as_pointer_value()
         })
@@ -367,8 +542,9 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessTerminator,
-        ProcessTest,
+        ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessSignalState,
+        ProcessTerminator, ProcessTest, ProcessValue, ProcessValueId, ProcessValueKind, Signal,
+        SignalId,
     };
     use siox::resolve::DefId;
 
@@ -545,5 +721,117 @@ mod tests {
         assert!(body("bb1:").contains("ret i8 2"), "{llvm}");
         assert!(body("bb2:").contains("ret i8 3"), "{llvm}");
         assert!(body("bb3:").contains("ret i8 -1"), "{llvm}");
+    }
+
+    /// Direct branch lowering reconstructs a value from as many ABI words as
+    /// its own signal width requires, then branches on the selected bit.
+    #[test]
+    fn process_branch_reads_an_exact_width_multiword_value() {
+        let process_ir = ProcessIr {
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("wide-branch".into()),
+                span: span(),
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![],
+                blocks: vec![
+                    ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Branch {
+                            condition: ProcessValueId(1),
+                            then_block: ProcessBlockId(1),
+                            else_block: ProcessBlockId(2),
+                        },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(1),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span: span() },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(2),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Finish { span: span() },
+                    },
+                ],
+            }],
+            values: vec![
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Current,
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::BitSlice {
+                        base: ProcessValueId(0),
+                        high: 64,
+                        low: 64,
+                    },
+                },
+            ],
+            ..ProcessIr::default()
+        };
+        let design = Design {
+            signals: vec![Signal {
+                path: "Wide.flag".into(),
+                declaration_span: span(),
+                width: 65,
+                real: false,
+                integer: false,
+                char: false,
+                range: None,
+                init: vec![0, 0],
+                enum_type: None,
+            }],
+            process_ir,
+            ..Design::default()
+        };
+        let llvm = crate::llvm::emit_module_ir(&design).unwrap();
+        assert!(
+            llvm.contains("call i64 @sx_read_word(i32 0, i32 0)"),
+            "{llvm}"
+        );
+        assert!(
+            llvm.contains("call i64 @sx_read_word(i32 0, i32 1)"),
+            "{llvm}"
+        );
+        assert!(llvm.contains("lshr i65"), "{llvm}");
+        assert!(llvm.contains("br i1"), "{llvm}");
+    }
+
+    /// Oversized process-only values fail before asking LLVM to construct an
+    /// unsupported integer type, even when no hardware signal has that width.
+    #[test]
+    fn unsupported_process_value_width_is_an_error_not_a_panic() {
+        let process_ir = ProcessIr {
+            values: vec![ProcessValue {
+                span: span(),
+                ty: None,
+                bit_width: Some(crate::llvm::emit::LLVM_MAX_INT_BITS + 1),
+                kind: ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(vec![0])),
+            }],
+            ..ProcessIr::default()
+        };
+        let error = crate::llvm::emit_module_ir(&Design {
+            process_ir,
+            ..Design::default()
+        })
+        .unwrap_err();
+        assert!(error.contains("process value 0"), "{error}");
+        assert!(
+            error.contains(&crate::llvm::emit::LLVM_MAX_INT_BITS.to_string()),
+            "{error}"
+        );
     }
 }
