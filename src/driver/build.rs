@@ -332,6 +332,12 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
     prog.push_str("extern int64_t sx_range_value(void);\n");
     prog.push_str("extern uint32_t sx_index_error(void);\n");
     prog.push_str("extern int64_t sx_index_value(void);\n");
+    // Test discovery is owned by the canonical Process IR object.  The C
+    // compatibility layer may still execute a generated test body below, but
+    // it must not carry a second name/count registry while that body emitter
+    // is being replaced.
+    prog.push_str("extern const uint32_t sx_test_count;\n");
+    prog.push_str("extern const char *const sx_test_names[];\n");
     prog.push_str("static signed sx_check_ranges(void);\n");
     let abi_words = design
         .signals
@@ -861,7 +867,6 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         let root = test.root;
         let instance = hier.instance(root);
         let name = hier.root_path(root);
-        let qualified = test.qualified_name.clone();
         let symbol = format!("r{}", root.0);
         let (map, aliases) = build_map(hier, root, design);
         let items = siox::testbench::implementation_items(modules, resolved, instance.entity_id);
@@ -951,7 +956,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             value_bits,
         };
         prog.push_str(&ctx.gen_test_fn(&items)?);
-        names.push((symbol, qualified));
+        names.push(symbol);
     }
     prog.push_str(&gen_main(&names));
 
@@ -1476,8 +1481,20 @@ fn gen_fst_runtime(
 /// waveform. The format follows the path's extension: `.vcd` writes VCD and
 /// anything else writes FST, so FST is the default without having to name it.
 /// Passing `-o` twice with one of each extension writes both.
-fn gen_main(names: &[(String, String)]) -> String {
+fn gen_main(symbols: &[String]) -> String {
     let mut m = String::new();
+    // Execution still crosses the old per-test generated-C boundary. Keep
+    // that compatibility seam to one index dispatcher: discovery, filtering,
+    // names, and reporting all consume the descriptors emitted by LLVM.
+    m.push_str("static signed sx_run_test(uint32_t index) {\n    switch (index) {\n");
+    for (index, symbol) in symbols.iter().enumerate() {
+        m.push_str(&format!("    case {index}u: return test_{symbol}();\n"));
+    }
+    m.push_str(
+        "    default: g_msg = \"invalid Process IR test descriptor index\"; return 1;\n\
+         \x20   }\n\
+         }\n",
+    );
     // The waveform format is chosen by the path's extension rather than by a
     // separate flag: `.vcd` writes VCD, anything else writes FST. FST is the
     // richer format and the better default, and `-o wave.vcd` is a shorter way
@@ -1510,20 +1527,24 @@ fn gen_main(names: &[(String, String)]) -> String {
     );
     m.push_str("    signed failed = 0, ran = 0, filtered = 0;\n");
     // Count how many tests match, so the "running N tests" line is post-filter.
-    for (_, display) in names {
-        m.push_str(&format!(
-            "    if (!filter || strstr(\"{display}\", filter)) ran++; else filtered++;\n"
-        ));
-    }
+    m.push_str(
+        "    for (uint32_t test = 0; test < sx_test_count; test++) {\n\
+         \x20       if (!filter || strstr(sx_test_names[test], filter)) ran++; else filtered++;\n\
+         \x20   }\n",
+    );
     m.push_str("    printf(\"\\nrunning %d test%s\\n\", ran, ran == 1 ? \"\" : \"s\");\n");
-    for (symbol, display) in names {
-        m.push_str(&format!(
-            "    if (!filter || strstr(\"{display}\", filter)) {{ \
-             if (test_{symbol}()) {{ printf(\"test {display} ... FAILED\\n    %s\\n\", g_msg); \
-             if (g_loc) printf(\"  --> %s\\n\", g_loc); failed++; }} \
-             else printf(\"test {display} ... ok\\n\"); }}\n"
-        ));
-    }
+    m.push_str(
+        "    for (uint32_t test = 0; test < sx_test_count; test++) {\n\
+         \x20       const char *display = sx_test_names[test];\n\
+         \x20       if (!filter || strstr(display, filter)) {\n\
+         \x20           if (sx_run_test(test)) {\n\
+         \x20               printf(\"test %s ... FAILED\\n    %s\\n\", display, g_msg);\n\
+         \x20               if (g_loc) printf(\"  --> %s\\n\", g_loc);\n\
+         \x20               failed++;\n\
+         \x20           } else printf(\"test %s ... ok\\n\", display);\n\
+         \x20       }\n\
+         \x20   }\n",
+    );
     m.push_str(
         "    printf(\"\\ntest result: %s. %d passed; %d failed; %d filtered out\",\n\
          \x20          failed ? \"FAILED\" : \"ok\", ran - failed, failed, filtered);\n\
@@ -8925,7 +8946,19 @@ fn c_logic_element(
 
 #[cfg(test)]
 mod tests {
-    use super::{c_condition, c_logic_element};
+    use super::{c_condition, c_logic_element, gen_main};
+
+    #[test]
+    /// The compatibility harness discovers tests through the descriptor ABI;
+    /// only the temporary index-to-generated-body dispatcher remains local.
+    fn native_main_uses_process_ir_test_descriptors() {
+        let generated = gen_main(&["r2".to_string(), "r7".to_string()]);
+        assert!(generated.contains("test < sx_test_count"));
+        assert!(generated.contains("const char *display = sx_test_names[test]"));
+        assert!(generated.contains("case 0u: return test_r2();"));
+        assert!(generated.contains("case 1u: return test_r7();"));
+        assert!(!generated.contains("strstr(\""));
+    }
 
     #[test]
     /// A condition is parenthesized exactly once, so nesting does not accumulate

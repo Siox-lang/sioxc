@@ -319,8 +319,9 @@ Remaining:
   states, and scheduler calls into the same LLVM module as signals and Siox
   functions. Native object and test-executable builds must differ only in
   linked runtime/entry-point packaging, not language lowering. The LLVM object
-  now exports versioned immutable test/process/activation/sensitivity tables;
-  process entry points and runtime consumption remain.
+  now exports versioned immutable test/process/activation/sensitivity tables,
+  and the compatibility executable uses their test counts/names for filtering
+  and reporting. Process entry points and full runtime consumption remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
@@ -385,10 +386,11 @@ Current baseline:
 - 🔴 **Retire generated C.** First make the compatibility harness consume
   unified Process IR instead of translating AST, then add direct LLVM process
   lowering and a linked scheduler/test/waveform runtime. The object-side static
-  descriptor ABI and IR-owned clock discovery are complete; statement/value
-  execution and runtime linking remain. Differentially test both outputs before
-  deleting the C translator. The complete straight-pipeline plan is in
-  `docs/proposals/testbench-software-ir.md`.
+  descriptor ABI, descriptor-owned test filtering/reporting, and IR-owned clock
+  discovery are complete; a temporary descriptor-index-to-C-body dispatcher,
+  statement/value execution, and runtime linking remain. Differentially test
+  both outputs before deleting the C translator. The complete straight-pipeline
+  plan is in `docs/proposals/testbench-software-ir.md`.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

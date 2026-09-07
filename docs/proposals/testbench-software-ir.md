@@ -190,10 +190,12 @@ language-lowering path.
    clock discovery now consumes canonical reactive activation, delayed-write
    instructions, and storage-to-DUT bindings rather than rescanning AST. Bare
    impl-scope self-toggle statements also lower as ordinary concurrent clock
-   CFGs instead of being mixed into the foreground process. Remove the
-   remaining direct AST statement/expression translation next. This creates
-   one semantic lowering even while generated C remains available for
-   differential testing.
+   CFGs instead of being mixed into the foreground process. Test filtering,
+   counts, and display names now come from the LLVM object's immutable Process
+   IR descriptors too; generated C retains only an index-to-body compatibility
+   dispatcher. Remove the remaining direct AST statement/expression
+   translation next. This creates one semantic lowering even while generated
+   C remains available for differential testing.
 6. **Add direct LLVM process lowering and the linked runtime.** Start with
    straight-line reactive/event processes, then branches/loops, suspension and
    delayed writes, aggregates and checked indices, strings/file I/O, formatting,

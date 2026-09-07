@@ -30,9 +30,10 @@ uint32_t sx_range_site(void);
 uint32_t sx_index_error(void);   int64_t sx_index_value(void);
 ```
 
-The object now also exports immutable process discovery metadata. These
-symbols are not consumed by the compatibility harness's generated `main` yet,
-but they are the descriptor boundary the reusable runtime will consume:
+The object also exports immutable process discovery metadata. The
+compatibility harness already consumes `sx_test_count` and `sx_test_names` for
+filtering and reporting; the remaining generated test-body dispatcher accepts
+only the descriptor index. The reusable runtime will consume the same tables:
 
 ```c
 extern const uint32_t sx_process_abi_version;
@@ -77,7 +78,7 @@ runtime inventoried below.
 | dynamic arrays | `sx_dyn_get`, `sx_dyn_get_checked`, `sx_dyn_equal_values` | heap-backed values read at run time |
 | formatting | `sx_decimal`, `sx_chars` | arbitrary-width decimal and char-vector rendering |
 | waveforms | `sx_vcd_*`, `sx_fst_*`, `sx_is_vcd`, `sx_wave_begin_test` | writer lifetime, per-test files, libfst linkage |
-| descriptors and accounting | generated `main`, `sx_dbg_*` | test table, name filtering, result counting, stable output |
+| descriptors and accounting | generated `main`, `sx_dbg_*` | count/name discovery is already object-owned; move result counting, stable output, and debug lookup into the runtime |
 
 ### Does *not* become runtime — emit it instead
 
