@@ -12,6 +12,7 @@
 
 mod aot;
 mod emit;
+mod process;
 
 pub use aot::emit_object;
 pub use emit::emit_module_ir;

@@ -14,7 +14,11 @@ use std::path::Path;
 use std::process::Command;
 
 use siox::elab::{Hierarchy, InstanceId};
-use siox::ir::{Design, FunctionIndex, LayoutKind, ScalarDomain, SignalId, SourceLayout};
+use siox::ir::{
+    Design, FunctionIndex, LayoutDirection, LayoutKind, ProcessInstruction, ProcessNumber,
+    ProcessSensitivity, ProcessTest, ProcessValueId, ProcessValueKind, ScalarDomain, SignalId,
+    SourceLayout,
+};
 use siox::resolve::{DefId, Resolved};
 use siox::syntax::ast;
 use siox::syntax::Module;
@@ -883,7 +887,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             &type_aliases,
             &struct_field_names,
         );
-        let clocks = scan_clocks(&items, &aliases)?;
+        let clocks = scan_process_clocks(design, test)?;
         let instance_names: std::collections::HashSet<String> = hier
             .instance(root)
             .children
@@ -8171,44 +8175,123 @@ fn after_toggle(
     Ok(None)
 }
 
-/// Collect the background clocks in a test's body — `clock(clk, period)` calls
-/// and the VHDL-style `clk = !clk after half;` idiom: (signal id, half fs).
-fn scan_clocks(
-    items: &[&ast::ImplItem],
-    aliases: &HashMap<String, Vec<SignalId>>,
-) -> Result<Vec<(u32, u64)>, String> {
+/// Convert one Process IR duration into the compatibility scheduler's
+/// femtosecond timeline. This remains a transitional suffix fold; canonical
+/// lowering will eventually leave a plain `time` value in the arena.
+fn process_duration_fs(design: &Design, value: ProcessValueId) -> Result<u64, String> {
+    let Some(value) = design.process_ir.values.get(value.0 as usize) else {
+        return Err(format!(
+            "clock delay references invalid process value %v{}",
+            value.0
+        ));
+    };
+    let (number, scale) = match &value.kind {
+        ProcessValueKind::Suffixed { number, suffix } => {
+            let scale =
+                u64::try_from(ast::suffix_scale(suffix).unwrap_or(1_000_000)).map_err(|_| {
+                    format!("time unit `{suffix}` is too large for the native timeline")
+                })?;
+            (number, scale)
+        }
+        ProcessValueKind::Number(number) => (number, 1),
+        other => {
+            return Err(format!(
+                "clock delay must be a constant time value, found {other:?}"
+            ))
+        }
+    };
+    let ProcessNumber::Integer(words) = number else {
+        return Err("clock delay must use an integer time value".to_string());
+    };
+    if words
+        .get(1..)
+        .is_some_and(|rest| rest.iter().any(|word| *word != 0))
+    {
+        return Err("clock delay exceeds the native 64-bit femtosecond timeline".to_string());
+    }
+    words
+        .first()
+        .copied()
+        .unwrap_or(0)
+        .checked_mul(scale)
+        .ok_or_else(|| "clock delay exceeds the native 64-bit femtosecond timeline".to_string())
+}
+
+/// The storage or signal at the root of a scheduled place.
+fn scheduled_place(design: &Design, value: ProcessValueId) -> Option<ProcessSensitivity> {
+    match &design.process_ir.values.get(value.0 as usize)?.kind {
+        ProcessValueKind::Storage(storage) => Some(ProcessSensitivity::Storage(*storage)),
+        ProcessValueKind::Signal { signals, .. } if signals.len() == 1 => {
+            Some(ProcessSensitivity::Signal(signals[0]))
+        }
+        ProcessValueKind::Field { base, .. } | ProcessValueKind::Index { base, .. } => {
+            scheduled_place(design, *base)
+        }
+        _ => None,
+    }
+}
+
+/// Collect the canonical self-toggle clock schedules from one test descriptor.
+///
+/// The compatibility scheduler used to rediscover these by walking source AST
+/// after elaboration. Reading the schedule, activation and storage bindings
+/// from Process IR makes declaration spelling and source order irrelevant and
+/// leaves one scheduler meaning for the direct LLVM runtime to inherit.
+fn scan_process_clocks(design: &Design, test: &ProcessTest) -> Result<Vec<(u32, u64)>, String> {
     let mut clocks: Vec<(u32, u64)> = Vec::new();
     let mut add = |id: u32, half: u64| {
         if !clocks.iter().any(|(c, _)| *c == id) {
             clocks.push((id, half));
         }
     };
-    let mut scan_statement = |statement: &ast::Stmt| -> Result<(), String> {
-        if let ast::Stmt::Assign {
-            target,
-            value,
-            after,
-            ..
-        } = statement
+    for process_id in &test.processes {
+        let Some(process) = design.process_ir.processes.get(process_id.0 as usize) else {
+            return Err(format!(
+                "test `{}` references invalid process {:?}",
+                test.qualified_name, process_id
+            ));
+        };
+        // Hardware processes nested below the test root are already executed
+        // by `sx_settle`; only test-owned self-toggle processes are background
+        // clocks in the compatibility scheduler.
+        if process.owner != test.root {
+            continue;
+        }
+        let sensitivity = match &process.activation {
+            siox::ir::ProcessActivation::Reactive { sensitivity } if sensitivity.len() == 1 => {
+                sensitivity[0]
+            }
+            _ => continue,
+        };
+        for instruction in process
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
         {
-            if let Some((path, half)) = after_toggle(target, value, after)? {
-                // A clock shared by several DUTs toggles every port.
-                for id in aliases.get(&path).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    add(id.0, half);
+            let ProcessInstruction::Schedule { target, delay, .. } = instruction else {
+                continue;
+            };
+            if scheduled_place(design, *target) != Some(sensitivity) {
+                continue;
+            }
+            let half = process_duration_fs(design, *delay)?.max(1);
+            match sensitivity {
+                ProcessSensitivity::Signal(signal) => add(signal.0, half),
+                ProcessSensitivity::Storage(storage) => {
+                    let Some(storage) = design.process_ir.storages.get(storage.0 as usize) else {
+                        return Err(format!("clock references invalid storage %g{}", storage.0));
+                    };
+                    // A shared source may fan out to several DUT input ports.
+                    for binding in &storage.bindings {
+                        if matches!(
+                            binding.direction,
+                            LayoutDirection::In | LayoutDirection::InOut
+                        ) {
+                            add(binding.signal.0, half);
+                        }
+                    }
                 }
             }
-        }
-        Ok(())
-    };
-    for item in items {
-        match item {
-            ast::ImplItem::Stmt(statement) => scan_statement(statement)?,
-            ast::ImplItem::Process(process)
-                if siox::testbench::is_clock_process(&process.body.stmts) =>
-            {
-                scan_statement(&process.body.stmts[0])?;
-            }
-            _ => {}
         }
     }
     Ok(clocks)

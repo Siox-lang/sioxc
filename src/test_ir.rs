@@ -151,6 +151,43 @@ pub fn lower(
                     process_ir.processes.push(lowered);
                     test_processes.push(id);
                 }
+                ImplItem::Stmt(statement) if crate::testbench::is_clock_statement(statement) => {
+                    // Legacy impl-scope syntax still denotes a concurrent
+                    // clock process. Keeping it in the foreground statement
+                    // list made Process IR lose the scheduling boundary even
+                    // though the compatibility harness rediscovered it later
+                    // by scanning AST. Give it an ordinary reactive CFG now.
+                    let id = ProcessId(process_ir.processes.len() as u32);
+                    let statements = std::slice::from_ref(statement);
+                    let activation = process_activation(
+                        statements,
+                        &root_path,
+                        design,
+                        resolved,
+                        test.root,
+                        &process_ir,
+                    );
+                    let lowered = {
+                        let mut context = LoweringContext {
+                            resolved,
+                            typed,
+                            design,
+                            root_path: &root_path,
+                            process_ir: &mut process_ir,
+                        };
+                        lower_process(
+                            id,
+                            test.root,
+                            Some(format!("{root_path}::<clock:{}>", id.0)),
+                            ast::stmt_span(statement),
+                            activation,
+                            statements,
+                            &mut context,
+                        )
+                    };
+                    process_ir.processes.push(lowered);
+                    test_processes.push(id);
+                }
                 ImplItem::Stmt(statement) => legacy_statements.push(statement.clone()),
                 ImplItem::Const(_)
                 | ImplItem::Fn(_)
@@ -273,10 +310,13 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
                         process_ir,
                         &mut process,
                         tail,
-                        driver.target,
-                        &driver.expr,
-                        driver.cond.as_ref(),
-                        assignment_span,
+                        ImportedAssignment {
+                            signal: driver.target,
+                            expression: &driver.expr,
+                            condition: driver.cond.as_ref(),
+                            driver_context: driver.ctx,
+                            span: assignment_span,
+                        },
                     );
                 }
             }
@@ -298,10 +338,13 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
                         process_ir,
                         &mut process,
                         tail,
-                        update.target,
-                        &update.expr,
-                        update.cond.as_ref(),
-                        update.span.unwrap_or(span),
+                        ImportedAssignment {
+                            signal: update.target,
+                            expression: &update.expr,
+                            condition: update.cond.as_ref(),
+                            driver_context: event.ctx,
+                            span: update.span.unwrap_or(span),
+                        },
                     );
                 }
                 process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(exit);
@@ -318,17 +361,30 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
     }
 }
 
+/// One assignment imported from the normalized digital compatibility product.
+struct ImportedAssignment<'a> {
+    signal: SignalId,
+    expression: &'a crate::ir::Expr,
+    condition: Option<&'a crate::ir::Expr>,
+    driver_context: u32,
+    span: crate::diag::Span,
+}
+
 /// Append one normalized signal assignment, spelling a guard as an explicit
 /// branch so the resulting CFG needs no special conditional-write operation.
 fn append_digital_assignment(
     process_ir: &mut ProcessIr,
     process: &mut ProcessCfg,
     tail: ProcessBlockId,
-    signal: SignalId,
-    expression: &crate::ir::Expr,
-    condition: Option<&crate::ir::Expr>,
-    span: crate::diag::Span,
+    assignment: ImportedAssignment<'_>,
 ) -> ProcessBlockId {
+    let ImportedAssignment {
+        signal,
+        expression,
+        condition,
+        driver_context,
+        span,
+    } = assignment;
     let (assignment, next) = if let Some(condition) = condition {
         let assignment = push_block(process);
         let next = push_block(process);
@@ -356,6 +412,7 @@ fn append_digital_assignment(
         .instructions
         .push(ProcessInstruction::Assign {
             semantics: ProcessAssignment::StagedSignal,
+            driver_context: Some(driver_context),
             target,
             value,
             span,
@@ -773,6 +830,11 @@ fn lower_statement(
             let value = value_ref(value, process, context);
             let instruction = match after {
                 Some(delay) => ProcessInstruction::Schedule {
+                    driver_context: matches!(
+                        semantics,
+                        ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
+                    )
+                    .then_some(process.id.0),
                     target,
                     value,
                     delay: value_ref(delay, process, context),
@@ -780,6 +842,11 @@ fn lower_statement(
                 },
                 None => ProcessInstruction::Assign {
                     semantics,
+                    driver_context: matches!(
+                        semantics,
+                        ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
+                    )
+                    .then_some(process.id.0),
                     target,
                     value,
                     span: *span,
@@ -1681,6 +1748,7 @@ mod tests {
                     instruction,
                     ProcessInstruction::Assign {
                         semantics: ProcessAssignment::StagedSignal,
+                        driver_context: Some(_),
                         target,
                         value,
                         ..
@@ -1718,6 +1786,17 @@ mod tests {
             .instructions
             .iter()
             .any(|instruction| matches!(instruction, ProcessInstruction::Schedule { .. }))));
+        assert!(design.process_ir.processes[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instruction| matches!(
+                instruction,
+                ProcessInstruction::Schedule {
+                    driver_context: None,
+                    ..
+                }
+            )));
         let assignments = process
             .blocks
             .iter()

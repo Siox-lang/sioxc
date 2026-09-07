@@ -318,7 +318,9 @@ Remaining:
 - 🔴 **Direct Process IR lowering.** Lower unified process CFGs, suspension
   states, and scheduler calls into the same LLVM module as signals and Siox
   functions. Native object and test-executable builds must differ only in
-  linked runtime/entry-point packaging, not language lowering.
+  linked runtime/entry-point packaging, not language lowering. The LLVM object
+  now exports versioned immutable test/process/activation/sensitivity tables;
+  process entry points and runtime consumption remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
@@ -355,8 +357,11 @@ Current baseline:
 - 🟡 Native process scheduling supports one foreground stimulus process plus
   any number of canonical self-toggle clock processes. Clocks start at time
   zero regardless of declaration order, and additional foreground processes
-  are rejected with E-P028 instead of being serialized. General independently
-  suspending processes belong to the unified Process IR scheduler.
+  are rejected with E-P028 instead of being serialized. Clock discovery now
+  reads reactive CFG schedules and storage bindings from Process IR rather than
+  rescanning source AST, including legacy bare clock statements. General
+  independently suspending processes belong to the unified Process IR
+  scheduler.
 - ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
   declared array labels, nested dimensions, struct fields/values and packed
   bits. Composite right-hand sides are staged before writes. Invalid dynamic
@@ -379,9 +384,11 @@ Current baseline:
   AST-to-value/CFG lowering entry point.
 - 🔴 **Retire generated C.** First make the compatibility harness consume
   unified Process IR instead of translating AST, then add direct LLVM process
-  lowering and a linked scheduler/test/waveform runtime. Differentially test
-  both outputs before deleting the C translator. The complete straight-pipeline
-  plan is in `docs/proposals/testbench-software-ir.md`.
+  lowering and a linked scheduler/test/waveform runtime. The object-side static
+  descriptor ABI and IR-owned clock discovery are complete; statement/value
+  execution and runtime linking remain. Differentially test both outputs before
+  deleting the C translator. The complete straight-pipeline plan is in
+  `docs/proposals/testbench-software-ir.md`.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

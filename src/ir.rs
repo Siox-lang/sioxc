@@ -954,6 +954,12 @@ pub enum ProcessInstruction {
     Assign {
         /// Whether the write is immediate or staged to the next delta.
         semantics: ProcessAssignment,
+        /// Compatibility driver identity when this write was imported from
+        /// the normalized hardware scheduler. Writes from one source context
+        /// override in order; writes from different contexts resolve. New
+        /// source-first lowering may use the owning [`ProcessId`] directly
+        /// and leave this migration field absent.
+        driver_context: Option<u32>,
         /// The place written.
         target: ProcessValueId,
         /// The value written.
@@ -965,6 +971,9 @@ pub enum ProcessInstruction {
     /// scheduler operation rather than a flavour of immediate assignment, so
     /// native backends never have to infer scheduling from an optional field.
     Schedule {
+        /// Compatibility driver identity, with the same meaning as on
+        /// [`ProcessInstruction::Assign`]. Testbench storage clocks have none.
+        driver_context: Option<u32>,
         /// The signal place written when the delay expires.
         target: ProcessValueId,
         /// The value captured for the future write.

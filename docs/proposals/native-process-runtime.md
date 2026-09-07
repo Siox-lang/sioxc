@@ -1,8 +1,9 @@
 # The native process runtime
 
-Status: **proposal**, and an inventory. Nothing here is implemented and no
-code is changed by it. It specifies the fixed ABI that direct LLVM process
-lowering will call, so step 6 of the
+Status: **migration ABI**. Runtime services and process entry points remain to
+be implemented, while the LLVM object already exports source-independent test,
+process, activation, and sensitivity descriptor tables. It specifies the fixed
+ABI that direct LLVM process lowering will call, so step 6 of the
 [unified process pipeline](testbench-software-ir.md) has a target to build
 against rather than discovering one while porting.
 
@@ -28,6 +29,34 @@ uint32_t sx_range_error(void);   int64_t sx_range_value(void);
 uint32_t sx_range_site(void);
 uint32_t sx_index_error(void);   int64_t sx_index_value(void);
 ```
+
+The object now also exports immutable process discovery metadata. These
+symbols are not consumed by the compatibility harness's generated `main` yet,
+but they are the descriptor boundary the reusable runtime will consume:
+
+```c
+extern const uint32_t sx_process_abi_version;
+extern const uint32_t sx_test_count;
+extern const char *const sx_test_names[];
+extern const uint32_t sx_test_roots[];
+extern const uint32_t sx_test_process_offsets[];
+extern const uint32_t sx_test_process_ids[];
+
+extern const uint32_t sx_process_count;
+extern const uint32_t sx_process_roots[];
+extern const uint32_t sx_process_owners[];
+extern const uint32_t sx_process_entries[];
+extern const uint8_t  sx_process_activations[];
+extern const uint32_t sx_process_sensitivity_offsets[];
+extern const uint8_t  sx_process_sensitivity_kinds[];
+extern const uint32_t sx_process_sensitivity_ids[];
+```
+
+Offsets use the usual half-open flattened-table representation. Activation is
+`0 = time zero`, `1 = reactive`; sensitivity is `0 = signal`, `1 = persistent
+storage`. Counts make the one ABI-safe sentinel in each logically empty table
+unobservable. Changing any table or encoding increments
+`sx_process_abi_version`.
 
 **Provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -90,11 +119,13 @@ signatures:
    immediate, hardware signals are staged, and an immediate storage write
    stages propagation to its bound DUT inputs. Ownership of that commit loop is
    still the open ABI choice.
-4. **Activation.** How the exact `ProcessActivation::Reactive` signal/storage
-   sensitivity list reaches the ready queue — a static table, or registration
-   at reset. Reactive processes receive an initial time-zero activation.
-5. **Test descriptors.** Whether `ProcessTest` becomes a static table the
-   runtime walks, or generated registration calls. Each descriptor now lists
+4. **Activation — decided and emitted.** Exact
+   `ProcessActivation::Reactive` signal/storage sensitivity lists are immutable
+   offset tables in the design object. The runtime reads them while resetting a
+   selected test and gives reactive processes their initial time-zero
+   activation; no generated registration calls are required.
+5. **Test descriptors — decided and emitted.** `ProcessTest` is an immutable
+   name/root/process-list table in the design object. Each descriptor lists
    stimulus, clocks, and all nested DUT hardware processes under its root.
 
 ## Non-goals

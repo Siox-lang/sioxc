@@ -186,9 +186,14 @@ language-lowering path.
    for explicit processes and implicit continuous processes to enter Process
    IR first, then derive the current `Driver`/`EventBlock` optimizations from
    that representation and verify identical delta-cycle behavior.
-5. **Make the compatibility harness consume Process IR.** Remove its direct AST
-   statement/expression translation first. This creates one semantic lowering
-   even while generated C remains available for differential testing.
+5. **In progress: make the compatibility harness consume Process IR.** Native
+   clock discovery now consumes canonical reactive activation, delayed-write
+   instructions, and storage-to-DUT bindings rather than rescanning AST. Bare
+   impl-scope self-toggle statements also lower as ordinary concurrent clock
+   CFGs instead of being mixed into the foreground process. Remove the
+   remaining direct AST statement/expression translation next. This creates
+   one semantic lowering even while generated C remains available for
+   differential testing.
 6. **Add direct LLVM process lowering and the linked runtime.** Start with
    straight-line reactive/event processes, then branches/loops, suspension and
    delayed writes, aggregates and checked indices, strings/file I/O, formatting,

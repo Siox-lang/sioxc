@@ -226,6 +226,7 @@ pub(crate) fn build_module<'ctx>(
     }
     let cg = Codegen::new(ctx, design);
     cg.build();
+    super::process::emit_metadata(ctx, &cg.module, design);
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
         return Err(format!(
