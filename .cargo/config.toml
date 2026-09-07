@@ -1,0 +1,4 @@
+# Render ```mermaid blocks in rustdoc output. rustdoc-only, so ordinary
+# builds, tests and clippy are unaffected. See docs/rustdoc-header.html.
+[build]
+rustdocflags = ["--html-in-header", "docs/rustdoc-header.html"]

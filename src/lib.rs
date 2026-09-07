@@ -21,6 +21,44 @@
 //! [`compiler`] is the presentation-neutral embedding boundary that composes
 //! those stages for editors, build tools, and `sioxc`. The native LLVM AOT
 //! backend is available as `siox::llvm` when the `llvm` feature is enabled.
+//!
+//! ```mermaid
+//! flowchart TD
+//!     src["source .siox"] --> syntax
+//!     syntax["syntax<br/>lex, parse"] --> resolve
+//!     resolve["resolve<br/>names, visibility"] --> types
+//!     types["types<br/>type & kind check"] --> elab
+//!     elab["elab<br/>instances, parameters"] --> ir
+//!     ir["ir<br/>digital simulation IR"] --> tb
+//!     ir --> emit
+//!     tb["testbench + test_ir<br/>#[test] discovery"] --> build
+//!     emit["llvm::emit<br/>design to LLVM IR"] --> aot
+//!     aot["llvm::aot"] --> obj["native object"]
+//!     build["driver::build<br/>generated C + libfst"] --> exe["test executable<br/>VCD / FST"]
+//!     diag["diag: spans, diagnostics"] -.-> syntax
+//!     diag -.-> resolve
+//!     diag -.-> types
+//!     diag -.-> elab
+//!     diag -.-> ir
+//!     compiler["compiler: embedding boundary,<br/>owns orchestration"] === src
+//! ```
+//!
+//! # Building the documentation
+//!
+//! ```text
+//! cargo doc --no-deps --open
+//! ```
+//!
+//! The ```` ```mermaid ```` blocks throughout these docs are rendered by
+//! `docs/rustdoc-header.html`, which `.cargo/config.toml` passes to rustdoc as
+//! `--html-in-header`. Diagrams fall back to their source text when the
+//! mermaid CDN is unreachable, so the pages stay readable offline. Use
+//! `cargo doc --document-private-items` to include the internal helpers that
+//! make up most of each stage.
+
+// Every public item carries documentation. CI runs clippy with `-D warnings`,
+// so this is a hard gate there while staying a warning locally.
+#![warn(missing_docs)]
 
 extern crate self as siox;
 

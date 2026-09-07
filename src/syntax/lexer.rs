@@ -68,6 +68,11 @@ fn unrecognized_byte(c: u8) -> bool {
     )
 }
 
+/// Turns source text into [`Token`]s.
+///
+/// The lexer is total: unrecognized input becomes [`TokenKind::Unknown`] and a
+/// diagnostic rather than stopping the scan, so the parser still receives a
+/// full token stream and can report more than the first problem.
 pub struct Lexer<'a> {
     file: FileId,
     src: &'a str,
@@ -76,6 +81,7 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// A lexer over `src`, whose spans are attributed to `file`.
     pub fn new(file: FileId, src: &'a str) -> Self {
         Lexer {
             file,
@@ -133,6 +139,8 @@ impl<'a> Lexer<'a> {
 
     // --- scanners -----------------------------------------------------------
 
+    /// Consume a `//` comment through end of line, leaving the newline for
+    /// `skip_whitespace`.
     fn line_comment(&mut self) -> TokenKind {
         // Consume through end of line, leaving the newline for skip_whitespace.
         while let Some(c) = self.peek() {
@@ -144,6 +152,8 @@ impl<'a> Lexer<'a> {
         TokenKind::Comment
     }
 
+    /// Consume a `/* */` comment, which nests. An unterminated one reports at
+    /// `start` and consumes the rest of the file.
     fn block_comment(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         self.pos += 2; // `/*`
         let mut depth = 1;
@@ -170,6 +180,8 @@ impl<'a> Lexer<'a> {
         TokenKind::Comment
     }
 
+    /// Consume an identifier run and classify it as a keyword or a plain
+    /// identifier.
     fn ident_or_keyword(&mut self) -> TokenKind {
         let start = self.pos;
         while self.peek().is_some_and(is_ident_continue) {
@@ -178,6 +190,9 @@ impl<'a> Lexer<'a> {
         keyword_kind(&self.src[start..self.pos]).unwrap_or(TokenKind::Ident)
     }
 
+    /// Consume a numeric literal: an optional `0x`/`0b` radix prefix, digits
+    /// with `_` separators, and a fractional part for decimals only. A suffix
+    /// lexes separately as a trailing identifier.
     fn number(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         // Optional `0x` / `0b` radix prefix, otherwise plain decimal. Only
         // decimal numbers can carry a fractional part.
@@ -241,6 +256,9 @@ impl<'a> Lexer<'a> {
         self.peek_at(1 + len) == Some(b'\'')
     }
 
+    /// Consume a `'c'` character literal. A run that is not exactly one
+    /// character followed by a closing quote is the attribute tick instead, so
+    /// this rewinds rather than reporting.
     fn character_literal(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         self.bump(); // opening `'`
         let mut chars = 0;
@@ -301,6 +319,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consume a punctuation token, preferring the longest match so `::` never
+    /// lexes as two `:` and `<<` never as two `<`.
     fn punctuation(&mut self, sink: &mut DiagnosticSink, start: usize) -> TokenKind {
         let two = self.peek_at(1);
         // Two-character operators first.
@@ -386,20 +406,24 @@ impl<'a> Lexer<'a> {
 
     // --- cursor helpers -----------------------------------------------------
 
+    /// Advance past any run of whitespace.
     fn skip_whitespace(&mut self) {
         while self.peek().is_some_and(|c| c.is_ascii_whitespace()) {
             self.bump();
         }
     }
 
+    /// The byte at the cursor, or `None` at end of input.
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
     }
 
+    /// The byte `n` positions ahead, or `None` past the end.
     fn peek_at(&self, n: usize) -> Option<u8> {
         self.bytes.get(self.pos + n).copied()
     }
 
+    /// Consume and return the byte at the cursor.
     fn bump(&mut self) -> Option<u8> {
         let c = self.peek();
         if c.is_some() {
@@ -408,31 +432,40 @@ impl<'a> Lexer<'a> {
         c
     }
 
+    /// A span over `[start, end)` in this lexer's file.
     fn span(&self, start: usize, end: usize) -> Span {
         Span::new(self.file, start as u32..end as u32)
     }
 }
 
+/// Whether `c` may begin an identifier.
 fn is_ident_start(c: u8) -> bool {
     c == b'_' || c.is_ascii_alphabetic()
 }
 
+/// Whether `c` may continue an identifier.
 fn is_ident_continue(c: u8) -> bool {
     c == b'_' || c.is_ascii_alphanumeric()
 }
 
+/// Whether `c` is a decimal digit.
 fn is_dec_digit(c: u8) -> bool {
     c.is_ascii_digit()
 }
 
+/// Whether `c` is a hexadecimal digit.
 fn is_hex_digit(c: u8) -> bool {
     c.is_ascii_hexdigit()
 }
 
+/// Whether `c` is a binary digit.
 fn is_bin_digit(c: u8) -> bool {
     c == b'0' || c == b'1'
 }
 
+/// The keyword `s` spells, or `None` for an ordinary identifier. Analogue
+/// words are deliberately absent so they lex as identifiers and are rejected
+/// later with a Phase-2 diagnostic.
 fn keyword_kind(s: &str) -> Option<TokenKind> {
     Some(match s {
         "module" => TokenKind::Module,
@@ -468,6 +501,7 @@ mod tests {
     use super::*;
     use crate::syntax::token::TokenKind::*;
 
+    /// Lex `src`, returning its token kinds and how many errors were reported.
     fn lex(src: &str) -> (Vec<TokenKind>, usize) {
         let mut sink = DiagnosticSink::new();
         let kinds: Vec<TokenKind> = Lexer::new(FileId(0), src)
@@ -478,17 +512,21 @@ mod tests {
         (kinds, sink.error_count())
     }
 
+    /// Lex `src` and return just the token kinds.
     fn kinds(src: &str) -> Vec<TokenKind> {
         lex(src).0
     }
 
     #[test]
+    /// Empty and whitespace-only input still terminates with `Eof`.
     fn empty_input_is_just_eof() {
         assert_eq!(kinds(""), vec![Eof]);
         assert_eq!(kinds("   \n\t "), vec![Eof]);
     }
 
     #[test]
+    /// Keywords are recognized, but analogue words stay identifiers so the type
+    /// checker can reject them with a Phase-2 diagnostic.
     fn keywords_vs_identifiers() {
         assert_eq!(
             kinds("entity impl process"),
@@ -505,6 +543,8 @@ mod tests {
     }
 
     #[test]
+    /// A `'c'`-shaped run is a character literal; every other `'` is the
+    /// attribute tick, even glued to an identifier as in `sig'event`.
     fn tick_attribute_vs_character_literal() {
         // A `'c'`-shaped run is a character literal; any other `'` is the
         // attribute tick (`sig'event`), even glued to an identifier.
@@ -519,6 +559,8 @@ mod tests {
     }
 
     #[test]
+    /// A token's span must cover exactly its own text, since every diagnostic
+    /// location is derived from it.
     fn spans_cover_the_token_text() {
         let mut sink = DiagnosticSink::new();
         let toks = Lexer::new(FileId(0), "entity Counter").tokenize(&mut sink);
@@ -529,6 +571,8 @@ mod tests {
     }
 
     #[test]
+    /// Decimal, hex and binary literals all lex as `Int`, with `_` separators
+    /// allowed inside each.
     fn numbers_decimal_hex_binary() {
         assert_eq!(kinds("42 0xFF 0b1010"), vec![Int, Int, Int, Eof]);
         assert_eq!(kinds("1_000 0xff_ff 0b1010_0101"), vec![Int, Int, Int, Eof]);
@@ -540,6 +584,8 @@ mod tests {
     }
 
     #[test]
+    /// `1000.0` is a float but `0..10` is two integers around a `..`; the
+    /// fractional point must not swallow a range.
     fn floats_and_ranges_are_distinguished() {
         assert_eq!(kinds("1000.0 1_000.25_5"), vec![Float, Float, Eof]);
         // The `f`-style suffix is a separate identifier, mirroring signed suffixes.
@@ -551,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    /// Logic values lex as character literals and quoted text as strings.
     fn logic_and_string_literals() {
         assert_eq!(
             kinds("'0' '1' 'Z' 'X'"),
@@ -565,6 +612,7 @@ mod tests {
     }
 
     #[test]
+    /// Multi-character punctuation takes the longest match.
     fn multi_char_punctuation() {
         assert_eq!(
             kinds(":: .. == => -> << >>"),
@@ -575,11 +623,15 @@ mod tests {
     }
 
     #[test]
+    /// An attribute application lexes as its individual punctuation and name
+    /// rather than a single token.
     fn attribute_application_pound_bracket() {
         assert_eq!(kinds("#[top]"), vec![Pound, LBracket, Ident, RBracket, Eof]);
     }
 
     #[test]
+    /// Comments are retained as trivia tokens, including nested block comments,
+    /// so the formatter can reproduce them.
     fn comments_are_trivia_tokens() {
         assert_eq!(kinds("a // tail\nb"), vec![Ident, Comment, Ident, Eof]);
         assert_eq!(
@@ -589,6 +641,8 @@ mod tests {
     }
 
     #[test]
+    /// A representative declaration lexes with no errors and the expected
+    /// sequence.
     fn assignment_line_lexes_cleanly() {
         let (ks, errors) = lex("let clk: Bit = '0';");
         assert_eq!(errors, 0);
@@ -599,6 +653,8 @@ mod tests {
     }
 
     #[test]
+    /// An unterminated string reports once and still ends the stream in `Eof`,
+    /// so the parser always receives a complete token sequence.
     fn error_recovery_reports_and_continues() {
         // Unterminated string: one error, stream still ends in Eof.
         let (ks, errors) = lex("\"oops");

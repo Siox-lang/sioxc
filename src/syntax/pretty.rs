@@ -28,6 +28,7 @@ struct Printer {
 }
 
 impl Printer {
+    /// Emit one line at the current indentation.
     fn line(&mut self, s: &str) {
         for _ in 0..self.indent {
             self.out.push_str(INDENT);
@@ -36,12 +37,14 @@ impl Printer {
         self.out.push('\n');
     }
 
+    /// Emit a blank separator line.
     fn blank(&mut self) {
         self.out.push('\n');
     }
 
     // --- items --------------------------------------------------------------
 
+    /// Print a whole module: its `module` header, then each item.
     fn module(&mut self, m: &Module) {
         self.line(&format!("module {};", path(&m.path)));
         for item in &m.items {
@@ -50,6 +53,7 @@ impl Printer {
         }
     }
 
+    /// Print one top-level item.
     fn item(&mut self, item: &Item) {
         match item {
             Item::Using(u) => self.using(u),
@@ -74,6 +78,7 @@ impl Printer {
         }
     }
 
+    /// Print a `using` import or alias.
     fn using(&mut self, u: &Using) {
         let body = match &u.kind {
             UsingKind::Import { base, names } => {
@@ -93,6 +98,7 @@ impl Printer {
         self.line(&format!("{}{body}", pub_kw(u.is_pub)));
     }
 
+    /// Print a `const` declaration.
     fn const_decl(&mut self, c: &ConstDecl) {
         let kw = pub_kw(c.is_pub);
         self.line(&format!(
@@ -103,6 +109,8 @@ impl Printer {
         ));
     }
 
+    /// Print a `struct`. A newtype (`struct B(A);`) never carries a body, so it
+    /// prints on one line.
     fn struct_decl(&mut self, s: &StructDecl) {
         let kw = pub_kw(s.is_pub);
         // Newtype: `struct B(A);` — it never carries a body.
@@ -134,6 +142,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print a `view` and its field directions.
     fn view_decl(&mut self, v: &ViewDecl) {
         let kw = pub_kw(v.is_pub);
         let target = format!(" for {}", type_str(&v.target));
@@ -152,6 +161,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print an `enum`. A newtype (`enum Logic(ULogic);`) prints on one line.
     fn enum_decl(&mut self, e: &EnumDecl) {
         let kw = pub_kw(e.is_pub);
         // Newtype: `enum Logic(ULogic);` — it never carries a body.
@@ -172,6 +182,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print an `entity`: its attributes, then its port list.
     fn entity(&mut self, e: &EntityDecl) {
         for a in &e.attrs {
             self.line(&attr(a));
@@ -201,6 +212,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print an `impl` block, inherent or trait.
     fn impl_decl(&mut self, i: &ImplDecl) {
         for a in &i.attrs {
             let value = a
@@ -244,6 +256,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print one member of an impl body.
     fn impl_item(&mut self, item: &ImplItem) {
         match item {
             ImplItem::Const(c) => self.const_decl(c),
@@ -270,6 +283,7 @@ impl Printer {
         }
     }
 
+    /// Print a `trait` and its required methods.
     fn trait_decl(&mut self, t: &TraitDecl) {
         let kw = pub_kw(t.is_pub);
         self.line(&format!(
@@ -285,6 +299,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print an `attr` declaration and the targets it allows.
     fn attr_decl(&mut self, a: &AttrDecl) {
         let kw = pub_kw(a.is_pub);
         let targets = a
@@ -300,6 +315,7 @@ impl Printer {
         ));
     }
 
+    /// Print a function signature and, when present, its body.
     fn fn_decl(&mut self, f: &FnDecl) {
         let kw = pub_kw(f.is_pub);
         let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
@@ -331,6 +347,7 @@ impl Printer {
 
     // --- statements ---------------------------------------------------------
 
+    /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
@@ -363,6 +380,7 @@ impl Printer {
         }
     }
 
+    /// Print an `if` statement.
     fn if_stmt(&mut self, i: &IfStmt) {
         self.if_chain("if", i);
     }
@@ -383,6 +401,7 @@ impl Printer {
         }
     }
 
+    /// Print a `match` statement and its arms.
     fn match_stmt(&mut self, m: &MatchStmt) {
         self.line(&format!("match {} {{", expr(&m.scrutinee)));
         self.indent += 1;
@@ -395,6 +414,7 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print a block's statements at one deeper indentation, without the braces.
     fn block_body(&mut self, b: &Block) {
         self.indent += 1;
         for s in &b.stmts {
@@ -406,6 +426,7 @@ impl Printer {
 
 // --- leaf renderers (pure) --------------------------------------------------
 
+/// `"pub "` or the empty string, so callers can prefix unconditionally.
 fn pub_kw(is_pub: bool) -> &'static str {
     if is_pub {
         "pub "
@@ -455,6 +476,7 @@ pub fn dir_str(d: Direction) -> &'static str {
     }
 }
 
+/// Render a path as its `::`-joined segments.
 fn path(p: &Path) -> String {
     p.segments
         .iter()
@@ -476,6 +498,7 @@ fn trait_name_str(name: &str) -> String {
     }
 }
 
+/// Render a parameter list as `<W: integer>`; empty when there are none.
 fn params(p: &Params) -> String {
     if p.params.is_empty() {
         return String::new();
@@ -492,6 +515,7 @@ fn params(p: &Params) -> String {
     format!("<{inner}>")
 }
 
+/// Render one function parameter, or bare `self` for the receiver.
 fn fn_param(p: &FnParam) -> String {
     if p.is_self {
         return "self".to_string();
@@ -503,6 +527,7 @@ fn fn_param(p: &FnParam) -> String {
     }
 }
 
+/// Render a `let` declaration, including any attributes on it.
 fn let_decl(l: &LetDecl) -> String {
     let mut s = String::new();
     for a in &l.attrs {
@@ -519,6 +544,8 @@ fn let_decl(l: &LetDecl) -> String {
     s
 }
 
+/// Render an applied attribute, using the `#[name]` shorthand when it has no
+/// value.
 fn attr(a: &Attr) -> String {
     match &a.value {
         Some(v) => format!("#[{} = {}]", path(&a.name), expr(v)),
@@ -526,6 +553,7 @@ fn attr(a: &Attr) -> String {
     }
 }
 
+/// Render a match pattern.
 fn pattern(p: &Pattern) -> String {
     match p {
         Pattern::Wildcard => "_".to_string(),
@@ -538,6 +566,7 @@ fn pattern(p: &Pattern) -> String {
     }
 }
 
+/// Render one generic argument, positional or named.
 fn generic_arg(a: &GenericArg) -> String {
     match a {
         GenericArg::Positional(e) => expr(e),
@@ -565,6 +594,8 @@ pub fn type_str(t: &Type) -> String {
     }
 }
 
+/// The source spelling of a prefix operator. `not` keeps its trailing space
+/// because it is a word rather than punctuation.
 fn un_op(op: UnOp) -> &'static str {
     match op {
         UnOp::Neg => "-",
@@ -612,6 +643,7 @@ const POSTFIX_PREC: u8 = 200;
 const UNARY_PREC: u8 = 100;
 const RANGE_PREC: u8 = 1;
 
+/// Render an expression, adding only the parentheses precedence requires.
 fn expr(e: &Expr) -> String {
     expr_prec(e, 0)
 }
@@ -632,6 +664,8 @@ fn expr_prec(e: &Expr, parent: u8) -> String {
     }
 }
 
+/// Render an expression together with its binding power, so the caller can
+/// decide whether it needs parentheses in its context.
 fn expr_inner(e: &Expr) -> (String, u8) {
     match e {
         Expr::Int { text, .. } => (text.clone(), u8::MAX),
@@ -780,6 +814,9 @@ mod tests {
     use super::*;
     use crate::diag::{DiagnosticSink, FileId};
 
+    /// Assert that printing a parsed module reproduces `src` exactly, and that
+    /// reparsing the result is stable. Every case below is one grammar shape
+    /// that must survive the round trip.
     fn roundtrip(src: &str) {
         let mut sink = DiagnosticSink::new();
         let m1 = crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -817,6 +854,7 @@ mod tests {
     }
 
     #[test]
+    /// A generic function keeps its type parameters and bounds.
     fn roundtrips_generic_fn() {
         roundtrip(
             "module m;\nfn maxi<T: Ord>(a: T, b: T) -> T {\n    if a > b {\n        return a;\n    }\n    return b;\n}\n",
@@ -824,6 +862,8 @@ mod tests {
     }
 
     #[test]
+    /// Nested generic arguments stay type-shaped rather than collapsing to
+    /// expressions.
     fn roundtrips_nested_generic_type_arguments() {
         roundtrip(
             "module m;\n\
@@ -837,6 +877,8 @@ mod tests {
     }
 
     #[test]
+    /// `where T: Ord` parses to the same AST as `<T: Ord>`, so printing is
+    /// canonical rather than preserving which spelling was written.
     fn where_clause_desugars_to_inline_bounds() {
         // `where T: Ord` parses to the same AST as `<T: Ord>`; printing is
         // canonical (inline) and re-parses identically.
@@ -855,6 +897,7 @@ mod tests {
     }
 
     #[test]
+    /// Nominal derivation (`enum Logic(Bit);`) prints as a newtype.
     fn roundtrips_derived_types() {
         roundtrip(
             "module m;\n\
@@ -868,6 +911,7 @@ mod tests {
     }
 
     #[test]
+    /// Member visibility is preserved on both fields and functions.
     fn roundtrips_member_visibility() {
         roundtrip(
             "module m;\npub fn exported() {}\npub struct S { pub value: integer, hidden: integer }\nimpl S { pub fn value(self) -> integer { return self.value; } }\n",
@@ -875,6 +919,7 @@ mod tests {
     }
 
     #[test]
+    /// A trait's type arguments survive (`impl Add<integer> for C`).
     fn roundtrips_trait_type_args() {
         roundtrip(
             "module m;\nstruct C { re: real }\nimpl Add<integer> for C {\n    fn add(self, rhs: integer) -> C {\n        return self;\n    }\n}\n",
@@ -882,6 +927,7 @@ mod tests {
     }
 
     #[test]
+    /// Explicit construction type arguments survive (`read<unsigned[16]>`).
     fn roundtrips_typed_construct_calls() {
         roundtrip(
             "module m;\nimpl E {\n    let bytes: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\");\n    let text: string = read<string>(\"banner.txt\");\n}\n",
@@ -889,6 +935,7 @@ mod tests {
     }
 
     #[test]
+    /// `if` in value position keeps its required `else`.
     fn roundtrips_if_expressions() {
         roundtrip(
             "module m;\nimpl E {\n    let y: Bit = if sel { a } else { b };\n    z = if x > 200 { 200 } else if x < 10 { 10 } else { x };\n}\n",
@@ -896,6 +943,7 @@ mod tests {
     }
 
     #[test]
+    /// Unconstrained array types and `Char` print as written.
     fn roundtrips_unconstrained_arrays_and_char() {
         roundtrip(
             "module std::text;\n\
@@ -908,6 +956,7 @@ mod tests {
     }
 
     #[test]
+    /// Operator traits and their impls round-trip.
     fn roundtrips_operator_traits() {
         roundtrip(
             "module m;\n\
@@ -924,6 +973,7 @@ mod tests {
     }
 
     #[test]
+    /// Suffix literals (`1ns`) and radix bit strings (`x"AB"`) keep their form.
     fn roundtrips_suffix_and_bitstring_literals() {
         roundtrip(
             "module m;\n\
@@ -939,6 +989,8 @@ mod tests {
     }
 
     #[test]
+    /// Character-literal enum variants print as the quoted symbols they were
+    /// declared with.
     fn roundtrips_logic_literal_enum_variants() {
         roundtrip(
             "module std::logic;\n\
@@ -948,6 +1000,7 @@ mod tests {
     }
 
     #[test]
+    /// Concatenation and the type-less struct literal both survive.
     fn roundtrips_concat_and_nameless_struct_literal() {
         roundtrip(
             "module m;\n\
@@ -960,6 +1013,7 @@ mod tests {
     }
 
     #[test]
+    /// A complete program exercising most shapes at once.
     fn roundtrips_a_full_program() {
         roundtrip(
             "module demo::counter;\n\
@@ -990,6 +1044,7 @@ mod tests {
     }
 
     #[test]
+    /// Traits, matches and construction together.
     fn roundtrips_trait_match_and_construct() {
         roundtrip(
             "module m;\n\
@@ -1010,11 +1065,15 @@ mod tests {
     }
 
     #[test]
+    /// Parentheses are re-added only where precedence needs them, so `(a + b) * c`
+    /// keeps its grouping and `a + b * c` does not gain any.
     fn precedence_is_preserved() {
         roundtrip("module m;\nimpl M {\n  y = (a + b) * c;\n  z = a + b * c;\n}\n");
     }
 
     #[test]
+    /// Custom textual operators compose with the core `and`/`or`, and `not`
+    /// remains prefix.
     fn textual_logical_operators_roundtrip() {
         // Custom precedence composes with core and/or; `not` is prefix.
         roundtrip(
@@ -1028,6 +1087,7 @@ mod tests {
     }
 
     #[test]
+    /// An explicit `process` block prints with its boundary intact.
     fn explicit_process_roundtrips() {
         roundtrip(
             "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  process update {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",

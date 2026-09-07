@@ -32,6 +32,7 @@ pub struct InstanceId(pub u32);
 /// A resolved parameter value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamValue {
+    /// A parameter folded to a concrete integer.
     Int(i64),
     /// Could not be evaluated to a constant (e.g. an unbound top-level param).
     Unknown,
@@ -51,9 +52,13 @@ pub enum EType {
     /// renders as `unsigned[8]`), the same encoding as `Bit[8]` or `Point[4]`.
     /// Signedness/behaviour lives in the family's operator impls, not here.
     Array {
+        /// The element type; for a bit vector this names the family.
         elem: Box<EType>,
+        /// Element count, or `None` when it depends on an unbound parameter.
         len: Option<u32>,
     },
+    /// Anything with no simple width — a bus, mode, or generic type — kept as
+    /// its rendered spelling so diagnostics can still name it.
     Other(String),
 }
 
@@ -69,6 +74,8 @@ impl EType {
 }
 
 impl fmt::Display for EType {
+    /// Render the type the way the source spelled it, so diagnostics can quote
+    /// `unsigned[8]` rather than an internal shape.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EType::Named(n) => write!(f, "{n}"),
@@ -84,8 +91,11 @@ impl fmt::Display for EType {
 /// substitution (e.g. `unsigned[W]` with `W=8` becomes `unsigned[8]`).
 #[derive(Clone, Debug)]
 pub struct Connection {
+    /// The port's name on the instantiated entity.
     pub port: String,
+    /// The parent-local signal wired to it.
     pub signal: String,
+    /// The port's type after parameter substitution.
     pub ty: EType,
     /// The connection site (`.bus = wire`), for diagnostics.
     pub span: Span,
@@ -120,13 +130,16 @@ pub struct Instance {
     pub entity: String,
     /// Stable identity of `entity`; the string above is presentation only.
     pub entity_id: DefId,
+    /// Elaboration parameters bound for this instance, as `(name, value)`.
     pub params: Vec<(String, ParamValue)>,
     /// How this instance's ports connect to the parent's signals (empty for a
     /// root, which has no parent).
     pub connections: Vec<Connection>,
     /// Declared versus built slots for entity arrays owned by this instance.
     pub instance_arrays: Vec<InstanceArrayFact>,
+    /// Sub-instances declared inside this one.
     pub children: Vec<InstanceId>,
+    /// Whether the entity is `extern`, so nothing is elaborated beneath it.
     pub is_extern: bool,
 }
 
@@ -134,7 +147,10 @@ pub struct Instance {
 /// selected instance trees.
 #[derive(Default)]
 pub struct Hierarchy {
+    /// The tree roots: entities nothing instantiates, or the one `--top`
+    /// selected.
     pub roots: Vec<InstanceId>,
+    /// Every instance, indexed by [`InstanceId`].
     pub instances: Vec<Instance>,
     pub(crate) expr_types: HashMap<Span, Ty>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
@@ -144,6 +160,10 @@ pub struct Hierarchy {
 }
 
 impl Hierarchy {
+    /// The instance `id` names.
+    ///
+    /// # Panics
+    /// If `id` did not come from this hierarchy.
     pub fn instance(&self, id: InstanceId) -> &Instance {
         &self.instances[id.0 as usize]
     }
@@ -181,6 +201,7 @@ impl Hierarchy {
         out
     }
 
+    /// Append one instance and its subtree to the `--emit tree` rendering.
     fn write_instance(
         &self,
         out: &mut String,
@@ -277,6 +298,8 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         .collect();
     let mut out = HashSet::new();
 
+    /// Record an entity instantiated by a type mention, skipping names bound to
+    /// the enclosing declaration's own type parameters.
     fn record_type(
         ty: &Type,
         type_params: &HashSet<String>,
@@ -292,6 +315,8 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         }
     }
 
+    /// Record any entity instantiated by a `let`, including through its
+    /// initializer's construction site.
     fn record_let(
         declaration: &LetDecl,
         type_params: &HashSet<String>,
@@ -308,6 +333,7 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         }
     }
 
+    /// Record entities instantiated anywhere within a block.
     fn record_block(
         block: &Block,
         type_params: &HashSet<String>,
@@ -320,6 +346,8 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         }
     }
 
+    /// Record entities instantiated by one statement, walking into nested
+    /// blocks.
     fn record_statement(
         statement: &Stmt,
         type_params: &HashSet<String>,
@@ -429,6 +457,8 @@ pub fn elaborate_entities(
     })
 }
 
+/// Elaborate the roots `is_selected` accepts, building the instance forest
+/// beneath each.
 fn elaborate_roots(
     modules: &[Module],
     resolved: &Resolved,
@@ -494,6 +524,8 @@ struct Elaborator<'a> {
 }
 
 impl<'a> Elaborator<'a> {
+    /// Index every entity, struct and view declaration across the modules so
+    /// later lookups are by definition rather than by name.
     fn collect(&mut self, modules: &'a [Module]) {
         for m in modules {
             for item in &m.items {
@@ -519,6 +551,8 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Build one instance and, recursively, everything it instantiates.
+    /// Parameters are substituted here, so each instance carries concrete widths.
     fn build(
         &mut self,
         inst_name: &str,
@@ -671,6 +705,9 @@ impl<'a> Elaborator<'a> {
         env
     }
 
+    /// The instance-construction sites inside an entity body: its root layer and
+    /// any generate `for`/`if`, but never a process, match arm, or function.
+    /// An `extern` entity is a black box and contributes none.
     fn gather_instances(
         &self,
         entity_id: DefId,
@@ -1000,6 +1037,8 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Note instances written somewhere structural elaboration cannot reach, so
+    /// they are reported rather than silently dropped.
     fn note_misplaced_if(&self, iff: &IfStmt, tparams: &HashSet<String>) {
         self.note_misplaced(&iff.then, tparams);
         match iff.else_.as_deref() {
@@ -1009,6 +1048,8 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Gather instances from a generate `if`, taking only the branch its
+    /// constant condition selects.
     fn gather_if(
         &self,
         iff: &'a IfStmt,
@@ -1140,6 +1181,9 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Match an instance's connection arguments to the entity's ports, checking
+    /// widths after parameter substitution and reporting unknown or unconnected
+    /// ports.
     fn resolve_connections(
         &mut self,
         edecl: &EntityDecl,
@@ -1311,12 +1355,14 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Append an instance to the hierarchy and return its id.
     fn push(&mut self, inst: Instance) -> InstanceId {
         let id = InstanceId(self.out.instances.len() as u32);
         self.out.instances.push(inst);
         id
     }
 
+    /// Emit an error diagnostic with a stable code at `span`.
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink
             .emit(Diagnostic::error(msg).with_code(code).at(span));
@@ -1545,6 +1591,8 @@ fn render_index(e: &Expr, env: &HashMap<String, i64>) -> String {
     }
 }
 
+/// Render an expression as source-like text, for tree output and
+/// diagnostics.
 fn render_expr(e: &Expr) -> String {
     match e {
         Expr::Path(p) => p
@@ -1560,6 +1608,8 @@ fn render_expr(e: &Expr) -> String {
     }
 }
 
+/// Parse an integer literal, honouring `0x`/`0b` prefixes and `_`
+/// separators. `None` when the text is not a literal.
 fn parse_int(text: &str) -> Option<i64> {
     let normalized = text.trim().replace('_', "");
     let t = normalized.as_str();
@@ -1637,6 +1687,8 @@ fn is_connection_target(e: &Expr) -> bool {
     }
 }
 
+/// Render the signal path an expression names, substituting any elaboration
+/// parameters it indexes with.
 fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     match e {
         Expr::Path(p) => p
@@ -1661,6 +1713,8 @@ fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
     }
 }
 
+/// The leading name of a type expression, looking through generic
+/// application and indexing.
 fn type_head_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
@@ -1669,6 +1723,8 @@ fn type_head_name(ty: &Type) -> Option<&str> {
     }
 }
 
+/// The definition a type expression ultimately names, or `None` when it
+/// resolves to nothing.
 fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
     match ty {
         Type::Path(path) => resolved.resolved(path.span),
@@ -1677,6 +1733,8 @@ fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
     }
 }
 
+/// Render a parameter list as `<W = 8>` for tree output; empty when there
+/// are no parameters.
 fn format_params(params: &[(String, ParamValue)]) -> String {
     if params.is_empty() {
         return String::new();
@@ -1697,6 +1755,8 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
+    /// Elaborate `src` with the minimal library types the tests need, returning
+    /// the hierarchy and its error count.
     fn elaborate_src(src: &str) -> (Hierarchy, usize) {
         // unsigned/signed are `#[vector]` library types, not seeded.
         let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n");
@@ -1727,6 +1787,8 @@ mod tests {
     }
 
     #[test]
+    /// Two entities with the same leaf name in different modules must stay
+    /// distinct, since instances are keyed by definition rather than spelling.
     fn equal_entity_leaves_keep_their_resolved_identity() {
         let sources = [
             (
@@ -1836,6 +1898,7 @@ mod tests {
     }
 
     #[test]
+    /// An `out` port must connect to something that can be driven.
     fn an_out_port_must_connect_to_a_signal() {
         let base = "module m;\n\
             entity Sub { a: Bit in, y: Bit out }\n\
@@ -1922,6 +1985,8 @@ mod tests {
         }\n";
 
     #[test]
+    /// The instance tree carries substituted parameters and resolved port
+    /// connections.
     fn builds_instance_tree_with_params_and_connections() {
         let (hier, errors) = elaborate_src(HARNESS);
         assert_eq!(errors, 0);
@@ -1946,6 +2011,9 @@ mod tests {
     }
 
     #[test]
+    /// A partially populated instance array must retain both its declared and
+    /// its actually-built slots, so an intentionally absent element is
+    /// distinguishable from an unresolved path.
     fn hierarchy_retains_declared_and_conditionally_built_instance_slots() {
         let src = "module m;\n\
             entity Cell { y: Bit out }\n\
@@ -1974,6 +2042,8 @@ mod tests {
     }
 
     #[test]
+    /// An unconnected `in` port holds its default value, so it warns (W-P012)
+    /// rather than erroring.
     fn unconnected_input_warns_not_errors() {
         // A sub-instance with a forgotten `in` connection holds its default
         // value (§3.29) — a warning (W-P012), not an error.
@@ -2007,6 +2077,8 @@ mod tests {
     }
 
     #[test]
+    /// A type parameter named like an entity is data, not an instance, even
+    /// when an entity of that name exists.
     fn type_param_named_like_an_entity_is_not_an_instance() {
         // `Buf<T>`'s `let s: T` is data (the bound type `unsigned[8]`), even though
         // the top entity is *also* named `T`. Previously the elaborator treated
@@ -2046,6 +2118,7 @@ mod tests {
     }
 
     #[test]
+    /// The `--emit tree` rendering names the instances it contains.
     fn tree_string_is_rendered() {
         let (hier, _) = elaborate_src(HARNESS);
         let tree = hier.to_tree_string();
@@ -2055,6 +2128,8 @@ mod tests {
     }
 
     #[test]
+    /// Port types carry substituted widths, so `unsigned[W]` becomes
+    /// `unsigned[8]` at an instance bound with `W = 8`.
     fn parameter_widths_are_substituted_into_port_types() {
         let (hier, _) = elaborate_src(HARNESS);
         let root = hier.instance(hier.roots[0]);
@@ -2067,6 +2142,8 @@ mod tests {
     }
 
     #[test]
+    /// Connection widths are strict: a narrower local signal on a wider port is
+    /// an error.
     fn connection_width_mismatch_is_reported() {
         // Port `a` is unsigned[8] (W=8) but the local signal `a` is unsigned[4].
         let src = "module m;\n\
@@ -2083,6 +2160,7 @@ mod tests {
     }
 
     #[test]
+    /// Equal widths after substitution connect without complaint.
     fn matching_widths_are_fine() {
         let src = "module m;\n\
             entity Sub<W: integer> { a: unsigned[W] in, b: unsigned[W] out }\n\
@@ -2098,6 +2176,8 @@ mod tests {
     }
 
     #[test]
+    /// A nominal newtype over an array is width-checked as a vector, recognized
+    /// structurally rather than through a marker trait.
     fn nominal_array_connection_width_is_checked_without_a_marker_trait() {
         let src = "module m; \
                    struct Word(integer[]); \
@@ -2109,6 +2189,8 @@ mod tests {
     }
 
     #[test]
+    /// A forgotten connection warns rather than erroring, since the input holds
+    /// its default value.
     fn missing_connection_is_reported() {
         // `rst` is left unconnected — a warning (it holds its default), not an
         // error (§3.29). See `unconnected_input_warns_not_errors` for the code.
@@ -2126,6 +2208,7 @@ mod tests {
     }
 
     #[test]
+    /// Connecting a port the entity does not declare is an error.
     fn unknown_port_is_reported() {
         let src = "module m;\n\
             entity Counter { count: unsigned[8] out }\n\
@@ -2182,6 +2265,8 @@ mod tests {
     }
 
     #[test]
+    /// An `extern` entity elaborates as a black box: its ports are checked but
+    /// nothing is built beneath it.
     fn extern_entity_is_a_black_box() {
         let src = "module m;\n\
             extern entity Ram<W: integer> { addr: unsigned[W] in, data: unsigned[8] out }\n\

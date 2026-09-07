@@ -139,6 +139,8 @@ mod bitpack_tests {
     use siox::ir::Signal;
 
     #[test]
+    /// The event plane uses one bit per signal, so its size tracks the signal
+    /// count rather than a fixed word.
     fn events_use_one_bit_per_signal() {
         let signal = |index| Signal {
             path: format!("s{index}"),
@@ -336,6 +338,7 @@ fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
 }
 
 impl<'ctx, 'd> Codegen<'ctx, 'd> {
+    /// An emitter for `design` in `ctx`, with empty caches.
     fn new(ctx: &'ctx Context, design: &'d Design) -> Self {
         let module = ctx.create_module("design");
         #[cfg(not(feature = "bitpack"))]
@@ -412,6 +415,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .expect("LLVM supports the logical width")
     }
 
+    /// The declared width of a signal.
     fn signal_width(&self, id: SignalId) -> u32 {
         self.design
             .signal_width(id)
@@ -424,6 +428,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         storage_int(self.ctx, self.signal_width(id))
     }
 
+    /// Emit the whole module: state globals, accessors, the settle function and
+    /// its combinational helpers.
     fn build(&self) {
         let range_error = self
             .module
@@ -465,6 +471,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.settle(&comb_helpers);
     }
 
+    /// Pointer to the flag recording whether a ranged-numeric check failed.
     fn range_error_ptr(&self) -> PointerValue<'ctx> {
         self.module
             .get_global("range_error")
@@ -472,6 +479,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .as_pointer_value()
     }
 
+    /// Pointer to the offending value latched by a ranged-numeric failure.
     fn range_value_ptr(&self) -> PointerValue<'ctx> {
         self.module
             .get_global("range_value")
@@ -487,6 +495,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap_or(0)
     }
 
+    /// Pointer to the site identifier of a ranged-numeric failure, so the report
+    /// can name the declaration.
     fn range_site_ptr(&self) -> PointerValue<'ctx> {
         self.module
             .get_global("range_site")
@@ -494,6 +504,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .as_pointer_value()
     }
 
+    /// Pointer to the flag recording whether a bounds check failed.
     fn index_error_ptr(&self) -> PointerValue<'ctx> {
         self.module
             .get_global("index_error")
@@ -501,6 +512,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .as_pointer_value()
     }
 
+    /// Pointer to the offending index latched by a bounds failure.
     fn index_value_ptr(&self) -> PointerValue<'ctx> {
         self.module
             .get_global("index_value")
@@ -508,6 +520,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .as_pointer_value()
     }
 
+    /// The storage width for a lookup table's elements: the smallest convenient
+    /// integer type that holds `element_width`.
     fn lookup_storage_width(element_width: u32) -> u32 {
         element_width.next_power_of_two().max(8)
     }
@@ -536,6 +550,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     // --- state ------------------------------------------------------------
 
     #[cfg(not(feature = "bitpack"))]
+    /// Declare the globals backing the design's signal state.
     fn state_globals(&self) {
         // Each of `cur`/`old`/`event`/`snap` is one width-packed struct (see
         // `state_ty`). `snap` holds each delta's entry values, so `old` can
@@ -548,6 +563,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// Pointer to one named state array.
     fn array_ptr(&self, name: &str) -> PointerValue<'ctx> {
         self.module.get_global(name).unwrap().as_pointer_value()
     }
@@ -817,6 +833,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     // --- bit-packed state layout (feature `bitpack`) ----------------------
 
     #[cfg(feature = "bitpack")]
+    /// Declare the state globals for the test-harness emitter.
     fn state_globals(&self) {
         // `cur`/`old`/`event`/`snap` are each `[words x i64]`; signals share
         // words (see `pack_layout`). `snap` holds each delta's entry values so
@@ -971,6 +988,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- accessors: sx_set / sx_read / sx_reset ---------------------------
 
+    /// Emit the `sx_*` accessor functions that make up the design ABI.
     fn accessors(&self) {
         // The compute type follows the design's widest signal, but the ABI
         // must not: `sx_set`/`sx_read` are declared `u64` on the Rust side.
@@ -1647,6 +1665,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// Latch a ranged-numeric failure: record the offending value and its site,
+    /// but only on the control-flow path that actually evaluated the write.
     fn record_range_value(
         &self,
         target: SignalId,
@@ -1849,10 +1869,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- expressions ------------------------------------------------------
 
+    /// A constant at the ABI word width.
     fn c(&self, v: u64) -> IntValue<'ctx> {
         self.c_at(v, 64)
     }
 
+    /// A constant at an explicit width.
     fn c_at(&self, v: u64, width: u32) -> IntValue<'ctx> {
         self.value_ty(width).const_int(v, false)
     }
@@ -1938,10 +1960,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap()
     }
 
+    /// Emit an expression at its own natural width.
     fn emit(&self, e: &Expr) -> IntValue<'ctx> {
         self.emit_at(e, self.expr_width(e))
     }
 
+    /// Emit an expression at `width`, extending or truncating as needed.
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
             Expr::MetaCmp { inner, .. } => self.emit_at(inner, width),
@@ -2199,6 +2223,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
     }
 
+    /// Emit a binary operation, selecting the unsigned, signed or float
+    /// instruction from the IR operator.
     fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, result_width: u32) -> IntValue<'ctx> {
         // Float ops reinterpret the i64 words as f64.
         if matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv) {
@@ -2451,6 +2477,7 @@ mod tests {
     use super::*;
     use siox::ir::{Design, Driver, EventBlock, LookupTable, LookupTableId, NextUpdate, Signal};
 
+    /// A minimal test signal: a plain bit vector of `width` at `path`.
     fn sig(path: &str, width: u32) -> Signal {
         Signal {
             path: path.into(),
@@ -2466,6 +2493,7 @@ mod tests {
     }
 
     #[test]
+    /// A combinational adder emits the expected instructions.
     fn emits_combinational_adder() {
         // y (id 2) = a (0) + b (1), width 8.
         let design = Design {
@@ -2524,6 +2552,8 @@ mod tests {
     }
 
     #[test]
+    /// A packed logic table emits as a compact constant lookup rather than an
+    /// unrolled shift chain.
     fn emits_compact_constant_lookup_table() {
         let design = Design {
             signals: vec![sig("E.index", 8), sig("E.value", 4)],
@@ -2905,6 +2935,7 @@ mod tests {
     }
 
     #[test]
+    /// The ABI accepts arbitrarily many words; there is no width ceiling.
     fn accepts_arbitrarily_many_abi_words() {
         let design = Design {
             signals: vec![sig("E.a", 512)],
@@ -2938,6 +2969,7 @@ mod tests {
     }
 
     #[test]
+    /// Storage keeps a wide signal's exact width rather than rounding it.
     fn storage_keeps_exact_wide_signal_width() {
         let design = Design {
             signals: vec![sig("E.value", 65)],
@@ -2966,6 +2998,7 @@ mod tests {
     }
 
     #[test]
+    /// A width LLVM cannot represent is an error, not a panic.
     fn unsupported_llvm_width_is_an_error_not_a_panic() {
         let design = Design {
             signals: vec![sig("E.enormous", LLVM_MAX_INT_BITS + 1)],
@@ -2992,6 +3025,7 @@ mod tests {
     }
 
     #[test]
+    /// Constants wider than one word emit correctly.
     fn emits_constants_wider_than_one_word() {
         let design = Design {
             signals: vec![sig("E.y", 192)],
@@ -3027,6 +3061,8 @@ mod tests {
     }
 
     #[test]
+    /// Each expression is emitted at its own type width rather than inheriting
+    /// the enclosing one.
     fn expressions_keep_their_own_type_width() {
         let design = Design {
             signals: vec![
@@ -3091,6 +3127,8 @@ mod tests {
     }
 
     #[test]
+    /// A dynamic shift is guarded, since a shift at or past the width is LLVM
+    /// poison rather than zero.
     fn guards_dynamic_shifts_against_llvm_poison() {
         let design = Design {
             signals: vec![sig("E.value", 16), sig("E.amount", 16), sig("E.y", 16)],
@@ -3135,6 +3173,7 @@ mod tests {
     }
 
     #[test]
+    /// A real-to-integer conversion sign-extends in a wider signed context.
     fn real_to_integer_sign_extends_in_wider_signed_contexts() {
         let design = Design {
             signals: vec![sig("E.r", 64), sig("E.lt", 1)],
@@ -3183,6 +3222,8 @@ mod tests {
     }
 
     #[test]
+    /// Drivers are emitted in dependency order, so a chain declared backwards
+    /// still settles in one pass.
     fn topo_orders_a_chain() {
         // Drivers declared out of dependency order: y=c, c=b, b=a. The emitted
         // settle must compute b, then c, then y (each after its input).

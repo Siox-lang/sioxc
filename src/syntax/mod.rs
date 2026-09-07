@@ -128,6 +128,11 @@ pub fn bit_pattern_mask(text: &str) -> Option<(Vec<u64>, Vec<u64>)> {
     Some((mask, value))
 }
 
+/// Shift `bits` of `value` into the low end of a low-word-first bit vector,
+/// carrying between words.
+///
+/// Radix literals are accumulated digit by digit this way, so a bit string
+/// wider than one ABI word assembles without a width ceiling.
 fn push_group(words: &mut Vec<u64>, bits: u32, value: u64) {
     let mut carry = value;
     for word in words.iter_mut() {

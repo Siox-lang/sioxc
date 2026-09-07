@@ -152,6 +152,8 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// Print the per-stage progress lines `-v` asks for, using the counts each
+/// completed phase left in `CompilationStats`.
 fn report_stages(compilation: &siox::compiler::Compilation, emit: &Emit) {
     if compilation.resolved.is_some() {
         eprintln!(
@@ -183,6 +185,8 @@ fn report_stages(compilation: &siox::compiler::Compilation, emit: &Emit) {
     }
 }
 
+/// Print the frontend token/item trace: the entry file's tokens, then a
+/// summary line per top-level item.
 fn report_frontend(compilation: &siox::compiler::Compilation) {
     if let (Some(file), Some(source)) = (
         compilation.entry_file,
@@ -219,6 +223,7 @@ fn report_frontend(compilation: &siox::compiler::Compilation) {
     }
 }
 
+/// A `(kind, name)` pair naming one top-level item for the `-v` trace.
 fn describe_item(item: &Item) -> (&'static str, String) {
     match item {
         Item::Fn(function) => ("fn", function.name.text.clone()),

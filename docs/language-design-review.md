@@ -562,6 +562,142 @@ stage narrative to a dedicated history document and leave concise rationale
 links from the specification where needed. No language feature is removed;
 only the ambiguity about which prose is authoritative.
 
+### 15. Two sigils both called "attributes"
+
+Metadata is written `#[test]`, `#[precedence = 40]` (spec 3.5/3.6) while value
+and type queries are written `sig'event`, `x'length` (spec 3.9). Both are
+routinely called "attributes", and the language borrows the first spelling from
+Rust and the second from VHDL, so the pair reads as duplication even though
+nothing about them overlaps.
+
+A proposal worth recording: spell metadata `'name = value` as well, so one
+sigil covers everything a VHDL reader would call an attribute, and reserve
+`#[...]` for Rust-shaped behavior (`derive`, lints) if that is ever wanted.
+
+**Where it makes sense.** VHDL genuinely does unify the read side -- a
+user-declared attribute is applied with `attribute foo of sig : signal is …;`
+and read back as `sig'foo` -- so a VHDL-shaped language having one attribute
+sigil is defensible, and the current pairing of a Rust spelling with a VHDL one
+is an aesthetic inconsistency in a language that borrows from both.
+
+**Verdict — defer; keep `#[...]` for now.** The current split encodes
+*direction*, not category: `#[…]` writes metadata onto a declaration and `'`
+reads a property off a value. Merging them makes one sigil mean "attach" in
+declaration position and "query" in expression position, which also costs the
+language its "three sigils, one job each" rule. Three concrete obstacles, none
+fatal but all real:
+
+- **Extent.** `#[precedence = 40]` is delimited; `'precedence = 40 impl …` is
+  not, and stops being readable as soon as the value is an expression such as
+  `0..7`. Fixing that means re-adding delimiters, which is most of the way back
+  to `#[…]`.
+- **Lexing.** A `'c'`-shaped run is a character literal, so a bare
+  single-letter attribute (`'k'`) lexes as one and misparses. Mandatory
+  delimiters would avoid this.
+- **Scanning.** `'name = "x" 'library = "y" entity E` is harder to read than the
+  bracketed form once several attributes carry values.
+
+**A worked alternative, if the syntax is ever changed.** This is now written up
+as two proposals — [declarative attributes](proposals/attribute-system.md) for
+the `attr … for … = …;` replacement, and
+[`#[...]` as compiler directives](proposals/compiler-directives.md) for what
+`#[...]` becomes. The shape below is the summary; the proposals carry the
+migration, costs, and open questions.
+
+Successive refinement during review produced one shape worth recording, because
+it is the only form that reaches all three target positions:
+
+```siox
+// declaration gains a default, so a read is always total
+attr test: Bool for entity = false;
+attr keep: Bool for let, port = false;
+attr precedence: integer for impl = 0;
+
+impl Operator<"nand", Logic, Logic> for Logic {
+    attr precedence = 40;          // objectless -> the enclosing item
+}
+
+impl CounterTest {
+    attr test for CounterTest = true;
+    attr keep for acc = true;      // named -> that declaration
+    let acc: unsigned[8] = 0;
+}
+```
+
+Three properties make this better than the intermediate attempts. The `attr`
+keyword marks the statement as compile time lexically, so it can never be
+confused with a driver the way `p'keep = true;` could. The objectless and
+`for`-named forms compose as *this* versus *that*, the same distinction as
+`self` versus an explicit name, and the declaration stays distinguishable
+because only it carries `: Type`. And `for` is already the language's word for
+"targets X" -- `impl T for X`, `view V for S`, `attr a: T for entity` -- so this
+is VHDL's `of` spelled in vocabulary siox already has.
+
+Defaults are the genuinely novel part: neither VHDL nor siox has them, and they
+are what makes readback safe. VHDL's `sig'foo` is an error unless someone
+specified `foo` on `sig` elsewhere; with a declared default every object has
+every attribute, so `x'foo` always answers.
+
+Costs that remain, and they are the reason this is recorded rather than
+adopted: locality is lost for `let`/`port` targets, since a binding no longer
+sits on the declaration it describes; a forward-reference rule is needed
+(may a binding precede its target, or cross a module boundary?); the ~188
+`#[test]` uses move off the entity line into an impl body, where they are
+harder to scan; and `for` reaches five distinct uses. Entity bodies are
+interface-only (3.1), so an entity-targeted binding cannot live inside the
+entity at all -- it must be resolved through the declaration's `for` clause
+from the impl.
+
+**Two pieces are additive and need no syntax change**, and could land
+independently of any decision above: declaration defaults, and readback of an
+applied attribute through `'`. Elaboration already retains what readback needs
+-- `Instance::attrs` is a `Vec<(String, Option<String>)>` of name and
+pretty-printed value, kept for external tools -- so a read with default
+fallback is a lookup rather than a new mechanism.
+
+**A better axis than heritage: compile time versus runtime.** The sigil split
+today follows where each spelling came from -- `#[…]` from Rust, `'` from VHDL
+-- but the semantically important line runs somewhere else, and it already runs
+*through* `'`:
+
+| group | when | cost in the generated design | spelled |
+| ----- | ---- | ---------------------------- | ------- |
+| declaration metadata (`test`, `precedence`, `keep`, `library`) | compile | none | `#[…]` |
+| shape queries (`length`, `high`, `low`, `left`, `right`, `ascending`, `range`) | elaboration; folds to a literal | none | `'` |
+| state queries (`event`, `old`) | every delta cycle | a shadow `old` array plus an event bit-plane | `'` |
+
+Lowering `n = acc'length` yields `driver E.n = 8` -- the attribute leaves no IR
+node at all -- while `y = if clk'event { acc } else { acc'old }` yields
+`driver E.y = Event(E.clk) ? E.acc : Old(E.acc)`, and the backend allocates
+`cur`/`old`/`event`/`snap` planes for the whole design to serve it. So the
+current boundary separates two groups that are both free and compile-time, and
+unites one that is free with one that obliges the engine to retain state.
+
+Evidence that the missing distinction already costs something: `acc'length`
+folds when driven but is rejected as a `let` initializer with E-P021 "not a
+constant", because the constness rule asks whether the expression mentions
+another signal rather than whether it depends on that signal's *value*. A
+static shape query is not a signal read, and nothing in the language currently
+says so.
+
+Marking the line would also make hardware cost legible -- `x'old` obliges
+retained state, `x'length` obliges nothing -- and it sits beside the planned
+`std::target: std::Target` constant, which is the same idea of a compile-time
+fact carried as a value.
+
+Prior art within the project: these queries were previously spelled `::`
+(`acc::length`) and consolidated onto `'` in the July 2026 three-sigil change.
+Any re-split should be understood as revisiting that decision on a different
+axis -- the earlier one was about sigil clarity, this one is about evaluation
+time -- rather than as an oversight.
+
+Note also that reserving `#[…]` is not a prerequisite for adding `derive`
+later: Rust uses one spelling for inert and generative attributes without
+confusion. And the cheap half of the fix costs nothing -- this document and the
+reference already say "metadata attributes" and "digital system attributes", so
+using those names consistently removes most of the felt redundancy without
+touching the grammar.
+
 ## Incomplete does not mean incoherent
 
 These items are missing or partial, but their current direction makes sense and

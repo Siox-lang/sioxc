@@ -77,6 +77,8 @@ mod tests {
     use siox::ir::{BinOp, Driver, Expr, Signal, SignalId};
     use std::process::Command;
 
+    /// A minimal test signal: a plain bit vector of `width` at `path`, with no
+    /// range, enum, or initializer.
     fn sig(path: &str, width: u32) -> Signal {
         Signal {
             path: path.into(),
@@ -186,6 +188,8 @@ signed main(void) {
 
     #[test]
     #[cfg(not(feature = "bitpack"))]
+    /// An object whose signals span eight ABI words must still link and carry
+    /// between words correctly. Skipped when `clang` is unavailable.
     fn eight_word_object_links_and_carries() {
         if Command::new("clang").arg("--version").output().is_err() {
             eprintln!("skipping eight_word_object_links_and_carries: clang not found");

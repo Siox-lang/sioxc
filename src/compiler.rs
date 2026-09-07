@@ -34,15 +34,25 @@ mod build;
 /// the same meaning as a disk compilation.
 #[derive(Clone, Debug)]
 pub enum SourceInput {
+    /// Read the source from disk at this path.
     Path(PathBuf),
-    Memory { path: PathBuf, text: String },
+    /// Compile text held in memory, such as an editor's unsaved buffer.
+    Memory {
+        /// The path the buffer stands for. Relative compile-time reads and
+        /// default artifact names resolve against it.
+        path: PathBuf,
+        /// The buffer's contents.
+        text: String,
+    },
 }
 
 impl SourceInput {
+    /// An input read from `path` on disk.
     pub fn path(path: impl Into<PathBuf>) -> Self {
         Self::Path(path.into())
     }
 
+    /// An in-memory input standing for `path`.
     pub fn memory(path: impl Into<PathBuf>, text: impl Into<String>) -> Self {
         Self::Memory {
             path: path.into(),
@@ -50,12 +60,15 @@ impl SourceInput {
         }
     }
 
+    /// The path this input is known by, whichever form it takes.
     pub fn name(&self) -> &Path {
         match self {
             Self::Path(path) | Self::Memory { path, .. } => path,
         }
     }
 
+    /// The source text, read from disk or taken from the in-memory buffer.
+    /// A directory is rejected here rather than producing a confusing parse error.
     fn read(&self) -> Result<String, CompileFailure> {
         match self {
             Self::Path(path) => {
@@ -99,12 +112,17 @@ pub enum Emit {
     /// LLVM textual IR.
     LlvmIr,
     /// Native object exposing the `sx_*` design ABI.
-    Object { top: Option<String> },
+    Object {
+        /// Which uninstantiated structural root to compile. `None` picks the
+        /// only root, and is an error when several exist.
+        top: Option<String>,
+    },
     /// Standalone native executable containing all `#[test]` entities.
     TestExecutable,
 }
 
 impl Emit {
+    /// Emit an object for the design's single structural root.
     pub fn object() -> Self {
         Self::Object { top: None }
     }
@@ -113,7 +131,9 @@ impl Emit {
 /// One complete compiler request.
 #[derive(Clone, Debug)]
 pub struct CompileRequest {
+    /// The source to compile.
     pub input: SourceInput,
+    /// Which product to produce.
     pub emit: Emit,
     /// Required destination override for file artifacts. Textual artifacts are
     /// returned in memory and ignore this field.
@@ -126,6 +146,8 @@ pub struct CompileRequest {
 }
 
 impl CompileRequest {
+    /// A request for `emit` from `input`, with no output override and
+    /// debug info off.
     pub fn new(input: SourceInput, emit: Emit) -> Self {
         Self {
             input,
@@ -141,6 +163,7 @@ impl CompileRequest {
         self
     }
 
+    /// Set the destination path for a file artifact.
     pub fn with_output(mut self, path: impl Into<PathBuf>) -> Self {
         self.output = Some(path.into());
         self
@@ -150,13 +173,23 @@ impl CompileRequest {
 /// A successfully materialized artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Artifact {
+    /// A textual product returned in memory, such as an IR or AST dump.
     Text(String),
-    File { kind: FileArtifact, path: PathBuf },
+    /// A product written to disk.
+    File {
+        /// What kind of file was written.
+        kind: FileArtifact,
+        /// Where it was written.
+        path: PathBuf,
+    },
 }
 
+/// Which kind of file a [`Artifact::File`] holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileArtifact {
+    /// A native object exposing the `sx_*` design ABI.
     Object,
+    /// A self-contained executable that runs the design's `#[test]` entities.
     TestExecutable,
 }
 
@@ -164,19 +197,30 @@ pub enum FileArtifact {
 /// structured diagnostics in [`Compilation::diagnostics`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
+    /// The source could not be read at all.
     Input,
+    /// The request did not name a workable root — none exist, or several do
+    /// and none was chosen.
     Selection,
+    /// Lowered IR failed a structural invariant, which is a compiler bug
+    /// rather than a fault in the source.
     Validation,
+    /// Code generation, the C compiler, or the linker failed.
     Backend,
 }
 
+/// A non-language failure: why the pipeline could not finish, as opposed to
+/// what was wrong with the program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileFailure {
+    /// Which stage-independent category the failure falls into.
     pub kind: FailureKind,
+    /// Human-readable explanation.
     pub message: String,
 }
 
 impl CompileFailure {
+    /// A failure of `kind` carrying `message`.
     fn new(kind: FailureKind, message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -186,6 +230,7 @@ impl CompileFailure {
 }
 
 impl fmt::Display for CompileFailure {
+    /// Render as just the message, so `?` and `unwrap` read naturally.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
@@ -197,36 +242,61 @@ impl std::error::Error for CompileFailure {}
 /// or build tool report progress without parsing compiler text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompilationStats {
+    /// Top-level items in the entry file.
     pub entry_items: usize,
+    /// Modules loaded, entry file and standard library together.
     pub modules: usize,
+    /// Definitions produced by resolution; `None` if it did not run.
     pub definitions: Option<usize>,
+    /// Instances in the elaborated hierarchy; `None` if elaboration did not
+    /// run.
     pub instances: Option<usize>,
+    /// Uninstantiated structural roots found.
     pub roots: Option<usize>,
+    /// Signals in the lowered design; `None` if lowering did not run.
     pub signals: Option<usize>,
+    /// Combinational drivers in the lowered design.
     pub drivers: Option<usize>,
+    /// Event blocks in the lowered design.
     pub event_blocks: Option<usize>,
 }
 
 /// Result of one request, including useful partial products on failure.
 pub struct Compilation {
+    /// Every file the compilation loaded, so spans can be rendered.
     pub sources: SourceMap,
+    /// The entry file's id within [`Compilation::sources`].
     pub entry_file: Option<FileId>,
+    /// The entry file's tokens, retained even when later stages fail.
     pub entry_tokens: Vec<Token>,
+    /// Parsed modules, entry file first. Parsing is best-effort, so this can
+    /// hold a partial tree alongside error diagnostics.
     pub modules: Vec<Module>,
+    /// Resolution output; `None` if resolution did not run.
     pub resolved: Option<Resolved>,
+    /// Type-checking output; `None` if it did not run.
     pub typed: Option<Typed>,
+    /// The elaborated instance hierarchy; `None` if elaboration did not run.
     pub hierarchy: Option<Hierarchy>,
     /// Resolved native tests bound to their elaborated hierarchy roots.
     /// Present only when compiling a test executable.
     pub test_plan: Option<TestPlan>,
+    /// The lowered digital IR; `None` if lowering did not run.
     pub design: Option<Design>,
+    /// Every diagnostic emitted, at any severity.
     pub diagnostics: DiagnosticSink,
+    /// The requested product, when it was produced.
     pub artifact: Option<Artifact>,
+    /// Why the pipeline stopped, for failures that are not source-language
+    /// diagnostics.
     pub failure: Option<CompileFailure>,
+    /// Counts from the phases that completed.
     pub stats: CompilationStats,
 }
 
 impl Compilation {
+    /// A compilation with nothing completed yet. Every phase product starts
+    /// absent and is filled in as its stage succeeds.
     fn empty() -> Self {
         Self {
             sources: SourceMap::new(),
@@ -245,14 +315,18 @@ impl Compilation {
         }
     }
 
+    /// Whether an artifact can be trusted: no failure, and no error-severity
+    /// diagnostic.
     pub fn succeeded(&self) -> bool {
         self.failure.is_none() && !self.diagnostics.has_errors()
     }
 
+    /// The entry file's parsed module, if parsing produced one.
     pub fn entry(&self) -> Option<&Module> {
         self.modules.first()
     }
 
+    /// Every diagnostic emitted, in emission order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         self.diagnostics.diagnostics()
     }
@@ -308,12 +382,14 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// A compiler resolving `std::` imports under `std_root`.
     pub fn new(std_root: impl Into<PathBuf>) -> Self {
         Self {
             std_root: std_root.into(),
         }
     }
 
+    /// The standard-library root this compiler resolves `std::` against.
     pub fn std_root(&self) -> &Path {
         &self.std_root
     }
@@ -528,6 +604,9 @@ impl Compiler {
     }
 
     #[cfg(feature = "llvm")]
+    /// Run the design's structural invariants, turning any violation into an
+    /// error diagnostic. A failure here is a compiler bug rather than a fault in
+    /// the source, so it reports as [`FailureKind::Validation`].
     fn validate_design(result: &mut Compilation) -> bool {
         let design = result.design.as_ref().expect("lowering completed");
         let issues = design.validate();
@@ -546,6 +625,7 @@ impl Compiler {
     }
 
     #[cfg(feature = "llvm")]
+    /// Emit textual LLVM IR for the validated design.
     fn emit_llvm_ir(&self, result: &mut Compilation) {
         if !Self::validate_design(result) {
             return;
@@ -559,6 +639,8 @@ impl Compiler {
     }
 
     #[cfg(not(feature = "llvm"))]
+    /// Stub for builds without the `llvm` feature: reports that the backend is
+    /// unavailable rather than silently emitting nothing.
     fn emit_llvm_ir(&self, result: &mut Compilation) {
         result.failure = Some(backend_unavailable());
     }
@@ -585,6 +667,7 @@ impl Compiler {
     }
 
     #[cfg(feature = "llvm")]
+    /// Emit a native object exposing the `sx_*` design ABI.
     fn emit_object(&self, result: &mut Compilation, output: PathBuf) {
         if !Self::reject_unresolved_widths(result) {
             return;
@@ -606,11 +689,13 @@ impl Compiler {
     }
 
     #[cfg(not(feature = "llvm"))]
+    /// Stub for builds without the `llvm` feature.
     fn emit_object(&self, result: &mut Compilation, _output: PathBuf) {
         result.failure = Some(backend_unavailable());
     }
 
     #[cfg(feature = "llvm")]
+    /// Build a standalone executable containing every `#[test]` entity.
     fn emit_test_executable(&self, result: &mut Compilation, output: PathBuf, debug: bool) {
         if !Self::validate_design(result) {
             return;
@@ -640,12 +725,15 @@ impl Compiler {
     }
 
     #[cfg(not(feature = "llvm"))]
+    /// Stub for builds without the `llvm` feature.
     fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
         result.failure = Some(backend_unavailable());
     }
 }
 
 #[cfg(not(feature = "llvm"))]
+/// The failure returned by every backend entry point when the crate was
+/// built without the `llvm` feature.
 fn backend_unavailable() -> CompileFailure {
     CompileFailure::new(
         FailureKind::Backend,
@@ -653,6 +741,12 @@ fn backend_unavailable() -> CompileFailure {
     )
 }
 
+/// Pick the structural root to compile.
+///
+/// Roots are entities nothing instantiates. `explicit` names one directly and
+/// may be module-qualified to break a tie between equal leaf names. With no
+/// explicit choice, exactly one root must exist -- `#[top]` is vendor metadata
+/// and deliberately does not participate.
 fn select_top(
     modules: &[Module],
     resolved: &Resolved,
@@ -836,6 +930,8 @@ fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
     modules
 }
 
+/// The file backing a module path: under the standard-library root for a
+/// `std::` path, otherwise beside the entry file.
 fn module_file(source_root: &Path, std_root: &Path, segments: &[String]) -> PathBuf {
     let is_std = segments.first().is_some_and(|segment| segment == "std");
     let mut path = if is_std {
@@ -850,6 +946,8 @@ fn module_file(source_root: &Path, std_root: &Path, segments: &[String]) -> Path
     path
 }
 
+/// Render the token stream for `--emit tokens`, one token per line with its
+/// kind and source text.
 fn tokens_string(source: &str, tokens: &[Token]) -> String {
     let mut out = String::new();
     for (index, token) in tokens.iter().enumerate() {
@@ -873,6 +971,8 @@ mod tests {
     use crate::syntax::lexer::Lexer;
 
     #[test]
+    /// Dependency discovery has to find imports through both spellings, since
+    /// `using a::b::{c}` and `pub using a::b::c` name the same module.
     fn lexical_dependency_discovery_matches_both_import_spellings() {
         let source = "module user;\n\
             using alpha::math::{Value, \"%%\"};\n\
@@ -891,6 +991,8 @@ mod tests {
     }
 
     #[test]
+    /// When two modules export an entity of the same name, an explicit `--top`
+    /// must be qualified; the bare leaf is ambiguous and has to say so.
     fn explicit_top_requires_qualification_when_entity_leaves_collide() {
         let mut sink = DiagnosticSink::new();
         let modules = [
@@ -917,6 +1019,8 @@ mod tests {
     }
 
     #[test]
+    /// `#[top]` is vendor metadata, not a build directive: default root
+    /// selection must ignore it and use structural reachability instead.
     fn default_object_root_is_structural_not_vendor_metadata() {
         let mut sink = DiagnosticSink::new();
         let modules = [
@@ -950,6 +1054,7 @@ mod tests {
     }
 
     #[test]
+    /// With exactly one uninstantiated entity, no `--top` is needed.
     fn sole_uninstantiated_entity_is_the_default_object_root() {
         let mut sink = DiagnosticSink::new();
         let modules = [syntax::parse_module(

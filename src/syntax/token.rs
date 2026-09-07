@@ -8,91 +8,172 @@
 
 use crate::diag::Span;
 
+/// One lexed token: what it is, and where it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
+    /// Which lexical form this token is.
     pub kind: TokenKind,
+    /// The token's extent in the source file, for diagnostics.
     pub span: Span,
 }
 
+/// Every lexical form the siox lexer produces.
+///
+/// Analogue keywords (`domain`, `across`, `through`) are deliberately absent:
+/// they lex as plain identifiers so the type checker can reject them with a
+/// Phase-2 diagnostic rather than the lexer failing first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     // Literals & names
+    /// An identifier or a keyword-shaped word that is not a keyword.
     Ident,
-    Int,          // 42, 0xFF, 0b1010 (numeric suffixes like 100n lex as a trailing ident)
-    Float,        // 1000.0  (the `f`-style suffix lexes as a trailing ident, like Int)
-    CharacterLit, // a single character in single quotes: '0' '1' 'Z' 'X', 'a', '!'
-    StrLit,       // "work"  (prefixed strings like x"05AB" lex as Ident + StrLit)
+    /// An integer literal such as `42`, `0xFF`, or `0b1010`. A numeric suffix
+    /// like the `n` in `100n` lexes separately as a trailing identifier.
+    Int,
+    /// A float literal such as `1000.0`. Suffixes lex separately, as for [`TokenKind::Int`].
+    Float,
+    /// A single character in single quotes: `'0'`, `'Z'`, `'a'`, `'!'`.
+    CharacterLit,
+    /// A double-quoted string. A radix-prefixed string such as `x"05AB"` lexes
+    /// as an identifier followed by this.
+    StrLit,
 
     // Keywords (Phase 1)
+    /// The `module` keyword.
     Module,
+    /// The `using` keyword.
     Using,
+    /// The `pub` visibility keyword.
     Pub,
+    /// The `entity` keyword.
     Entity,
+    /// The `impl` keyword.
     Impl,
+    /// The `struct` keyword.
     Struct,
+    /// The `view` keyword.
     View,
+    /// The `enum` keyword.
     Enum,
+    /// The `trait` keyword.
     Trait,
+    /// The `attr` keyword, which declares a user attribute.
     Attr,
+    /// The `const` keyword.
     Const,
-    Let, // signal / state / local binding: `let x: T = e;`
-    Fn,  // function / method declaration: `fn name(self) { ... }`
+    /// The `let` keyword: signal, state, or local binding (`let x: T = e;`).
+    Let,
+    /// The `fn` keyword: function or method declaration.
+    Fn,
+    /// The `process` keyword.
     Process,
+    /// The `in` port direction, also the separator in `for i in range`.
     In,
+    /// The `out` port direction.
     Out,
+    /// The `inout` port direction.
     Inout,
+    /// The `if` keyword.
     If,
+    /// The `else` keyword.
     Else,
+    /// The `match` keyword.
     Match,
+    /// The `for` keyword.
     For,
+    /// The `return` keyword.
     Return,
+    /// The `extern` keyword.
     Extern,
-    SelfKw, // self (method receiver + `self'event`, spec 3.9/3.20); `true`/`false` stay idents (enum)
+    /// The `self` receiver, also the base of `self'event`. `true`/`false` are
+    /// not keywords — they stay identifiers, being enum variants.
+    SelfKw,
 
     // Punctuation
-    LParen,     // (
-    RParen,     // )
-    LBrace,     // {
-    RBrace,     // }
-    LBracket,   // [
-    RBracket,   // ]
-    Lt,         // <
-    Gt,         // >
-    ColonColon, // ::
-    Colon,      // :
-    Semi,       // ;
-    Comma,      // ,
-    Dot,        // .
-    DotDot,     // ..  (ranges, spec 3.23)
-    Eq,         // =   (single operator, spec 3.12)
-    EqEq,       // ==
-    FatArrow,   // =>  (match arms)
-    Arrow,      // ->  (return type; NOTE: analogue path use is Phase 2)
-    Amp,        // &
-    Pipe,       // |
+    /// `(`
+    LParen,
+    /// `)`
+    RParen,
+    /// `{`
+    LBrace,
+    /// `}`
+    RBrace,
+    /// `[`
+    LBracket,
+    /// `]`
+    RBracket,
+    /// `<` — comparison, and the opening of a generic argument list.
+    Lt,
+    /// `>` — comparison, and the closing of a generic argument list.
+    Gt,
+    /// `::` — the type and module sigil.
+    ColonColon,
+    /// `:` — type ascription and trait bounds.
+    Colon,
+    /// `;`
+    Semi,
+    /// `,`
+    Comma,
+    /// `.` — the value sigil: field access and method calls.
+    Dot,
+    /// `..` — range construction.
+    DotDot,
+    /// `=` — the single assignment operator; siox has no `<=`/`:=` split.
+    Eq,
+    /// `==`
+    EqEq,
+    /// `=>` — separates a match arm's pattern from its body.
+    FatArrow,
+    /// `->` — return type. Analogue path use of this token is Phase 2.
+    Arrow,
+    /// `&`
+    Amp,
+    /// `|` — also the pattern alternative separator.
+    Pipe,
+    /// `+`
     Plus,
+    /// `-`
     Minus,
+    /// `*`
     Star,
+    /// `/`
     Slash,
-    PlusEq,   // +=
-    MinusEq,  // -=
-    StarEq,   // *=
-    SlashEq,  // /=
-    AmpEq,    // &=
-    PipeEq,   // |=
-    Shl,      // <<
-    Shr,      // >>
-    Bang,     // ! (assert!)
-    BangEq,   // !=
-    LtEq,     // <=
-    GtEq,     // >=
-    CustomOp, // user-defined punctuation operator, e.g. %% or ^^
-    Pound,    // # (attribute application `#[...]`, spec 3.5/3.6)
-    Tick,     // ' (VHDL-style attribute accessor `sig'event`, spec 3.9); a
-    //   `'c'`-shaped run stays a CharacterLit — see the lexer.
+    /// `+=`
+    PlusEq,
+    /// `-=`
+    MinusEq,
+    /// `*=`
+    StarEq,
+    /// `/=`
+    SlashEq,
+    /// `&=`
+    AmpEq,
+    /// `|=`
+    PipeEq,
+    /// `<<`
+    Shl,
+    /// `>>`
+    Shr,
+    /// `!` — the macro-shaped call marker, as in `assert!`.
+    Bang,
+    /// `!=`
+    BangEq,
+    /// `<=`
+    LtEq,
+    /// `>=`
+    GtEq,
+    /// A user-defined punctuation operator such as `%%` or `^^`.
+    CustomOp,
+    /// `#` — introduces an attribute application `#[...]`.
+    Pound,
+    /// `'` — the VHDL-style attribute accessor in `sig'event`. A `'c'`-shaped
+    /// run is lexed as a [`TokenKind::CharacterLit`] instead; see the lexer.
+    Tick,
 
     // Trivia / control
+    /// A comment, retained so the formatter can reproduce it.
     Comment,
+    /// End of input.
     Eof,
     /// Lexer error recovery token.
     Unknown,

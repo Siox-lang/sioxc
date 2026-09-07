@@ -1067,10 +1067,13 @@ struct WaveScope {
     signals: Vec<(usize, String)>,
 }
 
+/// The VCD symbol per discriminant for an enum-typed signal, so a waveform
+/// shows `X`/`Z` rather than a bare number.
 fn logic_vcd_symbols(design: &Design, signal: &siox::ir::Signal) -> Option<HashMap<u64, char>> {
     logic_vcd_symbols_for_type(design, signal.enum_type.as_deref()?)
 }
 
+/// As [`logic_vcd_symbols`], but for a named type rather than a signal.
 fn logic_vcd_symbols_for_type(design: &Design, type_name: &str) -> Option<HashMap<u64, char>> {
     let symbols = design.enum_syms.get(type_name)?;
     let encoding = design.logic_encodings.get(type_name)?;
@@ -1090,6 +1093,8 @@ fn logic_vcd_symbols_for_type(design: &Design, type_name: &str) -> Option<HashMa
     Some(out)
 }
 
+/// Emit one VCD `$scope` and the variable declarations inside it, recursing
+/// into child scopes.
 fn emit_vcd_scope_header(out: &mut String, name: &str, scope: &WaveScope, design: &Design) {
     out.push_str(&format!("$scope module {name} $end\n"));
     for &(id, ref signal_name) in &scope.signals {
@@ -1278,6 +1283,7 @@ fn gen_wave_runtime(design: &Design) -> String {
     c
 }
 
+/// Emit the FST scope registration calls mirroring the VCD scope header.
 fn emit_fst_scope_registration(out: &mut String, name: &str, scope: &WaveScope, design: &Design) {
     out.push_str(&format!(
         "    fstWriterSetScope(g_fst, FST_ST_VCD_MODULE, \"{}\", 0);\n",
@@ -1308,6 +1314,9 @@ fn emit_fst_scope_registration(out: &mut String, name: &str, scope: &WaveScope, 
     out.push_str("    fstWriterSetUpscope(g_fst);\n");
 }
 
+/// Generate the FST writer into the test binary. Companion planes and
+/// hoisted operands are excluded: they are implementation detail, not design
+/// state anyone declared.
 fn gen_fst_runtime(
     design: &Design,
     root: &WaveScope,
@@ -1653,6 +1662,8 @@ fn collect_struct_field_names(
             }
         }
     }
+    /// Flatten a struct's field names into their leaf paths, guarding against a
+    /// recursive type with `seen`.
     fn flat(
         name: &str,
         raw: &RawStructFieldNames,
@@ -1682,11 +1693,14 @@ fn collect_struct_field_names(
         .collect()
 }
 
+/// The widest integer literal or expression the generated C must hold, which
+/// sets the word count of its scratch types.
 fn max_literal_type_width(
     modules: &[Module],
     derived: &HashMap<String, u32>,
     fns: &FunctionIndex<'_>,
 ) -> u32 {
+    /// The width one literal needs; a fractional literal is a 64-bit real.
     fn literal_width(text: &str) -> u32 {
         if text.contains('.') {
             return 64;
@@ -1696,6 +1710,7 @@ fn max_literal_type_width(
         ((words.len().saturating_sub(1) as u32) * 64 + (64 - high.leading_zeros())).max(1)
     }
 
+    /// The widest value an expression can produce, taken from its operands.
     fn expr_width(expression: &ast::Expr) -> u32 {
         use ast::Expr;
         match expression {
@@ -1759,6 +1774,7 @@ fn max_literal_type_width(
         }
     }
 
+    /// The widest value a statement can produce.
     fn stmt_width(statement: &ast::Stmt) -> u32 {
         match statement {
             ast::Stmt::Let(declaration) => declaration.value.as_ref().map(expr_width).unwrap_or(0),
@@ -1792,6 +1808,7 @@ fn max_literal_type_width(
         }
     }
 
+    /// The widest value an `if` chain can produce, across every branch.
     fn if_width(statement: &ast::IfStmt) -> u32 {
         let else_width = match statement.else_.as_deref() {
             Some(ast::ElseBranch::Block(block)) => block_width(block),
@@ -1803,10 +1820,12 @@ fn max_literal_type_width(
             .max(else_width)
     }
 
+    /// The widest value any statement in a block can produce.
     fn block_width(block: &ast::Block) -> u32 {
         block.stmts.iter().map(stmt_width).max().unwrap_or(0)
     }
 
+    /// The bit width of a declared type, resolving aliases and derived types.
     fn width(ty: &ast::Type, derived: &HashMap<String, u32>, fns: &FunctionIndex<'_>) -> u32 {
         match ty {
             ast::Type::Path(p) => fns
@@ -2070,6 +2089,7 @@ fn eval_c_const(
     }
 }
 
+/// The discriminant a `Enum::Variant` path names.
 fn enum_variant_value(
     path: &ast::Path,
     enums: &HashMap<String, HashMap<String, u64>>,
@@ -2082,6 +2102,8 @@ fn enum_variant_value(
         .copied()
 }
 
+/// Fold a constant expression to a C literal, or `None` when it is not
+/// constant.
 fn emit_c_const(
     expression: &ast::Expr,
     constants: &HashMap<String, String>,
@@ -2215,6 +2237,7 @@ fn literal_fits_word(text: &str) -> bool {
     parsed.is_ok_and(|v| v <= u128::from(u64::MAX))
 }
 
+/// Mask an expression to `w` bits, or leave it alone at width zero.
 fn mask_c(e: &str, w: u32) -> String {
     if w > 0 {
         format!("sx_mask(({e}), {w})")
@@ -2223,6 +2246,7 @@ fn mask_c(e: &str, w: u32) -> String {
     }
 }
 
+/// Render a multi-word constant as a C initializer, omitting zero words.
 fn c_word_literal(words: &[u64]) -> String {
     let parts = words
         .iter()
@@ -2243,6 +2267,8 @@ fn c_word_literal(words: &[u64]) -> String {
     }
 }
 
+/// Parse an integer literal into low-word-first 64-bit chunks, honouring
+/// radix prefixes and `_` separators.
 fn parse_word_literal(text: &str) -> Vec<u64> {
     let text = text.trim().replace('_', "");
     if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
@@ -2254,6 +2280,8 @@ fn parse_word_literal(text: &str) -> Vec<u64> {
     }
 }
 
+/// Accumulate `digits` in `radix` into low-word-first chunks, with no width
+/// ceiling.
 fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
     let mut words = Vec::<u64>::new();
     for digit in siox::syntax::radix_digits(digits) {
@@ -2274,6 +2302,8 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 }
 
 impl Ctx<'_> {
+    /// Wrap a runtime index in its bounds check, so an out-of-range access
+    /// reports the offending value, the declared range and the source line.
     fn checked_index_c(
         &self,
         expression: String,
@@ -2287,10 +2317,12 @@ impl Ctx<'_> {
         format!("sx_checked_index((int64_t)({expression}), {left}LL, {right}LL, {location})")
     }
 
+    /// Whether a type resolves to `expected` after alias expansion.
     fn type_is(&self, ty: &ast::Type, expected: &str) -> bool {
         resolved_type_name(ty, self.type_aliases, self.fns).as_deref() == Some(expected)
     }
 
+    /// Whether a type name resolves to `expected` after alias expansion.
     fn type_name_is(&self, name: &str, expected: &str) -> bool {
         name == expected
             || self
@@ -2326,6 +2358,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// The element indices of a fixed-size string type, or `None` when it is not
+    /// one.
     fn resolved_sized_string_indices(&self, ty: &ast::Type) -> Option<Vec<i64>> {
         let mut current = ty;
         let mut seen = std::collections::HashSet::new();
@@ -2346,6 +2380,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// Emit a write to a signal's runtime storage, going through the design ABI
+    /// rather than touching the slot directly.
     fn emit_runtime_storage_write(
         &self,
         path: &str,
@@ -2495,6 +2531,8 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    /// Declare a testbench local of string type. Returns whether it applied, so
+    /// the caller can fall through to the ordinary path.
     fn try_declare_string_local(&self, l: &ast::LetDecl, b: &mut String) -> Result<bool, String> {
         let Some(ty) = &l.ty else { return Ok(false) };
         if !is_single_string_type(ty) {
@@ -2644,12 +2682,14 @@ impl Ctx<'_> {
         ))
     }
 
+    /// The retained source layout for a testbench local, if lowering kept one.
     fn persisted_layout(&self, local_path: &str) -> Option<&SourceLayout> {
         self.design
             .source_layouts
             .get(&format!("{}.{}", self.name, local_path))
     }
 
+    /// The concrete leaf field names of a struct-typed local.
     fn concrete_field_names(&self, local_path: &str) -> Option<Vec<String>> {
         let LayoutKind::Struct { fields, .. } = &self.persisted_layout(local_path)?.kind else {
             return None;
@@ -2686,6 +2726,7 @@ impl Ctx<'_> {
             .or_else(|| self.struct_field_names.get(type_name).cloned())
     }
 
+    /// Whether a layout is an aggregate rather than a single storage leaf.
     fn layout_is_composite(layout: &SourceLayout) -> bool {
         matches!(
             layout.kind,
@@ -2796,6 +2837,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// Declare one flattened storage leaf in the generated C. A zero width means
+    /// an unresolved parameter, which is an error rather than a silent skip.
     fn declare_layout_leaf(
         &self,
         prefix: &str,
@@ -3673,7 +3716,7 @@ impl Ctx<'_> {
         tmp
     }
 
-    /// [`Self::write_composite_field`] with the value staged: the expression
+    /// Write one composite field with its value staged: the expression
     /// goes into `decls` and the assignment into `writes`, so a caller can
     /// emit every field's value before any of them lands. Without that split,
     /// `t = P { .a = t.b, .b = t.a }` wrote `a` and then read it back for `b`.
@@ -3711,6 +3754,8 @@ impl Ctx<'_> {
         Ok(false)
     }
 
+    /// Whether any storage leaf lives under `prefix`, i.e. whether the path
+    /// names an aggregate with leaves.
     fn has_storage_prefix(&self, prefix: &str) -> bool {
         let descendant = |name: &str| {
             name == prefix
@@ -3753,6 +3798,8 @@ impl Ctx<'_> {
             .unwrap_or_default()
     }
 
+    /// Every leaf under `prefix`, keyed by path, for a whole-aggregate read or
+    /// write.
     fn composite_targets(&self, prefix: &str) -> BTreeMap<String, (bool, String)> {
         let mut targets = BTreeMap::new();
         for (name, id) in self.map {
@@ -3913,6 +3960,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// Dispatch a binary operator to the std impl its operand family selects.
+    /// The family chooses the implementation; the width only sizes the result.
     fn c_dispatch_binop(
         &self,
         op: &ast::BinOp,
@@ -4034,6 +4083,8 @@ impl Ctx<'_> {
         }))
     }
 
+    /// Dispatch `not` the same way, for any operand carrying a family rather
+    /// than only a bare name.
     fn c_dispatch_not(&self, rhs: &ast::Expr) -> Result<Option<String>, String> {
         // Any operand that carries a family, not only a bare name: asking for
         // a `Path` here meant `not (a and b)` skipped `Logic`'s table and
@@ -4631,6 +4682,8 @@ impl Ctx<'_> {
         declarations: &mut String,
         ind: &str,
     ) -> Result<Option<Vec<DynamicTargetVariant>>, String> {
+        /// Conjoin two guard expressions, dropping the parentheses when there is no
+        /// left side yet.
         fn combine(left: Option<String>, right: String) -> String {
             match left {
                 Some(left) => format!("({left}) && ({right})"),
@@ -4638,6 +4691,8 @@ impl Ctx<'_> {
             }
         }
 
+        /// Expand a dynamic write target into the concrete leaves it may touch, with
+        /// the guard that selects each one.
         fn expand(
             cx: &Ctx<'_>,
             expression: &ast::Expr,
@@ -4833,6 +4888,8 @@ impl Ctx<'_> {
         Ok(true)
     }
 
+    /// Emit one statement of a test body as C, attributing it to its source line
+    /// so a debugger can follow it.
     fn stmt(&self, s: &ast::Stmt, b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         // Attribute what follows to the statement that produced it, so a
@@ -5277,6 +5334,7 @@ impl Ctx<'_> {
         }
     }
 
+    /// Translate a siox format string and its arguments into a C `printf` call.
     fn c_format(&self, text: &str, args: &[ast::Expr]) -> Result<(String, Vec<String>), String> {
         let mut cfmt = String::new();
         let mut cargs = Vec::new();
@@ -5495,6 +5553,8 @@ impl Ctx<'_> {
         ))
     }
 
+    /// Emit a call: a runtime intrinsic such as `assert!` or `print!`, or an
+    /// ordinary function.
     fn call(
         &self,
         callee: &ast::Expr,
@@ -5623,6 +5683,7 @@ impl Ctx<'_> {
         (n > 0).then_some(n)
     }
 
+    /// The dynamic-string local an expression names, if it is one.
     fn dynamic_string_path(&self, expression: &ast::Expr) -> Option<String> {
         let path = expr_path(expression)?;
         self.dynamic_strings
@@ -5631,6 +5692,8 @@ impl Ctx<'_> {
             .then_some(path)
     }
 
+    /// Read one element of a dynamic string, or `None` when the expression is
+    /// not such an index.
     fn dynamic_string_index(&self, expression: &ast::Expr) -> Option<Result<String, String>> {
         let ast::Expr::Index { base, index, .. } = expression else {
             return None;
@@ -5705,6 +5768,8 @@ impl Ctx<'_> {
         None
     }
 
+    /// The stored value of a character literal for a given target, taken from
+    /// the target's enum encoding rather than assumed.
     fn char_value_for_target(&self, name: &str, ch: char) -> u64 {
         if let Some(id) = self.map.get(name) {
             let signal = &self.design.signals[id.0 as usize];
@@ -5905,6 +5970,7 @@ impl Ctx<'_> {
             .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns))
     }
 
+    /// Whether an operand is a `real`, so float operators are emitted.
     fn is_real_operand(&self, e: &ast::Expr) -> bool {
         match e {
             ast::Expr::Int { text, .. } if text.contains('.') => return true,
@@ -6098,6 +6164,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether an operand is a signed kernel `integer`, so signed comparison and
+    /// division are emitted.
     fn is_integer_operand(&self, e: &ast::Expr) -> bool {
         match e {
             ast::Expr::Unary {
@@ -6186,6 +6254,8 @@ impl Ctx<'_> {
                 .is_some_and(|id| self.design.signals[id.0 as usize].integer)
     }
 
+    /// Render an integer operand with the sign extension its declared width
+    /// requires.
     fn c_integer_operand(&self, e: &ast::Expr, rendered: &str) -> String {
         let signed_width = expr_path(e).and_then(|path| {
             if let Some(id) = self
@@ -6306,6 +6376,8 @@ impl Ctx<'_> {
         }
     }
 
+    /// The pointer and length of a string value, for the runtime calls that take
+    /// one.
     fn c_string_value_slice(&self, expression: &ast::Expr) -> Option<(String, String)> {
         if let Some(path) = self.dynamic_string_path(expression) {
             let ident = c_local_ident(&path);
@@ -6465,6 +6537,8 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Emit an `await`: hand the delay to the scheduler and resume the test at
+    /// the following statement.
     fn emit_await(&self, args: &[ast::Expr], b: &mut String, depth: usize) -> Result<(), String> {
         let ind = "    ".repeat(depth);
         match args.first() {
@@ -6687,6 +6761,8 @@ impl Ctx<'_> {
         .then(|| "0ULL".to_string())
     }
 
+    /// Emit a function call. `T()` is the type's default value rather than a
+    /// call, since hardware has no constructor.
     fn c_fn_call(&self, callee: &ast::Expr, args: &[ast::Expr]) -> Result<String, String> {
         // `T()` / `unsigned[8]()`: the type's default (spec 3.29). Hardware
         // built these; the testbench had no case for a zero-argument type
@@ -7088,6 +7164,7 @@ impl Ctx<'_> {
         })
     }
 
+    /// Translate one expression into C.
     fn expr(&self, e: &ast::Expr) -> Result<String, String> {
         if let Some(read) = self.dynamic_string_index(e) {
             return read;
@@ -7667,6 +7744,8 @@ impl Ctx<'_> {
         expression: &ast::Expr,
         suffix: &str,
     ) -> Option<Result<String, String>> {
+        /// Walk a nested access into its ordered steps, or `None` when the
+        /// expression is not a place.
         fn walk<'e>(
             expression: &'e ast::Expr,
             steps: &mut Vec<NativeAccessStep<'e>>,
@@ -7689,6 +7768,7 @@ impl Ctx<'_> {
             }
         }
 
+        /// Emit a read through a walked access path, descending one step at a time.
         fn read_from(
             cx: &Ctx<'_>,
             path: &str,
@@ -7801,6 +7881,8 @@ impl Ctx<'_> {
         Some(self.c_bit_slice_of(&path, a, b))
     }
 
+    /// Read a single dynamically indexed bit, or `None` when the base is not
+    /// indexable that way.
     fn c_dynamic_bit(&self, base: &ast::Expr, index: &ast::Expr) -> Option<Result<String, String>> {
         let path = expr_path(base)?;
         if !self.array_elements(&path).is_empty() {
@@ -7809,6 +7891,7 @@ impl Ctx<'_> {
         self.c_dynamic_bit_of_path(&path, index)
     }
 
+    /// As [`Ctx::c_dynamic_bit`], with the base already resolved to a path.
     fn c_dynamic_bit_of_path(
         &self,
         path: &str,
@@ -7989,6 +8072,7 @@ impl Ctx<'_> {
         ))
     }
 
+    /// Read a path: a C local when it is one, otherwise the design ABI.
     fn read_path(&self, path: &str) -> Result<String, String> {
         if self.locals.borrow().contains(path) {
             return Ok(c_local_ident(path));
@@ -8244,6 +8328,8 @@ fn struct_const_fields<'a>(
     }
 }
 
+/// Emit the constant tables the generated C needs, including any real-valued
+/// constants.
 fn const_tables(
     const_decls: &[(String, &ast::ConstDecl)],
     enums: &HashMap<String, HashMap<String, u64>>,
@@ -8391,6 +8477,8 @@ fn const_tables(
     }
 }
 
+/// Map every source path to its signal id. A device under test lowers under
+/// the testbench's path, so both are addressable from the test body.
 fn build_map(
     hier: &Hierarchy,
     root: InstanceId,
@@ -8437,6 +8525,7 @@ fn build_map(
     (map, aliases)
 }
 
+/// The definition a type expression names, through resolution.
 fn resolved_type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<crate::resolve::DefId> {
     match ty {
         ast::Type::Path(path) => resolved.resolved(path.span),
@@ -8447,6 +8536,7 @@ fn resolved_type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<crate::re
     }
 }
 
+/// The last segment of a type's path, its leaf name.
 fn type_head_name(t: &ast::Type) -> Option<&str> {
     match t {
         ast::Type::Path(p) => p.segments.last().map(|s| s.text.as_str()),
@@ -8468,6 +8558,7 @@ fn is_single_string_type(ty: &ast::Type) -> bool {
     }
 }
 
+/// The element indices of a sized string type, or `None` for anything else.
 fn sized_string_indices(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
@@ -8492,6 +8583,8 @@ fn sized_string_indices(
     index_values(index, const_ranges, consts, fns)
 }
 
+/// The index values an index expression covers: a count, or an explicit
+/// range.
 fn index_values(
     index: &ast::Expr,
     const_ranges: &HashMap<String, (i64, i64)>,
@@ -8521,6 +8614,8 @@ fn index_values(
     }
 }
 
+/// The indices between two bounds, in the direction the declaration wrote
+/// them.
 fn directional_indices(left: i64, right: i64) -> Vec<i64> {
     if left <= right {
         (left..=right).collect()
@@ -8529,6 +8624,7 @@ fn directional_indices(left: i64, right: i64) -> Vec<i64> {
     }
 }
 
+/// The declared index bounds of a type, or `None` when it is unindexed.
 fn type_index_bounds(
     ty: &ast::Type,
     const_ranges: &HashMap<String, (i64, i64)>,
@@ -8545,6 +8641,7 @@ fn type_index_bounds(
     Some((*indices.first()?, *indices.last()?))
 }
 
+/// Fold an index bound to a constant, using the known constants.
 fn const_index_bound(
     expression: &ast::Expr,
     consts: &HashMap<String, u128>,
@@ -8557,6 +8654,7 @@ fn const_index_bound(
     siox::ir::eval_const_fns(expression, &env, fns, 0)
 }
 
+/// A signed index bound literal, including a negative one.
 fn signed_index_bound(expr: &ast::Expr) -> Option<i64> {
     match expr {
         ast::Expr::Int { text, .. } => i64::try_from(try_parse_u64(text)?).ok(),
@@ -8587,6 +8685,8 @@ fn extern_c_type(
     }
 }
 
+/// The name a type resolves to after following aliases, guarded against an
+/// alias cycle.
 fn resolved_type_name(
     ty: &ast::Type,
     aliases: &HashMap<String, ast::Type>,
@@ -8612,6 +8712,7 @@ fn resolved_type_name(
     }
 }
 
+/// The single-segment path an expression names, or `None`.
 fn expr_path(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
@@ -8637,6 +8738,8 @@ fn expr_path_base(e: &ast::Expr) -> Option<String> {
     }
 }
 
+/// The remainder of `name` under `prefix`, when `name` is a field or element
+/// beneath it rather than merely sharing a spelling.
 fn descendant_suffix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
     name.strip_prefix(prefix)
         .filter(|rest| rest.starts_with('[') || rest.starts_with('.'))
@@ -8654,6 +8757,7 @@ fn c_condition(expression: &str) -> String {
     }
 }
 
+/// The text of a string literal expression.
 fn str_lit(e: &ast::Expr) -> Option<String> {
     match e {
         ast::Expr::StrLit { text, .. } => Some(text.clone()),
@@ -8661,10 +8765,12 @@ fn str_lit(e: &ast::Expr) -> Option<String> {
     }
 }
 
+/// Parse an integer literal, yielding zero when it is not one.
 fn parse_u64(text: &str) -> u64 {
     try_parse_u64(text).unwrap_or(0)
 }
 
+/// Parse an integer literal, honouring radix prefixes and `_` separators.
 fn try_parse_u64(text: &str) -> Option<u64> {
     let normalized = text.trim().replace('_', "");
     let t = normalized.as_str();
@@ -8688,6 +8794,8 @@ fn logic_lit_value(c: char, enums: &HashMap<String, HashMap<String, u64>>) -> u6
         .unwrap_or(0)
 }
 
+/// A C test for membership in a discriminant set, emitted as a comparison
+/// chain over the sorted members.
 fn c_disc_in(value: &str, members: &std::collections::HashSet<u64>) -> String {
     let mut members = members.iter().copied().collect::<Vec<_>>();
     members.sort_unstable();
@@ -8704,6 +8812,8 @@ fn c_disc_in(value: &str, members: &std::collections::HashSet<u64>) -> String {
     )
 }
 
+/// A C expression for a logic value's value-plane bit, derived from std's
+/// encoding rather than a hard-coded table.
 fn c_logic_value_bit(value: &str, encoding: &siox::ir::LogicEncoding) -> String {
     let highs = encoding
         .value_bits
@@ -8735,6 +8845,8 @@ mod tests {
     use super::{c_condition, c_logic_element};
 
     #[test]
+    /// A condition is parenthesized exactly once, so nesting does not accumulate
+    /// redundant parentheses in the generated C.
     fn c_conditions_are_parenthesized_once() {
         assert_eq!(c_condition("ready"), "(ready)");
         assert_eq!(c_condition("((value) == 0ULL)"), "((value) == 0ULL)");

@@ -18,12 +18,16 @@ pub struct FileId(pub u32);
 /// Spans are half-open `[start, end)` byte offsets, mirroring `&str` slicing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
+    /// Which source file the range is measured in.
     pub file: FileId,
+    /// Inclusive start byte offset.
     pub start: u32,
+    /// Exclusive end byte offset.
     pub end: u32,
 }
 
 impl Span {
+    /// A span covering `range` within `file`.
     pub fn new(file: FileId, range: Range<u32>) -> Self {
         Span {
             file,
@@ -49,12 +53,16 @@ pub struct SourceMap {
     files: Vec<SourceFile>,
 }
 
+/// One loaded source file: the name diagnostics print, and its full text.
 pub struct SourceFile {
+    /// Display name, normally the path the file was read from.
     pub name: String,
+    /// The file's complete contents; spans index into this.
     pub text: String,
 }
 
 impl SourceMap {
+    /// An empty map holding no files.
     pub fn new() -> Self {
         SourceMap::default()
     }
@@ -69,14 +77,11 @@ impl SourceMap {
         id
     }
 
+    /// The file `id` refers to, or `None` if it was never registered.
     pub fn get(&self, id: FileId) -> Option<&SourceFile> {
         self.files.get(id.0 as usize)
     }
 
-    /// 1-based `(line, column)` for a byte offset, for diagnostic rendering.
-    ///
-    /// Columns count bytes within the line (good enough for ASCII source).
-    /// Unknown files or out-of-range offsets clamp to `(1, 1)`.
     /// The rendered source snippet for a span: the line it starts on, with a
     /// caret under the column.
     ///
@@ -110,6 +115,10 @@ impl SourceMap {
         ))
     }
 
+    /// 1-based `(line, column)` for a byte offset, for diagnostic rendering.
+    ///
+    /// Columns count bytes within the line (good enough for ASCII source).
+    /// Unknown files or out-of-range offsets clamp to `(1, 1)`.
     pub fn line_col(&self, file: FileId, offset: u32) -> (u32, u32) {
         let Some(src) = self.get(file) else {
             return (1, 1);
@@ -132,16 +141,23 @@ impl SourceMap {
 /// Severity of a [`Diagnostic`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
+    /// Compilation cannot produce an artifact. Stages keep going so more
+    /// errors surface in one run, but the driver exits non-zero.
     Error,
+    /// Something suspicious that does not stop compilation.
     Warning,
+    /// Supporting context attached to another diagnostic.
     Note,
+    /// A suggested fix.
     Help,
 }
 
 /// A secondary span attached to a diagnostic ("declared here", etc.).
 #[derive(Clone, Debug)]
 pub struct Label {
+    /// The secondary location being pointed at.
     pub span: Span,
+    /// What to say about it.
     pub message: String,
 }
 
@@ -153,16 +169,23 @@ pub struct Label {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
+    /// How serious this message is.
     pub severity: Severity,
     /// Stable code such as `E-P001`. See [`codes`] for the catalogue.
     pub code: Option<&'static str>,
+    /// The headline message, rendered next to the severity and code.
     pub message: String,
+    /// The location the message is chiefly about, if it has one.
     pub primary: Option<Span>,
+    /// Additional locations giving context, such as a prior declaration.
     pub labels: Vec<Label>,
+    /// An optional suggested fix, rendered as a trailing `= help:` line.
     pub help: Option<String>,
 }
 
 impl Diagnostic {
+    /// A new error with no code, span, or labels yet; add them with the
+    /// builder methods below.
     pub fn error(message: impl Into<String>) -> Self {
         Diagnostic {
             severity: Severity::Error,
@@ -174,6 +197,7 @@ impl Diagnostic {
         }
     }
 
+    /// As [`Diagnostic::error`], but at warning severity.
     pub fn warning(message: impl Into<String>) -> Self {
         Diagnostic {
             severity: Severity::Warning,
@@ -181,16 +205,19 @@ impl Diagnostic {
         }
     }
 
+    /// Attach a stable code from [`codes`].
     pub fn with_code(mut self, code: &'static str) -> Self {
         self.code = Some(code);
         self
     }
 
+    /// Set the primary span this diagnostic points at.
     pub fn at(mut self, span: Span) -> Self {
         self.primary = Some(span);
         self
     }
 
+    /// Add a secondary labelled location.
     pub fn label(mut self, span: Span, message: impl Into<String>) -> Self {
         self.labels.push(Label {
             span,
@@ -199,6 +226,7 @@ impl Diagnostic {
         self
     }
 
+    /// Attach a suggested fix.
     pub fn help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self
@@ -213,24 +241,31 @@ pub struct DiagnosticSink {
 }
 
 impl DiagnosticSink {
+    /// An empty sink.
     pub fn new() -> Self {
         DiagnosticSink::default()
     }
 
+    /// Record one diagnostic. Stages keep going after emitting, so that a
+    /// single run reports as much as it can.
     pub fn emit(&mut self, diag: Diagnostic) {
         self.diagnostics.push(diag);
     }
 
+    /// Everything emitted so far, in emission order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
 
+    /// Whether any diagnostic was an error, meaning no artifact should be
+    /// produced.
     pub fn has_errors(&self) -> bool {
         self.diagnostics
             .iter()
             .any(|d| d.severity == Severity::Error)
     }
 
+    /// How many errors were emitted, for the driver's closing summary.
     pub fn error_count(&self) -> usize {
         self.diagnostics
             .iter()
@@ -245,17 +280,35 @@ impl DiagnosticSink {
 /// clear message, optional help, and related spans.
 pub mod codes {
     // Errors
+    /// A name that resolution could not find in any scope in view.
     pub const UNKNOWN_NAME: &str = "E-P001";
+    /// Two declarations of the same name in one scope.
     pub const DUPLICATE_ITEM: &str = "E-P002";
+    /// A value used where its type does not fit — including a width
+    /// disagreement, since assignment and connection widths are strict.
     pub const TYPE_MISMATCH: &str = "E-P003";
+    /// An assignment to an `in` port. Inputs are driven by the
+    /// instantiator, never from inside the entity.
     pub const WRITE_TO_INPUT_PORT: &str = "E-P004";
     // E-P005 (MISSING_PORT_CONNECTION) retired: an unconnected input is not an
     // error — it holds its default value (§3.29). See `UNCONNECTED_INPUT` below.
+    /// An attribute applied to a declaration kind its `attr`
+    /// declaration does not list.
     pub const INVALID_ATTR_TARGET: &str = "E-P006";
+    /// An attribute value whose type is not the one its
+    /// `attr` declaration names.
     pub const INVALID_ATTR_VALUE_TYPE: &str = "E-P007";
+    /// A method call with no matching inherent or trait method
+    /// for the receiver's type.
     pub const INVALID_METHOD_CALL: &str = "E-P008";
+    /// A match pattern that cannot apply to the scrutinee's type —
+    /// a bit pattern against an enum, or a width that cannot line up.
     pub const INVALID_PATTERN: &str = "E-P009";
+    /// Analogue syntax (`domain`, `across`/`through`, `'ddt`, layout
+    /// attributes). Phase 1 rejects these deliberately rather than accepting
+    /// them silently.
     pub const PHASE2_SYNTAX: &str = "E-P010";
+    /// A `using` naming a module or item that does not exist.
     pub const UNRESOLVED_IMPORT: &str = "E-P011";
     /// A `let` binding without a type annotation (`let x = ...`): Phase 1 is
     /// type-strict — every binding declares its type (`let x: T [= ...]`).
@@ -324,14 +377,30 @@ pub mod codes {
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
     // `Resolve`, and otherwise are the E-P014 `CONFLICTING_DRIVERS` error.
+    /// A combinational path that does not assign on every route, so
+    /// the target must hold its previous value — inferred storage where none
+    /// was asked for.
     pub const POSSIBLE_LATCH: &str = "W-P002";
+    /// A declared signal nothing reads.
     pub const UNUSED_SIGNAL: &str = "W-P003";
+    /// A declared parameter nothing uses.
     pub const UNUSED_PARAM: &str = "W-P004";
+    /// A `using` whose name is never referenced.
     pub const UNUSED_IMPORT: &str = "W-P005";
+    /// A match arm fully covered by earlier arms.
     pub const UNREACHABLE_MATCH_ARM: &str = "W-P006";
+    /// A match that does not cover every value of the
+    /// scrutinee's type and has no wildcard arm.
     pub const NON_EXHAUSTIVE_MATCH: &str = "W-P007";
+    /// A comparison against a metavalue that cannot behave
+    /// as written — `x == 'X'` is never true in `std_logic_1164`, which
+    /// defines no ordinary equality against an unknown.
     pub const SUSPICIOUS_LOGIC_COMPARE: &str = "W-P008";
+    /// A reset branch that does not put the design in a known
+    /// state, such as one leaving registers undriven.
     pub const SUSPICIOUS_RESET: &str = "W-P009";
+    /// A combinational cycle with no register in it, which has
+    /// no settled value and makes the delta-cycle loop oscillate.
     pub const COMBINATIONAL_LOOP: &str = "W-P010";
     /// An `out` port that is never driven inside its entity.
     pub const UNDRIVEN_OUTPUT: &str = "W-P011";

@@ -40,8 +40,12 @@ pub enum Ty {
     /// `signed`, or a user equivalent) retains its nominal family for method
     /// and operator dispatch while using the same element/length shape.
     Array {
+        /// The element type.
         elem: Box<Ty>,
+        /// Element count. Widths are concrete by this stage.
         len: u32,
+        /// The nominal family for a library newtype such as `unsigned`, which
+        /// drives method and operator dispatch. `None` for a plain array.
         family: Option<String>,
     },
     /// A declared function or method with no return type. Unlike `Error`, this
@@ -83,6 +87,7 @@ impl Typed {
         self.expr_types.get(&span)
     }
 
+    /// Every expression type, keyed by the expression's span.
     pub fn expr_types(&self) -> &HashMap<Span, Ty> {
         &self.expr_types
     }
@@ -334,6 +339,8 @@ struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
+    /// A checker over `modules`, seeded with the standard attribute targets so
+    /// `std::attrs` validates like any other declaration.
     fn new(sink: &'a mut DiagnosticSink, resolved: &'a Resolved, modules: &[Module]) -> Self {
         // Seed the std::attrs targets so the standard attributes validate while
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
@@ -468,6 +475,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Finish checking and hand back the recorded expression types.
     fn finish(self) -> Typed {
         Typed {
             expr_types: self.expr_types.into_inner(),
@@ -1103,15 +1111,19 @@ impl<'a> Checker<'a> {
         self.base_struct_fields_at(ty, &mut HashSet::new())
     }
 
+    /// The field names of a struct head, including those inherited from a
+    /// nominal derivation base.
     fn base_struct_fields_named(&self, head: &str) -> Vec<String> {
         self.base_struct_fields_named_at(head, &mut HashSet::new())
     }
 
+    /// How many fields a struct definition has, for positional construction.
     fn struct_field_count(&self, id: crate::resolve::DefId) -> Option<usize> {
         let key = self.definition_key(id)?;
         self.struct_field_count_at(&key, &mut HashSet::new())
     }
 
+    /// As [`Self::struct_field_count`], guarding against a derivation cycle.
     fn struct_field_count_at(&self, name: &str, seen: &mut HashSet<String>) -> Option<usize> {
         if !seen.insert(name.to_string()) {
             return None;
@@ -1136,6 +1148,7 @@ impl<'a> Checker<'a> {
         self.base_struct_fields_named_at(&head, seen)
     }
 
+    /// As [`Self::base_struct_fields_named`], guarding against a derivation cycle.
     fn base_struct_fields_named_at(&self, head: &str, seen: &mut HashSet<String>) -> Vec<String> {
         let mut out = Vec::new();
         if !seen.insert(head.to_string()) {
@@ -1223,6 +1236,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Resolve each array family's element type, following newtype chains to the
+    /// underlying element.
     fn resolve_array_elements(&mut self) {
         for family in self.array_families.clone() {
             let mut current = family.clone();
@@ -1246,6 +1261,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `owner` implements the trait `key`, directly or through a blanket
+    /// impl.
     fn has_impl(&self, key: &str, owner: &str) -> bool {
         if self
             .trait_impls
@@ -1266,6 +1283,7 @@ impl<'a> Checker<'a> {
             })
     }
 
+    /// Type-check one top-level item.
     fn check_item(&mut self, item: &Item) {
         self.check_item_type_layouts(item);
         let sym = HashMap::new();
@@ -1425,6 +1443,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check that an `extern "C"` parameter or result has a representable ABI
+    /// type: `real` maps to `double`, integer-shaped types to 64-bit words.
     fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
         let checked = self.ast_ty(ty);
         let supported = matches!(checked, Ty::Integer | Ty::Real)
@@ -1533,6 +1553,8 @@ impl<'a> Checker<'a> {
         None
     }
 
+    /// Reject a type whose layout cannot be computed, such as an unconstrained
+    /// array in a position that needs a width.
     fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -1597,6 +1619,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check the type layouts in a function signature.
     fn check_fn_type_layouts(&mut self, function: &FnDecl) {
         self.check_param_type_layouts(&function.generics);
         for parameter in &function.params {
@@ -1609,6 +1632,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check the type layouts in a generic parameter list's bounds.
     fn check_param_type_layouts(&mut self, parameters: &Params) {
         for parameter in &parameters.params {
             if let Some(bound) = &parameter.bound {
@@ -1617,6 +1641,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check the type layouts an item declares.
     fn check_item_type_layouts(&mut self, item: &Item) {
         match item {
             Item::Using(using) => {
@@ -1681,6 +1706,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check a `view`: every field it names must exist on the target struct.
     fn check_view(&mut self, view: &ViewDecl) {
         let target_ty = &view.target;
         let Some(target) = self.type_key(target_ty) else {
@@ -1746,6 +1772,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check an applied view at a use site, so `Source Stream<T>` is verified
+    /// against the view's declaration.
     fn check_applied_view(&mut self, ty: &Type) {
         let Type::View { view, target, span } = ty else {
             return;
@@ -1935,6 +1963,8 @@ impl<'a> Checker<'a> {
         self.sink.emit(d);
     }
 
+    /// Reject access to a private field from outside the owning type's module
+    /// (E-P024).
     fn check_field_visibility(&mut self, owner: &str, field: &Ident) {
         let Some(visibility) = self
             .field_visibility
@@ -2105,6 +2135,8 @@ impl<'a> Checker<'a> {
         self.check_collected_method_args(&owner, name, expr_span(callee), args, sym);
     }
 
+    /// Reject a call to a private method from outside its module. Returns
+    /// whether the call is allowed.
     fn check_method_visibility(&mut self, key: &(String, String), use_span: Span) -> bool {
         let Some(visibility) = self.method_visibility.get(key).cloned() else {
             return true;
@@ -2130,6 +2162,9 @@ impl<'a> Checker<'a> {
         false
     }
 
+    /// Whether a member is reachable from `use_span`. A private representation
+    /// member belongs to the nominal type's module, not to whoever holds a value
+    /// of it.
     fn member_access_allowed(&self, visibility: &MemberVisibility, use_span: Span) -> bool {
         // A private representation member belongs to the nominal type, not to
         // every declaration that happens to share its module. The module
@@ -2151,6 +2186,7 @@ impl<'a> Checker<'a> {
             || self.current_impl_owner.borrow().as_deref() == Some(visibility.owner.as_str())
     }
 
+    /// Check a method call's arguments against the declared signature.
     fn check_collected_method_args(
         &mut self,
         owner: &str,
@@ -2251,6 +2287,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Type-check an `impl` block.
     fn check_impl(&mut self, im: &ImplDecl) {
         // Stimulus primitives are meaningful in a testbench; in an entity body
         // lowering dropped them without a word.
@@ -2312,6 +2349,8 @@ impl<'a> Checker<'a> {
         self.in_testbench.set(saved_tb);
     }
 
+    /// The body of [`Self::check_impl`], separated so the stimulus-context guard can
+    /// wrap it.
     fn check_impl_inner(&mut self, im: &ImplDecl) {
         self.check_trait_contract(im);
         // The supported constrained array implementations are lowered by the
@@ -2461,6 +2500,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check a `process` body, with the index bounds and port directions in
+    /// scope for its statements.
     fn check_process_block(
         &mut self,
         block: &Block,
@@ -2684,6 +2725,8 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Whether every path through a block returns, so a function with a declared
+    /// result cannot fall off its end.
     fn block_guarantees_return(&self, body: &Block, outer: &HashMap<String, Ty>) -> bool {
         // Locals are block-scoped from the start during resolution. Mirror
         // that here so a `match` on a local can prove its domain exhaustive.
@@ -2705,6 +2748,7 @@ impl<'a> Checker<'a> {
             .any(|statement| self.statement_guarantees_return(statement, &names))
     }
 
+    /// Whether one statement guarantees a return on every path.
     fn statement_guarantees_return(&self, statement: &Stmt, names: &HashMap<String, Ty>) -> bool {
         match statement {
             Stmt::Return { .. } => true,
@@ -2730,6 +2774,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether an `if` chain returns on every path, which requires an `else`.
     fn if_guarantees_return(&self, if_: &IfStmt, names: &HashMap<String, Ty>) -> bool {
         self.block_guarantees_return(&if_.then, names)
             && match if_.else_.as_deref() {
@@ -2739,6 +2784,8 @@ impl<'a> Checker<'a> {
             }
     }
 
+    /// Whether a match covers its scrutinee's type. A wildcard, including one
+    /// inside an or-pattern, is sufficient on its own.
     fn match_is_exhaustive(
         &self,
         scrutinee: &Expr,
@@ -2768,6 +2815,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether numeric arms cover the scrutinee's whole value domain.
     fn numeric_match_is_exhaustive(&self, ty: &Ty, arms: &[MatchArm]) -> bool {
         let Some((lo, hi)) = self.numeric_domain(ty) else {
             return false;
@@ -2920,6 +2968,7 @@ impl<'a> Checker<'a> {
         self.array_bounds.replace(saved_index_bounds);
     }
 
+    /// Type-check one statement.
     fn check_stmt(
         &mut self,
         s: &Stmt,
@@ -3137,6 +3186,7 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Type-check an `if` chain and its branches.
     fn check_if(
         &mut self,
         i: &IfStmt,
@@ -3292,12 +3342,15 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Check every arm's pattern against the scrutinee's type.
     fn check_pattern_domains(&mut self, ty: &Ty, arms: &[MatchArm]) {
         for arm in arms {
             self.check_pattern_domain(ty, &arm.pattern);
         }
     }
 
+    /// Check one pattern against a type: that it is a form the type admits, and
+    /// that any literal lies inside its domain.
     fn check_pattern_domain(&mut self, ty: &Ty, pattern: &Pattern) {
         if matches!(ty, Ty::Error) {
             return;
@@ -3427,6 +3480,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Report a match that does not cover its scrutinee (W-P007), after checking
+    /// the individual patterns.
     fn check_arms_exhaustive(
         &mut self,
         scrutinee: &Expr,
@@ -3596,6 +3651,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether a type implements `Boolean`, so it may be used as a condition.
     fn implements_boolean(&self, name: &str) -> bool {
         self.has_impl("Boolean", name)
     }
@@ -3719,6 +3775,8 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// Whether an index contract's declared element type matches the actual one,
+    /// treating an absent declaration as a match.
     fn index_contract_type_matches(
         declared: &Option<String>,
         actual: Option<&str>,
@@ -4048,10 +4106,14 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether a type is exactly the bare parameter `name`, rather than
+    /// something merely mentioning it.
     fn is_direct_type_param(ty: &Type, name: &str) -> bool {
         matches!(ty, Type::Path(path) if path.segments.len() == 1 && path.segments[0].text == name)
     }
 
+    /// Whether an expression is a contextual literal, which takes its type from
+    /// the surrounding context rather than carrying one.
     fn is_contextual_literal(expression: &Expr) -> bool {
         matches!(
             expression,
@@ -4125,6 +4187,7 @@ impl<'a> Checker<'a> {
         if !(1..=64).contains(&width) {
             return;
         }
+        /// Fold a constant integer expression, or `None` when it is not constant.
         fn const_fold(e: &Expr) -> Option<i64> {
             match e {
                 Expr::Binary { op, lhs, rhs, .. } => {
@@ -4638,12 +4701,15 @@ impl<'a> Checker<'a> {
         self.methods.keys().any(|(_, m)| m == name)
     }
 
+    /// The definition a call's path names, when it resolves to a function.
     fn function_id(&self, path: &Path) -> Option<DefId> {
         self.resolved
             .resolved(path.span)
             .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn))
     }
 
+    /// Whether `name` is one of the built-in conversions rather than an ordinary
+    /// call.
     fn is_conversion_name(&self, name: &str) -> bool {
         if matches!(name, "integer" | "real" | "Char" | "string")
             || self.is_array_family(name)
@@ -4787,6 +4853,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether a type may be used as an index. `Ty::Error` is admitted so one
+    /// bad type does not cascade.
     fn is_integer_like_index(ty: &Ty) -> bool {
         matches!(ty, Ty::Integer | Ty::Error)
             || matches!(
@@ -4798,6 +4866,7 @@ impl<'a> Checker<'a> {
             )
     }
 
+    /// Check an index value's type, naming `description` in any diagnostic.
     fn check_index_value(&mut self, value: &Expr, sym: &HashMap<String, Ty>, description: &str) {
         let ty = self.type_of(value, sym);
         if Self::is_integer_like_index(&ty) {
@@ -4920,6 +4989,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check indexing of a type that supplies its own index contract rather than
+    /// being a built-in array.
     fn check_custom_index(&mut self, base: &Expr, index: &Expr, sym: &HashMap<String, Ty>) {
         let base_ty = self.type_of(base, sym);
         if matches!(base_ty, Ty::Array { .. }) {
@@ -5013,6 +5084,8 @@ impl<'a> Checker<'a> {
         self.assignable(&right_ty, left, sym) || self.assignable(&left_ty, right, sym)
     }
 
+    /// The first of `values` that carries a domain of its own, which the
+    /// contextual literals beside it then adopt.
     fn value_domain_anchor<'b>(
         &self,
         values: &[&'b Expr],
@@ -5028,6 +5101,8 @@ impl<'a> Checker<'a> {
             .or_else(|| values.first().copied())
     }
 
+    /// Whether every value shares one domain, so a comparison or match over them
+    /// is meaningful.
     fn values_share_domain(&self, values: &[&Expr], sym: &HashMap<String, Ty>) -> bool {
         let Some(anchor) = self.value_domain_anchor(values, sym) else {
             return false;
@@ -5120,6 +5195,7 @@ impl<'a> Checker<'a> {
             })
     }
 
+    /// Whether an operator impl accepts these operand types.
     fn operator_accepts(
         &self,
         symbol: &str,
@@ -5131,6 +5207,8 @@ impl<'a> Checker<'a> {
             .is_some()
     }
 
+    /// As [`Self::operator_accepts`], but allowing the right operand to be a
+    /// contextual literal that adopts the left's type.
     fn operator_accepts_expr(
         &self,
         symbol: &str,
@@ -5158,6 +5236,8 @@ impl<'a> Checker<'a> {
         )
     }
 
+    /// Check comparison operands, keeping the focused character and enum
+    /// diagnostics rather than a generic mismatch.
     fn check_comparison_operands(
         &mut self,
         op: &BinOp,
@@ -5214,6 +5294,7 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// Check the operands of a built-in arithmetic or shift operator.
     fn check_intrinsic_binary_operands(
         &mut self,
         op: &BinOp,
@@ -5286,6 +5367,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `value` may be assigned to `lhs`. Widths are strict, but a
+    /// contextual literal adopts the target's type.
     fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {
         match value {
             // A decimal literal is already `real`; narrowing it to integer or
@@ -6052,6 +6135,7 @@ impl<'a> Checker<'a> {
         ty
     }
 
+    /// Infer an expression's type without reporting; [`Self::check_expr`] reports.
     fn infer_type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
         match e {
             // A numeric literal is `integer`, or `real` when it has a point.
@@ -6444,6 +6528,8 @@ impl<'a> Checker<'a> {
         targets.next().is_none().then(|| first.to_string())
     }
 
+    /// The visibility of a field, following nominal derivation to wherever it
+    /// was declared.
     fn field_visibility_for(&self, head: &str, field: &str) -> Option<MemberVisibility> {
         let mut current = head.to_string();
         let mut seen = HashSet::new();
@@ -6465,6 +6551,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The module a span belongs to. Files are not modules: several files may
+    /// declare one.
     fn module_of(&self, span: Span) -> String {
         self.file_modules
             .get(&span.file)
@@ -6472,6 +6560,8 @@ impl<'a> Checker<'a> {
             .unwrap_or_else(|| format!("<file:{}>", span.file.0))
     }
 
+    /// The stable module-qualified key for a definition, used everywhere a type
+    /// is compared by identity rather than spelling.
     fn definition_key(&self, id: DefId) -> Option<String> {
         let definition = self.resolved.def(id)?;
         if matches!(
@@ -6484,24 +6574,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The key for whatever is declared at `span`.
     fn declaration_key(&self, span: Span) -> Option<String> {
         self.resolved
             .declared(span)
             .and_then(|id| self.definition_key(id))
     }
 
+    /// The key for whatever a path resolves to.
     fn path_key(&self, path: &Path) -> Option<String> {
         self.resolved
             .resolved(path.span)
             .and_then(|id| self.definition_key(id))
     }
 
+    /// The key for whatever an identifier resolves to.
     fn ident_key(&self, ident: &Ident) -> Option<String> {
         self.resolved
             .resolved(ident.span)
             .and_then(|id| self.definition_key(id))
     }
 
+    /// The owner's key for an associated path such as `Type::CONST`.
     fn associated_owner_key(&self, path: &Path) -> Option<String> {
         (path.segments.len() >= 2).then(|| {
             let owner = &path.segments[path.segments.len() - 2];
@@ -6509,6 +6603,7 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// The key for a type expression.
     fn type_key(&self, ty: &Type) -> Option<String> {
         match ty {
             Type::Path(path) => self.path_key(path),
@@ -6521,11 +6616,13 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The key for a trait path.
     fn trait_key(&self, path: &Path) -> Option<String> {
         let id = self.resolved.resolved(path.span)?;
         self.trait_definition_key(id)
     }
 
+    /// The key for a trait named by a type expression.
     fn trait_type_key(&self, ty: &Type) -> Option<String> {
         match ty {
             Type::Path(path) => self.trait_key(path),
@@ -6534,6 +6631,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The key for a trait definition, or `None` if the id is not a trait.
     fn trait_definition_key(&self, id: DefId) -> Option<String> {
         let definition = self.resolved.def(id)?;
         if definition.kind == DefKind::Builtin || is_compiler_trait(self.resolved, id) {
@@ -6543,6 +6641,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The trait a blanket array impl requires of its element type, as in
+    /// `impl<T: Resolve> Resolve for T[]`.
     fn blanket_requirement(&self, im: &ImplDecl) -> Option<String> {
         let Type::Indexed { base, .. } = &im.target else {
             return None;
@@ -6569,10 +6669,12 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The leaf name of a module-qualified key.
     fn key_leaf<'k>(&self, key: &'k str) -> &'k str {
         key.rsplit("::").next().unwrap_or(key)
     }
 
+    /// The key for an array family, leaving non-family names unchanged.
     fn array_family_key(&self, name: &str) -> String {
         if self.array_families.contains(name) {
             return name.to_string();
@@ -6607,6 +6709,7 @@ impl<'a> Checker<'a> {
             })
     }
 
+    /// The head name of a checked type, for diagnostics and impl lookup.
     fn ty_head(&self, t: &Ty) -> Option<String> {
         Some(match t {
             Ty::Named(id) => self.definition_key(*id)?,
@@ -6620,6 +6723,8 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// The checked type a head name denotes, mapping the kernel names to their
+    /// built-in types.
     fn ty_from_head(&self, name: &str) -> Ty {
         match name {
             "integer" => Ty::Integer,
@@ -6668,6 +6773,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The element type of an array family.
     fn array_element_ty(&self, family: &str) -> Ty {
         self.array_elements
             .get(family)
@@ -6736,6 +6842,8 @@ impl<'a> Checker<'a> {
         self.check_struct_literal_value(ty, value, sym);
     }
 
+    /// Check a struct literal against its declared type. Privacy constrains
+    /// constructing the representation, not every use of the value.
     fn check_struct_literal_value(
         &mut self,
         declared: &Type,
@@ -6788,6 +6896,8 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// Check a struct literal against a known struct head, reporting missing,
+    /// unknown or ill-typed fields.
     fn check_struct_literal_for_head(
         &mut self,
         expected: &Ty,
@@ -6958,6 +7068,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check one field's value against the field's declared type.
     fn check_struct_field_value(
         &mut self,
         owner: &str,
@@ -7056,6 +7167,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check a value against a ranged numeric's declared domain, so an
+    /// out-of-range constant is rejected at compile time.
     fn check_value_range(&mut self, decl_ty: &Type, value: &Expr) {
         let Some(resolved) = self.resolve_alias_type(decl_ty) else {
             return;
@@ -7086,6 +7199,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Convert an AST type into a checked type.
     fn ast_ty(&self, t: &Type) -> Ty {
         match t {
             Type::Path(p) => self.path_ty(p),
@@ -7161,6 +7275,8 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Convert a type path into a checked type, mapping the kernel names
+    /// directly.
     fn path_ty(&self, p: &Path) -> Ty {
         if p.segments.len() == 1 {
             match p.segments[0].text.as_str() {
@@ -7182,6 +7298,7 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Convert a path naming a nominal type into a checked type.
     fn named_path_ty(&self, path: &Path) -> Ty {
         let Some(key) = self.path_key(path) else {
             return self.named_ty(path.span);
@@ -7227,16 +7344,19 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Emit an error diagnostic with a stable code at `span`.
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink
             .emit(Diagnostic::error(msg).with_code(code).at(span));
     }
 
+    /// Emit an error diagnostic carrying a suggested fix.
     fn error_with_help(&mut self, code: &'static str, span: Span, msg: String, help: String) {
         self.sink
             .emit(Diagnostic::error(msg).with_code(code).at(span).help(help));
     }
 
+    /// Emit a warning diagnostic carrying a suggested fix.
     fn warn(&mut self, code: &'static str, span: Span, msg: String, help: &str) {
         self.sink.emit(
             Diagnostic::warning(msg)
@@ -7331,6 +7451,7 @@ fn type_head_span(ty: &Type) -> Option<Span> {
     }
 }
 
+/// The leading name of a type expression.
 fn type_head_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
@@ -7398,6 +7519,7 @@ fn self_ty(im: &ImplDecl) -> &Type {
     }
 }
 
+/// Whether an expression is exactly the `self` receiver.
 fn is_self_value(expression: &Expr) -> bool {
     matches!(
         expression,
@@ -7406,6 +7528,8 @@ fn is_self_value(expression: &Expr) -> bool {
     )
 }
 
+/// Whether an impl is a blanket one over any array, as in
+/// `impl<T: Op> Op for T[]`.
 fn is_blanket_array_impl(im: &ImplDecl) -> bool {
     let Type::Indexed {
         base, index: None, ..
@@ -7454,6 +7578,8 @@ fn width_of(index: &Expr) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether an operator is one of the six comparisons, which yield `Bool`
+/// rather than their operands' family.
 fn is_comparison(op: &BinOp) -> bool {
     matches!(
         op,
@@ -7526,6 +7652,7 @@ fn strlit_help(lhs: &Ty, value: &Expr) -> Option<String> {
     }
 }
 
+/// Render a checked type the way the source spells it, for diagnostics.
 fn ty_name(t: &Ty) -> String {
     match t {
         Ty::Real => "real".to_string(),
@@ -7562,6 +7689,7 @@ fn declared_bounds_of(
     bounds.borrow().get(&seg.text).copied()
 }
 
+/// A signed integer literal's value, including a negative one.
 fn signed_lit(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int { text, .. } => i64::try_from(unsigned_lit_text(text)?).ok(),
@@ -7577,6 +7705,8 @@ fn signed_lit(e: &Expr) -> Option<i64> {
     }
 }
 
+/// An unsigned integer literal's value, honouring radix prefixes and `_`
+/// separators.
 fn unsigned_lit_text(text: &str) -> Option<u64> {
     let text = text.replace('_', "");
     if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
@@ -7588,6 +7718,8 @@ fn unsigned_lit_text(text: &str) -> Option<u64> {
     }
 }
 
+/// The element count an explicit range covers, when both bounds are
+/// constant.
 fn explicit_range_len(e: &Expr) -> Option<u32> {
     let Expr::Range { lo, hi, .. } = e else {
         return None;
@@ -7631,6 +7763,8 @@ mod tests {
         impl Operator<\"<=>\", unsigned, Ordering> for unsigned { fn apply(self, rhs: unsigned) -> Ordering { return Equal; } }\n\
         struct signed(Logic[]);\n";
 
+    /// Type-check `src` with the vector prelude appended and return its error
+    /// count.
     fn check_src(src: &str) -> usize {
         let src = format!("{src}{VEC}");
         let src = src.as_str();
@@ -7643,6 +7777,7 @@ mod tests {
         sink.error_count() - parse_resolve_errors
     }
 
+    /// Type-check several sources as one program and return the sink.
     fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
         let mut sink = DiagnosticSink::new();
         let modules: Vec<Module> = sources
@@ -7655,6 +7790,8 @@ mod tests {
     }
 
     #[test]
+    /// Private struct members are scoped to the owning type's module, while
+    /// `pub` ones cross the boundary.
     fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {
         let provider = "module model;\n\
             pub struct Packet { hidden: integer, pub visible: integer }\n\
@@ -7675,6 +7812,8 @@ mod tests {
     }
 
     #[test]
+    /// Two structs with the same leaf name in different modules keep separate
+    /// visibility domains.
     fn equal_struct_leaves_keep_independent_visibility_domains() {
         let a = "module a::record;\n\
             pub struct Pair { hidden: integer, pub shown: integer }\n\
@@ -7721,6 +7860,9 @@ mod tests {
     }
 
     #[test]
+    /// Compiler hook traits are selected by their resolved declaration, not by a
+    /// matching leaf name, so a user trait of the same name is not mistaken for
+    /// one.
     fn compiler_hook_traits_are_selected_by_declaration_not_leaf() {
         let ops = "module std::ops; pub trait Boolean {}";
         let custom = "module custom; \
@@ -7757,6 +7899,8 @@ mod tests {
     }
 
     #[test]
+    /// A user trait named like an operator trait does not thereby define a
+    /// language operator.
     fn custom_operator_trait_does_not_define_language_operators() {
         let custom = "module custom; \
             pub trait Operator<op: string, input, output> { \
@@ -7781,6 +7925,8 @@ mod tests {
     }
 
     #[test]
+    /// Private members are scoped to the owning type, so unrelated code in the
+    /// same module still cannot reach them.
     fn unrelated_code_in_the_defining_module_cannot_use_private_members() {
         let sink = check_modules(&[(
             "module model;\n\
@@ -7811,6 +7957,8 @@ mod tests {
     }
 
     #[test]
+    /// Constructing a struct with private fields requires the owning
+    /// implementation.
     fn private_struct_literals_require_the_owning_implementation() {
         let sink = check_modules(&[(
             "module model;\n\
@@ -7831,6 +7979,7 @@ mod tests {
     }
 
     #[test]
+    /// A nested literal cannot bypass the private-construction rule.
     fn nested_explicit_struct_literals_cannot_bypass_private_construction() {
         let sink = check_modules(&[(
             "module model;\n\
@@ -7859,6 +8008,8 @@ mod tests {
     }
 
     #[test]
+    /// An impl split across blocks in the type's own module keeps private
+    /// access.
     fn a_split_impl_in_the_types_module_keeps_private_access() {
         let declaration = "module model;\nstruct Packet { hidden: integer }\n";
         let implementation =
@@ -7871,6 +8022,7 @@ mod tests {
     }
 
     #[test]
+    /// An entity instance exposes its ports but not its implementation state.
     fn entity_instances_expose_ports_but_not_implementation_state() {
         let sink = check_modules(&[(
             "module model;\n\
@@ -7893,6 +8045,8 @@ mod tests {
     }
 
     #[test]
+    /// Entity helper methods stay local to `self` until cross-hierarchy call
+    /// semantics exist (E-P024).
     fn entity_helpers_are_local_to_self_until_instance_calls_have_semantics() {
         let sink = check_modules(&[(
             "module model;\n\
@@ -7916,6 +8070,8 @@ mod tests {
     }
 
     #[test]
+    /// An applied view is an explicit structural interface rather than a
+    /// convenience alias.
     fn an_applied_view_is_an_explicit_structural_interface() {
         let provider = "module bus;\n\
             pub struct Stream { data: integer }\n\
@@ -7932,6 +8088,8 @@ mod tests {
     }
 
     #[test]
+    /// Public entity instance methods remain rejected pending cross-hierarchy
+    /// call semantics.
     fn public_entity_instance_methods_wait_for_cross_hierarchy_call_semantics() {
         let sink = check_modules(&[(
             "module m;\npub entity Device { value: integer out }\nimpl Device { pub fn read(self) -> integer { return value; } }\n",
@@ -7944,6 +8102,8 @@ mod tests {
     }
 
     #[test]
+    /// A public entity associated function with no receiver is an ordinary
+    /// namespaced function.
     fn public_entity_associated_functions_are_namespaced_functions() {
         let provider = "module model;\n\
             pub entity Device {}\n\
@@ -7972,6 +8132,8 @@ mod tests {
     }
 
     #[test]
+    /// An entity associated function has no instance scope, so it cannot reach
+    /// ports or state.
     fn entity_associated_functions_have_no_instance_scope() {
         let sink = check_modules(&[(
             "module m;\n\
@@ -7985,6 +8147,7 @@ mod tests {
     }
 
     #[test]
+    /// A private trait keeps its implementation methods private.
     fn a_private_trait_keeps_its_implementation_methods_private() {
         let provider = "module model;\n\
             pub struct Value(integer);\n\
@@ -7998,6 +8161,7 @@ mod tests {
     }
 
     #[test]
+    /// A view does not publish the backing struct's methods.
     fn a_view_does_not_publish_backing_struct_methods() {
         let provider = "module bus;\n\
             pub struct Stream { data: integer }\n\
@@ -8012,6 +8176,7 @@ mod tests {
     }
 
     #[test]
+    /// A view declared in another module cannot publish private backing fields.
     fn a_foreign_view_cannot_publish_private_backing_fields() {
         let provider = "module bus;\npub struct Stream { data: integer }\n";
         let consumer = "module user;\nusing bus::{Stream};\npub view Source for Stream { data out }\npub entity Producer { bus: Stream Source }\n";
@@ -8151,6 +8316,8 @@ mod tests {
     }
 
     #[test]
+    /// Expression types are recorded for every node, so later stages can look
+    /// one up by span.
     fn typed_records_expression_types() {
         let src = format!(
             "module m;\nentity E {{ a: unsigned[8] in, y: Logic out, }}\n\
@@ -8174,6 +8341,8 @@ mod tests {
     }
 
     #[test]
+    /// Numeric separators and based indices are checked at the literal's full
+    /// width rather than a truncated one.
     fn numeric_separators_and_based_type_indices_are_checked_at_full_width() {
         let errors = check_src(
             "module m;\n\
@@ -8191,6 +8360,7 @@ mod tests {
     }
 
     #[test]
+    /// A loop variable shadows an outer binding and takes the element type.
     fn loop_variables_shadow_outer_types_with_element_types() {
         let errors = check_src(
             "module m;\n\
@@ -8211,6 +8381,7 @@ mod tests {
         assert_eq!(errors, 0, "each loop body needs its own value-type scope");
     }
 
+    /// Collect the diagnostic codes checking `src` produces.
     fn diag_codes(src: &str) -> Vec<String> {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
@@ -8224,6 +8395,8 @@ mod tests {
     }
 
     #[test]
+    /// Comparing a logic value against an integer literal warns (W-P008), since
+    /// the comparison cannot mean what it looks like.
     fn suspicious_logic_compare_warns_on_integer_literal() {
         let warns = |src: &str| diag_codes(src).iter().any(|c| c.contains("W-P008"));
         // Bit / Logic / enum vs a bare integer literal → W-P008.
@@ -8247,6 +8420,7 @@ mod tests {
     }
 
     #[test]
+    /// Writing an input leaf of a bus is rejected like any other input write.
     fn rejects_write_to_input_bus_leaf() {
         // Driving an `in` leaf of a bus-mode port (`bus.ready` in the Source
         // view) is a write to an input (spec 3.19) — a clear E-P004.
@@ -8271,6 +8445,8 @@ mod tests {
     }
 
     #[test]
+    /// Trait impls overload by backing struct, so two views over different
+    /// structs may both implement one trait.
     fn views_overload_by_backing_struct_in_trait_impls() {
         let errors = check_src(
             "module m;\n\
@@ -8292,6 +8468,7 @@ mod tests {
     }
 
     #[test]
+    /// A chain of integer aliases still enforces the underlying value range.
     fn chained_integer_aliases_still_enforce_value_ranges() {
         let errors = check_src(
             "module m;\n\
@@ -8304,6 +8481,8 @@ mod tests {
     }
 
     #[test]
+    /// A chain of struct aliases still validates literals against the real
+    /// fields.
     fn chained_struct_aliases_still_validate_literals() {
         let errors = check_src(
             "module m;\n\
@@ -8317,6 +8496,7 @@ mod tests {
     }
 
     #[test]
+    /// Free function parameters and locals keep their declared types.
     fn free_function_parameters_and_locals_keep_their_declared_types() {
         let parameter = check_src(
             "module m;\n\
@@ -8350,6 +8530,7 @@ mod tests {
     }
 
     #[test]
+    /// A returned value must match the declared result type.
     fn return_values_match_the_function_signature() {
         let errors = check_src(
             "module m;\n\
@@ -8363,6 +8544,7 @@ mod tests {
     }
 
     #[test]
+    /// Call arguments are checked against the declared parameter types.
     fn local_function_arguments_use_their_declared_types() {
         let errors = check_src(
             "module m;\n\
@@ -8385,6 +8567,7 @@ mod tests {
     }
 
     #[test]
+    /// A decimal literal needs a `real` context or an explicit conversion.
     fn decimal_literals_require_real_context_or_explicit_conversion() {
         let errors = check_src(
             "module m;\n\
@@ -8404,6 +8587,7 @@ mod tests {
     }
 
     #[test]
+    /// Comparisons and value branches require compatible operand types.
     fn comparisons_and_value_branches_need_compatible_types() {
         let tb = |body: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {body} }}\n");
         assert_eq!(
@@ -8467,6 +8651,7 @@ mod tests {
     }
 
     #[test]
+    /// Built-in arithmetic requires numeric operands.
     fn intrinsic_arithmetic_requires_numeric_operands() {
         let errors = check_src(
             "module m;\n\
@@ -8489,6 +8674,8 @@ mod tests {
     }
 
     #[test]
+    /// Struct literal fields are checked wherever the literal appears, not only
+    /// in a `let`.
     fn struct_literal_fields_are_checked_in_every_value_context() {
         let errors = check_src(
             "module m;\n\
@@ -8511,6 +8698,7 @@ mod tests {
     }
 
     #[test]
+    /// Method calls check both argument count and argument types.
     fn method_calls_check_argument_count_and_types() {
         let errors = check_src(
             "module m;\n\
@@ -8542,6 +8730,8 @@ mod tests {
     }
 
     #[test]
+    /// Associated and instance call forms are distinct: neither substitutes for
+    /// the other.
     fn associated_and_instance_method_call_forms_are_distinct() {
         let errors = check_src(
             "module m;\n\
@@ -8575,6 +8765,7 @@ mod tests {
     }
 
     #[test]
+    /// A module-qualified free call keeps that module's contract.
     fn module_qualified_free_calls_keep_their_contracts() {
         let errors = check_src(
             "module m;\n\
@@ -8597,6 +8788,8 @@ mod tests {
     }
 
     #[test]
+    /// Functions with the same leaf name in different modules keep distinct
+    /// contracts.
     fn equal_function_leaves_keep_module_specific_contracts() {
         let a = "module a;\npub fn convert(value: integer) -> integer { return value; }\n";
         let b = "module b;\npub fn convert(value: real) -> real { return value; }\n";
@@ -8619,6 +8812,8 @@ mod tests {
     }
 
     #[test]
+    /// Constants with the same leaf name in different modules keep distinct
+    /// types.
     fn equal_constant_leaves_keep_module_specific_types() {
         let integer = "module a;\npub const VALUE: integer = 11;\n";
         let real = "module b;\npub const VALUE: real = 2.5;\n";
@@ -8648,6 +8843,8 @@ mod tests {
     }
 
     #[test]
+    /// A function with a declared result must return on every path, including
+    /// through matches and numeric domains.
     fn value_returning_functions_return_on_every_path() {
         let missing = check_src(
             "module m;\n\
@@ -8691,6 +8888,7 @@ mod tests {
     }
 
     #[test]
+    /// The same rule applies to methods: none may fall through.
     fn value_returning_methods_cannot_fall_through() {
         let errors = check_src(
             "module m;\n\
@@ -8709,6 +8907,8 @@ mod tests {
     }
 
     #[test]
+    /// An array alias preserves the declared index bounds rather than
+    /// renormalizing them.
     fn array_aliases_preserve_declared_index_bounds() {
         let errors = check_src(
             "module m;\n\
@@ -8723,6 +8923,7 @@ mod tests {
     }
 
     #[test]
+    /// A method's declared return type propagates to its call site.
     fn method_return_type_propagates() {
         // A method returning `Logic` used directly as a condition must error
         // (Logic isn't Boolean), proving the return type flows into checks.
@@ -8751,6 +8952,8 @@ mod tests {
     }
 
     #[test]
+    /// A string literal in a non-string position gets a targeted hint rather
+    /// than a bare mismatch.
     fn string_literal_gets_a_targeted_hint() {
         let sp = crate::diag::Span::new(FileId(0), 0..1);
         let s = |t: &str| Expr::StrLit {
@@ -8781,6 +8984,8 @@ mod tests {
     }
 
     #[test]
+    /// A vector newtype reports its real family in diagnostics, not the
+    /// underlying array.
     fn vector_names_its_real_family() {
         // A known family displays by name; anonymous vectors fall back to unsigned.
         let int8 = Ty::Array {
@@ -8827,6 +9032,7 @@ mod tests {
     }
 
     #[test]
+    /// Assigning to a `const` is rejected.
     fn assigning_to_a_const_is_rejected() {
         let has = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P018"));
         // This reached the emitter as "unknown signal `K`" — a message naming
@@ -8844,6 +9050,7 @@ mod tests {
     }
 
     #[test]
+    /// Struct literal field names are checked against the declaration.
     fn struct_literal_field_names_are_checked() {
         let has = |src: &str, code: &str| diag_codes(src).iter().any(|c| c.contains(code));
         let base = "module m;\nstruct S { pub a: Bit, pub b: Bit }\nentity E { y: Bit out, }\nimpl E { let s: S = LIT; y = s.a; }\n";
@@ -8868,6 +9075,7 @@ mod tests {
     }
 
     #[test]
+    /// A struct containing itself has no finite layout and is rejected.
     fn a_struct_containing_itself_is_rejected() {
         let bad = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P003"));
         // Elaboration flattens a struct into leaf signals, so each of these
@@ -8891,6 +9099,7 @@ mod tests {
     }
 
     #[test]
+    /// Two `let` declarations of one name in a scope are an error.
     fn duplicate_let_is_an_error() {
         let has = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P002"));
         // A scalar silently shadowed; a struct emitted its field locals twice
@@ -8904,6 +9113,7 @@ mod tests {
     }
 
     #[test]
+    /// Unreachable arms warn in a match expression, as in a match statement.
     fn unreachable_arms_warn_in_a_match_expression() {
         // The two match forms share `MatchArm` but not the code walking it,
         // so this was statement-only.
@@ -8925,6 +9135,7 @@ mod tests {
     }
 
     #[test]
+    /// A constant array index outside the declared bounds is rejected.
     fn data_array_index_is_bound_checked() {
         let oob = |src: &str| diag_codes(src).iter().any(|c| c.contains("E-P003"));
         // A plain count is 0-based: `v[9]` used to read `v[3]` in silence.
@@ -8953,6 +9164,7 @@ mod tests {
     }
 
     #[test]
+    /// An arm fully covered by earlier arms warns (W-P006).
     fn unreachable_match_arms_warn() {
         let base = "module m;\nenum State { Idle, Run, Done }\nentity E { y: Bit out, }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
         // An arm after `_` is unreachable.
@@ -8985,6 +9197,7 @@ mod tests {
     }
 
     #[test]
+    /// A match not covering every enum variant warns (W-P007).
     fn non_exhaustive_enum_match_warns() {
         let base = "module m;\nenum State { Idle, Run, Done }\nentity E { y: Bit out, }\nimpl E {\n  let s: State;\n  match s {\n    ARMS\n  }\n}\n";
         // Missing `Done` and no `_` -> one warning.
@@ -9020,12 +9233,14 @@ mod tests {
     }
 
     #[test]
+    /// The analogue `'ddt` attribute is rejected as Phase-2 syntax (E-P010).
     fn rejects_phase2_ddt() {
         let errors = check_src("module m;\nentity E { y: Bit out, }\nimpl E {\n  y = x'ddt;\n}\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
+    /// The digital system attributes are accepted.
     fn accepts_digital_sysattrs() {
         let errors = check_src(
             "module m;\nentity E { clk: Bit in, q: Bit out, }\nimpl E {\n  if clk.rising() {\n    q = clk'old;\n  }\n}\n",
@@ -9034,6 +9249,7 @@ mod tests {
     }
 
     #[test]
+    /// A reset written as an edge rather than a level warns (W-P009).
     fn edge_detected_reset_warns() {
         let src = "module m;\nentity E { reset: Bit in, q: Bit out, }\n\
                    impl E { if reset.rising() { q = '0'; } }\n";
@@ -9045,6 +9261,7 @@ mod tests {
     }
 
     #[test]
+    /// Writing an input port is rejected (E-P004).
     fn rejects_write_to_input_port() {
         let errors = check_src(
             "module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  en = '1';\n  y = en;\n}\n",
@@ -9053,6 +9270,7 @@ mod tests {
     }
 
     #[test]
+    /// Writing an output port is the normal case and is accepted.
     fn writing_output_is_fine() {
         let errors =
             check_src("module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  y = en;\n}\n");
@@ -9060,6 +9278,7 @@ mod tests {
     }
 
     #[test]
+    /// Writing an input through a field or index is rejected too.
     fn rejects_write_to_plain_input_field_or_index() {
         // A field/index of a *plain* `in` port is read-only too.
         let errors = check_src(
@@ -9070,6 +9289,7 @@ mod tests {
     }
 
     #[test]
+    /// A bare logic value is not a condition: `Logic` opts out of `Condition`.
     fn bare_logic_condition_is_rejected() {
         let errors = check_src(
             "module m;\nentity E { rst: Logic in, y: Bit out, }\nimpl E {\n  if rst {\n    y = '0';\n  }\n}\n",
@@ -9078,6 +9298,8 @@ mod tests {
     }
 
     #[test]
+    /// A compared logic value is a condition, since the comparison yields a
+    /// boolean.
     fn compared_logic_and_bit_conditions_are_fine() {
         // `rst == '1'` is a comparison (-> Bool); `en` is a Bit. Both valid.
         let errors = check_src(
@@ -9087,6 +9309,8 @@ mod tests {
     }
 
     #[test]
+    /// An attribute applied to a target its declaration does not list is
+    /// rejected (E-P006).
     fn attribute_on_wrong_target_is_rejected() {
         // `keep` is declared for `let, port`, not `entity`.
         let errors = check_src("module m;\n#[keep]\nentity E { y: Bit out, }\n");
@@ -9094,6 +9318,7 @@ mod tests {
     }
 
     #[test]
+    /// An attribute on a declared target is accepted.
     fn attribute_on_right_target_is_fine() {
         let errors = check_src(
             "module m;\npub attr vendor_top: Bool for entity;\n#[vendor_top]\nentity E { y: Bit out, }\n",
@@ -9102,6 +9327,7 @@ mod tests {
     }
 
     #[test]
+    /// Assigning a `Bool` to a `Bit` port is rejected: they are distinct types.
     fn assigning_bool_to_a_bit_port_is_rejected() {
         let errors = check_src(
             "module m;\nentity E { en: Bit in, y: Bit out, }\nimpl E {\n  y = en == en;\n}\n",
@@ -9111,6 +9337,7 @@ mod tests {
     }
 
     #[test]
+    /// Integer and logic literals adopt the type of their context.
     fn integer_and_logic_literals_are_polymorphic() {
         // signed literal -> any unsigned; '1' -> Bit or Logic. No conversions needed.
         let errors = check_src(
@@ -9120,6 +9347,8 @@ mod tests {
     }
 
     #[test]
+    /// A nominal array newtype forwards a blanket array operator whose bound it
+    /// satisfies.
     fn nominal_array_newtype_forwards_matching_blanket_array_operator() {
         let errors = check_src(
             "module m;\n\
@@ -9134,6 +9363,7 @@ mod tests {
     }
 
     #[test]
+    /// It does not forward one whose bound it fails.
     fn nominal_array_newtype_does_not_forward_unsatisfied_array_operator() {
         let errors = check_src(
             "module m;\n\
@@ -9149,6 +9379,7 @@ mod tests {
     }
 
     #[test]
+    /// It preserves its declared element type rather than the base array's.
     fn nominal_array_newtype_preserves_its_declared_element_type() {
         let errors = check_src(
             "module m;\n\
@@ -9161,6 +9392,8 @@ mod tests {
     }
 
     #[test]
+    /// A blanket array operator that cannot lower is rejected rather than
+    /// accepted and dropped.
     fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
         let blanket = |op: &str| {
             format!(
@@ -9181,6 +9414,7 @@ mod tests {
     }
 
     #[test]
+    /// An enum assignment takes the enum's type.
     fn enum_assignment_uses_the_enum_type() {
         let errors = check_src(
             "module m;\nenum State { Idle, Run }\nentity E { s: State out, }\nimpl E {\n  s = State::Idle;\n}\n",
@@ -9189,6 +9423,7 @@ mod tests {
     }
 
     #[test]
+    /// An initializer of the wrong type is rejected.
     fn bad_initializer_type_is_rejected() {
         let errors = check_src(
             "module m;\nentity E { y: Bit out, }\nimpl E {\n  let flag: Bool = 5;\n  y = '0';\n}\n",
@@ -9197,6 +9432,7 @@ mod tests {
     }
 
     #[test]
+    /// An attribute's value is checked against its declared type (E-P007).
     fn attribute_value_type_is_checked() {
         // `name` expects a string; giving it an signed is an error.
         let bad = check_src("module m;\n#[name = 5]\nentity E { y: Bit out, }\n");
@@ -9206,6 +9442,7 @@ mod tests {
     }
 
     #[test]
+    /// Operators on user types require a matching impl.
     fn operators_on_user_types_need_an_impl() {
         let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { p: V in, q: V in, y: Bit out, }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
         // Without an impl, `+` on a struct is rejected.
@@ -9221,6 +9458,7 @@ mod tests {
     }
 
     #[test]
+    /// An operator overload must match its declared input type.
     fn operator_overloads_match_the_declared_input_type() {
         let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
         let explicit = "impl Operator<\"+\", Right, Left> for Left {\n\
@@ -9257,6 +9495,7 @@ mod tests {
     }
 
     #[test]
+    /// `self` in a method signature is the impl target.
     fn self_in_method_signatures_is_the_impl_target() {
         let methods = "impl Left {\n\
                          pub fn choose(self, rhs: Self) -> Self { return rhs; }\n\
@@ -9282,6 +9521,7 @@ mod tests {
     }
 
     #[test]
+    /// `self` in an index contract is likewise the impl target.
     fn self_in_index_contracts_is_the_impl_target() {
         let contracts = "module m;\n\
              struct Box { pub value: integer }\n\
@@ -9345,6 +9585,8 @@ mod tests {
     }
 
     #[test]
+    /// The six comparisons derive from the three-way `<=>`, so struct equality
+    /// follows from one impl.
     fn struct_equality_is_derived_from_three_way_comparison() {
         let base = |operator: &str| {
             format!(
@@ -9370,6 +9612,7 @@ mod tests {
     }
 
     #[test]
+    /// Suffix traits define the literal forms and disambiguate between them.
     fn suffix_traits_define_and_disambiguate_literals() {
         let time = "struct Time { fs: unsigned[48] }\nimpl Suffix<\"s\", integer> for Time {}\n";
         // A Suffix impl's symbol defines the literal's type: Time = 5s passes.
@@ -9389,6 +9632,7 @@ mod tests {
     }
 
     #[test]
+    /// Suffix and radix bit-string literals are type-checked.
     fn suffix_and_bitstring_literals_are_checked() {
         // Known unit suffixes and valid bit-strings pass.
         assert_eq!(
@@ -9417,6 +9661,7 @@ mod tests {
     }
 
     #[test]
+    /// A user type opts into conditions by implementing `Boolean`.
     fn user_type_opts_into_condition_via_boolean() {
         // Without an `impl Boolean for State`, `if state` is rejected.
         let without = check_src(
@@ -9432,6 +9677,7 @@ mod tests {
     }
 
     #[test]
+    /// A character literal defaults to `Char` but adopts an annotated enum type.
     fn char_literal_defaults_to_char_but_takes_annotated_type() {
         // Bare: '0' is a Char.  Annotated / if-expr context: it takes the
         // target type (Bit/Logic), including through an if-expression.
@@ -9453,6 +9699,7 @@ mod tests {
     }
 
     #[test]
+    /// Literals default to their core types when no context overrides them.
     fn literals_default_to_their_core_types() {
         let ty = |src: &str| {
             let mut sink = DiagnosticSink::new();
@@ -9462,6 +9709,8 @@ mod tests {
             c.type_of(&value_expr(&m), &HashMap::new())
         };
         // helper: the value in `impl E { y = <value>; }`
+        /// The value expression of the first item, for tests that inspect one
+        /// literal's inferred type.
         fn value_expr(m: &crate::syntax::Module) -> Expr {
             for item in &m.items {
                 if let Item::Impl(im) = item {
@@ -9490,6 +9739,7 @@ mod tests {
     }
 
     #[test]
+    /// Boolean operators reject types that are not bit-shaped.
     fn boolean_ops_reject_non_bit_types() {
         // `and`/`or`/`not` are boolean-per-bit: bit-derived / Boolean only.
         assert_eq!(
@@ -9523,6 +9773,7 @@ mod tests {
     }
 
     #[test]
+    /// A logical operator's template controls the result type.
     fn logical_operator_template_controls_output_type() {
         let src = "module m;\n\
             enum Left { L }\n\
@@ -9541,6 +9792,7 @@ mod tests {
     }
 
     #[test]
+    /// A custom operator selects both its input and output templates.
     fn custom_operator_selects_input_and_output_templates() {
         let ok = "module m;\n\
             attr precedence: integer for impl;\n\
@@ -9602,6 +9854,8 @@ mod tests {
     }
 
     #[test]
+    /// A type whose layout cannot be represented is rejected before lowering,
+    /// where the failure would be harder to explain.
     fn unrepresentable_type_layouts_are_rejected_before_lowering() {
         let range = "module m;\n\
             entity E { y: Logic[-9223372036854775807..9223372036854775807] out }\n\
@@ -9665,6 +9919,7 @@ mod tests {
     }
 
     #[test]
+    /// Struct literal values are checked against each field's declared type.
     fn struct_literal_values_use_their_field_types() {
         let direct = check_src(
             "module m;\n\
@@ -9853,6 +10108,7 @@ mod tests {
     }
 
     #[test]
+    /// A type constructor takes at most one argument.
     fn type_constructors_accept_at_most_one_argument() {
         let fixture = |call: &str| {
             format!(
@@ -9883,6 +10139,7 @@ mod tests {
     }
 
     #[test]
+    /// `extern "C"` call arguments must match the declaration.
     fn extern_call_arguments_must_match_the_declaration() {
         let src = "module m;\n\
                    extern \"C\" { fn take_int(value: integer) -> integer; }\n\
@@ -9896,6 +10153,8 @@ mod tests {
     }
 
     #[test]
+    /// `extern "C"` signatures are limited to the scalar ABI actually
+    /// implemented.
     fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
         assert_eq!(
             check_src(
@@ -9933,6 +10192,7 @@ mod tests {
     }
 
     #[test]
+    /// Generic call arguments obey both concrete and repeated type parameters.
     fn generic_call_arguments_obey_concrete_and_repeated_types() {
         let src = "module m;\n\
                    fn select<T>(tag: integer, first: T, second: T) -> T { return first; }\n\
@@ -9952,6 +10212,7 @@ mod tests {
     }
 
     #[test]
+    /// A free function's return type propagates to its call site.
     fn free_function_return_types_propagate_to_the_call_site() {
         let src = "module m;\n\
                    fn logic_value() -> Logic { return 'X'; }\n\
@@ -9969,6 +10230,7 @@ mod tests {
     }
 
     #[test]
+    /// A function with no return type cannot be used as a value.
     fn procedures_cannot_be_used_as_values() {
         let src = "module m;\n\
                    fn procedure() {}\n\
@@ -10000,6 +10262,7 @@ mod tests {
     }
 
     #[test]
+    /// Runtime intrinsics check their arity.
     fn runtime_function_arity_is_checked() {
         let tb = |expression: &str| {
             format!(
@@ -10016,6 +10279,8 @@ mod tests {
     }
 
     #[test]
+    /// Runtime intrinsics check argument types and results, and reject forms
+    /// that have been removed.
     fn runtime_functions_enforce_types_results_and_removed_forms() {
         let tb = |body: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {body} }}\n");
         assert_eq!(
@@ -10184,6 +10449,7 @@ mod tests {
     }
 
     #[test]
+    /// Every arm of a match expression must produce the same type.
     fn match_expression_checks_every_arm_type() {
         let bad_assignment = check_src(
             "module m;\n\
@@ -10221,6 +10487,8 @@ mod tests {
     }
 
     #[test]
+    /// Signal widths have no global word limit, so a very wide signal checks
+    /// like any other.
     fn signal_width_has_no_global_word_limit() {
         let at = |w: u32| {
             check_src(&format!(
@@ -10302,6 +10570,7 @@ mod tests {
     }
 
     #[test]
+    /// A `process` is only valid in an inherent entity impl (E-P027).
     fn process_is_only_valid_on_an_inherent_entity_impl() {
         assert_eq!(
             check_src(
@@ -10410,6 +10679,7 @@ mod tests {
     }
 
     #[test]
+    /// A view method cannot drive a leaf the view marks as input.
     fn a_view_method_cannot_drive_an_input_leaf() {
         let count = |src: &str| {
             let src = format!("{src}{VEC}");
@@ -10699,6 +10969,7 @@ mod tests {
     }
 
     #[test]
+    /// A character pattern requires a character-valued enum scrutinee.
     fn a_character_pattern_needs_a_character_valued_enum() {
         let count = |src: &str| {
             let src = format!("{src}{VEC}");
@@ -10761,6 +11032,7 @@ mod tests {
     }
 
     #[test]
+    /// Match patterns must lie inside the scrutinee's domain.
     fn match_patterns_must_belong_to_the_scrutinee_domain() {
         let enums = "module m;\nenum Left { Zero, One }\nenum Right { Zero, One }\n";
         assert_eq!(
@@ -11152,6 +11424,7 @@ mod tests {
     }
 
     #[test]
+    /// Built-in indexing requires a numeric index value.
     fn intrinsic_indices_require_numeric_index_values() {
         let tb = |body: &str| {
             format!(
@@ -11189,6 +11462,7 @@ mod tests {
     }
 
     #[test]
+    /// `for` requires a range or an iterable array.
     fn for_loops_require_ranges_or_iterable_arrays() {
         let tb = |range: &str| {
             format!(
@@ -11239,6 +11513,7 @@ mod tests {
     }
 
     #[test]
+    /// Operators the grammar reserves cannot be overloaded.
     fn reserved_operators_cannot_be_overloaded() {
         let header = "module m;\nattr precedence: integer for impl;\n\
             enum A { A0 }\n";
@@ -11261,6 +11536,8 @@ mod tests {
     }
 
     #[test]
+    /// Every formatted macro checks its argument count against the format
+    /// string.
     fn every_formatted_macro_checks_arity() {
         let fixture =
             |call: &str| format!("module m;\n#[test] entity T {{}}\nimpl T {{ {call}; }}\n");
@@ -11283,6 +11560,8 @@ mod tests {
     }
 
     #[test]
+    /// A custom operator must declare a precedence, and declare it consistently
+    /// across impls.
     fn custom_operator_precedence_is_required_and_consistent() {
         let header = "module m;\nattr precedence: integer for impl;\n\
             enum A { A0 } enum B { B0 }\n";

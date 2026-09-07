@@ -35,6 +35,8 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Word counts round up and keep rounding: the ABI has no width ceiling, so
+    /// a 512-bit signal is eight words rather than a clamped one.
     fn abi_word_counts_round_up_without_a_global_limit() {
         assert_eq!(words_for(0), 1);
         assert_eq!(words_for(1), 1);

@@ -31,14 +31,18 @@ pub struct TestCase {
 /// The single native-test input shared by every backend.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestPlan {
+    /// The discovered tests, in declaration order.
     pub tests: Vec<TestCase>,
 }
 
 impl TestPlan {
+    /// Whether the plan found no tests, in which case there is nothing to
+    /// build.
     pub fn is_empty(&self) -> bool {
         self.tests.is_empty()
     }
 
+    /// How many tests the plan holds.
     pub fn len(&self) -> usize {
         self.tests.len()
     }
@@ -158,6 +162,8 @@ pub(crate) fn is_clock_statement(statement: &Stmt) -> bool {
     crate::syntax::pretty::expr_string(target) == crate::syntax::pretty::expr_string(rhs)
 }
 
+/// Collect every entity carrying the canonical `std::attrs::test` attribute,
+/// with the attribute's value so `#[test = false]` can disable one.
 fn discover(modules: &[Module], resolved: &Resolved) -> Vec<DiscoveredTest> {
     modules
         .iter()
@@ -211,6 +217,8 @@ pub fn implementation_items<'a>(
         .collect()
 }
 
+/// The definition a type expression ultimately names, looking through
+/// generic application and indexing. `None` when it resolves to nothing.
 fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
     match ty {
         Type::Path(path) => resolved.resolved(path.span),
@@ -224,6 +232,8 @@ mod tests {
     use super::*;
     use crate::diag::{DiagnosticSink, FileId};
 
+    /// Parse `source` together with the minimal `std::logic` and `std::attrs`
+    /// stubs test discovery needs, returning the modules and their sink.
     fn modules(source: &str) -> (Vec<Module>, DiagnosticSink) {
         let std_logic = "module std::logic; pub enum Bool { false, true }";
         let std_attrs =
@@ -242,6 +252,8 @@ mod tests {
     }
 
     #[test]
+    /// Discovery must key on the resolved `std::attrs::test` definition rather
+    /// than the spelling, and must honour an explicit `= false`.
     fn discovery_uses_the_canonical_std_attribute_and_its_value() {
         let source = "module tests;\n\
             pub attr test: Bool for entity;\n\
@@ -261,6 +273,8 @@ mod tests {
     }
 
     #[test]
+    /// The Phase-1 test scheduler runs one foreground process, but time-zero
+    /// clock processes are additional and must stay allowed.
     fn native_tests_reject_multiple_foreground_processes_but_allow_clocks() {
         let diagnostics = |source: &str| {
             let (modules, mut sink) = modules(source);

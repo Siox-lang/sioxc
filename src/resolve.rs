@@ -133,15 +133,23 @@ pub enum DefKind {
     /// Compiler-provided type, operator hook, or attribute (`integer`,
     /// `Operator`, `top`, ...).
     Builtin,
+    /// A `struct` declaration.
     Struct,
+    /// A `view` declaration.
     View,
+    /// An `enum` declaration.
     Enum,
+    /// One variant of an enum, owned by it via [`DefInfo::parent`].
     EnumVariant,
+    /// An `entity` declaration.
     Entity,
+    /// A `trait` declaration.
     Trait,
+    /// A `const` declaration, at module scope or in an impl.
     Const,
     /// A module-level function (inlined at lowering; const-evaluable).
     Fn,
+    /// A `using Name = Type;` alias, transparent rather than nominal.
     TypeAlias,
     /// Declared metadata attribute (`attr top: Bool for entity;`).
     Attr,
@@ -154,10 +162,13 @@ pub enum DefKind {
 /// Metadata for one declaration.
 #[derive(Clone, Debug)]
 pub struct DefInfo {
+    /// The declared name, unqualified.
     pub name: String,
     /// Declaring module path. `None` only for compiler builtins.
     pub module: Option<String>,
+    /// What kind of declaration this is.
     pub kind: DefKind,
+    /// Whether it is visible outside its declaring module.
     pub is_pub: bool,
     /// Declaration site, or `None` for builtins.
     pub span: Option<Span>,
@@ -182,10 +193,12 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    /// Metadata for `id`, or `None` if it is not from this resolution.
     pub fn def(&self, id: DefId) -> Option<&DefInfo> {
         self.defs.get(id.0 as usize)
     }
 
+    /// Every definition, indexed by [`DefId`].
     pub fn defs(&self) -> &[DefInfo] {
         &self.defs
     }
@@ -214,6 +227,7 @@ impl Resolved {
         })
     }
 
+    /// What kind of thing `id` names, or `None` if it is unknown here.
     pub fn kind_of(&self, id: DefId) -> Option<DefKind> {
         self.def(id).map(|d| d.kind)
     }
@@ -309,6 +323,8 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.out
 }
 
+/// The path at the head of a type expression, looking through generic
+/// application and indexing.
 fn type_head_path(t: &Type) -> Option<&Path> {
     match t {
         Type::Path(path) => Some(path),
@@ -317,6 +333,7 @@ fn type_head_path(t: &Type) -> Option<&Path> {
     }
 }
 
+/// Render a path as its `::`-joined segments.
 fn path_text(path: &Path) -> String {
     path.segments
         .iter()
@@ -325,6 +342,8 @@ fn path_text(path: &Path) -> String {
         .join("::")
 }
 
+/// The name, span and kind-word of an impl member, for duplicate reporting.
+/// `None` for members that introduce no name.
 fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
     Some(match item {
         ImplItem::Let(declaration) => (&declaration.name.text, declaration.name.span, "state"),
@@ -404,6 +423,7 @@ struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
+    /// A resolver with empty scopes, reporting into `sink`.
     fn new(sink: &'a mut DiagnosticSink) -> Self {
         Resolver {
             sink,
@@ -430,6 +450,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Declare the compiler-provided names: the numeric and character kernels,
+    /// the operator hooks, and the builtin attributes. These have no source span.
     fn seed_builtins(&mut self) {
         // The numeric and character kernels are intrinsic. Digital scalar
         // enums and indexed families come from std declarations.
@@ -454,6 +476,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Record which module the following items belong to, so declarations
+    /// register under the right qualified path.
     fn set_current_module(&mut self, module: &Module) {
         self.current_module = Some(
             module
@@ -517,6 +541,8 @@ impl<'a> Resolver<'a> {
 
     // --- collection (declarations) -----------------------------------------
 
+    /// Declare one top-level item's name, before any body is resolved, so items
+    /// can refer to each other regardless of source order.
     fn collect_item(&mut self, item: &Item) {
         match item {
             Item::Fn(f) => {
@@ -642,6 +668,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Report imports nothing referenced (W-P005), skipping standard-library
+    /// files so a user is never linted for what std imports.
     fn lint_unused_imports(&mut self, std_files: &std::collections::HashSet<crate::diag::FileId>) {
         let sites = std::mem::take(&mut self.import_sites);
         for site in sites {
@@ -815,6 +843,8 @@ impl<'a> Resolver<'a> {
         progress
     }
 
+    /// Report an import whose name collides with an existing declaration,
+    /// pointing at both.
     fn report_import_collision(&mut self, name: &str, span: Span, existing: DefId) {
         let mut diagnostic = Diagnostic::error(format!(
             "imported name `{name}` conflicts with an existing name in this module"
@@ -944,6 +974,8 @@ impl<'a> Resolver<'a> {
         id
     }
 
+    /// Register a name in the current module's export table, reporting a
+    /// duplicate against the existing definition.
     fn register_global(&mut self, name: &str, id: DefId, span: Span) {
         let current_module = self.current_module.as_deref();
         if let Some(module) = &self.current_module {
@@ -993,6 +1025,8 @@ impl<'a> Resolver<'a> {
         self.globals.entry(name.to_string()).or_insert(id);
     }
 
+    /// Register an `attr` declaration, which lives in a namespace of its own so
+    /// an attribute and a type may share a name.
     fn register_attr(&mut self, name: &str, id: DefId, span: Span) {
         if let Some(module) = &self.current_module {
             let key = (module.clone(), name.to_string());
@@ -1016,6 +1050,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Create a definition and return its id, recording its span and owner.
     fn add_def(
         &mut self,
         name: String,
@@ -1041,6 +1076,7 @@ impl<'a> Resolver<'a> {
 
     // --- resolution (uses) --------------------------------------------------
 
+    /// Resolve the bodies and type references of one top-level item.
     fn resolve_item(&mut self, item: &Item) {
         match item {
             // An alias target is a type reference and must resolve — a
@@ -1124,6 +1160,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve an `impl` block: bind its generic parameters, resolve the target
+    /// and trait, then each member.
     fn resolve_impl(&mut self, im: &ImplDecl) {
         self.enter();
         self.bind_params(&im.params, false, None);
@@ -1267,6 +1305,8 @@ impl<'a> Resolver<'a> {
         self.exit();
     }
 
+    /// Enforce inherent-impl coherence: only the module that defines a nominal
+    /// type may add inherent members to it.
     fn check_inherent_impl_coherence(&mut self, im: &ImplDecl) {
         let Some(owner) = self.impl_owner(&im.target) else {
             // Unknown targets already receive the ordinary resolution error.
@@ -1326,6 +1366,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The nominal type an impl targets, plus the backing type when the target
+    /// is a view, since both own the members.
     fn impl_owner(&self, ty: &Type) -> Option<ImplOwner> {
         match ty {
             Type::Path(path) => Some(ImplOwner {
@@ -1340,6 +1382,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The definition a type expression names, looking through generic
+    /// application and indexing.
     fn type_definition(&self, ty: &Type) -> Option<DefId> {
         match ty {
             Type::Path(path) => self.out.resolved(path.span),
@@ -1348,6 +1392,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Render an impl owner for a diagnostic, naming the backing type too when
+    /// the target is a view.
     fn impl_owner_display(&self, owner: ImplOwner) -> Option<String> {
         let nominal = self.out.qualified_name(owner.nominal)?;
         match owner.backing {
@@ -1356,6 +1402,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve one member of an impl body.
     fn resolve_impl_item(&mut self, item: &ImplItem) {
         match item {
             ImplItem::Const(c) => {
@@ -1377,6 +1424,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve a function: its generic parameters scope over both the signature
+    /// and the body.
     fn resolve_fn(&mut self, f: &FnDecl) {
         self.enter();
         // Function parameters scope over both the signature and body. This is
@@ -1407,6 +1456,8 @@ impl<'a> Resolver<'a> {
         self.exit();
     }
 
+    /// Resolve a block in its own scope. Locals are bound before the statements
+    /// run so a declaration is visible to what follows it.
     fn resolve_block(&mut self, b: &Block) {
         self.enter();
         for s in &b.stmts {
@@ -1420,6 +1471,7 @@ impl<'a> Resolver<'a> {
         self.exit();
     }
 
+    /// Resolve one statement.
     fn resolve_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(l) => {
@@ -1460,6 +1512,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve an `if` and its `else` chain.
     fn resolve_if(&mut self, i: &IfStmt) {
         self.resolve_expr(&i.cond);
         self.resolve_block(&i.then);
@@ -1470,6 +1523,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve an applied attribute against the `attr` namespace, which is
+    /// separate from ordinary names.
     fn resolve_attr(&mut self, a: &Attr) {
         let segs = &a.name.segments;
         let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
@@ -1504,6 +1559,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve a type expression and everything nested inside it.
     fn resolve_type(&mut self, ty: &Type) {
         match ty {
             Type::Path(p) => self.resolve_type_path(p),
@@ -1532,6 +1588,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve a type path, reporting an unknown name with a close-spelling
+    /// suggestion where one exists.
     fn resolve_type_path(&mut self, p: &Path) {
         if p.segments.is_empty() {
             return;
@@ -1594,6 +1652,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve an expression and its operands. Literal leaves bind nothing; a
+    /// suffix such as the `ns` in `1ns` is not a value path.
     fn resolve_expr(&mut self, e: &Expr) {
         match e {
             // Literal leaves; a suffix (`1ns`) is not a value path — it binds
@@ -1697,6 +1757,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolve a value path: a local, a constant, or an enum variant. A
+    /// qualified path checks the exact module rather than any in scope.
     fn resolve_value_path(&mut self, p: &Path) {
         if p.segments.len() >= 2 {
             let enum_position = p.segments.len() - 2;
@@ -1889,6 +1951,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Record a use of an impl's generic parameter, so the unused-parameter lint
+    /// sees uses that occur in impl members.
     fn mark_impl_param_use(&mut self, id: DefId) {
         if self.out.kind_of(id) != Some(DefKind::Param) {
             return;
@@ -1908,6 +1972,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Record a qualified use of a definition, so visibility can be checked
+    /// against the module that owns it.
     fn record_qualified_use(&mut self, use_span: Span, id: DefId) {
         // A private import is diagnosed at the import itself. Keep resolving
         // uses through that binding so one mistake does not cascade onto every
@@ -1940,6 +2006,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Reject a public signature that names a private nominal type: such an API
+    /// would be exported but impossible for its users to name (E-P025).
     fn check_public_interfaces(&mut self, modules: &[Module]) {
         let structs: HashMap<DefId, &StructDecl> = modules
             .iter()
@@ -2042,6 +2110,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The declared type of one field a view projects, following aliases and
+    /// nominal derivation to the backing struct.
     fn view_field_type(
         &self,
         target: &Type,
@@ -2068,6 +2138,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The struct definition a type expression ultimately names, following
+    /// aliases and derivation bases without looping.
     fn struct_type_id(
         &self,
         ty: &Type,
@@ -2116,6 +2188,7 @@ impl<'a> Resolver<'a> {
         })
     }
 
+    /// Check that a public function's signature exposes no private type.
     fn check_public_fn(&mut self, function: &FnDecl, context: &str) {
         self.check_public_params(&function.generics, context);
         for parameter in &function.params {
@@ -2128,6 +2201,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Check that public generic bounds expose no private type.
     fn check_public_params(&mut self, params: &Params, context: &str) {
         for param in &params.params {
             if let Some(bound) = &param.bound {
@@ -2136,6 +2210,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Check one type in a public position, recursing through its arguments.
     fn check_public_type(&mut self, ty: &Type, context: &str) {
         match ty {
             Type::Path(path) => self.check_public_path(path, context),
@@ -2158,6 +2233,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Check one resolved path in a public position, reporting E-P025 when it
+    /// names a private declaration from another module.
     fn check_public_path(&mut self, path: &Path, context: &str) {
         let Some(id) = self.out.resolved(path.span) else {
             return;
@@ -2186,6 +2263,8 @@ impl<'a> Resolver<'a> {
         self.sink.emit(diagnostic);
     }
 
+    /// Whether two spans belong to the same module. Files are not modules: two
+    /// files may declare the same one and share its private names.
     fn same_module(&self, a: Span, b: Span) -> bool {
         match (
             self.file_modules.get(&a.file),
@@ -2198,10 +2277,12 @@ impl<'a> Resolver<'a> {
 
     // --- scopes & lookup ----------------------------------------------------
 
+    /// Push a new lexical scope.
     fn enter(&mut self) {
         self.scopes.push(HashMap::new());
     }
 
+    /// Pop the innermost lexical scope.
     fn exit(&mut self) {
         self.scopes.pop();
     }
@@ -2232,22 +2313,26 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Bind a local name in the innermost scope.
     fn bind_local(&mut self, name: &str, span: Span) {
         let id = self.add_def(name.to_string(), DefKind::Local, false, Some(span), None);
         self.bind(name, id);
     }
 
+    /// Bind a local the compiler introduced, which has no source span.
     fn bind_synthetic_local(&mut self, name: &str) {
         let id = self.add_def(name.to_string(), DefKind::Local, false, None, None);
         self.bind(name, id);
     }
 
+    /// Insert `name` into the innermost scope.
     fn bind(&mut self, name: &str, id: DefId) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), id);
         }
     }
 
+    /// Find `name` in the nearest enclosing scope.
     fn lookup(&self, name: &str) -> Option<DefId> {
         for scope in self.scopes.iter().rev() {
             if let Some(id) = scope.get(name) {
@@ -2277,6 +2362,7 @@ impl<'a> Resolver<'a> {
         self.builtins.get(name).copied()
     }
 
+    /// Find an attribute by name, checking the current module before imports.
     fn lookup_attr(&self, name: &str) -> Option<DefId> {
         if let Some(module) = &self.current_module {
             if let Some(id) = self.module_attrs.get(&(module.clone(), name.to_string())) {
@@ -2299,6 +2385,8 @@ impl<'a> Resolver<'a> {
         self.builtin_attrs.get(name).copied()
     }
 
+    /// Find a name exported by `module`, honouring `pub using` re-exports. The
+    /// `attr` flag selects the attribute namespace.
     fn lookup_module_export(&self, module: &str, name: &str, attr: bool) -> Option<DefId> {
         let direct = if attr {
             self.module_attrs
@@ -2344,6 +2432,7 @@ impl<'a> Resolver<'a> {
         best.map(|(_, s)| s.clone())
     }
 
+    /// The variant `name` of `enum_id`, or `None` when the enum has none.
     fn variant(&self, enum_id: DefId, name: &str) -> Option<DefId> {
         self.enum_variants
             .get(&enum_id)
@@ -2351,6 +2440,7 @@ impl<'a> Resolver<'a> {
             .copied()
     }
 
+    /// Emit an error diagnostic with a stable code at `span`.
     fn error(&mut self, code: &'static str, span: Span, msg: String) {
         self.sink
             .emit(Diagnostic::error(msg).with_code(code).at(span));
@@ -2383,6 +2473,8 @@ mod tests {
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
         enum Bool { false, true }\n";
 
+    /// Resolve `src` with the digital prelude appended, returning the resolution
+    /// and its error count.
     fn resolve_src(src: &str) -> (Resolved, usize) {
         let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
@@ -2437,6 +2529,8 @@ mod tests {
         sink
     }
 
+    /// Resolve several sources as one program and return the sink, for cases
+    /// that need more than one module.
     fn module_diagnostics(sources: &[(&str, FileId)]) -> DiagnosticSink {
         let mut sink = DiagnosticSink::new();
         let modules: Vec<Module> = sources
@@ -2448,6 +2542,8 @@ mod tests {
     }
 
     #[test]
+    /// Only the defining module may add inherent members to a nominal type
+    /// (E-P026).
     fn foreign_modules_cannot_add_inherent_impls() {
         let sink = module_diagnostics(&[
             (
@@ -2473,6 +2569,8 @@ mod tests {
     }
 
     #[test]
+    /// Coherence is per module, not per file: a second file of the same module
+    /// may add inherent members.
     fn inherent_impl_ownership_is_the_module_not_the_source_file() {
         let sink = module_diagnostics(&[
             ("module owner;\npub struct Device(integer);\n", FileId(0)),
@@ -2488,6 +2586,8 @@ mod tests {
     }
 
     #[test]
+    /// Compiler types and aliases are not nominal types of any module, so
+    /// neither can gain inherent members.
     fn compiler_types_and_aliases_do_not_gain_inherent_impls() {
         let sink = diagnostics(
             "module m;\nusing Count = integer;\n\
@@ -2504,6 +2604,8 @@ mod tests {
     }
 
     #[test]
+    /// Inherent impls split across blocks still share one member namespace, so a
+    /// duplicate across them is reported.
     fn split_inherent_impls_share_one_member_namespace() {
         let sink = diagnostics(
             "module m;\nstruct Register(integer);\n\
@@ -2526,6 +2628,8 @@ mod tests {
     }
 
     #[test]
+    /// A named process occupies the entity's member namespace, so it cannot
+    /// collide with a `let` or method of that name.
     fn named_processes_share_the_entity_member_namespace() {
         let sink = diagnostics(
             "module m;\nentity Device {}\n\
@@ -2552,6 +2656,8 @@ mod tests {
     }
 
     #[test]
+    /// Members of different kinds still share one namespace, so a `let` in one
+    /// impl block cannot be shadowed by a method of that name in another.
     fn different_inherent_member_kinds_cannot_shadow_across_blocks() {
         let sink = diagnostics(
             "module m;\nentity Device {}\n\
@@ -2565,6 +2671,8 @@ mod tests {
     }
 
     #[test]
+    /// An impl on an applied view is owned by the backing type as well, so both
+    /// modules' coherence rules apply.
     fn applied_view_owners_include_the_backing_type() {
         let sink = diagnostics(
             "module m;\n\
@@ -2588,6 +2696,8 @@ mod tests {
     }
 
     #[test]
+    /// An import nothing references is linted (W-P005), and std's own imports
+    /// never lint the user.
     fn unused_import_lint() {
         // A provider module (`std::lib`) and a user module that imports two of
         // its names but only uses one. The unused one warns; the used one and
@@ -2618,6 +2728,8 @@ mod tests {
     }
 
     #[test]
+    /// Importing a private item from another module is an error (E-P016); the
+    /// public one beside it still resolves.
     fn private_import_is_rejected() {
         // A provider with a private and a `pub` item; a user imports both. Only
         // importing the non-`pub` one is a cross-module visibility violation.
@@ -2651,6 +2763,7 @@ mod tests {
     }
 
     #[test]
+    /// Two files declaring the same module share its private names.
     fn private_items_are_shared_by_files_in_the_same_module() {
         let mut sink = DiagnosticSink::new();
         let declaration = crate::syntax::parse_module(
@@ -2677,6 +2790,7 @@ mod tests {
     }
 
     #[test]
+    /// A public signature naming a private type is rejected (E-P025).
     fn a_public_signature_cannot_expose_a_private_type() {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
@@ -2694,6 +2808,8 @@ mod tests {
     }
 
     #[test]
+    /// A public view projecting a field of private type is rejected for the same
+    /// reason.
     fn a_public_view_cannot_project_a_private_field_type() {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
@@ -2723,6 +2839,8 @@ mod tests {
     }
 
     #[test]
+    /// A private *field* is fine when its type is public: it is the type that
+    /// must be nameable, not the field.
     fn a_public_view_may_project_a_private_field_of_public_type() {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
@@ -2747,6 +2865,8 @@ mod tests {
     }
 
     #[test]
+    /// A public method on a private type is only reachable within the module, so
+    /// it does not need to be rejected.
     fn a_public_method_on_a_private_type_has_only_module_visibility() {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
@@ -2768,6 +2888,8 @@ mod tests {
     }
 
     #[test]
+    /// An import binds only the named module's declaration, not a same-named one
+    /// elsewhere.
     fn an_import_only_binds_the_requested_modules_declaration() {
         let mut sink = DiagnosticSink::new();
         let a = crate::syntax::parse_module(
@@ -2793,6 +2915,8 @@ mod tests {
     }
 
     #[test]
+    /// Loading a module does not put its names into unqualified scope; only an
+    /// explicit `using` does.
     fn loaded_modules_do_not_leak_names_into_unqualified_scope() {
         let mut sink = DiagnosticSink::new();
         let library = crate::syntax::parse_module(
@@ -2813,6 +2937,7 @@ mod tests {
     }
 
     #[test]
+    /// A qualified path resolves against the exact module it names.
     fn qualified_paths_resolve_the_exact_module() {
         let mut sink = DiagnosticSink::new();
         let a = crate::syntax::parse_module(
@@ -2843,6 +2968,8 @@ mod tests {
     }
 
     #[test]
+    /// Constants with the same leaf name in different modules keep distinct
+    /// identities.
     fn equal_constant_leaves_keep_their_module_identity() {
         let mut sink = DiagnosticSink::new();
         let modules = [
@@ -2885,6 +3012,8 @@ mod tests {
     }
 
     #[test]
+    /// `pub using` re-exports its target, so importers of the re-exporting
+    /// module see the name.
     fn public_imports_reexport_their_target() {
         let mut sink = DiagnosticSink::new();
         let base = crate::syntax::parse_module(
@@ -2917,6 +3046,8 @@ mod tests {
     }
 
     #[test]
+    /// An import may not silently shadow a local declaration; the collision is
+    /// reported.
     fn an_import_cannot_silently_shadow_a_local_declaration() {
         let mut sink = DiagnosticSink::new();
         let library = crate::syntax::parse_module(
@@ -2937,6 +3068,8 @@ mod tests {
     }
 
     #[test]
+    /// Importing the same target twice from one module is redundant rather than
+    /// ambiguous.
     fn repeated_same_module_imports_of_one_target_are_not_ambiguous() {
         let mut sink = DiagnosticSink::new();
         let library = crate::syntax::parse_module(
@@ -2962,6 +3095,7 @@ mod tests {
     }
 
     #[test]
+    /// A qualified path to a private item is rejected even without an import.
     fn qualified_private_access_is_rejected() {
         let mut sink = DiagnosticSink::new();
         let provider = crate::syntax::parse_module(
@@ -2985,6 +3119,7 @@ mod tests {
     }
 
     #[test]
+    /// A `pub using` alias is exported like any other public name.
     fn pub_using_alias_is_exported() {
         let mut sink = DiagnosticSink::new();
         let provider =
@@ -3005,6 +3140,8 @@ mod tests {
     }
 
     #[test]
+    /// A generic parameter nothing references is linted (W-P004), while one used
+    /// in the signature is not.
     fn unused_fn_type_parameter_lint() {
         // `dead`'s `<T>` is never referenced; `used`'s `<T>` is used in the
         // signature. Only the dead one warns.
@@ -3095,6 +3232,8 @@ mod tests {
     }
 
     #[test]
+    /// Uses of a declaration's parameters inside its impls count toward the
+    /// unused-parameter lint.
     fn declaration_params_merge_uses_from_impls() {
         let sink = diagnostics(
             "module m;\n\
@@ -3120,6 +3259,8 @@ mod tests {
     }
 
     #[test]
+    /// Operator traits resolve, and an impl for an unknown operator symbol is
+    /// reported.
     fn operator_traits_resolve_and_reject_unknown_operators() {
         // The operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
@@ -3181,6 +3322,8 @@ mod tests {
     }
 
     #[test]
+    /// Free function bodies are resolved, so an unknown name inside one is
+    /// reported.
     fn free_function_bodies_are_resolved() {
         let (_, errs) = resolve_src(
             "module m;\nfn bad(value: Bit) -> Bit { let local: Missing = value; return value; }\n",
@@ -3231,6 +3374,7 @@ mod tests {
     }
 
     #[test]
+    /// An unknown type name suggests the closest declared spelling.
     fn unknown_type_suggests_a_close_name() {
         let sink = diagnostics("module m;\nstruct Packet { a: Bit }\nentity E { y: Packe out, }\n");
         let d = sink
@@ -3242,6 +3386,7 @@ mod tests {
     }
 
     #[test]
+    /// Edit distance underpins the did-you-mean suggestions.
     fn levenshtein_basics() {
         assert_eq!(levenshtein("Packe", "Packet"), 1);
         assert_eq!(levenshtein("signed", "singed"), 2);
@@ -3249,6 +3394,7 @@ mod tests {
     }
 
     #[test]
+    /// A duplicate declaration points at the first one as a related location.
     fn duplicate_item_points_to_the_first() {
         let sink = diagnostics("module m;\nstruct P { a: Bit }\nstruct P { b: Bit }\n");
         let d = sink
@@ -3261,6 +3407,7 @@ mod tests {
     }
 
     #[test]
+    /// A representative counter resolves with no errors.
     fn counter_resolves_clean() {
         let (_, errors) = resolve_src(
             "module m;\n\
@@ -3282,24 +3429,29 @@ mod tests {
     }
 
     #[test]
+    /// An unknown type in a port is reported.
     fn unknown_type_is_reported() {
         let (_, errors) = resolve_src("module m;\nentity E { y: Bogus out, }\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
+    /// The obsolete `Vector` marker is not a compiler trait: array families are
+    /// recognized structurally instead.
     fn obsolete_vector_marker_is_not_a_compiler_trait() {
         let (_, errors) = resolve_src("module m;\nstruct Word(Bit[]);\nimpl Vector for Word {}\n");
         assert_eq!(errors, 1, "array representation follows the base type");
     }
 
     #[test]
+    /// Two declarations of one name in a scope are reported.
     fn duplicate_item_is_reported() {
         let (_, errors) = resolve_src("module m;\nstruct P { a: Bit }\nstruct P { b: Bit }\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
+    /// A valid enum variant path resolves; an unknown variant errors.
     fn enum_variant_paths() {
         // Good variant resolves; bad variant errors.
         let (_, errors) = resolve_src(
@@ -3314,12 +3466,14 @@ mod tests {
     }
 
     #[test]
+    /// An impl on an undeclared target is reported.
     fn impl_on_undeclared_target_is_reported() {
         let (_, errors) = resolve_src("module m;\nimpl Nope {\n  x = 1;\n}\n");
         assert_eq!(errors, 1);
     }
 
     #[test]
+    /// An undeclared attribute is reported, while a declared one resolves.
     fn undeclared_attribute_is_reported_but_declared_is_ok() {
         let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { y: Bit out, }\n");
         assert_eq!(errors, 1);
@@ -3331,6 +3485,7 @@ mod tests {
     }
 
     #[test]
+    /// A qualified attribute resolves against the exact module named.
     fn a_qualified_attribute_uses_the_exact_module() {
         let mut sink = DiagnosticSink::new();
         let attrs = crate::syntax::parse_module(
@@ -3351,6 +3506,7 @@ mod tests {
     }
 
     #[test]
+    /// Two `attr` declarations of one name are reported.
     fn duplicate_attribute_declarations_are_reported() {
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(
@@ -3366,6 +3522,8 @@ mod tests {
     }
 
     #[test]
+    /// Use sites are recorded, so later stages can map a span back to the
+    /// definition it referenced.
     fn use_sites_are_recorded() {
         let (r, _) = resolve_src(
             "module m;\nenum State { Idle }\nentity M {}\nimpl M {\n  s = State::Idle;\n}\n",

@@ -52,6 +52,8 @@ mod tests {
     use super::*;
 
     #[test]
+    /// `{{` is an escaped brace, not a placeholder, so it must not consume an
+    /// argument or shift the ones after it.
     fn escaped_braces_do_not_consume_arguments() {
         assert_eq!(arity("{{}} {}"), 1);
         let parts = parts("{{}} {}");

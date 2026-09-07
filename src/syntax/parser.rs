@@ -97,6 +97,11 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
 /// 8MB main thread does, so this is set from the former.
 const MAX_NESTING: u32 = 128;
 
+/// Builds an AST from a token stream.
+///
+/// Parsing is best-effort: on an unexpected token the parser emits a
+/// diagnostic and resynchronizes rather than stopping, so one run reports many
+/// problems and later stages still receive a usable partial tree.
 pub struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
@@ -111,6 +116,11 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    /// A parser over `tokens`, reporting into `sink`.
+    ///
+    /// Comment and [`TokenKind::Unknown`] trivia are stripped here so the
+    /// grammar never has to skip them; the lexer has already reported the
+    /// latter.
     pub fn new(src: &'a str, tokens: Vec<Token>, sink: &'a mut DiagnosticSink) -> Self {
         // Strip comment trivia so the grammar can ignore it. The trailing `Eof`
         // is always kept.
@@ -145,6 +155,10 @@ impl<'a> Parser<'a> {
 
     // --- top level ----------------------------------------------------------
 
+    /// Parse one source file: `module <path>;` followed by its items.
+    ///
+    /// Always returns a [`Module`], partial if the source did not parse
+    /// cleanly; check the sink for errors.
     pub fn parse_module(&mut self) -> Module {
         let start = self.span();
         self.expect(TokenKind::Module, "to begin a module");
@@ -170,6 +184,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one top-level item. `None` after unrecoverable junk, having already
+    /// reported and resynchronized.
     fn parse_item(&mut self) -> Option<Item> {
         let attrs = self.parse_attrs();
         let is_pub = self.eat(TokenKind::Pub);
@@ -255,6 +271,8 @@ impl<'a> Parser<'a> {
         Some(item)
     }
 
+    /// Skip tokens until something that can begin a new item, so one bad item
+    /// yields one diagnostic rather than a cascade.
     fn recover_to_item_boundary(&mut self) {
         while !self.at(TokenKind::Eof) {
             if matches!(
@@ -285,6 +303,7 @@ impl<'a> Parser<'a> {
 
     // --- attributes ---------------------------------------------------------
 
+    /// Parse any run of `#[...]` attribute applications.
     fn parse_attrs(&mut self) -> Vec<Attr> {
         let mut attrs = Vec::new();
         while self.at(TokenKind::Pound) {
@@ -309,6 +328,7 @@ impl<'a> Parser<'a> {
 
     // --- using / const ------------------------------------------------------
 
+    /// Parse `using a::b::{c, d};` or `using Name = Type;`.
     fn parse_using(&mut self, is_pub: bool) -> Using {
         let start = self.span();
         self.bump(); // `using`
@@ -365,6 +385,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `const` declaration.
     fn parse_const(&mut self, is_pub: bool) -> ConstDecl {
         let start = self.span();
         self.bump(); // `const`
@@ -385,6 +406,7 @@ impl<'a> Parser<'a> {
 
     // --- struct / enum ------------------------------------------------------
 
+    /// Parse a `struct`, including the newtype form `struct B(A);`.
     fn parse_struct(&mut self, is_pub: bool) -> StructDecl {
         let start = self.span();
         self.bump(); // `struct`
@@ -440,6 +462,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `view` and its per-field directions.
     fn parse_view(&mut self, is_pub: bool) -> ViewDecl {
         let start = self.span();
         self.bump(); // `view`
@@ -506,6 +529,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an `enum`, including the newtype form `enum Logic(ULogic);`.
     fn parse_enum(&mut self, is_pub: bool) -> EnumDecl {
         let start = self.span();
         self.bump(); // `enum`
@@ -571,6 +595,7 @@ impl<'a> Parser<'a> {
 
     // --- entity -------------------------------------------------------------
 
+    /// Parse an `entity` interface: its parameters and port list.
     fn parse_entity(&mut self, attrs: Vec<Attr>, is_pub: bool, is_extern: bool) -> EntityDecl {
         let start = self.span();
         self.bump(); // `entity`
@@ -708,6 +733,7 @@ impl<'a> Parser<'a> {
 
     // --- impl ---------------------------------------------------------------
 
+    /// Parse an `impl` block, inherent or for a trait.
     fn parse_impl(&mut self, attrs: Vec<Attr>) -> ImplDecl {
         let start = self.span();
         self.bump(); // `impl`
@@ -806,6 +832,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an impl body's brace-delimited member list.
     fn parse_impl_body(&mut self) -> Vec<ImplItem> {
         self.expect(TokenKind::LBrace, "to open an impl body");
         let mut items = Vec::new();
@@ -822,6 +849,7 @@ impl<'a> Parser<'a> {
         items
     }
 
+    /// Parse one impl member. `None` after junk that was reported and skipped.
     fn parse_impl_item(&mut self) -> Option<ImplItem> {
         // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
@@ -878,10 +906,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the rest of a `let` once its name has been consumed.
     fn parse_let_after_name(&mut self, start: Span, name: Ident) -> LetDecl {
         self.parse_let_rest(Vec::new(), start, name)
     }
 
+    /// Parse a `let`'s optional type, optional initializer and terminator, with
+    /// any attributes already collected.
     fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type())
@@ -903,6 +934,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the rest of a function once its name has been consumed.
     fn parse_fn_after_name(&mut self, start: Span, name: Ident, is_pub: bool) -> FnDecl {
         let mut generics = self.parse_params_opt();
         let params = self.parse_fn_params();
@@ -957,6 +989,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a function's parameter list, allowing a leading `self` receiver.
     fn parse_fn_params(&mut self) -> Vec<FnParam> {
         self.expect(TokenKind::LParen, "to open a parameter list");
         let mut params = Vec::new();
@@ -1016,6 +1049,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `trait` and its required method signatures.
     fn parse_trait(&mut self, is_pub: bool) -> TraitDecl {
         let start = self.span();
         self.bump(); // `trait`
@@ -1052,6 +1086,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an `attr` declaration and the target kinds it allows.
     fn parse_attr_decl(&mut self, is_pub: bool) -> AttrDecl {
         let start = self.span();
         self.bump(); // `attr`
@@ -1080,6 +1115,7 @@ impl<'a> Parser<'a> {
 
     // --- statements ---------------------------------------------------------
 
+    /// Parse a block, counting nesting depth against the recursion limit.
     fn parse_block(&mut self) -> Block {
         let start = self.span();
         if self.enter_nesting() {
@@ -1094,6 +1130,7 @@ impl<'a> Parser<'a> {
         parsed
     }
 
+    /// Parse a block's braces and statements, with `start` already captured.
     fn parse_block_inner(&mut self, start: crate::diag::Span) -> Block {
         self.expect(TokenKind::LBrace, "to open a block");
         let mut stmts = Vec::new();
@@ -1111,6 +1148,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one statement.
     fn parse_stmt(&mut self) -> Stmt {
         match self.kind() {
             TokenKind::Let => {
@@ -1167,6 +1205,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a statement that begins with an expression: either an assignment or
+    /// a bare expression statement.
     fn parse_expr_or_assign_stmt(&mut self) -> Stmt {
         let start = self.span();
         let lhs = self.parse_expr(false);
@@ -1212,6 +1252,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The operator a compound assignment applies, so `x += 1` becomes
+    /// `x = x + 1`. `None` for a plain `=`.
     fn compound_binop_impl(k: &TokenKind) -> Option<BinOp> {
         Some(match k {
             TokenKind::PlusEq => BinOp::Add,
@@ -1224,6 +1266,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse an `if` statement and any `else` chain.
     fn parse_if(&mut self) -> IfStmt {
         let start = self.span();
         self.bump(); // `if`
@@ -1246,6 +1289,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `match` statement and its arms.
     fn parse_match(&mut self) -> MatchStmt {
         let start = self.span();
         self.bump(); // `match`
@@ -1286,6 +1330,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `,`-terminated match arm body written as a single statement
+    /// rather than a block.
     fn parse_arm_single_stmt(&mut self) -> Stmt {
         let start = self.span();
         // A `,`-terminated arm body: `=> return e`, `=> a = b`, or `=> e`.
@@ -1315,6 +1361,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `for` loop over a static range.
     fn parse_for(&mut self) -> Stmt {
         let start = self.span();
         self.bump(); // `for`
@@ -1330,6 +1377,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a pattern, including `|` alternatives.
     fn parse_pattern(&mut self) -> Pattern {
         let start = self.span();
         let first = self.parse_pattern_atom();
@@ -1347,6 +1395,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one pattern with no alternatives: a wildcard, path, bit pattern,
+    /// range, or character literal.
     fn parse_pattern_atom(&mut self) -> Pattern {
         match self.kind() {
             TokenKind::Ident if self.cur_text() == "_" => {
@@ -1442,6 +1492,8 @@ impl<'a> Parser<'a> {
 
     // --- expressions (Pratt) ------------------------------------------------
 
+    /// Parse an expression. `no_struct` suppresses brace-initiated construction
+    /// where a `{` would otherwise be read as a block, as in an `if` condition.
     fn parse_expr(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         if self.enter_nesting() {
@@ -1457,6 +1509,8 @@ impl<'a> Parser<'a> {
         parsed
     }
 
+    /// Parse an expression with `start` already captured and the nesting depth
+    /// already counted.
     fn parse_expr_inner(&mut self, no_struct: bool, start: crate::diag::Span) -> Expr {
         if self.eat(TokenKind::DotDot) {
             if self.eat(TokenKind::Eq) {
@@ -1496,6 +1550,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether a range bound follows, distinguishing `v[..4]` from `v[..]`.
     fn range_bound_follows(&self) -> bool {
         !matches!(
             self.kind(),
@@ -1511,6 +1566,9 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Parse an infix expression by precedence climbing, stopping below
+    /// `min_bp`. Custom operators contribute the binding power their impl
+    /// declared.
     fn parse_bin(&mut self, min_bp: u8, no_struct: bool) -> Expr {
         let start = self.span();
         let mut lhs = self.parse_unary(no_struct);
@@ -1629,6 +1687,8 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse a prefix operator, or one of the expression forms that begins with
+    /// a keyword such as `if` or `match`.
     fn parse_unary(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         // Rust-style if-expression: `if c { a } else { b }` (else required).
@@ -1706,6 +1766,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse postfix chains: field access, attribute ticks, indexing, calls and
+    /// construction.
     fn parse_postfix(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         let mut e = self.parse_primary(no_struct);
@@ -1781,6 +1843,7 @@ impl<'a> Parser<'a> {
         e
     }
 
+    /// Parse a parenthesized, comma-separated argument list.
     fn parse_call_args(&mut self) -> Vec<Expr> {
         self.expect(TokenKind::LParen, "to open a call");
         let mut args = Vec::new();
@@ -1810,6 +1873,8 @@ impl<'a> Parser<'a> {
         args
     }
 
+    /// Parse a primary expression: a literal, path, parenthesized group,
+    /// concatenation, or array.
     fn parse_primary(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         match self.kind() {
@@ -1919,6 +1984,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `{a, b, c}` bit concatenation, most significant element first.
     fn parse_concat(&mut self, start: Span) -> Expr {
         self.expect(TokenKind::LBrace, "to open a concatenation");
         let mut parts = Vec::new();
@@ -1980,6 +2046,8 @@ impl<'a> Parser<'a> {
         Expr::Path(path)
     }
 
+    /// Parse struct or instance construction, including the `..base` spread and
+    /// positional arguments.
     fn parse_construct(&mut self, start: Span, ty: Option<Type>) -> Expr {
         self.expect(TokenKind::LBrace, "to open a construction");
         let mut args = Vec::new();
@@ -2045,6 +2113,7 @@ impl<'a> Parser<'a> {
 
     // --- types --------------------------------------------------------------
 
+    /// Parse a type expression, including a trailing view application.
     fn parse_type(&mut self) -> Type {
         let start = self.span();
         let first = self.parse_type_core();
@@ -2070,6 +2139,8 @@ impl<'a> Parser<'a> {
         first
     }
 
+    /// Parse a type without view application: a path plus any generic arguments
+    /// and index brackets.
     fn parse_type_core(&mut self) -> Type {
         let start = self.span();
         let path = self.parse_path();
@@ -2100,6 +2171,9 @@ impl<'a> Parser<'a> {
         ty
     }
 
+    /// Parse a `<...>` argument list, deciding per argument whether it is
+    /// unambiguously type-shaped or must stay an expression until a later stage
+    /// knows the parameter's kind.
     fn parse_generic_args(&mut self) -> Vec<GenericArg> {
         self.expect(TokenKind::Lt, "to open a generic argument list");
         let mut args = Vec::new();
@@ -2192,6 +2266,7 @@ impl<'a> Parser<'a> {
         let _ = self.parse_generic_atom();
     }
 
+    /// Parse one expression-shaped generic argument.
     fn parse_generic_atom(&mut self) -> Expr {
         if self.at(TokenKind::Minus) {
             let start = self.span();
@@ -2209,6 +2284,7 @@ impl<'a> Parser<'a> {
 
     // --- params -------------------------------------------------------------
 
+    /// Parse a parameter list if one is present, otherwise return an empty one.
     fn parse_params_opt(&mut self) -> Params {
         if self.at(TokenKind::Lt) {
             self.parse_params()
@@ -2217,6 +2293,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a `<W: integer, T>` parameter list.
     fn parse_params(&mut self) -> Params {
         self.expect(TokenKind::Lt, "to open a parameter list");
         let mut params = Vec::new();
@@ -2241,6 +2318,7 @@ impl<'a> Parser<'a> {
         Params { params }
     }
 
+    /// Parse a `::`-separated path.
     fn parse_path(&mut self) -> Path {
         let start = self.span();
         let mut segments = vec![self.parse_ident()];
@@ -2254,6 +2332,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse an identifier, accepting `self` since it may head a path.
     fn parse_ident(&mut self) -> Ident {
         if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) {
             let t = self.bump();
@@ -2288,6 +2367,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether the current token can serve as a name. Some keywords are also
+    /// valid field and member names.
     fn is_name_token(&self) -> bool {
         matches!(
             self.kind(),
@@ -2318,6 +2399,7 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Consume a direction keyword if one is present.
     fn eat_direction(&mut self) -> Option<Direction> {
         let dir = match self.kind() {
             TokenKind::In => Direction::In,
@@ -2377,6 +2459,9 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The index of the `>` closing the angle list starting at `i`, accounting
+    /// for nesting and for a `>>` that closes two levels at once. `None` when
+    /// nothing closes it, which is how a `<` is told from a comparison.
     fn matched_angle_end(&self, mut i: usize) -> Option<usize> {
         let mut depth = 0u32;
         loop {
@@ -2404,30 +2489,38 @@ impl<'a> Parser<'a> {
 
     // --- cursor primitives --------------------------------------------------
 
+    /// The token at the cursor, clamped to the final `Eof`.
     fn peek(&self) -> &Token {
         &self.tokens[self.pos.min(self.tokens.len() - 1)]
     }
 
+    /// The kind of the token at the cursor.
     fn kind(&self) -> &TokenKind {
         &self.peek().kind
     }
 
+    /// The kind of token `i`, clamped to the final `Eof`.
     fn kind_at(&self, i: usize) -> &TokenKind {
         &self.tokens[i.min(self.tokens.len() - 1)].kind
     }
 
+    /// The span of token `i`, clamped to the final `Eof`.
     fn span_at(&self, i: usize) -> Span {
         self.tokens[i.min(self.tokens.len() - 1)].span
     }
 
+    /// Whether the cursor is on a token of kind `k`.
     fn at(&self, k: TokenKind) -> bool {
         self.peek().kind == k
     }
 
+    /// The span of the token at the cursor.
     fn span(&self) -> Span {
         self.peek().span
     }
 
+    /// The span of the previous token, used to point a diagnostic at what came
+    /// before rather than at the unexpected token.
     fn prev_span(&self) -> Span {
         if self.pos == 0 {
             self.tokens[0].span
@@ -2436,14 +2529,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The source text of the token at the cursor.
     fn cur_text(&self) -> &str {
         self.text_of(self.peek().span)
     }
 
+    /// The source text `span` covers.
     fn text_of(&self, span: Span) -> &str {
         &self.src[span.start as usize..span.end as usize]
     }
 
+    /// Consume and return the token at the cursor.
     fn bump(&mut self) -> Token {
         let t = self.peek().clone();
         if self.pos < self.tokens.len() - 1 {
@@ -2479,6 +2575,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Consume the token if it is of kind `k`, reporting nothing either way.
     fn eat(&mut self, k: TokenKind) -> bool {
         if self.at(k) {
             self.bump();
@@ -2512,6 +2609,8 @@ impl<'a> Parser<'a> {
         Some(base)
     }
 
+    /// Consume a token of kind `k`, or report that `ctx` expected one. Returns
+    /// whether it was found, so callers can continue either way.
     fn expect(&mut self, k: TokenKind, ctx: &str) -> bool {
         if self.at(k.clone()) {
             self.bump();
@@ -2539,11 +2638,13 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// Report an error at the cursor.
     fn error_here(&mut self, msg: impl Into<String>) {
         let span = self.span();
         self.error_at(span, msg);
     }
 
+    /// Report an error at `span`.
     fn error_at(&mut self, span: Span, msg: impl Into<String>) {
         self.sink.emit(Diagnostic::error(msg).at(span));
     }
@@ -2621,18 +2722,21 @@ mod tests {
     use super::*;
     use crate::diag::FileId;
 
+    /// Parse `src`, returning the module and its error count.
     fn parse(src: &str) -> (Module, usize) {
         let mut sink = DiagnosticSink::new();
         let m = crate::syntax::parse_module(FileId(0), src, &mut sink);
         (m, sink.error_count())
     }
 
+    /// Parse `src`, asserting it produced no errors.
     fn parse_ok(src: &str) -> Module {
         let (m, errors) = parse(src);
         assert_eq!(errors, 0, "unexpected parse errors in:\n{src}");
         m
     }
 
+    /// Parse `src` and return the diagnostics it produced.
     fn diagnostics(src: &str) -> Vec<Diagnostic> {
         let mut sink = DiagnosticSink::new();
         crate::syntax::parse_module(FileId(0), src, &mut sink);
@@ -2673,6 +2777,8 @@ mod tests {
     }
 
     #[test]
+    /// A direction written before a view field name is reported once, with the
+    /// move suggested, rather than cascading.
     fn leading_direction_on_a_view_field_reports_the_move_once() {
         let diags = diagnostics("module m;\nview V for S {\n  out a;\n  in b;\n}\n");
         assert_eq!(diags.len(), 2, "one per field, got {diags:#?}");
@@ -2797,6 +2903,7 @@ mod tests {
     }
 
     #[test]
+    /// A module header and its imports parse into the expected shapes.
     fn module_header_and_imports() {
         let m = parse_ok(
             "module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = unsigned[32];\n",
@@ -2808,6 +2915,7 @@ mod tests {
     }
 
     #[test]
+    /// An entity's parameters and ports parse with their directions.
     fn entity_with_params_and_ports() {
         let m = parse_ok(
             "module m;\nentity Counter<W: integer> {\n  clk: Bit in,\n  rst: Logic in,\n  en: Bit in,\n  count: unsigned[W] out,\n}\n",
@@ -2823,6 +2931,7 @@ mod tests {
     }
 
     #[test]
+    /// Constants, structs and enums parse together.
     fn struct_enum_const() {
         let m = parse_ok(
             "module m;\nconst DEFAULT_WIDTH: usize = 8;\nstruct Packet<T> { valid: Bit, data: T }\nenum State {  Idle = 0, Start = 1, Shift = 2, Done = 3 }\n",
@@ -2894,6 +3003,7 @@ mod tests {
     }
 
     #[test]
+    /// An impl body carries state and an explicit `process` block.
     fn impl_with_state_and_explicit_process() {
         let m = parse_ok(
             "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  process update {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
@@ -2918,6 +3028,7 @@ mod tests {
     }
 
     #[test]
+    /// Visibility is retained on functions, fields and methods alike.
     fn visibility_is_retained_on_functions_fields_and_methods() {
         let m = parse_ok(
             "module m;\npub fn exported() {}\nfn hidden() {}\npub struct S { pub open: integer, closed: integer }\nimpl S { pub fn get(self) -> integer { return self.open; } fn secret(self) -> integer { return self.closed; } }\n",
@@ -2937,6 +3048,8 @@ mod tests {
     }
 
     #[test]
+    /// Interface members have no independent visibility, so writing `pub` on one
+    /// is reported.
     fn interface_members_reject_redundant_visibility() {
         let mut sink = DiagnosticSink::new();
         crate::syntax::parse_module(
@@ -2958,6 +3071,8 @@ mod tests {
     }
 
     #[test]
+    /// The generic binder precedes the trait, as in
+    /// `impl<T: Resolve> Resolve for T[]`.
     fn generic_trait_impl_parameters_precede_the_trait() {
         let m = parse_ok(
             "module m;\n\
@@ -3028,6 +3143,8 @@ mod tests {
     }
 
     #[test]
+    /// An attribute tick is distinguished from a path, so `state'old` is not
+    /// read as a name.
     fn sysattr_vs_path_in_expressions() {
         let m = parse_ok(
             "module m;\nimpl M {\n  if state'old == State::Idle {\n    started = '1';\n  }\n}\n",
@@ -3049,6 +3166,7 @@ mod tests {
     }
 
     #[test]
+    /// A trait and an impl of it parse together.
     fn trait_and_clocklike_impl() {
         let m = parse_ok(
             "module m;\ntrait ClockLike {\n  fn rising(self);\n  fn edge(self);\n}\nimpl ClockLike for Logic {\n  fn rising(self) {\n    return self'event and self'old == '0' and self == '1';\n  }\n  fn edge(self) {\n    return self'event;\n  }\n}\n",
@@ -3066,6 +3184,7 @@ mod tests {
     }
 
     #[test]
+    /// Bus modes and construction expressions parse.
     fn bus_modes_and_construction() {
         let m = parse_ok(
             "module m;\nstruct Stream<T> { clk: Bit, valid: Bit, ready: Bit, data: T }\nview Source<T> for Stream<T> {\n  clk in,\n  valid out,\n  ready in,\n  data out,\n}\nimpl Stream<T> Source { fn ready(self) -> Bit { return self.ready; } }\nentity Producer {\n  bus: Stream<unsigned[32]> Source,\n}\n",
@@ -3083,6 +3202,7 @@ mod tests {
     }
 
     #[test]
+    /// Direction keywords cannot be used as view names.
     fn direction_keywords_cannot_be_view_names() {
         for name in ["in", "out", "inout"] {
             let src = format!(
@@ -3097,6 +3217,8 @@ mod tests {
     }
 
     #[test]
+    /// Partial ranges parse, while an inclusive `..=` is rejected: siox ranges
+    /// are already inclusive.
     fn partial_ranges_parse_and_inclusive_equals_is_rejected() {
         let m = parse_ok("module m;\nimpl T { a = v[..4]; b = v[1..]; c = v[..]; }\n");
         let Item::Impl(im) = &m.items[0] else {
@@ -3120,6 +3242,8 @@ mod tests {
     }
 
     #[test]
+    /// A `>>` closing two nested generic levels splits into two closers rather
+    /// than lexing as a shift.
     fn nested_generic_close_splits_shr() {
         // A `>>` closing two angle levels (a nested generic bound) parses: the
         // `>>` token is split so one `>` closes `Bar<Bit>` and the other the
@@ -3138,6 +3262,7 @@ mod tests {
     }
 
     #[test]
+    /// An explicit construction type argument survives parsing.
     fn typed_construct_calls_keep_their_type_argument() {
         let module = parse_ok(
             "module m;\nimpl E { let rom: unsigned[16][2] = read<unsigned[16]>(\"rom.bin\"); }\n",
@@ -3163,6 +3288,7 @@ mod tests {
     }
 
     #[test]
+    /// Instance construction parses in both explicit and positional forms.
     fn instance_construction_explicit_and_positional() {
         // Explicit form: every `.field` carries a value.
         let m = parse_ok(
@@ -3189,6 +3315,8 @@ mod tests {
     }
 
     #[test]
+    /// The old bare `.field` name-shorthand is no longer a form and is
+    /// rejected.
     fn bare_field_shorthand_is_rejected() {
         // The old name-shorthand `.clk` (dot, no value) is no longer a form.
         let (_, errors) =
@@ -3197,6 +3325,7 @@ mod tests {
     }
 
     #[test]
+    /// `a and b or c` parses as `(a and b) or c`, since `and` binds tighter.
     fn textual_logical_operators_and_precedence() {
         // `a and b or c` must parse as `(a and b) or c` (and binds tighter).
         let m = parse_ok("module m;\nimpl M {\n  y = a and b or c;\n}\n");
@@ -3212,6 +3341,7 @@ mod tests {
     }
 
     #[test]
+    /// Enum and wildcard match arms parse.
     fn match_enum_and_wildcard() {
         let m = parse_ok(
             "module m;\nimpl M {\n  match state {\n    State::Idle => { next = State::Start; }\n    _ => next = State::Idle,\n  }\n}\n",
@@ -3226,6 +3356,8 @@ mod tests {
     }
 
     #[test]
+    /// An integer pattern too large for `i64` is reported rather than silently
+    /// wrapping to zero.
     fn overflowing_integer_pattern_is_not_silently_zero() {
         let (_, errors) = parse(
             "module m;\nimpl M {\n\
@@ -3236,6 +3368,8 @@ mod tests {
     }
 
     #[test]
+    /// `i64::MIN` is a valid pattern bound and must not overflow while being
+    /// negated.
     fn minimum_i64_pattern_is_accepted() {
         let module = parse_ok(
             "module m;\nimpl M {\n\
@@ -3259,6 +3393,7 @@ mod tests {
     }
 
     #[test]
+    /// Attribute declarations, applications and `extern entity` parse together.
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
             "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
@@ -3284,6 +3419,7 @@ mod tests {
     }
 
     #[test]
+    /// A `#[test]` entity and its stimulus body parse.
     fn test_entity_with_stimulus() {
         let m = parse_ok(
             "module m;\n#[test]\nentity CounterTest {\n}\nimpl CounterTest {\n  let clk: Bit = '0';\n  let dut = Counter<W = 8> {\n    .clk = clk,\n    .count = count,\n  };\n  await 10ns;\n  rst = '0';\n  for i in 0..10 {\n    await clk.rising();\n  }\n  assert!(count == 10, \"counter should increment 10 times\");\n}\n",
@@ -3305,6 +3441,8 @@ mod tests {
     }
 
     #[test]
+    /// After junk, the parser reports once and still parses the following item,
+    /// so one error does not hide the rest of the file.
     fn recovers_after_a_bad_item() {
         let (m, errors) = parse("module m;\n@@@ junk\nentity Good { y: Bit out, }\n");
         assert!(errors > 0);
