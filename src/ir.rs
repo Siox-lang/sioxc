@@ -1588,6 +1588,16 @@ struct Lowering<'a> {
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
     depth_exceeded: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Operands hoisted out of a per-element metavalue unroll by a helper that
+    /// holds only `&self` -- resolution folding and the two partial-write
+    /// helpers. Those cannot append a signal themselves, so they hoist here and
+    /// the `&mut self` caller drains it with [`Lowering::flush_meta_temps`]
+    /// immediately afterwards. Nothing may create a signal in between: the
+    /// hoisted expressions already carry the ids they were promised.
+    ///
+    /// Left non-hoisting between those windows, so any other caller keeps the
+    /// fully inlined lowering.
+    meta_temps: std::cell::RefCell<MetaTemps>,
     /// Value names that resolved to nothing while lowering. Name
     /// resolution deliberately leaves plain value identifiers to later
     /// stages, and this is the stage that knows every signal, constant
@@ -1872,6 +1882,7 @@ impl<'a> Lowering<'a> {
             suffix_impls: HashMap::new(),
             free_fns: FunctionIndex::new(resolved),
             inline_depth: std::cell::Cell::new(0),
+            meta_temps: std::cell::RefCell::new(MetaTemps::inline_only()),
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
@@ -4228,7 +4239,13 @@ impl<'a> Lowering<'a> {
             // separate value/discriminant planes.
             if let Some(element) = element_resolve {
                 let width = self.out.signals[*t as usize].width;
-                if let Some((value, meta)) = self.resolve_vector_contexts(ctxs, width, &element) {
+                // Folding unrolls per element, so an operand it repeats is
+                // hoisted rather than deep-copied `width` times. Nothing
+                // between the arm and the flush creates a signal.
+                self.arm_meta_temps(0, declaration_span);
+                let folded = self.resolve_vector_contexts(ctxs, width, &element);
+                self.flush_meta_temps();
+                if let Some((value, meta)) = folded {
                     replaced.push((*t, value, Some(meta), labels));
                 } else {
                     self.sink.emit(
@@ -4332,7 +4349,8 @@ impl<'a> Lowering<'a> {
                     .meta
                     .clone()
                     .or_else(|| {
-                        self.lower_meta_ir(&driver.expr, width, &mut MetaTemps::inline_only())
+                        let mut temps = self.meta_temps.borrow_mut();
+                        self.lower_meta_ir(&driver.expr, width, &mut temps)
                     })
                     .unwrap_or(Expr::Const(0));
                 match &driver.cond {
@@ -4356,6 +4374,24 @@ impl<'a> Lowering<'a> {
             }
             contributions.push((value, meta));
         }
+
+        // The per-element loop below reads every contribution's value and
+        // discriminant plane once per element, so an inline contribution is
+        // deep-copied `width` times -- which is what made a resolved
+        // multi-driver signal grow as `width^2` even after the operand metas
+        // were hoisted. Bind each plane once and let the unroll read a leaf.
+        let contributions: Vec<(Expr, Expr)> = {
+            let mut temps = self.meta_temps.borrow_mut();
+            contributions
+                .into_iter()
+                .map(|(value, meta)| {
+                    (
+                        materialize(value, width, &mut temps),
+                        materialize(meta, width * 4, &mut temps),
+                    )
+                })
+                .collect()
+        };
 
         let table = encoding.binary_ops.get("resolve");
         let mut value = Expr::Const(0);
@@ -5592,9 +5628,16 @@ impl<'a> Lowering<'a> {
             self.out.event_blocks[block_index].updates = updates;
         }
 
-        // A hoisted operand is an ordinary combinational signal. They are
-        // created inner-to-outer, and `topo_order` sorts drivers by dependency
-        // before emission, so appending them here is enough.
+        self.materialize_meta_temps(&mut temps);
+    }
+
+    /// Turn everything a sink hoisted into ordinary combinational signals.
+    ///
+    /// Temporaries are created inner-to-outer and `topo_order` sorts drivers by
+    /// dependency before emission, so appending them is enough. The ids were
+    /// handed out from the signal count when the sink was armed, which is why
+    /// nothing may create a signal between arming and draining.
+    fn materialize_meta_temps(&mut self, temps: &mut MetaTemps) {
         for temp in std::mem::take(&mut temps.made) {
             debug_assert_eq!(temp.id as usize, self.out.signals.len());
             self.out.signals.push(Signal {
@@ -5618,6 +5661,20 @@ impl<'a> Lowering<'a> {
                 span: None,
             });
         }
+    }
+
+    /// Arm [`Lowering::meta_temps`] so the `&self` helpers hoist instead of
+    /// inlining. Ids continue from the current signal count.
+    fn arm_meta_temps(&self, ctx: u32, anchor: crate::diag::Span) {
+        *self.meta_temps.borrow_mut() = MetaTemps::new(self.out.signals.len() as u32, ctx, anchor);
+    }
+
+    /// Materialize whatever the armed sink collected and leave it non-hoisting
+    /// again. Safe to call when nothing was armed or nothing hoisted.
+    fn flush_meta_temps(&mut self) {
+        let mut temps =
+            std::mem::replace(&mut *self.meta_temps.borrow_mut(), MetaTemps::inline_only());
+        self.materialize_meta_temps(&mut temps);
     }
 
     /// Rewrite each single-element read of a metavalue vector into its 9-value
@@ -7677,9 +7734,17 @@ impl<'a> Lowering<'a> {
                     let meta = if self.out.array_element_enums.contains_key(&sig.0) {
                         let companion = SignalId(self.driven_companion(sig));
                         let meta_width = self.out.signals[companion.0 as usize].width;
+                        // Armed after `driven_companion`, which creates a
+                        // signal: the ids these hoists are promised start at
+                        // the current signal count.
+                        self.arm_meta_temps(
+                            self.cur_ctx,
+                            self.out.signals[sig.0 as usize].declaration_span,
+                        );
                         let meta_base = self.slice_meta_write_base(sig, companion, false, &[]);
                         let slice_width = hi.saturating_sub(lo) + 1;
                         let meta_value = self.partial_write_meta(value, &v, slice_width);
+                        self.flush_meta_temps();
                         Some(self.merge_slice(
                             meta_base,
                             hi * 4 + 3,
@@ -8141,9 +8206,14 @@ impl<'a> Lowering<'a> {
                         let meta = if self.out.array_element_enums.contains_key(&sig.0) {
                             let companion = SignalId(self.driven_companion(sig));
                             let meta_width = self.out.signals[companion.0 as usize].width;
+                            self.arm_meta_temps(
+                                self.cur_ctx,
+                                self.out.signals[sig.0 as usize].declaration_span,
+                            );
                             let meta_base = self.slice_meta_write_base(sig, companion, true, out);
                             let slice_width = hi.saturating_sub(lo) + 1;
                             let meta_value = self.partial_write_meta(value, &v, slice_width);
+                            self.flush_meta_temps();
                             Some(self.merge_slice(
                                 meta_base,
                                 hi * 4 + 3,
@@ -8450,8 +8520,13 @@ impl<'a> Lowering<'a> {
                     let meta = if self.out.array_element_enums.contains_key(&signal.0) {
                         let companion = SignalId(self.driven_companion(signal));
                         let meta_width = self.out.signals[companion.0 as usize].width;
+                        self.arm_meta_temps(
+                            self.cur_ctx,
+                            self.out.signals[signal.0 as usize].declaration_span,
+                        );
                         let meta_base =
                             self.slice_meta_write_base(signal, companion, sequential, pending);
+                        self.flush_meta_temps();
                         let meta_value = Expr::Select {
                             cond: Box::new(Expr::Binary {
                                 op: BinOp::Ge,
@@ -8560,11 +8635,8 @@ impl<'a> Lowering<'a> {
             explicit
                 .clone()
                 .or_else(|| {
-                    self.lower_meta_ir(
-                        expr,
-                        self.out.signals[signal.0 as usize].width,
-                        &mut MetaTemps::inline_only(),
-                    )
+                    let mut temps = self.meta_temps.borrow_mut();
+                    self.lower_meta_ir(expr, self.out.signals[signal.0 as usize].width, &mut temps)
                 })
                 .unwrap_or(Expr::Const(0))
         };
@@ -8747,10 +8819,12 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.lower_meta_ir(value, width, &mut MetaTemps::inline_only())
+        let mut temps = self.meta_temps.borrow_mut();
+        self.lower_meta_ir(value, width, &mut temps)
             .unwrap_or(Expr::Const(0))
     }
 
+    /// The signals a dynamic write may target, with the guard selecting each.
     fn dynamic_write_targets(
         &self,
         path: &str,
@@ -13090,6 +13164,8 @@ struct MetaTemps {
 }
 
 impl MetaTemps {
+    /// A hoisting sink whose first temporary takes `next_id`, carrying the
+    /// context and anchor of the write being lowered.
     fn new(next_id: u32, ctx: u32, anchor: crate::diag::Span) -> Self {
         Self {
             hoist: true,
@@ -13141,6 +13217,9 @@ fn materialize(expr: Expr, width: u32, temps: &mut MetaTemps) -> Expr {
     Expr::Current(SignalId(id))
 }
 
+/// The discriminant of element `index`: its companion nibble when the
+/// element is a metavalue, otherwise the value plane's bit widened to a
+/// discriminant.
 fn logic_element_disc(value: &Expr, meta: &Expr, index: u32, encoding: &LogicEncoding) -> Expr {
     let nibble = Expr::Slice {
         base: Box::new(meta.clone()),

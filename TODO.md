@@ -219,11 +219,16 @@ Remaining:
   312-row NVC comparison sweep builds at about 650 MiB instead of exhausting
   8-14 GiB scopes and retains 312/312 behavioral parity. A regression checks
   the width-scaling shape, and VCD/FST hide the materialized operands.
-- 🟡 **Close the residual metavalue scaling paths.** Resolution folding
-  and two partial-write helpers currently retain the old inline-only path
-  because they cannot append signals while holding `&self`; deeply nested
-  resolved multi-driver expressions can therefore still duplicate. Move
-  expressions to a shared/interned DAG or let those helpers allocate temps.
+- ✅ **Close the residual metavalue scaling paths.** Resolution folding and the
+  two partial-write helpers hold only `&self` and so could not append a hoisted
+  operand. They now hoist into a `RefCell` sink on the lowering that the
+  `&mut self` caller drains immediately afterwards, and resolution additionally
+  binds each folded contribution's value and discriminant plane once instead of
+  deep-copying it per element. Two parallel drivers on a resolved `unsigned[16]`
+  went from exhausting a 6 GiB scope to 226 KB of IR, and the growth is linear
+  in width (2.01x per doubling) where it was quadratic (3.91x). Resolution
+  behaviour is unchanged: the nine-value `res.siox` sweep still matches `nvc` on
+  all 81 cells. A regression checks the width-scaling shape.
 - ✅ **Bound LLVM backend function size.** Codegen builds the combinational
   schedule once, partitions it into internal noinline helpers of four
   processes, and reuses those helpers at both settle sites. LLVM's measured

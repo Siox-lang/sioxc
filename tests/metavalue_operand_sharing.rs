@@ -94,3 +94,55 @@ fn std_logic_tables_finish_as_interned_lookups() {
         "the normalized driver expressions did not reference a shared lookup:\n{ir}"
     );
 }
+
+/// The same bound must hold when several drivers fold through `Resolve`.
+///
+/// Resolution folding runs its own per-element unroll, and its helpers hold
+/// only `&self`, so they could not hoist and each contribution's value and
+/// discriminant plane was deep-copied once per element. Two parallel drivers on
+/// a resolved vector therefore grew as `width^2` and exhausted a 6 GiB compiler
+/// scope at eight elements, while one driver on the same expression stayed
+/// linear.
+fn lower_resolved(width: usize) -> Design {
+    let pad = "0".repeat(width - 8);
+    let source = format!(
+        "module m;\n\
+         using std::bits::unsigned;\n\
+         entity E {{ y: unsigned[{width}] out }}\n\
+         impl E {{\n\
+         let a: unsigned[{width}] = \"{pad}0000X100\";\n\
+         let b: unsigned[{width}] = \"{pad}000U0101\";\n\
+         y = (a or b) - (a and b);\n\
+         y = (a and b) - (a or b);\n\
+         }}\n"
+    );
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/resolved.siox", &source),
+            Emit::Ir,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "lowering {width}-element resolved drivers failed:\n{}",
+        compilation.render_diagnostics()
+    );
+    compilation.design.expect("digital IR")
+}
+
+#[test]
+fn resolved_multi_driver_contributions_are_hoisted_not_duplicated() {
+    let narrow = lower_resolved(8);
+    let wide = lower_resolved(16);
+
+    assert!(
+        !narrow.metavalue_temps.is_empty(),
+        "the folded contributions were left inline, so nothing was hoisted"
+    );
+
+    let (n, w) = (reads(&narrow), reads(&wide));
+    assert!(
+        w < n * 3,
+        "doubling the element count more than tripled the IR ({n} -> {w} signal reads): \
+         a resolved driver contribution is being copied per element again"
+    );
+}
