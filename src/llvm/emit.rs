@@ -1264,12 +1264,21 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.position_at_end(done);
         self.builder.build_return(None).unwrap();
 
-        // i64 sx_read_word(i32 sig, i32 word)
-        let f = self.module.add_function(
-            "sx_read_word",
-            i64.fn_type(&[i32.into(), i32.into()], false),
-            None,
-        );
+        self.read_word_accessor("sx_read_word", "cur", None);
+        self.read_word_accessor("sx.process.read.old", "old", Some(Linkage::Internal));
+        self.read_word_accessor("sx.process.read.event", "event", Some(Linkage::Internal));
+    }
+
+    /// Emit one word-at-a-time state reader. The public current-value reader
+    /// is the design ABI; old/event readers are internal implementation
+    /// details used only by direct Process IR entries.
+    fn read_word_accessor(&self, name: &str, state: &str, linkage: Option<Linkage>) {
+        let i64 = self.ctx.i64_type();
+        let i32 = self.ctx.i32_type();
+        let bits = super::ABI_WORD_BITS;
+        let f =
+            self.module
+                .add_function(name, i64.fn_type(&[i32.into(), i32.into()], false), linkage);
         let entry = self.ctx.append_basic_block(f, "e");
         self.builder.position_at_end(entry);
         let sig = f.get_nth_param(0).unwrap().into_int_value();
@@ -1289,12 +1298,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             Vec::new();
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
-            let cty = self.value_ty(self.signal_width(SignalId(id as u32)));
+            // `event` is logically one bit, but the non-bitpacked backend
+            // keeps it in the signal-width state slot. Build the shift in the
+            // loaded storage type; using logical i1 beside an iN load makes an
+            // ill-typed LLVM shift for every N > 1.
+            let v = self.load(state, SignalId(id as u32));
+            let cty = v.get_type();
             let shift = self
                 .builder
-                .build_int_mul(self.fit(word, cty), cty.const_int(bits as u64, false), "sh")
+                .build_int_mul(
+                    self.fit(word, cty),
+                    cty.const_int(u64::from(bits), false),
+                    "sh",
+                )
                 .unwrap();
-            let v = self.load("cur", SignalId(id as u32));
             let down = self
                 .builder
                 .build_right_shift(v, shift, false, "dn")

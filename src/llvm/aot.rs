@@ -77,9 +77,10 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        BinOp, Driver, Expr, ProcessActivation, ProcessBlock, ProcessBlockId, ProcessCfg,
-        ProcessId, ProcessIr, ProcessSignalState, ProcessTerminator, ProcessValue, ProcessValueId,
-        ProcessValueKind, Signal, SignalId,
+        BinOp, Driver, Expr, LookupTable, LookupTableId, ProcessActivation, ProcessBinaryOp,
+        ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessNumber,
+        ProcessSignalState, ProcessTerminator, ProcessValue, ProcessValueId, ProcessValueKind,
+        Signal, SignalId,
     };
     use std::process::Command;
 
@@ -115,7 +116,7 @@ mod tests {
                 id: ProcessId(0),
                 root: InstanceId(0),
                 owner: InstanceId(0),
-                label: Some("a-high-bit".into()),
+                label: Some("a-gt-127".into()),
                 span,
                 activation: ProcessActivation::TimeZero,
                 entry: ProcessBlockId(0),
@@ -125,7 +126,7 @@ mod tests {
                         id: ProcessBlockId(0),
                         instructions: vec![],
                         terminator: ProcessTerminator::Branch {
-                            condition: ProcessValueId(1),
+                            condition: ProcessValueId(14),
                             then_block: ProcessBlockId(1),
                             else_block: ProcessBlockId(2),
                         },
@@ -155,11 +156,119 @@ mod tests {
                 ProcessValue {
                     span,
                     ty: None,
+                    bit_width: Some(8),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![127])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(8),
+                    kind: ProcessValueKind::ForeignCall {
+                        name: "sx_test_threshold".into(),
+                        arguments: vec![ProcessValueId(1)],
+                        float_arguments: vec![false],
+                        integer_arguments: vec![false],
+                        float_result: false,
+                        integer_result: false,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
                     bit_width: Some(1),
-                    kind: ProcessValueKind::BitSlice {
-                        base: ProcessValueId(0),
-                        high: 7,
-                        low: 7,
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Gt,
+                        left: ProcessValueId(0),
+                        right: ProcessValueId(2),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(4),
+                    kind: ProcessValueKind::TableLookup {
+                        table: LookupTableId(0),
+                        index: ProcessValueId(4),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(4),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![9])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Eq,
+                        left: ProcessValueId(5),
+                        right: ProcessValueId(6),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Select {
+                        condition: ProcessValueId(7),
+                        then_value: ProcessValueId(3),
+                        else_value: ProcessValueId(8),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(2),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![3])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::SignedGt,
+                        left: ProcessValueId(10),
+                        right: ProcessValueId(8),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(3),
+                    kind: ProcessValueKind::Concat(vec![
+                        ProcessValueId(9),
+                        ProcessValueId(7),
+                        ProcessValueId(11),
+                    ]),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(3),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![7])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Eq,
+                        left: ProcessValueId(12),
+                        right: ProcessValueId(13),
                     },
                 },
             ],
@@ -187,7 +296,10 @@ mod tests {
             enum_bases: Default::default(),
             new_defaults: Default::default(),
             logic_encodings: Default::default(),
-            lookup_tables: Default::default(),
+            lookup_tables: vec![LookupTable {
+                element_width: 4,
+                values: vec![7, 9],
+            }],
             base_dir: Default::default(),
             meta_of: Default::default(),
             metavalue_temps: Default::default(),
@@ -218,6 +330,7 @@ extern void sx_settle(void);
 typedef unsigned char (*sx_process_entry)(unsigned resume_block);
 extern sx_process_entry const sx_process_entries[];
 extern const unsigned sx_process_initial_blocks[];
+unsigned long long sx_test_threshold(unsigned long long value) { return value; }
 signed main(void) {
     sx_reset();
     sx_set(0, 30); sx_set(1, 12); sx_settle();

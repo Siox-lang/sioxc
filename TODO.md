@@ -331,8 +331,13 @@ Remaining:
   instead of consulting a design-wide width. Instruction/value coverage,
   suspension services, and full runtime consumption remain. Direct branch
   terminators already evaluate exact-width integer/bit-string/character
-  literals, current scalar signals, and fixed bit slices; unsupported value
-  forms or signal states still return the explicit unsupported status.
+  literals; current, old, and event state; fixed bit slices; integer/signed/
+  floating arithmetic and comparisons; defined divide/shift corner cases;
+  std-derived lookup tables; selections; packed concatenations; and scalar
+  foreign calls. Positive minimum-width literals remain positive when they
+  enter a signed operation instead of being mistaken for two's-complement
+  negatives. Unsupported aggregate/place values still return the explicit
+  unsupported status.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

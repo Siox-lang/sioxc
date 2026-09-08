@@ -16,8 +16,8 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 use siox::ir::{
-    Design, ProcessActivation, ProcessCfg, ProcessNumber, ProcessSensitivity, ProcessSignalState,
-    ProcessTerminator, ProcessValueId, ProcessValueKind,
+    Design, ProcessActivation, ProcessBinaryOp, ProcessCfg, ProcessNumber, ProcessSensitivity,
+    ProcessSignalState, ProcessTerminator, ProcessUnaryOp, ProcessValueId, ProcessValueKind,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -53,26 +53,51 @@ fn fit<'ctx>(builder: &Builder<'ctx>, value: IntValue<'ctx>, width: u32) -> Opti
     }
 }
 
-/// Read one scalar current-signal value through the stable word ABI and
-/// reconstruct its exact LLVM integer. Composite signal lists and old/event
-/// planes intentionally remain unsupported until their state accessors are
-/// part of the direct process lowering boundary.
-fn current_signal<'ctx>(
+/// Signed counterpart of [`fit`].
+fn fit_signed<'ctx>(
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let ty = value
+        .get_type()
+        .get_context()
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    match value.get_type().get_bit_width().cmp(&width) {
+        std::cmp::Ordering::Less => builder.build_int_s_extend(value, ty, "pv.sx").ok(),
+        std::cmp::Ordering::Greater => builder.build_int_truncate(value, ty, "pv.tr").ok(),
+        std::cmp::Ordering::Equal => Some(value),
+    }
+}
+
+/// Read one scalar signal value through a word accessor and reconstruct its
+/// exact LLVM integer. The current plane uses the stable design ABI; old/event
+/// accessors remain internal to the emitted design object.
+fn signal_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
     signals: &[siox::ir::SignalId],
+    state: ProcessSignalState,
     width: u32,
 ) -> Option<IntValue<'ctx>> {
     let [signal] = signals else {
         return None;
     };
-    let signal_width = design.signal_width(*signal)?;
+    let signal_width = match state {
+        ProcessSignalState::Current | ProcessSignalState::Old => design.signal_width(*signal)?,
+        ProcessSignalState::Event => 1,
+    };
     let value_type = context
         .custom_width_int_type(std::num::NonZeroU32::new(width)?)
         .ok()?;
-    let read = module.get_function("sx_read_word")?;
+    let read = module.get_function(match state {
+        ProcessSignalState::Current => "sx_read_word",
+        ProcessSignalState::Old => "sx.process.read.old",
+        ProcessSignalState::Event => "sx.process.read.event",
+    })?;
     let mut value = value_type.const_zero();
     // Never request or shift a word whose first bit lies outside the result.
     // A malformed hand-built IR can disagree with the signal width; treating
@@ -115,9 +140,412 @@ fn current_signal<'ctx>(
     Some(value)
 }
 
-/// Emit the side-effect-free scalar subset needed by direct CFG control.
-/// Values are dependency ordered, but the per-block cache also prevents a
-/// shared arena node from being emitted more than once in one LLVM block.
+/// Emit an arena value and convert it to the operation's contextual width.
+#[allow(clippy::too_many_arguments)]
+fn process_value_at<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    width: u32,
+    signed: bool,
+    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    let value = process_value(context, module, builder, design, id, cache)?;
+    if signed && process_value_is_signed(design, id) {
+        fit_signed(builder, value, width)
+    } else {
+        fit(builder, value, width)
+    }
+}
+
+/// Whether a scalar arena value denotes a signed mathematical result rather
+/// than merely carrying a bit pattern whose high bit happens to be set.
+///
+/// This distinction matters when a signed operation widens an operand. The
+/// minimum representation of the positive literal `3` is `i2 3`, but it must
+/// zero-extend to `i65 3`; blindly sign-extending it would turn it into `-1`.
+/// Conversely, a negative-capable kernel-integer signal and the result of a
+/// signed arithmetic operation must preserve their sign. This mirrors the
+/// established digital emitter's contextual signed-operand rules.
+fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    match &value.kind {
+        ProcessValueKind::Signal { signals, state } => {
+            let [signal] = signals.as_slice() else {
+                return false;
+            };
+            !matches!(state, ProcessSignalState::Event)
+                && design.signals.get(signal.0 as usize).is_some_and(|signal| {
+                    signal.integer && signal.range.map(|(left, _)| left < 0).unwrap_or(true)
+                })
+        }
+        ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_) => {
+            matches!(value.ty, Some(siox::types::Ty::Integer))
+        }
+        ProcessValueKind::Unary { operation, .. } => matches!(
+            operation,
+            ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger
+        ),
+        ProcessValueKind::Binary { operation, .. } => matches!(
+            operation,
+            ProcessBinaryOp::SignedAdd
+                | ProcessBinaryOp::SignedSub
+                | ProcessBinaryOp::SignedMul
+                | ProcessBinaryOp::SignedDiv
+                | ProcessBinaryOp::ArithmeticShr
+        ),
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            process_value_is_signed(design, *then_value)
+                || process_value_is_signed(design, *else_value)
+        }
+        ProcessValueKind::ForeignCall { integer_result, .. } => *integer_result,
+        _ => false,
+    }
+}
+
+/// Convert an arbitrary-width scalar to the one-bit condition domain.
+fn as_condition<'ctx>(builder: &Builder<'ctx>, value: IntValue<'ctx>) -> Option<IntValue<'ctx>> {
+    if value.get_type().get_bit_width() == 1 {
+        Some(value)
+    } else {
+        builder
+            .build_int_compare(
+                IntPredicate::NE,
+                value,
+                value.get_type().const_zero(),
+                "pv.condition",
+            )
+            .ok()
+    }
+}
+
+/// Emit a normalized scalar binary operation with the same defined corner
+/// cases as the established hardware LLVM path.
+#[allow(clippy::too_many_arguments)]
+fn process_binary<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    operation: &ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    result_width: u32,
+    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    let left_width = design.process_ir.values.get(left.0 as usize)?.bit_width?;
+    let right_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
+
+    if matches!(
+        operation,
+        ProcessBinaryOp::FloatAdd
+            | ProcessBinaryOp::FloatSub
+            | ProcessBinaryOp::FloatMul
+            | ProcessBinaryOp::FloatDiv
+    ) {
+        let float = context.f64_type();
+        let left = process_value_at(context, module, builder, design, left, 64, false, cache)?;
+        let right = process_value_at(context, module, builder, design, right, 64, false, cache)?;
+        let left = builder
+            .build_bit_cast(left, float, "pv.fa")
+            .ok()?
+            .into_float_value();
+        let right = builder
+            .build_bit_cast(right, float, "pv.fb")
+            .ok()?
+            .into_float_value();
+        let result = match operation {
+            ProcessBinaryOp::FloatAdd => builder.build_float_add(left, right, "pv.fadd").ok()?,
+            ProcessBinaryOp::FloatSub => builder.build_float_sub(left, right, "pv.fsub").ok()?,
+            ProcessBinaryOp::FloatMul => builder.build_float_mul(left, right, "pv.fmul").ok()?,
+            ProcessBinaryOp::FloatDiv => builder.build_float_div(left, right, "pv.fdiv").ok()?,
+            _ => return None,
+        };
+        let bits = builder
+            .build_bit_cast(result, context.i64_type(), "pv.fbits")
+            .ok()?
+            .into_int_value();
+        return fit(builder, bits, result_width);
+    }
+
+    if matches!(
+        operation,
+        ProcessBinaryOp::FloatEq
+            | ProcessBinaryOp::FloatNe
+            | ProcessBinaryOp::FloatLt
+            | ProcessBinaryOp::FloatLe
+            | ProcessBinaryOp::FloatGt
+            | ProcessBinaryOp::FloatGe
+    ) {
+        let float = context.f64_type();
+        let left = process_value_at(context, module, builder, design, left, 64, false, cache)?;
+        let right = process_value_at(context, module, builder, design, right, 64, false, cache)?;
+        let left = builder
+            .build_bit_cast(left, float, "pv.fa")
+            .ok()?
+            .into_float_value();
+        let right = builder
+            .build_bit_cast(right, float, "pv.fb")
+            .ok()?
+            .into_float_value();
+        let predicate = match operation {
+            ProcessBinaryOp::FloatEq => inkwell::FloatPredicate::OEQ,
+            ProcessBinaryOp::FloatNe => inkwell::FloatPredicate::UNE,
+            ProcessBinaryOp::FloatLt => inkwell::FloatPredicate::OLT,
+            ProcessBinaryOp::FloatLe => inkwell::FloatPredicate::OLE,
+            ProcessBinaryOp::FloatGt => inkwell::FloatPredicate::OGT,
+            ProcessBinaryOp::FloatGe => inkwell::FloatPredicate::OGE,
+            _ => return None,
+        };
+        let result = builder
+            .build_float_compare(predicate, left, right, "pv.fcmp")
+            .ok()?;
+        return fit(builder, result, result_width);
+    }
+
+    let comparison = matches!(
+        operation,
+        ProcessBinaryOp::Eq
+            | ProcessBinaryOp::Ne
+            | ProcessBinaryOp::Lt
+            | ProcessBinaryOp::Le
+            | ProcessBinaryOp::Gt
+            | ProcessBinaryOp::Ge
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+    );
+    let signed = matches!(
+        operation,
+        ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedMul
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+            | ProcessBinaryOp::ArithmeticShr
+    );
+    let operand_width = if comparison {
+        left_width.max(right_width)
+    } else {
+        result_width
+    };
+    let operand_width = if signed {
+        operand_width.checked_add(1)?
+    } else {
+        operand_width
+    };
+    if operand_width > super::emit::LLVM_MAX_INT_BITS {
+        return None;
+    }
+
+    if matches!(
+        operation,
+        ProcessBinaryOp::Shl | ProcessBinaryOp::Shr | ProcessBinaryOp::ArithmeticShr
+    ) {
+        let shift_width = operand_width.max(right_width);
+        let left = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            left,
+            shift_width,
+            matches!(operation, ProcessBinaryOp::ArithmeticShr),
+            cache,
+        )?;
+        let right = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            right,
+            shift_width,
+            false,
+            cache,
+        )?;
+        let ty = left.get_type();
+        let limit = ty.const_int(u64::from(operand_width), false);
+        let out_of_range = builder
+            .build_int_compare(IntPredicate::UGE, right, limit, "pv.shift.oob")
+            .ok()?;
+        let zero = ty.const_zero();
+        let safe = builder
+            .build_select(out_of_range, zero, right, "pv.shift.amount")
+            .ok()?
+            .into_int_value();
+        let shifted = if matches!(operation, ProcessBinaryOp::Shl) {
+            builder.build_left_shift(left, safe, "pv.shl").ok()?
+        } else {
+            builder
+                .build_right_shift(
+                    left,
+                    safe,
+                    matches!(operation, ProcessBinaryOp::ArithmeticShr),
+                    "pv.shr",
+                )
+                .ok()?
+        };
+        let out_of_range_value = if matches!(operation, ProcessBinaryOp::ArithmeticShr) {
+            let negative = builder
+                .build_int_compare(IntPredicate::SLT, left, zero, "pv.shift.negative")
+                .ok()?;
+            builder
+                .build_select(negative, ty.const_all_ones(), zero, "pv.shift.fill")
+                .ok()?
+                .into_int_value()
+        } else {
+            zero
+        };
+        let result = builder
+            .build_select(out_of_range, out_of_range_value, shifted, "pv.shift.result")
+            .ok()?
+            .into_int_value();
+        return fit(builder, result, result_width);
+    }
+
+    let left = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        left,
+        operand_width,
+        signed,
+        cache,
+    )?;
+    let right = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        right,
+        operand_width,
+        signed,
+        cache,
+    )?;
+    let compare = |predicate, name| {
+        let value = builder
+            .build_int_compare(predicate, left, right, name)
+            .ok()?;
+        fit(builder, value, result_width)
+    };
+    let result = match operation {
+        ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => {
+            builder.build_int_add(left, right, "pv.add").ok()?
+        }
+        ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => {
+            builder.build_int_sub(left, right, "pv.sub").ok()?
+        }
+        ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => {
+            builder.build_int_mul(left, right, "pv.mul").ok()?
+        }
+        ProcessBinaryOp::Div => {
+            let zero = left.get_type().const_zero();
+            let one = left.get_type().const_int(1, false);
+            let is_zero = builder
+                .build_int_compare(IntPredicate::EQ, right, zero, "pv.div.zero")
+                .ok()?;
+            let safe = builder
+                .build_select(is_zero, one, right, "pv.div.denominator")
+                .ok()?
+                .into_int_value();
+            let quotient = builder.build_int_unsigned_div(left, safe, "pv.div").ok()?;
+            builder
+                .build_select(is_zero, zero, quotient, "pv.div.result")
+                .ok()?
+                .into_int_value()
+        }
+        ProcessBinaryOp::SignedDiv => {
+            let ty = left.get_type();
+            let zero = ty.const_zero();
+            let one = ty.const_int(1, false);
+            let negative_one = ty.const_all_ones();
+            let minimum = builder
+                .build_left_shift(
+                    one,
+                    ty.const_int(u64::from(operand_width - 1), false),
+                    "pv.sdiv.minimum",
+                )
+                .ok()?;
+            let is_zero = builder
+                .build_int_compare(IntPredicate::EQ, right, zero, "pv.sdiv.zero")
+                .ok()?;
+            let is_minimum = builder
+                .build_int_compare(IntPredicate::EQ, left, minimum, "pv.sdiv.is_minimum")
+                .ok()?;
+            let is_negative_one = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    right,
+                    negative_one,
+                    "pv.sdiv.is_negative_one",
+                )
+                .ok()?;
+            let overflow = builder
+                .build_and(is_minimum, is_negative_one, "pv.sdiv.overflow")
+                .ok()?;
+            let unsafe_divisor = builder.build_or(is_zero, overflow, "pv.sdiv.unsafe").ok()?;
+            let safe = builder
+                .build_select(unsafe_divisor, one, right, "pv.sdiv.denominator")
+                .ok()?
+                .into_int_value();
+            let quotient = builder.build_int_signed_div(left, safe, "pv.sdiv").ok()?;
+            let quotient = builder
+                .build_select(overflow, minimum, quotient, "pv.sdiv.overflow.result")
+                .ok()?
+                .into_int_value();
+            builder
+                .build_select(is_zero, zero, quotient, "pv.sdiv.result")
+                .ok()?
+                .into_int_value()
+        }
+        ProcessBinaryOp::And => builder.build_and(left, right, "pv.and").ok()?,
+        ProcessBinaryOp::Or => builder.build_or(left, right, "pv.or").ok()?,
+        ProcessBinaryOp::Xor => builder.build_xor(left, right, "pv.xor").ok()?,
+        ProcessBinaryOp::Eq => return compare(IntPredicate::EQ, "pv.eq"),
+        ProcessBinaryOp::Ne => return compare(IntPredicate::NE, "pv.ne"),
+        ProcessBinaryOp::Lt => return compare(IntPredicate::ULT, "pv.lt"),
+        ProcessBinaryOp::Le => return compare(IntPredicate::ULE, "pv.le"),
+        ProcessBinaryOp::Gt => return compare(IntPredicate::UGT, "pv.gt"),
+        ProcessBinaryOp::Ge => return compare(IntPredicate::UGE, "pv.ge"),
+        ProcessBinaryOp::SignedLt => return compare(IntPredicate::SLT, "pv.slt"),
+        ProcessBinaryOp::SignedLe => return compare(IntPredicate::SLE, "pv.sle"),
+        ProcessBinaryOp::SignedGt => return compare(IntPredicate::SGT, "pv.sgt"),
+        ProcessBinaryOp::SignedGe => return compare(IntPredicate::SGE, "pv.sge"),
+        ProcessBinaryOp::Shl
+        | ProcessBinaryOp::Shr
+        | ProcessBinaryOp::ArithmeticShr
+        | ProcessBinaryOp::FloatAdd
+        | ProcessBinaryOp::FloatSub
+        | ProcessBinaryOp::FloatMul
+        | ProcessBinaryOp::FloatDiv
+        | ProcessBinaryOp::FloatEq
+        | ProcessBinaryOp::FloatNe
+        | ProcessBinaryOp::FloatLt
+        | ProcessBinaryOp::FloatLe
+        | ProcessBinaryOp::FloatGt
+        | ProcessBinaryOp::FloatGe
+        | ProcessBinaryOp::Custom(_) => return None,
+    };
+    fit(builder, result, result_width)
+}
+
+/// Emit the scalar subset needed by direct CFG control. Values are dependency
+/// ordered, but the per-block cache also prevents a shared arena node from
+/// being emitted more than once in one LLVM block. Foreign calls invalidate
+/// cached signal reads because they may mutate state through the public ABI.
 fn process_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -142,10 +570,9 @@ fn process_value<'ctx>(
         | ProcessValueKind::BitString { words, .. } => ty.const_int_arbitrary_precision(words),
         ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),
         ProcessValueKind::Char(character) => ty.const_int(u64::from(u32::from(*character)), false),
-        ProcessValueKind::Signal {
-            signals,
-            state: ProcessSignalState::Current,
-        } => current_signal(context, module, builder, design, signals, width)?,
+        ProcessValueKind::Signal { signals, state } => {
+            signal_value(context, module, builder, design, signals, *state, width)?
+        }
         ProcessValueKind::BitSlice { base, high, low } => {
             let base = process_value(context, module, builder, design, *base, cache)?;
             let base_width = base.get_type().get_bit_width();
@@ -165,6 +592,243 @@ fn process_value<'ctx>(
                     .ok()?
             };
             fit(builder, shifted, width)?
+        }
+        ProcessValueKind::TableLookup { table, index } => {
+            let metadata = design.lookup_tables.get(table.0)?;
+            let count = u64::try_from(metadata.values.len()).ok()?;
+            let count_width = (64 - count.leading_zeros()).max(1);
+            let index_width = design
+                .process_ir
+                .values
+                .get(index.0 as usize)?
+                .bit_width?
+                .max(count_width);
+            let index = process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                *index,
+                index_width,
+                false,
+                cache,
+            )?;
+            let in_range = builder
+                .build_int_compare(
+                    IntPredicate::ULT,
+                    index,
+                    index.get_type().const_int(count, false),
+                    "pv.table.in_range",
+                )
+                .ok()?;
+            let safe_index = builder
+                .build_select(
+                    in_range,
+                    index,
+                    index.get_type().const_zero(),
+                    "pv.table.safe_index",
+                )
+                .ok()?
+                .into_int_value();
+            let safe_index = fit(builder, safe_index, 64)?;
+            let storage_width = metadata.element_width.next_power_of_two().max(8);
+            let storage = context
+                .custom_width_int_type(std::num::NonZeroU32::new(storage_width)?)
+                .ok()?;
+            let array = storage.array_type(u32::try_from(metadata.values.len()).ok()?);
+            let global = module.get_global(&format!("sx.lookup.{}", table.0))?;
+            let pointer = unsafe {
+                builder
+                    .build_in_bounds_gep(
+                        array,
+                        global.as_pointer_value(),
+                        &[context.i64_type().const_zero(), safe_index],
+                        "pv.table.pointer",
+                    )
+                    .ok()?
+            };
+            let loaded = builder
+                .build_load(storage, pointer, "pv.table.value")
+                .ok()?
+                .into_int_value();
+            let selected = builder
+                .build_select(in_range, loaded, storage.const_zero(), "pv.table.result")
+                .ok()?
+                .into_int_value();
+            fit(builder, selected, width)?
+        }
+        ProcessValueKind::ForeignCall {
+            name,
+            arguments,
+            float_arguments,
+            integer_arguments,
+            float_result,
+            integer_result,
+        } => {
+            use inkwell::types::BasicMetadataTypeEnum as MetadataType;
+            use inkwell::values::BasicMetadataValueEnum as MetadataValue;
+
+            let float = context.f64_type();
+            let mut parameter_types = Vec::<MetadataType>::with_capacity(arguments.len());
+            let mut argument_values = Vec::<MetadataValue>::with_capacity(arguments.len());
+            for (index, argument) in arguments.iter().enumerate() {
+                let argument = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *argument,
+                    64,
+                    integer_arguments.get(index).copied().unwrap_or(false),
+                    cache,
+                )?;
+                if float_arguments.get(index).copied().unwrap_or(false) {
+                    parameter_types.push(float.into());
+                    argument_values.push(
+                        builder
+                            .build_bit_cast(argument, float, "pv.foreign.float_argument")
+                            .ok()?
+                            .into_float_value()
+                            .into(),
+                    );
+                } else {
+                    parameter_types.push(context.i64_type().into());
+                    argument_values.push(argument.into());
+                }
+            }
+            let function = module.get_function(name).unwrap_or_else(|| {
+                let signature = if *float_result {
+                    float.fn_type(&parameter_types, false)
+                } else {
+                    context.i64_type().fn_type(&parameter_types, false)
+                };
+                module.add_function(name, signature, Some(Linkage::External))
+            });
+            let returned = match builder
+                .build_call(function, &argument_values, "pv.foreign")
+                .ok()?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(value) => value,
+                _ => return None,
+            };
+            // Foreign code may call public signal accessors. Later arena reads
+            // must observe that mutation rather than reuse an earlier load.
+            cache.clear();
+            let returned = if *float_result {
+                builder
+                    .build_bit_cast(
+                        returned.into_float_value(),
+                        context.i64_type(),
+                        "pv.foreign.float_result",
+                    )
+                    .ok()?
+                    .into_int_value()
+            } else {
+                returned.into_int_value()
+            };
+            if *integer_result {
+                fit_signed(builder, returned, width)?
+            } else {
+                fit(builder, returned, width)?
+            }
+        }
+        ProcessValueKind::Unary { operation, operand } => match operation {
+            ProcessUnaryOp::Neg => {
+                let operand = process_value_at(
+                    context, module, builder, design, *operand, width, false, cache,
+                )?;
+                builder.build_int_neg(operand, "pv.neg").ok()?
+            }
+            ProcessUnaryOp::Not => {
+                let operand = process_value(context, module, builder, design, *operand, cache)?;
+                let inverted = builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        operand,
+                        operand.get_type().const_zero(),
+                        "pv.not",
+                    )
+                    .ok()?;
+                fit(builder, inverted, width)?
+            }
+            ProcessUnaryOp::RealToInteger => {
+                let operand =
+                    process_value_at(context, module, builder, design, *operand, 64, false, cache)?;
+                let real = builder
+                    .build_bit_cast(operand, context.f64_type(), "pv.real.bits")
+                    .ok()?
+                    .into_float_value();
+                let integer = builder
+                    .build_float_to_signed_int(real, context.i64_type(), "pv.real.integer")
+                    .ok()?;
+                fit_signed(builder, integer, width)?
+            }
+        },
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => process_binary(
+            context, module, builder, design, operation, *left, *right, width, cache,
+        )?,
+        ProcessValueKind::Select {
+            condition: selected,
+            then_value,
+            else_value,
+        } => {
+            let selected = process_value(context, module, builder, design, *selected, cache)?;
+            let selected = as_condition(builder, selected)?;
+            let then_value = process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                *then_value,
+                width,
+                false,
+                cache,
+            )?;
+            let else_value = process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                *else_value,
+                width,
+                false,
+                cache,
+            )?;
+            builder
+                .build_select(selected, then_value, else_value, "pv.select")
+                .ok()?
+                .into_int_value()
+        }
+        ProcessValueKind::Concat(parts) => {
+            let mut joined = ty.const_zero();
+            let mut offset = width;
+            for part in parts {
+                let part_width = design.process_ir.values.get(part.0 as usize)?.bit_width?;
+                offset = offset.checked_sub(part_width)?;
+                let part =
+                    process_value_at(context, module, builder, design, *part, width, false, cache)?;
+                let part = if offset == 0 {
+                    part
+                } else {
+                    builder
+                        .build_left_shift(
+                            part,
+                            ty.const_int(u64::from(offset), false),
+                            "pv.concat.place",
+                        )
+                        .ok()?
+                };
+                joined = builder.build_or(joined, part, "pv.concat").ok()?;
+            }
+            if offset != 0 {
+                return None;
+            }
+            joined
         }
         _ => return None,
     };
@@ -354,18 +1018,8 @@ fn process_entry<'ctx>(
                         .unwrap();
                     continue;
                 };
-                let condition = if condition.get_type().get_bit_width() == 1 {
-                    condition
-                } else {
-                    builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            condition,
-                            condition.get_type().const_zero(),
-                            "pv.condition",
-                        )
-                        .unwrap()
-                };
+                let condition = as_condition(&builder, condition)
+                    .expect("validated scalar process condition has a nonzero width");
                 builder
                     .build_conditional_branch(
                         condition,
@@ -723,10 +1377,11 @@ mod tests {
         assert!(body("bb3:").contains("ret i8 -1"), "{llvm}");
     }
 
-    /// Direct branch lowering reconstructs a value from as many ABI words as
-    /// its own signal width requires, then branches on the selected bit.
+    /// Direct branch lowering reconstructs current/old state from as many ABI
+    /// words as required, combines it with event state, and branches on a
+    /// selected high bit.
     #[test]
-    fn process_branch_reads_an_exact_width_multiword_value() {
+    fn process_branch_reads_exact_width_state_and_operations() {
         let process_ir = ProcessIr {
             processes: vec![ProcessCfg {
                 id: ProcessId(0),
@@ -742,7 +1397,7 @@ mod tests {
                         id: ProcessBlockId(0),
                         instructions: vec![],
                         terminator: ProcessTerminator::Branch {
-                            condition: ProcessValueId(1),
+                            condition: ProcessValueId(6),
                             then_block: ProcessBlockId(1),
                             else_block: ProcessBlockId(2),
                         },
@@ -772,11 +1427,59 @@ mod tests {
                 ProcessValue {
                     span: span(),
                     ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Old,
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Event,
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Ne,
+                        left: ProcessValueId(0),
+                        right: ProcessValueId(1),
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
                     bit_width: Some(1),
                     kind: ProcessValueKind::BitSlice {
                         base: ProcessValueId(0),
                         high: 64,
                         low: 64,
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::And,
+                        left: ProcessValueId(2),
+                        right: ProcessValueId(3),
+                    },
+                },
+                ProcessValue {
+                    span: span(),
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::And,
+                        left: ProcessValueId(4),
+                        right: ProcessValueId(5),
                     },
                 },
             ],
@@ -806,7 +1509,17 @@ mod tests {
             llvm.contains("call i64 @sx_read_word(i32 0, i32 1)"),
             "{llvm}"
         );
+        assert!(
+            llvm.contains("call i64 @sx.process.read.old(i32 0, i32 1)"),
+            "{llvm}"
+        );
+        assert!(
+            llvm.contains("call i64 @sx.process.read.event(i32 0, i32 0)"),
+            "{llvm}"
+        );
         assert!(llvm.contains("lshr i65"), "{llvm}");
+        assert!(llvm.contains("icmp ne i65"), "{llvm}");
+        assert!(llvm.contains("and i1"), "{llvm}");
         assert!(llvm.contains("br i1"), "{llvm}");
     }
 

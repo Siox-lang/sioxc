@@ -468,6 +468,10 @@ fn normalized_value_width(
         }
         ProcessValueKind::BitString { width, .. } => Some(*width),
         ProcessValueKind::Char(_) => Some(1),
+        ProcessValueKind::Signal {
+            state: ProcessSignalState::Event,
+            ..
+        } => Some(1),
         ProcessValueKind::Signal { signals, .. } => signal_width(signals),
         ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
         ProcessValueKind::CheckedIndex { index, .. } => width(index),
@@ -1597,6 +1601,10 @@ fn source_value_width(
             .bit_width()?
             .try_into()
             .ok(),
+        ProcessValueKind::Signal {
+            state: ProcessSignalState::Event,
+            ..
+        } => Some(1),
         ProcessValueKind::Signal { signals, .. } => {
             signals.iter().try_fold(0u32, |total, signal| {
                 total.checked_add(context.design.signal_width(*signal)?)
@@ -2281,6 +2289,29 @@ mod tests {
             .process_ir
             .validate(design.signals.len() as u32)
             .is_empty());
+    }
+
+    #[test]
+    /// An event is one Boolean regardless of the observed signal's packed
+    /// width; treating it as the signal width would inflate direct operations.
+    fn event_process_values_are_one_bit() {
+        let span = crate::diag::Span::new(FileId(0), 0..0);
+        let process_ir = ProcessIr {
+            values: vec![ProcessValue {
+                span,
+                ty: None,
+                bit_width: None,
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Event,
+                },
+            }],
+            ..ProcessIr::default()
+        };
+        assert_eq!(
+            normalized_value_width(&process_ir, ProcessValueId(0), &Design::default()),
+            Some(1)
+        );
     }
 
     #[test]
