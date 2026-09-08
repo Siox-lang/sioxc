@@ -238,6 +238,7 @@ pub(crate) fn build_module<'ctx>(
         ));
     }
     let cg = Codegen::new(ctx, design);
+    super::process::declare_state(ctx, &cg.module, design);
     cg.build();
     super::process::emit_metadata(ctx, &cg.module, design);
     // LLVM's own verifier — a well-formedness net beyond textual checks.
@@ -1019,6 +1020,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Address one process-staging flag by its compile-time signal id.
     fn process_flag_ptr(&self, name: &str, signal: u32) -> PointerValue<'ctx> {
+        self.process_flag_ptr_at(
+            name,
+            self.ctx.i32_type().const_int(u64::from(signal), false),
+        )
+    }
+
+    /// Address a process-staging flag by an in-range runtime signal id.
+    fn process_flag_ptr_at(&self, name: &str, signal: IntValue<'ctx>) -> PointerValue<'ctx> {
         let byte = self.ctx.i8_type();
         let bytes = byte.array_type(self.n.max(1));
         let global = self
@@ -1030,10 +1039,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .build_in_bounds_gep(
                     bytes,
                     global.as_pointer_value(),
-                    &[
-                        self.ctx.i32_type().const_zero(),
-                        self.ctx.i32_type().const_int(u64::from(signal), false),
-                    ],
+                    &[self.ctx.i32_type().const_zero(), signal],
                     "process.flag",
                 )
                 .unwrap()
@@ -1132,6 +1138,25 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .build_or(any_changed, changed, "process.any_changed")
                 .unwrap();
         }
+        let storage_changed = self
+            .builder
+            .build_call(
+                self.module
+                    .get_function("sx.process.commit.storage")
+                    .expect("process storage commit declaration"),
+                &[],
+                "process.storage.changed",
+            )
+            .unwrap()
+            .try_as_basic_value();
+        let storage_changed = match storage_changed {
+            inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+            _ => unreachable!("process storage commit returns i1"),
+        };
+        any_changed = self
+            .builder
+            .build_or(any_changed, storage_changed, "process.any_state_changed")
+            .unwrap();
         let result = self
             .builder
             .build_int_z_extend(any_changed, byte, "process.commit.result")
@@ -1144,54 +1169,51 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             byte.fn_type(&[self.ctx.i32_type().into()], false),
             None,
         );
-        let entry = self.ctx.append_basic_block(changed, "entry");
-        let done = self.ctx.append_basic_block(changed, "done");
-        let cases = (0..self.n)
-            .map(|signal| {
-                (
-                    self.ctx.i32_type().const_int(u64::from(signal), false),
-                    self.ctx.append_basic_block(changed, "signal"),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.builder.position_at_end(entry);
         self.builder
-            .build_switch(
-                changed
-                    .get_first_param()
-                    .expect("changed query has a signal id")
-                    .into_int_value(),
-                done,
-                &cases,
+            .position_at_end(self.ctx.append_basic_block(changed, "entry"));
+        let signal = changed
+            .get_first_param()
+            .expect("changed query has a signal id")
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                signal,
+                self.ctx.i32_type().const_int(u64::from(self.n), false),
+                "process.changed.in_range",
             )
             .unwrap();
-        let mut incoming = Vec::with_capacity(cases.len());
-        for (signal, (_, block)) in cases.iter().enumerate() {
-            self.builder.position_at_end(*block);
-            let value = self
-                .builder
-                .build_load(
-                    byte,
-                    self.process_flag_ptr("sx.process.changed", signal as u32),
-                    "process.changed.value",
-                )
-                .unwrap()
-                .into_int_value();
-            incoming.push((value, *block));
-            self.builder.build_unconditional_branch(done).unwrap();
-        }
-        self.builder.position_at_end(done);
+        let safe = self
+            .builder
+            .build_select(
+                in_range,
+                signal,
+                self.ctx.i32_type().const_zero(),
+                "process.changed.safe_id",
+            )
+            .unwrap()
+            .into_int_value();
+        let loaded = self
+            .builder
+            .build_load(
+                byte,
+                self.process_flag_ptr_at("sx.process.changed", safe),
+                "process.changed.value",
+            )
+            .unwrap()
+            .into_int_value();
         let result = self
             .builder
-            .build_phi(byte, "process.changed.result")
-            .unwrap();
-        result.add_incoming(&[(&byte.const_zero(), entry)]);
-        for (value, block) in &incoming {
-            result.add_incoming(&[(value as &dyn inkwell::values::BasicValue, *block)]);
-        }
-        self.builder
-            .build_return(Some(&result.as_basic_value().into_int_value()))
-            .unwrap();
+            .build_select(
+                in_range,
+                loaded,
+                byte.const_zero(),
+                "process.changed.result",
+            )
+            .unwrap()
+            .into_int_value();
+        self.builder.build_return(Some(&result)).unwrap();
     }
 
     // --- accessors: sx_set / sx_read / sx_reset ---------------------------
@@ -1251,6 +1273,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 )
                 .unwrap();
         }
+        self.builder
+            .build_call(
+                self.module
+                    .get_function("sx.process.reset")
+                    .expect("process reset declaration"),
+                &[],
+                "",
+            )
+            .unwrap();
         self.builder.build_return(None).unwrap();
 
         // i32 sx_range_error(void): zero, or one plus the first ranged signal

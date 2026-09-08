@@ -341,9 +341,12 @@ Remaining:
   the future runtime owns when a ready-process batch commits. Commit preserves
   source-order override and updates current/old/event state across arbitrary
   ABI words; an unsupported block performs no partial calls or writes before
-  returning status 255. Locals, persistent storage and projections, checked
-  indexing/failure latches, runtime instructions, match/for, and suspension
-  remain.
+  returning status 255. Scalar/packed process locals and persistent testbench
+  storage now use exact-width object-owned frames: declarations and assignments
+  update immediately, input/inout bindings stage DUT writes, output bindings
+  mirror committed DUT values, and storage changes are exposed for reactive
+  scheduling. Recursive aggregate projections, checked indexing/failure
+  latches, runtime instructions, match/for, and suspension remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

@@ -51,6 +51,7 @@ extern sx_process_entry const sx_process_entries[];
 extern const uint32_t sx_process_initial_blocks[];
 uint8_t sx_process_commit(void);
 uint8_t sx_process_changed(uint32_t signal);
+uint8_t sx_process_storage_changed(uint32_t storage);
 extern const uint8_t  sx_process_activations[];
 extern const uint32_t sx_process_sensitivity_offsets[];
 extern const uint8_t  sx_process_sensitivity_kinds[];
@@ -61,10 +62,10 @@ Offsets use the usual half-open flattened-table representation. Activation is
 `0 = time zero`, `1 = reactive`; sensitivity is `0 = signal`, `1 = persistent
 storage`. Counts make the one ABI-safe sentinel in each logically empty table
 unobservable. `sx_process_commit` publishes one complete ready batch and
-returns whether any signal changed. `sx_process_changed` identifies the
-committed signals for reactive sensitivity checks. Changing any table,
-function contract, or encoding increments
-`sx_process_abi_version`.
+returns whether any signal or persistent storage changed.
+`sx_process_changed` and `sx_process_storage_changed` identify the committed
+objects for reactive sensitivity checks. Changing any table, function
+contract, or encoding increments `sx_process_abi_version`.
 
 The runtime starts a process by calling `sx_process_entries[id]` with
 `sx_process_initial_blocks[id]`. A suspended process is called again with the
@@ -72,10 +73,11 @@ resume block recorded by the suspension service. Entry status is `0 =
 completed`, `1 = suspended` (reserved until suspension lowering lands), `2 =
 stopped`, `3 = finish simulation`, and `255 = unsupported migration node`.
 The last status is a temporary fail-closed guard: current entries execute
-scalar control flow and whole-signal staged assignments, but must not pretend
-that an instruction omitted by the incremental emitter completed
-successfully. An unsupported block is rejected transactionally before it
-performs foreign calls or publishes a pending write.
+scalar control flow, immediate scalar/packed local and persistent-storage
+writes, and whole-signal staged assignments, but must not pretend that an
+instruction omitted by the incremental emitter completed successfully. An
+unsupported block is rejected transactionally before it performs foreign
+calls or publishes a pending write.
 
 **Provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -139,10 +141,17 @@ signatures:
    values wider than one ABI word are reconstructed exactly, and signed
    widening distinguishes mathematical results from positive minimum-width
    bit patterns.
-2. **Storage allocation.** Whether `ProcessStorage` is runtime-allocated and
-   addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
-   recursive layouts, flattened DUT bindings, and endpoint directions are now
-   complete, so this is an ABI/allocation choice rather than an IR blocker.
+2. **Storage allocation — decided and scalar/packed forms emitted.** Each
+   scalar/packed process-local and persistent `ProcessStorage` value has
+   exact-width state in the design object. This keeps arbitrary-width layouts
+   and process frames in LLVM rather than teaching the reusable scheduler their representation;
+   globals also retain locals across a future suspend/resume call. Declarations
+   and local/storage assignments update this state immediately. A storage
+   input/inout binding stages the same value into its DUT signal, while an
+   output binding mirrors the committed DUT signal during commit. The object
+   snapshots storage at each batch boundary and exposes its change flags for
+   storage sensitivities. Recursive array/struct leaves and projections remain
+   to be emitted from their retained `SourceLayout`.
 3. **Staged writes — decided and emitted.** LLVM owns exact-width pending signal
    storage and the representation-dependent commit operation. Whole-scalar
    signal assignments write only that pending plane; later writes to the same

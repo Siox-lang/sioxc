@@ -77,10 +77,12 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        BinOp, Driver, Expr, LookupTable, LookupTableId, ProcessActivation, ProcessAssignment,
-        ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction,
-        ProcessIr, ProcessNumber, ProcessSignalState, ProcessSuspendOp, ProcessTerminator,
-        ProcessValue, ProcessValueId, ProcessValueKind, Signal, SignalId,
+        BinOp, Driver, Expr, LayoutDirection, LayoutKind, LookupTable, LookupTableId,
+        ProcessActivation, ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId,
+        ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId,
+        ProcessNumber, ProcessSignalState, ProcessStorage, ProcessStorageBinding, ProcessStorageId,
+        ProcessSuspendOp, ProcessTerminator, ProcessValue, ProcessValueId, ProcessValueKind,
+        Signal, SignalId, SourceLayout,
     };
     use std::process::Command;
 
@@ -594,7 +596,7 @@ signed main(void) {
     sx_reset();
     if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 1;
     if (sx_read_word(0, 0) != 0 || sx_read_word(0, 1) != 0) return 2;
-    if (sx_process_commit() != 1 || sx_process_changed(0) != 1) return 3;
+    if (sx_process_commit() != 1 || sx_process_changed(0) != 1 || sx_process_changed(99) != 0) return 3;
     if (sx_read_word(0, 0) != 0x0123456789abcdefULL || sx_read_word(0, 1) != 1) return 4;
     if (sx_process_entries[1](sx_process_initial_blocks[1]) != 2) return 5;
     if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 6;
@@ -625,6 +627,232 @@ signed main(void) {
         assert!(
             run.success(),
             "native staged process returned {:?}",
+            run.code()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    /// Scalar process locals update immediately, persistent storage survives
+    /// entry calls, and an input binding reaches the DUT only at commit.
+    fn process_locals_and_storage_execute_with_immediate_semantics() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!(
+                "skipping process_locals_and_storage_execute_with_immediate_semantics: clang not found"
+            );
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let packed = || SourceLayout {
+            span,
+            kind: LayoutKind::Packed {
+                width: 8,
+                family: "unsigned".into(),
+                range: None,
+                element_enum: None,
+            },
+        };
+        let values = vec![
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![3])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Local {
+                    process: ProcessId(0),
+                    local: ProcessLocalId(0),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Storage(ProcessStorageId(0)),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![5])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Add,
+                    left: ProcessValueId(1),
+                    right: ProcessValueId(4),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(3),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![6])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(2),
+                    right: ProcessValueId(6),
+                },
+            },
+        ];
+        let process_ir = ProcessIr {
+            storages: vec![ProcessStorage {
+                id: ProcessStorageId(0),
+                owner: InstanceId(0),
+                name: "input".into(),
+                source: None,
+                span,
+                ty: None,
+                layout: Some(packed()),
+                initializer: Some(ProcessValueId(0)),
+                bindings: vec![ProcessStorageBinding {
+                    projection: String::new(),
+                    signal: SignalId(0),
+                    direction: LayoutDirection::In,
+                }],
+            }],
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("immediate-state".into()),
+                span,
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![ProcessLocal {
+                    id: ProcessLocalId(0),
+                    name: "temporary".into(),
+                    source: None,
+                    span,
+                    ty: None,
+                    layout: Some(packed()),
+                }],
+                blocks: vec![
+                    ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![
+                            ProcessInstruction::Declare {
+                                local: ProcessLocalId(0),
+                                initializer: Some(ProcessValueId(3)),
+                                span,
+                            },
+                            ProcessInstruction::Assign {
+                                semantics: ProcessAssignment::ImmediateLocal,
+                                driver_context: None,
+                                target: ProcessValueId(1),
+                                value: ProcessValueId(5),
+                                span,
+                            },
+                            ProcessInstruction::Assign {
+                                semantics: ProcessAssignment::ImmediateStorage,
+                                driver_context: None,
+                                target: ProcessValueId(2),
+                                value: ProcessValueId(1),
+                                span,
+                            },
+                        ],
+                        terminator: ProcessTerminator::Branch {
+                            condition: ProcessValueId(7),
+                            then_block: ProcessBlockId(1),
+                            else_block: ProcessBlockId(2),
+                        },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(1),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(2),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Finish { span },
+                    },
+                ],
+            }],
+            values,
+            tests: vec![],
+        };
+        let design = Design {
+            signals: vec![sig("D.input", 8)],
+            process_ir,
+            ..Design::default()
+        };
+
+        let dir = std::env::temp_dir().join(format!("siox_process_state_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern unsigned long long sx_read(unsigned);
+extern unsigned char sx_process_commit(void);
+extern unsigned char sx_process_changed(unsigned);
+extern unsigned char sx_process_storage_changed(unsigned);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
+signed main(void) {
+    sx_reset();
+    if (sx_read(0) != 0) return 1;
+    if (sx_process_commit() != 1 || sx_read(0) != 3) return 2;
+    if (sx_process_changed(0) != 1 || sx_process_storage_changed(0) != 0 ||
+        sx_process_storage_changed(99) != 0) return 3;
+
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 2) return 4;
+    if (sx_read(0) != 3) return 5;
+    if (sx_process_commit() != 1 || sx_read(0) != 6) return 6;
+    if (sx_process_changed(0) != 1 || sx_process_storage_changed(0) != 1) return 7;
+    if (sx_process_commit() != 0) return 8;
+    if (sx_process_changed(0) != 0 || sx_process_storage_changed(0) != 0) return 9;
+
+    sx_reset();
+    if (sx_process_commit() != 1 || sx_read(0) != 3) return 10;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([
+                main_c.to_str().unwrap(),
+                object.to_str().unwrap(),
+                "-o",
+                binary.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(
+            run.success(),
+            "native process state returned {:?}",
             run.code()
         );
         let _ = std::fs::remove_dir_all(&dir);

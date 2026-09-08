@@ -1,10 +1,10 @@
 //! LLVM code generation for siox (compiled-backend plan, stage B2).
 //!
 //! Consumes the process-extracted [`siox::ir::Design`] and builds an LLVM
-//! module: three word-width state arrays (`cur`/`old`/`event`), the
-//! `sx_set`/`sx_read`/`sx_reset` accessors, and a `sx_settle` that evaluates
-//! the combinational processes in dependency order. Sequential (event-block)
-//! codegen and the full delta-cycle fixpoint are the next increment.
+//! module: exact-width signal/process state planes, the
+//! `sx_set`/`sx_read`/`sx_reset` accessors, direct Process IR entries, and an
+//! `sx_settle` compatibility path that evaluates combinational and event
+//! processes in dependency order.
 //!
 //! LLVM is the permanent backend — building siox needs an LLVM toolchain (see
 //! `Cargo.toml` for the pinned version). Values use their semantic LLVM width

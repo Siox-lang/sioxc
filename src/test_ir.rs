@@ -1564,10 +1564,23 @@ fn source_value_width(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
-    if let Some(width) = ty
-        .and_then(crate::types::Ty::bit_width)
-        .filter(|width| *width != 0)
-    {
+    let typed_width = |ty: &crate::types::Ty| {
+        ty.bit_width().or_else(|| {
+            let crate::types::Ty::Named(definition) = ty else {
+                return None;
+            };
+            let qualified = context.resolved.qualified_name(*definition)?;
+            let symbols = context.design.enum_syms.get(&qualified).or_else(|| {
+                qualified
+                    .rsplit("::")
+                    .next()
+                    .and_then(|name| context.design.enum_syms.get(name))
+            })?;
+            let highest = symbols.keys().copied().max().unwrap_or(0);
+            Some((u64::BITS - highest.leading_zeros()).max(1))
+        })
+    };
+    if let Some(width) = ty.and_then(&typed_width).filter(|width| *width != 0) {
         return Some(width);
     }
     let width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
@@ -1584,14 +1597,14 @@ fn source_value_width(
         ProcessValueKind::String(value) => {
             u32::try_from(value.chars().count()).ok()?.checked_mul(32)
         }
-        ProcessValueKind::Local { local, .. } => process
-            .locals
-            .get(local.0 as usize)?
-            .layout
-            .as_ref()?
-            .bit_width()?
-            .try_into()
-            .ok(),
+        ProcessValueKind::Local { local, .. } => {
+            let local = process.locals.get(local.0 as usize)?;
+            local
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .or_else(|| local.ty.as_ref().and_then(typed_width))
+        }
         ProcessValueKind::Storage(storage) => context
             .process_ir
             .storages
@@ -2161,6 +2174,16 @@ mod tests {
                 ..
             }
         )));
+        assert!(
+            design.process_ir.values.iter().all(|value| {
+                !matches!(
+                    value.kind,
+                    ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_)
+                ) || value.bit_width.is_some()
+            }),
+            "scalar state references need direct-backend widths: {:#?}",
+            design.process_ir.values
+        );
         for (index, value) in design.process_ir.values.iter().enumerate() {
             assert!(
                 crate::ir::process::process_value_dependencies(&value.kind)

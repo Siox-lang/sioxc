@@ -16,9 +16,10 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 use siox::ir::{
-    Design, ProcessActivation, ProcessBinaryOp, ProcessCfg, ProcessNumber, ProcessSensitivity,
-    ProcessSignalState, ProcessTerminator, ProcessUnaryOp, ProcessValueId, ProcessValueKind,
-    SignalId,
+    Design, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment, ProcessBinaryOp,
+    ProcessCfg, ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessSensitivity,
+    ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp, ProcessValueId,
+    ProcessValueKind, SignalId,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -26,7 +27,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 3;
+const PROCESS_ABI_VERSION: u32 = 4;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -38,6 +39,236 @@ const PROCESS_FINISHED: u8 = 3;
 /// lowering is not implemented yet. The runtime must report this, never treat
 /// it as successful completion.
 const PROCESS_UNSUPPORTED: u8 = u8::MAX;
+
+fn local_state_name(process: siox::ir::ProcessId, local: ProcessLocalId) -> String {
+    format!("sx.process.local.{}.{}", process.0, local.0)
+}
+
+fn storage_state_name(storage: ProcessStorageId) -> String {
+    format!("sx.process.storage.{}", storage.0)
+}
+
+fn storage_old_name(storage: ProcessStorageId) -> String {
+    format!("sx.process.storage.old.{}", storage.0)
+}
+
+fn layout_width(layout: &siox::ir::SourceLayout) -> Option<u32> {
+    u32::try_from(layout.bit_width()?)
+        .ok()
+        .filter(|width| *width != 0)
+}
+
+fn local_width(
+    design: &Design,
+    process: siox::ir::ProcessId,
+    local: ProcessLocalId,
+) -> Option<u32> {
+    let local = design
+        .process_ir
+        .processes
+        .get(process.0 as usize)?
+        .locals
+        .get(local.0 as usize)?;
+    local
+        .layout
+        .as_ref()
+        .and_then(layout_width)
+        .or_else(|| {
+            local
+                .ty
+                .as_ref()
+                .and_then(siox::types::Ty::bit_width)
+                .filter(|width| *width != 0)
+        })
+        .or_else(|| {
+            design.process_ir.values.iter().find_map(|value| {
+                matches!(
+                    value.kind,
+                    ProcessValueKind::Local {
+                        process: owner,
+                        local: id,
+                    } if owner == process && id == local.id
+                )
+                .then_some(value.bit_width)
+                .flatten()
+            })
+        })
+        .filter(|width| *width != 0 && *width <= super::emit::LLVM_MAX_INT_BITS)
+}
+
+fn storage_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
+    let storage = design.process_ir.storages.get(storage.0 as usize)?;
+    storage
+        .layout
+        .as_ref()
+        .and_then(layout_width)
+        .or_else(|| {
+            storage
+                .ty
+                .as_ref()
+                .and_then(siox::types::Ty::bit_width)
+                .filter(|width| *width != 0)
+        })
+        .or_else(|| {
+            design.process_ir.values.iter().find_map(|value| {
+                matches!(value.kind, ProcessValueKind::Storage(id) if id == storage.id)
+                    .then_some(value.bit_width)
+                    .flatten()
+            })
+        })
+        .filter(|width| *width != 0 && *width <= super::emit::LLVM_MAX_INT_BITS)
+}
+
+/// Scalar and nominal packed storage has one directly addressable LLVM value.
+/// Recursive arrays/structs keep their leaf layout and are lowered separately.
+fn direct_storage_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
+    let metadata = design.process_ir.storages.get(storage.0 as usize)?;
+    if metadata.layout.as_ref().is_some_and(|layout| {
+        !matches!(
+            layout.kind,
+            LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+        )
+    }) {
+        return None;
+    }
+    let width = storage_width(design, storage)?;
+    metadata
+        .bindings
+        .iter()
+        .all(|binding| {
+            binding.projection.is_empty() && design.signal_width(binding.signal) == Some(width)
+        })
+        .then_some(width)
+}
+
+fn storage_observed_signal(design: &Design, storage: ProcessStorageId) -> Option<Option<SignalId>> {
+    direct_storage_width(design, storage)?;
+    let storage = design.process_ir.storages.get(storage.0 as usize)?;
+    let mut observed = storage
+        .bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                binding.direction,
+                LayoutDirection::Out | LayoutDirection::InOut
+            )
+        })
+        .map(|binding| binding.signal);
+    let first = observed.next();
+    observed
+        .all(|signal| Some(signal) == first)
+        .then_some(first)
+}
+
+fn storage_write_signals(design: &Design, storage: ProcessStorageId) -> Option<Vec<SignalId>> {
+    direct_storage_width(design, storage)?;
+    let storage = design.process_ir.storages.get(storage.0 as usize)?;
+    if storage
+        .bindings
+        .iter()
+        .any(|binding| matches!(binding.direction, LayoutDirection::Out))
+    {
+        return None;
+    }
+    Some(
+        storage
+            .bindings
+            .iter()
+            .filter(|binding| {
+                matches!(
+                    binding.direction,
+                    LayoutDirection::In | LayoutDirection::InOut
+                )
+            })
+            .map(|binding| binding.signal)
+            .collect(),
+    )
+}
+
+fn layout_default(design: &Design, layout: Option<&siox::ir::SourceLayout>) -> u64 {
+    let Some(layout) = layout else { return 0 };
+    let key = match &layout.kind {
+        LayoutKind::Scalar {
+            nominal: Some(name),
+            ..
+        } => Some(name.as_str()),
+        LayoutKind::Scalar {
+            domain: siox::ir::ScalarDomain::Enum(name),
+            ..
+        }
+        | LayoutKind::Packed { family: name, .. } => Some(name.as_str()),
+        _ => None,
+    };
+    key.and_then(|key| design.new_defaults.get(key).copied())
+        .unwrap_or(0)
+}
+
+fn storage_default(design: &Design, storage: ProcessStorageId) -> u64 {
+    layout_default(
+        design,
+        design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)
+            .and_then(|storage| storage.layout.as_ref()),
+    )
+}
+
+fn local_default(design: &Design, process: siox::ir::ProcessId, local: ProcessLocalId) -> u64 {
+    layout_default(
+        design,
+        design
+            .process_ir
+            .processes
+            .get(process.0 as usize)
+            .and_then(|process| process.locals.get(local.0 as usize))
+            .and_then(|local| local.layout.as_ref()),
+    )
+}
+
+/// Declare exact-width process frames before the design ABI is emitted. The
+/// design reset/commit functions call the two internal helpers whose bodies
+/// are filled after all Process IR metadata is available.
+pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
+    let add_state = |name: &str, width: u32| {
+        let ty = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).expect("nonzero state width"))
+            .expect("validated process state width");
+        let global = module.add_global(ty, None, name);
+        global.set_initializer(&ty.const_zero());
+        global.set_linkage(Linkage::Internal);
+    };
+    for storage in &design.process_ir.storages {
+        if let Some(width) = direct_storage_width(design, storage.id) {
+            add_state(&storage_state_name(storage.id), width);
+            add_state(&storage_old_name(storage.id), width);
+        }
+    }
+    for process in &design.process_ir.processes {
+        for local in &process.locals {
+            if let Some(width) = local_width(design, process.id, local.id) {
+                add_state(&local_state_name(process.id, local.id), width);
+            }
+        }
+    }
+    let storage_count = u32::try_from(design.process_ir.storages.len())
+        .expect("ProcessStorageId is a u32 ABI index");
+    let changed = context.i8_type().array_type(storage_count.max(1));
+    let global = module.add_global(changed, None, "sx.process.storage.changed");
+    global.set_initializer(&changed.const_zero());
+    global.set_linkage(Linkage::Internal);
+
+    module.add_function(
+        "sx.process.reset",
+        context.void_type().fn_type(&[], false),
+        Some(Linkage::Internal),
+    );
+    module.add_function(
+        "sx.process.commit.storage",
+        context.bool_type().fn_type(&[], false),
+        Some(Linkage::Internal),
+    );
+}
 
 /// Convert an integer to another exact LLVM width without changing its
 /// unsigned bit pattern.
@@ -139,6 +370,49 @@ fn signal_value<'ctx>(
         value = builder.build_or(value, placed, "pv.join").ok()?;
     }
     Some(value)
+}
+
+fn state_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    name: &str,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    Some(
+        builder
+            .build_load(ty, module.get_global(name)?.as_pointer_value(), "pv.state")
+            .ok()?
+            .into_int_value(),
+    )
+}
+
+fn store_state<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    name: &str,
+    width: u32,
+    value: IntValue<'ctx>,
+) -> Option<()> {
+    let value = fit(builder, value, width)?;
+    builder
+        .build_store(module.get_global(name)?.as_pointer_value(), value)
+        .ok()?;
+    Some(())
+}
+
+fn stage_signal<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    signal: SignalId,
+    value: IntValue<'ctx>,
+) -> Option<()> {
+    let stage = module.get_function(&format!("sx.process.stage.{}", signal.0))?;
+    builder.build_call(stage, &[value.into()], "").ok()?;
+    Some(())
 }
 
 /// Emit an arena value and convert it to the operation's contextual width.
@@ -574,6 +848,20 @@ fn process_value<'ctx>(
         ProcessValueKind::Signal { signals, state } => {
             signal_value(context, module, builder, design, signals, *state, width)?
         }
+        ProcessValueKind::Local { process, local } => state_value(
+            context,
+            module,
+            builder,
+            &local_state_name(*process, *local),
+            width,
+        )?,
+        ProcessValueKind::Storage(storage) => state_value(
+            context,
+            module,
+            builder,
+            &storage_state_name(*storage),
+            width,
+        )?,
         ProcessValueKind::BitSlice { base, high, low } => {
             let base = process_value(context, module, builder, design, *base, cache)?;
             let base_width = base.get_type().get_bit_width();
@@ -977,6 +1265,22 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && arguments.len() == integer_arguments.len()
                     && arguments.iter().all(|argument| has(&supported, *argument))
             }
+            ProcessValueKind::Local { process, local } => {
+                local_width(design, *process, *local) == value.bit_width
+            }
+            ProcessValueKind::Storage(storage) => {
+                direct_storage_width(design, *storage) == value.bit_width
+                    && storage_observed_signal(design, *storage).is_some()
+                    && design
+                        .process_ir
+                        .storages
+                        .get(storage.0 as usize)
+                        .is_some_and(|storage| {
+                            storage
+                                .initializer
+                                .is_none_or(|initializer| has(&supported, initializer))
+                        })
+            }
             ProcessValueKind::Unary { operand, .. } => has(&supported, *operand),
             ProcessValueKind::Binary {
                 operation,
@@ -1004,8 +1308,6 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             }
             ProcessValueKind::Suffixed { .. }
             | ProcessValueKind::String(_)
-            | ProcessValueKind::Local { .. }
-            | ProcessValueKind::Storage(_)
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Field { .. }
@@ -1041,22 +1343,351 @@ fn staged_signal_target(design: &Design, target: ProcessValueId) -> Option<Signa
         .filter(|signal| design.signals.get(signal.0 as usize).is_some())
 }
 
+fn immediate_local_target(
+    design: &Design,
+    owner: siox::ir::ProcessId,
+    target: ProcessValueId,
+) -> Option<(ProcessLocalId, u32)> {
+    let value = design.process_ir.values.get(target.0 as usize)?;
+    let ProcessValueKind::Local { process, local } = &value.kind else {
+        return None;
+    };
+    (*process == owner)
+        .then(|| local_width(design, *process, *local).map(|width| (*local, width)))
+        .flatten()
+        .filter(|(_, width)| Some(*width) == value.bit_width)
+}
+
+fn immediate_storage_target(
+    design: &Design,
+    target: ProcessValueId,
+) -> Option<(ProcessStorageId, u32)> {
+    let value = design.process_ir.values.get(target.0 as usize)?;
+    let ProcessValueKind::Storage(storage) = &value.kind else {
+        return None;
+    };
+    let width = direct_storage_width(design, *storage)?;
+    (value.bit_width == Some(width) && storage_write_signals(design, *storage).is_some())
+        .then_some((*storage, width))
+}
+
+fn storage_changed_ptr<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    count: u32,
+    storage: u32,
+) -> PointerValue<'ctx> {
+    storage_changed_ptr_at(
+        context,
+        module,
+        builder,
+        count,
+        context.i32_type().const_int(u64::from(storage), false),
+    )
+}
+
+fn storage_changed_ptr_at<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    count: u32,
+    storage: IntValue<'ctx>,
+) -> PointerValue<'ctx> {
+    let byte = context.i8_type();
+    let table = byte.array_type(count.max(1));
+    let global = module
+        .get_global("sx.process.storage.changed")
+        .expect("process storage change table");
+    unsafe {
+        builder
+            .build_in_bounds_gep(
+                table,
+                global.as_pointer_value(),
+                &[context.i32_type().const_zero(), storage],
+                "process.storage.changed.pointer",
+            )
+            .expect("valid storage change pointer")
+    }
+}
+
+/// Fill the process-frame reset/commit helpers declared before the design ABI
+/// and expose storage-change queries beside signal-change queries.
+fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
+    let builder = context.create_builder();
+    let byte = context.i8_type();
+    let storage_count = u32::try_from(design.process_ir.storages.len())
+        .expect("ProcessStorageId is a u32 ABI index");
+    let supported_values = supported_process_values(design);
+
+    let reset = module
+        .get_function("sx.process.reset")
+        .expect("process reset declaration");
+    builder.position_at_end(context.append_basic_block(reset, "entry"));
+    for process in &design.process_ir.processes {
+        for local in &process.locals {
+            let Some(width) = local_width(design, process.id, local.id) else {
+                continue;
+            };
+            let ty = context
+                .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+                .expect("validated local width");
+            store_state(
+                module,
+                &builder,
+                &local_state_name(process.id, local.id),
+                width,
+                ty.const_zero(),
+            )
+            .expect("declared process local state");
+        }
+    }
+    let mut cache = HashMap::new();
+    for storage in &design.process_ir.storages {
+        builder
+            .build_store(
+                storage_changed_ptr(context, module, &builder, storage_count, storage.id.0),
+                byte.const_zero(),
+            )
+            .unwrap();
+        let Some(width) = direct_storage_width(design, storage.id) else {
+            continue;
+        };
+        let ty = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+            .expect("validated storage width");
+        let writable = storage_write_signals(design, storage.id);
+        let initialized = storage
+            .initializer
+            .filter(|initializer| {
+                supported_values
+                    .get(initializer.0 as usize)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            .and_then(|initializer| {
+                process_value_at(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    initializer,
+                    width,
+                    false,
+                    &mut cache,
+                )
+            });
+        let value = if writable.is_none() {
+            storage_observed_signal(design, storage.id)
+                .flatten()
+                .and_then(|signal| {
+                    signal_value(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        &[signal],
+                        ProcessSignalState::Current,
+                        width,
+                    )
+                })
+                .unwrap_or_else(|| ty.const_int(storage_default(design, storage.id), false))
+        } else {
+            initialized.unwrap_or_else(|| ty.const_int(storage_default(design, storage.id), false))
+        };
+        store_state(
+            module,
+            &builder,
+            &storage_state_name(storage.id),
+            width,
+            value,
+        )
+        .expect("declared process storage state");
+        store_state(
+            module,
+            &builder,
+            &storage_old_name(storage.id),
+            width,
+            value,
+        )
+        .expect("declared process storage snapshot");
+        if let Some(signals) = writable {
+            for signal in signals {
+                stage_signal(module, &builder, signal, value)
+                    .expect("validated scalar storage binding");
+            }
+        }
+        cache.clear();
+    }
+    builder.build_return(None).unwrap();
+
+    let commit = module
+        .get_function("sx.process.commit.storage")
+        .expect("process storage commit declaration");
+    builder.position_at_end(context.append_basic_block(commit, "entry"));
+    let mut any_changed = context.bool_type().const_zero();
+    for storage in &design.process_ir.storages {
+        let Some(width) = direct_storage_width(design, storage.id) else {
+            continue;
+        };
+        let previous = state_value(
+            context,
+            module,
+            &builder,
+            &storage_old_name(storage.id),
+            width,
+        )
+        .expect("declared storage snapshot");
+        let current = state_value(
+            context,
+            module,
+            &builder,
+            &storage_state_name(storage.id),
+            width,
+        )
+        .expect("declared storage state");
+        let current = storage_observed_signal(design, storage.id)
+            .flatten()
+            .and_then(|signal| {
+                signal_value(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    &[signal],
+                    ProcessSignalState::Current,
+                    width,
+                )
+            })
+            .unwrap_or(current);
+        store_state(
+            module,
+            &builder,
+            &storage_state_name(storage.id),
+            width,
+            current,
+        )
+        .expect("declared storage state");
+        store_state(
+            module,
+            &builder,
+            &storage_old_name(storage.id),
+            width,
+            current,
+        )
+        .expect("declared storage snapshot");
+        let changed = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                previous,
+                current,
+                "process.storage.changed",
+            )
+            .unwrap();
+        builder
+            .build_store(
+                storage_changed_ptr(context, module, &builder, storage_count, storage.id.0),
+                builder
+                    .build_int_z_extend(changed, byte, "process.storage.changed.byte")
+                    .unwrap(),
+            )
+            .unwrap();
+        any_changed = builder
+            .build_or(any_changed, changed, "process.storage.any_changed")
+            .unwrap();
+    }
+    builder.build_return(Some(&any_changed)).unwrap();
+
+    let query = module.add_function(
+        "sx_process_storage_changed",
+        byte.fn_type(&[context.i32_type().into()], false),
+        None,
+    );
+    builder.position_at_end(context.append_basic_block(query, "entry"));
+    let storage = query
+        .get_first_param()
+        .expect("storage change query has an id")
+        .into_int_value();
+    let in_range = builder
+        .build_int_compare(
+            IntPredicate::ULT,
+            storage,
+            context
+                .i32_type()
+                .const_int(u64::from(storage_count), false),
+            "process.storage.changed.in_range",
+        )
+        .unwrap();
+    let safe = builder
+        .build_select(
+            in_range,
+            storage,
+            context.i32_type().const_zero(),
+            "process.storage.changed.safe_id",
+        )
+        .unwrap()
+        .into_int_value();
+    let loaded = builder
+        .build_load(
+            byte,
+            storage_changed_ptr_at(context, module, &builder, storage_count, safe),
+            "process.storage.changed.value",
+        )
+        .unwrap()
+        .into_int_value();
+    let result = builder
+        .build_select(
+            in_range,
+            loaded,
+            byte.const_zero(),
+            "process.storage.changed.result",
+        )
+        .unwrap()
+        .into_int_value();
+    builder.build_return(Some(&result)).unwrap();
+}
+
 /// Whether a block is transactional for the currently implemented direct
 /// subset. Unsupported blocks execute no foreign calls and publish no staged
 /// writes before returning status 255.
-fn block_is_supported(design: &Design, block: &siox::ir::ProcessBlock, values: &[bool]) -> bool {
+fn block_is_supported(
+    design: &Design,
+    process: &ProcessCfg,
+    block: &siox::ir::ProcessBlock,
+    values: &[bool],
+) -> bool {
     let value = |id: ProcessValueId| values.get(id.0 as usize).copied().unwrap_or(false);
     let instructions = block
         .instructions
         .iter()
         .all(|instruction| match instruction {
-            siox::ir::ProcessInstruction::Assign {
-                semantics: siox::ir::ProcessAssignment::StagedSignal,
+            ProcessInstruction::Declare {
+                local, initializer, ..
+            } => local_width(design, process.id, *local).is_some() && initializer.is_none_or(value),
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateLocal,
+                target,
+                value: assigned,
+                ..
+            } => immediate_local_target(design, process.id, *target).is_some() && value(*assigned),
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::ImmediateStorage,
+                target,
+                value: assigned,
+                ..
+            } => immediate_storage_target(design, *target).is_some() && value(*assigned),
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::StagedSignal,
                 target,
                 value: assigned,
                 ..
             } => staged_signal_target(design, *target).is_some() && value(*assigned),
-            _ => false,
+            ProcessInstruction::Assign {
+                semantics: ProcessAssignment::PerPlace,
+                ..
+            }
+            | ProcessInstruction::Schedule { .. }
+            | ProcessInstruction::Runtime { .. } => false,
         });
     let terminator = match &block.terminator {
         ProcessTerminator::Return { value: None, .. }
@@ -1122,7 +1753,7 @@ fn process_entry<'ctx>(
     let supported_values = supported_process_values(design);
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
         builder.position_at_end(*llvm);
-        if !block_is_supported(design, block, &supported_values) {
+        if !block_is_supported(design, process, block, &supported_values) {
             builder
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                 .unwrap();
@@ -1130,30 +1761,106 @@ fn process_entry<'ctx>(
         }
 
         let mut cache = HashMap::new();
-        let mut staged = Vec::with_capacity(block.instructions.len());
         let mut failed = false;
         for instruction in &block.instructions {
-            let siox::ir::ProcessInstruction::Assign {
-                semantics: siox::ir::ProcessAssignment::StagedSignal,
-                target,
-                value,
-                ..
-            } = instruction
-            else {
-                unreachable!("block support check admitted another instruction")
+            let emitted = match instruction {
+                ProcessInstruction::Declare {
+                    local, initializer, ..
+                } => local_width(design, process.id, *local).and_then(|width| {
+                    let value = match initializer {
+                        Some(initializer) => process_value_at(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *initializer,
+                            width,
+                            false,
+                            &mut cache,
+                        )?,
+                        None => context
+                            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                            .ok()?
+                            .const_int(local_default(design, process.id, *local), false),
+                    };
+                    store_state(
+                        module,
+                        &builder,
+                        &local_state_name(process.id, *local),
+                        width,
+                        value,
+                    )
+                }),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::ImmediateLocal,
+                    target,
+                    value,
+                    ..
+                } => immediate_local_target(design, process.id, *target).and_then(
+                    |(local, width)| {
+                        let value = process_value_at(
+                            context, module, &builder, design, *value, width, false, &mut cache,
+                        )?;
+                        store_state(
+                            module,
+                            &builder,
+                            &local_state_name(process.id, local),
+                            width,
+                            value,
+                        )
+                    },
+                ),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::ImmediateStorage,
+                    target,
+                    value,
+                    ..
+                } => immediate_storage_target(design, *target).and_then(|(storage, width)| {
+                    let value = process_value_at(
+                        context, module, &builder, design, *value, width, false, &mut cache,
+                    )?;
+                    store_state(module, &builder, &storage_state_name(storage), width, value)?;
+                    for signal in storage_write_signals(design, storage)? {
+                        stage_signal(module, &builder, signal, value)?;
+                    }
+                    Some(())
+                }),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::StagedSignal,
+                    target,
+                    value,
+                    ..
+                } => staged_signal_target(design, *target).and_then(|signal| {
+                    let width = design.signal_width(signal)?;
+                    let value = process_value_at(
+                        context, module, &builder, design, *value, width, false, &mut cache,
+                    )?;
+                    stage_signal(module, &builder, signal, value)
+                }),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::PerPlace,
+                    ..
+                }
+                | ProcessInstruction::Schedule { .. }
+                | ProcessInstruction::Runtime { .. } => None,
             };
-            let signal = staged_signal_target(design, *target)
-                .expect("block support check admitted a non-signal place");
-            let width = design
-                .signal_width(signal)
-                .expect("validated signal target has a width");
-            let Some(value) = process_value_at(
-                context, module, &builder, design, *value, width, false, &mut cache,
-            ) else {
+            if emitted.is_none() {
                 failed = true;
                 break;
-            };
-            staged.push((signal, value));
+            }
+            if matches!(
+                instruction,
+                ProcessInstruction::Declare { .. }
+                    | ProcessInstruction::Assign {
+                        semantics: ProcessAssignment::ImmediateLocal
+                            | ProcessAssignment::ImmediateStorage,
+                        ..
+                    }
+            ) {
+                // Immediate writes must invalidate an earlier arena load of
+                // the same place. Staged signal writes deliberately do not.
+                cache.clear();
+            }
         }
         let branch_condition = match &block.terminator {
             ProcessTerminator::Branch { condition, .. } => {
@@ -1170,16 +1877,6 @@ fn process_entry<'ctx>(
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                 .unwrap();
             continue;
-        }
-
-        // All values and the terminator were emitted successfully before any
-        // staged write becomes visible. Multiple writes to one target retain
-        // source-order override because each helper replaces its pending slot.
-        for (signal, value) in staged {
-            let stage = module
-                .get_function(&format!("sx.process.stage.{}", signal.0))
-                .expect("Codegen emitted a stage helper for every signal");
-            builder.build_call(stage, &[value.into()], "").unwrap();
         }
 
         match &block.terminator {
@@ -1262,6 +1959,7 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
 /// logically empty arrays unobservable.
 pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
     let process_ir = &design.process_ir;
+    emit_state_helpers(context, module, design);
     u32_global(
         context,
         module,
@@ -1466,9 +2164,10 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 3"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 4"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
+        assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
         assert!(llvm.contains("define internal void @sx.process.stage.0(i1"));
         assert!(llvm.contains("@sx_test_count = constant i32 1"));
         assert!(llvm.contains("@sx_process_count = constant i32 2"));
