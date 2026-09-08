@@ -74,10 +74,11 @@ completed`, `1 = suspended` (reserved until suspension lowering lands), `2 =
 stopped`, `3 = finish simulation`, and `255 = unsupported migration node`.
 The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
-writes, and whole-signal staged assignments, but must not pretend that an
-instruction omitted by the incremental emitter completed successfully. An
-unsupported block is rejected transactionally before it performs foreign
-calls or publishes a pending write.
+writes, whole-signal staged assignments, checked-index failure latches, and
+ranged-write checks, but must not pretend that an instruction omitted by the
+incremental emitter completed successfully. An unsupported block is rejected
+transactionally before it performs foreign calls or publishes a pending
+write.
 
 **Provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -140,18 +141,22 @@ signatures:
    concatenation; std-derived lookup tables; and scalar foreign calls. Signal
    values wider than one ABI word are reconstructed exactly, and signed
    widening distinguishes mathematical results from positive minimum-width
-   bit patterns.
+   bit patterns. `CheckedIndex` nodes retain their Process IR source domain,
+   latch only on an evaluated selection path, and feed the existing
+   `sx_index_*` failure ABI.
 2. **Storage allocation — decided and scalar/packed forms emitted.** Each
    scalar/packed process-local and persistent `ProcessStorage` value has
    exact-width state in the design object. This keeps arbitrary-width layouts
-   and process frames in LLVM rather than teaching the reusable scheduler their representation;
-   globals also retain locals across a future suspend/resume call. Declarations
-   and local/storage assignments update this state immediately. A storage
-   input/inout binding stages the same value into its DUT signal, while an
-   output binding mirrors the committed DUT signal during commit. The object
-   snapshots storage at each batch boundary and exposes its change flags for
-   storage sensitivities. Recursive array/struct leaves and projections remain
-   to be emitted from their retained `SourceLayout`.
+   and process frames in LLVM rather than teaching the reusable scheduler
+   their representation; globals also retain locals across a future
+   suspend/resume call. Declarations and local/storage assignments update this
+   state immediately. A storage input/inout binding stages the same value into
+   its DUT signal, while an output binding mirrors the committed DUT signal
+   during commit. Ranged bindings check the stored mathematical value before
+   narrowing and use the same source-site failure record as direct signal
+   writes. The object snapshots storage at each batch boundary and exposes its
+   change flags for storage sensitivities. Recursive array/struct leaves and
+   projections remain to be emitted from their retained `SourceLayout`.
 3. **Staged writes — decided and emitted.** LLVM owns exact-width pending signal
    storage and the representation-dependent commit operation. Whole-scalar
    signal assignments write only that pending plane; later writes to the same

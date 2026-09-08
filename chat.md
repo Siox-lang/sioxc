@@ -9012,3 +9012,14 @@ binding constraint on that file.
 2026-09-08 Codex: staged whole-scalar Process IR writes are implemented behind process ABI v3. Verified both complete storage-layout suites (418 default / 400 all-feature unit tests plus integrations), strict all-feature clippy, no-default-features check, the 183-file external corpus, a source-to-object ABI test, and a directly executed counter binary producing the expected VCD values/timestamps.
 2026-09-08 Codex: staged signal execution landed as 85267c2. Continuing the no-generated-C pipeline with exact-width LLVM process frames: scalar/packed locals and persistent test storage update immediately, input/inout bindings stage the DUT write, output bindings mirror committed DUT signals, and storage change flags feed the existing sensitivity metadata.
 2026-09-08 Codex: direct scalar/packed process frames and storage binding semantics are verified. A linked ABI probe covers local read-after-write, storage read-after-write, reset initializers, staged input propagation, storage change tracking, invalid query IDs, and both LLVM layouts. Signal/storage change queries now use constant-size checked indexing rather than one basic block per object. The complete 419-default/401-all-feature suites, strict clippy, no-default check, corpus 183/183, and direct counter/VCD smoke test pass; the full suite also caught and fixed zero-width dynamic string allocation while named enum/loop-local widths are now retained in Process IR.
+2026-09-08 Codex: direct Process IR runtime safety is verified. `CheckedIndex`
+now latches the first evaluated bounds failure through the existing ABI with
+source-domain/value retention across value selects and normalized boolean
+guards; process-only diagnostic sites are indexed after stable legacy sites.
+Whole ranged signal writes and writable storage bindings check before signal
+narrowing and retain their Process IR assignment site. The activity-aware
+value cache shares pure operands without cloning nested select caches, and the
+large runtime-vector-index design remains bounded by the 8 GiB test scope.
+Gates: 420 default / 402 all-feature unit tests plus all integrations/docs,
+strict all-feature Clippy, no-default check, corpus 183/183, source-to-object
+and hand-built linked process-entry probes, and direct counter/VCD validation.

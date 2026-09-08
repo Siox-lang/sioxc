@@ -16,10 +16,10 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 use siox::ir::{
-    Design, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment, ProcessBinaryOp,
-    ProcessCfg, ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessSensitivity,
-    ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp, ProcessValueId,
-    ProcessValueKind, SignalId,
+    Design, IndexSite, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment,
+    ProcessBinaryOp, ProcessCfg, ProcessInstruction, ProcessLocalId, ProcessNumber,
+    ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
+    ProcessValueId, ProcessValueKind, SignalId,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -415,6 +415,269 @@ fn stage_signal<'ctx>(
     Some(())
 }
 
+/// Record the first checked-index failure in the same globals used by the
+/// established hardware emitter. `active` preserves source control flow when
+/// LLVM eagerly computes both operands of a value-level `select`.
+fn latch_index_failure<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    valid: IntValue<'ctx>,
+    offending: IntValue<'ctx>,
+    active: Option<IntValue<'ctx>>,
+    site: u32,
+) -> Option<()> {
+    let invalid = builder.build_not(valid, "pv.index.invalid").ok()?;
+    let invalid = match active {
+        Some(active) => builder.build_and(active, invalid, "pv.index.active").ok()?,
+        None => invalid,
+    };
+    let i32 = context.i32_type();
+    let error = module.get_global("index_error")?.as_pointer_value();
+    let previous = builder
+        .build_load(i32, error, "pv.index.previous")
+        .ok()?
+        .into_int_value();
+    let empty = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            previous,
+            i32.const_zero(),
+            "pv.index.empty",
+        )
+        .ok()?;
+    let record = builder.build_and(empty, invalid, "pv.index.record").ok()?;
+    let next = builder
+        .build_select(
+            record,
+            i32.const_int(u64::from(site), false),
+            previous,
+            "pv.index.next",
+        )
+        .ok()?
+        .into_int_value();
+    builder.build_store(error, next).ok()?;
+
+    let offending = fit_signed(builder, offending, 64)?;
+    let value = module.get_global("index_value")?.as_pointer_value();
+    let previous = builder
+        .build_load(context.i64_type(), value, "pv.index.value.previous")
+        .ok()?
+        .into_int_value();
+    let next = builder
+        .build_select(record, offending, previous, "pv.index.value.next")
+        .ok()?
+        .into_int_value();
+    builder.build_store(value, next).ok()?;
+    Some(())
+}
+
+/// Latch a ranged-signal violation before the assigned value is narrowed to
+/// the signal's storage width. The public query ABI is shared with the legacy
+/// hardware emitter while Process IR replaces its execution path.
+#[allow(clippy::too_many_arguments)]
+fn latch_range_failure<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    signal: SignalId,
+    value: IntValue<'ctx>,
+    span: siox::diag::Span,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) -> Option<()> {
+    let (left, right) = design.signals.get(signal.0 as usize)?.range?;
+    let low = left.min(right);
+    let high = left.max(right);
+    let ty = value.get_type();
+    let below = builder
+        .build_int_compare(
+            IntPredicate::SLT,
+            value,
+            ty.const_int(low as u64, true),
+            "pv.range.below",
+        )
+        .ok()?;
+    let above = builder
+        .build_int_compare(
+            IntPredicate::SGT,
+            value,
+            ty.const_int(high as u64, true),
+            "pv.range.above",
+        )
+        .ok()?;
+    let violation = builder.build_or(below, above, "pv.range.violation").ok()?;
+    let i32 = context.i32_type();
+    let error = module.get_global("range_error")?.as_pointer_value();
+    let previous = builder
+        .build_load(i32, error, "pv.range.previous")
+        .ok()?
+        .into_int_value();
+    let empty = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            previous,
+            i32.const_zero(),
+            "pv.range.empty",
+        )
+        .ok()?;
+    let record = builder
+        .build_and(empty, violation, "pv.range.record")
+        .ok()?;
+    let next = builder
+        .build_select(
+            record,
+            i32.const_int(u64::from(signal.0) + 1, false),
+            previous,
+            "pv.range.next",
+        )
+        .ok()?
+        .into_int_value();
+    builder.build_store(error, next).ok()?;
+
+    let site = module.get_global("range_site")?.as_pointer_value();
+    let previous_site = builder
+        .build_load(i32, site, "pv.range.site.previous")
+        .ok()?
+        .into_int_value();
+    let site_id = range_sites.get(&span).copied().unwrap_or(0);
+    let next_site = builder
+        .build_select(
+            record,
+            i32.const_int(u64::from(site_id), false),
+            previous_site,
+            "pv.range.site.next",
+        )
+        .ok()?
+        .into_int_value();
+    builder.build_store(site, next_site).ok()?;
+
+    let value = fit_signed(builder, value, 64)?;
+    let stored_value = module.get_global("range_value")?.as_pointer_value();
+    let previous_value = builder
+        .build_load(context.i64_type(), stored_value, "pv.range.value.previous")
+        .ok()?
+        .into_int_value();
+    let next_value = builder
+        .build_select(record, value, previous_value, "pv.range.value.next")
+        .ok()?
+        .into_int_value();
+    builder.build_store(stored_value, next_value).ok()?;
+    Some(())
+}
+
+/// Compute which dependency-ordered arena nodes contain a checked access.
+/// One shared table serves every process/block in the module.
+fn checked_process_values(design: &Design) -> Vec<bool> {
+    let mut checked = Vec::with_capacity(design.process_ir.values.len());
+    let has =
+        |checked: &[bool], id: ProcessValueId| checked.get(id.0 as usize).copied().unwrap_or(false);
+    for value in &design.process_ir.values {
+        let contains = match &value.kind {
+            ProcessValueKind::CheckedIndex { .. } => true,
+            ProcessValueKind::Field { base, .. }
+            | ProcessValueKind::Attribute { base, .. }
+            | ProcessValueKind::BitSlice { base, .. }
+            | ProcessValueKind::TableLookup { index: base, .. }
+            | ProcessValueKind::Unary { operand: base, .. } => has(&checked, *base),
+            ProcessValueKind::Index { base, index }
+            | ProcessValueKind::Binary {
+                left: base,
+                right: index,
+                ..
+            } => has(&checked, *base) || has(&checked, *index),
+            ProcessValueKind::Range { left, right } => left
+                .iter()
+                .chain(right)
+                .copied()
+                .any(|value| has(&checked, value)),
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value,
+            } => [*condition, *then_value, *else_value]
+                .into_iter()
+                .any(|value| has(&checked, value)),
+            ProcessValueKind::MetaCompare {
+                operands, inner, ..
+            } => operands
+                .iter()
+                .copied()
+                .chain(std::iter::once(*inner))
+                .any(|value| has(&checked, value)),
+            ProcessValueKind::Match { scrutinee, arms } => {
+                has(&checked, *scrutinee) || arms.iter().any(|arm| has(&checked, arm.value))
+            }
+            ProcessValueKind::Call {
+                callee, arguments, ..
+            } => std::iter::once(*callee)
+                .chain(arguments.iter().copied())
+                .any(|value| has(&checked, value)),
+            ProcessValueKind::ForeignCall { arguments, .. } => {
+                arguments.iter().any(|value| has(&checked, *value))
+            }
+            ProcessValueKind::Construct { fields, spread, .. } => fields
+                .iter()
+                .filter_map(|field| field.value)
+                .chain(spread.iter().copied())
+                .any(|value| has(&checked, value)),
+            ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => {
+                values.iter().any(|value| has(&checked, *value))
+            }
+            ProcessValueKind::Number(_)
+            | ProcessValueKind::Suffixed { .. }
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::String(_)
+            | ProcessValueKind::Local { .. }
+            | ProcessValueKind::Storage(_)
+            | ProcessValueKind::Signal { .. }
+            | ProcessValueKind::Definition(_)
+            | ProcessValueKind::Intrinsic(_)
+            | ProcessValueKind::Invalid => false,
+        };
+        checked.push(contains);
+    }
+    checked
+}
+
+/// Per-function value cache. Pure subgraphs use one entry regardless of the
+/// enclosing branch predicate; a subgraph containing `CheckedIndex` includes
+/// that predicate in its key so a shared arena node can latch independently
+/// on different source control-flow paths without cloning the whole cache.
+struct ProcessValueCache<'ctx, 'checks> {
+    emitted: HashMap<(ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
+    checked: &'checks [bool],
+}
+
+impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
+    fn new(checked: &'checks [bool]) -> Self {
+        Self {
+            emitted: HashMap::new(),
+            checked,
+        }
+    }
+
+    fn contains_check(&self, value: ProcessValueId) -> bool {
+        self.checked.get(value.0 as usize).copied().unwrap_or(false)
+    }
+
+    fn key(
+        &self,
+        value: ProcessValueId,
+        active: Option<IntValue<'ctx>>,
+    ) -> (ProcessValueId, Option<IntValue<'ctx>>) {
+        (
+            value,
+            self.contains_check(value).then_some(active).flatten(),
+        )
+    }
+
+    fn clear(&mut self) {
+        self.emitted.clear();
+    }
+}
+
 /// Emit an arena value and convert it to the operation's contextual width.
 #[allow(clippy::too_many_arguments)]
 fn process_value_at<'ctx>(
@@ -425,9 +688,20 @@ fn process_value_at<'ctx>(
     id: ProcessValueId,
     width: u32,
     signed: bool,
-    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    let value = process_value(context, module, builder, design, id, cache)?;
+    let value = process_value(
+        context,
+        module,
+        builder,
+        design,
+        id,
+        active,
+        index_sites,
+        cache,
+    )?;
     if signed && process_value_is_signed(design, id) {
         fit_signed(builder, value, width)
     } else {
@@ -481,6 +755,7 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
             process_value_is_signed(design, *then_value)
                 || process_value_is_signed(design, *else_value)
         }
+        ProcessValueKind::CheckedIndex { index, .. } => process_value_is_signed(design, *index),
         ProcessValueKind::ForeignCall { integer_result, .. } => *integer_result,
         _ => false,
     }
@@ -514,7 +789,9 @@ fn process_binary<'ctx>(
     left: ProcessValueId,
     right: ProcessValueId,
     result_width: u32,
-    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
     let left_width = design.process_ir.values.get(left.0 as usize)?.bit_width?;
     let right_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
@@ -527,8 +804,30 @@ fn process_binary<'ctx>(
             | ProcessBinaryOp::FloatDiv
     ) {
         let float = context.f64_type();
-        let left = process_value_at(context, module, builder, design, left, 64, false, cache)?;
-        let right = process_value_at(context, module, builder, design, right, 64, false, cache)?;
+        let left = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            left,
+            64,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?;
+        let right = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            right,
+            64,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?;
         let left = builder
             .build_bit_cast(left, float, "pv.fa")
             .ok()?
@@ -561,8 +860,30 @@ fn process_binary<'ctx>(
             | ProcessBinaryOp::FloatGe
     ) {
         let float = context.f64_type();
-        let left = process_value_at(context, module, builder, design, left, 64, false, cache)?;
-        let right = process_value_at(context, module, builder, design, right, 64, false, cache)?;
+        let left = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            left,
+            64,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?;
+        let right = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            right,
+            64,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?;
         let left = builder
             .build_bit_cast(left, float, "pv.fa")
             .ok()?
@@ -638,6 +959,8 @@ fn process_binary<'ctx>(
             left,
             shift_width,
             matches!(operation, ProcessBinaryOp::ArithmeticShr),
+            active,
+            index_sites,
             cache,
         )?;
         let right = process_value_at(
@@ -648,6 +971,8 @@ fn process_binary<'ctx>(
             right,
             shift_width,
             false,
+            active,
+            index_sites,
             cache,
         )?;
         let ty = left.get_type();
@@ -698,8 +1023,32 @@ fn process_binary<'ctx>(
         left,
         operand_width,
         signed,
+        active,
+        index_sites,
         cache,
     )?;
+    let right_active = if left_width == 1
+        && right_width == 1
+        && cache.contains_check(right)
+        && matches!(operation, ProcessBinaryOp::And | ProcessBinaryOp::Or)
+    {
+        let left_condition = as_condition(builder, left)?;
+        let required = if matches!(operation, ProcessBinaryOp::And) {
+            left_condition
+        } else {
+            builder
+                .build_not(left_condition, "pv.or.right.active")
+                .ok()?
+        };
+        Some(match active {
+            Some(active) => builder
+                .build_and(active, required, "pv.logical.right.active")
+                .ok()?,
+            None => required,
+        })
+    } else {
+        active
+    };
     let right = process_value_at(
         context,
         module,
@@ -708,6 +1057,8 @@ fn process_binary<'ctx>(
         right,
         operand_width,
         signed,
+        right_active,
+        index_sites,
         cache,
     )?;
     let compare = |predicate, name| {
@@ -821,15 +1172,19 @@ fn process_binary<'ctx>(
 /// ordered, but the per-block cache also prevents a shared arena node from
 /// being emitted more than once in one LLVM block. Foreign calls invalidate
 /// cached signal reads because they may mutate state through the public ABI.
+#[allow(clippy::too_many_arguments)]
 fn process_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
     id: ProcessValueId,
-    cache: &mut HashMap<ProcessValueId, IntValue<'ctx>>,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    if let Some(value) = cache.get(&id).copied() {
+    let cache_key = cache.key(id, active);
+    if let Some(value) = cache.emitted.get(&cache_key).copied() {
         return Some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
@@ -863,7 +1218,16 @@ fn process_value<'ctx>(
             width,
         )?,
         ProcessValueKind::BitSlice { base, high, low } => {
-            let base = process_value(context, module, builder, design, *base, cache)?;
+            let base = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *base,
+                active,
+                index_sites,
+                cache,
+            )?;
             let base_width = base.get_type().get_bit_width();
             if high < low || *high >= base_width {
                 return None;
@@ -881,6 +1245,47 @@ fn process_value<'ctx>(
                     .ok()?
             };
             fit(builder, shifted, width)?
+        }
+        ProcessValueKind::CheckedIndex {
+            index,
+            valid,
+            left,
+            right,
+            span,
+        } => {
+            let index_value = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *index,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let valid = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *valid,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let valid = as_condition(builder, valid)?;
+            let site = index_sites.get(&IndexSite {
+                span: *span,
+                left: *left,
+                right: *right,
+            })?;
+            let offending = if process_value_is_signed(design, *index) {
+                fit_signed(builder, index_value, 64)?
+            } else {
+                fit(builder, index_value, 64)?
+            };
+            latch_index_failure(context, module, builder, valid, offending, active, *site)?;
+            fit(builder, index_value, width)?
         }
         ProcessValueKind::TableLookup { table, index } => {
             let metadata = design.lookup_tables.get(table.0)?;
@@ -900,6 +1305,8 @@ fn process_value<'ctx>(
                 *index,
                 index_width,
                 false,
+                active,
+                index_sites,
                 cache,
             )?;
             let in_range = builder
@@ -969,6 +1376,8 @@ fn process_value<'ctx>(
                     *argument,
                     64,
                     integer_arguments.get(index).copied().unwrap_or(false),
+                    active,
+                    index_sites,
                     cache,
                 )?;
                 if float_arguments.get(index).copied().unwrap_or(false) {
@@ -1025,12 +1434,30 @@ fn process_value<'ctx>(
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::Neg => {
                 let operand = process_value_at(
-                    context, module, builder, design, *operand, width, false, cache,
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    width,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
                 )?;
                 builder.build_int_neg(operand, "pv.neg").ok()?
             }
             ProcessUnaryOp::Not => {
-                let operand = process_value(context, module, builder, design, *operand, cache)?;
+                let operand = process_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
                 let inverted = builder
                     .build_int_compare(
                         IntPredicate::EQ,
@@ -1042,8 +1469,18 @@ fn process_value<'ctx>(
                 fit(builder, inverted, width)?
             }
             ProcessUnaryOp::RealToInteger => {
-                let operand =
-                    process_value_at(context, module, builder, design, *operand, 64, false, cache)?;
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
                 let real = builder
                     .build_bit_cast(operand, context.f64_type(), "pv.real.bits")
                     .ok()?
@@ -1059,15 +1496,61 @@ fn process_value<'ctx>(
             left,
             right,
         } => process_binary(
-            context, module, builder, design, operation, *left, *right, width, cache,
+            context,
+            module,
+            builder,
+            design,
+            operation,
+            *left,
+            *right,
+            width,
+            active,
+            index_sites,
+            cache,
         )?,
         ProcessValueKind::Select {
             condition: selected,
             then_value,
             else_value,
         } => {
-            let selected = process_value(context, module, builder, design, *selected, cache)?;
+            let selected = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *selected,
+                active,
+                index_sites,
+                cache,
+            )?;
             let selected = as_condition(builder, selected)?;
+            let checked_arms =
+                cache.contains_check(*then_value) || cache.contains_check(*else_value);
+            let (then_active, else_active) = if !checked_arms {
+                (None, None)
+            } else {
+                let then_active = match active {
+                    Some(outer) => Some(
+                        builder
+                            .build_and(outer, selected, "pv.select.then.active")
+                            .ok()?,
+                    ),
+                    None => Some(selected),
+                };
+                let not_selected = builder.build_not(selected, "pv.select.not").ok()?;
+                let else_active = match active {
+                    Some(outer) => Some(
+                        builder
+                            .build_and(outer, not_selected, "pv.select.else.active")
+                            .ok()?,
+                    ),
+                    None => Some(not_selected),
+                };
+                (then_active, else_active)
+            };
+            // LLVM `select` computes both operands in one block. Checked
+            // subgraphs include their activity predicate in the cache key;
+            // pure operands keep sharing one emitted value across both arms.
             let then_value = process_value_at(
                 context,
                 module,
@@ -1076,6 +1559,8 @@ fn process_value<'ctx>(
                 *then_value,
                 width,
                 false,
+                then_active,
+                index_sites,
                 cache,
             )?;
             let else_value = process_value_at(
@@ -1086,6 +1571,8 @@ fn process_value<'ctx>(
                 *else_value,
                 width,
                 false,
+                else_active,
+                index_sites,
                 cache,
             )?;
             builder
@@ -1099,8 +1586,18 @@ fn process_value<'ctx>(
             for part in parts {
                 let part_width = design.process_ir.values.get(part.0 as usize)?.bit_width?;
                 offset = offset.checked_sub(part_width)?;
-                let part =
-                    process_value_at(context, module, builder, design, *part, width, false, cache)?;
+                let part = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *part,
+                    width,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
                 let part = if offset == 0 {
                     part
                 } else {
@@ -1121,7 +1618,7 @@ fn process_value<'ctx>(
         }
         _ => return None,
     };
-    cache.insert(id, emitted);
+    cache.emitted.insert(cache_key, emitted);
     Some(emitted)
 }
 
@@ -1247,6 +1744,16 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                         .and_then(|value| value.bit_width)
                         .is_some_and(|width| *high < width)
             }
+            ProcessValueKind::CheckedIndex { index, valid, .. } => {
+                has(&supported, *index)
+                    && has(&supported, *valid)
+                    && value.bit_width
+                        == design
+                            .process_ir
+                            .values
+                            .get(index.0 as usize)
+                            .and_then(|index| index.bit_width)
+            }
             ProcessValueKind::TableLookup { table, index } => {
                 has(&supported, *index)
                     && design.lookup_tables.get(table.0).is_some_and(|table| {
@@ -1313,7 +1820,6 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Field { .. }
             | ProcessValueKind::Attribute { .. }
             | ProcessValueKind::Index { .. }
-            | ProcessValueKind::CheckedIndex { .. }
             | ProcessValueKind::Range { .. }
             | ProcessValueKind::MetaCompare { .. }
             | ProcessValueKind::Match { .. }
@@ -1419,6 +1925,13 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
     let storage_count = u32::try_from(design.process_ir.storages.len())
         .expect("ProcessStorageId is a u32 ABI index");
     let supported_values = supported_process_values(design);
+    let checked_values = checked_process_values(design);
+    let index_sites = design
+        .index_sites()
+        .into_iter()
+        .enumerate()
+        .map(|(index, site)| (site, index as u32 + 1))
+        .collect::<HashMap<_, _>>();
 
     let reset = module
         .get_function("sx.process.reset")
@@ -1442,7 +1955,7 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             .expect("declared process local state");
         }
     }
-    let mut cache = HashMap::new();
+    let mut cache = ProcessValueCache::new(&checked_values);
     for storage in &design.process_ir.storages {
         builder
             .build_store(
@@ -1474,6 +1987,8 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                     initializer,
                     width,
                     false,
+                    None,
+                    &index_sites,
                     &mut cache,
                 )
             });
@@ -1715,6 +2230,9 @@ fn process_entry<'ctx>(
     module: &Module<'ctx>,
     design: &Design,
     process: &ProcessCfg,
+    index_sites: &HashMap<IndexSite, u32>,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+    checked_values: &[bool],
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
     let i32 = context.i32_type();
@@ -1760,7 +2278,7 @@ fn process_entry<'ctx>(
             continue;
         }
 
-        let mut cache = HashMap::new();
+        let mut cache = ProcessValueCache::new(checked_values);
         let mut failed = false;
         for instruction in &block.instructions {
             let emitted = match instruction {
@@ -1776,6 +2294,8 @@ fn process_entry<'ctx>(
                             *initializer,
                             width,
                             false,
+                            None,
+                            index_sites,
                             &mut cache,
                         )?,
                         None => context
@@ -1799,7 +2319,16 @@ fn process_entry<'ctx>(
                 } => immediate_local_target(design, process.id, *target).and_then(
                     |(local, width)| {
                         let value = process_value_at(
-                            context, module, &builder, design, *value, width, false, &mut cache,
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *value,
+                            width,
+                            false,
+                            None,
+                            index_sites,
+                            &mut cache,
                         )?;
                         store_state(
                             module,
@@ -1814,14 +2343,48 @@ fn process_entry<'ctx>(
                     semantics: ProcessAssignment::ImmediateStorage,
                     target,
                     value,
+                    span,
                     ..
                 } => immediate_storage_target(design, *target).and_then(|(storage, width)| {
+                    let signed_value = process_value_is_signed(design, *value);
                     let value = process_value_at(
-                        context, module, &builder, design, *value, width, false, &mut cache,
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        *value,
+                        width,
+                        false,
+                        None,
+                        index_sites,
+                        &mut cache,
                     )?;
                     store_state(module, &builder, &storage_state_name(storage), width, value)?;
                     for signal in storage_write_signals(design, storage)? {
-                        stage_signal(module, &builder, signal, value)?;
+                        let signal_width = design.signal_width(signal)?;
+                        let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
+                        let staged = if ranged {
+                            let checked_width = width.max(signal_width).max(64);
+                            let checked = if signed_value {
+                                fit_signed(&builder, value, checked_width)?
+                            } else {
+                                fit(&builder, value, checked_width)?
+                            };
+                            latch_range_failure(
+                                context,
+                                module,
+                                &builder,
+                                design,
+                                signal,
+                                checked,
+                                *span,
+                                range_sites,
+                            )?;
+                            fit(&builder, checked, signal_width)?
+                        } else {
+                            fit(&builder, value, signal_width)?
+                        };
+                        stage_signal(module, &builder, signal, staged)?;
                     }
                     Some(())
                 }),
@@ -1829,13 +2392,42 @@ fn process_entry<'ctx>(
                     semantics: ProcessAssignment::StagedSignal,
                     target,
                     value,
+                    span,
                     ..
                 } => staged_signal_target(design, *target).and_then(|signal| {
                     let width = design.signal_width(signal)?;
+                    let source_width = design.process_ir.values.get(value.0 as usize)?.bit_width?;
+                    let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
+                    let checked_width = if ranged {
+                        width.max(source_width).max(64)
+                    } else {
+                        width
+                    };
                     let value = process_value_at(
-                        context, module, &builder, design, *value, width, false, &mut cache,
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        *value,
+                        checked_width,
+                        ranged,
+                        None,
+                        index_sites,
+                        &mut cache,
                     )?;
-                    stage_signal(module, &builder, signal, value)
+                    if ranged {
+                        latch_range_failure(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            signal,
+                            value,
+                            *span,
+                            range_sites,
+                        )?;
+                    }
+                    stage_signal(module, &builder, signal, fit(&builder, value, width)?)
                 }),
                 ProcessInstruction::Assign {
                     semantics: ProcessAssignment::PerPlace,
@@ -1863,10 +2455,17 @@ fn process_entry<'ctx>(
             }
         }
         let branch_condition = match &block.terminator {
-            ProcessTerminator::Branch { condition, .. } => {
-                process_value(context, module, &builder, design, *condition, &mut cache)
-                    .and_then(|condition| as_condition(&builder, condition))
-            }
+            ProcessTerminator::Branch { condition, .. } => process_value(
+                context,
+                module,
+                &builder,
+                design,
+                *condition,
+                None,
+                index_sites,
+                &mut cache,
+            )
+            .and_then(|condition| as_condition(&builder, condition)),
             _ => None,
         };
         if failed
@@ -1929,14 +2528,35 @@ fn process_entry<'ctx>(
 /// Emit the opaque function-pointer table consumed by the native scheduler.
 fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
     let pointer = context.ptr_type(AddressSpace::default());
+    let index_sites = design
+        .index_sites()
+        .into_iter()
+        .enumerate()
+        .map(|(index, site)| (site, index as u32 + 1))
+        .collect::<HashMap<_, _>>();
+    let range_sites = design
+        .range_sites()
+        .into_iter()
+        .enumerate()
+        .map(|(index, span)| (span, index as u32 + 1))
+        .collect::<HashMap<_, _>>();
+    let checked_values = checked_process_values(design);
     let values = design
         .process_ir
         .processes
         .iter()
         .map(|process| {
-            process_entry(context, module, design, process)
-                .as_global_value()
-                .as_pointer_value()
+            process_entry(
+                context,
+                module,
+                design,
+                process,
+                &index_sites,
+                &range_sites,
+                &checked_values,
+            )
+            .as_global_value()
+            .as_pointer_value()
         })
         .collect::<Vec<_>>();
     let fallback = [pointer.const_null()];

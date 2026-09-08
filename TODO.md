@@ -345,8 +345,12 @@ Remaining:
   storage now use exact-width object-owned frames: declarations and assignments
   update immediately, input/inout bindings stage DUT writes, output bindings
   mirror committed DUT values, and storage changes are exposed for reactive
-  scheduling. Recursive aggregate projections, checked indexing/failure
-  latches, runtime instructions, match/for, and suspension remain.
+  scheduling. Direct `CheckedIndex` evaluation now records the first active
+  bounds failure through the shared diagnostic ABI (including path-sensitive
+  value-level selections), and ranged signal/storage-binding writes latch
+  their mathematical value and Process IR source site before narrowing.
+  Recursive aggregate projections and per-place writes, runtime instructions,
+  match/for, and suspension remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

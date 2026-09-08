@@ -13260,6 +13260,47 @@ impl Design {
     /// two walks that disagree by one entry would misattribute every failure
     /// after the first divergence.
     pub fn range_sites(&self) -> Vec<crate::diag::Span> {
+        fn process_place_signals(
+            ir: &crate::ir::process::ProcessIr,
+            value: crate::ir::process::ProcessValueId,
+            signals: &mut Vec<SignalId>,
+        ) {
+            let Some(value) = ir.values.get(value.0 as usize) else {
+                return;
+            };
+            match &value.kind {
+                crate::ir::process::ProcessValueKind::Signal { signals: ids, .. } => {
+                    signals.extend(ids.iter().copied());
+                }
+                crate::ir::process::ProcessValueKind::Storage(storage) => {
+                    if let Some(storage) = ir.storages.get(storage.0 as usize) {
+                        signals.extend(
+                            storage
+                                .bindings
+                                .iter()
+                                .filter(|binding| {
+                                    matches!(
+                                        binding.direction,
+                                        LayoutDirection::In | LayoutDirection::InOut
+                                    )
+                                })
+                                .map(|binding| binding.signal),
+                        );
+                    }
+                }
+                crate::ir::process::ProcessValueKind::Field { base, .. }
+                | crate::ir::process::ProcessValueKind::Index { base, .. } => {
+                    process_place_signals(ir, *base, signals);
+                }
+                crate::ir::process::ProcessValueKind::Concat(parts) => {
+                    for part in parts {
+                        process_place_signals(ir, *part, signals);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         let mut sites = Vec::new();
         let mut seen = HashSet::new();
         let mut add = |target: SignalId, span: Option<crate::diag::Span>| {
@@ -13279,6 +13320,29 @@ impl Design {
         for block in &self.event_blocks {
             for update in &block.updates {
                 add(update.target, update.span);
+            }
+        }
+        // Process IR currently coexists with the normalized hardware graph,
+        // so identical migrated writes deduplicate by span. Source-first
+        // testbench writes that have no legacy driver still need a stable site
+        // id for the same public range-failure ABI.
+        for process in &self.process_ir.processes {
+            for block in &process.blocks {
+                for instruction in &block.instructions {
+                    let (target, span) = match instruction {
+                        crate::ir::process::ProcessInstruction::Assign { target, span, .. }
+                        | crate::ir::process::ProcessInstruction::Schedule {
+                            target, span, ..
+                        } => (*target, *span),
+                        crate::ir::process::ProcessInstruction::Declare { .. }
+                        | crate::ir::process::ProcessInstruction::Runtime { .. } => continue,
+                    };
+                    let mut signals = Vec::new();
+                    process_place_signals(&self.process_ir, target, &mut signals);
+                    for signal in signals {
+                        add(signal, Some(span));
+                    }
+                }
             }
         }
         sites
@@ -13363,6 +13427,21 @@ impl Design {
                     collect(condition, &mut sites, &mut seen);
                 }
                 collect(&update.expr, &mut sites, &mut seen);
+            }
+        }
+        // Process IR owns the source-level checked access once generated-C is
+        // gone. Keep legacy expression sites first for ABI stability during
+        // migration, then append process-only sites. Arena nodes are already
+        // dependency ordered, and the set removes cloned accesses.
+        for value in &self.process_ir.values {
+            if let crate::ir::process::ProcessValueKind::CheckedIndex {
+                left, right, span, ..
+            } = value.kind
+            {
+                let site = IndexSite { span, left, right };
+                if seen.insert(site) {
+                    sites.push(site);
+                }
             }
         }
         sites

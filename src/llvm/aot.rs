@@ -859,6 +859,239 @@ signed main(void) {
     }
 
     #[test]
+    /// Process-only diagnostic sites reach the established failure ABI. An
+    /// invalid checked access in an untaken select arm must remain inactive,
+    /// while an evaluated access records both its index and the ranged write's
+    /// pre-truncation value/source site.
+    fn process_checked_index_and_range_failures_follow_control_flow() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!(
+                "skipping process_checked_index_and_range_failures_follow_control_flow: clang not found"
+            );
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let quiet_write = Span::new(FileId(0), 10..11);
+        let checked_site = Span::new(FileId(0), 20..21);
+        let failing_write = Span::new(FileId(0), 30..31);
+        let values = vec![
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(64),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(64),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![7])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+            },
+            ProcessValue {
+                span: checked_site,
+                ty: None,
+                bit_width: Some(64),
+                kind: ProcessValueKind::CheckedIndex {
+                    index: ProcessValueId(1),
+                    valid: ProcessValueId(2),
+                    left: 0,
+                    right: 3,
+                    span: checked_site,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(64),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(64),
+                kind: ProcessValueKind::Select {
+                    condition: ProcessValueId(2),
+                    then_value: ProcessValueId(3),
+                    else_value: ProcessValueId(4),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(3),
+                    right: ProcessValueId(1),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::And,
+                    left: ProcessValueId(2),
+                    right: ProcessValueId(6),
+                },
+            },
+        ];
+        let assignment = |value, span| ProcessInstruction::Assign {
+            semantics: ProcessAssignment::StagedSignal,
+            driver_context: None,
+            target: ProcessValueId(0),
+            value: ProcessValueId(value),
+            span,
+        };
+        let process = |id, value, write_span| ProcessCfg {
+            id: ProcessId(id),
+            root: InstanceId(0),
+            owner: InstanceId(0),
+            label: Some(format!("failure-{id}")),
+            span,
+            activation: ProcessActivation::TimeZero,
+            entry: ProcessBlockId(0),
+            locals: vec![],
+            blocks: vec![ProcessBlock {
+                id: ProcessBlockId(0),
+                instructions: vec![assignment(value, write_span)],
+                terminator: ProcessTerminator::Return {
+                    value: None,
+                    span: Some(span),
+                },
+            }],
+        };
+        let guarded = ProcessCfg {
+            id: ProcessId(2),
+            root: InstanceId(0),
+            owner: InstanceId(0),
+            label: Some("guarded-failure".into()),
+            span,
+            activation: ProcessActivation::TimeZero,
+            entry: ProcessBlockId(0),
+            locals: vec![],
+            blocks: vec![
+                ProcessBlock {
+                    id: ProcessBlockId(0),
+                    instructions: vec![],
+                    terminator: ProcessTerminator::Branch {
+                        condition: ProcessValueId(7),
+                        then_block: ProcessBlockId(1),
+                        else_block: ProcessBlockId(2),
+                    },
+                },
+                ProcessBlock {
+                    id: ProcessBlockId(1),
+                    instructions: vec![],
+                    terminator: ProcessTerminator::Return {
+                        value: None,
+                        span: Some(span),
+                    },
+                },
+                ProcessBlock {
+                    id: ProcessBlockId(2),
+                    instructions: vec![],
+                    terminator: ProcessTerminator::Return {
+                        value: None,
+                        span: Some(span),
+                    },
+                },
+            ],
+        };
+        let process_ir = ProcessIr {
+            processes: vec![
+                process(0, 5, quiet_write),
+                process(1, 3, failing_write),
+                guarded,
+            ],
+            values,
+            ..ProcessIr::default()
+        };
+        let mut ranged = sig("D.ranged", 64);
+        ranged.integer = true;
+        ranged.range = Some((-2, 2));
+        let design = Design {
+            signals: vec![ranged],
+            process_ir,
+            ..Design::default()
+        };
+        assert_eq!(design.index_sites().len(), 1);
+        assert_eq!(design.range_sites(), vec![quiet_write, failing_write]);
+
+        let dir = std::env::temp_dir().join(format!("siox_process_fail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern unsigned long long sx_read(unsigned);
+extern unsigned sx_index_error(void);
+extern long long sx_index_value(void);
+extern unsigned sx_range_error(void);
+extern long long sx_range_value(void);
+extern unsigned sx_range_site(void);
+extern unsigned char sx_process_commit(void);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
+signed main(void) {
+    sx_reset();
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 1;
+    if (sx_index_error() != 0 || sx_range_error() != 0) return 2;
+    if (sx_process_commit() != 1 || sx_read(0) != 1) return 3;
+
+    sx_reset();
+    if (sx_process_entries[2](sx_process_initial_blocks[2]) != 0) return 4;
+    if (sx_index_error() != 0 || sx_range_error() != 0) return 5;
+
+    sx_reset();
+    if (sx_process_entries[1](sx_process_initial_blocks[1]) != 0) return 6;
+    if (sx_index_error() != 1 || sx_index_value() != 7) return 7;
+    if (sx_range_error() != 1 || sx_range_value() != 7 || sx_range_site() != 2) return 8;
+    if (sx_process_commit() != 1 || sx_read(0) != 7) return 9;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([
+                main_c.to_str().unwrap(),
+                object.to_str().unwrap(),
+                "-o",
+                binary.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(
+            run.success(),
+            "native process failure probe returned {:?}",
+            run.code()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     #[cfg(not(feature = "bitpack"))]
     /// An object whose signals span eight ABI words must still link and carry
     /// between words correctly. Skipped when `clang` is unavailable.

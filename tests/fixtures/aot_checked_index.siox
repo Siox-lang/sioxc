@@ -1,0 +1,14 @@
+module aot_checked_index;
+
+// A non-zero declared index range forces a runtime bounds predicate into the
+// canonical Process IR. The linked test invokes that process entry directly,
+// without the generated-C testbench translator.
+entity DynamicRead {
+    index: unsigned[5] in,
+    word: unsigned[15..8] in,
+    value: Logic out
+}
+
+impl DynamicRead {
+    value = word[index];
+}
